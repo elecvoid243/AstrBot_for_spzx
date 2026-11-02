@@ -49,8 +49,11 @@ async def test_control_keeps_original_attempt_when_pause_races_usage_reservation
         nonlocal paused_once
         if not paused_once:
             paused_once = True
+            current = await env.service.get_run(owner, run_id)
             await env.service.control_run(
-                owner, run_id, {"action": "pause", "request_id": "pause-at-reserve"}
+                owner,
+                current["control"]["root_run_id"],
+                {"action": "pause", "request_id": "pause-at-reserve"},
             )
         try:
             return await original_reserve(
@@ -104,6 +107,7 @@ async def test_control_keeps_original_attempt_when_pause_races_usage_reservation
         )
         await asyncio.wait_for(denied.wait(), 5)
         before = await env.service.get_run("alice", started["run_id"])
+        before_task = before["tasks"][0]
         assert before["control"]["status"] == "paused"
         assert before["usage"]["ledger"] == [] and external == []
         await env.service.control_run(
@@ -112,6 +116,7 @@ async def test_control_keeps_original_attempt_when_pause_races_usage_reservation
             {"action": action, "request_id": "control-original-reservation"},
         )
         final = await completed_run(env.service, started["run_id"])
+        final_task = final["tasks"][0]
         (tmp_path / "pause-observations.json").write_text(
             json.dumps(
                 {"before": before, "final": final, "external": external}, indent=2
@@ -121,12 +126,14 @@ async def test_control_keeps_original_attempt_when_pause_races_usage_reservation
         if action == "cancel":
             assert final["status"] == "cancelled", final
             assert not final["usage"]["ledger"] and external == []
-            assert final["state"]["attempt_id"] == before["state"]["attempt_id"]
+            assert (
+                final_task["state"]["attempt_id"] == before_task["state"]["attempt_id"]
+            )
             return
         assert final["status"] == "completed", final
-        assert final["state"]["attempt_id"] == before["state"]["attempt_id"]
+        assert final_task["state"]["attempt_id"] == before_task["state"]["attempt_id"]
         assert external == [
-            (final["state"]["message_id"], final["state"]["attempt_id"])
+            (final_task["state"]["message_id"], final_task["state"]["attempt_id"])
         ]
         assert len(final["usage"]["ledger"]) == 1
         assert final["usage"]["ledger"][0]["receipt_id"] == "pause-gap-delivery"

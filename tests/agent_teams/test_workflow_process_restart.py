@@ -167,9 +167,7 @@ asyncio.run(main())
     assert before["pending_result"] is not None
     assert before["result"] is None
     assert evidence["finished"]["status"] == ("completed" if safe else "interrupted")
-    assert evidence["finished"]["run_id"] == (
-        evidence["root"]["tasks"][0]["run_id"] if graph else identities["run_id"]
-    )
+    assert evidence["finished"]["run_id"] == (evidence["root"]["tasks"][0]["run_id"])
     if graph:
         assert evidence["root"]["status"] == ("completed" if safe else "blocked")
         assert (tmp_path / "model-calls.log").read_text(encoding="utf-8") == model_calls

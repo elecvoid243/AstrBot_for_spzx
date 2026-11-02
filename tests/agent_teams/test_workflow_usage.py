@@ -34,6 +34,17 @@ async def test_quota_wait_automatically_admits_ready_branches_without_reusing_me
         layout: Flat graph or nested graph whose root/local ceiling is binding.
     """
     env = workflow_env
+    env.role = await env.roles.save_role(
+        "alice",
+        {
+            "definition": {
+                **env.role["definition"],
+                "max_parallel": 5,
+                "max_instances": 6,
+            },
+            "installation": env.role["installation"],
+        },
+    )
     ports = env.service.ports_factory("alice")
     original_collect = ports.collect
     bindings, deliveries = {}, []
@@ -140,6 +151,7 @@ async def test_quota_wait_automatically_admits_ready_branches_without_reusing_me
     env.service.ports_factory = lambda username: ports
     definition = {
         "name": "Quota release wakes ready work",
+        "result_task_id": "e",
         "max_parallel": 2,
         "limits": {"token_budget": 25, "max_output_tokens": 10},
         "tasks": [
@@ -161,6 +173,7 @@ async def test_quota_wait_automatically_admits_ready_branches_without_reusing_me
             {
                 "definition": {
                     "name": "Nested ready work",
+                    "result_task_id": "e",
                     "max_parallel": 3 if layout == "root_ceiling" else 1,
                     "tasks": definition["tasks"][1:],
                 }
@@ -174,24 +187,29 @@ async def test_quota_wait_automatically_admits_ready_branches_without_reusing_me
                     "name": "Nested coordinator",
                     "max_parallel": 3,
                     "coordinator": {
+                        "id": "coordinator",
                         "role_id": env.role["role_id"],
                         "role_version": 1,
                         "overrides": {"max_parallel": 5, "max_instances": 6},
                     },
                     "allowed_roles": [
-                        {"role_id": env.role["role_id"], "role_version": 1}
+                        {
+                            "id": "worker",
+                            "role_id": env.role["role_id"],
+                            "role_version": 1,
+                        }
                     ],
                     "allowed_workflows": [
                         {
                             "asset_id": child["asset_id"],
                             "version": 1,
-                            "result_task_id": "e",
                         }
                     ],
                 }
             },
         )
         definition["max_parallel"] = 2 if layout == "root_ceiling" else 3
+        definition["result_task_id"] = "nested"
         definition["required_inputs"] = ["goal"]
         definition["tasks"] = [
             definition["tasks"][0],
@@ -329,6 +347,7 @@ async def test_quota_wait_keeps_the_member_session_exclusive(workflow_env):
         {
             "definition": {
                 "name": "Shared member quota wait",
+                "result_task_id": "b",
                 "max_parallel": 2,
                 "limits": {"token_budget": 25, "max_output_tokens": 10},
                 "tasks": [
@@ -496,6 +515,7 @@ async def test_root_member_limit_blocks_initial_graph_instances(workflow_env):
         {
             "definition": {
                 "name": "Two writers",
+                "result_task_id": "b",
                 "limits": {"max_members": 1},
                 "tasks": [
                     {

@@ -256,12 +256,15 @@ async def test_frozen_graph_rechecks_current_resources_before_recovery(tmp_path)
             calls.append(message_id)
             await binding.save_checkpoint(
                 {
+                    "format_version": 2,
                     "phase": "response",
                     "invocation_id": "original",
                     "model_calls": 1,
                     "steps_used": 1,
                     "messages": [],
                     "tools": [],
+                    "tool_calls": [],
+                    "tool_result_files": {},
                     "response": {"role": "assistant", "completion_text": "Evidence"},
                 }
             )

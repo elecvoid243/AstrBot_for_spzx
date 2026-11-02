@@ -98,9 +98,10 @@ describe("Agent browser snapshots", () => {
     try {
       await flushPromises();
       const image = view.get("img");
+      let decoded = true;
       Object.defineProperties(image.element, {
         currentSrc: { get: () => image.attributes("src") },
-        complete: { get: () => true },
+        complete: { get: () => decoded },
         naturalWidth: { get: () => 1280 },
       });
       vi.spyOn(image.element, "getBoundingClientRect").mockReturnValue({
@@ -146,12 +147,60 @@ describe("Agent browser snapshots", () => {
       expect(socket.sent.filter((x) => x.operation === "wheel")).toHaveLength(
         0,
       );
+      const priorLatency = view.attributes("data-frame-latency");
+      for (const [index, type] of ["action", "state"].entries()) {
+        stream.enqueue(
+          new TextEncoder().encode(
+            `data: ${JSON.stringify({
+              ...frame,
+              image: undefined,
+              type,
+              sequence: index + 2,
+              applied_input_id: 1,
+            })}\n\n`,
+          ),
+        );
+        await flushPromises();
+        expect(view.attributes("data-awaiting-frame")).toBe("true");
+        expect(view.attributes("data-frame-input")).toBe("0");
+        expect(view.attributes("data-frame-latency")).toBe(priorLatency);
+        expect(socket.sent.filter((x) => x.operation === "wheel")).toHaveLength(
+          0,
+        );
+      }
+      // Late old-owner and old-browser captures cannot confirm current input.
+      for (const patch of [
+        { control_epoch: 1 },
+        { browser_session_id: "old-browser" },
+      ]) {
+        stream.enqueue(
+          new TextEncoder().encode(
+            `data: ${JSON.stringify({
+              ...frame,
+              type: "frame",
+              sequence: 4,
+              applied_input_id: 99,
+              width: 1280,
+              height: 720,
+              ...patch,
+            })}\n\n`,
+          ),
+        );
+        await flushPromises();
+        expect(view.attributes("data-awaiting-frame")).toBe("true");
+        expect(view.attributes("data-frame-input")).toBe("0");
+        expect(view.attributes("data-frame-latency")).toBe(priorLatency);
+        expect(socket.sent.filter((x) => x.operation === "wheel")).toHaveLength(
+          0,
+        );
+      }
+      // A real new capture with identical pixels needs no second DOM load.
       stream.enqueue(
         new TextEncoder().encode(
           `data: ${JSON.stringify({
             ...frame,
             type: "frame",
-            sequence: 2,
+            sequence: 5,
             applied_input_id: 1,
             width: 1280,
             height: 720,
@@ -173,12 +222,14 @@ describe("Agent browser snapshots", () => {
       );
       socket.ack("reset_keys", 3);
       socket.ack("reset_keys", 4);
+      decoded = false;
       stream.enqueue(
         new TextEncoder().encode(
           `data: ${JSON.stringify({
             ...frame,
             type: "frame",
-            sequence: 3,
+            sequence: 6,
+            image: "new-pixels",
             applied_input_id: 3,
             width: 1280,
             height: 720,
@@ -186,6 +237,10 @@ describe("Agent browser snapshots", () => {
         ),
       );
       await flushPromises();
+      expect(view.attributes("data-awaiting-frame")).toBe("true");
+      decoded = true;
+      await image.trigger("load");
+      expect(view.attributes("data-awaiting-frame")).toBe("false");
       expect(socket.sent.filter((x) => x.operation === "wheel")).toHaveLength(
         1,
       );

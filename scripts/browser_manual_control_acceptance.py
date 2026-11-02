@@ -575,8 +575,78 @@ addEventListener('focusin',report);
                     viewport={"width": 1600, "height": 1000},
                     device_scale_factor=1.5 if args.pointer_input else 1,
                 )
+                if args.pointer_input:
+                    # Delay actual SSE captures, not synthetic component events.
+                    # Metadata can be delivered after the real WS acknowledgement.
+                    await context.add_init_script(r"""
+(() => {
+  const nativeFetch = window.fetch.bind(window);
+  const gate = window.__h04Frames = {hold:false,holdMetadata:false,pending:null,
+    metadata:[],metadataCount:0,blockedFrames:0,lastMetadata:null,latest:null};
+  window.fetch = async (...args) => {
+    const response = await nativeFetch(...args);
+    const url = typeof args[0] === 'string' ? args[0] : args[0].url;
+    if (!url?.includes('/browser-use/stream') || !response.body) return response;
+    const reader = response.body.getReader();
+    const encoder = new TextEncoder(), decoder = new TextDecoder();
+    const body = new ReadableStream({
+      start(controller) {
+        const emit = block => controller.enqueue(encoder.encode(block + '\n\n'));
+        gate.flushMetadata = () => {
+          gate.holdMetadata = false;
+          for (const block of gate.metadata) emit(block);
+          gate.metadata = [];
+        };
+        gate.release = () => {
+          gate.hold = false;
+          if (gate.pending) emit(gate.pending);
+          gate.pending = null;
+        };
+        (async () => {
+          let buffer = '';
+          try {
+            while (true) {
+              const {value, done} = await reader.read();
+              if (done) { controller.close(); break; }
+              buffer += decoder.decode(value, {stream:true}).replaceAll('\r','');
+              let end;
+              while ((end = buffer.indexOf('\n\n')) >= 0) {
+                const block = buffer.slice(0,end);
+                buffer = buffer.slice(end+2);
+                const data = block.split('\n').find(line => line.startsWith('data: '));
+                if (data) {
+                  const event = JSON.parse(data.slice(6));
+                  if (event.type === 'frame' && gate.hold) {
+                    gate.pending = block;
+                    gate.latest = {sequence:event.sequence,input_id:event.applied_input_id};
+                    gate.blockedFrames++;
+                    continue;
+                  }
+                  if (event.type === 'state' || event.type === 'action') {
+                    gate.metadataCount++;
+                    gate.lastMetadata = {sequence:event.sequence,input_id:event.applied_input_id};
+                    if (gate.holdMetadata) {
+                      if (gate.metadata.length >= 8) throw new Error('Acceptance metadata gate overflow');
+                      gate.metadata.push(block);
+                      continue;
+                    }
+                  }
+                }
+                emit(block);
+              }
+            }
+          } catch(error) { controller.error(error); }
+        })();
+      },
+      cancel() { return reader.cancel(); }
+    });
+    return new Response(body, {status:response.status,headers:response.headers});
+  };
+})();
+""")
                 page = await context.new_page()
                 wheel_acks = []
+                feedback_acks = []
 
                 def socket_opened(ws):
                     """Collect only category/ID/status for pointer acceptance.
@@ -593,6 +663,17 @@ addEventListener('focusin',report);
                         """
                         with contextlib.suppress(ValueError, TypeError):
                             ack = json.loads(raw)
+                            if (
+                                ack.get("operation") in {"click", "text"}
+                                and ack.get("status") == "applied"
+                            ):
+                                feedback_acks.append(
+                                    {
+                                        "operation": ack["operation"],
+                                        "input_id": ack["input_id"],
+                                        "received_at": time.perf_counter(),
+                                    }
+                                )
                             if ack.get("operation") == "wheel":
                                 wheel_acks.append(
                                     {
@@ -710,12 +791,104 @@ addEventListener('focusin',report);
                 ).first.wait_for(timeout=15000)
                 assert sum(bool(item.get("tools")) for item in model_requests) == before
                 await page.keyboard.press("Escape")
+                if args.pointer_input:
+                    before_id = await page.locator(".agent-browser-view").get_attribute(
+                        "data-frame-input"
+                    )
+                    before_latency = await page.locator(
+                        ".agent-browser-view"
+                    ).get_attribute("data-frame-latency")
+                    before_pixels = await image.get_attribute("src")
+                    await page.evaluate(
+                        "Object.assign(window.__h04Frames,{hold:true,holdMetadata:true,pending:null,metadata:[],blockedFrames:0,latest:null})"
+                    )
+                    await asyncio.sleep(0.2)
+                    before_pixels = await image.get_attribute("src")
+                    with Image.open(
+                        io.BytesIO(base64.b64decode(before_pixels.split(",", 1)[1]))
+                    ) as pixels:
+                        before_pixel = pixels.convert("RGB").getpixel((80, 80))
+                    await page.evaluate(
+                        "document.querySelector('.agent-browser-image img').addEventListener('click',()=>window.__h04Frames.inputStarted=performance.now(),{once:true,capture:true})"
+                    )
+                click_started = time.perf_counter()
                 await image.click(position=position)
                 for _ in range(30):
                     if counter == 1:
                         break
                     await asyncio.sleep(0.1)
                 assert counter == 1, counter
+                if args.pointer_input:
+                    for _ in range(80):
+                        click_ack = next(
+                            (
+                                ack
+                                for ack in feedback_acks
+                                if ack["operation"] == "click"
+                                and ack["received_at"] >= click_started
+                            ),
+                            None,
+                        )
+                        if click_ack:
+                            break
+                        await asyncio.sleep(0.025)
+                    assert click_ack is not None
+                    await page.evaluate("window.__h04Frames.flushMetadata()")
+                    await page.wait_for_function(
+                        "id => window.__h04Frames.latest?.input_id >= id && window.__h04Frames.lastMetadata?.input_id >= id && window.__h04Frames.latest.sequence > window.__h04Frames.lastMetadata.sequence",
+                        arg=click_ack["input_id"],
+                    )
+                    await asyncio.sleep(0.35)
+                    gate = await page.evaluate(
+                        "({blockedFrames:window.__h04Frames.blockedFrames,metadataCount:window.__h04Frames.metadataCount,latest:window.__h04Frames.latest,lastMetadata:window.__h04Frames.lastMetadata})"
+                    )
+                    metrics["same_target_frame_proof"] = {
+                        "ack_input_id": click_ack["input_id"],
+                        "ack_ms": round(
+                            (click_ack["received_at"] - click_started) * 1000, 1
+                        ),
+                        "before_displayed_input": before_id,
+                        "gate": gate,
+                    }
+                    await page.screenshot(path=str(evidence / "feedback-held-zh.png"))
+                    held_pixels = await image.get_attribute("src")
+                    with Image.open(
+                        io.BytesIO(base64.b64decode(held_pixels.split(",", 1)[1]))
+                    ) as pixels:
+                        held_pixel = pixels.convert("RGB").getpixel((80, 80))
+                    metrics["same_target_frame_proof"].update(
+                        before_pixel=before_pixel,
+                        held_pixel=held_pixel,
+                        held_awaiting=await page.locator(
+                            ".agent-browser-view"
+                        ).get_attribute("data-awaiting-frame"),
+                        held_displayed_input=await page.locator(
+                            ".agent-browser-view"
+                        ).get_attribute("data-frame-input"),
+                    )
+                    assert held_pixel == before_pixel
+                    assert (
+                        await page.locator(".agent-browser-view").get_attribute(
+                            "data-awaiting-frame"
+                        )
+                        == "true"
+                    ), "Metadata-only action/state falsely confirmed old pixels"
+                    assert (
+                        await page.locator(".agent-browser-view").get_attribute(
+                            "data-frame-input"
+                        )
+                        == before_id
+                    )
+                    assert (
+                        await page.locator(".agent-browser-view").get_attribute(
+                            "data-frame-latency"
+                        )
+                        == before_latency
+                    )
+                    released_after_ms = await page.evaluate(
+                        "performance.now()-window.__h04Frames.inputStarted"
+                    )
+                    await page.evaluate("window.__h04Frames.release()")
                 for _ in range(60):
                     encoded = (await image.get_attribute("src")).split(",", 1)[1]
                     with Image.open(io.BytesIO(base64.b64decode(encoded))) as pixels:
@@ -733,6 +906,24 @@ addEventListener('focusin',report);
                         )
                     raise AssertionError(
                         "Live displayed frame did not show the clicked page update."
+                    )
+                if args.pointer_input:
+                    await page.wait_for_function(
+                        "document.querySelector('.agent-browser-image img')?.complete && document.querySelector('.agent-browser-view')?.dataset.awaitingFrame === 'false'"
+                    )
+                    loaded_ms = float(
+                        await page.locator(".agent-browser-view").get_attribute(
+                            "data-frame-latency"
+                        )
+                    )
+                    assert loaded_ms >= released_after_ms - 20
+                    metrics["same_target_frame_proof"].update(
+                        released_after_ms=round(released_after_ms, 1),
+                        loaded_latency_ms=loaded_ms,
+                        visible_changed_pixel=[red, green, blue],
+                    )
+                    metrics["checks"].append(
+                        "H04-P2: real click acknowledgement and same-target metadata cannot confirm held old JPEG; only released actual changed capture confirms"
                     )
                 metrics["checks"].append(
                     "live displayed JPEG confirms actual click feedback"

@@ -147,6 +147,9 @@ let compositionTimer: ReturnType<typeof setTimeout> | undefined;
 let inputQueue: Record<string, unknown>[] = [];
 let inputInFlight = false;
 const browserImage = ref<HTMLImageElement | null>(null);
+// Only a snapshot/frame owns these capture fields. Control-only events may
+// retain its pixels but cannot advance their input, epoch or capture sequence.
+const imageFrame = ref<BrowserState | null>(null);
 const displayedFrame = ref<BrowserState | null>(null);
 const inputCount = ref(0);
 const awaitingFrame = ref(false);
@@ -400,10 +403,29 @@ function enqueueInput(command: Record<string, unknown>) {
 /** Confirm pixels have loaded before reporting feedback or mapping new input. */
 function frameLoaded(event: Event) {
   const image = event.currentTarget as HTMLImageElement;
-  const current = state.value;
+  const current = imageFrame.value;
   if (
     !current?.image ||
-    image.currentSrc !== `data:${current.mime_type};base64,${current.image}`
+    image.currentSrc !== `data:${current.mime_type};base64,${current.image}` ||
+    (humanControl.value &&
+      current.pointer_input_version === 1 &&
+      current.control_epoch !== manualEpoch) ||
+    [
+      "generation",
+      "browser_session_id",
+      "tab_id",
+      "document_id",
+      "viewport_width",
+      "viewport_height",
+      "scroll_x",
+      "scroll_y",
+      "position_revision",
+      "control_epoch",
+    ].some(
+      (name) =>
+        current[name as keyof BrowserState] !==
+        state.value?.[name as keyof BrowserState],
+    )
   )
     return;
   displayedFrame.value = { ...current };
@@ -631,9 +653,10 @@ watch(
     }
   },
 );
-watch(state, async () => {
+watch(imageFrame, async () => {
   await nextTick();
-  // Identical JPEGs may not fire load again, but are still new consistent captures.
+  // Identical JPEGs may not fire load again. Only an actual capture can advance
+  // their provenance; metadata retaining old pixels must not run this path.
   if (browserImage.value?.complete && browserImage.value.naturalWidth > 0)
     frameLoaded({ currentTarget: browserImage.value } as unknown as Event);
 });
@@ -837,6 +860,13 @@ async function follow(
             event.height > 720)
         )
           continue;
+        if (
+          event.type === "frame" &&
+          humanControl.value &&
+          event.pointer_input_version === 1 &&
+          event.control_epoch !== manualEpoch
+        )
+          continue;
         // Every event is self-contained; sequence ordering also rejects old tabs.
         // Preserve pixels only while their document and coordinate space match.
         const previous = state.value;
@@ -870,6 +900,7 @@ async function follow(
                     }
                   : {}),
               };
+        if (event.type === "frame") imageFrame.value = { ...event };
         if (event.action_reset) resynchronized.value = true;
         connection.value =
           event.execution_state === "stopped" ? "stopped" : "live";
@@ -906,6 +937,7 @@ async function refresh(resuming = false): Promise<void> {
   clearTimeout(retryTimer);
   pending?.abort();
   state.value = null;
+  imageFrame.value = null;
   loading.value = false;
   if (!props.chatId || !props.visible || !pageVisible.value) return;
   if (!online.value) {
@@ -970,6 +1002,7 @@ async function refresh(resuming = false): Promise<void> {
       throw new Error(t(`${key}.expired`));
     }
     state.value = snapshot.data.data;
+    imageFrame.value = { ...snapshot.data.data };
     const identity = JSON.stringify([
       state.value.generation,
       state.value.browser_session_id,

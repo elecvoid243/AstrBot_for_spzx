@@ -202,7 +202,8 @@ async def test_only_published_final_files_are_delivered_to_confirmed_initiator(
         "Authorization": "Bearer "
         + jwt.encode({"username": caller.principal}, signing_key, algorithm="HS256")
     }
-    assert (await client.get(old_path, headers=caller_headers)).status_code == 404
+    # A platform principal is not a Dashboard account, even with a signed JWT.
+    assert (await client.get(old_path, headers=caller_headers)).status_code == 401
     other_asset = await service.save_asset(
         "operator",
         {

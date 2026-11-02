@@ -370,6 +370,8 @@
     "noAttention": "当前没有需要处理的任务。",
     "members": "本次运行成员",
     "context": "同一成员在本次运行内延续上下文，新的运行使用独立会话。",
+    "taskContext": "每个图任务和尝试都保留独立的记录身份。",
+    "teamContext": "团队成员可以通过明确的消息共享信息。",
     "graph": "展开执行图（只读）",
     "artifacts": "产物",
     "task": "任务",
@@ -382,7 +384,13 @@
     "fullRecord": "展开完整原始记录",
     "events": "持久事件与观测游标",
     "emptyProcess": "尚无已完成的成员响应或工具结果。",
-    "observation": "过程关联到任务、尝试和成员。观测游标用于页面重连，不代表调用检查点恢复。"
+    "observation": "过程关联到任务、尝试和成员。观测游标用于页面重连，不代表调用检查点恢复。",
+    "modelResponse": "模型回复",
+    "readerTitle": "Agent 执行过程",
+    "capabilityNote": "仅展示模型实际提供的思考与执行过程。",
+    "finalOnly": "此模型提供方仅返回最终结果，未提供流式片段。",
+    "deliveryStates": { "started": "接收中", "completed": "已完成", "error": "出错", "incomplete": "未完成" },
+    "toolStates": { "running": "执行中", "completed": "已完成", "error": "出错", "unknown": "结果未知", "incomplete": "未完成" }
   },
   "graph": {
     "canvas": "工作流画布",
@@ -519,7 +527,7 @@
       "cancelled": "已取消：不再启动新工作"
     },
     "inFlight": "在途外部调用可能仍会完成。暂停或取消不会撤销已发生的外部效果。",
-    "semantics": "继续运行和从检查点恢复沿用原 Attempt；重试创建新 Attempt；新迭代创建新的任务实例，属于单独的编排操作。",
+    "semantics": "继续会恢复本次运行；重试会开始一次新的尝试。",
     "resolveFirst": "请先在“已保存的成员过程”中处理结果不明的工具调用，再重试此任务。",
     "previous": "历史尝试",
     "originalInputs": "原始冻结输入与精确产物版本",

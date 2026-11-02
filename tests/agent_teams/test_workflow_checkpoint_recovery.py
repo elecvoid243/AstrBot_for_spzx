@@ -8,16 +8,17 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-
-import pytest
-import httpx
-from fastapi import FastAPI
 from types import SimpleNamespace
-from astrbot.dashboard.api.auth import require_dashboard_user
-from astrbot.dashboard.api.workflow_assets import router
+
+import httpx
+import pytest
+from fastapi import FastAPI
 
 from astrbot.core.agent_teams.assets import RoleAssetError
-from tests.agent_teams.test_workflow_assets import completed_run, workflow_env
+from astrbot.dashboard.api.auth import require_dashboard_user
+from astrbot.dashboard.api.workflow_assets import router
+from tests.agent_teams.test_workflow_assets import completed_run
+from tests.agent_teams.test_workflow_assets import workflow_env as workflow_env
 
 
 @pytest.mark.asyncio
@@ -61,7 +62,7 @@ async def test_http_recovery_uses_the_authenticated_owner_and_original_run(workf
     assert len(env.observations) == 1
 
 
-@pytest.mark.parametrize("scenario", ["response", "request", "no_thinking", "started", "submit_pre", "submit_post", "save_failure", "observation_failure", "missing_model", "changed_tool", "parameters", "repair", "parameters_checkpoint", "repair_checkpoint", "parameters_checkpoint_failure", "graph", "concurrent", "tool_result", "tool_checkpoint", "tool_applied", "batch_unknown", "submit_mixed_pre", "submit_mixed_post", "submit_custom_pre", "submit_custom_post", "submit_file_pre", "submit_file_post", "parameters_tool_result", "tool_image_protocol", "tool_save_failure", "tool_observation_failure", "legacy_response", "legacy_upgrade_failure", "partial_generator", "generator_error", "completed_generator", "submit_conflict_result", "submit_conflict_applied", "submit_conflict_pre", "overflow_result", "overflow_applied", "overflow_legacy_result", "overflow_legacy_applied", "overflow_request", "overflow_generator", "overflow_legacy_unaligned", "overflow_legacy_request", "overflow_restore_failure"])
+@pytest.mark.parametrize("scenario", ["response", "request", "no_thinking", "started", "submit_pre", "submit_post", "save_failure", "observation_failure", "missing_model", "changed_tool", "parameters", "repair", "parameters_checkpoint", "repair_checkpoint", "parameters_checkpoint_failure", "tool_progress_gap", "graph", "concurrent", "tool_result", "tool_checkpoint", "tool_applied", "batch_unknown", "submit_mixed_pre", "submit_mixed_post", "submit_custom_pre", "submit_custom_post", "submit_file_pre", "submit_file_post", "parameters_tool_result", "tool_image_protocol", "tool_save_failure", "tool_observation_failure", "legacy_response", "legacy_upgrade_failure", "partial_generator", "generator_error", "completed_generator", "submit_conflict_result", "submit_conflict_applied", "submit_conflict_pre", "overflow_result", "overflow_applied", "overflow_legacy_result", "overflow_legacy_applied", "overflow_request", "overflow_generator", "overflow_legacy_unaligned", "overflow_legacy_request", "overflow_restore_failure"])
 def test_saved_model_plan_survives_forced_process_termination(tmp_path, scenario, preview=False):
     """Resume the real execution chain without repeating the saved model plan.
 
@@ -90,7 +91,9 @@ def test_saved_model_plan_survives_forced_process_termination(tmp_path, scenario
                 None after persisting the ledger and sending the scripted response.
             """
             payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-            if self.path == "/tool":
+            if self.path == "/query" and scenario == "tool_progress_gap":
+                response = {"status": "succeeded", "evidence": "External receipt", "results": [{"content": [{"type": "text", "text": "Verified external evidence."}]}]}
+            elif self.path == "/tool":
                 effects.append(payload)
                 response = {"text": "Verified external evidence."}
                 if scenario.startswith("overflow"):
@@ -205,6 +208,30 @@ def test_saved_model_plan_survives_forced_process_termination(tmp_path, scenario
             repaired = subprocess.run([*command, "recover", scenario], cwd=root, capture_output=True, text=True, encoding="utf-8", timeout=40, env={**os.environ, "PYTHONUTF8": "1"})
             assert repaired.returncode == 0, repaired.stdout + repaired.stderr
             evidence = json.loads((tmp_path / "recovered.json").read_text(encoding="utf-8"))
+        if scenario == "tool_progress_gap":
+            before_process = evidence["before"]["process"]
+            assert not any(record["kind"] == "tool_progress" for record in before_process)
+            calls = evidence["after"]["tool_calls"]
+            call = next(item for item in calls if item["name"] == "external_evidence")
+            records = [record["data"] for record in evidence["after"]["process"] if record["kind"] == "tool_result" and record["data"].get("tool_record_id") == call["record_id"] and record["data"].get("index") == 0]
+            assert len(records) == 1 and records[0]["raw_result"]["content"][0]["text"] == "Verified external evidence.", (call["record_id"], [r["data"] for r in evidence["after"]["process"] if r["kind"] == "tool_result"])
+        if scenario in {"response", "parameters", "repair", "parameters_checkpoint", "repair_checkpoint"}:
+            expected_id = "plan-original" if scenario == "response" else "parameters-original"
+            previous = [record for record in evidence["before"]["process"] if record["kind"] == "model_response" and record["data"]["id"] == expected_id]
+            current_records = [record for record in evidence["after"]["process"] if record["kind"] == "model_response" and record["data"]["id"] == expected_id]
+            assert len(current_records) == 1
+            saved = current_records[0]["data"]
+            assert saved["receipt_id"]
+            matching = [entry for entry in evidence["after"]["usage"]["ledger"] if entry["receipt_id"] == saved["receipt_id"]]
+            assert len(matching) == 1 and matching[0]["invocation_id"] == saved["invocation_id"]
+            if previous:
+                assert len(previous) == 1 and previous[0]["data"] == saved
+            recorded_calls = {call["record_id"] for call in evidence["after"]["tool_calls"]}
+            results = [record for record in evidence["after"]["process"] if record["kind"] == "tool_result"]
+            assert results and all(record["data"].get("tool_record_id") in recorded_calls for record in results)
+            if scenario in {"parameters", "repair"}:
+                parent = [record for record in evidence["after"]["process"] if record["kind"] == "model_response" and record["data"]["id"] == "plan-original"]
+                assert len(parent) == 1 and parent[0]["data"]["receipt_id"] != saved["receipt_id"]
         if scenario.startswith("overflow"):
             assert len(file_reads) == 1
             assert file_reads[0]["content"] is not None

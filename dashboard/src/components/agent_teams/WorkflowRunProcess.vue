@@ -1,9 +1,7 @@
 <template>
   <section class="run-process mt-6">
-    <h3 class="text-h6 mb-2">{{ tm("v2.process") }}</h3>
-    <p class="text-caption text-medium-emphasis mb-3">
-      {{ tm("progress.observation") }}
-    </p>
+    <h3 class="text-h6 mb-2">{{ tm("progress.readerTitle") }}</h3>
+    <p class="text-caption text-medium-emphasis mb-3">{{ tm("progress.capabilityNote") }}</p>
     <h4 v-if="run.messages?.length" class="text-subtitle-1 mt-4">
       {{ tm("communication.title") }}
     </h4>
@@ -143,8 +141,22 @@
     >
       {{ tm("progress.emptyProcess") }}
     </p>
+    <template v-for="item in readingItems" :key="item.kind + ':' + item.key">
+      <article v-if="item.kind === 'delivery'" class="process-record pa-4" data-testid="model-delivery">
+        <p class="text-caption text-medium-emphasis">
+          {{ tm("progress.modelResponse") }} · {{ tm(`progress.deliveryStates.${item.status}`) }}
+        </p>
+        <p v-if="item.streaming === false" class="text-caption">{{ tm("progress.finalOnly") }}</p>
+        <ReasoningBlock v-if="item.reasoning" :reasoning="item.reasoning" :is-dark="isDark" />
+        <MarkdownMessagePart v-if="item.text" :content="item.text" :refs="null" :is-dark="isDark" :custom-html-tags="CHAT_MARKDOWN_CUSTOM_TAGS" :is-streaming="item.status === 'started'" />
+      </article>
+      <div v-else class="process-record pa-2" data-testid="observed-tool">
+        <p class="text-caption text-medium-emphasis">{{ tm(`progress.toolStates.${item.status}`) }}</p>
+        <ToolCallCard :tool-call="item" :is-dark="isDark" />
+      </div>
+    </template>
     <details
-      v-for="record in run.process ?? []"
+      v-for="record in otherRecords"
       :key="record.record_id"
       class="process-record"
       data-testid="process-record"
@@ -207,7 +219,7 @@
       </div>
     </details>
     <details
-      v-if="run.state.response"
+      v-if="run.state.response && !deliveries.length"
       class="process-record"
       data-testid="complete-response"
     >
@@ -218,6 +230,7 @@
     </details>
     <details class="process-record">
       <summary>{{ tm("progress.events") }} · {{ run.cursor ?? 0 }}</summary>
+      <p class="text-caption pa-4">{{ tm("progress.observation") }}</p>
       <pre class="process-text pa-4">{{
         JSON.stringify(run.events ?? [], null, 2)
       }}</pre>
@@ -225,13 +238,140 @@
   </section>
 </template>
 <script setup lang="ts">
-import { reactive } from "vue";
+import { computed, reactive } from "vue";
+import MarkdownMessagePart from "@/components/chat/message_list_comps/MarkdownMessagePart.vue";
+import ReasoningBlock from "@/components/chat/message_list_comps/ReasoningBlock.vue";
+import ToolCallCard from "@/components/chat/message_list_comps/ToolCallCard.vue";
+import { CHAT_MARKDOWN_CUSTOM_TAGS } from "@/components/chat/chatMarkdownComponents";
+import { useCustomizerStore } from "@/stores/customizer";
 import { workflowAssetsApi } from "@/api/workflowAssets";
 import { extractApiError } from "@/utils/extractApiError";
 import { useModuleI18n } from "@/i18n/composables";
 import WorkflowToolResolution from "./WorkflowToolResolution.vue";
 import type { ToolResolutionRequest } from "@/api/generated/openapi-v1";
-defineProps<{ run: any; busy?: boolean }>();
+const props = defineProps<{ run: any; busy?: boolean }>();
+const customizer = useCustomizerStore();
+const isDark = computed(() => customizer.isDark);
+const deliveries = computed(() => {
+  const groups = new Map<string, any>();
+  for (const [order, record] of (props.run.process ?? []).entries()) {
+    if (!["model_delivery", "model_delta"].includes(record.kind)) continue;
+    const data = record.data;
+    const key = `${record.run_id}:${record.attempt_id}:${data.receipt_id}`;
+    if (!groups.has(key))
+      groups.set(key, {
+        key,
+        order,
+        kind: "delivery",
+        invocation: data.invocation_id,
+        status: "started",
+        chunks: [],
+        end: null,
+      });
+    const group = groups.get(key);
+    if (record.kind === "model_delta") group.chunks.push(data);
+    else if (data.status !== "started") group.end = data;
+    else group.streaming = data.streaming;
+  }
+  for (const [order, record] of (props.run.process ?? []).entries()) {
+    if (record.kind !== "model_response" || !record.data.receipt_id) continue;
+    const key = `${record.run_id}:${record.attempt_id}:${record.data.receipt_id}`;
+    if (!groups.has(key)) groups.set(key, {
+      key, order, kind: "delivery", invocation: record.data.invocation_id,
+      streaming: false, chunks: [], end: null,
+    });
+    const group = groups.get(key);
+    if (group) {
+      group.order = Math.min(group.order, order);
+      group.response = record.data;
+    }
+  }
+  return [...groups.values()].map((group) => {
+    group.chunks.sort((a: any, b: any) => a.sequence - b.sequence);
+    return {
+      ...group,
+      status: group.end?.status ?? (group.response ? (group.response.role === "err" ? "error" : "completed") : (props.run.status === "running" ? "started" : "incomplete")),
+      text:
+        group.response?.text ??
+        group.end?.text ??
+        group.chunks.map((item: any) => item.text).join(""),
+      reasoning:
+        group.response?.reasoning_content ??
+        group.end?.reasoning_content ??
+        group.chunks.map((item: any) => item.reasoning_content).join(""),
+    };
+  });
+});
+const observedTools = computed(() => {
+  const groups = new Map<string, any>();
+  for (const [order, record] of (props.run.process ?? []).entries()) {
+    if (!["tool_start", "tool_progress", "tool_status"].includes(record.kind)) continue;
+    const data = record.data;
+    const key = `${record.run_id}:${record.attempt_id}:${data.tool_record_id}`;
+    if (!groups.has(key))
+      groups.set(key, {
+        key,
+        order,
+        kind: "tool",
+        id: data.id,
+        name: data.name,
+        args: data.args ?? {},
+        parts: [],
+        status: "running",
+      });
+    const group = groups.get(key);
+    if (record.kind === "tool_start") group.args = data.args;
+    else if (record.kind === "tool_progress") group.parts.push(data);
+    else group.status = data.status;
+  }
+  for (const record of props.run.process ?? []) {
+    if (record.kind !== "tool_result") continue;
+    const key = `${record.run_id}:${record.attempt_id}:${record.data.tool_record_id}`;
+    const group = groups.get(key);
+    if (group && typeof record.data.result === "string") group.finalResult = record.data.result;
+    if (group && record.data.raw_result && Number.isInteger(record.data.index) &&
+        !group.parts.some((part: any) => part.index === record.data.index))
+      group.parts.push(record.data);
+  }
+  return [...groups.values()].map((group) => {
+    const progress = group.parts
+      .sort((a: any, b: any) => a.index - b.index)
+      .flatMap((item: any) => (item.raw_result?.content ?? [])
+        .filter((part: any) => part.type === "text")
+        .map((part: any) => part.text))
+      .join("\n");
+    return { ...group, status: group.status === "running" && props.run.status !== "running" ? "incomplete" : group.status,
+      result: group.finalResult && !progress.includes(group.finalResult)
+      ? [progress, group.finalResult].filter(Boolean).join("\n") : progress };
+  });
+});
+const readingItems = computed(() => [...deliveries.value, ...observedTools.value]
+  .sort((a, b) => a.order - b.order));
+const otherRecords = computed(() =>
+  (props.run.process ?? []).filter((record: any) => {
+    if (
+      ["model_delivery", "model_delta", "tool_start", "tool_progress", "tool_status"].includes(
+        record.kind,
+      )
+    )
+      return false;
+    if (
+      record.kind === "model_response" &&
+      deliveries.value.some(
+        (item) =>
+          item.key ===
+          `${record.run_id}:${record.attempt_id}:${record.data.receipt_id}`,
+      )
+    )
+      return false;
+    if (
+      record.kind === "tool_result" &&
+      record.data.tool_record_id && observedTools.value.some((item) => item.key === `${record.run_id}:${record.attempt_id}:${record.data.tool_record_id}`)
+    )
+      return false;
+    return true;
+  }),
+);
 const emit = defineEmits<{
   (event: "resolve", recordId: string, payload: ToolResolutionRequest): void;
 }>();

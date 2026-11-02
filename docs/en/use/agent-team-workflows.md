@@ -36,6 +36,17 @@ Screenshots use an isolated frontend preview with sample run records and the sam
 
 Open **Runs → History** to browse asset runs accessible to the signed-in user by date. **Load more history** reads the next page; **Refresh** reloads from the first page while keeping the existing records visible. **View Run** opens the run's frozen snapshot, artifacts and saved member process. Legacy engine records, long-term member conversations and migration actions are no longer displayed.
 
+## Read a live run
+
+![Live run workspace with sample data](/images/agent-teams-live-process-en.jpg)
+
+The screenshot shows the actual workspace components with isolated sample data; it is not a real model run.
+
+
+Open **Runs → View Run** and select a task in the left column. Its saved model and tool observations appear in the middle; existing human requests and artifacts appear on the right. The execution graph remains available in the overview. A running local Agent displays real text and reasoning as its provider returns them; if the provider supplies only a final response, the workspace says so. Tool cards show the parameters and progress actually returned by the tool. No reasoning or internal tool progress is invented when unavailable.
+
+Reopening the run reads saved observations. An interrupted delivery remains separate from a later retry. The page follows new content while you remain at the bottom; scrolling away keeps your position. Leaving the page stops observation, not execution. The status shown comes from the saved run state.
+
 ## Inspect v2 runs
 
 Choose **View Run** on a v2 record to see the goal, task progress and waiting reasons, then handle **Human requests** or select a task to read its artifacts. Expand usage details and the execution graph as needed. The graph is labelled **Run Snapshot (read only)** and has no definition toolbox or property editor. Editing through **Assets** affects future runs. Role cards identify a **Role template**, while runtime details identify a **Run member**.

@@ -23,6 +23,9 @@ const api = vi.hoisted(() => ({
   answer: vi.fn(),
 }));
 const roles = vi.hoisted(() => ({ list: vi.fn(), resources: vi.fn() }));
+vi.mock("@/stores/customizer", () => ({
+  useCustomizerStore: () => ({ isDark: false }),
+}));
 vi.mock("@/api/workflowAssets", () => ({ workflowAssetsApi: api }));
 vi.mock("@/api/roleAssets", () => ({ roleAssetsApi: roles }));
 vi.mock("@/i18n/composables", () => ({
@@ -1878,6 +1881,57 @@ describe("single-task workflow workspace", () => {
     );
     wrapper.unmount();
   });
+
+  it("merges incremental records without replacing the reader or forcing scroll", async () => {
+    vi.useFakeTimers();
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: "/", component: slotStub }] });
+    await router.push("/?workflow_run=run-1");
+    const start = { record_id: "start", run_id: "run-1", attempt_id: "attempt-1", kind: "model_delivery", data: { receipt_id: "delivery", invocation_id: "invocation", status: "started" } };
+    const delta = { record_id: "delta", run_id: "run-1", attempt_id: "attempt-1", kind: "model_delta", data: { receipt_id: "delivery", sequence: 0, text: "First", reasoning_content: "" } };
+    api.run.mockResolvedValue({ ...run, cursor: 10, process: [start] });
+    api.events.mockResolvedValue({ cursor: 11, reset: false, events: [{ cursor: 11 }], records: [delta], snapshot: null });
+    const wrapper = mount(WorkflowWorkspacePanel, { props: { mode: "runs" }, global: { plugins: [router], stubs } });
+    await flushPromises();
+    const reader = wrapper.get('[data-testid="model-delivery"]').element;
+    const pane = wrapper.get(".workbench-process");
+    Object.defineProperties(pane.element, { scrollHeight: { value: 1000 }, clientHeight: { value: 200 } });
+    pane.element.scrollTop = 100;
+    await pane.trigger("scroll");
+    await vi.advanceTimersByTimeAsync(2000);
+    await flushPromises();
+    expect(wrapper.get('[data-testid="model-delivery"]').element).toBe(reader);
+    expect(wrapper.findAll('[data-testid="model-delivery"]')).toHaveLength(1);
+    expect(pane.element.scrollTop).toBe(100);
+    expect(api.run).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(2000);
+    await flushPromises();
+    expect(wrapper.findAll('[data-testid="model-delivery"]')).toHaveLength(1);
+    expect(api.events).toHaveBeenLastCalledWith("run-1", 11);
+    wrapper.unmount();
+  });
+
+  it.each([["image/png", "ImagePreview"], ["application/pdf", "PdfPreview"]])(
+    "uses the chat preview for stored %s artifacts", async (mediaType, componentName) => {
+      const router = createRouter({ history: createMemoryHistory(), routes: [{ path: "/", component: slotStub }] });
+      await router.push("/?workflow_run=run-1");
+      api.run.mockResolvedValue({ ...run, cursor: 1, result_ref: { artifact_id: "artifact", version: 1 } });
+      api.artifact.mockResolvedValue({ artifact_id: "artifact", version: 1, content: { text: "Report", files: [{file_id: "file", filename: "report"}] } });
+      const blob = new Blob(["sample"], { type: mediaType });
+      api.file.mockResolvedValue({ data: blob, headers: {} });
+      const wrapper = mount(WorkflowWorkspacePanel, { props: { mode: "runs" }, global: { plugins: [router], stubs: { ...stubs,
+        ImagePreview: { props: ["blob", "filename"], template: '<div data-testid="image-preview">{{ filename }}</div>' },
+        PdfPreview: { props: ["blob"], template: '<div data-testid="pdf-preview" />' },
+      } } });
+      await flushPromises();
+      const button = wrapper.findAll("button").find(item => item.text() === "v2.previewFile");
+      expect(button).toBeDefined();
+      await button!.trigger("click");
+      await flushPromises();
+      expect(api.file).toHaveBeenCalledWith("artifact", 1, "file", false);
+      expect(wrapper.findComponent({ name: componentName }).exists() || wrapper.find(componentName === "ImagePreview" ? '[data-testid="image-preview"]' : '[data-testid="pdf-preview"]').exists()).toBe(true);
+      wrapper.unmount();
+    },
+  );
 
   it("continues a cursor, ignores duplicate observations and resets to a persisted snapshot", async () => {
     vi.useFakeTimers();

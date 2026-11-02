@@ -269,7 +269,7 @@ async def execute_team_turn(
         config_checker: Optional check that the selected profile still exists.
         on_delivered: Persists or publishes the dispatched message association.
         on_event: Receives interactive waiting events from collection.
-        record_process: Saves complete model responses and original tool results.
+        record_process: Saves model deliveries, deltas and original tool observations.
         save_checkpoint: Saves the built-in runner's durable execution boundaries.
         checkpoint: Saved effective context and response for this original attempt.
         admit_work: Wait for durable whole-run permission before external work.

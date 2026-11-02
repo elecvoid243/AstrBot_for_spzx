@@ -165,7 +165,7 @@
               </p>
             </div>
             <p class="text-caption text-medium-emphasis">
-              {{ tm("progress.context") }}
+              {{ tm(run.snapshot.team_definition ? "progress.teamContext" : "progress.taskContext") }}
             </p>
           </v-card-text>
         </v-card>
@@ -286,6 +286,9 @@ const members = computed(() =>
 </script>
 
 <style scoped>
+.run-overview {
+  container-type: inline-size;
+}
 .child-scope {
   border: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
   border-radius: 10px;
@@ -344,12 +347,12 @@ summary {
   font-weight: 600;
   padding: 12px 0;
 }
-@media (max-width: 900px) {
+@container (max-width: 700px) {
   .run-columns {
     grid-template-columns: minmax(0, 1fr);
   }
 }
-@media (max-width: 500px) {
+@container (max-width: 380px) {
   .run-task {
     padding: 14px;
     gap: 10px;

@@ -370,6 +370,8 @@
     "noAttention": "No task needs attention at this time.",
     "members": "Members in this run",
     "context": "Each member continues its context within this run. New runs use isolated conversations.",
+    "taskContext": "Each graph task and attempt has its own recorded identity.",
+    "teamContext": "Team members can share information through explicit messages.",
     "graph": "Expand execution graph (read-only)",
     "artifacts": "Artifacts",
     "task": "Task",
@@ -382,7 +384,13 @@
     "fullRecord": "Expand complete original record",
     "events": "Persistent events and observation cursor",
     "emptyProcess": "No completed member response or tool result yet.",
-    "observation": "Process records belong to a task, attempt and member. The observation cursor reconnects this page; it does not restore invocation checkpoints."
+    "observation": "Process records belong to a task, attempt and member. The observation cursor reconnects this page; it does not restore invocation checkpoints.",
+    "modelResponse": "Model response",
+    "readerTitle": "Agent process",
+    "capabilityNote": "Only reasoning and execution details actually provided by the model are shown.",
+    "finalOnly": "This provider returned a final response without streaming.",
+    "deliveryStates": { "started": "Receiving", "completed": "Complete", "error": "Error", "incomplete": "Incomplete" },
+    "toolStates": { "running": "Running", "completed": "Complete", "error": "Error", "unknown": "Outcome unknown", "incomplete": "Not completed" }
   },
   "graph": {
     "canvas": "Workflow canvas",
@@ -519,7 +527,7 @@
       "cancelled": "Cancelled — no new work will start"
     },
     "inFlight": "In-flight external calls may still finish. Pausing or cancelling does not undo external effects.",
-    "semantics": "Continue and checkpoint recovery keep the same Attempt. Retry creates a new Attempt. A new iteration creates a new task and is a separate workflow action.",
+    "semantics": "Continue resumes this run. Retry starts a new attempt.",
     "resolveFirst": "Resolve uncertain tool effects in Saved member process before retrying this task.",
     "previous": "Previous attempt",
     "originalInputs": "Original frozen inputs and exact artifact versions",

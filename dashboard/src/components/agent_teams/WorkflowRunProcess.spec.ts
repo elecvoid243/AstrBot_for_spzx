@@ -2,6 +2,9 @@ import { mount } from "@vue/test-utils";
 import { expect, it, vi } from "vitest";
 import WorkflowRunProcess from "./WorkflowRunProcess.vue";
 
+vi.mock("@/stores/customizer", () => ({
+  useCustomizerStore: () => ({ isDark: false }),
+}));
 vi.mock("@/i18n/composables", () => ({
   useModuleI18n: () => ({ tm: (key: string) => key }),
 }));

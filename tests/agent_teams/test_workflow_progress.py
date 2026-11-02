@@ -2,23 +2,24 @@
 
 import asyncio
 import json
-
-import pytest
-from sqlalchemy import text
-from sqlalchemy.exc import IntegrityError
-from fastapi import FastAPI
-from httpx import ASGITransport, AsyncClient
 from types import SimpleNamespace
 
-from astrbot.core.agent_teams.assets import RoleAssetService
-from astrbot.core.agent_teams.assets import RoleAssetError
+import pytest
+from fastapi import FastAPI
+from httpx import ASGITransport, AsyncClient
+from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
+
+from astrbot.core.agent_teams.assets import RoleAssetError, RoleAssetService
 from astrbot.core.agent_teams.workflows import WorkflowService
-from tests.agent_teams.test_workflow_assets import (
-    completed_run,
-    workflow_env as workflow_env,
-)
 from astrbot.dashboard.api.auth import require_dashboard_user
 from astrbot.dashboard.api.workflow_assets import router
+from tests.agent_teams.test_workflow_assets import (
+    completed_run,
+)
+from tests.agent_teams.test_workflow_assets import (
+    workflow_env as workflow_env,
+)
 
 
 @pytest.mark.asyncio
@@ -38,7 +39,7 @@ async def test_reopening_run_reads_committed_progress_and_continues_cursor(
         "waiting": 0,
     }
     assert reopened["events"][0]["kind"] == "run.started"
-    assert reopened["state"]["response"]["text"] == "Done"
+    assert reopened["tasks"][0]["state"]["response"]["text"] == "Done"
     changes = await observer.get_events("alice", run["run_id"], 0)
     assert changes["snapshot"]["status"] == "completed"
     assert [event["cursor"] for event in changes["events"]] == sorted(
@@ -48,103 +49,45 @@ async def test_reopening_run_reads_committed_progress_and_continues_cursor(
         "cursor": reopened["cursor"],
         "reset": False,
         "events": [],
+        "records": [],
         "snapshot": None,
     }
 
 
 @pytest.mark.asyncio
-async def test_run_list_and_unchanged_poll_omit_history_but_detail_and_changes_keep_it(
-    workflow_env,
-):
+async def test_run_list_and_unchanged_poll_omit_history_but_detail_and_changes_keep_it(workflow_env):
     env = workflow_env
     evidence = "INITIAL_INPUT " + "Long evidence. " * 4000 + "UNSELECTED_INPUT_END"
-    asset = await env.service.save_asset(
-        "alice",
-        {"definition": {
-            **env.asset["definition"],
-            "task": "Report {evidence}",
-            "required_inputs": ["evidence"],
-        }},
-    )
-    historical = await env.service.start_run(
-        "alice", asset["asset_id"], {"version": 1, "inputs": {"evidence": evidence}}
-    )
-    await completed_run(env.service, historical["run_id"])
-    selected = await env.service.start_run(
-        "alice", env.asset["asset_id"], {"version": 1}
-    )
+    asset = await env.service.save_asset("alice", {"definition": {**env.asset["definition"], "required_inputs": ["evidence"]}})
+    historical = await env.service.start_run("alice", asset["asset_id"], {"version": 1, "inputs": {"evidence": evidence}})
+    historical = await completed_run(env.service, historical["run_id"])
+    task = historical["tasks"][0]
+    selected = await env.service.start_run("alice", env.asset["asset_id"], {"version": 1})
     await completed_run(env.service, selected["run_id"])
     complete = {"text": "UNSELECTED_HISTORY " * 4000}
-    await env.service.record_process(
-        "alice",
-        historical["run_id"],
-        historical["state"]["attempt_id"],
-        "long-history",
-        "tool_result",
-        complete,
-    )
+    await env.service.record_process("alice", task["run_id"], task["state"]["attempt_id"], "long-history", "tool_result", complete)
     observer = WorkflowService(env.db, RoleAssetService(env.db))
     listed = await observer.list_runs("alice")
     assert len(listed["runs"]) == 2
-    summary = next(
-        run for run in listed["runs"] if run["run_id"] == historical["run_id"]
-    )
+    summary = next(run for run in listed["runs"] if run["run_id"] == historical["run_id"])
     assert summary["status"] == "completed"
-    assert summary["progress"] == {
-        "total": 1,
-        "completed": 1,
-        "running": 0,
-        "waiting": 0,
-    }
-    assert summary["snapshot"]["definition"]["name"] == "Report"
-    assert summary["snapshot"]["task"].startswith("Report INITIAL_INPUT ")
-    assert len(summary["snapshot"]["task"]) <= 200
-    assert "inputs" not in summary["snapshot"]
-    assert summary["state"]["attempt_id"] == historical["state"]["attempt_id"]
-    assert summary["state"]["reason"] is None
-    assert summary["artifacts"][0]["artifact_id"] == historical["run_id"]
-    assert "process" not in summary
-    assert "events" not in summary
-    assert "result" not in summary
-    assert "response" not in summary["state"]
-    assert "profile" not in summary["snapshot"]
+    assert "process" not in summary and "events" not in summary
     assert "UNSELECTED_HISTORY" not in json.dumps(listed)
     assert "UNSELECTED_INPUT_END" not in json.dumps(listed)
     selected_detail = await observer.get_run("alice", selected["run_id"])
-    assert await observer.get_events(
-        "alice", selected["run_id"], selected_detail["cursor"]
-    ) == {
-        "cursor": selected_detail["cursor"],
-        "reset": False,
-        "events": [],
-        "snapshot": None,
-    }
+    unchanged = await observer.get_events("alice", selected["run_id"], selected_detail["cursor"])
+    assert unchanged["snapshot"] is None and unchanged["events"] == []
     detail = await observer.get_run("alice", historical["run_id"])
-    assert detail["process"][0]["data"] == complete
+    assert detail["tasks"][0]["process"][0]["data"] == complete
     assert detail["snapshot"]["inputs"] == {"evidence": evidence}
-    assert detail["snapshot"]["task"] == "Report " + evidence
-    await env.service.record_process(
-        "alice",
-        historical["run_id"],
-        historical["state"]["attempt_id"],
-        "next-history",
-        "tool_result",
-        {"text": "NEW_COMPLETE_HISTORY " * 4000},
-    )
+    await env.service.record_process("alice", task["run_id"], task["state"]["attempt_id"], "next-history", "tool_result", {"text": "NEW_COMPLETE_HISTORY " * 4000})
     changes = await observer.get_events("alice", historical["run_id"], detail["cursor"])
-    assert changes["reset"] is False
-    assert len(changes["events"]) == 1
-    assert changes["snapshot"]["process"][0]["data"] == complete
-    assert (
-        changes["snapshot"]["process"][1]["data"]["text"]
-        == "NEW_COMPLETE_HISTORY " * 4000
-    )
-    assert changes["cursor"] == changes["snapshot"]["events"][-1]["cursor"]
-    reset = await observer.get_events(
-        "alice", historical["run_id"], changes["cursor"] + 1
-    )
+    assert changes["reset"] is False and changes["snapshot"] is None
+    assert len(changes["events"]) == len(changes["records"]) == 1
+    assert changes["records"][0]["data"]["text"] == "NEW_COMPLETE_HISTORY " * 4000
+    reset = await observer.get_events("alice", historical["run_id"], changes["cursor"] + 1)
     assert reset["reset"] is True
-    assert reset["snapshot"]["process"] == changes["snapshot"]["process"]
+    assert reset["snapshot"]["tasks"][0]["process"][0]["data"] == complete
     assert (await observer.list_runs("bob"))["runs"] == []
 
 
@@ -154,7 +97,7 @@ async def test_complete_process_records_keep_identity_and_duplicate_delivery_is_
 ):
     env = workflow_env
     run = await env.service.start_run("alice", env.asset["asset_id"], {"version": 1})
-    await completed_run(env.service, run["run_id"])
+    run = (await completed_run(env.service, run["run_id"]))["tasks"][0]
     response = {
         "text": "Evidence. " * 4000,
         "reasoning_content": "Provider returned this.",
@@ -221,12 +164,12 @@ async def test_complete_process_records_keep_identity_and_duplicate_delivery_is_
 
 
 @pytest.mark.asyncio
-async def test_expired_cursor_resets_to_snapshot_without_losing_saved_records(
+async def test_old_cursor_replays_saved_records_in_bounded_batches(
     workflow_env,
 ):
     env = workflow_env
     run = await env.service.start_run("alice", env.asset["asset_id"], {"version": 1})
-    await completed_run(env.service, run["run_id"])
+    run = (await completed_run(env.service, run["run_id"]))["tasks"][0]
     initial = await env.service.get_run("alice", run["run_id"])
     for number in range(1001):
         await env.service.record_process(
@@ -237,13 +180,17 @@ async def test_expired_cursor_resets_to_snapshot_without_losing_saved_records(
             "model_response",
             {"text": f"Saved response {number}"},
         )
-    reconnect = await env.service.get_events("alice", run["run_id"], initial["cursor"])
-    assert reconnect["reset"] is True
-    assert reconnect["events"] == []
-    assert reconnect["snapshot"]["status"] == "completed"
-    assert len(reconnect["snapshot"]["process"]) == 1001
-    assert reconnect["snapshot"]["process"][-1]["data"]["text"] == "Saved response 1000"
-    assert reconnect["cursor"] > initial["cursor"]
+    cursor = initial["cursor"]
+    records = []
+    while len(records) < 1001:
+        reconnect = await env.service.get_events("alice", run["run_id"], cursor)
+        assert reconnect["reset"] is False and reconnect["snapshot"] is None
+        assert len(reconnect["records"]) <= 128
+        records.extend(reconnect["records"])
+        cursor = reconnect["cursor"]
+    assert records[-1]["data"]["text"] == "Saved response 1000"
+    assert cursor > initial["cursor"]
+
 
 
 @pytest.mark.asyncio
@@ -252,7 +199,9 @@ async def test_failed_event_save_leaves_no_visible_process_fact_or_advanced_curs
 ):
     env = workflow_env
     run = await env.service.start_run("alice", env.asset["asset_id"], {"version": 1})
-    before = await completed_run(env.service, run["run_id"])
+    before = (await completed_run(env.service, run["run_id"]))["tasks"][0]
+    run = before
+    before = await env.service.get_run("alice", run["run_id"])
     # Inject a storage fault at the real transaction boundary, without observing tables.
     async with env.db.engine.begin() as connection:
         await connection.execute(

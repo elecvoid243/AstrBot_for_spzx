@@ -3478,6 +3478,12 @@ class WorkflowService:
                 if include_details
                 else []
             )
+            event_positions = {
+                event.data["record_id"]: event.id
+                for event in events
+                if event.kind.startswith("process.") and "record_id" in event.data
+            }
+            process.sort(key=lambda record: event_positions.get(record.record_id, 0))
             remote_run_ids = [
                 item.run_id
                 for item in rows
@@ -3851,7 +3857,13 @@ class WorkflowService:
                             "pending_result": current.pending_result,
                             "cursor": current_events[-1].id if current_events else 0,
                             "process": [
-                                record.model_dump(mode="json")
+                                {
+                                    **record.model_dump(mode="json"),
+                                    "root_run_id": root_id,
+                                    "scope_id": current.state.get("scope_id"),
+                                    "task_run_id": current.run_id,
+                                    "node_id": current.snapshot.get("node_id"),
+                                }
                                 for record in process
                                 if record.run_id == current.run_id
                             ],
@@ -5113,15 +5125,15 @@ class WorkflowService:
         *,
         execution_id: str | None = None,
     ) -> dict:
-        """Save complete structured observations and one deduplicated event.
+        """Save an immutable observation and its deduplicated event atomically.
 
         Args:
             username: Original owner, checked against the persisted run.
             run_id: Task run producing the record.
             attempt_id: Actual execution attempt; stale writers are rejected.
             record_id: Stable delivery identity within this attempt.
-            kind: Model response, tool result, or original remote process event.
-            data: Complete returned payload, never parsed from display text.
+            kind: Model delivery, delta, response, tool observation, or remote event.
+            data: Original observation, never reconstructed from final display text.
             execution_id: Durable execution owner; late executors cannot append records.
 
         Returns:
@@ -5131,7 +5143,17 @@ class WorkflowService:
             RoleAssetError: Invalid identity, inaccessible run or conflicting replay.
         """
         if (
-            kind not in {"model_response", "tool_result", "remote_event"}
+            kind
+            not in {
+                "model_response",
+                "model_delta",
+                "model_delivery",
+                "tool_start",
+                "tool_progress",
+                "tool_status",
+                "tool_result",
+                "remote_event",
+            }
             or not record_id
             or len(record_id) > 256
         ):
@@ -5193,56 +5215,127 @@ class WorkflowService:
         return record.model_dump(mode="json")
 
     async def get_events(self, username: str, run_id: str, after: int = 0) -> dict:
-        """Continue observation from a committed cursor or return a fresh snapshot.
+        """Read a bounded batch of committed observations after a cursor.
 
         Args:
             username: Authenticated owner.
             run_id: Run or graph identity to observe.
-            after: Last cursor applied by the client; zero starts observation.
+            after: Last committed cursor applied by the client; zero requests a snapshot.
 
         Returns:
-            Ordered events and their consistent snapshot when facts changed.
-            Cursors outside the last 1000 events restart from the snapshot.
+            A consistent initial or reset snapshot, or ordered incremental records.
 
         Raises:
             RoleAssetError: Run is inaccessible or the cursor is negative.
         """
         if after < 0:
             raise RoleAssetError("Cursor must not be negative")
+        if after == 0:
+            snapshot = await self.get_run(username, run_id)
+            return {
+                "cursor": snapshot["cursor"],
+                "reset": True,
+                "events": [],
+                "records": [],
+                "snapshot": snapshot,
+            }
         async with self.db.get_db() as session:
             if self.db.engine.dialect.name == "sqlite":
                 await session.execute(text("BEGIN"))
             run = await session.get(AgentWorkflowRun, run_id)
             if run is None or run.owner_username != username:
                 raise RoleAssetError("Run not found", status=404)
-            identities = [item.run_id for item in await _descendant_runs(session, run)]
-            cursor = (
+            descendants = await _descendant_runs(session, run)
+            by_id = {item.run_id: item for item in descendants}
+            high_water = (
                 await session.execute(
                     select(func.max(AgentWorkflowEvent.id)).where(
-                        col(AgentWorkflowEvent.run_id).in_(identities)
+                        col(AgentWorkflowEvent.run_id).in_(by_id)
                     )
                 )
             ).scalar_one() or 0
-            if after == cursor:
-                return {
-                    "cursor": cursor,
-                    "reset": False,
-                    "events": [],
-                    "snapshot": None,
-                }
+            if after <= high_water:
+                events = (
+                    (
+                        await session.execute(
+                            select(AgentWorkflowEvent)
+                            .where(
+                                col(AgentWorkflowEvent.run_id).in_(by_id),
+                                col(AgentWorkflowEvent.id) > after,
+                            )
+                            .order_by(col(AgentWorkflowEvent.id))
+                            .limit(128)
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                record_ids = [
+                    event.data["record_id"]
+                    for event in events
+                    if event.kind.startswith("process.")
+                ]
+                records = []
+                if record_ids:
+                    rows = (
+                        (
+                            await session.execute(
+                                select(AgentWorkflowProcess).where(
+                                    col(AgentWorkflowProcess.record_id).in_(record_ids)
+                                )
+                            )
+                        )
+                        .scalars()
+                        .all()
+                    )
+                    by_record = {row.record_id: row for row in rows}
+                    records = [
+                        {
+                            **by_record[identity].model_dump(mode="json"),
+                            "root_run_id": _root_run_id(
+                                by_id[by_record[identity].run_id]
+                            ),
+                            "scope_id": by_id[by_record[identity].run_id].state.get(
+                                "scope_id"
+                            ),
+                            "task_run_id": by_record[identity].run_id,
+                            "node_id": by_id[by_record[identity].run_id].snapshot.get(
+                                "node_id"
+                            ),
+                        }
+                        for identity in record_ids
+                        if identity in by_record
+                    ]
+                # Non-process events can alter arbitrary graph state. A single
+                # consistent snapshot resynchronizes those facts, not each token.
+                if all(
+                    event.kind.startswith(("process.", "checkpoint."))
+                    or event.kind
+                    in {"usage.started", "usage.reported", "usage.resumed"}
+                    for event in events
+                ):
+                    return {
+                        "cursor": events[-1].id if events else after,
+                        "reset": False,
+                        "events": [
+                            {
+                                "cursor": event.id,
+                                "run_id": event.run_id,
+                                "kind": event.kind,
+                                "data": event.data,
+                            }
+                            for event in events
+                        ],
+                        "records": records,
+                        "snapshot": None,
+                    }
         snapshot = await self.get_run(username, run_id)
-        events = snapshot["events"]
-        reset = after > snapshot["cursor"] or (
-            len(events) > 1000 and after < events[-1001]["cursor"]
-        )
-        changes = (
-            [] if reset else [event for event in events if event["cursor"] > after]
-        )
         return {
             "cursor": snapshot["cursor"],
-            "reset": reset,
-            "events": changes,
-            "snapshot": snapshot if reset or changes else None,
+            "reset": True,
+            "events": [],
+            "records": [],
+            "snapshot": snapshot,
         }
 
     async def list_runs(self, username: str, limit: int = 50) -> dict:
@@ -8709,6 +8802,8 @@ class WorkflowService:
                                 "id": call["record_id"] + ":raw:0",
                                 "data": {
                                     "id": call["call_id"],
+                                    "tool_record_id": call["record_id"],
+                                    "index": 0,
                                     "name": call["name"],
                                     "raw_result": raw,
                                 },
@@ -8743,6 +8838,38 @@ class WorkflowService:
                                 kind="process.tool_result",
                                 data={
                                     "record_id": identity,
+                                    "attempt_id": state["attempt_id"],
+                                },
+                            )
+                        )
+                    status_id = uuid.uuid5(
+                        uuid.NAMESPACE_URL,
+                        f"{run_id}:{state['attempt_id']}:{call['record_id']}:status:completed",
+                    ).hex
+                    if await session.get(AgentWorkflowProcess, status_id) is None:
+                        session.add(
+                            AgentWorkflowProcess(
+                                record_id=status_id,
+                                run_id=run_id,
+                                task_id=state["task_id"],
+                                attempt_id=state["attempt_id"],
+                                member_id=row.snapshot["member"]["member_id"],
+                                kind="tool_status",
+                                data={
+                                    "tool_record_id": call["record_id"],
+                                    "id": call["call_id"],
+                                    "name": call["name"],
+                                    "args": call["args"],
+                                    "status": "completed",
+                                },
+                            )
+                        )
+                        session.add(
+                            AgentWorkflowEvent(
+                                run_id=run_id,
+                                kind="process.tool_status",
+                                data={
+                                    "record_id": status_id,
                                     "attempt_id": state["attempt_id"],
                                 },
                             )
@@ -8972,6 +9099,8 @@ class WorkflowService:
                             "id": record_id + ":decision:" + request.request_id,
                             "data": {
                                 "id": stored.call_id,
+                                "tool_record_id": stored.record_id,
+                                "index": len(call["raw_results"]) - 1,
                                 "name": stored.name,
                                 "raw_result": raw,
                             },

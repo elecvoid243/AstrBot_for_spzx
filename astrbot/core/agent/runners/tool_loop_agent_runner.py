@@ -699,6 +699,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                     (self._call_checkpoint or {}).get("tool_result_files", {})
                 ),
                 "response": None,
+                "response_receipt_id": None,
             }
         if self._call_checkpoint is None:
             raise ProcessPersistenceError(
@@ -708,6 +709,9 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         self._call_checkpoint["phase"] = phase
         if response is not None:
             self._call_checkpoint["response"] = dump_call_response(response)
+            self._call_checkpoint["response_receipt_id"] = getattr(
+                self, "_response_receipt_id", None
+            )
             if (
                 self.tool_schema_mode != "skills_like"
                 or stage != "main"
@@ -1435,6 +1439,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         Raises:
             ToolProtocolIntegrityError: The final request has ambiguous tool results.
         """
+        self._response_receipt_id = None
         restored_request = self._restored_call
         original_messages = list(self.run_context.messages)
         original_extra_parts = copy.deepcopy(self._assembled_extra_user_content_parts)
@@ -1588,31 +1593,163 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                 ),
             )
             self._context_usage_snapshot = None
-            if self.streaming:
+            process_sink = execution.record_process if execution else None
+            delivery_id = receipt["receipt_id"] if receipt else None
+            stream_available = (
+                type(self.provider).text_chat_stream is not Provider.text_chat_stream
+            )
+            use_stream = stream_available if process_sink else self.streaming
+            if process_sink and delivery_id:
+                await process_sink(
+                    f"{delivery_id}:start",
+                    "model_delivery",
+                    {
+                        "invocation_id": invocation_id,
+                        "receipt_id": delivery_id,
+                        "status": "started",
+                        "streaming": use_stream,
+                    },
+                )
+            if use_stream:
                 stream = self.provider.text_chat_stream(**payload)
+                pending_text = ""
+                pending_reasoning = ""
+                sequence = 0
+                first = True
+                flush_lock = asyncio.Lock()
+
+                async def flush() -> None:
+                    nonlocal pending_text, pending_reasoning, sequence
+                    async with flush_lock:
+                        while pending_text or pending_reasoning:
+                            text_part, pending_text = (
+                                pending_text[:2048],
+                                pending_text[2048:],
+                            )
+                            reasoning_part, pending_reasoning = (
+                                pending_reasoning[:2048],
+                                pending_reasoning[2048:],
+                            )
+                            await process_sink(
+                                f"{delivery_id}:delta:{sequence}",
+                                "model_delta",
+                                {
+                                    "invocation_id": invocation_id,
+                                    "receipt_id": delivery_id,
+                                    "sequence": sequence,
+                                    "text": text_part,
+                                    "reasoning_content": reasoning_part,
+                                },
+                            )
+                            sequence += 1
+
+                timer_stop = asyncio.Event()
+
+                async def flush_periodically() -> None:
+                    while not timer_stop.is_set():
+                        try:
+                            await asyncio.wait_for(timer_stop.wait(), timeout=0.2)
+                        except asyncio.TimeoutError:
+                            await flush()
+
+                timer = (
+                    asyncio.create_task(flush_periodically())
+                    if process_sink and delivery_id
+                    else None
+                )
                 try:
                     while True:
                         try:
                             with model_delivery(
                                 receipt, output_limit=output_token_budget
                             ):
-                                resp = await self._await_or_stop(anext(stream))  # type: ignore
+                                if timer:
+                                    pending_read = asyncio.create_task(
+                                        self._await_or_stop(anext(stream))  # type: ignore
+                                    )
+                                    try:
+                                        done, _ = await asyncio.wait(
+                                            {pending_read, timer},
+                                            return_when=asyncio.FIRST_COMPLETED,
+                                        )
+                                        if timer in done:
+                                            await timer
+                                            raise ProcessPersistenceError(
+                                                "Process timer stopped unexpectedly"
+                                            )
+                                        resp = pending_read.result()
+                                    finally:
+                                        if not pending_read.done():
+                                            pending_read.cancel()
+                                            await asyncio.gather(
+                                                pending_read, return_exceptions=True
+                                            )
+                                else:
+                                    resp = await self._await_or_stop(anext(stream))  # type: ignore
                         except StopAsyncIteration:
                             return
+                        if timer and timer.done():
+                            await timer
                         if resp is None:
                             return
+                        if resp.is_chunk and timer:
+                            pending_text += resp.completion_text or ""
+                            pending_reasoning += resp.reasoning_content or ""
+                            if (pending_text or pending_reasoning) and (
+                                first
+                                or len(pending_text) + len(pending_reasoning) >= 2048
+                            ):
+                                await flush()
+                                first = False
                         if not resp.is_chunk:
+                            if timer:
+                                await flush()
+                                await process_sink(
+                                    f"{delivery_id}:end",
+                                    "model_delivery",
+                                    {
+                                        "invocation_id": invocation_id,
+                                        "receipt_id": delivery_id,
+                                        "status": "error"
+                                        if resp.role == "err"
+                                        else "completed",
+                                        "text": resp.completion_text,
+                                        "reasoning_content": resp.reasoning_content,
+                                    },
+                                )
                             await self._report_metered_call(receipt, resp)
                             reported = True
+                            self._response_receipt_id = delivery_id
                         yield resp
                 finally:
-                    await self._close_executor(stream)
+                    try:
+                        if timer:
+                            timer_stop.set()
+                            await timer
+                            await flush()
+                    finally:
+                        await self._close_executor(stream)
             else:
                 with model_delivery(receipt, output_limit=output_token_budget):
                     resp = await self._await_or_stop(self.provider.text_chat(**payload))
                 if resp is not None:
+                    if process_sink and delivery_id:
+                        await process_sink(
+                            f"{delivery_id}:end",
+                            "model_delivery",
+                            {
+                                "invocation_id": invocation_id,
+                                "receipt_id": delivery_id,
+                                "status": "error"
+                                if resp.role == "err"
+                                else "completed",
+                                "text": resp.completion_text,
+                                "reasoning_content": resp.reasoning_content,
+                            },
+                        )
                     await self._report_metered_call(receipt, resp)
                     reported = True
+                    self._response_receipt_id = delivery_id
                     yield resp
         finally:
             # Failed or cancelled preparation must not retain an uncommitted
@@ -2001,6 +2138,9 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         """
 
         if getattr(self, "_reused_response", False):
+            self._response_receipt_id = (self._call_checkpoint or {}).get(
+                "response_receipt_id"
+            )
             self._reused_response = False
             if getattr(self, "_reused_parent_response", False):
                 return
@@ -2018,6 +2158,10 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                 else uuid.uuid4().hex,
                 "model_response",
                 {
+                    "invocation_id": self._call_checkpoint["invocation_id"]
+                    if self._call_checkpoint
+                    else None,
+                    "receipt_id": getattr(self, "_response_receipt_id", None),
                     "id": response.id,
                     "role": response.role,
                     "text": response.completion_text,
@@ -2142,6 +2286,9 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             if llm_response.is_chunk:
                 if self.stats.time_to_first_token == 0:
                     self.stats.time_to_first_token = time.time() - self.stats.start_time
+                execution = current_team_execution.get()
+                if not self.streaming and execution and execution.record_process:
+                    continue
 
                 if llm_response.reasoning_content:
                     yield AgentResponse(
@@ -2687,6 +2834,8 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                             "id": call["record_id"] + f":raw:{index}",
                             "data": {
                                 "id": call["call_id"],
+                                "tool_record_id": call["record_id"],
+                                "index": index,
                                 "name": call["name"],
                                 "raw_result": data,
                             },
@@ -2789,6 +2938,9 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             )
             record_data = {
                 "id": tool_call_id,
+                "tool_record_id": call_state["record_id"]
+                if call_state
+                else current_tool_invocation.get(),
                 "name": func_tool_name,
                 "raw_result": None,
                 "result": content,
@@ -2890,6 +3042,28 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                         await execution.record_process(
                             record["id"], "tool_result", record["data"]
                         )
+                    status = (
+                        "error"
+                        if (
+                            any(raw.get("isError") for raw in call_state["raw_results"])
+                            or any(
+                                str(item.get("content", "")).startswith("error:")
+                                for item in call_state["protocol_results"]
+                            )
+                        )
+                        else "completed"
+                    )
+                    await execution.record_process(
+                        call_state["record_id"] + ":status:" + status,
+                        "tool_status",
+                        {
+                            "tool_record_id": call_state["record_id"],
+                            "id": func_tool_id,
+                            "name": func_tool_name,
+                            "args": call_state["args"],
+                            "status": status,
+                        },
+                    )
                 # Restore image evidence from durable bytes even after temporary
                 # caches were cleared while the worker was stopped.
                 for index, item in enumerate(
@@ -2951,6 +3125,19 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                     "it; continue your task with the information you already "
                     "have.",
                 )
+                execution = current_team_execution.get()
+                if call_state and execution and execution.record_process:
+                    await execution.record_process(
+                        call_state["record_id"] + ":status:error",
+                        "tool_status",
+                        {
+                            "tool_record_id": call_state["record_id"],
+                            "id": func_tool_id,
+                            "name": func_tool_name,
+                            "args": call_state["args"],
+                            "status": "error",
+                        },
+                    )
                 continue
             tool_failed = False
             invocation_token = None
@@ -2993,6 +3180,19 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                         func_tool_id,
                         f"error: Tool {func_tool_name} not found. Available tools are: {', '.join(available_tools)}",
                     )
+                    execution = current_team_execution.get()
+                    if call_state and execution and execution.record_process:
+                        await execution.record_process(
+                            call_state["record_id"] + ":status:error",
+                            "tool_status",
+                            {
+                                "tool_record_id": call_state["record_id"],
+                                "id": func_tool_id,
+                                "name": func_tool_name,
+                                "args": call_state["args"],
+                                "status": "error",
+                            },
+                        )
                     continue
 
                 valid_params = {}  # 参数过滤：只传递函数实际需要的参数
@@ -3051,6 +3251,17 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                         metadata["idempotency_key"] = call_state["record_id"]
                     call_state["status"] = "started"
                     await self._save_call_checkpoint("tools_started")
+                    if execution and execution.record_process:
+                        await execution.record_process(
+                            call_state["record_id"] + ":start",
+                            "tool_start",
+                            {
+                                "tool_record_id": call_state["record_id"],
+                                "id": func_tool_id,
+                                "name": func_tool_name,
+                                "args": func_tool_args,
+                            },
+                        )
 
                 invocation_token = current_tool_invocation.set(
                     call_state["record_id"] if call_state else uuid.uuid4().hex
@@ -3138,6 +3349,8 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                                     "id": call_state["record_id"] + f":raw:{raw_index}",
                                     "data": {
                                         "id": func_tool_id,
+                                        "tool_record_id": call_state["record_id"],
+                                        "index": raw_index,
                                         "name": func_tool_name,
                                         "raw_result": resp.model_dump(mode="json"),
                                     },
@@ -3146,6 +3359,19 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                             # A generator may yield more effects and results.
                             # Only exhaustion below proves that this call finished.
                             await self._save_call_checkpoint("tool_progress")
+                            execution = current_team_execution.get()
+                            if execution and execution.record_process:
+                                await execution.record_process(
+                                    call_state["record_id"] + f":progress:{raw_index}",
+                                    "tool_progress",
+                                    {
+                                        "tool_record_id": call_state["record_id"],
+                                        "id": func_tool_id,
+                                        "name": func_tool_name,
+                                        "index": raw_index,
+                                        "raw_result": resp.model_dump(mode="json"),
+                                    },
+                                )
                         execution = current_team_execution.get()
                         if (
                             execution
@@ -3161,6 +3387,8 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                                 "tool_result",
                                 {
                                     "id": func_tool_id,
+                                    "tool_record_id": current_tool_invocation.get(),
+                                    "index": raw_index,
                                     "name": func_tool_name,
                                     "raw_result": resp.model_dump(mode="json"),
                                 },
@@ -3390,8 +3618,66 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                         await execution.record_process(
                             record["id"], "tool_result", record["data"]
                         )
+                    status = (
+                        "unknown"
+                        if tool_failed
+                        else (
+                            "error"
+                            if (
+                                any(
+                                    raw.get("isError")
+                                    for raw in call_state["raw_results"]
+                                )
+                                or any(
+                                    str(item.get("content", "")).startswith("error:")
+                                    for item in call_state["protocol_results"]
+                                )
+                            )
+                            else "completed"
+                        )
+                    )
+                    await execution.record_process(
+                        call_state["record_id"] + ":status:" + status,
+                        "tool_status",
+                        {
+                            "tool_record_id": call_state["record_id"],
+                            "id": func_tool_id,
+                            "name": func_tool_name,
+                            "args": call_state["args"],
+                            "status": status,
+                        },
+                    )
                 if tool_failed:
                     unresolved.append(func_tool_id)
+            elif call_state is not None and reused:
+                execution = current_team_execution.get()
+                if execution and execution.record_process:
+                    for record in call_state.get("process_records", []):
+                        await execution.record_process(
+                            record["id"], "tool_result", record["data"]
+                        )
+                    status = (
+                        "error"
+                        if (
+                            any(raw.get("isError") for raw in call_state["raw_results"])
+                            or any(
+                                str(item.get("content", "")).startswith("error:")
+                                for item in call_state["protocol_results"]
+                            )
+                        )
+                        else "completed"
+                    )
+                    await execution.record_process(
+                        call_state["record_id"] + ":status:" + status,
+                        "tool_status",
+                        {
+                            "tool_record_id": call_state["record_id"],
+                            "id": func_tool_id,
+                            "name": func_tool_name,
+                            "args": call_state["args"],
+                            "status": status,
+                        },
+                    )
 
             if len(tool_call_result_blocks) > tool_result_blocks_start:
                 tool_result_content = str(tool_call_result_blocks[-1].content)
@@ -3526,6 +3812,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         """
         if self._is_stop_requested():
             return
+        self._response_receipt_id = None
         response = None
         resumed = self._resume_requery
         if resumed is not None and resumed["stage"] != stage:
@@ -3636,6 +3923,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                     )
             finally:
                 await self._report_metered_call(receipt, response)
+            self._response_receipt_id = receipt["receipt_id"] if receipt else None
         if response:
             # Fill an observation commit gap with the original invocation identity.
             await self._record_model_response(response)

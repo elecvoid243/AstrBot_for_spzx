@@ -223,11 +223,18 @@
             icon="mdi-lock-outline"
             >{{ tm("workbench.snapshotHint") }}</v-alert
           >
-          <WorkflowRunProgress
-            :run="selectedRun"
-            :selected-task="selectedTaskNode"
-            @select="selectRunTask"
-          />
+          <div class="workbench-columns">
+            <div class="workbench-column">
+              <WorkflowRunProgress
+                :run="selectedRun"
+                :selected-task="selectedTaskNode"
+                @select="selectRunTask"
+              />
+            </div>
+            <div ref="processPane" class="workbench-column workbench-process" @scroll="onProcessScroll">
+              <WorkflowRunProcess :run="detailRun" :busy="!!currentOperation" @resolve="resolveTool" />
+            </div>
+            <div class="workbench-column">
           <section
             v-if="selectedRun.todos?.length"
             :aria-label="tm('human.title')"
@@ -498,11 +505,8 @@
               </v-expansion-panel-text>
             </v-expansion-panel>
           </v-expansion-panels>
-          <WorkflowRunProcess
-            :run="detailRun"
-            :busy="!!currentOperation"
-            @resolve="resolveTool"
-          />
+            </div>
+          </div>
         </v-card-text>
       </v-card>
     </template>
@@ -745,6 +749,8 @@
         }}</v-card-title>
         <v-card-text>
           <pre v-if="previewText" class="workflow-text">{{ previewText }}</pre>
+          <ImagePreview v-else-if="previewBlob?.type.startsWith('image/')" :blob="previewBlob" :filename="previewFilename" />
+          <PdfPreview v-else-if="previewBlob?.type === 'application/pdf'" :blob="previewBlob" />
           <iframe
             v-else-if="previewUrl"
             :src="previewUrl"
@@ -780,7 +786,9 @@
 
 <script setup lang="ts">
 import UnifiedRunHistory from "./UnifiedRunHistory.vue";
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import ImagePreview from "@/components/chat/message_list_comps/binary_preview/ImagePreview.vue";
+import PdfPreview from "@/components/chat/message_list_comps/binary_preview/PdfPreview.vue";
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { roleAssetsApi } from "@/api/roleAssets";
 import { workflowAssetsApi } from "@/api/workflowAssets";
@@ -888,6 +896,18 @@ const currentOperation = computed(() =>
     : undefined,
 );
 const selectedTaskNode = ref<string | null>(null);
+const processPane = ref<HTMLElement | null>(null);
+const followProcess = ref(true);
+function onProcessScroll() {
+  const pane = processPane.value;
+  if (pane) followProcess.value = pane.scrollHeight - pane.scrollTop - pane.clientHeight < 48;
+}
+watch(() => selectedTaskNode.value, () => { followProcess.value = true; });
+watch(() => selectedRun.value?.cursor, async () => {
+  if (!followProcess.value) return;
+  await nextTick();
+  if (processPane.value) processPane.value.scrollTop = processPane.value.scrollHeight;
+});
 const allRunTasks = computed<any[]>(() => [
   ...new Map(
     [
@@ -946,6 +966,8 @@ const revisionRequestId = ref("");
 const previewing = ref(false);
 const previewText = ref("");
 const previewUrl = ref("");
+const previewBlob = ref<Blob | null>(null);
+const previewFilename = ref("");
 const availableInputs = computed(() =>
   runs.value.flatMap((run) =>
     (run.artifacts ?? []).map((artifact: any) => ({
@@ -1005,11 +1027,22 @@ async function refresh() {
             selectedRun.value.cursor,
           );
           if (disposed || read !== runRead) return;
-          if (
-            changes.snapshot &&
-            (changes.reset || changes.cursor > selectedRun.value.cursor)
-          )
-            selectedRun.value = changes.snapshot;
+          if (changes.snapshot) {
+            if (changes.reset || changes.cursor > selectedRun.value.cursor)
+              selectedRun.value = changes.snapshot;
+          } else {
+            const root = selectedRun.value;
+            const runs = [root, ...(root.tasks ?? []), ...(root.scopes ?? [])];
+            for (const record of changes.records ?? []) {
+              const target = runs.find((run: any) => run.run_id === record.run_id);
+              if (target) {
+                target.process ??= [];
+                if (!target.process.some((item: any) => item.record_id === record.record_id))
+                  target.process.push(record);
+              }
+            }
+            root.cursor = changes.cursor;
+          }
         } else {
           const snapshot = await workflowAssetsApi.run(id);
           if (disposed || read !== runRead) return;
@@ -1416,7 +1449,11 @@ async function readFile(fileId: string, download: boolean) {
       previewText.value = response.data.type.startsWith("text/")
         ? await response.data.text()
         : "";
-      previewUrl.value = previewText.value
+      previewBlob.value = response.data.type.startsWith("image/") || response.data.type === "application/pdf"
+        ? response.data : null;
+      const files = ref.files ?? ref.content?.files ?? [];
+      previewFilename.value = files.find((file: any) => file.file_id === fileId)?.filename ?? fileId;
+      previewUrl.value = previewText.value || previewBlob.value
         ? ""
         : URL.createObjectURL(response.data);
       previewing.value = true;
@@ -1439,6 +1476,11 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
+.workbench-columns { display: grid; grid-template-columns: minmax(220px, 1fr) minmax(300px, 1.5fr) minmax(220px, 1fr); gap: 16px; align-items: start; }
+.workbench-column { min-width: 0; }
+.workbench-process { max-height: 75vh; overflow-y: auto; }
+@media (max-width: 1200px) { .workbench-columns { grid-template-columns: 1fr; } .workbench-process { max-height: none; } }
+
 :deep(.graph-dialog-overlay) {
   height: min(900px, calc(100vh - 48px));
 }

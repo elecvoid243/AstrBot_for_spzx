@@ -235,7 +235,7 @@ async def run_worker(
         parameters={"type": "object", "properties": {"value": {"type": "string"}}, "required": ["value"]},
         handler=external_stream if scenario.startswith(("reconcile_partial", "idempotent_partial", "safe_partial")) or scenario in {"partial_generator", "manual_retry_partial", "generator_error", "completed_generator", "overflow_generator", "overflow_legacy_unaligned"} else external_tool,
     )]
-    if scenario.startswith("reconcile_") or guarded_case == "legacy" and action != "start":
+    if scenario.startswith("reconcile_") or scenario == "tool_progress_gap" or guarded_case == "legacy" and action != "start":
         from astrbot.core.agent.tool import ToolRecovery, ToolRecoveryResult
 
         async def query_tool(context, identity, arguments):
@@ -586,6 +586,8 @@ async def run_worker(
                     session.info["kill_boundary"] = row.run_id
                 if scenario in {"tool_result", "parameters_tool_result"} and isinstance(row, AgentWorkflowProcess) and row.kind == "tool_result":
                     session.info["kill_boundary"] = row.run_id
+                if scenario == "tool_progress_gap" and isinstance(row, AgentWorkflowCheckpoint) and row.phase == "tool_progress" and row.data["tool_calls"][0]["raw_results"]:
+                    session.info["kill_boundary"] = row.run_id
                 if scenario in {"tool_checkpoint", "tool_applied"} and isinstance(row, AgentWorkflowCheckpoint) and row.phase == ("tool_result" if scenario == "tool_checkpoint" else "tools_applied") and row.data["response"]["id"] == "plan-original":
                     session.info["kill_boundary"] = row.run_id
                 if scenario == "usage_legacy_applied" and isinstance(row, AgentWorkflowCheckpoint) and row.phase == "tools_applied" and row.data["response"]["id"] == "plan-original":
@@ -614,16 +616,10 @@ async def run_worker(
 
         sql_event.listen(Session, "after_flush", after_flush)
         sql_event.listen(Session, "after_commit", after_commit)
-        if scenario.startswith("team_"):
-            role = await roles.save_role("alice", {
-                "definition": {"name": "Writer", "prompt": "Original role prompt.", "persona_id": "writer", "provider_id": "model-original", "tools": ["external_evidence", "astrbot_file_read_tool"] if scenario.startswith("overflow") else ["external_evidence"], "max_steps": 4, **({"context_length": 12000} if scenario == "usage_compression" else {}), **({"max_parallel": 2} if scenario == "control_mixed" else {}), **({"max_instances": 3} if scenario in {"manual_graph", "control_capacity", "control_mixed"} else {})},
-                "installation": {"profile_id": "default"},
-            })
-        else:
-            role = await roles.save_role("alice", {
-                "definition": {"name": "Writer", "prompt": "Original role prompt.", "persona_slot": "persona", "tools": ["evidence", "read"] if scenario.startswith("overflow") else ["evidence"], "max_steps": 4, **({"context_length": 12000} if scenario == "usage_compression" else {}), **({"max_parallel": 2} if scenario == "control_mixed" else {}), **({"max_instances": 3} if scenario in {"manual_graph", "control_capacity", "control_mixed"} else {})},
-                "installation": {"bindings": {"model": "model-original", "persona": "writer", "evidence": "external_evidence", **({"read": "astrbot_file_read_tool"} if scenario.startswith("overflow") else {})}},
-            })
+        role = await roles.save_role("alice", {
+            "definition": {"name": "Writer", "prompt": "Original role prompt.", "provider_id": "model-original", "persona_id": "writer", "tools": ["external_evidence", "astrbot_file_read_tool"] if scenario.startswith("overflow") else ["external_evidence"], "max_steps": 4, **({"context_length": 12000} if scenario == "usage_compression" else {}), **({"max_parallel": 2} if scenario == "control_mixed" else {}), **({"max_instances": 3} if scenario in {"manual_graph", "control_capacity", "control_mixed"} else {})},
+            "installation": {"profile_id": "default"},
+        })
         definition = {"name": "Original report", "role_id": role["role_id"], "role_version": 1, "task": "Read evidence and submit a report."}
         if limits is not None:
             definition["limits"] = limits
@@ -651,7 +647,11 @@ async def run_worker(
                 contract["properties"]["files"] = {"type": "array", "items": {"type": "object", "properties": {"file_id": {"type": "string"}}, "required": ["file_id"], "additionalProperties": False}}
                 contract["required"].append("files")
             definition["output_contract"] = contract
-        asset = await service.save_asset("alice", {"definition": {"name": definition["name"], "tasks": [{"id": "result", "name": definition["name"], "member": "writer", "role_id": role["role_id"], "role_version": 1, "task": definition["task"]}]}}) if scenario.startswith("team_") else await service.save_asset("alice", {"definition": definition})
+        if scenario in {"response", "parameters", "repair", "parameters_checkpoint", "repair_checkpoint", "parameters_checkpoint_failure", "tool_progress_gap"}:
+            definition = {"name": "Original report", "result_task_id": "write", "tasks": [{"id": "write", "name": "Writer", "member": "writer", "role_id": role["role_id"], "role_version": 1, "task": "Read evidence and submit a report."}], "edges": []}
+        if scenario.startswith("team_"):
+            definition = {"name": definition["name"], "result_task_id": "result", "tasks": [{"id": "result", "name": definition["name"], "member": "writer", "role_id": role["role_id"], "role_version": 1, "task": definition["task"]}]}
+        asset = await service.save_asset("alice", {"definition": definition})
         if scenario in {"usage_parallel", "usage_compression", "usage_shared_wait"}:
             asset = await service.save_asset("alice", {"definition": {"name": "Shared last reservation", "max_parallel": 2, "limits": limits, "tasks": [
                 {"id": key, "name": key, "member": "shared" if scenario == "usage_compression" or scenario == "usage_shared_wait" and key.startswith("a") else key, "role_id": role["role_id"], "role_version": 1, "task": key + ": Read evidence and submit a report." if scenario == "usage_shared_wait" else "Read evidence and submit a report.", "overrides": {"max_instances": 2, "max_parallel": 2}}

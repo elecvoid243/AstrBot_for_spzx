@@ -8,6 +8,8 @@ import sys
 from types import SimpleNamespace
 
 import pytest
+from fastapi import FastAPI
+from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
 
 from astrbot.core.agent.tool import FunctionTool
@@ -41,6 +43,8 @@ from astrbot.core.star.star_handler import (
 )
 from astrbot.core.umop_config_router import UmopConfigRouter
 from astrbot.core.utils.shared_preferences import SharedPreferences
+from astrbot.dashboard.api.auth import require_dashboard_user
+from astrbot.dashboard.api.workflow_assets import router as workflow_router
 from astrbot.dashboard.services.agent_team_ports import build_ports_for_test
 from astrbot.dashboard.services.agent_team_run_service import AgentTeamRunService
 from astrbot.dashboard.services.agent_team_service import AgentTeamService
@@ -66,6 +70,10 @@ from tests.unit.test_knowledge_base_service_contract import FakeEmbeddingProvide
         "dag_inherited_role",
         "auto_inherited_role",
         "v2_role",
+        "v2_live_role",
+        "v2_final_only_role",
+        "v2_reused_tool_id_role",
+        "v2_timer_failure_role",
         "v2_chat_role",
         "v2_graph_role",
         "v2_graph_migrated_role",
@@ -206,6 +214,22 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
                 Streaming text/reasoning chunks or the final tool/assistant result.
             """
             response = await self.text_chat(**kwargs)
+            if response.role == "assistant" and mode == "v2_timer_failure_role":
+                try:
+                    yield LLMResponse(role="assistant", is_chunk=True, completion_text="First fragment.")
+                    yield LLMResponse(role="assistant", is_chunk=True, completion_text=" Buffered fragment.")
+                    model_started.set()
+                    await asyncio.Future()
+                finally:
+                    model_cancelled.set()
+                return
+            if response.role == "assistant" and mode == "v2_live_role":
+                yield LLMResponse(role="assistant", is_chunk=True, completion_text="First fragment.")
+                model_started.set()
+                await history_read.wait()
+                yield LLMResponse(role="assistant", is_chunk=True, completion_text=" Second fragment.")
+                yield LLMResponse(role="assistant", completion_text="First fragment. Second fragment.")
+                return
             if response.role == "assistant":
                 yield LLMResponse(
                     role="assistant",
@@ -346,6 +370,10 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
                 mode
                 in (
                     "v2_role",
+                    "v2_live_role",
+                    "v2_final_only_role",
+                    "v2_reused_tool_id_role",
+                    "v2_timer_failure_role",
                     "v2_chat_role",
                     "v2_hidden_role",
                     "v2_no_thinking_role",
@@ -424,7 +452,7 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
                         role="tool",
                         tools_call_name=["submit_task_result"],
                         tools_call_args=[args],
-                        tools_call_ids=[f"submit-{self.turns[session]}"],
+                        tools_call_ids=["same-id" if mode == "v2_reused_tool_id_role" else f"submit-{self.turns[session]}"],
                     )
             if "team_dispatch" in names:
                 self.turns[session] = self.turns.get(session, 0) + 1
@@ -480,7 +508,11 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
             )
 
     for name in ("default-model", "research-model"):
-        provider = ScriptedProvider(
+        provider_class = (
+            type("FinalOnlyProvider", (ScriptedProvider,), {"text_chat_stream": Provider.text_chat_stream})
+            if mode == "v2_final_only_role" else ScriptedProvider
+        )
+        provider = provider_class(
             {
                 "id": name,
                 "type": "openai_chat_completion",
@@ -741,7 +773,7 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
                     "additionalProperties": False,
                 }
             asset = await service.save_asset(
-                "alice", {"definition": {"name": "Independent report", "tasks": [task]}}
+                "alice", {"definition": {"name": "Independent report", "result_task_id": task["id"], "tasks": [task]}}
             )
         if mode == "v2_process_failure_role":
             async with db.engine.begin() as connection:
@@ -750,6 +782,9 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
                         "CREATE TRIGGER reject_process BEFORE INSERT ON agent_workflow_process BEGIN SELECT RAISE(ABORT, 'storage unavailable'); END"
                     )
                 )
+        if mode == "v2_timer_failure_role":
+            async with db.engine.begin() as connection:
+                await connection.execute(text("CREATE TRIGGER reject_second_delta BEFORE INSERT ON agent_workflow_process WHEN NEW.kind = 'model_delta' AND json_extract(NEW.data, '$.sequence') = 1 BEGIN SELECT RAISE(ABORT, 'storage unavailable'); END"))
         dispatch_task = asyncio.create_task(event_bus.dispatch())
         try:
             if mode.startswith("v2_graph"):
@@ -761,7 +796,7 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
                     "role_version": 1,
                     "task": "Write evidence.",
                 }
-                definition = {"name": "Pipeline workflow", "tasks": [task], "edges": []}
+                definition = {"name": "Pipeline workflow", "result_task_id": task["id"], "tasks": [task], "edges": []}
                 if mode == "v2_graph_role":
                     definition["tasks"].append(
                         {
@@ -964,6 +999,61 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
                         ),
                     },
                 )
+            root_run_id = run["run_id"]
+            if mode == "v2_timer_failure_role":
+                await asyncio.wait_for(model_started.wait(), 20)
+                await asyncio.wait_for(model_cancelled.wait(), 5)
+            if mode == "v2_live_role":
+                try:
+                    await asyncio.wait_for(model_started.wait(), 20)
+                except TimeoutError:
+                    pytest.fail(f"No stream: {model_requests!r}; run: {await service.get_run('alice', run['run_id'])!r}")
+                observer = WorkflowService(db, RoleAssetService(db, lifecycle))
+                app = FastAPI()
+                app.state.services = SimpleNamespace(workflow_assets=observer)
+                app.include_router(workflow_router, prefix="/api/v1")
+                app.dependency_overrides[require_dashboard_user] = lambda: "alice"
+                async with AsyncClient(transport=ASGITransport(app), base_url="http://test") as client:
+                    response = await client.get(f"/api/v1/workflow_runs/{run['run_id']}/events")
+                    assert response.status_code == 200
+                    live = response.json()["data"]
+                    app.dependency_overrides[require_dashboard_user] = lambda: "bob"
+                    denied = await client.get(f"/api/v1/workflow_runs/{run['run_id']}/events")
+                    assert denied.status_code == 404
+                assert live["snapshot"]["status"] == "running"
+                app.dependency_overrides[require_dashboard_user] = lambda: "alice"
+                stream_path = f"/api/v1/workflow_runs/{run['run_id']}/events/stream"
+                disconnected = asyncio.Event()
+                request_received = False
+                stream_messages = []
+
+                async def receive():
+                    nonlocal request_received
+                    if not request_received:
+                        request_received = True
+                        return {"type": "http.request", "body": b"", "more_body": False}
+                    await disconnected.wait()
+                    return {"type": "http.disconnect"}
+
+                async def send(message):
+                    stream_messages.append(message)
+                    if message["type"] == "http.response.body" and message.get("body"):
+                        disconnected.set()
+
+                await asyncio.wait_for(app(
+                    {"type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1",
+                     "method": "GET", "scheme": "http", "path": stream_path,
+                     "raw_path": stream_path.encode(), "query_string": b"", "root_path": "",
+                     "headers": [], "client": ("test", 123), "server": ("test", 80)},
+                    receive, send,
+                ), timeout=5)
+                body = b"".join(m.get("body", b"") for m in stream_messages if m["type"] == "http.response.body")
+                assert body.startswith(b"data: ") and b"First fragment." in body
+                assert (await observer.get_run("alice", run["run_id"]))["status"] == "running"
+                live_records = live["snapshot"]["tasks"][0]["process"]
+                assert any(record["kind"] == "model_delta" and record["data"]["text"] == "First fragment." for record in live_records)
+                assert not any(record["kind"] == "model_delivery" and record["data"]["status"] == "completed" and record["data"].get("text") == "First fragment. Second fragment." for record in live_records)
+                history_read.set()
             for _ in range(1000):
                 current = await service.get_run("alice", run["run_id"])
                 if current["status"] != "running":
@@ -972,6 +1062,63 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
             if not mode.startswith("v2_graph"):
                 current = current["tasks"][0]
                 run = run["tasks"][0]
+            if mode == "v2_reused_tool_id_role":
+                assert current["status"] == "completed", current
+                starts = [r["data"] for r in current["process"] if r["kind"] == "tool_start"]
+                assert len(starts) == 2 and [s["id"] for s in starts] == ["same-id", "same-id"]
+                first_id, second_id = [s["tool_record_id"] for s in starts]
+                assert first_id != second_id
+                results = [r["data"] for r in current["process"] if r["kind"] == "tool_result"]
+                assert {r["tool_record_id"] for r in results} == {first_id, second_id}
+                statuses = [r["data"] for r in current["process"] if r["kind"] == "tool_status"]
+                assert {r["tool_record_id"] for r in statuses} == {first_id, second_id}
+                return
+            if mode == "v2_timer_failure_role":
+                assert current["status"] in {"failed", "interrupted", "blocked"}, current
+                assert len([r for r in current["process"] if r["kind"] == "model_delta"]) == 1
+                assert model_requests == ["research-model"] * 3
+                return
+            if mode == "v2_live_role":
+                assert current["status"] == "completed", current
+                reopened = await observer.get_run("alice", run["run_id"])
+                records = reopened["process"]
+                ends = [r for r in records if r["kind"] == "model_delivery" and r["data"].get("text") == "First fragment. Second fragment."]
+                assert len(ends) == 1
+                deltas = [r for r in records if r["kind"] == "model_delta" and r["data"]["receipt_id"] == ends[0]["data"]["receipt_id"]]
+                assert "".join(r["data"]["text"] for r in deltas) == "First fragment. Second fragment."
+                complete = [r for r in records if r["kind"] == "model_response" and r["data"].get("text") == "First fragment. Second fragment."]
+                assert len(complete) == 1 and complete[0]["data"]["receipt_id"] == ends[0]["data"]["receipt_id"]
+                attempt = current["state"]["attempt_id"]
+                before = await observer.get_run("alice", root_run_id)
+                payload = {"receipt_id": "test-delivery", "invocation_id": "test-invocation", "sequence": 0, "text": "replayed", "reasoning_content": ""}
+                first = await service.record_process("alice", run["run_id"], attempt, "test-replay", "model_delta", payload)
+                assert first == await service.record_process("alice", run["run_id"], attempt, "test-replay", "model_delta", payload)
+                with pytest.raises(RoleAssetError, match="reused"):
+                    await service.record_process("alice", run["run_id"], attempt, "test-replay", "model_delta", {**payload, "text": "different"})
+                with pytest.raises(RoleAssetError):
+                    await service.record_process("alice", run["run_id"], attempt, "late", "model_delta", payload, execution_id="obsolete")
+                changes = await observer.get_events("alice", root_run_id, before["cursor"])
+                assert changes["snapshot"] is None and len(changes["records"]) == 1
+                assert changes["records"][0]["data"] == payload
+                assert changes["records"][0]["root_run_id"] == root_run_id
+                assert changes["records"][0]["scope_id"] == current["state"]["scope_id"]
+                for index in range(130):
+                    await service.record_process("alice", run["run_id"], attempt, f"bounded-{index}", "model_delta", {**payload, "sequence": index})
+                page = await observer.get_events("alice", root_run_id, changes["cursor"])
+                assert len(page["events"]) == len(page["records"]) == 128
+                tail = await observer.get_events("alice", root_run_id, page["cursor"])
+                assert len(tail["events"]) == len(tail["records"]) == 2
+                assert [r["data"]["sequence"] for r in page["records"] + tail["records"]] == list(range(130))
+                changes = tail
+                with pytest.raises(RoleAssetError):
+                    await observer.get_events("bob", root_run_id, before["cursor"])
+                async with db.engine.begin() as connection:
+                    await connection.execute(text("CREATE TRIGGER reject_delta_event BEFORE INSERT ON agent_workflow_events WHEN NEW.kind = 'process.model_delta' BEGIN SELECT RAISE(ABORT, 'event storage failure'); END"))
+                with pytest.raises(Exception, match="event storage failure"):
+                    await service.record_process("alice", run["run_id"], attempt, "transaction-failure", "model_delta", payload)
+                unchanged = await observer.get_events("alice", root_run_id, changes["cursor"])
+                assert unchanged["cursor"] == changes["cursor"] and not unchanged["events"] and not unchanged["records"]
+                return
             if mode.startswith("v2_graph_migrated_role"):
                 assert current["status"] == "completed", current
                 assert model_requests == [
@@ -1029,6 +1176,7 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
                 return
             if mode in {
                 "v2_role",
+                "v2_final_only_role",
                 "v2_chat_role",
                 "v2_hidden_role",
                 "v2_no_thinking_role",
@@ -1045,6 +1193,10 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
                     if record["kind"] == "tool_result"
                 ]
                 assert len(responses) == 3
+                if mode == "v2_final_only_role":
+                    starts = [r for r in current["process"] if r["kind"] == "model_delivery" and r["data"]["status"] == "started"]
+                    assert len(starts) == 3 and all(not r["data"]["streaming"] for r in starts)
+                    assert not any(r["kind"] == "model_delta" for r in current["process"])
                 assert responses[-1]["data"]["reasoning_content"] == (
                     None if mode == "v2_no_thinking_role" else "Verified the evidence."
                 )
@@ -1094,13 +1246,15 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
                 "v2_process_failure_role",
                 "v2_partial_error_role",
             }:
-                assert model_requests == ["research-model"]
+                assert model_requests == (
+                    [] if mode == "v2_process_failure_role" else ["research-model"]
+                )
                 assert not any(
                     event["kind"] == "result.accepted" for event in current["events"]
                 )
                 if mode == "v2_process_failure_role":
                     assert current["process"] == []
-            elif mode not in {"v2_hidden_role", "v2_no_thinking_role"}:
+            elif mode not in {"v2_hidden_role", "v2_no_thinking_role", "v2_final_only_role"}:
                 assert any(
                     part["type"] == "think"
                     for part in current["state"]["response"]["parts"]
@@ -1135,6 +1289,9 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
                 ]
                 assert len(tool_results) == 3
                 assert [result["id"] for result in tool_results] == ["partial-1"] * 3
+                assert all(result["tool_record_id"] == call["record_id"] for result in tool_results)
+                statuses = [r["data"] for r in reopened["process"] if r["kind"] == "tool_status"]
+                assert statuses == [{"tool_record_id": call["record_id"], "id": "partial-1", "name": "partial_then_error", "args": {}, "status": "unknown"}]
                 assert tool_results[0]["raw_result"]["content"][0]["text"] == (
                     "Partial evidence only"
                 )

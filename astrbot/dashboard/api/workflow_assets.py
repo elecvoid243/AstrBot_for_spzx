@@ -1,10 +1,12 @@
 """Minimal v2 asset and persisted run HTTP boundary."""
 
+import asyncio
+import json
 from typing import Literal
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Query, Request, Security
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.security import APIKeyHeader
 
 from astrbot.core.agent_teams.assets import RoleAssetError
@@ -827,9 +829,8 @@ async def get_events(
         service: Shared public run service.
 
     Returns:
-        Changed events with a complete consistent snapshot, or a complete reset
-        snapshot for an expired cursor. An unchanged cursor returns no snapshot
-        without reading saved process history.
+        A consistent snapshot on initial or reset reads, otherwise a bounded
+        batch of committed events and their process records.
     """
     try:
         return ok(await service.get_events(username, run_id, after))
@@ -837,6 +838,50 @@ async def get_events(
         return JSONResponse(
             error(str(exc), {"fields": exc.fields}), status_code=exc.status
         )
+
+
+@router.get(
+    "/workflow_runs/{run_id}/events/stream",
+    response_class=StreamingResponse,
+    responses={200: {"content": {"text/event-stream": {"schema": {"type": "string"}}}}},
+)
+async def stream_events(
+    run_id: str,
+    request: Request,
+    after: int = Query(default=0, ge=0),
+    username: str = Depends(require_dashboard_user),
+    service: WorkflowService = Depends(get_workflow_service),
+):
+    """Observe the same authorized persisted cursor without controlling execution.
+
+    Args:
+        run_id: Persisted run or graph identity.
+        request: HTTP connection used to detect observer disconnects.
+        after: Last committed cursor applied by the observer.
+        username: Authenticated owner.
+        service: Shared public run service.
+
+    Returns:
+        Server-sent batches from durable storage, or an authorization error.
+    """
+    try:
+        initial = await service.get_events(username, run_id, after)
+    except RoleAssetError as exc:
+        return JSONResponse(
+            error(str(exc), {"fields": exc.fields}), status_code=exc.status
+        )
+
+    async def observe():
+        cursor = after
+        batch = initial
+        while not await request.is_disconnected():
+            if batch["snapshot"] is not None or batch["events"]:
+                yield "data: " + json.dumps(batch, ensure_ascii=False) + "\n\n"
+                cursor = batch["cursor"]
+            await asyncio.sleep(0.5)
+            batch = await service.get_events(username, run_id, cursor)
+
+    return StreamingResponse(observe(), media_type="text/event-stream")
 
 
 @router.get("/workflow_artifacts/{artifact_id}/versions/{version}")

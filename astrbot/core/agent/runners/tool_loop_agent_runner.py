@@ -49,6 +49,7 @@ from astrbot.core.agent.tool import (
 from astrbot.core.agent.tool_image_cache import CachedImage, tool_image_cache
 from astrbot.core.agent_team_execution import (
     CheckpointRecoveryError,
+    HumanInputRequired,
     ProcessPersistenceError,
     current_team_execution,
     model_delivery,
@@ -3177,7 +3178,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             tool_result_blocks_start = len(tool_call_result_blocks)
             tool_call_streak = (
                 self._same_tool_streak
-                if reused
+                if reused or retry_prefix is not None
                 else self._track_tool_call_streak(
                     func_tool_name,
                     func_tool_args,
@@ -3665,6 +3666,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                     e,
                     (
                         _ToolExecutionInterrupted,
+                        HumanInputRequired,
                         ProcessPersistenceError,
                         ToolProtocolIntegrityError,
                     ),

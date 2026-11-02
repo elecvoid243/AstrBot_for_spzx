@@ -38,6 +38,7 @@ from astrbot.core import logger
 from astrbot.core.agent.tool import FunctionTool, has_tool_recovery
 from astrbot.core.agent_team_execution import (
     CheckpointRecoveryError,
+    HumanInputRequired,
     ProcessPersistenceError,
     execute_team_turn,
 )
@@ -824,6 +825,8 @@ class HumanAnswerRequest(BaseModel):
     answer: str | None = Field(default=None, min_length=1, max_length=100_000)
     feedback: str | None = Field(default=None, min_length=1, max_length=100_000)
     artifact_ref: ArtifactReference | None = None
+    choice_id: str | None = Field(default=None, min_length=1, max_length=128)
+    free_text: str | None = Field(default=None, min_length=1, max_length=10_000)
 
 
 def _current_task_runs(run: AgentWorkflowRun) -> dict[str, str]:
@@ -5079,6 +5082,7 @@ class WorkflowService:
                     pass
             if row.snapshot.get("engine") == "graph_v2":
                 await self.advance_run(username, run_id)
+            await self._resume_human_choices(username, run_id)
         return await self.get_run(username, run_id)
 
     async def retry_task(self, username: str, run_id: str, payload: dict) -> dict:
@@ -8181,6 +8185,7 @@ class WorkflowService:
                 )
                 assert caller is not None
             await self.advance_run(username, caller.snapshot["parent_run_id"])
+        await self._resume_human_choices(username, _root_run_id(root))
         current = await self.get_run(username, run_id)
         if current["control"]["status"] == "active":
             for child in current.get("tasks", []):
@@ -8200,6 +8205,168 @@ class WorkflowService:
                         pass
             current = await self.get_run(username, run_id)
         return current
+
+    async def request_human_choice(
+        self,
+        username: str,
+        run_id: str,
+        attempt_id: str,
+        execution_id: str,
+        record_id: str,
+        spec: dict,
+    ) -> dict:
+        """Save a question at its original tool boundary or read its saved answer.
+
+        Args:
+            username: Owner captured by the execution callback.
+            run_id: Actual executing task, never supplied by the model.
+            attempt_id: Original attempt being continued.
+            execution_id: Current executor fence.
+            record_id: Runner-owned tool invocation identity.
+            spec: Validated question and option metadata from the built-in tool.
+
+        Returns:
+            Saved choice in the ordinary tool's response protocol.
+
+        Raises:
+            RoleAssetError: The execution identity or saved request conflicts.
+            HumanInputRequired: The saved question still needs an answer.
+        """
+        async with self.db.get_db() as session:
+            row = await session.get(AgentWorkflowRun, run_id)
+            if row is None or row.owner_username != username:
+                raise RoleAssetError("Run not found", status=404)
+            control = await self._lock_control(session, row)
+            await session.refresh(row)
+            await self._require_execution_owner(session, run_id, execution_id)
+            checkpoint = await session.get(AgentWorkflowCheckpoint, run_id)
+            call = await session.get(AgentWorkflowToolCall, record_id)
+            if (
+                control.status == "cancelled"
+                or row.state["attempt_id"] != attempt_id
+                or checkpoint is None
+                or checkpoint.attempt_id != attempt_id
+                or call is None
+                or call.run_id != run_id
+                or call.attempt_id != attempt_id
+                or call.invocation_id != checkpoint.invocation_id
+                or call.name != "ask_user_choice"
+                or call.status not in {"started", "unknown"}
+            ):
+                raise RoleAssetError(
+                    "Human choice has no active original tool call", status=409
+                )
+            todo_id = "choice:" + record_id
+            todo = await session.get(AgentWorkflowTodo, todo_id)
+            if todo is None:
+                root = await session.get(AgentWorkflowRun, _root_run_id(row))
+                assert root is not None
+                todo = AgentWorkflowTodo(
+                    todo_id=todo_id,
+                    root_run_id=root.run_id,
+                    task_run_id=run_id,
+                    data={
+                        "kind": "question",
+                        "source_kind": "tool_call",
+                        "scope_run_id": row.snapshot.get("parent_run_id", row.run_id),
+                        "node_id": row.snapshot.get("node_id"),
+                        "attempt_id": attempt_id,
+                        "invocation_id": call.invocation_id,
+                        "tool_record_id": record_id,
+                        "tool_call_id": call.call_id,
+                        "run_name": root.snapshot["definition"]["name"],
+                        "task_name": row.snapshot["definition"]["name"],
+                        "question": spec["prompt"],
+                        "choice_spec": copy.deepcopy(spec),
+                        "constraints": {
+                            "choices": [item["id"] for item in spec["options"]],
+                            "max_length": 10_000,
+                        },
+                        "recommendation": spec.get("recommendation"),
+                        "recommendation_ref": None,
+                        "recommendation_error": None,
+                        "artifact_ref": None,
+                        "answerable_by": [username],
+                        "deadline": None,
+                        "status": "pending",
+                        "response": None,
+                        "consumed_at": None,
+                    },
+                )
+                session.add(todo)
+                session.add(
+                    AgentWorkflowEvent(
+                        run_id=run_id,
+                        kind="human.requested",
+                        data={
+                            "todo_id": todo_id,
+                            "source_kind": "tool_call",
+                            "tool_record_id": record_id,
+                        },
+                    )
+                )
+            elif (
+                todo.task_run_id != run_id
+                or todo.data.get("attempt_id") != attempt_id
+                or todo.data.get("choice_spec") != spec
+            ):
+                raise RoleAssetError("Original human question changed", status=409)
+            if (
+                todo.data["status"] in {"answered", "consumed"}
+                and control.status == "active"
+            ):
+                return {
+                    key: todo.data["response"].get(key)
+                    for key in ("choice_id", "free_text")
+                }
+            if todo.data["status"] not in {"pending", "answered"}:
+                raise RoleAssetError("Human choice is no longer active", status=409)
+            row.status = "waiting_human"
+            row.state = {
+                **row.state,
+                "human_request_id": todo_id,
+                "reason": "Waiting for a human choice.",
+            }
+            session.add(row)
+            await session.commit()
+        raise HumanInputRequired(todo_id)
+
+    async def _resume_human_choices(self, username: str, root_run_id: str) -> None:
+        """Resume answered tool waits after their suspended executor has exited.
+
+        Args:
+            username: Authorized root owner.
+            root_run_id: Root containing all nested request scopes.
+        """
+        async with self.db.get_db() as session:
+            root = await session.get(AgentWorkflowRun, root_run_id)
+            if root is None or root.owner_username != username:
+                return
+            control = await session.get(AgentWorkflowControl, root_run_id)
+            if control is None or control.status != "active":
+                return
+            identities = (
+                (
+                    await session.execute(
+                        select(AgentWorkflowTodo.task_run_id).where(
+                            AgentWorkflowTodo.root_run_id == root_run_id,
+                            AgentWorkflowTodo.data["source_kind"].as_string()
+                            == "tool_call",
+                            AgentWorkflowTodo.data["status"].as_string() == "answered",
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        for identity in dict.fromkeys(identities):
+            if identity in self._executions:
+                continue
+            try:
+                await self.recover_run(username, identity)
+            except RoleAssetError:
+                # Capacity, pause and uncertain external effects remain durable waits.
+                pass
 
     async def answer_todo(
         self, username: str, run_id: str, todo_id: str, payload: dict
@@ -8244,7 +8411,14 @@ class WorkflowService:
             if previous is not None:
                 if any(
                     previous.get(key) != decision[key]
-                    for key in ("action", "answer", "feedback", "artifact_ref")
+                    for key in (
+                        "action",
+                        "answer",
+                        "feedback",
+                        "choice_id",
+                        "free_text",
+                        "artifact_ref",
+                    )
                 ):
                     raise RoleAssetError("Human request already answered", status=409)
             else:
@@ -8260,7 +8434,22 @@ class WorkflowService:
                             "The requested artifact version is not available; create the revision before deciding",
                             status=409,
                         )
-                if request.action == "reject":
+                if todo.data.get("source_kind") == "tool_call":
+                    options = todo.data["constraints"]["choices"]
+                    if (
+                        request.action != "answer"
+                        or request.answer is not None
+                        or request.feedback is not None
+                        or request.choice_id not in [*options, "__free_text__"]
+                        or request.choice_id == "__free_text__"
+                        and not request.free_text
+                    ):
+                        raise RoleAssetError(
+                            "Choose an offered option or provide free text"
+                        )
+                elif request.choice_id is not None or request.free_text is not None:
+                    raise RoleAssetError("Tool choice fields require a dynamic request")
+                elif request.action == "reject":
                     if not request.feedback or request.answer is not None:
                         raise RoleAssetError(
                             "Rejection requires feedback and no answer"
@@ -8308,6 +8497,7 @@ class WorkflowService:
                 # Submission already succeeded. Recovery/continue retries the
                 # durable scheduling fact without changing the saved answer.
                 logger.exception("Saved human response awaits scheduling: %s", todo_id)
+            await self._resume_human_choices(username, run_id)
         return await self.get_run(username, run_id)
 
     async def _execute_graph_task(
@@ -9048,10 +9238,30 @@ class WorkflowService:
                         "Continue the whole run before recovering a task", status=409
                     )
             checkpoint = await session.get(AgentWorkflowCheckpoint, run_id)
-            if row is None or row.status not in {"interrupted", "failed", "blocked"}:
+            if row is None or row.status not in {
+                "interrupted",
+                "failed",
+                "blocked",
+                "waiting_human",
+            }:
                 raise RoleAssetError(
                     "Only interrupted execution can be recovered", status=409
                 )
+            if row.status == "waiting_human":
+                todo = await session.get(
+                    AgentWorkflowTodo, row.state.get("human_request_id")
+                )
+                if (
+                    todo is None
+                    or todo.data.get("source_kind") != "tool_call"
+                    or todo.data.get("attempt_id") != row.state["attempt_id"]
+                    or todo.data["status"] != "answered"
+                    or run_id in self._executions
+                ):
+                    raise RoleAssetError(
+                        "The original tool is still waiting for a human answer",
+                        status=409,
+                    )
             parent = None
             parent_id = row.snapshot.get("parent_run_id")
             if parent_id:
@@ -9711,6 +9921,35 @@ class WorkflowService:
             RoleAssetError: Ownership changed or the attempt is no longer running.
         """
         async with self.db.get_db() as session:
+            applied_choices = [
+                call
+                for call in data.get("tool_calls", [])
+                if call["name"] == "ask_user_choice" and call["status"] == "applied"
+            ]
+            if applied_choices:
+                row = await session.get(AgentWorkflowRun, run_id)
+                if row is None or row.owner_username != username:
+                    raise RoleAssetError("Run not found", status=404)
+                control = await self._lock_control(session, row)
+                if control.status == "cancelled":
+                    raise RoleAssetError("Run was cancelled", status=409)
+                if control.status == "paused":
+                    for call in applied_choices:
+                        todo = await session.get(
+                            AgentWorkflowTodo, "choice:" + call["record_id"]
+                        )
+                        if todo and todo.data["status"] == "answered":
+                            raise RoleAssetError(
+                                "Continue the run before consuming a human answer",
+                                [
+                                    {
+                                        "path": "control",
+                                        "code": "PAUSED",
+                                        "message": "The human answer remains saved.",
+                                    }
+                                ],
+                                status=409,
+                            )
             changed = await session.execute(
                 update(AgentWorkflowRun)
                 .where(
@@ -9827,6 +10066,44 @@ class WorkflowService:
                 previous.raw_results = call["raw_results"]
                 previous.context_position = call["context_position"]
                 session.add(previous)
+                if call["name"] == "ask_user_choice" and call["status"] == "applied":
+                    todo = await session.get(
+                        AgentWorkflowTodo, "choice:" + call["record_id"]
+                    )
+                    if todo is not None:
+                        if (
+                            todo.task_run_id != run_id
+                            or todo.data.get("attempt_id") != attempt_id
+                            or todo.data["status"] not in {"answered", "consumed"}
+                            or call["context_position"] is None
+                        ):
+                            raise RoleAssetError(
+                                "Human answer cannot be applied to this context",
+                                status=409,
+                            )
+                        if todo.data["status"] == "answered":
+                            todo.data = {
+                                **todo.data,
+                                "status": "consumed",
+                                "consumed_at": time.time(),
+                                "consumption": {
+                                    "tool_record_id": call["record_id"],
+                                    "attempt_id": attempt_id,
+                                    "invocation_id": data["invocation_id"],
+                                    "context_position": call["context_position"],
+                                },
+                            }
+                            session.add(todo)
+                            session.add(
+                                AgentWorkflowEvent(
+                                    run_id=run_id,
+                                    kind="human.consumed",
+                                    data={
+                                        "todo_id": todo.todo_id,
+                                        "tool_record_id": call["record_id"],
+                                    },
+                                )
+                            )
                 if "recovery" in call:
                     recovery = await session.get(
                         AgentWorkflowToolRecovery, call["record_id"]
@@ -10032,6 +10309,26 @@ class WorkflowService:
             )
         for root in roots:
             await self.advance_run(root.owner_username, root.run_id)
+        async with self.db.get_db() as session:
+            waiting_roots = (
+                await session.execute(
+                    select(
+                        AgentWorkflowRun.owner_username, AgentWorkflowTodo.root_run_id
+                    )
+                    .join(
+                        AgentWorkflowTodo,
+                        AgentWorkflowRun.run_id == AgentWorkflowTodo.root_run_id,
+                    )
+                    .where(
+                        AgentWorkflowTodo.data["source_kind"].as_string()
+                        == "tool_call",
+                        AgentWorkflowTodo.data["status"].as_string() == "answered",
+                    )
+                    .distinct()
+                )
+            ).all()
+        for owner, root_id in waiting_roots:
+            await self._resume_human_choices(owner, root_id)
 
     async def shutdown(self) -> None:
         """Stop core-owned tasks before providers and database are terminated.
@@ -10116,6 +10413,32 @@ class WorkflowService:
                     payload,
                     execution_id=execution_id,
                 )
+
+            async def request_human(record_id: str, spec: dict) -> dict:
+                """Bind a built-in choice to this task's durable executor.
+
+                Args:
+                    record_id: Original runner-owned tool record.
+                    spec: Validated question with no client-provided identities.
+
+                Returns:
+                    Previously saved choice for the same tool call.
+                """
+                nonlocal checkpoint_error
+                try:
+                    return await self.request_human_choice(
+                        username,
+                        run_id,
+                        state["attempt_id"],
+                        execution_id,
+                        record_id,
+                        spec,
+                    )
+                except HumanInputRequired:
+                    raise
+                except Exception as exc:
+                    checkpoint_error = "Failed to persist the original human choice"
+                    raise ProcessPersistenceError(checkpoint_error) from exc
 
             tools = [
                 SubmitTaskResultTool(
@@ -10326,15 +10649,22 @@ class WorkflowService:
                 nonlocal checkpoint_error
                 if data["phase"] in {"request", "tools_started"}:
                     await admit_work()
-                try:
-                    await self.save_checkpoint(
-                        username, run_id, state["attempt_id"], execution_id, data
-                    )
-                except Exception as exc:
-                    checkpoint_error = "Failed to save execution checkpoint"
-                    raise ProcessPersistenceError(
-                        "Failed to save execution checkpoint"
-                    ) from exc
+                while True:
+                    try:
+                        await self.save_checkpoint(
+                            username, run_id, state["attempt_id"], execution_id, data
+                        )
+                        break
+                    except Exception as exc:
+                        if isinstance(exc, RoleAssetError) and any(
+                            field.get("code") == "PAUSED" for field in exc.fields
+                        ):
+                            await admit_work()
+                            continue
+                        checkpoint_error = "Failed to save execution checkpoint"
+                        raise ProcessPersistenceError(
+                            "Failed to save execution checkpoint"
+                        ) from exc
                 if data["phase"] in {"response", "tool_result", "tools_applied"}:
                     await admit_work()
 
@@ -10422,6 +10752,7 @@ class WorkflowService:
                     checkpoint=checkpoint,
                     begin_usage=begin_usage,
                     report_usage=report_usage,
+                    request_human=request_human,
                     pending_messages=(
                         lambda: self.pending_member_messages(
                             username, run_id, state["attempt_id"], execution_id
@@ -10593,6 +10924,9 @@ class WorkflowService:
             outcome["reason"] = (
                 "The Agent ended without submitting a valid task result."
             )
+        except HumanInputRequired:
+            status = "waiting_human"
+            outcome["reason"] = "Waiting for a human choice."
         except asyncio.CancelledError:
             status = "interrupted"
             outcome["reason"] = "Core execution stopped; this task was not replayed."

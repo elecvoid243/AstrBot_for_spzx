@@ -2335,6 +2335,37 @@ async def build_main_agent(
         req.func_tool = ToolSet(
             tools=[tool for tool in req.func_tool.tools if tool.name in allowed_tools]
         )
+    if getattr(execution, "request_human", None) and req.func_tool:
+        from astrbot.builtin_stars.ask_user_choice.ask_user_choice_tool import (
+            AskUserChoiceTool,
+        )
+        from astrbot.core.agent.tool import ToolRecovery
+        from astrbot.core.provider.func_tool_manager import _PermissionGuardedTool
+
+        for index, tool in enumerate(req.func_tool.tools):
+            original = (
+                tool._wrapped if isinstance(tool, _PermissionGuardedTool) else tool
+            )
+            if isinstance(original, AskUserChoiceTool):
+                # The shared ordinary-chat tool must retain its original behavior.
+                bound_tool = copy.copy(tool)
+                bound_tool.recovery = ToolRecovery(
+                    version="team-human-v1", safe_retry=True
+                )
+                bound_tool.parameters = copy.deepcopy(tool.parameters)
+                bound_tool.parameters["properties"].update(
+                    {
+                        "recommended_choice_id": {
+                            "type": "string",
+                            "description": "Optional recommended option ID from the supplied options.",
+                        },
+                        "recommendation_reason": {
+                            "type": "string",
+                            "description": "Reason for this explicit recommendation; required with recommended_choice_id.",
+                        },
+                    }
+                )
+                req.func_tool.tools[index] = bound_tool
 
     reset_coro = agent_runner.reset(
         provider=provider,

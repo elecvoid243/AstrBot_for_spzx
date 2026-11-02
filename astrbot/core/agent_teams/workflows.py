@@ -1,4 +1,4 @@
-"""Versioned single-task assets and independent runs, shared by all entry points."""
+"""Versioned workflow graphs and autonomous teams with durable execution."""
 
 import asyncio
 import base64
@@ -415,11 +415,18 @@ def _root_run_id(run: AgentWorkflowRun) -> str:
         run: Root, scope or task from a frozen launch.
 
     Returns:
-        Whole-run identity, including compatibility with earlier flat graphs.
+        Whole-run identity frozen by the unified graph launch.
+
+    Raises:
+        RoleAssetError: The saved run lacks the current ownership format.
     """
-    return run.snapshot.get(
-        "root_run_id", run.snapshot.get("parent_run_id", run.run_id)
-    )
+    identity = run.snapshot.get("root_run_id")
+    if not isinstance(identity, str) or not identity:
+        raise RoleAssetError(
+            "Stored run format is unsupported; recreate the asset and start a new run",
+            status=409,
+        )
+    return identity
 
 
 async def _descendant_runs(
@@ -443,8 +450,6 @@ async def _descendant_runs(
                     or_(
                         col(AgentWorkflowRun.run_id) == root_id,
                         AgentWorkflowRun.snapshot["root_run_id"].as_string() == root_id,
-                        AgentWorkflowRun.snapshot["parent_run_id"].as_string()
-                        == root_id,
                     ),
                 )
             )
@@ -1034,6 +1039,21 @@ class WorkflowService:
             )
             if row is None:
                 raise RoleAssetError("Workflow version not found", status=404)
+            try:
+                WorkflowSaveRequest.model_validate({"definition": row.definition})
+            except ValidationError as exc:
+                raise RoleAssetError(
+                    "Stored workflow format is unsupported; recreate it in the current editor",
+                    [
+                        {
+                            "path": ".".join(map(str, error["loc"])),
+                            "code": "UNSUPPORTED_FORMAT",
+                            "message": error["msg"],
+                        }
+                        for error in exc.errors()
+                    ],
+                    status=409,
+                ) from exc
             return {
                 "asset_id": asset_id,
                 "version": row.version,
@@ -2305,6 +2325,17 @@ class WorkflowService:
         asset = await self.get_asset(username, asset_id, request.version)
         definition = asset["definition"]
         input_refs = [ref.model_dump() for ref in request.input_artifacts]
+        if input_refs and definition.get("kind") != "autonomous":
+            raise RoleAssetError(
+                "Workflow graphs require explicit node inputs",
+                [
+                    {
+                        "path": "input_artifacts",
+                        "code": "UNSUPPORTED",
+                        "message": "Select upstream fields in the workflow editor; full artifact inputs are only available to autonomous teams",
+                    }
+                ],
+            )
         for ref in input_refs:
             await self.read_artifact(username, **ref)
         required = definition["required_inputs"]
@@ -2998,9 +3029,10 @@ class WorkflowService:
             for current in rows:
                 boundary = checkpoints.get(current.run_id)
                 runner = current.snapshot.get("effective", {}).get("runner")
-                if runner is None:
-                    runner = get_agent_runner_capabilities(
-                        current.snapshot.get("profile", {}).get("agent_runner", {})
+                if runner is None and "member" in current.snapshot:
+                    raise RoleAssetError(
+                        "Stored runner configuration is unsupported; start a new run",
+                        status=409,
                     )
                 result_issues = (
                     get_agent_runner_capability_issues(
@@ -4192,7 +4224,7 @@ class WorkflowService:
             run: Root or existing child task whose control protocol is shared.
 
         Returns:
-            Locked durable root decision, creating the default for older runs.
+            Locked durable root decision, created on first admission.
         """
         root_id = _root_run_id(run)
         await session.execute(
@@ -5246,6 +5278,9 @@ class WorkflowService:
                         select(AgentWorkflowRun.run_id)
                         .where(
                             AgentWorkflowRun.owner_username == username,
+                            AgentWorkflowRun.snapshot["root_run_id"]
+                            .as_string()
+                            .is_not(None),
                             AgentWorkflowRun.snapshot["parent_run_id"]
                             .as_string()
                             .is_(None),
@@ -8420,6 +8455,9 @@ class WorkflowService:
                     .where(
                         AgentWorkflowTodo.data["status"].as_string() == "pending",
                         AgentWorkflowTodo.data["deadline"].as_float() <= time.time(),
+                        AgentWorkflowRun.snapshot["root_run_id"]
+                        .as_string()
+                        .is_not(None),
                         AgentWorkflowTodo.data["timeout_checked_at"]
                         .as_float()
                         .is_(None),
@@ -9150,8 +9188,9 @@ class WorkflowService:
             )
         runner = run["snapshot"]["effective"].get("runner")
         if runner is None:
-            runner = get_agent_runner_capabilities(
-                run["snapshot"].get("profile", {}).get("agent_runner", {})
+            raise RoleAssetError(
+                "Stored runner configuration is unsupported; start a new run",
+                status=409,
             )
         issues = get_agent_runner_capability_issues(
             runner, {"definition.role_id": "task_result"}
@@ -10068,9 +10107,17 @@ class WorkflowService:
             for receipt in (
                 (
                     await session.execute(
-                        select(AgentWorkflowUsage).where(
+                        select(AgentWorkflowUsage)
+                        .join(
+                            AgentWorkflowRun,
+                            AgentWorkflowUsage.run_id == AgentWorkflowRun.run_id,
+                        )
+                        .where(
+                            AgentWorkflowRun.snapshot["root_run_id"]
+                            .as_string()
+                            .is_not(None),
                             AgentWorkflowUsage.data["quality"].as_string()
-                            == "in_flight"
+                            == "in_flight",
                         )
                     )
                 )
@@ -10087,6 +10134,9 @@ class WorkflowService:
                 (
                     await session.execute(
                         select(AgentWorkflowRun).where(
+                            AgentWorkflowRun.snapshot["root_run_id"]
+                            .as_string()
+                            .is_not(None),
                             col(AgentWorkflowRun.status).in_(
                                 ["running", "interrupted", "failed"]
                             ),
@@ -10106,6 +10156,9 @@ class WorkflowService:
                 (
                     await session.execute(
                         select(AgentWorkflowRun).where(
+                            AgentWorkflowRun.snapshot["root_run_id"]
+                            .as_string()
+                            .is_not(None),
                             col(AgentWorkflowRun.status).in_(
                                 ["running", "interrupted"]
                             ),
@@ -10182,6 +10235,9 @@ class WorkflowService:
                 (
                     await session.execute(
                         select(AgentWorkflowRun).where(
+                            AgentWorkflowRun.snapshot["root_run_id"]
+                            .as_string()
+                            .is_not(None),
                             col(AgentWorkflowRun.status).in_(
                                 ["interrupted", "failed", "blocked"]
                             ),
@@ -10228,6 +10284,9 @@ class WorkflowService:
                 (
                     await session.execute(
                         select(AgentWorkflowRun).where(
+                            AgentWorkflowRun.snapshot["root_run_id"]
+                            .as_string()
+                            .is_not(None),
                             col(AgentWorkflowRun.status) == "running",
                             AgentWorkflowRun.snapshot["engine"].as_string()
                             == "graph_v2",
@@ -10250,6 +10309,9 @@ class WorkflowService:
                         AgentWorkflowRun.run_id == AgentWorkflowTodo.root_run_id,
                     )
                     .where(
+                        AgentWorkflowRun.snapshot["root_run_id"]
+                        .as_string()
+                        .is_not(None),
                         AgentWorkflowTodo.data["source_kind"].as_string()
                         == "tool_call",
                         AgentWorkflowTodo.data["status"].as_string() == "answered",
@@ -10736,9 +10798,7 @@ class WorkflowService:
                     async with self.db.get_db() as session:
                         decision = await session.get(
                             AgentWorkflowControl,
-                            snapshot.get(
-                                "root_run_id", snapshot.get("parent_run_id", run_id)
-                            ),
+                            snapshot["root_run_id"],
                         )
                         paused = decision is not None and decision.status == "paused"
                         cancelled = (

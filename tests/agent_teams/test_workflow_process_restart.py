@@ -66,7 +66,6 @@ asyncio.run(test_main_pipeline_applies_role_capabilities_and_hooks(
                     "Pipeline did not save the safe point"
                 )
                 time.sleep(0.05)
-            identities = json.loads(marker.read_text(encoding="utf-8"))
             model_calls = (
                 (tmp_path / "model-calls.log").read_text(encoding="utf-8")
                 if graph

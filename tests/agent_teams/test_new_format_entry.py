@@ -7,8 +7,9 @@ import httpx
 import pytest
 from sqlmodel import select
 
+from astrbot.core.agent_teams.assets import RoleAssetError
 from astrbot.core.agent_teams.history import RunHistoryService
-from astrbot.core.db.po import AgentTeam, AgentWorkflowRun
+from astrbot.core.db.po import AgentTeam, AgentWorkflowRun, AgentWorkflowVersion
 from astrbot.dashboard.api.auth import require_dashboard_user
 from astrbot.dashboard.api.router import build_api_router
 from tests.agent_teams.test_workflow_assets import completed_run
@@ -78,9 +79,7 @@ async def test_history_pages_owned_root_runs_without_reading_or_removing_old_dat
         page = first.json()["data"]
         assert page["next_offset"] == 1
         second = (
-            await client.get(
-                "/api/v1/agent_history", params={"limit": 1, "offset": 1}
-            )
+            await client.get("/api/v1/agent_history", params={"limit": 1, "offset": 1})
         ).json()["data"]
         assert second["next_offset"] is None
         records = page["records"] + second["records"]
@@ -90,9 +89,7 @@ async def test_history_pages_owned_root_runs_without_reading_or_removing_old_dat
         assert all(item["status"] == "completed" for item in records)
         assert not any("legacy" in str(item) for item in records)
         for run in runs:
-            result = await client.get(
-                f"/api/v1/workflow_runs/{run['run_id']}/result"
-            )
+            result = await client.get(f"/api/v1/workflow_runs/{run['run_id']}/result")
             assert result.status_code == 200
             assert result.json()["data"] == {"text": "Complete report. " * 1000}
         for path in (
@@ -119,3 +116,70 @@ async def test_history_pages_owned_root_runs_without_reading_or_removing_old_dat
         ).scalar_one_or_none()
         assert preserved is not None
         assert preserved.name == "Preserved original data"
+
+
+@pytest.mark.asyncio
+async def test_old_definitions_are_rejected_without_conversion_or_deletion(
+    workflow_env,
+):
+    env = workflow_env
+    old = {
+        "name": "Old single task",
+        "role_id": env.role["role_id"],
+        "role_version": 1,
+        "task": "Write",
+    }
+    async with env.db.get_db() as session:
+        session.add(
+            AgentWorkflowVersion(
+                asset_id="old-definition",
+                version=1,
+                owner_username="alice",
+                definition=old,
+            )
+        )
+        session.add(
+            AgentWorkflowRun(
+                run_id="old-saved-run",
+                owner_username="alice",
+                status="running",
+                snapshot={"engine": "single_task_v2", "definition": old},
+                state={"safe_to_finish": True, "attempt_id": "old-attempt"},
+                pending_result={"text": "Old pending result"},
+            )
+        )
+        await session.commit()
+    with pytest.raises(RoleAssetError, match="recreate") as error:
+        await env.service.start_run("alice", "old-definition", {"version": 1})
+    assert error.value.status == 409
+    with pytest.raises(RoleAssetError, match="Stored run format is unsupported"):
+        await env.service.get_run("alice", "old-saved-run")
+    await env.service.boot_sweep()
+    assert env.observations == []
+    assert (await env.service.list_runs("alice"))["runs"] == []
+    async with env.db.get_db() as session:
+        stored = await session.get(AgentWorkflowVersion, ("old-definition", 1))
+        assert stored.definition == old
+        stored_run = await session.get(AgentWorkflowRun, "old-saved-run")
+        assert stored_run.status == "running"
+        assert stored_run.result is None
+        assert stored_run.pending_result == {"text": "Old pending result"}
+
+
+@pytest.mark.asyncio
+async def test_graph_rejects_implicit_full_artifact_inputs(workflow_env):
+    env = workflow_env
+    started = await env.service.start_run(
+        "alice", env.asset["asset_id"], {"version": 1}
+    )
+    finished = await completed_run(env.service, started["run_id"])
+    deliveries = len(env.observations)
+    with pytest.raises(RoleAssetError, match="explicit node inputs") as error:
+        await env.service.start_run(
+            "alice",
+            env.asset["asset_id"],
+            {"version": 1, "input_artifacts": [finished["result_ref"]]},
+        )
+    assert error.value.fields[0]["path"] == "input_artifacts"
+    assert len(env.observations) == deliveries
+    assert len((await env.service.list_runs("alice"))["runs"]) == 1

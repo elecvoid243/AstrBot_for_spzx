@@ -1549,22 +1549,6 @@ export type WorkflowControlRequest = {
 
 export type action4 = 'pause' | 'continue' | 'cancel';
 
-/**
- * A single task with a pinned role and declared input/output contracts.
- */
-export type WorkflowDefinition = {
-    name: string;
-    role_id: string;
-    role_version: number;
-    task: string;
-    required_inputs?: Array<(string)>;
-    overrides?: RoleOverrides;
-    output_contract?: ({
-    [key: string]: unknown;
-} | null);
-    limits?: (RunLimits | null);
-};
-
 export type WorkflowEdge = {
     from: string;
     to: string;
@@ -1630,6 +1614,9 @@ export type WorkflowStartRequest = {
         [key: string]: (string);
     };
     source?: string;
+    /**
+     * Fixed full-artifact inputs for autonomous teams. Workflow graphs use explicitly selected node inputs.
+     */
     input_artifacts?: Array<ArtifactReference>;
 };
 

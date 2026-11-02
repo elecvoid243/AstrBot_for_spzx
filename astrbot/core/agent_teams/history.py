@@ -43,6 +43,9 @@ class RunHistoryService:
                     )
                     .where(
                         col(AgentWorkflowRun.owner_username) == username,
+                        AgentWorkflowRun.snapshot["root_run_id"]
+                        .as_string()
+                        .is_not(None),
                         col(AgentWorkflowRun.snapshot)["parent_run_id"]
                         .as_string()
                         .is_(None),

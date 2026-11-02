@@ -111,7 +111,7 @@ In the intended platform conversation, send `/asset whoami` and paste the entire
 
 Check the read-only fields before opening the fixed version. The group UMO identifies the conversation, not its sender. Copying this text does not prove identity or bypass asset management permissions. A display name or a sender ID that matches a Dashboard account does not link those identities.
 
-An asset owner opens **Agent Teams → Assets** and chooses **Teams** for an autonomous team or **Workflows** for a single-task or canvas workflow. On the asset card, open **Chat access**, paste the complete response, check the read-only fields and choose **Open this version**. The grant pins the displayed asset version and allows its final result to be delivered to that exact conversation. A group conversation grant therefore explicitly allows the result to be visible in that group. Every reachable role, allowed team member and nested workflow must use the source profile; existing model/persona pools and tool, skill and knowledge-base restrictions still apply. Importing a package does not open it to chat callers. Use **Revoke access** to stop subsequent external work and result delivery; already delivered work remains recorded.
+An asset owner opens **Agent Teams → Assets** and chooses **Teams** for an autonomous team or **Workflows** for a single-Agent or multi-node canvas workflow. On the asset card, open **Chat access**, paste the complete response, check the read-only fields and choose **Open this version**. The grant pins the displayed asset version and allows its final result to be delivered to that exact conversation. A group conversation grant therefore explicitly allows the result to be visible in that group. Every reachable role, allowed team member and nested workflow must use the source profile; existing model/persona pools and tool, skill and knowledge-base restrictions still apply. Importing a package does not open it to chat callers. Use **Revoke access** to stop subsequent external work and result delivery; already delivered work remains recorded.
 
 Use `/asset list` to see accessible names, IDs, pinned versions and required input names. Invoke an asset explicitly, for example:
 
@@ -167,7 +167,7 @@ Add a saved workflow or autonomous team from the canvas toolbox, then select its
 
 In **Assets → Teams → New Autonomous Team / Edit Asset → Allowed workflows**, choose **Allow a saved workflow**. Select its **Pinned workflow version**. The panel shows that version's required text inputs and public output contract. A workflow returns the task selected by its own output node. Save the team as a new version. Workflows omitted from this list remain unavailable to its coordinator.
 
-Set **Root nesting depth limit** and **Maximum concurrent tasks**, then choose **Start Run** and enter the goal. The coordinator may call an allowed workflow with every declared input and optional visible, exact artifact references. Each call creates independent members; parent conversations and unrelated artifacts are not inherited. The coordinator waits for the call's task, then reads its complete result and immutable artifact. The chosen return task must have a validated result; a skipped return requires attention even if the workflow's other paths completed.
+Set **Root nesting depth limit** and **Maximum concurrent tasks**, then choose **Start Run** and enter the goal. The coordinator may call an allowed workflow with every declared input and optional exact artifact references recording the handoff source. Child Agents receive only explicitly mapped input values; those source records do not grant access to complete original artifacts or files. Each call creates independent members; parent conversations and unrelated artifacts are not inherited. The coordinator waits for the call's task, then reads its complete result and immutable artifact. The chosen return task must have a validated result; a skipped return requires attention even if the workflow's other paths completed.
 
 In **Runs → View Run**, select the coordinator and choose **View child workflow** beside its call. This route also works for coordinators inside a nested team. The call shows the returned result and the exact original child artifact reference. Choose **View child workflow** again to inspect the child tasks, or expand **Child scope** to see the saved workflow graph. **Human requests**, progress and **Saved member process** show the actual tasks and their waits, attempts and tool results.
 
@@ -295,14 +295,16 @@ If the requested revision does not exist yet, the request retains that exact ver
 
 This screenshot uses sample data in the actual component; it is not a full backend integration run.
 
-## Single-task assets
+## Single-Agent workflows and artifacts
 
-1. Choose **New Workflow**, enter a name and select a role template and its version.
-2. Enter comma-separated **Required text inputs (comma separated)**, such as `topic`. Reference an input with `{topic}` in the task; escape literal braces by doubling each brace. Only declared simple placeholders are supported.
-3. Leave **Output contract (JSON Schema)** empty for a non-empty text result, or enter a JSON Schema with `type: object` for evidence, review flags or files. References must stay within this schema; remote schemas are not loaded. Choose **Save New Version**. Saving creates a definition without a member session; existing runs retain their original version.
-4. Choose **Start Run**, fill every required input and optionally select exact versions under **Pinned input artifacts**. Summaries only help locate the desired content. Missing inputs or inaccessible resources produce field diagnostics without substituting defaults.
-5. Open **Runs → View Run**. Use **Artifact version** to read the complete text, evidence or structured result. Long content scrolls inside the result area without truncation. Files support **Preview file** and **Download file**. Expand **Output contract (JSON Schema)**, **Result submission history**, **Frozen effective configuration** and **Saved member process** to inspect the frozen contract and field errors.
-6. Choose **Create artifact revision**, edit the complete result JSON, optionally attach ready files and choose **Save artifact version**. Revisions must satisfy the original contract and create immutable versions. For a version conflict, refresh and select the latest version first. Earlier results and consumer inputs stay unchanged; no downstream task is automatically rerun.
+Single-Agent and multi-node workflows use the same canvas. The separate single-task format, slots and migration entry points are removed. Recreate old definitions and packages in the current editor; the system does not convert or delete their original data.
+
+1. Choose **New Workflow**. Configure responsibilities, persona and model directly in the initial Agent sidebar, or select a fixed role template.
+2. Declare workflow inputs on the input node and explicitly select them for the Agent. Use placeholders such as `{topic}` in the task; double literal braces to escape them.
+3. The default result is non-empty text. Configure output fields for structured results, or use JSON Schema for advanced contracts. References must stay within the schema. Select one result task at the output node.
+4. Drafts save automatically. Choose **Save version** to create a fixed definition, then **Start Run** on its asset card and provide the declared inputs. Workflows select data through node fields; **Pinned input artifacts** is available only for autonomous teams.
+5. In **Runs → View Run**, select a task to read its live process and complete artifact. Files support preview and download. Configuration and context views distinguish frozen settings from actual model input.
+6. An owner can explicitly revise a particular artifact. A revision must satisfy its original contract and becomes a new immutable version. Existing results, consumer inputs and approvals remain pinned. Child calls return the original child artifact identity without creating a parent copy.
 
 Every run creates a new member identity and isolated conversation. The role, inputs, persona prompt and effective configuration are frozen. Tool correction continues in the same member context. Later template edits affect new runs.
 
@@ -408,7 +410,7 @@ The report must use real provider/tool resources in your installation. The docum
 | Revision used only ordinary task dependencies | Assets → Workflows → Edit Asset → Add bounded loop; Runs → View Run → Loop iterations. |
 | New workflows had no persistent human entry | Assets → Workflows → Edit Asset → Human question / Version approval; Runs → View Run → Human requests. |
 
-Single-task assets remain compatible. Dependency assets provide acyclic scheduling, field conditions and persistent human requests through the same task result protocol. Bounded revision loops and autonomous teams share the same scheduler. Unknown tool decisions are available inside the selected task's process details.
+Single-Agent and multi-node workflows share the graph format, task result protocol and durable scheduler. Conditions, human requests, bounded loops and autonomous teams use the same execution boundary. Resolve unknown tools inside the selected task's process details.
 
 ## Human wait deadlines
 

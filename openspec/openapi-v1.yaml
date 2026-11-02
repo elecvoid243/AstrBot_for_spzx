@@ -10354,54 +10354,6 @@ components:
       type: object
       title: RunLimits
       description: Optional whole-scope ceilings; nested scopes also obey their ancestors.
-    WorkflowDefinition:
-      properties:
-        name:
-          type: string
-          maxLength: 128
-          minLength: 1
-          title: Name
-        role_id:
-          type: string
-          maxLength: 128
-          minLength: 1
-          title: Role Id
-        role_version:
-          type: integer
-          minimum: 1.0
-          title: Role Version
-        task:
-          type: string
-          maxLength: 100000
-          minLength: 1
-          title: Task
-        required_inputs:
-          items:
-            type: string
-          type: array
-          maxItems: 30
-          title: Required Inputs
-        overrides:
-          $ref: '#/components/schemas/RoleOverrides'
-        output_contract:
-          anyOf:
-          - additionalProperties: true
-            type: object
-          - type: 'null'
-          title: Output Contract
-        limits:
-          anyOf:
-          - $ref: '#/components/schemas/RunLimits'
-          - type: 'null'
-      additionalProperties: false
-      type: object
-      required:
-      - name
-      - role_id
-      - role_version
-      - task
-      title: WorkflowDefinition
-      description: A single task with a pinned role and declared input/output contracts.
     FieldCondition:
       additionalProperties: false
       description: A typed comparison against the source task's validated output.
@@ -10848,6 +10800,7 @@ components:
           type: array
           maxItems: 30
           title: Input Artifacts
+          description: Fixed full-artifact inputs for autonomous teams. Workflow graphs use explicitly selected node inputs.
       additionalProperties: false
       type: object
       required:

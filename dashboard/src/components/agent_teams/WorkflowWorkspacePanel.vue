@@ -716,6 +716,7 @@
             :rules="[(value) => !!value?.trim() || tm('v2.required')]"
           />
           <v-select
+            v-if="runAsset.definition.kind === 'autonomous'"
             v-model="inputArtifacts"
             :items="availableInputs"
             item-title="label"

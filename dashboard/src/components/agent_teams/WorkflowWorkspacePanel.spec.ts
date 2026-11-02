@@ -42,11 +42,19 @@ const asset = {
   version: 1,
   definition: {
     name: "Report",
-    role_id: "role-1",
-    role_version: 1,
-    task: "Research {topic}",
     required_inputs: ["topic"],
-    overrides: {},
+    result_task_id: "research",
+    max_parallel: 1,
+    tasks: [{
+      id: "research",
+      name: "Research",
+      member: "research",
+      role_id: "role-1",
+      role_version: 1,
+      task: "Research {topic}",
+      inputs: { topic: { input: "topic" } },
+    }],
+    edges: [],
   },
 };
 const run = {
@@ -124,7 +132,7 @@ Object.assign(stubs, {
   },
 });
 
-describe("single-task workflow workspace", () => {
+describe("workflow workspace", () => {
   it("answers a persisted request from the global inbox", async () => {
     const router = createRouter({ history: createMemoryHistory(), routes: [{ path: "/", component: { template: "<div />" } }] });
     await router.push("/");

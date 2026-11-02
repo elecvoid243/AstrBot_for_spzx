@@ -450,7 +450,7 @@ class RoleAssetService:
                 runner, {"definition.role_id": "task_result"}
             )
         )
-        if effective.get("runner", runner) != runner:
+        if effective.get("runner") != runner:
             issues.append(
                 {
                     "path": "installation.profile_id",

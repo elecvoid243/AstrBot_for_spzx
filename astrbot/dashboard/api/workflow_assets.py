@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from typing import Literal
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Query, Request, Security

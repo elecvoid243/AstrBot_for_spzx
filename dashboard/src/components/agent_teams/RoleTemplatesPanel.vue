@@ -80,11 +80,31 @@
         <v-card-actions
           ><v-btn variant="text" @click="edit(role)">{{
             tm("roles.edit")
-          }}</v-btn></v-card-actions
+          }}</v-btn
+          ><v-btn
+            data-testid="delete-role"
+            variant="text"
+            color="error"
+            @click="deleteTarget = role"
+            >{{ tm("deletion.delete") }}</v-btn
+          ></v-card-actions
         >
       </v-card>
     </div>
 
+    <DeleteAssetDialog
+      :name="
+        deleteTarget?.definition.name ||
+        (deleteTarget ? tm('draft.untitled') : null)
+      "
+      :busy="deleting"
+      :error="deleteError"
+      @cancel="
+        deleteTarget = null;
+        deleteError = '';
+      "
+      @confirm="deleteRole"
+    />
     <v-dialog
       v-model="dialog"
       class="workbench-dialog"
@@ -367,10 +387,31 @@ import { useModuleI18n } from "@/i18n/composables";
 import { extractApiError } from "@/utils/extractApiError";
 import RunnerCapabilities from "./RunnerCapabilities.vue";
 import RoleResourcesEditor from "./RoleResourcesEditor.vue";
+import DeleteAssetDialog from "./DeleteAssetDialog.vue";
 
 const { tm } = useModuleI18n("features/agent-teams");
 const { mobile } = useDisplay();
 const roles = ref<any[]>([]);
+const deleteTarget = ref<any>(null);
+const deleting = ref(false);
+const deleteError = ref("");
+async function deleteRole() {
+  if (!deleteTarget.value) return;
+  deleting.value = true;
+  deleteError.value = "";
+  try {
+    await roleAssetsApi.delete(deleteTarget.value.role_id);
+    deleteTarget.value = null;
+    await load();
+  } catch (cause) {
+    deleteError.value = extractApiError(
+      cause,
+      tm("errors.operationFailed"),
+    ).message;
+  } finally {
+    deleting.value = false;
+  }
+}
 const draft = useAssetDraft("role");
 const catalog = ref<Record<string, any[]>>({
   profiles: [],

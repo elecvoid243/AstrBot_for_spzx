@@ -12,6 +12,13 @@ import type {
 } from "./generated/openapi-v1";
 
 export const workflowAssetsApi = {
+  async delete(assetId: string) {
+    return (
+      await httpClient.delete(
+        `/api/v1/workflow_assets/${encodeURIComponent(assetId)}`,
+      )
+    ).data.data;
+  },
   async history(offset = 0) {
     return (
       await httpClient.get("/api/v1/agent_history", { params: { offset } })

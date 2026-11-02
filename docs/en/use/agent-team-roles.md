@@ -1,5 +1,11 @@
 # Agent Teams role templates
 
+Use **Delete** on a role card and confirm the impact to remove the entire role from new selections. All fixed versions remain available to workflows and teams that already pinned them, but a new reference cannot use a deleted role. Existing runs and their history are retained. Deletion cannot be undone.
+
+![Role deletion confirmation](/images/agent-teams-delete-asset-en.jpg)
+
+The screenshot shows the actual component with isolated sample data; it is not a backend integration test.
+
 Open **More Features → Agent Teams → Assets → Role templates**, then choose **New role**. A template stores responsibilities and capability requirements without creating a member chat session or starting a run.
 
 Edits are saved automatically as a draft, including incomplete settings. The status shows saving, saved, failure, or conflict. After a conflict, local edits remain visible; choose **Discard local changes and load server draft** only when ready to replace them. Select **Save version** to create an immutable version for references. Reopen the draft from the asset list after refreshing.

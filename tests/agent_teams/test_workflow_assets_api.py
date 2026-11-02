@@ -18,6 +18,38 @@ from tests.agent_teams.test_workflow_assets import workflow_env as workflow_env
 
 
 @pytest.mark.asyncio
+async def test_deletion_http_checks_ownership_and_hides_both_directories(workflow_env):
+    env = workflow_env
+    app = FastAPI()
+    app.state.services = SimpleNamespace(
+        role_assets=env.roles, workflow_assets=env.service
+    )
+    app.include_router(roles_router, prefix="/api/v1")
+    app.include_router(router, prefix="/api/v1")
+    app.dependency_overrides[require_dashboard_user] = lambda: "bob"
+    role_path = f"/api/v1/agent_roles/{env.role['role_id']}"
+    asset_path = f"/api/v1/workflow_assets/{env.asset['asset_id']}"
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        assert (await client.delete(role_path)).status_code == 404
+        assert (await client.delete(asset_path)).status_code == 404
+        app.dependency_overrides[require_dashboard_user] = lambda: "alice"
+        assert (await client.delete(role_path)).status_code == 200
+        assert (await client.delete(role_path)).status_code == 200
+        assert (await client.delete(asset_path)).status_code == 200
+        assert (await client.get("/api/v1/agent_roles")).json()["data"]["roles"] == []
+        assert (await client.get("/api/v1/workflow_assets")).json()["data"][
+            "assets"
+        ] == []
+        assert (await client.get(role_path)).json()["data"]["deleted"]
+        assert (await client.get(asset_path)).json()["data"]["deleted"]
+        assert (
+            await client.post(asset_path + "/runs", json={"version": 1})
+        ).status_code == 409
+
+
+@pytest.mark.asyncio
 async def test_inline_graph_http_start_and_read_original_result(workflow_env):
     env = workflow_env
     app = FastAPI()
@@ -333,13 +365,14 @@ def test_human_http_uuid_answers_reconnect_and_owner_permissions(tmp_path):
         events = client.get(path + "/events", params={"after": run["cursor"]}).json()[
             "data"
         ]
-        assert events["snapshot"]["todos"] == after["todos"]
-        assert events["reset"] is True
+        assert events["snapshot"] is None
+        assert events["reset"] is False
+        assert events["cursor"] >= after["cursor"]
         assert (
             len(
                 [
                     e
-                    for e in events["snapshot"]["events"]
+                    for e in events["events"]
                     if e["kind"] == "human.consumed"
                 ]
             )

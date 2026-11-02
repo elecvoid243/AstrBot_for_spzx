@@ -5271,6 +5271,16 @@ export type ReviseRoleAssetResponse = (SuccessEnvelope);
 
 export type ReviseRoleAssetError = (unknown);
 
+export type DeleteRoleAssetData = {
+    path: {
+        role_id: string;
+    };
+};
+
+export type DeleteRoleAssetResponse = (SuccessEnvelope);
+
+export type DeleteRoleAssetError = (unknown);
+
 export type ResolveRoleAssetData = {
     body: RoleOverrides;
     path: {
@@ -5402,6 +5412,16 @@ export type SaveAssetApiV1WorkflowAssetsAssetIdPutData = {
 export type SaveAssetApiV1WorkflowAssetsAssetIdPutResponse = (unknown);
 
 export type SaveAssetApiV1WorkflowAssetsAssetIdPutError = (HTTPValidationError);
+
+export type DeleteWorkflowAssetData = {
+    path: {
+        asset_id: string;
+    };
+};
+
+export type DeleteWorkflowAssetResponse = (SuccessEnvelope);
+
+export type DeleteWorkflowAssetError = (unknown);
 
 export type ListChatAccessApiV1WorkflowAssetsAssetIdChatAccessGetData = {
     path: {

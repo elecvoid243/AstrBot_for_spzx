@@ -6453,6 +6453,22 @@ paths:
         required: true
         schema:
           type: string
+    delete:
+      tags:
+      - AgentTeams
+      summary: Delete an entire role identity while retaining fixed versions
+      operationId: deleteRoleAsset
+      parameters:
+      - name: role_id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          $ref: '#/components/responses/Ok'
+        '404':
+          description: Role not found
   /api/v1/agent_roles/{role_id}/resolve:
     post:
       tags:
@@ -6866,6 +6882,22 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+    delete:
+      tags:
+      - Agent Teams workflows
+      summary: Delete an entire workflow or autonomous team identity
+      operationId: deleteWorkflowAsset
+      parameters:
+      - name: asset_id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          $ref: '#/components/responses/Ok'
+        '404':
+          description: Asset not found
   /api/v1/workflow_assets/{asset_id}/chat_access:
     get:
       tags:

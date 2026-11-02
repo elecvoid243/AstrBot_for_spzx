@@ -406,6 +406,21 @@ async def get_asset(
         )
 
 
+@router.delete("/workflow_assets/{asset_id}")
+async def delete_asset(
+    asset_id: str,
+    username: str = Depends(require_dashboard_user),
+    service: WorkflowService = Depends(get_workflow_service),
+):
+    try:
+        await service.roles.delete_asset(username, "workflow", asset_id)
+        return ok({})
+    except RoleAssetError as exc:
+        return JSONResponse(
+            error(str(exc), {"fields": exc.fields}), status_code=exc.status
+        )
+
+
 @router.post("/workflow_assets")
 @router.put("/workflow_assets/{asset_id}")
 async def save_asset(

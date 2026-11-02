@@ -60,6 +60,16 @@ function openPanel(initialRefs = [{ asset_id: "research", version: 3 }]) {
 }
 
 describe("allowed fixed workflow versions", () => {
+  it("explains a deleted pinned workflow without offering it as a new choice", async () => {
+    vi.mocked(workflowAssetsApi.get).mockReset().mockResolvedValue({ ...versions[0], asset_id: "removed", deleted: true });
+    const wrapper = openPanel([{ asset_id: "removed", version: 1 }]);
+    await flushPromises();
+    const panel = wrapper.getComponent(AllowedWorkflowsPanel);
+    expect(panel.text()).toContain("Research v1");
+    expect(panel.text()).toContain("deletion.referenced");
+    expect(panel.getComponent<any>('[data-testid="allowed-workflow-add"]').props("items")).toEqual([versions[2]]);
+    wrapper.unmount();
+  });
   it("preserves concurrent selections in independent workflow rows", async () => {
     let finishFirst!: (value: any) => void;
     const delayed = new Promise((resolve) => {

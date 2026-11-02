@@ -8,6 +8,7 @@ from astrbot.api import AstrBotConfig
 from astrbot.core.agent.tool import FunctionTool
 from astrbot.core.agent_teams.assets import RoleAssetError, RoleAssetService
 from astrbot.core.astrbot_config_mgr import AstrBotConfigManager
+from astrbot.core.db.po import AgentAssetTombstone
 from astrbot.core.db.sqlite import SQLiteDatabase
 from astrbot.core.knowledge_base.kb_mgr import KnowledgeBaseManager
 from astrbot.core.persona_mgr import PersonaManager
@@ -16,6 +17,30 @@ from astrbot.core.skills.skill_manager import SkillManager
 from astrbot.core.star import star
 from astrbot.core.umop_config_router import UmopConfigRouter
 from astrbot.core.utils.shared_preferences import SharedPreferences
+
+
+@pytest.mark.asyncio
+async def test_asset_tombstone_is_owned_idempotent_and_preserves_versions(tmp_path):
+    db = SQLiteDatabase(str(tmp_path / "roles.db"))
+    service = RoleAssetService(db)
+    role = await service.save_role(
+        "alice", {"definition": {"name": "Researcher", "prompt": "Check evidence."}}
+    )
+    role_id = role["role_id"]
+    with pytest.raises(RoleAssetError) as exc:
+        await service.delete_asset("bob", "role", role_id)
+    assert exc.value.status == 404
+    await service.delete_asset("alice", "role", role_id)
+    await service.delete_asset("alice", "role", role_id)
+    await db.engine.dispose()
+    reopened = SQLiteDatabase(str(tmp_path / "roles.db"))
+    async with reopened.get_db() as session:
+        tombstone = await session.get(AgentAssetTombstone, ("role", role_id))
+        assert tombstone is not None and tombstone.owner_username == "alice"
+    assert (await RoleAssetService(reopened).get_role("alice", role_id, 1))[
+        "version"
+    ] == 1
+    await reopened.engine.dispose()
 
 
 @pytest.mark.asyncio

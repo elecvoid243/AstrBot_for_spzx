@@ -89,6 +89,14 @@
           />
         </template>
         <template v-else>
+          <v-alert
+            v-if="preview?.deleted"
+            type="warning"
+            variant="tonal"
+            class="mb-2"
+            >{{ preview.definition.name }} ·
+            {{ tm("deletion.referenced") }}</v-alert
+          >
           <v-select
             v-model="preset.role_id"
             :items="roleItems"

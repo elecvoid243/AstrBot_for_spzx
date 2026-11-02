@@ -244,6 +244,15 @@ class CronJob(TimestampMixin, SQLModel, table=True):
     last_error: str | None = Field(default=None, sa_type=Text)
 
 
+class AgentAssetTombstone(TimestampMixin, SQLModel, table=True):
+    """Persistent deletion of an entire role or workflow identity."""
+
+    __tablename__: str = "agent_asset_tombstones"
+    kind: str = Field(primary_key=True)
+    asset_id: str = Field(primary_key=True)
+    owner_username: str = Field(index=True)
+
+
 class AgentAssetDraft(TimestampMixin, SQLModel, table=True):
     """Mutable owner-scoped editing snapshot for a versioned asset."""
 

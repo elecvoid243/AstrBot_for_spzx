@@ -85,6 +85,7 @@ from astrbot.core.db import BaseDatabase
 from astrbot.core.db.po import (
     AgentAssetDraft,
     AgentAssetDraftPublication,
+    AgentAssetTombstone,
     AgentRoleInstallation,
     AgentRoleVersion,
     AgentWorkflowArtifact,
@@ -574,6 +575,8 @@ class WorkflowService:
                 raise
             self.roles._validate_draft_body(draft_kind, draft["body"])
             async with self.db.get_db() as session:
+                if await session.get(AgentAssetTombstone, ("workflow", asset_id)):
+                    raise RoleAssetError("Asset has been deleted", status=409)
                 published = await session.get(
                     AgentAssetDraftPublication, (draft_kind, asset_id, draft_revision)
                 )
@@ -833,6 +836,22 @@ class WorkflowService:
         elif asset_id is None:
             asset_id = uuid.uuid4().hex
         async with self.db.get_db() as session:
+            await session.execute(text("BEGIN IMMEDIATE"))
+            if await session.get(AgentAssetTombstone, ("workflow", asset_id)):
+                raise RoleAssetError("Asset has been deleted", status=409)
+            base = None
+            base_version = (
+                draft["base_version"] if draft is not None else request.expected_version
+            )
+            if base_version is not None:
+                base_row = await session.get(
+                    AgentWorkflowVersion, (asset_id, base_version)
+                )
+                if base_row and base_row.owner_username == username:
+                    base = base_row.definition
+            await self.roles.check_active_references(
+                session, definition.model_dump(exclude_none=False), base
+            )
             if draft is not None:
                 result = await session.execute(
                     update(AgentAssetDraft)
@@ -1059,6 +1078,10 @@ class WorkflowService:
                 "version": row.version,
                 "definition": row.definition,
                 "versions": [r.version for r in rows],
+                "deleted": await session.get(
+                    AgentAssetTombstone, ("workflow", asset_id)
+                )
+                is not None,
             }
 
     async def list_assets(self, username: str) -> dict:
@@ -1077,6 +1100,13 @@ class WorkflowService:
                         select(AgentWorkflowVersion.asset_id)
                         .where(
                             AgentWorkflowVersion.owner_username == username,
+                            ~sa_select(AgentAssetTombstone.asset_id)
+                            .where(
+                                AgentAssetTombstone.kind == "workflow",
+                                AgentAssetTombstone.asset_id
+                                == AgentWorkflowVersion.asset_id,
+                            )
+                            .exists(),
                         )
                         .distinct()
                         .order_by(AgentWorkflowVersion.asset_id)
@@ -1085,11 +1115,8 @@ class WorkflowService:
                 .scalars()
                 .all()
             )
-        return {
-            "assets": [
-                await self.get_asset(username, identity) for identity in identities
-            ]
-        }
+        assets = [await self.get_asset(username, identity) for identity in identities]
+        return {"assets": [asset for asset in assets if not asset["deleted"]]}
 
     async def _asset_closure(
         self, username: str, asset: dict, *, asset_limit: int | None = None
@@ -1382,6 +1409,8 @@ class WorkflowService:
             RoleAssetError: An included version is missing or inaccessible.
         """
         asset = await self.get_asset(username, asset_id, version)
+        if asset["deleted"]:
+            raise RoleAssetError("Asset has been deleted", status=409)
         included = await self._asset_closure(username, asset, asset_limit=100)
         references = set()
         for current in included.values():
@@ -1921,6 +1950,12 @@ class WorkflowService:
                 .scalars()
                 .all()
             )
+            deleted = {
+                (row.kind, row.asset_id)
+                for row in (await session.execute(select(AgentAssetTombstone)))
+                .scalars()
+                .all()
+            }
         records = {(row.package_id, row.version): row for row in rows}
         manifests = (
             self._package_manifests(package, contents, choices) if not issues else {}
@@ -1935,6 +1970,18 @@ class WorkflowService:
                 if any(r.package_id == key[0] for r in rows)
                 else "install"
             )
+            if any(
+                r.package_id == key[0] and ("workflow", r.asset_id) in deleted
+                for r in rows
+            ):
+                actions[key] = "conflict"
+                issues.append(
+                    {
+                        "path": f"assets.{key[0]}:{key[1]}",
+                        "code": "CONFLICT",
+                        "message": "The previously imported local asset has been deleted",
+                    }
+                )
             if (
                 row
                 and key in manifests
@@ -1952,6 +1999,25 @@ class WorkflowService:
                         "message": "Same package identity and version have different content or resource selections",
                     }
                 )
+        for row in rows:
+            if (
+                not isinstance(row.package, dict)
+                or row.package.get("format_version") != 3
+            ):
+                continue
+            for entry in row.package.get("role_records", []):
+                source = entry["source"]
+                if (
+                    any(item[0] == source["role_id"] for item in contents["used_roles"])
+                    and ("role", entry["local_id"]) in deleted
+                ):
+                    issues.append(
+                        {
+                            "path": f"roles.{source['role_id']}:{source['version']}",
+                            "code": "CONFLICT",
+                            "message": "The previously imported local role has been deleted",
+                        }
+                    )
         if not issues:
             for row in rows:
                 if (
@@ -1962,6 +2028,8 @@ class WorkflowService:
                 for entry in row.package.get("role_records", []):
                     source = entry["source"]
                     key = (source["role_id"], source["version"])
+                    if not any(item[0] == key[0] for item in contents["used_roles"]):
+                        continue
                     if key not in contents["used_roles"]:
                         continue
                     local = copy.deepcopy(contents["roles"][key])
@@ -2034,6 +2102,7 @@ class WorkflowService:
         root = (package.asset_id, package.version)
         async with self.db.get_db() as session:
             try:
+                await session.execute(text("BEGIN IMMEDIATE"))
                 rows = (
                     (
                         await session.execute(
@@ -2110,6 +2179,13 @@ class WorkflowService:
                         )
                         version = max([*versions, *[v for a, v in allocated], 0]) + 1
                         asset_map[key] = (identity, version)
+                    if await session.get(
+                        AgentAssetTombstone, ("workflow", asset_map[key][0])
+                    ):
+                        raise RoleAssetError(
+                            "The previously imported local asset has been deleted",
+                            status=409,
+                        )
                 for key in sorted(contents["used_roles"]):
                     source, local = contents["roles"][key], normalized_roles[key]
                     existing = known_roles.get(key)
@@ -2202,6 +2278,11 @@ class WorkflowService:
                             "local_definition": local["definition"],
                             "local_installation": local["installation"],
                         }
+                    if await session.get(AgentAssetTombstone, ("role", identity)):
+                        raise RoleAssetError(
+                            "The previously imported local role has been deleted",
+                            status=409,
+                        )
                     role_map[key] = (identity, role_version)
                 for key in sorted(contents["included"]):
                     if key in records:
@@ -5334,6 +5415,9 @@ class WorkflowService:
                 if max_depth < 1 or limit is not None and limit < 1:
                     raise RoleAssetError("Nested team exceeds the frozen depth limit")
         async with self.db.get_db() as session:
+            await session.execute(text("BEGIN IMMEDIATE"))
+            if await session.get(AgentAssetTombstone, ("workflow", asset["asset_id"])):
+                raise RoleAssetError("Asset has been deleted", status=409)
             run_id = await self._create_scope(session, username, frozen)
             await session.commit()
         await self.advance_run(username, run_id)

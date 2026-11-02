@@ -11,11 +11,12 @@ from typing import TYPE_CHECKING
 from urllib.parse import quote
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
-from sqlmodel import select
+from sqlmodel import select, text
 
 from astrbot.core import logger
 from astrbot.core.agent_teams.assets import RoleAssetError
 from astrbot.core.db.po import (
+    AgentAssetTombstone,
     AgentWorkflowChatAccess,
     AgentWorkflowChatDelivery,
     AgentWorkflowRun,
@@ -305,6 +306,9 @@ class WorkflowChat:
             asset_id=asset_id, owner_username=username, **request.model_dump()
         )
         async with self.service.db.get_db() as session:
+            await session.execute(text("BEGIN IMMEDIATE"))
+            if await session.get(AgentAssetTombstone, ("workflow", asset_id)):
+                raise RoleAssetError("Asset has been deleted", status=409)
             await session.merge(grant)
             await session.commit()
         return request.model_dump()
@@ -349,6 +353,8 @@ class WorkflowChat:
             asset = await self.service.get_asset(
                 grant.owner_username, grant.asset_id, grant.version
             )
+            if asset["deleted"]:
+                continue
             assets.append(
                 {
                     "asset_id": grant.asset_id,

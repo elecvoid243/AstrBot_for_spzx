@@ -233,6 +233,21 @@ async def get_role(
         )
 
 
+@router.delete("/agent_roles/{role_id}")
+async def delete_role(
+    role_id: str,
+    username: str = Depends(require_dashboard_user),
+    service: RoleAssetService = Depends(get_role_service),
+):
+    try:
+        await service.delete_asset(username, "role", role_id)
+        return ok({})
+    except RoleAssetError as exc:
+        return JSONResponse(
+            error(str(exc), {"fields": exc.fields}), status_code=exc.status
+        )
+
+
 @router.post("/agent_roles/{role_id}/resolve")
 async def resolve_role(
     role_id: str,

@@ -584,8 +584,10 @@ The control belongs to one signed-in account, chat and client connection. Closin
 or hiding the panel, changing chats, losing observation or disconnecting input
 stops local input and leaves the browser paused. Reconnect explicitly, take control
 again and hand back before starting a new task. Stop execution and Close browser
-keep their existing meanings. Older plugins remain read-only and show an update hint.
-Keyboard input, text paste, double-click and scrolling are added by later tickets.
+keep their existing meanings. Plugins without `manual_control_version` remain
+read-only and show an update hint. Plugins with click takeover but without
+`keyboard_input_version` retain clicks and handback, and show a keyboard upgrade hint.
+Double-click and scrolling are added by later tickets.
 
 After confirmed takeover, click the image to focus remote keyboard input. Type English or Chinese, use Tab, Enter, arrows, Backspace and editing shortcuts, or explicitly paste plain text (up to 2048 characters / 4096 UTF-8 bytes). IME preedit stays local and commits once; cancelled composition inserts nothing. Tab/Escape reach the remote page while the image owns keyboard focus, including fullscreen. Use **Leave keyboard control** to return to local controls, or **Hand back control** to explicitly return the browser to the Agent. Clicking the chat composer or another local control releases held keys. Target changes discard queued input and require focusing the image again. Passwords and input payloads are absent from action summaries; after handback the Agent can still read visible page content.
 

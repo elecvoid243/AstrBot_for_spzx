@@ -312,7 +312,7 @@
     "runs": "Independent Runs",
     "scope": "Autonomous teams and workflows share frozen roles, contracted results, scheduling, controls and recovery. Waiting releases execution capacity; unknown external effects require confirmation.",
     "create": "New Workflow",
-    "emptyAssets": "No workflow assets yet. Create a role template, then save a workflow.",
+    "emptyAssets": "No workflows yet. Create a workflow to configure an Agent directly.",
     "emptyRuns": "No independent runs yet.",
     "role": "Role template",
     "edit": "Edit Asset",
@@ -386,7 +386,7 @@
   },
   "graph": {
     "canvas": "Workflow canvas",
-    "create": "New Canvas Workflow",
+    "create": "New Workflow",
     "design": "Asset design",
     "count": "{count} tasks",
     "undo": "Undo",
@@ -396,7 +396,7 @@
     "minimap": "Minimap",
     "toolbox": "Role toolbox",
     "dragHint": "Drag a role onto the canvas or click to add a task.",
-    "noRoles": "Create a role template first.",
+    "noRoles": "No role templates yet; configure the current Agent directly.",
     "properties": "Task properties",
     "taskName": "Task name",
     "memberKey": "Member instance key",
@@ -429,7 +429,12 @@
     "tasks": "Tasks",
     "selectTask": "Inspect task",
     "saveHint": "Saving freezes this definition. Subsequent edits affect new runs.",
-    "dependency": "Select dependency"
+    "dependency": "Select dependency",
+    "defaultModel": "Default model",
+    "modelOverride": "Agent model override",
+    "inlineAgent": "Direct configuration",
+    "outputHint": "The workflow returns the agent’s text result and its original artifact.",
+    "modelInheritanceHint": "Agents without a model override use the workflow default."
   },
   "resolution": {
     "savedWaiting": "Your tool decision is saved for this Attempt. While the run is paused, it waits for Continue run. Local waits and execution capacity still apply.",
@@ -705,7 +710,7 @@
     "snapshotHint": "Fixed run snapshot. Editing an asset or role template only affects future runs.",
     "emptyFilter": "No runs in this view. Choose another view or start a run from Assets.",
     "teamIntro": "Reusable autonomous teams, their allowed roles and local dependencies.",
-    "workflowIntro": "Versioned single-task and canvas workflows. Edit definitions here; inspect fixed snapshots in Runs.",
+    "workflowIntro": "Create and edit versioned workflows here; inspect fixed snapshots in Runs.",
     "template": "Role template"
   },
   "runHistory": {

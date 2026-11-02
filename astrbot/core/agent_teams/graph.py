@@ -8,7 +8,12 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from referencing import Registry, Resource
 from referencing.jsonschema import DRAFT202012
 
-from astrbot.core.agent_teams.assets import RoleAssetError, RoleOverrides
+from astrbot.core.agent_teams.assets import (
+    RoleAssetError,
+    RoleDefinition,
+    RoleInstallation,
+    RoleOverrides,
+)
 from astrbot.core.agent_teams.usage import RunLimits
 
 HUMAN_APPROVAL_CONTRACT = {
@@ -57,7 +62,7 @@ class WorkflowCall(TeamCall):
 
 
 class GraphTask(BaseModel):
-    """A task bound to a named member instance with a fixed role version."""
+    """A task bound to a named member with inline or pinned configuration."""
 
     model_config = ConfigDict(extra="forbid", strict=True, str_strip_whitespace=True)
     id: str = Field(min_length=1, max_length=128, pattern=r"^[a-zA-Z][\w-]*$")
@@ -65,6 +70,8 @@ class GraphTask(BaseModel):
     member: str = Field(default="", max_length=128)
     role_id: str | None = Field(default=None, min_length=1, max_length=128)
     role_version: int | None = Field(default=None, ge=1)
+    role: RoleDefinition | None = None
+    installation: RoleInstallation | None = None
     task: str = Field(default="", max_length=100_000)
     human: HumanTask | None = None
     team: TeamCall | None = None
@@ -92,6 +99,8 @@ class GraphTask(BaseModel):
                 or self.member
                 or self.role_id
                 or self.role_version
+                or self.role is not None
+                or self.installation is not None
                 or self.task
                 or self.overrides.model_dump(exclude_none=True)
             ):
@@ -99,18 +108,29 @@ class GraphTask(BaseModel):
                     "Child calls cannot also configure agent or human execution"
                 )
         elif self.human is None:
+            pinned = bool(self.role_id and self.role_version)
+            inline = self.role is not None and self.installation is not None
             if (
                 not self.member
-                or not self.role_id
-                or not self.role_version
                 or not self.task
+                or pinned == inline
+                or bool(self.role_id) != bool(self.role_version)
+                or (self.role is None) != (self.installation is None)
             ):
-                raise ValueError("Agent tasks require member, pinned role and task")
+                raise ValueError(
+                    "Agent tasks require a member, task and exactly one complete role source"
+                )
+            if inline and self.overrides.model_dump(exclude_none=True):
+                raise ValueError("Inline agents do not use role overrides")
+            if inline and "profile_id" not in self.installation.model_fields_set:
+                raise ValueError("Inline agents require an explicit profile_id")
         else:
             if (
                 self.member
                 or self.role_id
                 or self.role_version
+                or self.role is not None
+                or self.installation is not None
                 or self.task
                 or self.inputs
                 or self.output_contract
@@ -185,6 +205,7 @@ class GraphDefinition(BaseModel):
 
     model_config = ConfigDict(extra="forbid", strict=True, str_strip_whitespace=True)
     name: str = Field(min_length=1, max_length=128)
+    default_provider_id: str | None = Field(default=None, min_length=1, max_length=128)
     required_inputs: list[str] = Field(default_factory=list, max_length=30)
     max_parallel: int = Field(default=4, ge=1, le=100)
     max_depth: int = Field(default=3, ge=1, le=20)
@@ -475,7 +496,13 @@ def validate_graph(definition: GraphDefinition) -> None:
                     }
                 )
             continue
-        config = (task.role_id, task.role_version, task.overrides.model_dump())
+        config = (
+            task.role_id,
+            task.role_version,
+            task.role,
+            task.installation,
+            task.overrides.model_dump(),
+        )
         if not task.team and task.member in members and members[task.member] != config:
             fields.append(
                 {
@@ -512,7 +539,7 @@ def validate_graph(definition: GraphDefinition) -> None:
         try:
             for _, field, spec, conversion in Formatter().parse(task.task):
                 if field is not None and (
-                    field not in {*names, *task.inputs} or spec or conversion
+                    field not in task.inputs or spec or conversion
                 ):
                     raise ValueError("Use only declared {input_name} placeholders")
         except ValueError as exc:

@@ -124,7 +124,9 @@ async def run_worker(
         config["agent_runner"]["config"]["compression"].update({"overflow_strategy": "llm_compress", "provider_id": "model-original", "keep_recent_ratio": 0.15, "max_turns": 50})
     if scenario.startswith(("parameters", "repair", "team_message_parameters")):
         config["agent_runner"]["config"]["misc"]["tool_schema_mode"] = "skills_like"
-    config["agent_runner"]["config"]["model"]["provider_id"] = "model-original"
+    config["agent_runner"]["config"]["model"]["provider_id"] = "model-alternate" if scenario.startswith("inline_") else "model-original"
+    if scenario.startswith("inline_"):
+        config["agent_runner"]["config"]["persona"]["persona_id"] = "writer"
     config["test_profile"] = "original" if action == "start" else "edited"
     acm = AstrBotConfigManager(config, UmopConfigRouter(preferences), preferences)
     await acm.initialize()
@@ -296,7 +298,7 @@ async def run_worker(
             return ["model-original"]
 
         def meta(self):
-            return ProviderMeta(id="model-original", model=self.get_model(), type="scripted", provider_type=ProviderType.CHAT_COMPLETION)
+            return ProviderMeta(id=self.provider_config["id"], model=self.get_model(), type="scripted", provider_type=ProviderType.CHAT_COMPLETION)
 
         async def text_chat_stream(self, **kwargs):
             """Yield the recorded provider's complete response.
@@ -330,7 +332,7 @@ async def run_worker(
                     "parameter_query": bool(kwargs["func_tool"]) and all(not tool.description for tool in kwargs["func_tool"].tools),
                     "repair_query": "Do not return an empty response." in str(kwargs["contexts"]),
                     **({"llm_params": kwargs.get("llm_params")} if scenario.startswith("usage_") else {}),
-                    **({"system_prompt": kwargs.get("system_prompt"), "tool_descriptions": {tool.name: tool.description for tool in kwargs["func_tool"].tools}} if scenario.startswith(("team_", "child_", "reverse_")) else {}),
+                    **({"system_prompt": kwargs.get("system_prompt"), "provider_id": self.provider_config["id"], "tool_descriptions": {tool.name: tool.description for tool in kwargs["func_tool"].tools}} if scenario.startswith(("team_", "child_", "reverse_", "inline_")) else {}),
                     **({"run_id": execution.run_id, "member_id": execution.member_id, "attempt_id": execution.turn_id} if execution and scenario.startswith(("team_message_", "child_", "reverse_", "file_mode_")) else {}),
                 })
                 if action == "start" and scenario in {"request", "control_request"}:
@@ -367,11 +369,43 @@ async def run_worker(
         )
     providers.inst_map["model-original"] = provider
     providers.provider_insts.append(provider)
+    if scenario.startswith("inline_"):
+        alternate = RecordedProvider({"id": "model-alternate", "type": "openai_chat_completion", "modalities": ["text", "tool_use"]}, {})
+        alternate.set_model("model-alternate")
+        providers.inst_map["model-alternate"] = alternate
+        providers.provider_insts.append(alternate)
     conversations = ConversationManager(db)
     monkeypatch.setattr(kb_mgr, "DB_PATH", folder / "knowledge" / "kb.db")
     monkeypatch.setattr(kb_mgr, "FILES_PATH", str(folder / "knowledge"))
     knowledge = KnowledgeBaseManager(providers)
     await knowledge.initialize()
+    kb_requests = []
+    if scenario.startswith("inline_kb"):
+        from astrbot.core.knowledge_base.models import KnowledgeBase
+        from astrbot.core.knowledge_base.retrieval.manager import RetrievalResult
+
+        class TestKnowledgeBase:
+            def __init__(self, kb_id, name):
+                self.kb = KnowledgeBase(kb_id=kb_id, kb_name=name, doc_count=1)
+                self.init_error = None
+
+            async def terminate(self):
+                pass
+
+        class TestRetrieval:
+            async def retrieve(self, query, kb_ids, kb_id_helper_map, **kwargs):
+                kb_requests.append(kb_ids)
+                return [RetrievalResult(chunk_id="chunk", doc_id="doc", doc_name="evidence", kb_id=key,
+                    kb_name=kb_id_helper_map[key].kb.kb_name,
+                    content="Selected knowledge" if key == "selected-id" else "Wrong knowledge",
+                    score=1.0, metadata={}) for key in kb_ids]
+
+        knowledge.kb_insts = {
+            "selected-id": TestKnowledgeBase("selected-id", "Renamed" if scenario == "inline_kb_renamed" else "Selected"),
+            "other-id": TestKnowledgeBase("other-id", "selected-id"),
+        }
+        knowledge.retrieval_manager = TestRetrieval()
+        config["kb_names"] = ["selected-id"]
     context = Context(asyncio.Queue(), config, db, providers, None, conversations, None, personas, acm, knowledge, None)
     scheduler = PipelineScheduler(PipelineContext(config, SimpleNamespace(context=context), "default", db))
     await scheduler.initialize()
@@ -406,7 +440,7 @@ async def run_worker(
         if action != "start" and scenario == "control_request":
             run_id = event.get_extra("agent_team_execution").run_id
             await service.control_run("alice", run_id, {"request_id": "pause-restored-request", "action": "pause"})
-        if not guarded_case:
+        if not guarded_case and not scenario.startswith("inline_"):
             request.func_tool.add_tool(providers.llm_tools.func_list[0])
         elif action != "start" and guarded_case.endswith("_denied"):
             # Revoke after resource preflight so the invocation must recheck.
@@ -496,7 +530,7 @@ async def run_worker(
 
         sql_event.listen(Session, "after_flush", retry_flush)
         sql_event.listen(Session, "after_commit", retry_commit)
-    if action == "start" and not scenario.startswith("file_mode_"):
+    if action == "start" and not scenario.startswith(("file_mode_", "inline_")):
         if scenario in {"legacy_response", "legacy_upgrade_failure"} or scenario.startswith("overflow_legacy"):
             def before_flush(session, flush_context, instances):
                 """Construct a pre-T08 saved response through the real storage seam.
@@ -635,6 +669,26 @@ async def run_worker(
                 await connection.execute(text("CREATE TRIGGER reject_response_checkpoint BEFORE UPDATE ON agent_workflow_checkpoints WHEN NEW.phase = 'tool_result' BEGIN SELECT RAISE(ABORT, 'tool result storage unavailable'); END" if scenario == "tool_save_failure" else "CREATE TRIGGER reject_response_checkpoint BEFORE INSERT ON agent_workflow_process WHEN NEW.kind = 'tool_result' BEGIN SELECT RAISE(ABORT, 'tool observation storage unavailable'); END"))
     dispatch = asyncio.create_task(event_bus.dispatch())
     try:
+        if scenario.startswith("inline_"):
+            definition = {"name": "Inline pipeline", "default_provider_id": "model-original", "required_inputs": ["topic"], "tasks": [{
+                "id": "agent", "name": "Writer", "member": "writer", "task": "Unique task {topic}",
+                "inputs": {"topic": {"input": "topic"}}, "installation": {"profile_id": "default"},
+                "role": {"name": "Writer", "prompt": "Unique responsibility.", "persona_id": "writer" if scenario == "inline_persona" else None,
+                         "provider_id": "model-alternate" if scenario == "inline_override" else None,
+                         "tools": ["external_evidence"], "skills": [], "knowledge_bases": ["selected-id"] if scenario.startswith("inline_kb") and scenario != "inline_kb_empty" else []},
+            }]}
+            asset = await service.save_asset("alice", {"definition": definition})
+            reopened = await service.get_asset("alice", asset["asset_id"], 1)
+            readiness = await service.check_readiness("alice", asset["asset_id"], 1)
+            assert readiness["ready"], readiness
+            run = await service.start_run("alice", asset["asset_id"], {"version": 1, "inputs": {"topic": "energy"}})
+            for _ in range(1000):
+                current = await service.get_run("alice", run["run_id"])
+                if current["status"] in {"completed", "failed", "interrupted"}:
+                    break
+                await asyncio.sleep(.02)
+            (folder / "completed.json").write_text(json.dumps({"asset": reopened, "run": current, "kb_requests": kb_requests}), encoding="utf-8")
+            return
         if scenario.startswith("file_mode_"):
             from tests.agent_teams.file_mode_worker import run_file_mode_scenario
 

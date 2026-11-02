@@ -722,6 +722,7 @@ export type GhproxyTestRequest = {
  */
 export type GraphDefinition = {
     name: string;
+    default_provider_id?: (string | null);
     required_inputs?: Array<(string)>;
     max_parallel?: number;
     max_depth?: number;
@@ -754,7 +755,7 @@ export type GraphLoop = {
 };
 
 /**
- * A task bound to a named member instance with a fixed role version.
+ * A task bound to a named member with inline or pinned configuration.
  */
 export type GraphTask = {
     id: string;
@@ -762,6 +763,8 @@ export type GraphTask = {
     member?: string;
     role_id?: (string | null);
     role_version?: (number | null);
+    role?: (RoleDefinition | null);
+    installation?: (RoleInstallation | null);
     task?: string;
     human?: (HumanTask | null);
     team?: (TeamCall | null);
@@ -1564,7 +1567,7 @@ export type WorkflowRetryRequest = {
  * Create an asset or append an immutable version using optimistic locking.
  */
 export type WorkflowSaveRequest = {
-    definition: (WorkflowDefinition | GraphDefinition | AutonomousDefinition);
+    definition: (GraphDefinition | AutonomousDefinition);
     expected_version?: (number | null);
 };
 

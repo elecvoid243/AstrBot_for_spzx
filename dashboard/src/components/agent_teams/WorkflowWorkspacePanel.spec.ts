@@ -22,7 +22,7 @@ const api = vi.hoisted(() => ({
   retry: vi.fn(),
   answer: vi.fn(),
 }));
-const roles = vi.hoisted(() => ({ list: vi.fn() }));
+const roles = vi.hoisted(() => ({ list: vi.fn(), resources: vi.fn() }));
 vi.mock("@/api/workflowAssets", () => ({ workflowAssetsApi: api }));
 vi.mock("@/api/roleAssets", () => ({ roleAssetsApi: roles }));
 vi.mock("@/i18n/composables", () => ({
@@ -1966,34 +1966,88 @@ describe("single-task workflow workspace", () => {
     wrapper.unmount();
   });
 
-  it("saves a pinned asset and presents required input errors before starting a run", async () => {
+  it("saves the inline graph, corrects an input error and starts its fixed version", async () => {
     const router = createRouter({
       history: createMemoryHistory(),
       routes: [{ path: "/", component: slotStub }],
     });
     await router.push("/");
+    roles.resources.mockResolvedValue({
+      profiles: [{ id: "default" }],
+      models: [{ id: "m", name: "Model" }],
+      personas: [],
+      tools: [],
+      skills: [],
+      knowledge_bases: [],
+    });
     const wrapper = mount(WorkflowWorkspacePanel, {
       props: { mode: "assets" },
-      global: { plugins: [router], stubs },
+      global: {
+        plugins: [router],
+        stubs: {
+          ...stubs,
+          WorkflowGraphCanvas: {
+            props: ["definition"],
+            template: '<div data-testid="graph-editor" />',
+          },
+        },
+      },
     });
     await flushPromises();
     await wrapper
       .findAll("button")
-      .find((button) => button.text() === "v2.edit")!
+      .find((button) => button.text() === "graph.create")!
       .trigger("click");
-    api.save.mockResolvedValue(asset);
+    expect(wrapper.find('[data-testid="graph-editor"]').exists()).toBe(true);
+    await wrapper.find(".dialog input").setValue("My workflow");
     await wrapper
-      .find(".dialog textarea")
-      .setValue("Research {topic} carefully");
+      .findAll("button")
+      .find((button) => button.text() === "page.refresh")!
+      .trigger("click");
+    await flushPromises();
+    expect(
+      (wrapper.find(".dialog input").element as HTMLInputElement).value,
+    ).toBe("My workflow");
+    const saved = {
+      asset_id: "inline-1",
+      version: 3,
+      definition: {
+        name: "My workflow",
+        required_inputs: ["input"],
+        max_parallel: 4,
+        tasks: [
+          {
+            id: "agent",
+            name: "Agent",
+            member: "agent",
+            task: "{input}",
+            role: { name: "Agent" },
+            installation: { profile_id: "default" },
+            inputs: { input: { input: "input" } },
+          },
+        ],
+        edges: [],
+      },
+    };
+    api.save.mockImplementation(async () => {
+      api.list.mockResolvedValue({ assets: [saved] });
+      return saved;
+    });
     await wrapper
       .findAll(".dialog button")
       .find((button) => button.text() === "v2.save")!
       .trigger("click");
     await flushPromises();
-    expect(api.save).toHaveBeenCalledWith("asset-1", {
-      definition: { ...asset.definition, task: "Research {topic} carefully" },
-      expected_version: 1,
+    expect(api.save.mock.calls[0][1].definition.name).toBe("My workflow");
+    expect(api.save.mock.calls[0][1].definition.tasks[0]).toMatchObject({
+      role: { name: "Agent" },
+      installation: { profile_id: "default" },
+      inputs: { input: { input: "input" } },
+      task: "{input}",
     });
+    expect(
+      api.save.mock.calls[0][1].definition.tasks[0].role_id,
+    ).toBeUndefined();
     await wrapper
       .findAll("button")
       .find((button) => button.text() === "v2.start")!
@@ -2005,7 +2059,7 @@ describe("single-task workflow workspace", () => {
           message: "Invalid run inputs",
           data: {
             fields: [
-              { path: "inputs.topic", message: "Provide non-empty text" },
+              { path: "inputs.input", message: "Provide non-empty text" },
             ],
           },
         },
@@ -2016,21 +2070,21 @@ describe("single-task workflow workspace", () => {
       .find((button) => button.text() === "v2.start")!
       .trigger("click");
     await flushPromises();
-    expect(wrapper.text()).toContain("inputs.topic: Provide non-empty text");
-    api.start.mockResolvedValue(run);
+    expect(wrapper.text()).toContain("inputs.input: Provide non-empty text");
+    api.start.mockResolvedValue({ run_id: "inline-run" });
     await wrapper.find(".dialog input").setValue("energy");
     await wrapper
       .findAll(".dialog button")
       .find((button) => button.text() === "v2.start")!
       .trigger("click");
     await flushPromises();
-    expect(api.start).toHaveBeenLastCalledWith("asset-1", {
-      version: 1,
-      inputs: { topic: "energy" },
+    expect(api.start).toHaveBeenLastCalledWith("inline-1", {
+      version: 3,
+      inputs: { input: "energy" },
       source: "dashboard",
     });
-    expect(wrapper.emitted("started")).toEqual([["run-1"]]);
-    expect(router.currentRoute.value.query.workflow_run).toBe("run-1");
+    expect(wrapper.emitted("started")).toEqual([["inline-run"]]);
+    expect(router.currentRoute.value.query.workflow_run).toBe("inline-run");
     wrapper.unmount();
   });
 

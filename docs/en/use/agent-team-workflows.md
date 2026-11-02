@@ -1,22 +1,24 @@
 # Agent Teams asset and run workspace
 
-Open **More Features → Agent Teams → Assets**. **Teams** contains versioned autonomous teams, **Workflows** contains single-task and canvas workflows, and **Role templates** configures reusable responsibilities and local resources. Save a ready role before creating an asset. Import, export, chat access, editing and launch actions remain on the asset cards. After installation, the workspace opens the Teams or Workflows directory for the imported entry.
+Open **More Features → Agent Teams → Assets**. **Teams** contains versioned autonomous teams, **Workflows** contains graph workflows, and **Role templates** configures reusable responsibilities and local resources. A workflow can configure its Agent directly without a role template. Import, export, chat access, editing and launch actions remain on the asset cards. After installation, the workspace opens the Teams or Workflows directory for the imported entry.
 
-![The actual asset workspace](/images/agent-teams-current-en.jpg)
+![The workflow asset workspace](/images/agent-teams-current-en.jpg)
+
+The workspace and canvas screenshots use the actual components with isolated sample assets and a simulated resource catalog. They do not depict a real model run.
 
 ## Navigation and previous entry points
 
 | Previous entry | Current entry |
 | --- | --- |
 | Autonomous teams within Workflow Assets | Assets → Teams |
-| Single-task and canvas flows within Workflow Assets | Assets → Workflows |
+| New Workflow / New Canvas Workflow | Assets → Workflows → New Workflow (one canvas entry) |
 | Role templates | Assets → Role templates |
 | Independent Runs | Runs → All runs, In progress, Needs attention, History |
 | Previous team sidebar, Workflow Editor, Members, Run Monitor | Assets → Teams / Workflows / Role templates; Runs → View Run |
 | Previous History tab | Runs → History (asset runs only) |
 | Migrate previous definitions / active legacy run check | Removed; configure assets and start runs directly |
 
-The workspace uses versioned assets. Save a ready role template and a team or workflow, then start a run directly. Definition migration and legacy run checks are no longer part of the workflow.
+The workspace uses versioned assets. A workflow can be saved and started without a role template; autonomous teams still use their configured roles. Definition migration and legacy run checks are no longer part of the workflow.
 
 ## Run history
 
@@ -41,6 +43,8 @@ On narrow screens, expand the collapsed toolbox or properties heading when neede
 ![Human requests on a narrow screen](/images/agent-workbench-mobile-en.jpg)
 
 ## Move a complete nested asset to another instance
+
+Package import and export for directly configured Agents is being updated; the instructions below describe the existing pinned-role package flow.
 
 ![Actual nested-package and local-dependency preview](/images/agent-workbench-import-en.jpg)
 
@@ -132,7 +136,11 @@ Version reads belong to the current selection and editor. A delayed older respon
 
 ## Dependency canvas
 
-Choose **New Canvas Workflow**. Enter the workflow name, required text inputs and maximum concurrent tasks, then drag a role from the toolbox onto the canvas (or click it). Select a task to edit its name, instructions, pinned role version, member instance key, input references and output contract. Tasks sharing a member key use the same frozen role and configuration and advance one conversation serially; distinct member keys create isolated contexts and may run in parallel within the workflow and role limits.
+Choose **New Workflow**. The canvas opens with input, Agent and output views. Enter a workflow name and choose its **Default model**. Select the input view to declare input names; the Agent uses an explicit input reference and its `{input}` placeholder. Select the Agent to edit its task, responsibility, profile, optional persona, model override and resource choices. An unselected persona means no persona, and an empty custom resource list disables that category. An Agent without its own model uses the workflow default; if each local Agent selects a model, a default is optional. Each local Agent must resolve to an allowed model before launch. Save a version, reopen it, then start it with the declared inputs. The output shows the Agent's original text result and artifact.
+
+![Directly configured Agent in the workflow canvas](/images/agent-teams-inline-workflow-en.jpg)
+
+The earlier **New Workflow** and **New Canvas Workflow** buttons now lead to the one **New Workflow** canvas. Role templates remain a separate asset; a new workflow does not require one. Existing fixed-role graph nodes can still be edited. Tasks sharing a member key use the same frozen role and configuration and advance one conversation serially; distinct member keys create isolated contexts and may run in parallel within the workflow and role limits.
 
 Connect a task's right handle to another task's left handle. Choose a dependency by clicking its edge or using **Select dependency** and enable **Field condition** to compare a validated output field. Conditions use `eq`, `ne`, `gt`, `ge`, `lt` or `le` with a correctly typed value, without evaluating code. Fields must be required scalars in the source output contract; nested objects, local schema references and `allOf` may declare these fields. Ordered comparisons require numeric fields.
 
@@ -146,7 +154,7 @@ At startup, accepted task submissions at saved safe points finish idempotently. 
 
 ## Call an autonomous team from a workflow
 
-Save a ready autonomous team first. In **Assets → Workflows → New Canvas Workflow**, choose **Call autonomous team** in the role toolbox. Select the node to choose its **Pinned child team asset** and **Pinned team version**. Declare exactly the inputs required by that version, using workflow inputs or upstream result fields with dependency paths. The output contract comes from the chosen team version. Expand the team definition above the canvas to inspect its pinned coordinator and allowed roles; collapse it to keep the parent graph compact.
+Save a ready autonomous team first. In **Assets → Workflows → New Workflow**, choose **Call autonomous team** in the role toolbox. Select the node to choose its **Pinned child team asset** and **Pinned team version**. Declare exactly the inputs required by that version, using workflow inputs or upstream result fields with dependency paths. The output contract comes from the chosen team version. Expand the team definition above the canvas to inspect its pinned coordinator and allowed roles; collapse it to keep the parent graph compact.
 
 Set **Root nesting depth limit** and **Maximum concurrent tasks**, then **Save New Version**. Reopening retains the selected version, references and layout. A version response only applies to the latest choice in the current editor; an unavailable choice blocks saving. A run freezes every child definition, role configuration and resource binding before dispatch. Editing the child later affects new runs. Declared multiline inputs and literal braces reach its coordinator unchanged. Required inputs must remain nonempty after resolving upstream results; invalid values show input field errors before any child scope is created, while independent branches continue.
 
@@ -213,7 +221,7 @@ You can save a verified result, verified failure, explicit tool retry or reconci
 
 ## Human requests and version approval
 
-1. Open **Assets → Workflows → New Canvas Workflow / Edit Asset**. Add **Human question** or **Version approval** from **Role toolbox**. Human nodes require no model or role. Enter the question, allowed answers (one per line, or empty for free text) and maximum answer length.
+1. Open **Assets → Workflows → New Workflow / Edit Asset**. Add **Human question** or **Version approval** from **Role toolbox**. Human nodes require no model or role. Enter the question, allowed answers (one per line, or empty for free text) and maximum answer length.
 2. For approval, select the upstream **Artifact task** and exact **Artifact version**, and connect the artifact task as a dependency. Save a new asset version and start it; existing runs retain their definition.
 3. Open **Runs → View Run → Human requests**. Questions, constraints, task, Attempt and approval references persist. Waiting releases capacity and blocks only dependent paths. Independent branches continue; select their progress entries to read results.
 4. Choose or enter an answer and select **Submit answer**. For approval, first **Preview approval version** to read the complete pinned content, then **Approve this version**. Files can be previewed. **Reject with feedback** requires feedback, preserves rejection evidence and blocks the affected path. This does not create a revision loop.
@@ -241,7 +249,7 @@ Switching or closing the page does not stop core execution. Refreshing a URL wit
 
 ## Configure a bounded review and revision loop
 
-Open **Agent Teams → Assets → Workflows → New Canvas Workflow / Edit Asset**. Configure the writer and independent review tasks, an acyclic dependency from writer to reviewer, and the review output contract with a required Boolean `approved` field. Use **Add bounded loop** to choose the explicit body, exit result task, field comparison (`approved eq true`) and maximum iterations (1–100, within the effective member limit). Arbitrary expressions, graph back edges, overlapping bodies and a body that leaves and reenters its group are rejected before execution.
+Open **Agent Teams → Assets → Workflows → New Workflow / Edit Asset**. Configure the writer and independent review tasks, an acyclic dependency from writer to reviewer, and the review output contract with a required Boolean `approved` field. Use **Add bounded loop** to choose the explicit body, exit result task, field comparison (`approved eq true`) and maximum iterations (1–100, within the effective member limit). Arbitrary expressions, graph back edges, overlapping bodies and a body that leaves and reenters its group are rejected before execution.
 
 For the writer, declare first-round draft and feedback inputs. Under the loop, **Add feedback input** explicitly maps the previous writer's text to the next writer's draft and the previous review's text to its feedback. Ordinary dependency inputs within each round read that round's output. Collapse or expand the body to inspect the group on the actual canvas. Saving appends an asset version; existing runs retain their definition and configuration.
 
@@ -308,7 +316,7 @@ The report must use real provider/tool resources in your installation. The docum
 | Agent Teams → Members, Workflow Editor, Run Monitor | Assets → Teams / Workflows / Role templates; Runs → View Run / History. Migration and legacy run checks are removed. |
 | Previous History | Runs → History → asset run details. |
 | Saving a reusable single-task workflow | Agent Teams → Assets → Workflows → New Workflow; independent of a legacy team. |
-| Editing a reusable dependency workflow | Agent Teams → Assets → Workflows → New Canvas Workflow / Edit Asset; the previous execution editor is retired. |
+| Editing a reusable dependency workflow | Agent Teams → Assets → Workflows → New Workflow / Edit Asset; the previous execution editor is retired. |
 | Starting and inspecting a new workflow run | Assets → Workflows → Start Run, then Runs → View Run → Execution progress to select a task; the Inspect task selector remains available. |
 | Default graph and reply JSON within the detail | Progress appears first. The graph moves to Expand execution graph (read-only), and replies move to expandable Saved member process records. |
 | Editing a template and inspecting run configuration | Assets → Teams / Workflows appends versions; Runs displays frozen snapshots. |

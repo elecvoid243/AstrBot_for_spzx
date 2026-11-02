@@ -112,6 +112,21 @@ class WorkflowDefinition(BaseModel):
     limits: RunLimits | None = None
 
 
+def _capacity_key(snapshot: dict) -> tuple:
+    """Identify the role quota or the inline member's own quota.
+
+    Args:
+        snapshot: Frozen task execution snapshot.
+
+    Returns:
+        A namespace-qualified identity used for concurrency accounting.
+    """
+    definition = snapshot["definition"]
+    if definition.get("role_id"):
+        return ("role", definition["role_id"], definition["role_version"])
+    return ("member", snapshot["member"]["member_id"])
+
+
 class TeamRole(BaseModel):
     """A pinned role permitted by an autonomous asset."""
 
@@ -146,7 +161,7 @@ class WorkflowSaveRequest(BaseModel):
     """Create an asset or append an immutable version using optimistic locking."""
 
     model_config = ConfigDict(extra="forbid", strict=True)
-    definition: WorkflowDefinition | GraphDefinition | AutonomousDefinition
+    definition: GraphDefinition | AutonomousDefinition
     expected_version: int | None = Field(default=None, ge=1)
 
 
@@ -1073,24 +1088,12 @@ class WorkflowService:
                     if fields:
                         raise RoleAssetError("Invalid team call", fields)
                     continue
-                assert task.role_id is not None and task.role_version is not None
                 await self._validate_task_definition(
                     username,
-                    WorkflowDefinition(
-                        name=task.name,
-                        role_id=task.role_id,
-                        role_version=task.role_version,
-                        task=task.task,
-                        required_inputs=list(
-                            dict.fromkeys([*definition.required_inputs, *task.inputs])
-                        ),
-                        overrides=task.overrides,
-                        output_contract=task.output_contract,
-                    ),
+                    task,
+                    required_inputs=list(task.inputs),
                 )
             validate_graph(definition)
-        else:
-            await self._validate_task_definition(username, definition)
         version = 1
         if asset_id is not None:
             current = await self.get_asset(username, asset_id)
@@ -1124,8 +1127,9 @@ class WorkflowService:
     async def _validate_task_definition(
         self,
         username: str,
-        definition: WorkflowDefinition,
+        definition: WorkflowDefinition | GraphTask,
         package_roles: set[tuple[str, int]] | None = None,
+        required_inputs: list[str] | None = None,
     ) -> None:
         """Validate the shared role, template and contracted output semantics.
 
@@ -1133,6 +1137,7 @@ class WorkflowService:
             username: Authenticated asset author.
             definition: One task, from either a single-task asset or a graph.
             package_roles: Portable references validated before local installation.
+            required_inputs: Declared graph and task inputs for a graph task.
 
         Raises:
             RoleAssetError: Invalid contract, template or inaccessible pinned role.
@@ -1189,7 +1194,11 @@ class WorkflowService:
                         }
                     ],
                 ) from exc
-        names = definition.required_inputs
+        names = (
+            required_inputs
+            if required_inputs is not None
+            else definition.required_inputs
+        )
         if len(set(names)) != len(names) or any(
             not name.isidentifier() for name in names
         ):
@@ -1212,7 +1221,14 @@ class WorkflowService:
                 "Invalid task template",
                 [{"path": "definition.task", "code": "INVALID", "message": str(exc)}],
             ) from exc
-        if package_roles is None:
+        if isinstance(definition, GraphTask) and definition.role is not None:
+            self.roles._validate_request(
+                {
+                    "definition": definition.role.model_dump(),
+                    "installation": definition.installation.model_dump(),
+                }
+            )
+        elif package_roles is None:
             await self.roles.get_role(
                 username, definition.role_id, definition.role_version
             )
@@ -3001,77 +3017,7 @@ class WorkflowService:
             raise RoleAssetError("Invalid run inputs", fields)
         if "tasks" in definition or definition.get("kind") == "autonomous":
             return await self._start_graph(username, asset, request, chat=chat)
-        frozen = await self._freeze_member(username, definition, asset=asset)
-        if chat is not None:
-            self.chat.prepare(frozen, chat)
-        effective = frozen["effective"]
-        member = frozen["member"]
-        session_id = member["session_id"]
-        snapshot = {
-            "engine": "single_task_v2",
-            "usage_protocol": 1,
-            "asset_id": asset_id,
-            "asset_version": request.version,
-            "definition": definition,
-            **frozen,
-            "inputs": request.inputs,
-            "input_artifacts": input_refs,
-            "source": request.source,
-            "initiator": frozen.get("initiator", username),
-            "task": definition["task"].format_map(request.inputs),
-            "member": member,
-        }
-        run_id = uuid.uuid4().hex
-        state = {
-            "scope_id": uuid.uuid4().hex,
-            "task_id": uuid.uuid4().hex,
-            "attempt_id": uuid.uuid4().hex,
-            "message_id": uuid.uuid4().hex,
-            "safe_to_finish": False,
-            "reason": None,
-            "response": None,
-        }
-        async with self.db.get_db() as session:
-            session.add(
-                ConversationV2(
-                    conversation_id=member["conversation_id"],
-                    platform_id="webchat",
-                    user_id=member["umo"],
-                    content=[],
-                    title=definition["name"],
-                    persona_id=effective.get("persona_id"),
-                )
-            )
-            session.add(
-                PlatformSession(
-                    session_id=session_id,
-                    creator=username,
-                    display_name=definition["name"],
-                    archived=1,
-                )
-            )
-            session.add(
-                AgentWorkflowRun(
-                    run_id=run_id,
-                    owner_username=username,
-                    snapshot=snapshot,
-                    state=state,
-                )
-            )
-            if chat is not None:
-                session.add(AgentWorkflowChatDelivery(run_id=run_id))
-            session.add(
-                AgentWorkflowEvent(
-                    run_id=run_id,
-                    kind="run.started",
-                    data={"attempt_id": state["attempt_id"]},
-                )
-            )
-            await session.commit()
-        task = asyncio.create_task(self._execute(username, run_id))
-        self._tasks.add(task)
-        task.add_done_callback(self._tasks.discard)
-        return await self.get_run(username, run_id)
+        raise RoleAssetError("Legacy workflow definitions are not supported")
 
     async def _freeze_member(
         self,
@@ -3095,12 +3041,34 @@ class WorkflowService:
         Raises:
             RoleAssetError: Bound resources are missing or incompatible.
         """
-        role = await self.roles.resolve_role(
-            username,
-            definition["role_id"],
-            definition["role_version"],
-            definition["overrides"],
+        if definition.get("role") is not None:
+            role = {
+                "role_id": None,
+                "version": None,
+                "definition": definition["role"],
+                "installation": definition["installation"],
+            }
+            overrides = {}
+        else:
+            role = await self.roles.get_role(
+                username, definition["role_id"], definition["role_version"]
+            )
+            overrides = definition.get("overrides", {}).copy()
+        default_provider = asset["definition"].get("default_provider_id")
+        preview = await self.roles.preview_role(role, overrides)
+        uses_default_provider = (
+            default_provider
+            and preview["effective"]["runner"]["type"] == "local"
+            and not overrides.get("provider_id", role["definition"].get("provider_id"))
         )
+        if uses_default_provider:
+            overrides["provider_id"] = default_provider
+            preview = await self.roles.preview_role(role, overrides)
+            preview["sources"]["provider_id"] = "workflow:default_provider_id"
+            for issue in preview["issues"]:
+                if issue["path"] == "overrides.provider_id":
+                    issue["path"] = "definition.default_provider_id"
+        role.update(preview)
         if not role["ready"]:
             raise RoleAssetError("Role resources are not ready", role["issues"])
         issues = get_agent_runner_capability_issues(
@@ -3269,7 +3237,7 @@ class WorkflowService:
                     *frozen.get("allowed_roles", {}).values(),
                 ]
             else:
-                members = [await self._freeze_member(username, definition, asset=asset)]
+                raise RoleAssetError("Legacy workflow definitions are not supported")
         except RoleAssetError as exc:
             return {
                 "ready": False,
@@ -3974,6 +3942,18 @@ class WorkflowService:
                 result["result_ref"] = results[_current_task_runs(row)["coordinator"]][
                     "result_ref"
                 ]
+            elif (
+                row.status == "completed"
+                and len(result["tasks"]) == 1
+                and not any(
+                    row.snapshot["definition"]["tasks"][0].get(kind)
+                    for kind in ("human", "team", "workflow")
+                )
+            ):
+                task_result = result["tasks"][0]
+                result["result_ref"] = task_result["result_ref"]
+                if include_details:
+                    result["result"] = task_result["result"]
             result["todos"] = [todo for task in all_tasks for todo in task["todos"]]
             result["scopes"] = [
                 {
@@ -4493,7 +4473,7 @@ class WorkflowService:
                         ]
                         if not _has_scope_capacity(root, scope, active):
                             return {"waiting": True, "scope_run_id": scope.run_id}
-                        role_id = row.snapshot["definition"]["role_id"]
+                        role_id = _capacity_key(row.snapshot)
                         role_limit = row.snapshot["effective"].get("max_parallel")
                         if (
                             any(
@@ -4506,8 +4486,7 @@ class WorkflowService:
                             )
                             or role_limit is not None
                             and sum(
-                                r.snapshot["definition"]["role_id"] == role_id
-                                for r in active
+                                _capacity_key(r.snapshot) == role_id for r in active
                             )
                             >= role_limit
                         ):
@@ -5328,6 +5307,10 @@ class WorkflowService:
                             "name": team["name"],
                             "member": "coordinator",
                             "task": "{goal}",
+                            "inputs": {
+                                name: {"input": name}
+                                for name in team["required_inputs"]
+                            },
                             **team["coordinator"],
                             "output_contract": team.get("output_contract"),
                         }
@@ -5337,24 +5320,7 @@ class WorkflowService:
         elif "tasks" in asset["definition"]:
             definition = GraphDefinition.model_validate(asset["definition"])
         else:
-            definition = GraphDefinition.model_validate(
-                {
-                    "name": asset["definition"]["name"],
-                    "required_inputs": asset["definition"]["required_inputs"],
-                    "limits": asset["definition"].get("limits"),
-                    "tasks": [
-                        {
-                            "id": "result",
-                            "member": "result",
-                            **{
-                                key: value
-                                for key, value in asset["definition"].items()
-                                if key not in {"required_inputs", "limits"}
-                            },
-                        }
-                    ],
-                }
-            )
+            raise RoleAssetError("Legacy workflow definitions are not supported")
         if team and team.get("approval_question"):
             definition = GraphDefinition.model_validate(
                 {
@@ -5377,22 +5343,38 @@ class WorkflowService:
             )
         validate_graph(definition)
         members = {}
-        role_counts: dict[str, int] = {}
+        role_counts: dict[tuple, int] = {}
         for index, task in enumerate(definition.tasks):
             if task.human is not None or task.team is not None:
                 continue
-            assert task.role_id is not None
             if task.member not in members:
-                frozen = await self._freeze_member(
-                    username,
-                    task.model_dump(exclude_none=True),
-                    asset=asset,
-                    role_path="definition.coordinator.role_id"
-                    if team
-                    else f"definition.tasks.{index}.role_id"
-                    if "tasks" in asset["definition"]
-                    else "definition.role_id",
-                )
+                try:
+                    frozen = await self._freeze_member(
+                        username,
+                        task.model_dump(exclude_none=True),
+                        asset=asset,
+                        role_path="definition.coordinator.role_id"
+                        if team
+                        else f"definition.tasks.{index}.role_id",
+                    )
+                except RoleAssetError as exc:
+                    if team:
+                        raise
+                    fields = []
+                    for issue in exc.fields:
+                        path = issue["path"]
+                        if (
+                            path.startswith("definition.")
+                            and path != "definition.default_provider_id"
+                        ):
+                            path = (
+                                f"definition.tasks.{index}.role."
+                                + path.removeprefix("definition.")
+                            )
+                        elif path.startswith(("installation.", "overrides.")):
+                            path = f"definition.tasks.{index}." + path
+                        fields.append({**issue, "path": path})
+                    raise RoleAssetError(str(exc), fields, exc.status) from exc
                 if (
                     team
                     and task.id == "coordinator"
@@ -5409,12 +5391,22 @@ class WorkflowService:
                             }
                         ],
                     )
-                role_counts[task.role_id] = role_counts.get(task.role_id, 0) + 1
+                role_key = (
+                    ("role", task.role_id, task.role_version)
+                    if task.role_id
+                    else ("member", task.member)
+                )
+                role_counts[role_key] = role_counts.get(role_key, 0) + 1
                 members[task.member] = frozen
-        for frozen in members.values():
+        for member_name, frozen in members.items():
             role_id = frozen["role"]["role_id"]
+            role_key = (
+                ("role", role_id, frozen["role"]["version"])
+                if role_id
+                else ("member", member_name)
+            )
             limit = frozen["effective"].get("max_instances")
-            if limit is not None and role_counts[role_id] > limit:
+            if limit is not None and role_counts[role_key] > limit:
                 raise RoleAssetError(
                     "Role member instance limit exceeded",
                     [
@@ -6678,8 +6670,8 @@ class WorkflowService:
                         and (
                             role_limit is None
                             or sum(
-                                task.snapshot["role"]["role_id"]
-                                == caller.snapshot["role"]["role_id"]
+                                _capacity_key(task.snapshot)
+                                == _capacity_key(caller.snapshot)
                                 for task in active
                             )
                             < role_limit
@@ -6951,9 +6943,9 @@ class WorkflowService:
                     and row.status == "running"
                     and "member" in row.snapshot
                 )
-                role_active: dict[str, int] = {}
+                role_active: dict[tuple, int] = {}
                 for row in active:
-                    role_id = row.snapshot["definition"]["role_id"]
+                    role_id = _capacity_key(row.snapshot)
                     role_active[role_id] = role_active.get(role_id, 0) + 1
                 # Repeat terminal propagation so definition order does not turn
                 # a skipped branch into a barrier for its downstream merge.
@@ -7076,7 +7068,9 @@ class WorkflowService:
                                 progress = True
                                 continue
                             member_id = row.snapshot.get("member", {}).get("member_id")
-                            role_id = row.snapshot["definition"].get("role_id")
+                            role_id = (
+                                _capacity_key(row.snapshot) if not child_call else None
+                            )
                             role_limit = row.snapshot.get("effective", {}).get(
                                 "max_parallel"
                             )
@@ -7093,7 +7087,7 @@ class WorkflowService:
                             inputs = dict(
                                 row.snapshot["inputs"]
                                 if retrying or task.get("workflow")
-                                else root.snapshot["inputs"]
+                                else {}
                             )
                             refs = list(
                                 row.snapshot.get("input_artifacts", [])
@@ -8200,7 +8194,7 @@ class WorkflowService:
                     and "member" in task.snapshot
                     and not task.state.get("capacity_released")
                 ]
-                role_id = row.snapshot["definition"]["role_id"]
+                role_id = _capacity_key(row.snapshot)
                 role_limit = row.snapshot["effective"].get("max_parallel")
                 member_busy = any(
                     task.snapshot["member"]["member_id"]
@@ -8215,8 +8209,7 @@ class WorkflowService:
                         not _has_scope_capacity(whole_root, parent, active)
                         or role_limit is not None
                         and sum(
-                            task.snapshot["definition"]["role_id"] == role_id
-                            for task in active
+                            _capacity_key(task.snapshot) == role_id for task in active
                         )
                         >= role_limit
                     )
@@ -9504,7 +9497,7 @@ class WorkflowService:
                     execution={
                         **effective,
                         "config_id": snapshot["profile_id"],
-                        "kb_names": effective["knowledge_bases"],
+                        "kb_ids": effective["knowledge_bases"],
                         "tools": [*effective["tools"], *[tool.name for tool in tools]],
                         "message_id": state["message_id"],
                         "profile_snapshot": snapshot["profile"],

@@ -401,7 +401,10 @@ async def test_http_limits_are_validated_saved_and_frozen_at_launch(workflow_env
         )
         assert started.status_code == 200
         root = started.json()["data"]
-        assert root["usage"]["limits"] == definition["limits"]
+        assert all(
+            root["usage"]["limits"][key] == value
+            for key, value in definition["limits"].items()
+        )
         assert root["usage"]["tokens"]["reported"] is None
         definition["limits"]["max_steps"] = 1.5
         invalid = await client.post(
@@ -434,7 +437,7 @@ async def test_call_receipts_survive_duplicate_reports_and_keep_their_identity(
         "alice", env.asset["asset_id"], {"version": 1}
     )
     for _ in range(200):
-        current = await env.service.get_run("alice", started["run_id"])
+        current = (await env.service.get_run("alice", started["run_id"]))["tasks"][0]
         if current["state"].get("execution_id"):
             break
         await asyncio.sleep(0.01)
@@ -594,11 +597,12 @@ async def test_explicit_retry_keeps_consumption_and_accepts_late_original_report
     )
     started = await env.service.start_run("alice", asset["asset_id"], {"version": 1})
     first = await completed_run(env.service, started["run_id"])
-    assert first["status"] == "failed"
+    assert first["status"] == "blocked"
+    first = first["tasks"][0]
     assert first["usage"]["tokens"]["unknown_calls"] == 1
     await env.service.retry_task(
         "alice",
-        started["run_id"],
+        first["run_id"],
         {
             "request_id": "explicit-retry",
             "attempt_id": first["state"]["attempt_id"],
@@ -615,7 +619,7 @@ async def test_explicit_retry_keeps_consumption_and_accepts_late_original_report
     final = await env.service.get_run("alice", started["run_id"])
     assert final["state"] == second["state"]
     assert final["usage"]["tokens"]["reported"] == (9 if max_steps == 1 else 11)
-    assert final["state"]["attempt_id"] != first["state"]["attempt_id"]
+    assert final["tasks"][0]["state"]["attempt_id"] != first["state"]["attempt_id"]
     assert (
         len({receipt["attempt_id"] for receipt in final["usage"]["ledger"]})
         == max_steps
@@ -647,7 +651,7 @@ async def test_last_token_allowance_is_shared_by_in_flight_calls(workflow_env):
     env.service.ports_factory = lambda username: ports
     started = await env.service.start_run("alice", asset["asset_id"], {"version": 1})
     for _ in range(200):
-        current = await env.service.get_run("alice", started["run_id"])
+        current = (await env.service.get_run("alice", started["run_id"]))["tasks"][0]
         if current["state"].get("execution_id"):
             break
         await asyncio.sleep(0.01)

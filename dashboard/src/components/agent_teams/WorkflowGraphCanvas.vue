@@ -123,6 +123,15 @@
       role="alert"
       >{{ localError || Object.values(contractErrors)[0] }}</v-alert
     >
+    <v-alert
+      v-for="issue in issues"
+      :key="`${issue.path}:${issue.message}`"
+      type="error"
+      variant="tonal"
+      class="ma-3"
+    >
+      {{ issue.path }}: {{ issue.message }}
+    </v-alert>
     <div class="graph-columns" :class="{ 'is-readonly': readonly }">
       <details v-if="!readonly" class="graph-toolbox" :open="!narrow">
         <summary>{{ tm("graph.toolbox") }}</summary>
@@ -197,7 +206,7 @@
       <details
         v-if="!readonly"
         class="graph-inspector"
-        :open="!narrow || !!selectedTask || !!selectedEdge"
+        :open="!narrow || !!selectedNode || !!selectedEdge"
       >
         <summary>{{ tm("graph.properties") }}</summary>
         <template v-if="selectedTask">
@@ -213,7 +222,9 @@
             @update:model-value="checkpoint"
           />
           <v-select
-            v-if="!selectedTask.human && !selectedTask.team"
+            v-if="
+              !selectedTask.human && !selectedTask.team && !selectedTask.role
+            "
             v-model="selectedTask.role_id"
             :items="roles"
             item-title="definition.name"
@@ -223,7 +234,9 @@
             @update:model-value="changeRole"
           />
           <v-select
-            v-if="!selectedTask.human && !selectedTask.team"
+            v-if="
+              !selectedTask.human && !selectedTask.team && !selectedTask.role
+            "
             v-model="selectedTask.role_version"
             :items="selectedRole?.versions ?? [selectedTask.role_version]"
             :label="tm('v2.roleVersion')"
@@ -250,6 +263,53 @@
             class="mt-4"
             @update:model-value="checkpoint"
           />
+          <template v-if="selectedTask.role && selectedTask.installation">
+            <v-textarea
+              data-testid="inline-responsibility"
+              v-model="selectedTask.role.prompt"
+              :label="tm('roles.prompt')"
+              rows="3"
+              @update:model-value="checkpoint"
+            />
+            <v-select
+              v-model="selectedTask.installation.profile_id"
+              :items="catalog.profiles"
+              item-title="name"
+              item-value="id"
+              :label="tm('roles.profile')"
+              @update:model-value="checkpoint"
+            />
+            <v-select
+              v-model="selectedTask.role.provider_id"
+              :items="catalog.models"
+              item-title="name"
+              item-value="id"
+              :label="tm('graph.modelOverride')"
+              clearable
+              @update:model-value="checkpoint"
+            />
+            <p class="text-caption mb-3">
+              {{ tm("graph.modelInheritanceHint") }}
+            </p>
+            <v-select
+              v-model="selectedTask.role.persona_id"
+              :items="catalog.personas"
+              item-title="name"
+              item-value="id"
+              :label="tm('roles.localPersona')"
+              clearable
+              @update:model-value="checkpoint"
+            />
+            <v-expansion-panels multiple>
+              <RoleResourcesEditor
+                :key="selectedTask.id"
+                :definition="selectedTask.role"
+                :modes="resourceModes"
+                :catalog="catalog"
+                @change="checkpoint"
+              />
+            </v-expansion-panels>
+          </template>
           <template v-if="selectedTask.team">
             <v-select
               :model-value="selectedTask.team.asset_id"
@@ -406,6 +466,18 @@
             >{{ tm("graph.removeTask") }}</v-btn
           >
         </template>
+        <template v-else-if="selectedNode === '__input'">
+          <v-text-field
+            :model-value="(draft.required_inputs ?? []).join(', ')"
+            :label="tm('v2.inputNames')"
+            :hint="tm('v2.inputHint')"
+            persistent-hint
+            @update:model-value="setWorkflowInputs"
+          />
+        </template>
+        <template v-else-if="selectedNode === '__output'">
+          <p class="text-body-2 my-4">{{ tm("graph.outputHint") }}</p>
+        </template>
         <template v-else-if="selectedEdge">
           <p class="text-subtitle-2 my-3">
             {{
@@ -471,6 +543,7 @@
 import { computed, onBeforeUnmount, ref, watch } from "vue";
 import TeamsFlowCanvas from "./TeamsFlowCanvas.vue";
 import WorkflowLoopPanel from "./WorkflowLoopPanel.vue";
+import RoleResourcesEditor from "./RoleResourcesEditor.vue";
 import type { FlowNode } from "./TeamsFlowCanvas.vue";
 import type { GraphDefinition } from "@/api/generated/openapi-v1";
 import { useModuleI18n } from "@/i18n/composables";
@@ -481,6 +554,8 @@ const props = withDefaults(
   defineProps<{
     definition: GraphDefinition;
     roles?: any[];
+    catalog?: Record<string, any[]>;
+    issues?: { path: string; message: string }[];
     teams?: any[];
     childAssets?: Record<string, any>;
     readonly?: boolean;
@@ -489,6 +564,15 @@ const props = withDefaults(
   }>(),
   {
     roles: () => [],
+    catalog: () => ({
+      profiles: [],
+      models: [],
+      personas: [],
+      tools: [],
+      skills: [],
+      knowledge_bases: [],
+    }),
+    issues: () => [],
     teams: () => [],
     childAssets: () => ({}),
     readonly: false,
@@ -506,9 +590,23 @@ const draft = ref<GraphDefinition>(
   JSON.parse(JSON.stringify(props.definition)),
 );
 const canvas = ref<InstanceType<typeof TeamsFlowCanvas>>();
-const selectedNode = ref<string | null>(null);
+const selectedNode = ref<string | null>(
+  props.definition.tasks.length === 1 && props.definition.tasks[0].role
+    ? props.definition.tasks[0].id
+    : null,
+);
+watch(
+  () => props.issues,
+  (issues) => {
+    const match = issues
+      .map((issue) => /^definition\.tasks\.(\d+)/.exec(issue.path))
+      .find(Boolean);
+    if (match)
+      selectedNode.value = draft.value.tasks[Number(match[1])]?.id ?? null;
+  },
+);
 const selectedEdgeKey = ref<string | null>(null);
-const minimap = ref(true);
+const minimap = ref(props.definition.tasks.length !== 1);
 const collapsedLoops = ref<string[]>([]);
 const localError = ref("");
 const contractErrors = ref<Record<string, string>>({});
@@ -531,6 +629,16 @@ const history = ref<string[]>([JSON.stringify(draft.value)]);
 const historyIndex = ref(0);
 const selectedTask = computed(() =>
   draft.value.tasks.find((task) => task.id === selectedNode.value),
+);
+const resourceModes = ref<Record<string, string>>({});
+watch(
+  selectedTask,
+  (task) => {
+    for (const field of ["tools", "skills", "knowledge_bases"])
+      resourceModes.value[field] =
+        (task?.role as any)?.[field] == null ? "inherit" : "custom";
+  },
+  { immediate: true },
 );
 watch(
   [selectedTask, () => props.readonly],
@@ -591,6 +699,7 @@ const taskNodes = computed<FlowNode[]>(() =>
           : task.human
           ? tm(`human.${task.human.kind}Node`)
           : `${
+              task.role?.name ??
               role?.definition.name ??
               running?.snapshot.member?.name ??
               task.role_id
@@ -611,6 +720,8 @@ const taskNodes = computed<FlowNode[]>(() =>
           ? task.human.kind === "approval"
             ? `v${task.human.artifact_version ?? 1}`
             : ""
+          : task.role
+          ? tm("graph.inlineAgent")
           : `v${task.role_version}`,
         inputLabel: `${tm("graph.inputs")} · ${
           Object.keys(task.inputs ?? {}).length
@@ -641,6 +752,28 @@ const collapsedGroups = computed(() =>
   ),
 );
 const nodes = computed<FlowNode[]>(() => [
+  ...(draft.value.tasks.length === 1
+    ? [
+        {
+          id: "__input",
+          position: { x: 0, y: 100 },
+          data: {
+            label: tm("graph.workflowInput"),
+            memberName: (draft.value.required_inputs ?? []).join(", "),
+            outputLabel: tm("graph.inputs"),
+          },
+        },
+        {
+          id: "__output",
+          position: { x: 620, y: 100 },
+          data: {
+            label: tm("graph.outputs"),
+            memberName: tm("graph.text"),
+            inputLabel: draft.value.tasks[0].name,
+          },
+        },
+      ]
+    : []),
   ...taskNodes.value.filter(
     (node) =>
       !collapsedGroups.value.some((loop) => loop.body.includes(node.id)),
@@ -662,7 +795,15 @@ const nodes = computed<FlowNode[]>(() => [
   })),
 ]);
 const edges = computed(() =>
-  (draft.value.edges ?? [])
+  [
+    ...(draft.value.tasks.length === 1
+      ? [
+          { source: "__input", target: draft.value.tasks[0].id },
+          { source: draft.value.tasks[0].id, target: "__output" },
+        ]
+      : []),
+    ...(draft.value.edges ?? []),
+  ]
     .map((edge) => {
       const sourceGroup = collapsedGroups.value.find((loop) =>
         loop.body.includes(edge.source),
@@ -960,6 +1101,7 @@ function changeRole(id: string) {
   checkpoint();
 }
 function connect({ from, to }: { from: string; to: string }) {
+  if (from.startsWith("__") || to.startsWith("__")) return;
   if (from.startsWith("loop:") || to.startsWith("loop:")) return;
   if (
     !draft.value.edges?.some(
@@ -969,6 +1111,13 @@ function connect({ from, to }: { from: string; to: string }) {
     (draft.value.edges ??= []).push({ source: from, target: to });
     checkpoint();
   }
+}
+function setWorkflowInputs(value: string) {
+  draft.value.required_inputs = value
+    .split(",")
+    .map((name) => name.trim())
+    .filter(Boolean);
+  checkpoint();
 }
 function move(positions: Record<string, { x: number; y: number }>) {
   if (props.readonly) return;
@@ -1108,6 +1257,7 @@ function layout() {
   overflow-wrap: anywhere;
 }
 .graph-workbench {
+  --graph-height: clamp(240px, calc(100vh - 410px), 560px);
   border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
   border-radius: 16px;
   overflow: hidden;
@@ -1128,7 +1278,8 @@ function layout() {
 .graph-columns {
   display: grid;
   grid-template-columns: 180px minmax(0, 1fr) 300px;
-  min-height: 560px;
+  height: var(--graph-height);
+  min-height: 0;
 }
 .graph-columns.is-readonly {
   grid-template-columns: minmax(0, 1fr);
@@ -1137,6 +1288,8 @@ function layout() {
 .graph-inspector {
   padding: 16px;
   min-width: 0;
+  min-height: 0;
+  overflow: auto;
   overflow-wrap: anywhere;
 }
 .graph-toolbox {
@@ -1144,8 +1297,12 @@ function layout() {
 }
 .graph-inspector {
   border-left: 1px solid rgba(var(--v-theme-on-surface), 0.1);
-  max-height: 70vh;
-  overflow: auto;
+  overflow-x: hidden;
+}
+.graph-inspector :deep(.v-input),
+.graph-inspector :deep(.v-field) {
+  min-width: 0;
+  max-width: 100%;
 }
 summary {
   cursor: pointer;
@@ -1182,9 +1339,13 @@ summary {
 }
 .graph-stage {
   position: relative;
-  height: 560px;
+  height: 100%;
   min-width: 0;
   background: rgba(var(--v-theme-primary), 0.025);
+}
+.graph-stage :deep(.teams-flow-canvas) {
+  height: 100%;
+  min-height: 0;
 }
 .graph-empty {
   position: absolute;
@@ -1254,6 +1415,7 @@ summary {
 @media (max-width: 1000px) {
   .graph-columns {
     grid-template-columns: minmax(0, 1fr);
+    height: auto;
   }
   .graph-toolbox {
     border-right: 0;
@@ -1263,7 +1425,7 @@ summary {
     max-height: none;
   }
   .graph-stage {
-    height: 460px;
+    height: clamp(260px, 45vh, 460px);
   }
   .graph-role {
     max-width: 260px;

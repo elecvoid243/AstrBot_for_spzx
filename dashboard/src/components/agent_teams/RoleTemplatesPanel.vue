@@ -209,57 +209,12 @@
                     />
                   </v-expansion-panel-text>
                 </v-expansion-panel>
-                <v-expansion-panel
-                  v-for="field in resourceFields"
-                  :key="field"
-                  :value="field"
-                >
-                  <v-expansion-panel-title>{{
-                    tm(`roles.${field}`)
-                  }}</v-expansion-panel-title>
-                  <v-expansion-panel-text>
-                    <v-select
-                      v-model="modes[field]"
-                      :data-issue-path="
-                        modes[field] === 'custom'
-                          ? undefined
-                          : `definition.${field}`
-                      "
-                      :items="capabilityModes"
-                      :label="tm('roles.mode')"
-                      :aria-label="`${tm(`roles.${field}`)}: ${tm(
-                        'roles.mode',
-                      )}`"
-                      @update:model-value="
-                        (mode: string) => {
-                          if (
-                            mode === 'custom' &&
-                            !Array.isArray(definition[field])
-                          )
-                            definition[field] = [];
-                        }
-                      "
-                    />
-                    <template v-if="modes[field] === 'custom'">
-                      <p class="text-caption mb-2">
-                        {{ tm("roles.customEmptyHint") }}
-                      </p>
-                      <v-select
-                        :data-issue-path="`definition.${field}`"
-                        v-model="definition[field]"
-                        :items="catalog[field]"
-                        item-title="name"
-                        item-value="id"
-                        :multiple="true"
-                        chips
-                        closable-chips
-                        :label="tm(`roles.${field}`)"
-                        :aria-label="tm(`roles.${field}`)"
-                        :error-messages="fieldErrors(`definition.${field}`)"
-                      />
-                    </template>
-                  </v-expansion-panel-text>
-                </v-expansion-panel>
+                <RoleResourcesEditor
+                  :definition="definition"
+                  :modes="modes"
+                  :catalog="catalog"
+                  :field-errors="fieldErrors"
+                />
                 <v-expansion-panel value="limits">
                   <v-expansion-panel-title>{{
                     tm("roles.limits")
@@ -376,6 +331,7 @@ import { roleAssetsApi } from "@/api/roleAssets";
 import { useModuleI18n } from "@/i18n/composables";
 import { extractApiError } from "@/utils/extractApiError";
 import RunnerCapabilities from "./RunnerCapabilities.vue";
+import RoleResourcesEditor from "./RoleResourcesEditor.vue";
 
 const { tm } = useModuleI18n("features/agent-teams");
 const { mobile } = useDisplay();
@@ -411,10 +367,6 @@ const limitFields = [
   "context_length",
 ] as const;
 const modes = ref<Record<string, string>>({});
-const capabilityModes = computed(() => [
-  { title: tm("roles.inherit"), value: "inherit" },
-  { title: tm("roles.override"), value: "custom" },
-]);
 const groups = ref<string[]>(["responsibility", "model"]);
 const resolved = ref<any>(null);
 const effectiveFields = computed(() =>

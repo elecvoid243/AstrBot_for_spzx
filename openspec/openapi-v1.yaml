@@ -10706,6 +10706,13 @@ components:
           maxLength: 128
           minLength: 1
           title: Name
+        default_provider_id:
+          anyOf:
+          - type: string
+            minLength: 1
+            maxLength: 128
+          - type: 'null'
+          default: null
         required_inputs:
           items:
             type: string
@@ -10776,7 +10783,7 @@ components:
       type: object
     GraphTask:
       additionalProperties: false
-      description: A task bound to a named member instance with a fixed role version.
+      description: A task bound to a named member with inline or pinned configuration.
       properties:
         id:
           maxLength: 128
@@ -10809,6 +10816,16 @@ components:
           - type: 'null'
           default: null
           title: Role Version
+        role:
+          anyOf:
+          - $ref: '#/components/schemas/RoleDefinition'
+          - type: 'null'
+          default: null
+        installation:
+          anyOf:
+          - $ref: '#/components/schemas/RoleInstallation'
+          - type: 'null'
+          default: null
         task:
           default: ''
           maxLength: 100000
@@ -10887,7 +10904,6 @@ components:
       properties:
         definition:
           anyOf:
-          - $ref: '#/components/schemas/WorkflowDefinition'
           - $ref: '#/components/schemas/GraphDefinition'
           - $ref: '#/components/schemas/AutonomousDefinition'
           title: Definition

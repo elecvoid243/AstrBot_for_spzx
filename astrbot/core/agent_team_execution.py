@@ -68,8 +68,8 @@ class NodeExecutionBinding:
     """Tool-loop step limit override (agent_runner.config.misc.max_steps)."""
     tool_call_timeout: float | None = None
     """Tool call timeout override in seconds."""
-    kb_names: list[str] | None = None
-    """Knowledge base names override (kb_names)."""
+    kb_ids: list[str] | None = None
+    """Frozen knowledge base identities for this member."""
     context_length: int | None = None
     """Context length override (request-level model/compression cap)."""
     turn_id: str | None = None
@@ -304,7 +304,7 @@ async def execute_team_turn(
         skills=execution.get("skills"),
         max_steps=execution.get("max_steps"),
         tool_call_timeout=execution.get("tool_call_timeout"),
-        kb_names=execution.get("kb_names"),
+        kb_ids=execution.get("kb_ids"),
         context_length=execution.get("context_length"),
         turn_id=turn_id,
         message_id=execution.get("message_id"),

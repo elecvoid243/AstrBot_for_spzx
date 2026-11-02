@@ -312,7 +312,7 @@
     "runs": "独立运行",
     "scope": "自主团队与工作流共用角色快照、契约化结果、调度、控制和恢复协议。等待释放执行容量，未知外部效果必须确认。",
     "create": "新建工作流",
-    "emptyAssets": "暂无工作流资产。先创建角色模板，再保存工作流。",
+    "emptyAssets": "暂无工作流资产。新建工作流即可直接配置 Agent。",
     "emptyRuns": "暂无独立运行。",
     "role": "角色模板",
     "edit": "编辑资产",
@@ -386,7 +386,7 @@
   },
   "graph": {
     "canvas": "工作流画布",
-    "create": "新建画布工作流",
+    "create": "新建工作流",
     "design": "资产设计",
     "count": "{count} 个任务",
     "undo": "撤销",
@@ -396,7 +396,7 @@
     "minimap": "小地图",
     "toolbox": "角色工具箱",
     "dragHint": "拖放角色到画布，或点击添加任务。",
-    "noRoles": "请先创建角色模板。",
+    "noRoles": "暂无角色模板；当前 Agent 可直接配置。",
     "properties": "任务属性",
     "taskName": "任务名称",
     "memberKey": "成员实例标识",
@@ -429,7 +429,12 @@
     "tasks": "任务",
     "selectTask": "查看任务",
     "saveHint": "保存后固定本版本。后续编辑只影响新运行。",
-    "dependency": "选择依赖"
+    "dependency": "选择依赖",
+    "defaultModel": "默认模型",
+    "modelOverride": "Agent 模型覆盖",
+    "inlineAgent": "直接配置",
+    "outputHint": "工作流返回该 Agent 的文本结果及其原始产物。",
+    "modelInheritanceHint": "未单独选择模型的 Agent 使用工作流默认模型。"
   },
   "resolution": {
     "savedWaiting": "工具处理决定已保存到原 Attempt。运行暂停期间等待“继续运行”，继续后仍遵守局部等待和执行容量限制。",
@@ -705,7 +710,7 @@
     "snapshotHint": "本次运行的固定快照。编辑资产或角色模板只影响后续新运行。",
     "emptyFilter": "此分类暂无运行。可切换分类，或从资产发起运行。",
     "teamIntro": "可复用自主团队、允许使用的角色与本机依赖。",
-    "workflowIntro": "版本化单任务与画布工作流。在此编辑定义，在运行中查看固定快照。",
+    "workflowIntro": "在此创建和编辑版本化工作流，在运行中查看固定快照。",
     "template": "角色模板"
   },
   "runHistory": {

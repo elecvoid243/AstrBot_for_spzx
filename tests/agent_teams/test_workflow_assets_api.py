@@ -2,6 +2,8 @@
 
 from types import SimpleNamespace
 
+import httpx
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -11,6 +13,56 @@ from astrbot.core.db.sqlite import SQLiteDatabase
 from astrbot.dashboard.api.auth import require_dashboard_user
 from astrbot.dashboard.api.role_assets import router as roles_router
 from astrbot.dashboard.api.workflow_assets import router
+from tests.agent_teams.test_workflow_assets import completed_run
+from tests.agent_teams.test_workflow_assets import workflow_env as workflow_env
+
+
+@pytest.mark.asyncio
+async def test_inline_graph_http_start_and_read_original_result(workflow_env):
+    env = workflow_env
+    app = FastAPI()
+    app.state.services = SimpleNamespace(workflow_assets=env.service)
+    app.include_router(router, prefix="/api/v1")
+    app.dependency_overrides[require_dashboard_user] = lambda: "alice"
+    definition = {
+        "name": "Inline HTTP",
+        "default_provider_id": "model-a",
+        "required_inputs": ["topic"],
+        "tasks": [
+            {
+                "id": "agent",
+                "name": "Writer",
+                "member": "writer",
+                "role": {"name": "Writer", "prompt": "Write"},
+                "installation": {"profile_id": "default"},
+                "task": "Write {topic}",
+                "inputs": {"topic": {"input": "topic"}},
+            }
+        ],
+    }
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        saved = (
+            await client.post(
+                "/api/v1/workflow_assets", json={"definition": definition}
+            )
+        ).json()["data"]
+        path = f"/api/v1/workflow_assets/{saved['asset_id']}"
+        assert (await client.get(path, params={"version": 1})).json()["data"][
+            "definition"
+        ]["tasks"][0]["role"]["prompt"] == "Write"
+        start = await client.post(
+            path + "/runs", json={"version": 1, "inputs": {"topic": "energy"}}
+        )
+        assert start.status_code == 200
+        run_id = start.json()["data"]["run_id"]
+        finished = await completed_run(env.service, run_id)
+        assert finished["status"] == "completed"
+        assert (await client.get(f"/api/v1/workflow_runs/{run_id}/result")).json()[
+            "data"
+        ] == {"text": "Complete report. " * 1000}
+        assert finished["result_ref"] == finished["tasks"][0]["result_ref"]
 
 
 def test_workflow_http_validation_and_ownership(tmp_path):
@@ -24,16 +76,21 @@ def test_workflow_http_validation_and_ownership(tmp_path):
     app.include_router(router, prefix="/api/v1")
     app.dependency_overrides[require_dashboard_user] = lambda: "alice"
     with TestClient(app) as client:
-        role = client.post(
-            "/api/v1/agent_roles",
-            json={"definition": {"name": "Writer", "prompt": "Write."}},
-        ).json()["data"]
         definition = {
             "name": "Report",
-            "role_id": role["role_id"],
-            "role_version": 1,
-            "task": "Read {topic}",
+            "default_provider_id": "model-a",
             "required_inputs": ["topic"],
+            "tasks": [
+                {
+                    "id": "writer",
+                    "name": "Writer",
+                    "member": "writer",
+                    "role": {"name": "Writer", "prompt": "Write."},
+                    "installation": {"profile_id": "default"},
+                    "task": "Read {topic}",
+                    "inputs": {"topic": {"input": "topic"}},
+                }
+            ],
         }
         response = client.post(
             "/api/v1/workflow_assets", json={"definition": definition}
@@ -92,10 +149,18 @@ def test_team_allowed_workflows_http_pin_and_owner_validation(tmp_path):
             json={
                 "definition": {
                     "name": "Saved workflow",
-                    "role_id": role["role_id"],
-                    "role_version": 1,
-                    "task": "Research {topic}",
                     "required_inputs": ["topic"],
+                    "tasks": [
+                        {
+                            "id": "result",
+                            "name": "Research",
+                            "member": "writer",
+                            "role_id": role["role_id"],
+                            "role_version": 1,
+                            "task": "Research {topic}",
+                            "inputs": {"topic": {"input": "topic"}},
+                        }
+                    ],
                 }
             },
         ).json()["data"]

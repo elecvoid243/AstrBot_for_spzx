@@ -25,6 +25,7 @@ async def test_graph_saves_pinned_roles_and_rejects_unbounded_back_edges(workflo
         "role_id": role["role_id"],
         "role_version": 1,
         "task": "Research {topic}.",
+        "inputs": {"topic": {"input": "topic"}},
     }
     definition = {
         "name": "Report",
@@ -407,7 +408,6 @@ async def test_task_aliases_resolve_from_frozen_workflow_inputs(
     assert finished["snapshot"]["inputs"] == {"a": "ORIGINAL_A", "b": "ORIGINAL_B"}
     assert finished["tasks"][-1]["snapshot"]["inputs"] == {
         "a": expected_alias,
-        "b": "ORIGINAL_B",
         "copy_a": "ORIGINAL_A",
     }
 
@@ -522,8 +522,7 @@ async def test_failure_only_blocks_related_dependencies(graph_script):
     )
     assert len(overview["artifacts"]) == 2
     assert all(
-        task["cursor"] == task["events"][-1]["cursor"]
-        for task in finished["tasks"]
+        task["cursor"] == task["events"][-1]["cursor"] for task in finished["tasks"]
     )
     assert all(
         "process" not in task and "events" not in task for task in overview["tasks"]

@@ -43,13 +43,6 @@
         @click="refresh"
         >{{ tm("page.refresh") }}</v-btn
       >
-      <v-btn
-        v-if="mode === 'assets' && assetKind !== 'teams'"
-        variant="tonal"
-        color="primary"
-        @click="edit(null)"
-        >{{ tm("v2.create") }}</v-btn
-      >
     </div>
     <v-alert
       v-if="error"
@@ -108,6 +101,9 @@
         </v-card-text>
         <v-card-actions class="flex-wrap">
           <v-btn
+            v-if="
+              asset.definition.kind === 'autonomous' || asset.definition.tasks
+            "
             variant="text"
             data-testid="open-chat-access"
             @click="chatAccessAsset = asset"
@@ -121,9 +117,7 @@
             @click="
               asset.definition.kind === 'autonomous'
                 ? editTeam(asset)
-                : asset.definition.tasks
-                ? editGraph(asset)
-                : edit(asset)
+                : editGraph(asset)
             "
             >{{ tm("v2.edit") }}</v-btn
           >
@@ -525,28 +519,27 @@
       v-model="graphEditing"
       max-width="1600"
       :persistent="saving"
+      content-class="graph-dialog-overlay"
     >
-      <v-card>
+      <v-card class="graph-dialog-card">
         <v-card-title class="text-h3 pa-4 pb-0 pl-6">{{
           tm("graph.canvas")
         }}</v-card-title>
-        <v-card-text>
+        <v-card-text class="graph-dialog-content">
           <div class="d-flex flex-wrap ga-3 mb-3">
             <v-text-field
               v-model="graphForm.name"
               :label="tm('v2.name')"
               style="min-width: 180px"
             />
-            <v-text-field
-              v-model="graphInputNames"
-              :label="tm('v2.inputNames')"
+            <v-select
+              v-model="graphForm.default_provider_id"
+              :items="catalog.models"
+              item-title="name"
+              item-value="id"
+              :label="tm('graph.defaultModel')"
+              clearable
               style="min-width: 220px"
-              @update:model-value="
-                graphForm.required_inputs = graphInputNames
-                  .split(',')
-                  .map((name) => name.trim())
-                  .filter(Boolean)
-              "
             />
             <v-text-field
               v-model.number="graphForm.max_parallel"
@@ -573,8 +566,12 @@
             />
           </details>
           <WorkflowGraphCanvas
+            class="graph-dialog-canvas"
+            :key="graphEditorKey"
             v-model:definition="graphForm"
             :roles="roles"
+            :catalog="catalog"
+            :issues="graphIssues"
             :teams="
               assets.filter((asset) => asset.definition.kind === 'autonomous')
             "
@@ -605,75 +602,6 @@
             >{{ tm("v2.save") }}</v-btn
           ></v-card-actions
         >
-      </v-card>
-    </v-dialog>
-
-    <v-dialog
-      class="workbench-dialog"
-      scrollable
-      v-model="editing"
-      max-width="720"
-      :persistent="saving"
-    >
-      <v-card>
-        <v-card-title class="text-h3 pa-4 pb-0 pl-6">{{
-          tm("v2.edit")
-        }}</v-card-title>
-        <v-card-text>
-          <v-text-field v-model="form.name" :label="tm('v2.name')" />
-          <v-select
-            v-model="form.role_id"
-            :items="roles"
-            item-title="definition.name"
-            item-value="role_id"
-            :label="tm('v2.role')"
-            @update:model-value="selectRole"
-          />
-          <v-select
-            v-model="form.role_version"
-            :items="roleVersions"
-            :label="tm('v2.roleVersion')"
-          />
-          <v-text-field
-            v-model="inputNames"
-            :label="tm('v2.inputNames')"
-            :hint="tm('v2.inputHint')"
-            persistent-hint
-          />
-          <v-textarea
-            v-model="form.task"
-            :label="tm('v2.task')"
-            :hint="tm('v2.taskHint')"
-            persistent-hint
-          />
-          <v-textarea
-            v-model="contractText"
-            :label="tm('v2.contract')"
-            :hint="tm('v2.contractHint')"
-            persistent-hint
-          />
-          <RunLimitsForm
-            v-model="form.limits"
-            @validation="usageInvalid = $event"
-          />
-          <v-alert v-if="formError" type="error" variant="tonal" class="mt-3">{{
-            formError
-          }}</v-alert>
-        </v-card-text>
-        <v-card-actions>
-          <v-spacer />
-          <v-btn variant="text" :disabled="saving" @click="editing = false">{{
-            tm("v2.close")
-          }}</v-btn>
-          <v-btn
-            variant="tonal"
-            color="primary"
-            :loading="saving"
-            :disabled="usageInvalid"
-            @click="save"
-            >{{ tm("v2.save") }}</v-btn
-          >
-        </v-card-actions>
       </v-card>
     </v-dialog>
 
@@ -858,7 +786,6 @@ import WorkflowHumanTodo from "./WorkflowHumanTodo.vue";
 import RunnerCapabilities from "./RunnerCapabilities.vue";
 import type {
   GraphDefinition,
-  WorkflowDefinition,
   ToolResolutionRequest,
   WorkflowControlRequest,
   WorkflowRetryRequest,
@@ -902,6 +829,14 @@ async function exportWorkflow(asset: any) {
   }
 }
 const roles = ref<any[]>([]);
+const catalog = ref<Record<string, any[]>>({
+  profiles: [],
+  models: [],
+  personas: [],
+  tools: [],
+  skills: [],
+  knowledge_bases: [],
+});
 const runs = ref<any[]>([]);
 const runView = ref<"all" | "active" | "pending" | "history">("all");
 const visibleRuns = computed(() =>
@@ -962,9 +897,10 @@ const detailRun = computed(
     selectedRun.value,
 );
 const graphEditing = ref(false);
+const graphEditorKey = ref(0);
 const teamEditing = ref(false);
 const graphInvalid = ref(false);
-const usageInvalid = ref(false);
+const graphIssues = ref<{ path: string; message: string }[]>([]);
 const graphUsageInvalid = ref(false);
 const graphForm = ref<GraphDefinition>({
   name: "",
@@ -974,7 +910,6 @@ const graphForm = ref<GraphDefinition>({
   tasks: [],
   edges: [],
 });
-const graphInputNames = ref("");
 const selectedArtifact = ref<any>(null);
 const artifactVersions = computed(() =>
   (detailRun.value?.artifacts ?? []).map(
@@ -990,7 +925,6 @@ const resultText = computed(() => {
     : JSON.stringify(content, null, 2);
 });
 const artifactVersion = ref<number>(1);
-const contractText = ref("");
 const inputArtifacts = ref<string[]>([]);
 const revising = ref(false);
 const revisionText = ref("");
@@ -1014,25 +948,10 @@ const loading = ref(false);
 const saving = ref(false);
 const error = ref("");
 const formError = ref("");
-const editing = ref(false);
 const starting = ref(false);
 const editingAsset = ref<any>(null);
 const runAsset = ref<any>(null);
-const form = ref<WorkflowDefinition>({
-  name: "",
-  role_id: "",
-  role_version: 1,
-  task: "",
-  required_inputs: [],
-  overrides: {},
-});
-const inputNames = ref("");
 const inputs = ref<Record<string, string>>({});
-const roleVersions = computed(
-  () =>
-    roles.value.find((role) => role.role_id === form.value.role_id)?.versions ??
-    [],
-);
 let timer: ReturnType<typeof setInterval> | undefined;
 let disposed = false;
 let artifactRead = 0;
@@ -1046,15 +965,17 @@ async function refresh() {
   try {
     error.value = "";
     if (props.mode === "assets") {
-      const [assetData, roleData, runData] = await Promise.all([
+      const [assetData, roleData, runData, resources] = await Promise.all([
         workflowAssetsApi.list(),
         roleAssetsApi.list(),
         workflowAssetsApi.runs(),
+        roleAssetsApi.resources(),
       ]);
       if (disposed || read !== runRead) return;
       assets.value = assetData.assets;
       roles.value = roleData.roles;
       runs.value = runData.runs;
+      if (resources) catalog.value = resources;
     } else {
       const runData = await workflowAssetsApi.runs();
       if (disposed || read !== runRead) return;
@@ -1102,41 +1023,34 @@ async function refresh() {
   }
 }
 
-function edit(asset: any) {
-  editingAsset.value = asset;
-  form.value = asset
-    ? JSON.parse(JSON.stringify(asset.definition))
-    : {
-        name: "",
-        role_id: "",
-        role_version: 1,
-        task: "",
-        required_inputs: [],
-        overrides: {},
-      };
-  inputNames.value = form.value.required_inputs?.join(", ") ?? "";
-  contractText.value = form.value.output_contract
-    ? JSON.stringify(form.value.output_contract, null, 2)
-    : "";
-  formError.value = "";
-  editing.value = true;
-}
-
 function editGraph(asset: any) {
   editingAsset.value = asset;
+  graphEditorKey.value++;
   graphForm.value = asset
     ? JSON.parse(JSON.stringify(asset.definition))
     : {
         name: "",
-        required_inputs: [],
+        default_provider_id: null,
+        required_inputs: ["input"],
         max_parallel: 4,
         max_depth: 3,
-        tasks: [],
+        tasks: [
+          {
+            id: "agent",
+            name: "Agent",
+            member: "agent",
+            role: { name: "Agent" },
+            installation: { profile_id: "default" },
+            task: "{input}",
+            inputs: { input: { input: "input", field: "text" } },
+            position: { x: 300, y: 100 },
+          },
+        ],
         edges: [],
       };
-  graphInputNames.value = graphForm.value.required_inputs?.join(", ") ?? "";
   formError.value = "";
   graphInvalid.value = false;
+  graphIssues.value = [];
   graphEditing.value = true;
 }
 
@@ -1159,7 +1073,15 @@ async function saveGraph() {
     await refresh();
   } catch (err) {
     const failure = extractApiError(err, tm("errors.operationFailed"));
-    formError.value = `${failure.message} ${failure.fields
+    graphIssues.value = failure.fields
+      .filter((field) => !field.path.includes(".AutonomousDefinition."))
+      .map((field) => ({
+        ...field,
+        path: field.path
+          .replace(/^body\./, "")
+          .replace("definition.GraphDefinition.", "definition."),
+      }));
+    formError.value = `${failure.message} ${graphIssues.value
       .map((field) => `${field.path}: ${field.message}`)
       .join("; ")}`;
   } finally {
@@ -1184,39 +1106,6 @@ watch(
     await loadArtifact();
   },
 );
-
-function selectRole(id: string) {
-  form.value.role_version =
-    roles.value.find((role) => role.role_id === id)?.version ?? 1;
-}
-
-async function save() {
-  if (saving.value || usageInvalid.value) return;
-  saving.value = true;
-  formError.value = "";
-  try {
-    form.value.required_inputs = inputNames.value
-      .split(",")
-      .map((name) => name.trim())
-      .filter(Boolean);
-    if (contractText.value.trim())
-      form.value.output_contract = JSON.parse(contractText.value);
-    else delete form.value.output_contract;
-    await workflowAssetsApi.save(editingAsset.value?.asset_id ?? null, {
-      definition: form.value,
-      expected_version: editingAsset.value?.version,
-    });
-    editing.value = false;
-    await refresh();
-  } catch (err) {
-    const failure = extractApiError(err, tm("errors.operationFailed"));
-    formError.value = `${failure.message} ${failure.fields
-      .map((field) => `${field.path}: ${field.message}`)
-      .join("; ")}`;
-  } finally {
-    saving.value = false;
-  }
-}
 
 const readiness = ref<any>(null);
 const checkingReadiness = ref(false);
@@ -1536,6 +1425,49 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
+:deep(.graph-dialog-overlay) {
+  height: min(900px, calc(100vh - 48px));
+}
+.graph-dialog-card {
+  height: 100%;
+  min-height: 0;
+}
+.graph-dialog-content {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1 1 0;
+}
+:deep(.graph-dialog-overlay > .graph-dialog-card > .graph-dialog-content) {
+  overflow-y: hidden;
+}
+.graph-dialog-content > :not(.graph-dialog-canvas) {
+  flex: 0 0 auto;
+}
+.graph-dialog-canvas {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+}
+.graph-dialog-canvas :deep(.graph-columns) {
+  flex: 1 1 0;
+  height: auto;
+  min-height: 0;
+  grid-template-rows: minmax(0, 1fr);
+}
+@media (max-width: 1000px) {
+  :deep(.graph-dialog-overlay > .graph-dialog-card > .graph-dialog-content) {
+    overflow-y: auto;
+  }
+  .graph-dialog-canvas {
+    flex: 0 0 auto;
+  }
+  .graph-dialog-canvas :deep(.graph-columns) {
+    flex: 0 0 auto;
+    grid-template-rows: none;
+  }
+}
 .workflow-text {
   white-space: pre-wrap;
   overflow-wrap: anywhere;

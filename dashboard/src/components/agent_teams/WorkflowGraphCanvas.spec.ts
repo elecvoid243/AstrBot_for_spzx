@@ -2,6 +2,7 @@ import { flushPromises, mount } from "@vue/test-utils";
 import { describe, expect, it, vi } from "vitest";
 import { reactive } from "vue";
 import WorkflowGraphCanvas from "./WorkflowGraphCanvas.vue";
+import RoleResourcesEditor from "./RoleResourcesEditor.vue";
 import { VueFlow } from "@vue-flow/core";
 
 vi.mock("@/i18n/composables", () => ({
@@ -9,6 +10,147 @@ vi.mock("@/i18n/composables", () => ({
 }));
 
 describe("canvas asset editing", () => {
+  it("edits inline responsibility and resources, undoes, redoes and reopens after refresh", async () => {
+    const definition = {
+      name: "Report",
+      default_provider_id: "model-a",
+      required_inputs: ["topic"],
+      edges: [],
+      tasks: [
+        {
+          id: "agent",
+          name: "Writer",
+          member: "writer",
+          task: "Write {topic}",
+          inputs: { topic: { input: "topic" } },
+          role: { name: "Writer", prompt: "Original" },
+          installation: { profile_id: "default" },
+        },
+      ],
+    };
+    const catalog = {
+      profiles: [],
+      models: [],
+      personas: [],
+      tools: [{ id: "search", name: "Search" }],
+      skills: [],
+      knowledge_bases: [],
+    };
+    const options = {
+      global: {
+        stubs: {
+          TeamsFlowCanvas: {
+            name: "TeamsFlowCanvas",
+            props: ["nodes", "edges"],
+            emits: ["select-node"],
+            template: "<div />",
+          },
+          WorkflowLoopPanel: true,
+          "v-icon": true,
+          "v-chip": true,
+          "v-btn": { template: "<button><slot /></button>" },
+          "v-text-field": true,
+          "v-spacer": true,
+          "v-alert": true,
+          "v-switch": true,
+          "v-expansion-panels": { template: "<div><slot /></div>" },
+          "v-expansion-panel": { template: "<div><slot /></div>" },
+          "v-expansion-panel-title": { template: "<div><slot /></div>" },
+          "v-expansion-panel-text": { template: "<div><slot /></div>" },
+          "v-textarea": {
+            props: ["modelValue"],
+            emits: ["update:modelValue"],
+            template: `<textarea :value="modelValue" @input="$emit('update:modelValue', $event.target.value)" />`,
+          },
+          "v-select": {
+            props: ["modelValue", "items", "multiple"],
+            emits: ["update:modelValue"],
+            template: `<select :multiple="multiple" :value="modelValue" @change="$emit('update:modelValue', multiple ? Array.from($event.target.options).filter(o => o.selected).map(o => o.value) : $event.target.value)"><option v-for="item in items" :value="item.id ?? item.value ?? item">{{ item.name ?? item.title ?? item }}</option></select>`,
+          },
+        },
+      },
+    };
+    const wrapper = mount(WorkflowGraphCanvas, {
+      ...options,
+      props: { definition, catalog },
+    });
+    const canvas = wrapper.findComponent({ name: "TeamsFlowCanvas" });
+    expect((canvas.props("nodes") as any[]).map((node) => node.id)).toEqual([
+      "__input",
+      "__output",
+      "agent",
+    ]);
+    expect(
+      (canvas.props("edges") as any[]).map((edge) => [
+        edge.source,
+        edge.target,
+      ]),
+    ).toEqual([
+      ["__input", "agent"],
+      ["agent", "__output"],
+    ]);
+    await wrapper
+      .get('[data-testid="inline-responsibility"]')
+      .setValue("Revised responsibility");
+    await wrapper
+      .get('select[aria-label="roles.tools: roles.mode"]')
+      .setValue("custom");
+    await wrapper
+      .get('[data-issue-path="definition.tools"]')
+      .setValue(["search"]);
+    const saved: any = wrapper.emitted("update:definition")!.at(-1)![0];
+    expect(saved.tasks[0].role).toMatchObject({
+      prompt: "Revised responsibility",
+      tools: ["search"],
+    });
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text() === "graph.undo")!
+      .trigger("click");
+    expect(
+      (wrapper.emitted("update:definition")!.at(-1)![0] as any).tasks[0].role
+        .tools,
+    ).toEqual([]);
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text() === "graph.redo")!
+      .trigger("click");
+    expect(
+      (wrapper.emitted("update:definition")!.at(-1)![0] as any).tasks[0].role
+        .tools,
+    ).toEqual(["search"]);
+    await wrapper.setProps({ roles: [], definition: saved });
+    expect(
+      (
+        wrapper.get('[data-testid="inline-responsibility"]')
+          .element as HTMLTextAreaElement
+      ).value,
+    ).toBe("Revised responsibility");
+    wrapper.unmount();
+    const reopened = mount(WorkflowGraphCanvas, {
+      ...options,
+      props: { definition: saved, catalog },
+    });
+    expect(
+      (
+        reopened.get('[data-testid="inline-responsibility"]')
+          .element as HTMLTextAreaElement
+      ).value,
+    ).toBe("Revised responsibility");
+    expect(reopened.find('[data-issue-path="definition.tools"]').exists()).toBe(
+      true,
+    );
+    expect(
+      (reopened.getComponent(RoleResourcesEditor).props("definition") as any)
+        .tools,
+    ).toEqual(["search"]);
+    reopened
+      .findComponent({ name: "TeamsFlowCanvas" })
+      .vm.$emit("select-node", "__output");
+    await reopened.vm.$nextTick();
+    expect(reopened.text()).toContain("graph.outputHint");
+    reopened.unmount();
+  });
   it("adds a pinned team call with declared input and output contracts", async () => {
     const wrapper = mount(WorkflowGraphCanvas, {
       props: {

@@ -604,41 +604,64 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
     resolved_role = None
     if mode.endswith("_role"):
         assets = RoleAssetService(db, lifecycle)
-        role = await assets.save_role(
-            "alice",
-            {
-                "definition": {
-                    "name": "Writer",
-                    "prompt": "Write with evidence.",
-                    "persona_slot": None
-                    if "_inherited" in mode
-                    else "research-persona",
-                    "skills": ["research-skill"],
-                    "tools": ["partial"] if mode == "v2_partial_error_role" else [],
-                    "knowledge_bases": ["evidence"],
+        if mode.startswith("v2") and not mode.startswith("v2_graph_migrated"):
+            role = await assets.save_role(
+                "alice",
+                {
+                    "definition": {
+                        "name": "Writer",
+                        "prompt": "Write with evidence.",
+                        "provider_id": "research-model",
+                        "persona_id": "researcher",
+                        "skills": ["alpha"],
+                        "tools": ["partial_then_error"]
+                        if mode == "v2_partial_error_role"
+                        else [],
+                        "knowledge_bases": [
+                            (
+                                await knowledge.get_kb_by_name("research-evidence")
+                            ).kb.kb_id
+                        ],
+                    },
+                    "installation": {"profile_id": "research"},
                 },
-                "installation": {
-                    "profile_id": "research",
-                    "bindings": {
-                        "model": "research-model",
-                        **(
-                            {"research-persona": "researcher"}
-                            if "_inherited" not in mode
-                            else {}
-                        ),
-                        "research-skill": "alpha",
-                        **(
-                            {"partial": "partial_then_error"}
-                            if mode == "v2_partial_error_role"
-                            else {}
-                        ),
-                        "evidence": (
-                            await knowledge.get_kb_by_name("research-evidence")
-                        ).kb.kb_id,
+            )
+        else:
+            role = await assets.save_role(
+                "alice",
+                {
+                    "definition": {
+                        "name": "Writer",
+                        "prompt": "Write with evidence.",
+                        "persona_slot": None
+                        if "_inherited" in mode
+                        else "research-persona",
+                        "skills": ["research-skill"],
+                        "tools": ["partial"] if mode == "v2_partial_error_role" else [],
+                        "knowledge_bases": ["evidence"],
+                    },
+                    "installation": {
+                        "profile_id": "research",
+                        "bindings": {
+                            "model": "research-model",
+                            **(
+                                {"research-persona": "researcher"}
+                                if "_inherited" not in mode
+                                else {}
+                            ),
+                            "research-skill": "alpha",
+                            **(
+                                {"partial": "partial_then_error"}
+                                if mode == "v2_partial_error_role"
+                                else {}
+                            ),
+                            "evidence": (
+                                await knowledge.get_kb_by_name("research-evidence")
+                            ).kb.kb_id,
+                        },
                     },
                 },
-            },
-        )
+            )
         resolved_role = await assets.resolve_role("alice", role["role_id"], 1)
         assert resolved_role["ready"] is True, resolved_role["issues"]
         assert await db.get_platform_sessions_by_creator("alice") == []
@@ -690,42 +713,36 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
             assets,
             ports_factory=workflow_ports,
         )
-        asset = await service.save_asset(
-            "alice",
-            {
-                "definition": {
-                    "name": "Independent report",
-                    "role_id": role["role_id"],
-                    "role_version": 1,
-                    "task": "Write evidence.",
-                    **(
-                        {
-                            "output_contract": {
+        if not mode.startswith("v2_graph"):
+            task = {
+                "id": "result",
+                "name": "Writer",
+                "member": "writer",
+                "role_id": role["role_id"],
+                "role_version": 1,
+                "task": "Write evidence.",
+            }
+            if mode.startswith("v2_file"):
+                task["output_contract"] = {
+                    "type": "object",
+                    "properties": {
+                        "text": {"type": "string"},
+                        "files": {
+                            "type": "array",
+                            "items": {
                                 "type": "object",
-                                "properties": {
-                                    "text": {"type": "string"},
-                                    "files": {
-                                        "type": "array",
-                                        "items": {
-                                            "type": "object",
-                                            "properties": {
-                                                "file_id": {"type": "string"}
-                                            },
-                                            "required": ["file_id"],
-                                            "additionalProperties": False,
-                                        },
-                                    },
-                                },
-                                "required": ["text", "files"],
+                                "properties": {"file_id": {"type": "string"}},
+                                "required": ["file_id"],
                                 "additionalProperties": False,
-                            }
-                        }
-                        if mode.startswith("v2_file")
-                        else {}
-                    ),
+                            },
+                        },
+                    },
+                    "required": ["text", "files"],
+                    "additionalProperties": False,
                 }
-            },
-        )
+            asset = await service.save_asset(
+                "alice", {"definition": {"name": "Independent report", "tasks": [task]}}
+            )
         if mode == "v2_process_failure_role":
             async with db.engine.begin() as connection:
                 await connection.execute(
@@ -952,6 +969,9 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
                 if current["status"] != "running":
                     break
                 await asyncio.sleep(0.01)
+            if not mode.startswith("v2_graph"):
+                current = current["tasks"][0]
+                run = run["tasks"][0]
             if mode.startswith("v2_graph_migrated_role"):
                 assert current["status"] == "completed", current
                 assert model_requests == [
@@ -1047,7 +1067,11 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
                     "hook": True,
                     "skill": True,
                     "knowledge": True,
-                    "tools": ["submit_task_result"],
+                    "tools": [
+                        "submit_task_result",
+                        "team_communicate",
+                        "read_task_artifact",
+                    ],
                     "correction_context": True,
                 }
             else:

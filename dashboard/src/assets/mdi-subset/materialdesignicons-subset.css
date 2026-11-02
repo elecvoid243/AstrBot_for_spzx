@@ -1,4 +1,4 @@
-/* Auto-generated MDI subset – 399 icons */
+/* Auto-generated MDI subset – 389 icons */
 /* Do not edit manually. Run: pnpm run subset-icons */
 
 @font-face {
@@ -22,10 +22,6 @@
 
 .mdi-account::before {
   content: "\F0004";
-}
-
-.mdi-account-circle::before {
-  content: "\F0009";
 }
 
 .mdi-account-edit::before {
@@ -116,16 +112,8 @@
   content: "\F19B3";
 }
 
-.mdi-arrow-expand::before {
-  content: "\F0616";
-}
-
 .mdi-arrow-left::before {
   content: "\F004D";
-}
-
-.mdi-arrow-left-circle::before {
-  content: "\F0CDD";
 }
 
 .mdi-arrow-right::before {
@@ -134,10 +122,6 @@
 
 .mdi-arrow-right-bold-circle-outline::before {
   content: "\F0057";
-}
-
-.mdi-arrow-right-circle::before {
-  content: "\F0CDF";
 }
 
 .mdi-arrow-top-right-thick::before {
@@ -464,10 +448,6 @@
   content: "\F0190";
 }
 
-.mdi-content-paste::before {
-  content: "\F0192";
-}
-
 .mdi-content-save::before {
   content: "\F0193";
 }
@@ -482,10 +462,6 @@
 
 .mdi-creation-outline::before {
   content: "\F1C2B";
-}
-
-.mdi-crown::before {
-  content: "\F01A5";
 }
 
 .mdi-cursor-default-click::before {
@@ -828,14 +804,6 @@
   content: "\F104A";
 }
 
-.mdi-grid::before {
-  content: "\F02C1";
-}
-
-.mdi-grid-off::before {
-  content: "\F02C2";
-}
-
 .mdi-hammer-wrench::before {
   content: "\F1323";
 }
@@ -1056,10 +1024,6 @@
   content: "\F07D9";
 }
 
-.mdi-map-outline::before {
-  content: "\F0982";
-}
-
 .mdi-memory::before {
   content: "\F035B";
 }
@@ -1270,10 +1234,6 @@
 
 .mdi-radiobox-marked::before {
   content: "\F043E";
-}
-
-.mdi-redo::before {
-  content: "\F044E";
 }
 
 .mdi-refresh::before {

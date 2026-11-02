@@ -9218,15 +9218,51 @@ class WorkflowService:
             async with self.db.get_db() as session:
                 origin = await session.get(AgentWorkflowRun, artifact_id)
                 assert origin is not None
-                root_id = origin.snapshot.get("parent_run_id")
-                root = await session.get(AgentWorkflowRun, root_id) if root_id else None
-                governed = root is not None and any(
-                    task.get("human")
-                    and task["human"]["kind"] == "approval"
-                    and task["human"]["artifact_task_id"]
-                    == origin.snapshot.get("node_id")
-                    for task in root.snapshot["definition"]["tasks"]
-                )
+                governed = False
+                source = origin
+                visited = set()
+                while source.snapshot.get("parent_run_id"):
+                    if source.run_id in visited:
+                        raise RoleAssetError(
+                            "Invalid artifact scope ancestry", status=409
+                        )
+                    visited.add(source.run_id)
+                    scope = await session.get(
+                        AgentWorkflowRun, source.snapshot["parent_run_id"]
+                    )
+                    if scope is None:
+                        raise RoleAssetError(
+                            "Artifact scope is unavailable", status=409
+                        )
+                    governed = any(
+                        task.get("human")
+                        and task["human"]["kind"] == "approval"
+                        and task["human"]["artifact_task_id"]
+                        == source.snapshot.get("node_id")
+                        for task in scope.snapshot["definition"]["tasks"]
+                    )
+                    if governed or not scope.snapshot.get("parent_run_id"):
+                        break
+                    result_node = (
+                        "coordinator"
+                        if scope.snapshot.get("team_definition")
+                        else scope.snapshot["definition"].get("result_task_id")
+                    )
+                    if result_node != source.snapshot.get("node_id"):
+                        break
+                    call = await session.get(
+                        AgentWorkflowRun, scope.snapshot["parent_run_id"]
+                    )
+                    if call is None:
+                        raise RoleAssetError(
+                            "Artifact caller is unavailable", status=409
+                        )
+                    returned = call.state.get("child_result_ref")
+                    if returned and returned["artifact_id"] != artifact_id:
+                        break
+                    # Child calls return the original artifact identity. Their
+                    # parent's approval still governs downloading that output.
+                    source = call
             if governed:
                 await self.export_artifact(username, artifact_id, version)
         if {"file_id": file_id} not in artifact["content"].get("files", []):

@@ -382,7 +382,9 @@ async def test_returned_file_revision_preserves_authorization_inputs_and_approva
         )["content"] == b"Complete original file COMPLETE_END"
     for version in [1, 2]:
         with pytest.raises(RoleAssetError) as invisible:
-            await env.service.get_file("alice", artifact_id, version, unused["file_id"])
+            await env.service.get_file(
+                "alice", artifact_id, version, unused["file_id"], download=False
+            )
         assert invisible.value.status == 404
     added = await env.service.revise_artifact(
         "alice",
@@ -397,9 +399,11 @@ async def test_returned_file_revision_preserves_authorization_inputs_and_approva
         },
     )
     assert added == {"artifact_id": artifact_id, "version": 3}
-    assert (await env.service.get_file("alice", artifact_id, 3, unused["file_id"]))[
-        "content"
-    ] == b"Unsubmitted coordinator file"
+    assert (
+        await env.service.get_file(
+            "alice", artifact_id, 3, unused["file_id"], download=False
+        )
+    )["content"] == b"Unsubmitted coordinator file"
     with pytest.raises(RoleAssetError) as owner:
         await env.service.revise_artifact("bob", artifact_id, request)
     assert owner.value.status == 404
@@ -443,6 +447,7 @@ async def test_returned_file_revision_preserves_authorization_inputs_and_approva
     assert (await env.service.get_file("alice", artifact_id, 1, file_id))[
         "content"
     ] == b"Complete original file COMPLETE_END"
-    assert (await env.service.get_file("alice", artifact_id, 2, file_id))[
-        "content"
-    ] == (b"Complete original file COMPLETE_END")
+    for version in [2, 3]:
+        with pytest.raises(RoleAssetError) as approval:
+            await env.service.get_file("alice", artifact_id, version, file_id)
+        assert approval.value.status == 409

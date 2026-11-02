@@ -1,7 +1,6 @@
 """Independent real-pipeline worker for public crash-recovery acceptance."""
 
 import asyncio
-import base64
 import contextlib
 import copy
 import json
@@ -626,7 +625,7 @@ async def run_worker(
             asset = await service.save_asset("alice", {"definition": {"name": "Paused graph", "result_task_id": "b", "max_parallel": 2 if scenario == "control_mixed" else 1, "tasks": [{"id": name, "name": name, "member": name, "role_id": role["role_id"], "role_version": 1, "task": name} for name in ["a", "b"]], "edges": []}})
         if scenario in {"save_failure", "observation_failure"}:
             async with db.engine.begin() as connection:
-                await connection.execute(text("CREATE TRIGGER reject_response_checkpoint BEFORE UPDATE ON agent_workflow_checkpoints WHEN NEW.phase = 'response' BEGIN SELECT RAISE(ABORT, 'checkpoint storage unavailable'); END" if scenario == "save_failure" else "CREATE TRIGGER reject_response_checkpoint BEFORE INSERT ON agent_workflow_process BEGIN SELECT RAISE(ABORT, 'observation storage unavailable'); END"))
+                await connection.execute(text("CREATE TRIGGER reject_response_checkpoint BEFORE UPDATE ON agent_workflow_checkpoints WHEN NEW.phase = 'response' BEGIN SELECT RAISE(ABORT, 'checkpoint storage unavailable'); END" if scenario == "save_failure" else "CREATE TRIGGER reject_response_checkpoint BEFORE INSERT ON agent_workflow_process WHEN NEW.kind = 'model_response' BEGIN SELECT RAISE(ABORT, 'observation storage unavailable'); END"))
         if scenario in {"tool_save_failure", "tool_observation_failure"}:
             async with db.engine.begin() as connection:
                 await connection.execute(text("CREATE TRIGGER reject_response_checkpoint BEFORE UPDATE ON agent_workflow_checkpoints WHEN NEW.phase = 'tool_result' BEGIN SELECT RAISE(ABORT, 'tool result storage unavailable'); END" if scenario == "tool_save_failure" else "CREATE TRIGGER reject_response_checkpoint BEFORE INSERT ON agent_workflow_process WHEN NEW.kind = 'tool_result' BEGIN SELECT RAISE(ABORT, 'tool observation storage unavailable'); END"))
@@ -729,10 +728,10 @@ async def run_worker(
             from hypercorn.asyncio import serve
             from hypercorn.config import Config
 
+            from astrbot.core.agent_teams.history import RunHistoryService
             from astrbot.dashboard.api.auth import require_dashboard_user
             from astrbot.dashboard.api.role_assets import router as role_router
             from astrbot.dashboard.api.workflow_assets import router as workflow_router
-            from astrbot.core.agent_teams.history import RunHistoryService
             await service.boot_sweep()
             app = FastAPI()
             app.state.services = SimpleNamespace(workflow_assets=service, role_assets=roles, run_history=RunHistoryService(db, service))
@@ -1263,7 +1262,7 @@ async def run_worker(
             (folder / "kill-ready.json").write_text(json.dumps({"run_id": run["run_id"]}), encoding="utf-8")
             await asyncio.Future()
         elif scenario in {"save_failure", "observation_failure", "tool_save_failure", "tool_observation_failure", "generator_error"}:
-            (folder / "kill-ready.json").write_text(json.dumps({"run_id": run["run_id"]}), encoding="utf-8")
+            (folder / "kill-ready.json").write_text(json.dumps({"run_id": current["tasks"][0]["run_id"]}), encoding="utf-8")
             await asyncio.Future()
     finally:
         await service.shutdown()

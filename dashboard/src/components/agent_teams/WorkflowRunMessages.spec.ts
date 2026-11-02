@@ -1,4 +1,5 @@
 import { flushPromises, mount } from "@vue/test-utils";
+import { createPinia } from "pinia";
 import { describe, expect, it, vi } from "vitest";
 import WorkflowRunProcess from "./WorkflowRunProcess.vue";
 
@@ -40,7 +41,7 @@ describe("member communication in official task process", () => {
           ],
         },
       },
-      global: { stubs: { "v-btn": { template: "<button><slot /></button>" } } },
+      global: { plugins: [createPinia()], stubs: { "v-btn": { template: "<button><slot /></button>" } } },
     });
     const record = wrapper.find('[data-testid="member-message"]');
     expect(record.text()).toContain("writer-a");

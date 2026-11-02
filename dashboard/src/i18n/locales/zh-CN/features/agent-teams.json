@@ -395,6 +395,8 @@
     "loadEvents": "加载更早事件",
     "loadOlder": "加载更早过程",
     "reloadLatest": "返回最新过程",
+    "newActivity": "阅读期间有新的过程更新。",
+    "olderHistoryHidden": "较早记录已移出实时窗口，可加载更早历史查看。",
     "historyWindow": "当前仅显示有界历史窗口。返回最新过程以查看较新的记录。",
     "readerTitle": "Agent 执行过程",
     "capabilityNote": "仅展示实际观测到的思考和执行细节；未提供的信息不可用，远端执行器可能只暴露部分过程。",

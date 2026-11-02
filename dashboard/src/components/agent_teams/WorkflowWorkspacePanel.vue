@@ -285,8 +285,10 @@
               <v-btn variant="text" :disabled="historyBusy || historyNext[detailRun.run_id + ':messages'] === null" @click="loadOlderHistory('messages')">{{ tm("progress.loadMessages") }}</v-btn>
               <v-btn variant="text" :disabled="historyBusy || historyNext[detailRun.run_id + ':events'] === null" @click="loadOlderHistory('events')">{{ tm("progress.loadEvents") }}</v-btn>
               <v-btn variant="text" :disabled="historyBusy || historyNext[detailRun.run_id + ':attempts'] === null" @click="loadOlderHistory('attempts')">{{ tm("progress.loadAttempts") }}</v-btn>
-              <v-btn v-if="historyTruncated[detailRun.run_id]" variant="text" @click="reloadLatestProcess">{{ tm("progress.reloadLatest") }}</v-btn>
+              <v-btn v-if="historyReading[detailRun.run_id] || historyTruncated[detailRun.run_id] || historyNewUpdates[detailRun.run_id]" variant="text" :loading="historyRestoring[detailRun.run_id]" @click="reloadLatestProcess">{{ tm("progress.reloadLatest") }}</v-btn>
+              <p v-if="historyNewUpdates[detailRun.run_id]" class="text-info" role="status">{{ tm("progress.newActivity") }}</p>
               <p v-if="historyTruncated[detailRun.run_id]" class="text-warning">{{ tm("progress.historyWindow") }}</p>
+              <p v-else-if="historyOlderHidden[detailRun.run_id]" class="text-caption">{{ tm("progress.olderHistoryHidden") }}</p>
               <p v-if="historyErrors[detailRun.run_id]" role="alert">{{ historyErrors[detailRun.run_id] }}</p>
               <WorkflowRunProcess :run="detailRun" :busy="!!currentOperation" @resolve="resolveTool" />
             </div>
@@ -1001,9 +1003,17 @@ const processPane = ref<HTMLElement | null>(null);
 const followProcess = ref(true);
 function onProcessScroll() {
   const pane = processPane.value;
-  if (pane) followProcess.value = pane.scrollHeight - pane.scrollTop - pane.clientHeight < 48;
+  const taskId = detailRun.value?.run_id;
+  if (!pane || !taskId) return;
+  if (pane.scrollHeight - pane.scrollTop - pane.clientHeight >= 48) {
+    followProcess.value = false;
+    historyReading.value[taskId] = true;
+  } else if (!historyPinned.value[taskId] && !historyTruncated.value[taskId] && !historyReturning.value[taskId]) {
+    delete historyReading.value[taskId];
+    delete historyNewUpdates.value[taskId];
+    followProcess.value = true;
+  }
 }
-watch(() => selectedTaskNode.value, () => { followProcess.value = true; });
 watch(() => selectedRun.value?.cursor, async () => {
   if (!followProcess.value) return;
   await nextTick();
@@ -1056,12 +1066,79 @@ const historyDone = ref<Record<string, boolean>>({});
 const historyBusy = ref(false);
 const historyErrors = ref<Record<string, string>>({});
 const historyTruncated = ref<Record<string, boolean>>({});
+const historyReading = ref<Record<string, boolean>>({});
+const historyPinned = ref<Record<string, boolean>>({});
+const historyNewUpdates = ref<Record<string, boolean>>({});
+const historyOlderHidden = ref<Record<string, boolean>>({});
+const historyRestoring = ref<Record<string, boolean>>({});
+const historyReturning = ref<Record<string, boolean>>({});
+const historyPending = ref<Record<string, Partial<Record<"process" | "events" | "messages" | "attempts", any[]>>>>({});
 watch(() => selectedRun.value?.run_id, () => {
   historyDone.value = {};
   historyNext.value = {};
   historyErrors.value = {};
   historyTruncated.value = {};
+  historyReading.value = {};
+  historyPinned.value = {};
+  historyNewUpdates.value = {};
+  historyOlderHidden.value = {};
+  historyRestoring.value = {};
+  historyReturning.value = {};
+  historyPending.value = {};
 });
+watch(() => detailRun.value?.run_id, (taskId, previousId) => {
+  if (previousId && previousId !== taskId) {
+    delete historyReading.value[previousId];
+    delete historyPinned.value[previousId];
+    if (historyTruncated.value[previousId]) void restoreLatest(previousId);
+    else delete historyNewUpdates.value[previousId];
+  }
+  followProcess.value = true;
+  if (taskId && taskId !== previousId && historyTruncated.value[taskId]) {
+    delete historyReading.value[taskId];
+    delete historyPinned.value[taskId];
+    void restoreLatest(taskId);
+  } else if (taskId && taskId !== previousId) {
+    void nextTick().then(() => {
+      if (detailRun.value?.run_id === taskId && followProcess.value && processPane.value)
+        processPane.value.scrollTop = processPane.value.scrollHeight;
+    });
+  }
+});
+
+function mergeHistoryWindow(target: any, kind: "process" | "events" | "messages" | "attempts", incoming: any[], older = false) {
+  const key = kind === "process" ? "record_id" : kind === "events" ? "cursor" : kind === "messages" ? "message_id" : "attempt_id";
+  const existing = target[kind] ?? [];
+  const known = new Set(existing.map((entry: any) => entry[key]));
+  if (!older && historyReturning.value[target.run_id]) {
+    const pending = historyPending.value[target.run_id] ??= {};
+    const entries = new Map([...(pending[kind] ?? []), ...incoming].map((entry: any) => [entry[key], entry]));
+    pending[kind] = [...entries.values()].sort((a: any, b: any) => (a.cursor ?? 0) - (b.cursor ?? 0)).slice(-512);
+  }
+  const isReading = target.run_id === detailRun.value?.run_id && !!(historyReading.value[target.run_id] || historyReturning.value[target.run_id]);
+  if (!older && isReading && incoming.some((entry: any) => !known.has(entry[key])))
+    historyNewUpdates.value[target.run_id] = true;
+  const entries = new Map([...existing, ...incoming].map((entry: any) => [entry[key], entry]));
+  const ordered = [...entries.values()].sort((a: any, b: any) => (a.cursor ?? 0) - (b.cursor ?? 0));
+  if (ordered.length <= 512) {
+    target[kind] = ordered;
+    return;
+  }
+  if (older || isReading) {
+    target[kind] = ordered.slice(0, 512);
+    historyTruncated.value[target.run_id] = true;
+  } else {
+    target[kind] = ordered.slice(-512);
+    historyOlderHidden.value[target.run_id] = true;
+    if (kind === "process") delete historyDone.value[target.run_id];
+    else {
+      delete historyNext.value[`${target.run_id}:${kind}`];
+      const floor = `${kind === "events" ? "event" : kind === "messages" ? "message" : "attempt"}_history_before`;
+      target[floor] = Math.max(Number(target[floor] ?? 1), target[kind][0].cursor ?? 1);
+    }
+  }
+}
+
 async function loadOlderProcess() {
   if (historyBusy.value || !selectedRun.value || !detailRun.value) return;
   const rootId = selectedRun.value.run_id;
@@ -1069,19 +1146,19 @@ async function loadOlderProcess() {
   const cursors = (detailRun.value.process ?? []).map((record: any) => record.cursor).filter((cursor: any) => Number.isInteger(cursor));
   const before = cursors.length ? Math.min(...cursors) : selectedRun.value.cursor + 1;
   historyBusy.value = true;
+  historyReading.value[taskId] = true;
+  historyPinned.value[taskId] = true;
+  followProcess.value = false;
   delete historyErrors.value[taskId];
   try {
     const page = await workflowAssetsApi.processPage(rootId, taskId, before);
-    if (selectedRun.value?.run_id !== rootId) return;
+    if (selectedRun.value?.run_id !== rootId || detailRun.value?.run_id !== taskId || !historyReading.value[taskId]) return;
     const pane = processPane.value;
     const height = pane?.scrollHeight ?? 0;
     const top = pane?.scrollTop ?? 0;
     const targets = runViews(selectedRun.value);
     for (const target of targets.filter((run: any) => run.run_id === taskId)) {
-      const records = new Map([...page.records, ...(target.process ?? [])].map((record: any) => [record.record_id, record]));
-      const merged = [...records.values()].sort((a: any, b: any) => a.cursor - b.cursor);
-      if (merged.length > 512) historyTruncated.value[taskId] = true;
-      target.process = merged.slice(0, 512);
+      mergeHistoryWindow(target, "process", page.records, true);
     }
     historyDone.value = { ...historyDone.value, [taskId]: page.next_before === null };
     await nextTick();
@@ -1101,19 +1178,18 @@ async function loadOlderHistory(kind: "events" | "messages" | "attempts") {
   if (next === null) return;
   const before = next ?? String(detailRun.value[kind === "events" ? "event_history_before" : kind === "messages" ? "message_history_before" : "attempt_history_before"] ?? 1);
   historyBusy.value = true;
+  historyReading.value[taskId] = true;
+  historyPinned.value[taskId] = true;
+  followProcess.value = false;
   delete historyErrors.value[taskId];
   try {
     const page = await workflowAssetsApi.runHistoryPage(rootId, taskId, kind, before);
-    if (selectedRun.value?.run_id !== rootId) return;
+    if (selectedRun.value?.run_id !== rootId || detailRun.value?.run_id !== taskId || !historyReading.value[taskId]) return;
     const pane = processPane.value;
     const height = pane?.scrollHeight ?? 0;
     const top = pane?.scrollTop ?? 0;
     for (const target of runViews(selectedRun.value).filter((view: any) => view.run_id === taskId)) {
-      const id = kind === "events" ? "cursor" : kind === "messages" ? "message_id" : "attempt_id";
-      const entries = new Map([...page.items, ...(target[kind] ?? [])].map((entry: any) => [entry[id], entry]));
-      const merged = [...entries.values()].sort((a: any, b: any) => a.cursor - b.cursor);
-      if (merged.length > 512) historyTruncated.value[taskId] = true;
-      target[kind] = merged.slice(0, 512);
+      mergeHistoryWindow(target, kind, page.items, true);
     }
     historyNext.value[key] = page.next_before;
     await nextTick();
@@ -1124,26 +1200,73 @@ async function loadOlderHistory(kind: "events" | "messages" | "attempts") {
     historyBusy.value = false;
   }
 }
-async function reloadLatestProcess() {
-  const rootId = selectedRun.value?.run_id;
-  if (!rootId || historyBusy.value) return;
-  historyBusy.value = true;
-  const read = ++runRead;
-  const taskId = detailRun.value.run_id;
+async function restoreLatest(taskId: string) {
+  const root = selectedRun.value;
+  if (!root || historyRestoring.value[taskId]) return;
+  const rootId = root.run_id;
+  const boundary = root.cursor;
+  historyRestoring.value[taskId] = true;
+  delete historyErrors.value[taskId];
   try {
-    const snapshot = await workflowAssetsApi.run(rootId);
-    if (read === runRead && selectedRun.value?.run_id === rootId) {
-      selectedRun.value = snapshot;
-      historyDone.value = {};
-      historyNext.value = {};
-      historyTruncated.value = {};
-      historyErrors.value = {};
+    const [process, events, messages, attempts] = await Promise.all([
+      workflowAssetsApi.processPage(rootId, taskId, boundary + 1),
+      workflowAssetsApi.runHistoryPage(rootId, taskId, "events", String(boundary + 1)),
+      workflowAssetsApi.runHistoryPage(rootId, taskId, "messages", String(boundary + 1)),
+      workflowAssetsApi.runHistoryPage(rootId, taskId, "attempts", String(boundary + 1)),
+    ]);
+    if (selectedRun.value?.run_id !== rootId || historyReading.value[taskId]) return;
+    const pages = { process: process.records, events: events.items, messages: messages.items, attempts: attempts.items };
+    for (const target of runViews(selectedRun.value).filter((view: any) => view.run_id === taskId)) {
+      for (const kind of ["process", "events", "messages", "attempts"] as const) {
+        const key = kind === "process" ? "record_id" : kind === "events" ? "cursor" : kind === "messages" ? "message_id" : "attempt_id";
+        const later = (target[kind] ?? []).filter((entry: any) => entry.cursor > boundary);
+        const pending = (historyPending.value[taskId]?.[kind] ?? []).filter((entry: any) => entry.cursor > boundary);
+        const entries = new Map([...pages[kind], ...later, ...pending].map((entry: any) => [entry[key], entry]));
+        const ordered = [...entries.values()].sort((a: any, b: any) => (a.cursor ?? 0) - (b.cursor ?? 0));
+        const trimmed = ordered.length > 512;
+        target[kind] = ordered.slice(-512);
+        if (kind === "process") historyDone.value[taskId] = !trimmed && process.next_before === null;
+        else {
+          const page = kind === "events" ? events : kind === "messages" ? messages : attempts;
+          historyNext.value[`${taskId}:${kind}`] = trimmed ? String(target[kind][0].cursor) : page.next_before;
+        }
+        if (trimmed || (kind === "process" ? process.next_before : (kind === "events" ? events : kind === "messages" ? messages : attempts).next_before))
+          historyOlderHidden.value[taskId] = true;
+      }
+    }
+    delete historyTruncated.value[taskId];
+    delete historyPinned.value[taskId];
+    delete historyNewUpdates.value[taskId];
+    delete historyReturning.value[taskId];
+    if (detailRun.value?.run_id === taskId) {
+      followProcess.value = true;
+      await nextTick();
+      if (detailRun.value?.run_id === taskId && followProcess.value && processPane.value)
+        processPane.value.scrollTop = processPane.value.scrollHeight;
     }
   } catch (cause) {
-    historyErrors.value[taskId] = extractApiError(cause, tm("errors.operationFailed")).message;
+    if (selectedRun.value?.run_id === rootId) {
+      historyErrors.value[taskId] = extractApiError(cause, tm("errors.operationFailed")).message;
+      if (detailRun.value?.run_id === taskId) {
+        historyReading.value[taskId] = true;
+        followProcess.value = false;
+      }
+    }
   } finally {
-    if (read === runRead) loading.value = false;
-    historyBusy.value = false;
+    delete historyRestoring.value[taskId];
+    delete historyPending.value[taskId];
+  }
+}
+async function reloadLatestProcess() {
+  const taskId = detailRun.value?.run_id;
+  if (!taskId || historyBusy.value || historyRestoring.value[taskId]) return;
+  delete historyReading.value[taskId];
+  historyReturning.value[taskId] = true;
+  followProcess.value = false;
+  try {
+    await restoreLatest(taskId);
+  } finally {
+    delete historyReturning.value[taskId];
   }
 }
 const graphEditing = ref(false);
@@ -1269,60 +1392,33 @@ async function refresh() {
                 const newViews = runViews(snapshot);
                 for (const target of newViews) {
                   const old = oldViews.find((view: any) => view.run_id === target.run_id);
-                  const records = new Map([...(old?.process ?? []), ...(target.process ?? []),
-                    ...(changes.records ?? []).filter((record: any) => record.run_id === target.run_id),
-                  ].map((record: any) => [record.record_id, record]));
-                  const merged = [...records.values()].sort((a: any, b: any) => a.cursor - b.cursor);
-                  if (merged.length > 512) historyTruncated.value[target.run_id] = true;
-                  target.process = merged.slice(0, 512);
-                  const attempts = new Map([...(old?.attempts ?? []), ...(target.attempts ?? [])].map((attempt: any) => [attempt.attempt_id, attempt]));
-                  const orderedAttempts = [...attempts.values()].sort((a: any, b: any) => a.cursor - b.cursor);
-                  if (orderedAttempts.length > 512) historyTruncated.value[target.run_id] = true;
-                  target.attempts = orderedAttempts.slice(0, 512);
-                  for (const kind of ["events", "messages"] as const) {
-                    const id = kind === "events" ? "cursor" : "message_id";
-                    const incoming = kind === "events"
-                      ? (changes.events ?? []).filter((event: any) => target.run_id === snapshot.run_id || target.run_id === event.run_id)
-                      : (changes.messages ?? []).filter((message: any) => messageBelongs(snapshot, target, message));
-                    const entries = new Map([...(old?.[kind] ?? []), ...(target[kind] ?? []), ...incoming].map((entry: any) => [entry[id], entry]));
-                    const history = [...entries.values()].sort((a: any, b: any) => a.cursor - b.cursor);
-                    if (history.length > 512) historyTruncated.value[target.run_id] = true;
-                    target[kind] = history.slice(0, 512);
+                  for (const kind of ["process", "events", "messages", "attempts"] as const) {
+                    const incoming = [...(target[kind] ?? [])];
+                    if (kind === "process") incoming.push(...(changes.records ?? []).filter((record: any) => record.run_id === target.run_id));
+                    else if (kind === "events") incoming.push(...(changes.events ?? []).filter((event: any) => target.run_id === snapshot.run_id || target.run_id === event.run_id));
+                    else if (kind === "messages") incoming.push(...(changes.messages ?? []).filter((message: any) => messageBelongs(snapshot, target, message)));
+                    target[kind] = old?.[kind] ?? [];
+                    mergeHistoryWindow(target, kind, incoming);
                   }
                 }
               } else {
                 historyDone.value = {};
                 historyNext.value = {};
                 historyTruncated.value = {};
+                historyReading.value = {};
+                historyPinned.value = {};
+                historyNewUpdates.value = {};
+                historyOlderHidden.value = {};
               }
               selectedRun.value = snapshot;
             }
           } else {
             const root = selectedRun.value;
             const runs = runViews(root);
-            for (const record of changes.records ?? []) {
-              for (const target of runs.filter((run: any) => run.run_id === record.run_id)) {
-                target.process ??= [];
-                if (!target.process.some((item: any) => item.record_id === record.record_id)) {
-                  if (target.process.length < 512) target.process.push(record);
-                  else historyTruncated.value[target.run_id] = true;
-                }
-              }
-            }
             for (const target of runs) {
-              for (const kind of ["events", "messages"] as const) {
-                const id = kind === "events" ? "cursor" : "message_id";
-                const incoming = kind === "events"
-                  ? (changes.events ?? []).filter((event: any) => target.run_id === root.run_id || target.run_id === event.run_id)
-                  : (changes.messages ?? []).filter((message: any) => messageBelongs(root, target, message));
-                target[kind] ??= [];
-                for (const entry of incoming) {
-                  if (!target[kind].some((existing: any) => existing[id] === entry[id])) {
-                    if (target[kind].length < 512) target[kind].push(entry);
-                    else historyTruncated.value[target.run_id] = true;
-                  }
-                }
-              }
+              mergeHistoryWindow(target, "process", (changes.records ?? []).filter((record: any) => record.run_id === target.run_id));
+              mergeHistoryWindow(target, "events", (changes.events ?? []).filter((event: any) => target.run_id === root.run_id || target.run_id === event.run_id));
+              mergeHistoryWindow(target, "messages", (changes.messages ?? []).filter((message: any) => messageBelongs(root, target, message)));
             }
             root.cursor = changes.cursor;
           }
@@ -1568,11 +1664,9 @@ function applyOperationSnapshot(next: any) {
     for (const target of runViews(snapshot)) {
       const old = oldViews.find((view: any) => view.run_id === target.run_id);
       for (const kind of ["process", "events", "messages", "attempts"] as const) {
-        const key = kind === "process" ? "record_id" : kind === "events" ? "cursor" : kind === "messages" ? "message_id" : "attempt_id";
-        const entries = new Map([...(old?.[kind] ?? []), ...(target[kind] ?? [])].map((entry: any) => [entry[key], entry]));
-        const ordered = [...entries.values()].sort((a: any, b: any) => a.cursor - b.cursor);
-        if (ordered.length > 512) historyTruncated.value[target.run_id] = true;
-        target[kind] = ordered.slice(0, 512);
+        const incoming = target[kind] ?? [];
+        target[kind] = old?.[kind] ?? [];
+        mergeHistoryWindow(target, kind, incoming);
       }
     }
     // A newer state snapshot does not acknowledge events that have not been read.
@@ -1581,6 +1675,10 @@ function applyOperationSnapshot(next: any) {
     historyDone.value = {};
     historyNext.value = {};
     historyTruncated.value = {};
+    historyReading.value = {};
+    historyPinned.value = {};
+    historyNewUpdates.value = {};
+    historyOlderHidden.value = {};
   }
   selectedRun.value = snapshot;
 }
@@ -1598,6 +1696,11 @@ async function openRun(runId: string) {
     historyNext.value = {};
     historyErrors.value = {};
     historyTruncated.value = {};
+    historyReading.value = {};
+    historyPinned.value = {};
+    historyNewUpdates.value = {};
+    historyOlderHidden.value = {};
+    followProcess.value = true;
     selectedTaskNode.value = snapshot.tasks?.[0]?.run_id ?? null;
     await router.replace({ query: { ...route.query, workflow_run: runId } });
     if (disposed || read !== runRead) return;

@@ -395,6 +395,8 @@
     "loadEvents": "Load older events",
     "loadOlder": "Load older process",
     "reloadLatest": "Return to latest",
+    "newActivity": "New activity has arrived while you are reading.",
+    "olderHistoryHidden": "Older records have moved out of the live window; load earlier history to read them.",
     "historyWindow": "Only a bounded history window is shown. Return to latest to see newer records.",
     "readerTitle": "Agent process",
     "capabilityNote": "Only observed reasoning and execution details are shown. Missing information is unavailable; remote executors may expose only part of a run.",

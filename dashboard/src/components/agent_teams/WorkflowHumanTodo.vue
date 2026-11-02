@@ -2,21 +2,48 @@
   <v-card variant="outlined" class="my-3" data-testid="human-todo">
     <v-card-text>
       <strong>{{ todo.question }}</strong>
-      <p v-if="!restricted && (todo.run_name || todo.task_name)" class="text-body-2 mt-2" data-testid="human-origin">
-        {{ tm("human.run") }}: {{ todo.run_name }} · {{ tm("human.task") }}: {{ todo.task_name }}
+      <p
+        v-if="!restricted && (todo.run_name || todo.task_name)"
+        class="text-body-2 mt-2"
+        data-testid="human-origin"
+      >
+        {{ tm("human.run") }}: {{ todo.run_name }} · {{ tm("human.task") }}:
+        {{ todo.task_name }}
       </p>
       <p class="text-caption mt-2">
         {{ tm(`human.status.${todo.status}`)
-        }}<span v-if="!restricted"> · {{ todo.root_run_id }} / {{ todo.task_run_id }}</span>
+        }}<span v-if="!restricted">
+          · {{ todo.root_run_id }} / {{ todo.task_run_id }}</span
+        >
       </p>
-      <div v-if="todo.recommendation" class="mt-2" data-testid="human-recommendation">
-        <strong>{{ tm("human.recommendation") }}: {{ todo.recommendation.value }}</strong>
+      <div
+        v-if="todo.recommendation"
+        class="mt-2"
+        data-testid="human-recommendation"
+      >
+        <strong
+          >{{ tm(todo.kind === "approval" ? "human.recommendedAction" : "human.recommendation") }}:
+          {{
+            todo.kind === "approval" && todo.recommendation.value === "approve"
+              ? tm("human.approve")
+              : todo.kind === "approval" &&
+                todo.recommendation.value === "reject"
+              ? tm("human.returnForRevision")
+              : todo.recommendation.value
+          }}</strong
+        >
         <p>{{ todo.recommendation.reason }}</p>
       </div>
-      <p v-else-if="todo.recommendation_error" class="text-caption mt-2">{{ tm("human.recommendationMissing") }}</p>
+      <p v-else-if="todo.recommendation_error" class="text-caption mt-2">
+        {{ tm("human.recommendationMissing") }}
+      </p>
       <p v-if="!restricted && todo.recommendation_ref" class="text-caption">
-        {{ tm("human.recommendationSource") }}: {{ todo.recommendation_source_name }} · {{ todo.recommendation_ref.artifact_id }} ·
-        v{{ todo.recommendation_ref.version }} · {{ todo.recommendation_fields?.value }} /
+        {{ tm("human.recommendationSource") }}:
+        {{ todo.recommendation_source_name }} ·
+        {{ todo.recommendation_ref.artifact_id }} · v{{
+          todo.recommendation_ref.version
+        }}
+        · {{ todo.recommendation_fields?.value }} /
         {{ todo.recommendation_fields?.reason }}
       </p>
       <p v-if="paused && todo.status === 'answered'" class="mt-2">
@@ -93,7 +120,7 @@
         </template>
         <v-textarea
           v-model="feedback"
-          :label="tm('human.feedback')"
+          :label="tm(todo.kind === 'approval' ? 'human.reworkFeedback' : 'human.feedback')"
           data-testid="human-feedback"
         />
         <div class="d-flex flex-wrap ga-2">
@@ -110,10 +137,18 @@
           >
           <v-btn
             variant="text"
-            :disabled="busy || !feedback.trim()"
+            :disabled="
+              busy || !feedback.trim() || (todo.kind === 'approval' && !preview)
+            "
             data-testid="human-reject"
             @click="submit('reject')"
-            >{{ tm("human.reject") }}</v-btn
+            >{{
+              tm(
+                todo.kind === "approval"
+                  ? "human.returnForRevision"
+                  : "human.reject",
+              )
+            }}</v-btn
           >
         </div>
       </template>
@@ -152,7 +187,7 @@
 </template>
 
 <script setup lang="ts">
-import { onUnmounted, ref } from "vue";
+import { onUnmounted, ref, watch } from "vue";
 import { workflowAssetsApi } from "@/api/workflowAssets";
 import type { HumanAnswerRequest } from "@/api/generated/openapi-v1";
 import { useModuleI18n } from "@/i18n/composables";
@@ -183,15 +218,33 @@ const fileUrl = ref("");
 const requests = new Map<string, string>();
 let disposed = false;
 let fileRead = 0;
+let previewRead = 0;
+watch(
+  () => [
+    props.todo.todo_id,
+    props.todo.artifact_ref?.artifact_id,
+    props.todo.artifact_ref?.version,
+  ],
+  () => {
+    previewRead++;
+    preview.value = null;
+    error.value = "";
+    reading.value = false;
+    feedback.value = "";
+    answer.value = "";
+  },
+);
 const urls: string[] = [];
 
 function submit(action: HumanAnswerRequest["action"]) {
   if (props.busy || props.cancelled || props.todo.status !== "pending") return;
-  if (action === "approve" && !preview.value) return;
+  if (props.todo.kind === "approval" && !preview.value) return;
   const values = {
     action,
     answer: action === "answer" ? answer.value.trim() : null,
     feedback: feedback.value.trim() || null,
+    artifact_ref:
+      props.todo.kind === "approval" ? props.todo.artifact_ref : null,
   };
   if (
     (action === "reject" && !values.feedback) ||
@@ -216,6 +269,7 @@ async function readPreview() {
   if (reading.value) return;
   reading.value = true;
   error.value = "";
+  const read = ++previewRead;
   try {
     const artifact = props.previewLoader
       ? await props.previewLoader(props.todo.todo_id)
@@ -223,12 +277,12 @@ async function readPreview() {
           props.todo.artifact_ref.artifact_id,
           props.todo.artifact_ref.version,
         );
-    if (!disposed) preview.value = artifact;
+    if (!disposed && read === previewRead) preview.value = artifact;
   } catch (err) {
-    if (!disposed)
+    if (!disposed && read === previewRead)
       error.value = extractApiError(err, tm("errors.operationFailed")).message;
   } finally {
-    reading.value = false;
+    if (read === previewRead) reading.value = false;
   }
 }
 

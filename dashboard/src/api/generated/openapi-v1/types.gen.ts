@@ -840,6 +840,7 @@ export type HumanAnswerRequest = {
     action: 'answer' | 'approve' | 'reject';
     answer?: (string | null);
     feedback?: (string | null);
+    artifact_ref?: (ArtifactReference | null);
 };
 
 export type action2 = 'answer' | 'approve' | 'reject';

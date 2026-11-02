@@ -166,7 +166,11 @@ async def run_loop_scenario(
             "alice",
             run_id,
             todo["todo_id"],
-            {"request_id": "final-approval", "action": "approve"},
+            {
+                "request_id": "final-approval",
+                "action": "approve",
+                "artifact_ref": todo["artifact_ref"],
+            },
         )
         after = await service.get_run("alice", run_id)
         exported = await service.export_artifact("alice", **todo["artifact_ref"])

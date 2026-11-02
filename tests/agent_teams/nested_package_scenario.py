@@ -214,7 +214,11 @@ async def exercise_nested(
             "alice",
             original["run_id"],
             todo["todo_id"],
-            {"request_id": "approve-old", "action": "approve"},
+            {
+                "request_id": "approve-old",
+                "action": "approve",
+                "artifact_ref": todo["artifact_ref"],
+            },
         )
         exported_old = await service.export_artifact("alice", **todo["artifact_ref"])
         new = await service.start_run(
@@ -236,7 +240,11 @@ async def exercise_nested(
             "alice",
             new["run_id"],
             new_todo["todo_id"],
-            {"request_id": "approve-new", "action": "approve"},
+            {
+                "request_id": "approve-new",
+                "action": "approve",
+                "artifact_ref": new_todo["artifact_ref"],
+            },
         )
         new = await service.get_run("alice", new["run_id"])
         new_artifact = await service.read_artifact("alice", **new_todo["artifact_ref"])

@@ -463,7 +463,11 @@ async def test_browser_previews_only_the_version_named_by_its_approval_request(
     approved = await client.post(
         path + "/todos/" + todo["todo_id"] + "/answer",
         headers=headers,
-        json={"request_id": "approve-pinned", "action": "approve"},
+        json={
+            "request_id": "approve-pinned",
+            "action": "approve",
+            "artifact_ref": artifact,
+        },
     )
     assert approved.status_code == 200
     assert approved.json()["data"]["status"] == "completed"

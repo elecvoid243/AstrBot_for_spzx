@@ -166,6 +166,7 @@ describe("persistent human request handling", () => {
           action: "approve",
           answer: null,
           feedback: null,
+          artifact_ref: todo.artifact_ref,
         },
       ]);
       await wrapper.setProps({ todo: { ...todo, status: "approved" } });
@@ -179,6 +180,37 @@ describe("persistent human request handling", () => {
     }
   });
 
+  it("discards a stale preview when the request changes", async () => {
+    let resolve!: (value: any) => void;
+    api.artifact.mockReturnValue(
+      new Promise((done) => {
+        resolve = done;
+      }),
+    );
+    const wrapper = mount(WorkflowHumanTodo, {
+      props: { todo, busy: false, paused: false, cancelled: false },
+      global: { stubs },
+    });
+    try {
+      await wrapper.get('[data-testid="human-preview"]').trigger("click");
+      await wrapper.setProps({
+        todo: {
+          ...todo,
+          todo_id: "new",
+          artifact_ref: { artifact_id: "report", version: 2 },
+        },
+      });
+      resolve({ content: { text: "Old version" }, files: [] });
+      await flushPromises();
+      expect(wrapper.text()).not.toContain("Old version");
+      expect(
+        wrapper.get('[data-testid="human-submit"]').attributes("disabled"),
+      ).toBeDefined();
+    } finally {
+      wrapper.unmount();
+    }
+  });
+
   it("requires rejection feedback and reuses request identity on repeated submit", async () => {
     const wrapper = mount(WorkflowHumanTodo, {
       props: { todo, busy: false, paused: true, cancelled: false },
@@ -188,6 +220,12 @@ describe("persistent human request handling", () => {
       expect(
         wrapper.get('[data-testid="human-reject"]').attributes("disabled"),
       ).toBeDefined();
+      api.artifact.mockResolvedValue({
+        content: { text: "Report" },
+        files: [],
+      });
+      await wrapper.get('[data-testid="human-preview"]').trigger("click");
+      await flushPromises();
       await wrapper
         .get('[data-testid="human-feedback"]')
         .setValue("Missing evidence");

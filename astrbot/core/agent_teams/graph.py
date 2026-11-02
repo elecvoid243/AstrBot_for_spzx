@@ -440,6 +440,24 @@ def validate_graph(definition: GraphDefinition) -> None:
         if not exit_rule:
             seen.add((edge.source, edge.target))
             predecessors[edge.target].add(edge.source)
+        source_human = tasks[edge.source].human
+        if (
+            source_human
+            and source_human.kind == "approval"
+            and (
+                edge.condition is None
+                or edge.condition.field != "approved"
+                or edge.condition.operator != "eq"
+                or type(edge.condition.value) is not bool
+            )
+        ):
+            fields.append(
+                {
+                    "path": path + ".condition",
+                    "code": "CONDITION",
+                    "message": "Approval exits must select approve or reject",
+                }
+            )
         source_control = tasks[edge.source].control
         if source_control and (
             exit_rule or (source_control.kind == "condition" and not edge.condition)
@@ -589,7 +607,7 @@ def validate_graph(definition: GraphDefinition) -> None:
             )
             if any(recommendation):
                 try:
-                    if not all(recommendation) or human.kind != "question":
+                    if not all(recommendation):
                         raise ValueError(
                             "Select an upstream task and both recommendation fields"
                         )

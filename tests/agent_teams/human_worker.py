@@ -201,7 +201,11 @@ async def run_human_scenario(
                 "alice",
                 run["run_id"],
                 run["todos"][0]["todo_id"],
-                {"request_id": "answer", "action": "approve"}
+                {
+                    "request_id": "answer",
+                    "action": "approve",
+                    "artifact_ref": run["todos"][0]["artifact_ref"],
+                }
                 if scenario.startswith("human_approval")
                 else {"request_id": "answer", "action": "answer", "answer": "Asia"},
             )
@@ -242,7 +246,11 @@ async def run_human_scenario(
             current = await service.get_run("alice", run_id)
         todo = current["todos"][0]
         answer = (
-            {"request_id": "answer", "action": "approve"}
+            {
+                "request_id": "answer",
+                "action": "approve",
+                "artifact_ref": todo["artifact_ref"],
+            }
             if todo["kind"] == "approval"
             else {"request_id": "answer", "action": "answer", "answer": "Asia"}
         )

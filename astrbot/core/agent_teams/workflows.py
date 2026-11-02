@@ -823,6 +823,7 @@ class HumanAnswerRequest(BaseModel):
     action: Literal["answer", "approve", "reject"]
     answer: str | None = Field(default=None, min_length=1, max_length=100_000)
     feedback: str | None = Field(default=None, min_length=1, max_length=100_000)
+    artifact_ref: ArtifactReference | None = None
 
 
 def _current_task_runs(run: AgentWorkflowRun) -> dict[str, str]:
@@ -7446,7 +7447,11 @@ class WorkflowService:
                     if todo.data["kind"] == "approval":
                         result["approved"] = not rejected
                     row.result = result
-                    row.status = "rejected" if rejected else "completed"
+                    row.status = (
+                        "rejected"
+                        if rejected and todo.data["kind"] != "approval"
+                        else "completed"
+                    )
                     row.state = {
                         **row.state,
                         "reason": response.get("feedback") if rejected else None,
@@ -7721,8 +7726,17 @@ class WorkflowService:
                                         and reason.strip()
                                         and len(choice) <= human["max_length"]
                                         and (
-                                            not human["choices"]
-                                            or choice in human["choices"]
+                                            (
+                                                human["kind"] == "approval"
+                                                and choice in {"approve", "reject"}
+                                            )
+                                            or (
+                                                human["kind"] == "question"
+                                                and (
+                                                    not human["choices"]
+                                                    or choice in human["choices"]
+                                                )
+                                            )
                                         )
                                     ):
                                         recommendation = {
@@ -8075,7 +8089,39 @@ class WorkflowService:
                             and selected is not None
                             and selected.status == "completed"
                             and selected.result is not None
+                            and not (
+                                (
+                                    selected.snapshot["definition"].get("human") or {}
+                                ).get("kind")
+                                == "approval"
+                                and selected.result.get("approved") is False
+                            )
                         )
+                    approval_missing = False
+                    if success and not root.snapshot.get("team_definition"):
+                        result_ref = selected.state.get("child_result_ref") or {
+                            "artifact_id": selected.run_id,
+                            "version": 1,
+                        }
+                        for definition_task in root.snapshot["definition"]["tasks"]:
+                            human = definition_task.get("human") or {}
+                            if (
+                                human.get("kind") != "approval"
+                                or human.get("artifact_task_id") != result_id
+                            ):
+                                continue
+                            approval_row = rows[definition_task["id"]]
+                            approval = await session.get(
+                                AgentWorkflowTodo, approval_row.run_id
+                            )
+                            if (
+                                approval is None
+                                or approval.data.get("status") != "approved"
+                                or approval.data.get("artifact_ref") != result_ref
+                            ):
+                                approval_missing = True
+                                success = False
+                                break
                     root.status = "completed" if success else "blocked"
                     root.state = {
                         **root.state,
@@ -8089,6 +8135,17 @@ class WorkflowService:
                             or selected.result is None
                             and selected.status == "completed"
                         )
+                        else "The selected result version has not been approved."
+                        if approval_missing
+                        else "The selected approval was rejected; connect an approved delivery or a bounded rework path."
+                        if not root.snapshot.get("team_definition")
+                        and selected is not None
+                        and (selected.snapshot["definition"].get("human") or {}).get(
+                            "kind"
+                        )
+                        == "approval"
+                        and selected.result is not None
+                        and selected.result.get("approved") is False
                         else "One or more branches require attention; independent branches were allowed to finish.",
                     }
                     if success:
@@ -8176,16 +8233,33 @@ class WorkflowService:
             if username not in todo.data.get("answerable_by", []):
                 raise RoleAssetError("Human request not found", status=404)
             decision = request.model_dump()
+            if todo.data["kind"] == "approval":
+                if decision["artifact_ref"] != todo.data["artifact_ref"]:
+                    raise RoleAssetError(
+                        "Artifact version does not match the human request", status=409
+                    )
+            elif request.artifact_ref is not None:
+                raise RoleAssetError("Questions cannot approve an artifact")
             previous = todo.data["response"]
             if previous is not None:
                 if any(
                     previous.get(key) != decision[key]
-                    for key in ("action", "answer", "feedback")
+                    for key in ("action", "answer", "feedback", "artifact_ref")
                 ):
                     raise RoleAssetError("Human request already answered", status=409)
             else:
                 if control.status == "cancelled":
                     raise RoleAssetError("Run was cancelled", status=409)
+                if todo.data["kind"] == "approval":
+                    ref = todo.data["artifact_ref"]
+                    artifact = await session.get(
+                        AgentWorkflowArtifact, (ref["artifact_id"], ref["version"])
+                    )
+                    if artifact is None:
+                        raise RoleAssetError(
+                            "The requested artifact version is not available; create the revision before deciding",
+                            status=409,
+                        )
                 if request.action == "reject":
                     if not request.feedback or request.answer is not None:
                         raise RoleAssetError(
@@ -8195,15 +8269,6 @@ class WorkflowService:
                     if request.action != "approve" or request.answer is not None:
                         raise RoleAssetError(
                             "Choose approve or reject for this exact version"
-                        )
-                    ref = todo.data["artifact_ref"]
-                    artifact = await session.get(
-                        AgentWorkflowArtifact, (ref["artifact_id"], ref["version"])
-                    )
-                    if artifact is None:
-                        raise RoleAssetError(
-                            "The requested artifact version is not available; create the revision before approving",
-                            status=409,
                         )
                 elif request.action != "answer" or not request.answer:
                     raise RoleAssetError("Provide an answer to this question")

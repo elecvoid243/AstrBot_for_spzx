@@ -10,7 +10,7 @@
       role="button"
       :aria-label="tm('editor.handleTarget')"
     />
-    <template v-if="data.controlKind === 'condition' && data.interactive !== false">
+    <template v-if="(data.controlKind === 'condition' || data.approval) && data.interactive !== false">
       <span class="control-exit control-exit-true">{{ data.trueLabel }}</span>
       <Handle id="matched-true" type="source" :position="Position.Right" class="at-node-handle control-handle-true" :aria-label="data.trueLabel" />
       <span class="control-exit control-exit-false">{{ data.falseLabel }}</span>
@@ -90,6 +90,7 @@ export interface MemberFlowNodeData {
   error?: string;
   configLabel?: string;
   personaLabel?: string;
+  approval?: boolean;
   controlKind?: string;
   trueLabel?: string;
   falseLabel?: string;

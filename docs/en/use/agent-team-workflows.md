@@ -284,12 +284,18 @@ You can save a verified result, verified failure, explicit tool retry or reconci
 
 1. Open **Assets → Workflows → New Workflow / Edit Asset**. Add **Human question** or **Version approval** from **Role toolbox**. Human nodes require no model or role. Enter the question, allowed answers (one per line, or empty for free text) and maximum answer length.
 2. For approval, select the upstream **Artifact task** and exact **Artifact version**, and connect the artifact task as a dependency. Save a new asset version and start it; existing runs retain their definition.
-3. Open **Runs → View Run → Human requests**. Questions, constraints, task, Attempt and approval references persist. Waiting releases capacity and blocks only dependent paths. Independent branches continue; select their progress entries to read results.
-4. Choose or enter an answer and select **Submit answer**. For approval, first **Preview approval version** to read the complete pinned content, then **Approve this version**. Files can be previewed. **Reject with feedback** requires feedback, preserves rejection evidence and blocks the affected path. This does not create a revision loop.
+3. Open **Runs → View Run → Human requests**. Questions, constraints, task, Attempt and approval references persist. An optional recommendation and reason come from explicitly selected upstream Agent fields. Waiting releases capacity and blocks only dependent paths. Independent branches continue; select their progress entries to read results.
+4. Choose or enter an answer and select **Submit answer**. For approval, first **Preview approval version** to read the complete pinned content, then **Approve this version**. Files can be previewed. **Return for revision** requires a preview and feedback. Connect the approval node’s named Approve and Reject outlets to explicit paths; rejection does not rerun the author. Place the author and approval in a bounded loop and map the rejection feedback to the next round for rework.
 5. **Export approved version** downloads JSON containing complete content and exact file references; after previewing, download files of that version. File downloads for an artifact governed by an approval node reject unapproved versions. Creating v2 never inherits v1 approval, changes its preview or automatically reruns downstream tasks.
 6. Refresh or reopen after restart to continue handling requests. Repeated identical answers are consumed once; another answer cannot replace one already saved. You may answer while globally paused: **Response saved. It will be consumed after the whole run continues.** Continuing preserves unanswered requests; cancellation retains requests and response history while preventing further consumption. Ordinary task retry cannot replace human answers.
 
 If the requested revision does not exist yet, the request retains that exact version; preview and approval explain that it is unavailable. Explicitly create the required revision on the artifact task, then preview and approve the original request. The service does not substitute v1 or the latest version, and no new Attempt is needed.
+
+![Named approval and return outlets in the canvas](/images/agent-teams-approval-canvas-en.jpg)
+
+![Approval request and its pinned version in an isolated component example](/images/agent-teams-approval-en.jpg)
+
+This screenshot uses sample data in the actual component; it is not a full backend integration run.
 
 ## Single-task assets
 

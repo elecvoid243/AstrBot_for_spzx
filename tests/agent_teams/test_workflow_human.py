@@ -188,7 +188,7 @@ async def test_approval_and_export_remain_bound_to_previewed_version(workflow_en
         "alice",
         run["run_id"],
         todo["todo_id"],
-        {"request_id": "approval-v1", "action": "approve"},
+        {"request_id": "approval-v1", "action": "approve", "artifact_ref": ref},
     )
     assert answered["status"] == "completed"
     assert await service.export_artifact("alice", **ref) == preview
@@ -208,7 +208,12 @@ async def test_approval_and_export_remain_bound_to_previewed_version(workflow_en
             "alice",
             run["run_id"],
             todo["todo_id"],
-            {"request_id": "different", "action": "reject", "feedback": "No"},
+            {
+                "request_id": "different",
+                "action": "reject",
+                "feedback": "No",
+                "artifact_ref": ref,
+            },
         )
 
 
@@ -580,7 +585,23 @@ async def test_requested_revision_can_be_supplied_after_approval_wait_begins(
             "alice",
             run["run_id"],
             todo["todo_id"],
-            {"request_id": "approve", "action": "approve"},
+            {
+                "request_id": "approve",
+                "action": "approve",
+                "artifact_ref": todo["artifact_ref"],
+            },
+        )
+    with pytest.raises(RoleAssetError):
+        await service.answer_todo(
+            "alice",
+            run["run_id"],
+            todo["todo_id"],
+            {
+                "request_id": "reject-unavailable",
+                "action": "reject",
+                "feedback": "Revise",
+                "artifact_ref": todo["artifact_ref"],
+            },
         )
     with pytest.raises(RoleAssetError):
         await service.recover_run("alice", todo["task_run_id"])
@@ -602,7 +623,11 @@ async def test_requested_revision_can_be_supplied_after_approval_wait_begins(
         "alice",
         run["run_id"],
         todo["todo_id"],
-        {"request_id": "approve", "action": "approve"},
+        {
+            "request_id": "approve",
+            "action": "approve",
+            "artifact_ref": todo["artifact_ref"],
+        },
     )
     assert approved["status"] == "completed"
     assert (await service.export_artifact("alice", **todo["artifact_ref"]))[

@@ -477,7 +477,11 @@ async def test_child_wait_or_failure_leaves_independent_branch_ready(
             "alice",
             run["run_id"],
             todo["todo_id"],
-            {"action": "approve", "request_id": "approval"},
+            {
+                "action": "approve",
+                "request_id": "approval",
+                "artifact_ref": todo["artifact_ref"],
+            },
         )
         assert answered["todos"][0]["status"] == "answered"
         assert answered["tasks"][0]["status"] == "waiting_child"

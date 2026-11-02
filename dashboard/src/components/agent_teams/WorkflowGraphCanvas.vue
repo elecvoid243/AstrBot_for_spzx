@@ -698,28 +698,43 @@
                   checkpoint();
                 "
               />
-              <v-select
-                v-model="selectedTask.human.recommendation_task_id"
-                clearable
-                :items="draft.tasks.filter((task) => task.id !== selectedTask?.id && !task.human && !task.control && !task.team && !task.workflow).map((task) => ({ title: task.name, value: task.id }))"
-                :label="tm('human.recommendationTask')"
-                @update:model-value="
-                  !$event && (selectedTask.human.recommendation_value_field = null, selectedTask.human.recommendation_reason_field = null);
-                  checkpoint();
-                "
+            </template>
+            <v-select
+              v-model="selectedTask.human.recommendation_task_id"
+              clearable
+              :items="
+                draft.tasks
+                  .filter(
+                    (task) =>
+                      task.id !== selectedTask?.id &&
+                      !task.human &&
+                      !task.control &&
+                      !task.team &&
+                      !task.workflow,
+                  )
+                  .map((task) => ({ title: task.name, value: task.id }))
+              "
+              :label="tm('human.recommendationTask')"
+              @update:model-value="
+                !$event &&
+                  ((selectedTask.human.recommendation_value_field = null),
+                  (selectedTask.human.recommendation_reason_field = null));
+                checkpoint();
+              "
+            />
+            <template v-if="selectedTask.human.recommendation_task_id">
+              <v-text-field
+                v-model="selectedTask.human.recommendation_value_field"
+                :label="tm('human.recommendationValueField')"
+                @update:model-value="checkpoint"
               />
-              <template v-if="selectedTask.human.recommendation_task_id">
-                <v-text-field
-                  v-model="selectedTask.human.recommendation_value_field"
-                  :label="tm('human.recommendationValueField')"
-                  @update:model-value="checkpoint"
-                />
-                <v-text-field
-                  v-model="selectedTask.human.recommendation_reason_field"
-                  :label="tm('human.recommendationReasonField')"
-                  @update:model-value="checkpoint"
-                />
-              </template>
+              <v-text-field
+                v-model="selectedTask.human.recommendation_reason_field"
+                :label="tm('human.recommendationReasonField')"
+                @update:model-value="checkpoint"
+              />
+            </template>
+            <template v-if="selectedTask.human.kind === 'question'">
               <v-text-field
                 v-model.number="selectedTask.human.max_length"
                 type="number"
@@ -799,7 +814,11 @@
                 @update:model-value="resetControlValue"
               />
               <v-btn
-                v-if="!selectedTask.control && !selectedTask.team && !selectedTask.workflow"
+                v-if="
+                  !selectedTask.control &&
+                  !selectedTask.team &&
+                  !selectedTask.workflow
+                "
                 variant="text"
                 size="small"
                 color="error"
@@ -811,7 +830,11 @@
               >
             </div>
             <v-btn
-              v-if="!selectedTask.control && !selectedTask.team && !selectedTask.workflow"
+              v-if="
+                !selectedTask.control &&
+                !selectedTask.team &&
+                !selectedTask.workflow
+              "
               variant="tonal"
               size="small"
               @click="addInput"
@@ -987,11 +1010,23 @@
             }}
           </p>
           <v-select
-            v-if="edgeSourceControl"
+            v-if="edgeSourceControl || edgeSourceApproval"
             :model-value="selectedEdge.condition?.value"
             :items="[
-              { title: tm('graph.trueExit'), value: true },
-              { title: tm('graph.falseExit'), value: false },
+              {
+                title: tm(
+                  edgeSourceApproval ? 'human.approve' : 'graph.trueExit',
+                ),
+                value: true,
+              },
+              {
+                title: tm(
+                  edgeSourceApproval
+                    ? 'human.returnForRevision'
+                    : 'graph.falseExit',
+                ),
+                value: false,
+              },
             ]"
             :label="tm('graph.exit')"
             data-testid="edge-exit"
@@ -1005,7 +1040,13 @@
             density="compact"
             @update:model-value="toggleCondition"
           />
-          <template v-if="selectedEdge.condition && !edgeSourceControl">
+          <template
+            v-if="
+              selectedEdge.condition &&
+              !edgeSourceControl &&
+              !edgeSourceApproval
+            "
+          >
             <v-text-field
               v-model="selectedEdge.condition.field"
               :label="tm('graph.field')"
@@ -1411,6 +1452,11 @@ const edgeSourceControl = computed(
     draft.value.tasks.find((task) => task.id === selectedEdge.value?.source)
       ?.control?.kind === "condition",
 );
+const edgeSourceApproval = computed(
+  () =>
+    draft.value.tasks.find((task) => task.id === selectedEdge.value?.source)
+      ?.human?.kind === "approval",
+);
 const controlValueType = computed(() => {
   const ref = selectedTask.value?.inputs?.value;
   if (!ref || ref.input != null) return "string";
@@ -1452,7 +1498,11 @@ function setControlValue(value: any) {
 }
 function setEdgeExit(value: string | number | boolean) {
   if (!selectedEdge.value || typeof value !== "boolean") return;
-  selectedEdge.value.condition = { field: "matched", operator: "eq", value };
+  selectedEdge.value.condition = {
+    field: edgeSourceApproval.value ? "approved" : "matched",
+    operator: "eq",
+    value,
+  };
   checkpoint();
 }
 const taskNodes = computed<FlowNode[]>(() =>
@@ -1469,8 +1519,15 @@ const taskNodes = computed<FlowNode[]>(() =>
       data: {
         label: task.name,
         controlKind: task.control?.kind,
-        trueLabel: tm("graph.trueExit"),
-        falseLabel: tm("graph.falseExit"),
+        approval: task.human?.kind === "approval",
+        trueLabel: tm(
+          task.human?.kind === "approval" ? "human.approve" : "graph.trueExit",
+        ),
+        falseLabel: tm(
+          task.human?.kind === "approval"
+            ? "human.returnForRevision"
+            : "graph.falseExit",
+        ),
         memberName: task.control
           ? tm(
               task.control.kind === "condition"
@@ -1664,14 +1721,29 @@ const edges = computed(() =>
         source: sourceGroup ? `loop:${sourceGroup.id}` : edge.source,
         target: targetGroup ? `loop:${targetGroup.id}` : edge.target,
         sourceHandle:
-          draft.value.tasks.find((task) => task.id === edge.source)?.control
-            ?.kind === "condition" && edge.condition
+          (draft.value.tasks.find((task) => task.id === edge.source)?.control
+            ?.kind === "condition" ||
+            draft.value.tasks.find((task) => task.id === edge.source)?.human
+              ?.kind === "approval") &&
+          edge.condition
             ? `matched-${edge.condition.value}`
             : undefined,
         label:
-          draft.value.tasks.find((task) => task.id === edge.source)?.control
-            ?.kind === "condition" && edge.condition
-            ? tm(edge.condition.value ? "graph.trueExit" : "graph.falseExit")
+          (draft.value.tasks.find((task) => task.id === edge.source)?.control
+            ?.kind === "condition" ||
+            draft.value.tasks.find((task) => task.id === edge.source)?.human
+              ?.kind === "approval") &&
+          edge.condition
+            ? tm(
+                draft.value.tasks.find((task) => task.id === edge.source)?.human
+                  ?.kind === "approval"
+                  ? edge.condition.value
+                    ? "human.approve"
+                    : "human.returnForRevision"
+                  : edge.condition.value
+                  ? "graph.trueExit"
+                  : "graph.falseExit",
+              )
             : edge.condition
             ? `${edge.condition.field} ${
                 edge.condition.operator
@@ -2085,9 +2157,15 @@ function connect({
   ) {
     const condition =
       draft.value.tasks.find((task) => task.id === from)?.control?.kind ===
-      "condition"
+        "condition" ||
+      draft.value.tasks.find((task) => task.id === from)?.human?.kind ===
+        "approval"
         ? {
-            field: "matched",
+            field:
+              draft.value.tasks.find((task) => task.id === from)?.human
+                ?.kind === "approval"
+                ? "approved"
+                : "matched",
             operator: "eq" as const,
             value: sourceHandle !== "matched-false",
           }

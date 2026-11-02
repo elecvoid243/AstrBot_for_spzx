@@ -67,7 +67,10 @@ class TeamManageTool(FunctionTool):
                 )
                 + ". call_workflow requires an allowed asset_id, exact version, name, "
                 "and all declared text inputs; optional input_artifacts must be visible "
-                "exact versions. It returns task_id; wait for that task before reading "
+                "exact versions and record provenance only. Child tasks receive the "
+                "declared text inputs, not permission to read these artifacts or files. "
+                "Read selected content first and pass it explicitly in inputs. "
+                "It returns task_id; wait for that task before reading "
                 "its result. Allowed workflows: "
                 + json.dumps(allowed_workflows or {}, ensure_ascii=False)
             ),

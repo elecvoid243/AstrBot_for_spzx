@@ -292,6 +292,7 @@ async def test_confirmed_browser_loses_read_and_answer_access_after_source_chang
         {
             "definition": {
                 "name": "Waiting",
+                "result_task_id": "question",
                 "tasks": [
                     {
                         "id": "question",
@@ -380,6 +381,7 @@ async def test_browser_previews_only_the_version_named_by_its_approval_request(
         {
             "definition": {
                 "name": "Report approval",
+                "result_task_id": "approval",
                 "tasks": [
                     {
                         "id": "report",
@@ -494,6 +496,7 @@ async def test_other_authorized_group_sender_cannot_connect_or_read_the_initiato
         {
             "definition": {
                 "name": "Group question",
+                "result_task_id": "question",
                 "tasks": [
                     {
                         "id": "question",

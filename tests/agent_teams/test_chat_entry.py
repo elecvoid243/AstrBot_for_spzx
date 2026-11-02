@@ -15,12 +15,12 @@ from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
     AiocqhttpMessageEvent,
 )
 from astrbot.core.star.filter.command import CommandFilter
+from astrbot.core.star.star import StarMetadata, star_map
 from astrbot.core.star.star_handler import (
     EventType,
     StarHandlerMetadata,
     star_handlers_registry,
 )
-from astrbot.core.star.star import StarMetadata, star_map
 from tests.agent_teams.test_chat_invocations import chat_env as chat_env
 
 
@@ -44,10 +44,19 @@ async def test_onebot_command_uses_platform_sender_source_and_named_inputs(
         {
             "definition": {
                 "name": "Report",
-                "role_id": role["role_id"],
-                "role_version": 1,
                 "required_inputs": ["topic"],
-                "task": "Research {topic}",
+                "result_task_id": "report",
+                "tasks": [
+                    {
+                        "id": "report",
+                        "name": "Report",
+                        "member": "writer",
+                        "role_id": role["role_id"],
+                        "role_version": 1,
+                        "task": "Research {topic}",
+                        "inputs": {"topic": {"input": "topic"}},
+                    }
+                ],
             }
         },
     )

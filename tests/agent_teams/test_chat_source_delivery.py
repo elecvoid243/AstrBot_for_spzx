@@ -148,6 +148,7 @@ async def test_cold_qq_preserves_notifications_until_its_source_recovers(chat_en
         {
             "definition": {
                 "name": "Source receipt",
+                "result_task_id": "question",
                 "tasks": [
                     {
                         "id": "question",
@@ -280,6 +281,7 @@ async def test_background_delivery_retains_pending_notices_when_audience_is_unkn
         {
             "definition": {
                 "name": "Private",
+                "result_task_id": "answer",
                 "tasks": [
                     {
                         "id": "answer",
@@ -386,6 +388,7 @@ async def test_wecom_asset_reply_uses_original_response_and_reconnects_after_exp
         {
             "definition": {
                 "name": "Private",
+                "result_task_id": "answer",
                 "tasks": [
                     {
                         "id": "answer",
@@ -514,6 +517,7 @@ async def test_wecom_http_asset_notices_require_an_advertised_response_stream(
         {
             "definition": {
                 "name": "Private",
+                "result_task_id": "answer",
                 "tasks": [
                     {
                         "id": "answer",
@@ -655,6 +659,7 @@ async def test_ambiguous_platform_sources_cannot_read_or_invoke_an_opened_asset(
         {
             "definition": {
                 "name": "Private",
+                "result_task_id": "answer",
                 "tasks": [
                     {
                         "id": "answer",

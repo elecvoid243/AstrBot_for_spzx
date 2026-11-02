@@ -39,8 +39,12 @@ async def test_team_launch_freezes_allowed_roles_without_creating_unused_context
     coordinator = await roles.save_role(
         "alice",
         {
-            "definition": {"name": "Coordinator", "prompt": "Coordinate evidence"},
-            "installation": {"bindings": {"model": "model"}},
+            "definition": {
+                "name": "Coordinator",
+                "prompt": "Coordinate evidence",
+                "provider_id": "model",
+            },
+            "installation": {"profile_id": "default"},
         },
     )
     writer = await roles.save_role(
@@ -49,9 +53,10 @@ async def test_team_launch_freezes_allowed_roles_without_creating_unused_context
             "definition": {
                 "name": "Writer",
                 "prompt": "Original evidence",
+                "provider_id": "model",
                 "max_instances": 2,
             },
-            "installation": {"bindings": {"model": "model"}},
+            "installation": {"profile_id": "default"},
         },
     )
     blocked = asyncio.Event()
@@ -81,11 +86,16 @@ async def test_team_launch_freezes_allowed_roles_without_creating_unused_context
                     "kind": "autonomous",
                     "name": "Research team",
                     "coordinator": {
+                        "id": "coordinator",
                         "role_id": coordinator["role_id"],
                         "role_version": 1,
                     },
                     "allowed_roles": [
-                        {"role_id": writer["role_id"], "role_version": 1}
+                        {
+                            "id": "writer",
+                            "role_id": writer["role_id"],
+                            "role_version": 1,
+                        }
                     ],
                     "max_members": 3,
                     "max_parallel": 1,
@@ -101,7 +111,7 @@ async def test_team_launch_freezes_allowed_roles_without_creating_unused_context
         assert len(run["tasks"]) == 1
         assert run["tasks"][0]["snapshot"]["coordinator"] is True
         assert (
-            run["snapshot"]["allowed_roles"][writer["role_id"]]["effective"]["prompt"]
+            run["snapshot"]["allowed_roles"]["writer"]["effective"]["prompt"]
             == "Original evidence"
         )
         assert len(await db.get_platform_sessions_by_creator("alice")) == 1
@@ -242,8 +252,14 @@ async def team_env(tmp_path):
             "definition": {
                 "kind": "autonomous",
                 "name": "Team",
-                "coordinator": {"id": "coordinator", "role_id": coordinator["role_id"], "role_version": 1},
-                "allowed_roles": [{"id": "writer", "role_id": writer["role_id"], "role_version": 1}],
+                "coordinator": {
+                    "id": "coordinator",
+                    "role_id": coordinator["role_id"],
+                    "role_version": 1,
+                },
+                "allowed_roles": [
+                    {"id": "writer", "role_id": writer["role_id"], "role_version": 1}
+                ],
                 "max_parallel": 1,
                 "max_members": 3,
                 "max_tasks": 8,
@@ -383,11 +399,16 @@ async def test_team_overviews_preserve_member_identities_without_frozen_prompts(
             "definition": {
                 **env.asset["definition"],
                 "coordinator": {
+                    "id": "coordinator",
                     "role_id": env.coordinator["role_id"],
                     "role_version": 2,
                 },
                 "allowed_roles": [
-                    {"role_id": env.writer["role_id"], "role_version": 2}
+                    {
+                        "id": "writer",
+                        "role_id": env.writer["role_id"],
+                        "role_version": 2,
+                    }
                 ],
             }
         },
@@ -409,7 +430,7 @@ async def test_team_overviews_preserve_member_identities_without_frozen_prompts(
                         None,
                         action="create_member",
                         request_id=f"member-{index}",
-                        role_id=env.writer["role_id"],
+                        preset_id="writer",
                         name=f"Writer {index}",
                     )
                 )["member_id"]
@@ -509,7 +530,7 @@ async def test_coordinator_creates_two_instances_dispatches_and_reads_complete_r
             request = {
                 "action": "create_member",
                 "request_id": f"member-{i}",
-                "role_id": env.writer["role_id"],
+                "preset_id": "writer",
                 "name": f"Writer {i}",
             }
             created = json.loads(await manage.call(None, **request))
@@ -625,7 +646,7 @@ async def test_required_team_approval_blocks_root_completion(team_env):
                 None,
                 action="create_member",
                 request_id="member",
-                role_id=env.writer["role_id"],
+                preset_id="writer",
                 name="Writer",
             )
         )
@@ -715,7 +736,7 @@ async def test_runtime_authority_limits_and_frozen_templates_are_enforced(team_e
             None,
             action="create_member",
             request_id="forbidden",
-            role_id=env.coordinator["role_id"],
+            preset_id="coordinator",
             name="Unauthorized",
         )
         members = []
@@ -726,7 +747,7 @@ async def test_runtime_authority_limits_and_frozen_templates_are_enforced(team_e
                         None,
                         action="create_member",
                         request_id=f"member-{index}",
-                        role_id=env.writer["role_id"],
+                        preset_id="writer",
                         name=f"Writer {index}",
                     )
                 )["member_id"]
@@ -735,7 +756,7 @@ async def test_runtime_authority_limits_and_frozen_templates_are_enforced(team_e
             None,
             action="create_member",
             request_id="overflow",
-            role_id=env.writer["role_id"],
+            preset_id="writer",
             name="Writer 3",
         )
         task = json.loads(
@@ -783,7 +804,7 @@ async def test_runtime_authority_limits_and_frozen_templates_are_enforced(team_e
                 {
                     "action": "create_member",
                     "request_id": "attack",
-                    "role_id": env.writer["role_id"],
+                    "preset_id": "writer",
                     "name": "Attack",
                 },
             )
@@ -844,7 +865,7 @@ async def test_whole_run_controls_apply_while_coordinator_waits(team_env, decisi
                     None,
                     action="create_member",
                     request_id=f"member-{index}",
-                    role_id=env.writer["role_id"],
+                    preset_id="writer",
                     name=f"Writer {index}",
                 )
             )

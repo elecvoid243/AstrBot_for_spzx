@@ -10252,13 +10252,8 @@ components:
 
     RoleDefinition:
       additionalProperties: false
-      description: Portable role content; resource names refer to logical slots.
+      description: Role content with direct resource identities.
       properties:
-        migration:
-          anyOf:
-          - $ref: '#/components/schemas/MigrationState'
-          - type: 'null'
-          default: null
         prompt:
           anyOf:
           - maxLength: 100000
@@ -10266,6 +10261,22 @@ components:
           - type: 'null'
           default: null
           title: Prompt
+        provider_id:
+          anyOf:
+          - maxLength: 128
+            minLength: 1
+            type: string
+          - type: 'null'
+          default: null
+          title: Provider Id
+        persona_id:
+          anyOf:
+          - maxLength: 128
+            minLength: 1
+            type: string
+          - type: 'null'
+          default: null
+          title: Persona Id
         tools:
           anyOf:
           - items:
@@ -10362,20 +10373,6 @@ components:
           maxLength: 2000
           title: Description
           type: string
-        model_slot:
-          default: model
-          maxLength: 128
-          minLength: 1
-          title: Model Slot
-          type: string
-        persona_slot:
-          anyOf:
-          - maxLength: 128
-            minLength: 1
-            type: string
-          - type: 'null'
-          default: null
-          title: Persona Slot
         model_capabilities:
           items:
             enum:
@@ -10409,16 +10406,6 @@ components:
           minLength: 1
           title: Profile Id
           type: string
-        bindings:
-          additionalProperties:
-            maxLength: 128
-            minLength: 1
-            type: string
-          propertyNames:
-            maxLength: 128
-            minLength: 1
-          title: Bindings
-          type: object
       title: RoleInstallation
       type: object
     RoleSaveRequest:
@@ -10442,7 +10429,7 @@ components:
       type: object
     RoleOverrides:
       additionalProperties: false
-      description: Optional configuration; null inherits and an empty list disables.
+      description: Optional configuration; lists inherit on null and disable when empty.
       properties:
         prompt:
           anyOf:
@@ -10451,6 +10438,22 @@ components:
           - type: 'null'
           default: null
           title: Prompt
+        provider_id:
+          anyOf:
+          - maxLength: 128
+            minLength: 1
+            type: string
+          - type: 'null'
+          default: null
+          title: Provider Id
+        persona_id:
+          anyOf:
+          - maxLength: 128
+            minLength: 1
+            type: string
+          - type: 'null'
+          default: null
+          title: Persona Id
         tools:
           anyOf:
           - items:

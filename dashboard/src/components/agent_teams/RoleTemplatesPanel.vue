@@ -37,7 +37,7 @@
             {{
               role.definition.description ||
               role.definition.prompt ||
-              tm("roles.personaPrompt")
+              tm("roles.none")
             }}
           </p>
           <v-chip
@@ -61,10 +61,7 @@
           </p>
           <p v-else class="text-caption mt-2">
             {{ tm("roles.model") }}:
-            {{
-              role.installation.bindings[role.definition.model_slot] ||
-              tm("roles.unbound")
-            }}
+            {{ role.definition.provider_id || tm("roles.unbound") }}
           </p>
         </v-card-text>
         <v-card-actions
@@ -126,14 +123,7 @@
                     tm("roles.responsibility")
                   }}</v-expansion-panel-title>
                   <v-expansion-panel-text>
-                    <v-select
-                      v-model="promptMode"
-                      :items="promptModes"
-                      :label="tm('roles.promptSource')"
-                      :aria-label="tm('roles.promptSource')"
-                    />
                     <v-textarea
-                      v-if="promptMode === 'inline'"
                       data-testid="role-prompt"
                       data-issue-path="definition.prompt"
                       v-model="definition.prompt"
@@ -141,27 +131,16 @@
                       rows="4"
                       :error-messages="fieldErrors('definition.prompt')"
                     />
-                    <v-text-field
-                      data-issue-path="definition.persona_slot"
-                      v-model="definition.persona_slot"
-                      :label="tm('roles.personaSlot')"
-                      clearable
-                    />
                     <v-select
-                      v-if="definition.persona_slot"
-                      :data-issue-path="`installation.bindings.${definition.persona_slot}`"
-                      v-model="installation.bindings[definition.persona_slot]"
+                      data-issue-path="definition.persona_id"
+                      v-model="definition.persona_id"
                       :items="catalog.personas"
                       item-title="name"
                       item-value="id"
                       :label="tm('roles.localPersona')"
                       :aria-label="tm('roles.localPersona')"
                       clearable
-                      :error-messages="
-                        fieldErrors(
-                          `installation.bindings.${definition.persona_slot}`,
-                        )
-                      "
+                      :error-messages="fieldErrors('definition.persona_id')"
                     />
                     <p class="text-caption">{{ tm("roles.exportNotice") }}</p>
                   </v-expansion-panel-text>
@@ -181,32 +160,20 @@
                       :aria-label="tm('roles.profile')"
                       :error-messages="fieldErrors('installation.profile_id')"
                     />
-                    <v-text-field
-                      v-if="
-                        (selectedProfile?.runner_type ?? 'local') === 'local'
-                      "
-                      v-model="definition.model_slot"
-                      data-issue-path="definition.model_slot"
-                      :label="tm('roles.modelSlot')"
-                      :error-messages="fieldErrors('definition.model_slot')"
-                    />
                     <v-select
                       v-if="
-                        (selectedProfile?.runner_type ?? 'local') === 'local'
+                        (selectedProfile?.runner_type ?? 'local') === 'local' ||
+                        definition.provider_id
                       "
-                      v-model="installation.bindings[definition.model_slot]"
-                      :data-issue-path="`installation.bindings.${definition.model_slot}`"
+                      v-model="definition.provider_id"
+                      data-issue-path="definition.provider_id"
                       :items="catalog.models"
                       item-title="name"
                       item-value="id"
                       :label="tm('roles.localModel')"
                       :aria-label="tm('roles.localModel')"
                       clearable
-                      :error-messages="
-                        fieldErrors(
-                          `installation.bindings.${definition.model_slot}`,
-                        )
-                      "
+                      :error-messages="fieldErrors('definition.provider_id')"
                     />
                     <v-select
                       data-issue-path="definition.model_capabilities"
@@ -263,34 +230,32 @@
                       :aria-label="`${tm(`roles.${field}`)}: ${tm(
                         'roles.mode',
                       )}`"
+                      @update:model-value="
+                        (mode: string) => {
+                          if (
+                            mode === 'custom' &&
+                            !Array.isArray(definition[field])
+                          )
+                            definition[field] = [];
+                        }
+                      "
                     />
                     <template v-if="modes[field] === 'custom'">
-                      <v-combobox
+                      <p class="text-caption mb-2">
+                        {{ tm("roles.customEmptyHint") }}
+                      </p>
+                      <v-select
                         :data-issue-path="`definition.${field}`"
                         v-model="definition[field]"
-                        multiple
-                        chips
-                        closable-chips
-                        :label="tm('roles.logicalSlots')"
-                        :aria-label="`${tm(`roles.${field}`)}: ${tm(
-                          'roles.logicalSlots',
-                        )}`"
-                        :error-messages="fieldErrors(`definition.${field}`)"
-                      />
-                      <v-select
-                        v-for="slot in definition[field] || []"
-                        :key="slot"
-                        :data-issue-path="`installation.bindings.${slot}`"
-                        v-model="installation.bindings[slot]"
                         :items="catalog[field]"
                         item-title="name"
                         item-value="id"
-                        :label="`${tm('roles.binding')}: ${slot}`"
-                        :aria-label="`${tm('roles.binding')}: ${slot}`"
-                        clearable
-                        :error-messages="
-                          fieldErrors(`installation.bindings.${slot}`)
-                        "
+                        :multiple="true"
+                        chips
+                        closable-chips
+                        :label="tm(`roles.${field}`)"
+                        :aria-label="tm(`roles.${field}`)"
+                        :error-messages="fieldErrors(`definition.${field}`)"
                       />
                     </template>
                   </v-expansion-panel-text>
@@ -434,8 +399,7 @@ const versions = ref<number[]>([]);
 const definition = ref<Record<string, any>>({});
 const installation = ref<{
   profile_id: string;
-  bindings: Record<string, string | null>;
-}>({ profile_id: "default", bindings: {} });
+}>({ profile_id: "default" });
 const resourceFields = ["tools", "skills", "knowledge_bases"] as const;
 const limitFields = [
   "max_instances",
@@ -447,14 +411,8 @@ const limitFields = [
   "context_length",
 ] as const;
 const modes = ref<Record<string, string>>({});
-const promptMode = ref("inline");
-const promptModes = computed(() => [
-  { title: tm("roles.inlinePrompt"), value: "inline" },
-  { title: tm("roles.personaPrompt"), value: "persona" },
-]);
 const capabilityModes = computed(() => [
   { title: tm("roles.inherit"), value: "inherit" },
-  { title: tm("roles.disable"), value: "none" },
   { title: tm("roles.override"), value: "custom" },
 ]);
 const groups = ref<string[]>(["responsibility", "model"]);
@@ -486,7 +444,7 @@ const saving = ref(false);
 const errorMessage = ref("");
 let editorRevision = 0;
 watch(
-  [definition, installation, modes, promptMode],
+  [definition, installation, modes],
   () => {
     editorRevision++;
     previewStale.value = true;
@@ -527,22 +485,16 @@ function edit(role?: any) {
         name: "",
         description: "",
         prompt: "",
-        model_slot: "model",
-        persona_slot: null,
+        provider_id: null,
+        persona_id: null,
         model_capabilities: [],
         runner_capabilities: [],
       };
   installation.value = role
     ? JSON.parse(JSON.stringify(role.installation))
-    : { profile_id: "default", bindings: {} };
-  promptMode.value = definition.value.prompt == null ? "persona" : "inline";
+    : { profile_id: "default" };
   for (const field of resourceFields)
-    modes.value[field] =
-      definition.value[field] == null
-        ? "inherit"
-        : definition.value[field].length
-        ? "custom"
-        : "none";
+    modes.value[field] = definition.value[field] == null ? "inherit" : "custom";
   issues.value = [];
   resolved.value = null;
   errorMessage.value = "";
@@ -560,19 +512,13 @@ async function openVersion(version: number) {
 }
 
 function payload() {
-  // Preserve null (inherit), [] (disable), and logical slots (custom) in storage.
-  const content: Record<string, any> = {
-    ...definition.value,
-    prompt: promptMode.value === "persona" ? null : definition.value.prompt,
-  };
-  content.persona_slot = content.persona_slot?.trim() || null;
+  // Preserve null (inherit), [] (disable), and selected resource identities.
+  const content: Record<string, any> = { ...definition.value };
+  content.persona_id = content.persona_id || null;
+  content.provider_id = content.provider_id || null;
   for (const field of resourceFields)
     content[field] =
-      modes.value[field] === "inherit"
-        ? null
-        : modes.value[field] === "none"
-        ? []
-        : content[field] ?? [];
+      modes.value[field] === "inherit" ? null : content[field] ?? [];
   for (const field of limitFields)
     content[field] =
       content[field] == null || content[field] === ""
@@ -580,21 +526,10 @@ function payload() {
         : Number.isFinite(Number(content[field]))
         ? Number(content[field])
         : content[field];
-  const activeSlots = new Set([
-    content.model_slot,
-    content.persona_slot,
-    ...resourceFields.flatMap((field) => content[field] ?? []),
-  ]);
-  const bindings = Object.fromEntries(
-    Object.entries(installation.value.bindings).filter(
-      ([slot, id]) => activeSlots.has(slot) && id,
-    ),
-  );
   return {
     definition: content as any,
     installation: {
       profile_id: installation.value.profile_id,
-      bindings: bindings as Record<string, string>,
     },
     expected_version: latestVersion.value,
   };
@@ -645,28 +580,17 @@ function fieldErrors(path: string) {
 }
 
 async function focusIssue(path: string) {
-  // Binding errors name logical slots; reveal the section that owns that slot.
   const field = path.split(".")[1];
-  const group = path.startsWith("installation.bindings.")
-    ? resourceFields.find(
-        (key) =>
-          definition.value[key]?.includes(
-            path.slice("installation.bindings.".length),
-          ),
-      ) ||
-      (path.endsWith(definition.value.persona_slot)
-        ? "responsibility"
-        : "model")
-    : resourceFields.includes(field as any)
+  const group = resourceFields.includes(field as any)
     ? field
     : limitFields.includes(field as any)
     ? "limits"
-    : ["name", "prompt", "persona_slot"].includes(field)
+    : ["name", "prompt", "persona_id"].includes(field)
     ? "responsibility"
     : "model";
   groups.value = [...new Set([...groups.value, group])];
   await nextTick();
-  // Match the longest field path so indexed errors and dotted slots stay exact.
+  // Match the longest field path so indexed errors locate their control.
   const target = Array.from(
     editor.value?.querySelectorAll<HTMLElement>("[data-issue-path]") ?? [],
   )

@@ -36,7 +36,12 @@ async def list_roles(
     username: str = Depends(require_dashboard_user),
     service: RoleAssetService = Depends(get_role_service),
 ):
-    return ok(await service.list_roles(username))
+    try:
+        return ok(await service.list_roles(username))
+    except RoleAssetError as exc:
+        return JSONResponse(
+            error(str(exc), {"fields": exc.fields}), status_code=exc.status
+        )
 
 
 @router.post("/agent_roles/preview")

@@ -43,7 +43,7 @@ Old log, trace, conversation, and statistics URLs still redirect to the correspo
 
 ## Accessing the Admin Panel
 
-See [Agent Teams role templates](./agent-team-roles.md) for resource bindings, inheritance previews and versioned saving.
+See [Agent Teams role templates](./agent-team-roles.md) for direct resource selection, inheritance previews and versioned saving.
 See [Asset and run workspace](./agent-team-workflows.md) for saving, starting and inspecting workflows and task results.
 
 After starting AstrBot, you can access the admin panel by visiting `http://localhost:6185` in your browser.

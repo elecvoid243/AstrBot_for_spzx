@@ -18,7 +18,6 @@ from astrbot.core.db import BaseDatabase
 from astrbot.core.db.po import (
     AgentRoleInstallation,
     AgentRoleVersion,
-    AgentWorkflowPackage,
 )
 from astrbot.core.tools.file_tool_mode import (
     DEFAULT_FILE_TOOL_MODE,
@@ -30,10 +29,12 @@ SlotName = Annotated[str, Field(min_length=1, max_length=128)]
 
 
 class RoleOverrides(BaseModel):
-    """Optional configuration; null inherits and an empty list disables."""
+    """Optional configuration; lists inherit on null and disable when empty."""
 
     model_config = ConfigDict(extra="forbid", strict=True, str_strip_whitespace=True)
     prompt: str | None = Field(default=None, max_length=100_000)
+    provider_id: SlotName | None = None
+    persona_id: SlotName | None = None
     tools: list[SlotName] | None = None
     skills: list[SlotName] | None = None
     knowledge_bases: list[SlotName] | None = None
@@ -46,30 +47,17 @@ class RoleOverrides(BaseModel):
     max_depth: int | None = Field(default=None, ge=1, le=20)
 
 
-class MigrationState(BaseModel):
-    """Unresolved legacy semantics retained until a reviewed definition version."""
-
-    model_config = ConfigDict(extra="forbid", strict=True)
-    issues: list[dict]
-    source: dict
-
-
 class RoleDefinition(RoleOverrides):
-    """Portable role content; resource names refer to logical slots."""
+    """Role content with direct resource identities."""
 
     name: str = Field(min_length=1, max_length=128)
     description: str = Field(default="", max_length=2000)
-    model_slot: SlotName = "model"
-    persona_slot: SlotName | None = None
     model_capabilities: list[Literal["tool_use", "image", "audio"]] = Field(
         default_factory=list
     )
     runner_capabilities: list[
         Literal["internal_checkpoint", "remote_query", "task_tools", "task_result"]
     ] = Field(default_factory=list)
-    migration: MigrationState | None = Field(
-        default=None, exclude_if=lambda value: value is None
-    )
 
 
 class RoleInstallation(BaseModel):
@@ -77,7 +65,6 @@ class RoleInstallation(BaseModel):
 
     model_config = ConfigDict(extra="forbid", strict=True, str_strip_whitespace=True)
     profile_id: SlotName = "default"
-    bindings: dict[SlotName, SlotName] = Field(default_factory=dict)
 
 
 class RoleSaveRequest(BaseModel):
@@ -392,15 +379,13 @@ class RoleAssetService:
         """Check current resources against a frozen task role's requirements.
 
         Args:
-            role: Pinned definition, bindings, effective configuration and resolved
-                package dependencies. Legacy snapshots omit the dependency field
-                and retain their original database-based contract checks.
+            role: Pinned definition and effective configuration.
             profile_snapshot: Original behavior settings. Only the file tool mode
                 affects catalog selection; live runtime and resource permissions
                 cannot be restored by this snapshot.
 
         Raises:
-            RoleAssetError: A frozen binding is unavailable or incompatible.
+            RoleAssetError: A frozen resource is unavailable or incompatible.
         """
         profile_id = role["installation"]["profile_id"]
         catalog = await self.get_resources(
@@ -468,6 +453,13 @@ class RoleAssetService:
                     or profile_id
                     not in resources[0].get("enabled_profiles", [profile_id])
                     or (
+                        kind == "tools"
+                        and not file_tool_allowed(
+                            resource_id,
+                            profile.get("file_tool_mode", DEFAULT_FILE_TOOL_MODE),
+                        )
+                    )
+                    or (
                         kind in ("models", "personas")
                         and "*" not in pool
                         and resource_id not in pool
@@ -499,90 +491,6 @@ class RoleAssetService:
                             "message": "Bound model no longer declares the required capabilities",
                         }
                     )
-        dependencies = role.get("package_dependencies")
-        # New snapshots carry their resolved contract. Legacy snapshots retain
-        # the original database-based requirements and frozen binding identities.
-        if dependencies is None and role.get("role_id"):
-            async with self.db.get_db() as session:
-                origin = await session.get(AgentRoleVersion, (role["role_id"], 1))
-                packages = (
-                    (
-                        await session.execute(
-                            select(AgentWorkflowPackage).where(
-                                AgentWorkflowPackage.owner_username
-                                == origin.owner_username
-                            )
-                        )
-                    )
-                    .scalars()
-                    .all()
-                    if origin is not None
-                    else []
-                )
-            dependencies = []
-            for package in packages:
-                source_key = next(
-                    (
-                        key
-                        for key, identity in package.role_ids.items()
-                        if identity == role["role_id"]
-                    ),
-                    None,
-                )
-                if source_key is None:
-                    continue
-                source = next(
-                    included
-                    for included in package.package["roles"]
-                    if f"{included['role_id']}:{included['version']}" == source_key
-                )
-                dependencies.extend(source["dependencies"])
-        for dependency in dependencies or []:
-            kind, slot = dependency["kind"], dependency["slot"]
-            identity = (
-                profile_id
-                if kind == "profiles"
-                else role["installation"]["bindings"].get(slot)
-            )
-            matches = [r for r in catalog[kind] if r["id"] == identity]
-            resource = matches[0] if len(matches) == 1 else {}
-            fingerprint = resource.get("fingerprint")
-            if kind == "profiles":
-                fingerprint = "astrbot.local.v1" if runner["type"] == "local" else None
-            pool = profile.get(
-                "provider_pool" if kind == "models" else "persona_pool", ["*"]
-            )
-            if (
-                not resource
-                or not resource.get("enabled", True)
-                or profile_id not in resource.get("enabled_profiles", [profile_id])
-                or kind in ("models", "personas")
-                and "*" not in pool
-                and identity not in pool
-                or kind in ("tools", "skills")
-                and persona.get(kind) is not None
-                and identity not in persona[kind]
-                and (kind == "skills" or resource.get("persona_restricted", True))
-                or kind == "profiles"
-                and runner["type"] != dependency["runner_type"]
-                or dependency["fingerprint"]
-                and fingerprint != dependency["fingerprint"]
-                or dependency["input_schema"] is not None
-                and resource.get("input_schema") != dependency["input_schema"]
-                or not set(dependency["capabilities"]).issubset(
-                    runner["capabilities"]
-                    if kind == "profiles"
-                    else resource.get("capabilities", [])
-                )
-            ):
-                issues.append(
-                    {
-                        "path": "installation."
-                        + ("profile_id" if kind == "profiles" else f"bindings.{slot}"),
-                        "code": "INCOMPATIBLE",
-                        "message": f"Frozen package dependency is unavailable or incompatible: {slot}",
-                    }
-                )
         if issues:
             raise RoleAssetError("Frozen resources are no longer available", issues)
 
@@ -612,8 +520,13 @@ class RoleAssetService:
         }
         try:
             task = RoleOverrides.model_validate(overrides or {}).model_dump(
-                exclude_none=True
+                exclude_unset=True
             )
+            task = {
+                key: value
+                for key, value in task.items()
+                if value is not None or key in ("persona_id", "provider_id")
+            }
         except ValidationError as exc:
             raise RoleAssetError(
                 "Invalid task overrides",
@@ -626,14 +539,25 @@ class RoleAssetService:
                     for e in exc.errors()
                 ],
             ) from exc
+        for field in ("tools", "skills", "knowledge_bases"):
+            seen = set()
+            for index, resource_id in enumerate(task.get(field) or []):
+                if resource_id in seen:
+                    raise RoleAssetError(
+                        "Resource identities must be unique within each list",
+                        [
+                            {
+                                "path": f"overrides.{field}.{index}",
+                                "code": "CONFLICT",
+                                "message": f"Duplicate resource: {resource_id}",
+                            }
+                        ],
+                    )
+                seen.add(resource_id)
         definition = role["definition"]
         installation = role["installation"]
-        bindings = installation.get("bindings", {})
         catalog = await self.get_resources()
-        issues: list[dict] = [
-            dict(issue)
-            for issue in (definition.get("migration") or {}).get("issues", [])
-        ]
+        issues: list[dict] = []
         sources: dict[str, str] = {}
         effective: dict = {}
         profile_id = installation.get("profile_id", "default")
@@ -668,11 +592,25 @@ class RoleAssetService:
                 }
             )
         persona: dict = {}
-        requirements = [("provider_id", "models", definition["model_slot"])]
+        provider_id = task.get("provider_id", definition["provider_id"])
+        persona_id = task.get("persona_id", definition["persona_id"])
+        requirements = [("provider_id", "models", provider_id)]
+        effective["persona_id"] = persona_id
+        sources["persona_id"] = "task" if "persona_id" in task else "role"
         if runner["type"] != "local":
             requirements = []
             effective["provider_id"] = None
             sources["provider_id"] = f"profile:{profile_id}"
+            if provider_id:
+                issues.append(
+                    {
+                        "path": "overrides.provider_id"
+                        if "provider_id" in task
+                        else "definition.provider_id",
+                        "code": "INCOMPATIBLE",
+                        "message": f"{runner['label']} does not use a local model",
+                    }
+                )
             for index, capability in enumerate(definition["model_capabilities"]):
                 if capability not in runner["modalities"]:
                     issues.append(
@@ -682,38 +620,24 @@ class RoleAssetService:
                             "message": f"{runner['label']} does not support {capability}",
                         }
                     )
-        if definition.get("persona_slot"):
-            requirements.insert(
-                0, ("persona_id", "personas", definition["persona_slot"])
-            )
-        elif profile.get("persona_id"):
-            requirements.insert(0, ("persona_id", "personas", profile["persona_id"]))
-        for field, kind, slot in requirements:
-            inherited_persona = field == "persona_id" and not definition.get(
-                "persona_slot"
-            )
-            resource_id = slot if inherited_persona else bindings.get(slot)
+        if persona_id:
+            requirements.insert(0, ("persona_id", "personas", persona_id))
+        for field, kind, resource_id in requirements:
             matches = (
                 [r for r in catalog[kind] if r["id"] == resource_id]
                 if resource_id
                 else []
             )
-            path = (
-                "installation.profile_id"
-                if inherited_persona
-                else f"installation.bindings.{slot}"
-            )
+            path = f"{'overrides' if field in task else 'definition'}.{field}"
             effective[field] = resource_id
-            sources[field] = (
-                f"profile:{profile_id}" if inherited_persona else f"installation:{slot}"
-            )
+            sources[field] = "task" if field in task else "role"
             if len(matches) != 1:
                 code = "AMBIGUOUS" if len(matches) > 1 else "MISSING"
                 issues.append(
                     {
                         "path": path,
                         "code": code,
-                        "message": f"Resource is {'ambiguous' if len(matches) > 1 else 'missing'}: {resource_id or slot}",
+                        "message": f"Resource is {'ambiguous' if len(matches) > 1 else 'missing'}: {resource_id or field}",
                     }
                 )
                 continue
@@ -743,6 +667,8 @@ class RoleAssetService:
                         "message": "Model does not declare the required capabilities",
                     }
                 )
+        effective["persona_prompt"] = persona.get("prompt")
+        sources["persona_prompt"] = f"persona:{persona_id}" if persona else "role"
         defaults = {
             "max_instances": 1,
             "max_parallel": 1,
@@ -757,14 +683,14 @@ class RoleAssetService:
             "knowledge_bases": [],
         }
         for field, default in defaults.items():
-            value = profile.get(field, default)
+            value = default if field == "prompt" else profile.get(field, default)
             if runner["type"] != "local" and field in (
                 "tools",
                 "skills",
                 "knowledge_bases",
             ):
                 value = []
-            source = f"profile:{profile_id}"
+            source = "role" if field == "prompt" else f"profile:{profile_id}"
             if runner["type"] != "local" and field in (
                 "max_steps",
                 "tool_call_timeout",
@@ -781,15 +707,12 @@ class RoleAssetService:
                             "message": f"{runner['label']} does not enforce the local runner setting {field}",
                         }
                     )
-            if field in ("prompt", "tools", "skills") and (
-                definition.get("persona_slot") or (field != "prompt" and persona)
+            if (
+                runner["type"] == "local"
+                and field in ("tools", "skills")
+                and persona.get(field) is not None
             ):
-                value, source = (
-                    persona.get(field),
-                    f"persona:{definition['persona_slot']}"
-                    if definition.get("persona_slot")
-                    else f"profile:{profile_id}",
-                )
+                value, source = persona[field], f"persona:{persona_id}"
             logical = False
             if definition.get(field) is not None:
                 value, source, logical = definition[field], "role", True
@@ -802,7 +725,7 @@ class RoleAssetService:
             ):
                 issues.append(
                     {
-                        "path": f"effective.{field}",
+                        "path": f"{'overrides' if field in task else 'definition'}.{field}",
                         "code": "INCOMPATIBLE",
                         "message": f"{runner['label']} does not execute local {field}",
                     }
@@ -817,11 +740,18 @@ class RoleAssetService:
                         for r in catalog[field]
                         if r.get("enabled", True)
                         and profile_id in r.get("enabled_profiles", [profile_id])
+                        and (
+                            field != "tools"
+                            or file_tool_allowed(
+                                r["id"],
+                                profile.get("file_tool_mode", DEFAULT_FILE_TOOL_MODE),
+                            )
+                        )
                     ]
                 )
                 resolved = []
                 for index, reference in enumerate(selected):
-                    resource_id = bindings.get(reference) if logical else reference
+                    resource_id = reference
                     matches = [
                         r
                         for r in catalog[field]
@@ -833,7 +763,9 @@ class RoleAssetService:
                         )
                     ]
                     path = (
-                        f"installation.bindings.{reference}"
+                        f"definition.{field}.{index}"
+                        if source == "role"
+                        else f"overrides.{field}.{index}"
                         if logical
                         else f"effective.{field}.{index}"
                     )
@@ -842,6 +774,13 @@ class RoleAssetService:
                         or not matches[0].get("enabled", True)
                         or profile_id
                         not in matches[0].get("enabled_profiles", [profile_id])
+                        or (
+                            field == "tools"
+                            and not file_tool_allowed(
+                                resource_id,
+                                profile.get("file_tool_mode", DEFAULT_FILE_TOOL_MODE),
+                            )
+                        )
                     ):
                         file_mode = profile.get(
                             "file_tool_mode", DEFAULT_FILE_TOOL_MODE
@@ -915,7 +854,8 @@ class RoleAssetService:
             "ready": not issues,
             "export_content": {
                 "prompt": definition.get("prompt"),
-                "persona_slot": definition.get("persona_slot"),
+                "persona_id": definition.get("persona_id"),
+                "persona_prompt": persona.get("prompt"),
             },
         }
 
@@ -1002,7 +942,7 @@ class RoleAssetService:
 
     @staticmethod
     def _validate_request(payload: dict) -> RoleSaveRequest:
-        """Validate field shapes and cross-field logical slot uniqueness.
+        """Validate field shapes and resource identity uniqueness within each list.
 
         Args:
             payload: Complete role save or preview request.
@@ -1011,7 +951,7 @@ class RoleAssetService:
             Validated definition and installation.
 
         Raises:
-            RoleAssetError: A field is invalid or slots have conflicting kinds.
+            RoleAssetError: A field is invalid or contains duplicate identities.
         """
         try:
             request = RoleSaveRequest.model_validate(payload)
@@ -1027,34 +967,21 @@ class RoleAssetService:
                     for e in exc.errors()
                 ],
             ) from exc
-        slots = {request.definition.model_slot: "model_slot"}
-        if request.definition.persona_slot:
-            if request.definition.persona_slot in slots:
-                raise RoleAssetError(
-                    "Logical slots must have one resource kind",
-                    [
-                        {
-                            "path": "definition.persona_slot",
-                            "code": "CONFLICT",
-                            "message": "Slot already used by model_slot",
-                        }
-                    ],
-                )
-            slots[request.definition.persona_slot] = "persona_slot"
         for field in ("tools", "skills", "knowledge_bases"):
+            slots = set()
             for index, slot in enumerate(getattr(request.definition, field) or []):
                 if slot in slots:
                     raise RoleAssetError(
-                        "Logical slots must be unique",
+                        "Resource identities must be unique within each list",
                         [
                             {
                                 "path": f"definition.{field}.{index}",
                                 "code": "CONFLICT",
-                                "message": f"Slot already used by {slots[slot]}",
+                                "message": f"Duplicate resource: {slot}",
                             }
                         ],
                     )
-                slots[slot] = field
+                slots.add(slot)
         return request
 
     async def get_role(
@@ -1095,6 +1022,12 @@ class RoleAssetService:
                 raise RoleAssetError("Role version not found", status=404)
             installation = await session.get(
                 AgentRoleInstallation, (role_id, row.version)
+            )
+            self._validate_request(
+                {
+                    "definition": row.definition,
+                    "installation": installation.installation if installation else {},
+                }
             )
             return {
                 "role_id": role_id,

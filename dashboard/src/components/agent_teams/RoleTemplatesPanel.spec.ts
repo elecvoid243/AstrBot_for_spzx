@@ -60,10 +60,10 @@ Object.assign(stubs, {
       '<textarea :value="modelValue" @input="$emit(\'update:modelValue\', $event.target.value)" />',
   },
   "v-select": {
-    props: ["modelValue", "items"],
+    props: ["modelValue", "items", "multiple"],
     emits: ["update:modelValue"],
     template:
-      '<select :value="modelValue" @change="$emit(\'update:modelValue\', $event.target.value)"><option v-for="item in items" :value="item.id ?? item.value ?? item">{{ item.name ?? item.title ?? item }}</option></select>',
+      '<select :value="modelValue" :multiple="multiple" @change="$emit(\'update:modelValue\', multiple ? Array.from($event.target.options).filter(option => option.selected).map(option => option.value) : $event.target.value)"><option v-for="item in items" :value="item.id ?? item.value ?? item">{{ item.name ?? item.title ?? item }}</option></select>',
   },
 });
 
@@ -83,7 +83,7 @@ describe("reusable role configuration", () => {
       ready: false,
       issues: [
         {
-          path: "installation.bindings.model",
+          path: "definition.provider_id",
           code: "MISSING",
           message: "Model is missing",
         },
@@ -104,7 +104,7 @@ describe("reusable role configuration", () => {
     await panel.get('[data-testid="role-prompt"]').setValue("Check evidence.");
     await panel.get('[data-testid="preview-role"]').trigger("click");
     await flushPromises();
-    expect(panel.text()).toContain("installation.bindings.model");
+    expect(panel.text()).toContain("definition.provider_id");
     expect(panel.text()).toContain("profile:default");
     await panel.get('[data-testid="save-role"]').trigger("click");
     await flushPromises();
@@ -112,11 +112,10 @@ describe("reusable role configuration", () => {
     expect(api.save.mock.calls[0][1].definition).toMatchObject({
       name: "Researcher",
       prompt: "Check evidence.",
-      model_slot: "model",
+      provider_id: null,
     });
     expect(api.save.mock.calls[0][1].installation).toEqual({
       profile_id: "default",
-      bindings: {},
     });
   });
   it("shows remote query capability and locates unsupported recovery requirements", async () => {
@@ -200,64 +199,94 @@ describe("reusable role configuration", () => {
     }
   });
 
-  it("locates the exact resource binding when logical slots share a dotted prefix", async () => {
+  it("selects actual resources and saves a custom empty list", async () => {
+    api.resources.mockResolvedValue({
+      profiles: [{ id: "default", name: "Default" }],
+      models: [{ id: "m", name: "Model" }],
+      personas: [{ id: "p", name: "Persona" }],
+      tools: [{ id: "tool", name: "Tool" }],
+      skills: [{ id: "skill", name: "Skill" }],
+      knowledge_bases: [{ id: "kb", name: "Knowledge" }],
+    });
+    const panel = mount(RoleTemplatesPanel, { global: { stubs } });
+    await flushPromises();
+    await panel.get('[data-testid="new-role"]').trigger("click");
+    await panel.get('[data-testid="role-name"]').setValue("Writer");
+    await panel.get('[data-issue-path="definition.provider_id"]').setValue("m");
+    await panel.get('[data-issue-path="definition.persona_id"]').setValue("p");
+    const modes = panel
+      .findAll("select")
+      .filter((el) => el.attributes("aria-label")?.endsWith("roles.mode"));
+    expect(modes).toHaveLength(3);
+    for (const mode of modes) await mode.setValue("custom");
+    const selections: Record<string, string[]> = {
+      tools: ["tool"],
+      skills: [],
+      knowledge_bases: ["kb"],
+    };
+    for (const [field, value] of Object.entries(selections)) {
+      const select = panel.get<HTMLSelectElement>(
+        `[data-issue-path="definition.${field}"]`,
+      );
+      for (const option of select.element.options)
+        option.selected = value.includes(option.value);
+      await select.trigger("change");
+    }
+    await panel.get('[data-testid="save-role"]').trigger("click");
+    await flushPromises();
+    expect(api.save.mock.calls[0][1].definition).toMatchObject({
+      provider_id: "m",
+      persona_id: "p",
+      tools: ["tool"],
+      skills: [],
+      knowledge_bases: ["kb"],
+    });
+    expect(api.save.mock.calls[0][1].installation).toEqual({
+      profile_id: "default",
+    });
+    panel.unmount();
+  });
+
+  it("reopens an empty custom list without turning it into inheritance", async () => {
     api.list.mockResolvedValue({
       roles: [
         {
-          role_id: "writer",
+          role_id: "r",
           version: 1,
           versions: [1],
           definition: {
-            name: "Writer",
-            prompt: "Write evidence.",
-            model_slot: "shared",
-            tools: ["shared.tool"],
+            name: "Saved",
+            provider_id: "m",
+            persona_id: null,
+            tools: [],
+            skills: null,
+            knowledge_bases: null,
           },
-          installation: { profile_id: "default", bindings: {} },
+          installation: { profile_id: "default" },
         },
       ],
     });
-    api.save.mockRejectedValue({
-      response: {
-        data: {
-          message: "Invalid role configuration",
-          data: {
-            fields: [
-              {
-                path: "installation.bindings.shared.tool",
-                message: "Missing tool",
-              },
-            ],
-          },
-        },
-      },
+    const panel = mount(RoleTemplatesPanel, { global: { stubs } });
+    await flushPromises();
+    await panel
+      .findAll("button")
+      .find((button) => button.text() === "roles.edit")!
+      .trigger("click");
+    expect(
+      panel.get<HTMLSelectElement>(
+        'select[aria-label="roles.tools: roles.mode"]',
+      ).element.value,
+    ).toBe("custom");
+    await panel.get('[data-testid="save-role"]').trigger("click");
+    await flushPromises();
+    expect(api.save.mock.calls[0][1].definition).toMatchObject({
+      tools: [],
+      skills: null,
+      knowledge_bases: null,
+      persona_id: null,
     });
-    const panel = mount(RoleTemplatesPanel, {
-      attachTo: document.body,
-      global: { stubs },
-    });
-    try {
-      await flushPromises();
-      await panel
-        .findAll("button")
-        .find((button) => button.text() === "roles.edit")!
-        .trigger("click");
-      await panel.get('[data-testid="save-role"]').trigger("click");
-      await flushPromises();
-      const control = panel.get(
-        'select[aria-label="roles.binding: shared.tool"]',
-      ).element;
-      const scroll = vi.fn();
-      control.scrollIntoView = scroll;
-      const link = panel.get<HTMLButtonElement>(".issue-link");
-      link.element.focus();
-      await link.trigger("click");
-      await flushPromises();
-      await vi.waitFor(() => expect(document.activeElement).toBe(control));
-      expect(scroll).toHaveBeenCalledOnce();
-    } finally {
-      panel.unmount();
-    }
+    expect(api.save.mock.calls[0][1].expected_version).toBe(1);
+    panel.unmount();
   });
 
   it("waits for the expanding section before scrolling to its error", async () => {

@@ -1196,11 +1196,12 @@ export type ReorderRequest = {
 };
 
 /**
- * Portable role content; resource names refer to logical slots.
+ * Role content with direct resource identities.
  */
 export type RoleDefinition = {
-    migration?: (MigrationState | null);
     prompt?: (string | null);
+    provider_id?: (string | null);
+    persona_id?: (string | null);
     tools?: (Array<(string)> | null);
     skills?: (Array<(string)> | null);
     knowledge_bases?: (Array<(string)> | null);
@@ -1213,8 +1214,6 @@ export type RoleDefinition = {
     max_depth?: (number | null);
     name: string;
     description?: string;
-    model_slot?: string;
-    persona_slot?: (string | null);
     model_capabilities?: Array<('tool_use' | 'image' | 'audio')>;
     runner_capabilities?: Array<('internal_checkpoint' | 'remote_query' | 'task_tools' | 'task_result')>;
 };
@@ -1224,16 +1223,15 @@ export type RoleDefinition = {
  */
 export type RoleInstallation = {
     profile_id?: string;
-    bindings?: {
-        [key: string]: (string);
-    };
 };
 
 /**
- * Optional configuration; null inherits and an empty list disables.
+ * Optional configuration; lists inherit on null and disable when empty.
  */
 export type RoleOverrides = {
     prompt?: (string | null);
+    provider_id?: (string | null);
+    persona_id?: (string | null);
     tools?: (Array<(string)> | null);
     skills?: (Array<(string)> | null);
     knowledge_bases?: (Array<(string)> | null);

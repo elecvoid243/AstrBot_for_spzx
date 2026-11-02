@@ -2053,11 +2053,15 @@
       "inactiveSegment": "Build 模式"
     },
     "webBrowser": {
+      "tabsLabel": "预览页面",
+      "newTab": "新页面",
+      "addTab": "新建预览页面",
+      "closeTab": "关闭 {name}",
       "urlPlaceholder": "输入地址，例如 localhost:3000",
       "urlLabel": "预览地址",
       "reload": "刷新",
       "openExternal": "在新标签页打开",
-      "bookmarkAdd": "收藏当前地址",
+      "bookmarkAdd": "收藏此页面地址",
       "bookmarkRemove": "取消收藏",
       "bookmarkRemoveNamed": "取消收藏 {url}",
       "bookmarkOpen": "打开收藏地址 {url}",

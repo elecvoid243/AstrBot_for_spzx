@@ -414,11 +414,12 @@ With a project loaded for the current conversation, click **Workspace** above th
 
 1. Start the website's development server separately. The preview does not start it for you.
 2. Enter its HTTP(S) address and press **Enter**, or select a suggested local port. For example, `localhost:5173` becomes `http://localhost:5173/`; a bare public hostname defaults to HTTPS. Localhost refers to the machine running your browser, which may differ from the AstrBot server.
-3. Use **Reload**, **Open in new tab**, or the star to bookmark the address. Up to 12 bookmarks and the last entered address are stored per project in this browser; they do not sync across browsers or devices. Switching workbench tabs keeps the loaded preview mounted.
+3. Select **New preview page** (+) to add a page, switch using its tab, and close it with ×. Closing the last page opens a blank page. Switching pages keeps the other previews loaded.
+4. Use **Reload**, **Open in new tab**, or the star in the address bar to bookmark the current page. Up to 12 bookmarks, the preview tabs and the active tab are stored per project in this browser; they do not sync across browsers or devices. Without a project, tabs last until the preview is remounted. Switching workbench tabs keeps the loaded previews mounted.
 
-The screenshot shows the workbench in fullscreen mode, available from its top-right fullscreen button.
+The preview below shows two pages open in the Web Preview component.
 
-![Actual Web Preview tab with local documentation data](/images/chat-web-preview-en.jpg)
+![Web Preview with two page tabs](./images/web-preview-tabs-en.png)
 
 This is an embedded page, with no back/forward controls. Its address bar keeps the entry address rather than tracking links or redirects inside the page. Sites can block embedding with their frame policy; an HTTPS dashboard may also block an HTTP preview. Use **Open in new tab** if embedding fails. The iframe is sandboxed, with additional isolation for addresses sharing the dashboard's origin; it does not bypass browser or target-site restrictions. File, data, and JavaScript URLs are unsupported.
 

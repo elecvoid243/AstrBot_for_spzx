@@ -2020,11 +2020,15 @@
       "inactiveSegment": "Build mode"
     },
     "webBrowser": {
+      "tabsLabel": "Preview pages",
+      "newTab": "New page",
+      "addTab": "New preview page",
+      "closeTab": "Close {name}",
       "urlPlaceholder": "Enter a URL, e.g. localhost:3000",
       "urlLabel": "Preview URL",
       "reload": "Reload",
       "openExternal": "Open in new tab",
-      "bookmarkAdd": "Bookmark current URL",
+      "bookmarkAdd": "Bookmark this page",
       "bookmarkRemove": "Remove bookmark",
       "bookmarkRemoveNamed": "Remove bookmark {url}",
       "bookmarkOpen": "Open bookmark {url}",

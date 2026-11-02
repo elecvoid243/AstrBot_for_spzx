@@ -1,13 +1,54 @@
 <!-- Author: elecvoid243 @ 2026-10-22
-     Web preview tab of the project workbench. Hosts one iframe pointed at
-     a user-supplied address (usually a local dev server), plus a
-     reload/new-tab pair and per-project bookmarks.
+     Web preview tab of the project workbench. Hosts user-supplied addresses
+     in separate iframes, plus per-project bookmarks.
 
      Deliberately not a browser: cross-origin iframes hide their history
      and current URL, so there is no back/forward and the address bar only
      holds the entry point. -->
 <template>
   <div class="web-browser-view">
+    <div class="web-browser-tabs" :aria-label="tm(`${I18N}.tabsLabel`)">
+      <div
+        v-for="tab in tabs"
+        :key="tab.id"
+        class="web-browser-tab"
+        :class="{ 'is-active': tab.id === activeTabId }"
+      >
+        <button
+          type="button"
+          class="web-browser-tab-select"
+          :aria-pressed="tab.id === activeTabId"
+          :title="tab.url || tm(`${I18N}.newTab`)"
+          @click="activeTabId = tab.id"
+        >
+          <v-icon size="14">mdi-web</v-icon>
+          <span>{{
+            tab.url ? bookmarkLabel(tab.url) : tm(`${I18N}.newTab`)
+          }}</span>
+        </button>
+        <button
+          type="button"
+          class="web-browser-tab-close"
+          :aria-label="
+            tm(`${I18N}.closeTab`, {
+              name: tab.url ? bookmarkLabel(tab.url) : tm(`${I18N}.newTab`),
+            })
+          "
+          @click="closeTab(tab.id)"
+        >
+          <v-icon size="13">mdi-close</v-icon>
+        </button>
+      </div>
+      <button
+        type="button"
+        class="web-browser-icon-btn web-browser-add-tab"
+        :title="tm(`${I18N}.addTab`)"
+        :aria-label="tm(`${I18N}.addTab`)"
+        @click="addTab"
+      >
+        <v-icon size="16">mdi-plus</v-icon>
+      </button>
+    </div>
     <div class="web-browser-address">
       <v-icon size="14" class="web-browser-address-icon">mdi-web</v-icon>
       <input
@@ -22,6 +63,24 @@
         :aria-invalid="errorMessage !== ''"
         @keydown.enter.prevent="submit"
       />
+      <button
+        type="button"
+        class="web-browser-star"
+        :class="{ 'is-on': isBookmarked }"
+        :disabled="!committedUrl"
+        :aria-pressed="isBookmarked"
+        :title="
+          tm(`${I18N}.${isBookmarked ? 'bookmarkRemove' : 'bookmarkAdd'}`)
+        "
+        :aria-label="
+          tm(`${I18N}.${isBookmarked ? 'bookmarkRemove' : 'bookmarkAdd'}`)
+        "
+        @click="toggleBookmark"
+      >
+        <v-icon size="14">{{
+          isBookmarked ? "mdi-star" : "mdi-star-outline"
+        }}</v-icon>
+      </button>
       <button
         type="button"
         class="web-browser-icon-btn"
@@ -44,26 +103,7 @@
       </button>
     </div>
 
-    <div v-if="committedUrl || bookmarks.length" class="web-browser-options">
-      <button
-        type="button"
-        class="web-browser-star"
-        :class="{ 'is-on': isBookmarked }"
-        :disabled="!committedUrl"
-        :aria-pressed="isBookmarked"
-        :title="
-          tm(`${I18N}.${isBookmarked ? 'bookmarkRemove' : 'bookmarkAdd'}`)
-        "
-        :aria-label="
-          tm(`${I18N}.${isBookmarked ? 'bookmarkRemove' : 'bookmarkAdd'}`)
-        "
-        @click="toggleBookmark"
-      >
-        <v-icon size="14">{{
-          isBookmarked ? "mdi-star" : "mdi-star-outline"
-        }}</v-icon>
-      </button>
-
+    <div v-if="bookmarks.length" class="web-browser-options">
       <span
         v-for="bookmark in bookmarks"
         :key="bookmark"
@@ -110,12 +150,18 @@
       </div>
     </div>
 
-    <div v-else class="web-browser-stage">
+    <div
+      v-for="tab in tabs"
+      :key="tab.id"
+      v-show="tab.url && tab.id === activeTabId"
+      class="web-browser-stage"
+    >
       <iframe
-        :key="reloadNonce"
+        v-if="tab.url"
+        :key="tab.reloadNonce"
         class="web-browser-frame"
-        :src="committedUrl"
-        :sandbox="sandbox"
+        :src="tab.url"
+        :sandbox="buildIframeSandbox(tab.url, dashboardOrigin)"
         referrerpolicy="no-referrer"
         :title="tm(`${I18N}.frameTitle`)"
       />
@@ -144,31 +190,53 @@ const props = defineProps<{ projectRoot: string | null }>();
 
 const { tm } = useModuleI18n("features/chat");
 const I18N = "spcodeProjectLoad.webBrowser";
+const dashboardOrigin = window.location.origin;
 
-const draft = ref("");
-const committedUrl = ref("");
+let nextTabId = 0;
+const tabs = ref([
+  { id: nextTabId++, url: "", draft: "", error: "", reloadNonce: 0 },
+]);
+const activeTabId = ref(tabs.value[0].id);
+const activeTab = computed(
+  () => tabs.value.find((tab) => tab.id === activeTabId.value)!,
+);
+const draft = computed({
+  get: () => activeTab.value.draft,
+  set: (value: string) => {
+    activeTab.value.draft = value;
+  },
+});
+const committedUrl = computed({
+  get: () => activeTab.value.url,
+  set: (value: string) => {
+    activeTab.value.url = value;
+  },
+});
 const bookmarks = ref<string[]>([]);
-const errorMessage = ref("");
-const reloadNonce = ref(0);
+const errorMessage = computed({
+  get: () => activeTab.value.error,
+  set: (value: string) => {
+    activeTab.value.error = value;
+  },
+});
 // Last payload written (or hydrated). Skips redundant writes and the
 // hydrate → watcher echo when the project changes.
 let lastPersisted = "";
 
-const sandbox = computed(() =>
-  buildIframeSandbox(committedUrl.value, window.location.origin),
+const quickLinks = computed(() =>
+  QUICK_URLS.map((url) => ({ url, label: bookmarkLabel(url) })),
 );
 const isBookmarked = computed(
   () =>
     committedUrl.value !== "" && bookmarks.value.includes(committedUrl.value),
-);
-const quickLinks = computed(() =>
-  QUICK_URLS.map((url) => ({ url, label: bookmarkLabel(url) })),
 );
 
 function persist(): void {
   const state = {
     url: committedUrl.value,
     bookmarks: bookmarks.value,
+    tabs: tabs.value.map((tab) => tab.url),
+    activeTab: tabs.value.findIndex((tab) => tab.id === activeTabId.value),
   };
   const serialized = JSON.stringify(state);
   if (serialized === lastPersisted) return;
@@ -178,12 +246,39 @@ function persist(): void {
 
 function hydrate(): void {
   const state = loadBrowserState(props.projectRoot);
-  committedUrl.value = state.url;
-  draft.value = state.url;
+  tabs.value = (state.tabs ?? [state.url]).map((url) => ({
+    id: nextTabId++,
+    url,
+    draft: url,
+    error: "",
+    reloadNonce: 0,
+  }));
+  activeTabId.value = tabs.value[state.activeTab ?? 0].id;
   bookmarks.value = state.bookmarks;
-  errorMessage.value = "";
-  reloadNonce.value = 0;
-  lastPersisted = JSON.stringify(state);
+  lastPersisted = "";
+}
+
+function addTab(): void {
+  const tab = {
+    id: nextTabId++,
+    url: "",
+    draft: "",
+    error: "",
+    reloadNonce: 0,
+  };
+  tabs.value.push(tab);
+  activeTabId.value = tab.id;
+}
+
+function closeTab(id: number): void {
+  const index = tabs.value.findIndex((tab) => tab.id === id);
+  if (index < 0) return;
+  if (tabs.value.length === 1) {
+    addTab();
+  } else if (id === activeTabId.value) {
+    activeTabId.value = tabs.value[index + 1]?.id ?? tabs.value[index - 1].id;
+  }
+  tabs.value.splice(index, 1);
 }
 
 function setError(reason: "invalid" | "scheme"): void {
@@ -219,7 +314,7 @@ function openQuick(url: string): void {
 
 function reload(): void {
   if (!committedUrl.value) return;
-  reloadNonce.value += 1;
+  activeTab.value.reloadNonce += 1;
 }
 
 function openExternal(): void {
@@ -248,7 +343,7 @@ function removeBookmark(url: string): void {
 }
 
 watch(() => props.projectRoot, hydrate);
-watch([committedUrl, bookmarks], persist, { deep: true });
+watch([tabs, activeTabId, bookmarks], persist, { deep: true });
 onMounted(hydrate);
 </script>
 
@@ -259,6 +354,64 @@ onMounted(hydrate);
   height: 100%;
   min-height: 320px;
   gap: 8px;
+}
+
+.web-browser-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  overflow-x: auto;
+  flex: 0 0 auto;
+}
+.web-browser-tab {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  max-width: 180px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: rgba(var(--v-theme-on-surface), 0.6);
+}
+.web-browser-tab.is-active {
+  border-color: rgba(var(--v-theme-primary), 0.3);
+  background: rgba(var(--v-theme-primary), 0.1);
+  color: rgb(var(--v-theme-on-surface));
+}
+.web-browser-tab-select {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  padding: 5px 4px 5px 8px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.web-browser-tab-select span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.web-browser-tab-close {
+  flex: 0 0 auto;
+  padding: 4px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.web-browser-tab-close:hover,
+.web-browser-tab-select:hover {
+  background: rgba(var(--v-theme-on-surface), 0.08);
+}
+.web-browser-add-tab {
+  position: sticky;
+  right: 0;
+  background: rgb(var(--v-theme-surface));
 }
 
 .web-browser-address {
@@ -329,10 +482,11 @@ onMounted(hydrate);
 }
 
 .web-browser-star {
+  flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 24px;
+  width: 22px;
   height: 24px;
   border: 0;
   border-radius: 6px;

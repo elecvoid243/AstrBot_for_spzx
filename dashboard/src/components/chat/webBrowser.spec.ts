@@ -146,6 +146,33 @@ describe("per-project persistence", () => {
     });
   });
 
+  it("restores and validates tabs while keeping legacy single-page state readable", () => {
+    const storage = memoryStorage();
+    const key = webBrowserStorageKey("F:/repo");
+    storage.setItem(
+      key,
+      JSON.stringify({ url: "localhost:3000", bookmarks: [] }),
+    );
+    expect(loadBrowserState("F:/repo", storage).url).toBe(
+      "http://localhost:3000/",
+    );
+    storage.setItem(
+      key,
+      JSON.stringify({
+        url: "localhost:3000",
+        bookmarks: [],
+        tabs: ["localhost:3000", "javascript:alert(1)", "https://example.com"],
+        activeTab: 9,
+      }),
+    );
+    expect(loadBrowserState("F:/repo", storage)).toEqual({
+      url: "https://example.com/",
+      bookmarks: [],
+      tabs: ["http://localhost:3000/", "", "https://example.com/"],
+      activeTab: 2,
+    });
+  });
+
   it("does not leak state across projects", () => {
     const storage = memoryStorage();
     saveBrowserState(

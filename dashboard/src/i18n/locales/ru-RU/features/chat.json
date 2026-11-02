@@ -1960,11 +1960,15 @@
       "inactiveSegment": "Режим Build"
     },
     "webBrowser": {
+      "tabsLabel": "Страницы просмотра",
+      "newTab": "Новая страница",
+      "addTab": "Новая страница просмотра",
+      "closeTab": "Закрыть {name}",
       "urlPlaceholder": "Введите адрес, напр. localhost:3000",
       "urlLabel": "Адрес просмотра",
       "reload": "Обновить",
       "openExternal": "Открыть в новой вкладке",
-      "bookmarkAdd": "Добавить адрес в закладки",
+      "bookmarkAdd": "Добавить эту страницу в закладки",
       "bookmarkRemove": "Удалить закладку",
       "bookmarkRemoveNamed": "Удалить закладку {url}",
       "bookmarkOpen": "Открыть закладку {url}",

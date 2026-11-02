@@ -124,6 +124,8 @@ export function bookmarkLabel(url: string): string {
 export interface BrowserState {
   url: string;
   bookmarks: string[];
+  tabs?: string[];
+  activeTab?: number;
 }
 
 export type BrowserStorage = Pick<Storage, "getItem" | "setItem">;
@@ -195,10 +197,23 @@ export function loadBrowserState(
   const record = parsed as Record<string, unknown>;
   const rawUrl = typeof record.url === "string" ? record.url.trim() : "";
   const normalized = rawUrl ? normalizeBrowserUrl(rawUrl) : null;
-  return {
+  const state: BrowserState = {
     url: normalized && normalized.ok ? normalized.url : "",
     bookmarks: sanitizeBookmarks(record.bookmarks),
   };
+  if (Array.isArray(record.tabs) && record.tabs.length) {
+    state.tabs = record.tabs.map((entry: unknown) => {
+      const result =
+        typeof entry === "string" ? normalizeBrowserUrl(entry) : null;
+      return result?.ok ? result.url : "";
+    });
+    state.activeTab =
+      typeof record.activeTab === "number" && Number.isInteger(record.activeTab)
+        ? Math.max(0, Math.min(record.activeTab, state.tabs.length - 1))
+        : 0;
+    state.url = state.tabs[state.activeTab];
+  }
+  return state;
 }
 
 /** Persist `state` for `projectRoot`. Storage failures are non-fatal. */
@@ -217,6 +232,16 @@ export function saveBrowserState(
     url: normalized && normalized.ok ? normalized.url : "",
     bookmarks: sanitizeBookmarks(state.bookmarks),
   };
+  if (state.tabs?.length) {
+    payload.tabs = state.tabs.map((url) => {
+      const result = normalizeBrowserUrl(url);
+      return result.ok ? result.url : "";
+    });
+    payload.activeTab = Number.isInteger(state.activeTab)
+      ? Math.max(0, Math.min(state.activeTab!, payload.tabs.length - 1))
+      : 0;
+    payload.url = payload.tabs[payload.activeTab];
+  }
   try {
     storage.setItem(key, JSON.stringify(payload));
   } catch {

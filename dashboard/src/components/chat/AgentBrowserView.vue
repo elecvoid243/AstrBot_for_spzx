@@ -171,7 +171,13 @@ let acknowledgementTimer: ReturnType<typeof setTimeout> | undefined;
 
 function disconnectControl() {
   if (humanControl.value || (manualPending.value && controlSocket))
-    manualMessage.value = t(`${key}.manualDisconnected`);
+    manualMessage.value = t(
+      `${key}.${
+        inputInFlight && inFlightOperation !== "reset_keys"
+          ? "inputUnknown"
+          : "manualDisconnected"
+      }`,
+    );
   inputQueue = [];
   inputCount.value = 0;
   awaitingFrame.value = false;
@@ -235,6 +241,7 @@ async function acquireControl() {
       if (controlSocket !== socket) return;
       const ack = JSON.parse(message.data);
       if (ack.operation === "heartbeat" && ack.status === "applied") return;
+      const unconfirmed = inputInFlight && inFlightOperation !== "reset_keys";
       clearTimeout(acknowledgementTimer);
       manualPending.value = releasing;
       inputInFlight = false;
@@ -261,8 +268,14 @@ async function acquireControl() {
         return;
       }
       if (ack.status !== "applied") {
-        manualMessage.value = ack.message || t(`${key}.manualFailed`);
+        const message =
+          ack.status === "uncertain" ||
+          (unconfirmed && ack.input_id === undefined)
+            ? t(`${key}.inputUnknown`)
+            : ack.message || t(`${key}.manualFailed`);
         disconnectControl();
+        manualMessage.value = message;
+        void refresh(true);
         return;
       }
       manualEpoch = ack.control_epoch;
@@ -292,8 +305,9 @@ async function acquireControl() {
     };
     socket.onclose = () => {
       if (controlSocket !== socket) return;
-      manualMessage.value = t(`${key}.manualDisconnected`);
       disconnectControl();
+      // Reauthorize observation too: a socket can fail because access was revoked.
+      void refresh(true);
     };
     socket.onerror = () => socket.close();
   } catch (error: any) {
@@ -848,6 +862,12 @@ async function follow(
         )
           continue;
         if (
+          humanControl.value &&
+          (event.control_epoch ?? manualEpoch) > manualEpoch &&
+          !(releasing && event.execution_state === "active")
+        )
+          disconnectControl();
+        if (
           event.type === "frame" &&
           (event.mime_type !== "image/jpeg" ||
             !event.image ||
@@ -1131,6 +1151,8 @@ const networkChanged = () => {
 };
 window.addEventListener("online", networkChanged);
 window.addEventListener("offline", networkChanged);
+window.addEventListener("pagehide", disconnectControl);
+window.addEventListener("astrbot:account-changed", disconnectControl);
 onBeforeUnmount(() => {
   disconnectControl();
   window.removeEventListener("blur", windowBlurred);
@@ -1141,6 +1163,8 @@ onBeforeUnmount(() => {
   document.removeEventListener("visibilitychange", visibilityChanged);
   window.removeEventListener("online", networkChanged);
   window.removeEventListener("offline", networkChanged);
+  window.removeEventListener("pagehide", disconnectControl);
+  window.removeEventListener("astrbot:account-changed", disconnectControl);
 });
 </script>
 
@@ -1181,6 +1205,9 @@ onBeforeUnmount(() => {
             :disabled="
               !state?.available ||
               state?.manual_control_version !== 1 ||
+              state?.execution_state === 'stopped' ||
+              (!humanControl &&
+                ['human', 'acquiring'].includes(state?.control_mode || '')) ||
               manualPending ||
               controlling
             "
@@ -1256,6 +1283,24 @@ onBeforeUnmount(() => {
     </div>
     <div v-else-if="manualMessage" role="status" class="agent-browser-notice">
       {{ manualMessage }}
+    </div>
+    <div
+      v-if="!humanControl && state?.control_mode === 'human'"
+      role="status"
+      class="agent-browser-notice agent-browser-occupied"
+    >
+      {{ t(`${key}.controlOccupied`) }}
+    </div>
+    <div
+      v-else-if="
+        !humanControl &&
+        state?.control_mode === 'paused' &&
+        state?.execution_state === 'active'
+      "
+      role="status"
+      class="agent-browser-notice agent-browser-paused"
+    >
+      {{ t(`${key}.controlPaused`) }}
     </div>
 
     <div

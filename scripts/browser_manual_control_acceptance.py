@@ -15,6 +15,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import secrets
 import shutil
 import socket
@@ -66,6 +67,11 @@ async def main() -> None:
         action="store_true",
         help="Exercise actual wheel/double-click and viewport feedback.",
     )
+    parser.add_argument(
+        "--recovery",
+        action="store_true",
+        help="Exercise H05 two-client lifecycle recovery and lost acknowledgements.",
+    )
     args = parser.parse_args()
     if args.lost_key_target and not args.text_input:
         parser.error("--lost-key-target requires --text-input")
@@ -106,6 +112,7 @@ async def main() -> None:
     private_text = "H03-" + secrets.token_urlsafe(12)
 
     pointer_state = {}
+    recovery_clicks = 0
 
     async def website(request):
         """Serve a deterministic authenticated counter page for actual CDP clicks.
@@ -524,6 +531,22 @@ addEventListener('focusin',report);
             await view.locator(".agent-browser-image img").wait_for(timeout=30000)
         except Exception:
             await view.screenshot(path=str(evidence / "navigation-failure.png"))
+            diagnostic = await view.evaluate("""async () => {
+              const headers={Authorization:'Bearer '+localStorage.getItem('token')};
+              const chat=location.hash.split('/chat/')[1]?.split('?')[0];
+              const base='/api/v1/plugins/extensions/browser-use/';
+              const status=await fetch(base+'status?'+new URLSearchParams({chat_id:chat}),{headers});
+              const state=await status.json();
+              const data=state.data || {};
+              delete data.image;
+              const snapshot=await fetch(base+'snapshot?'+new URLSearchParams({chat_id:chat,generation:data.generation,browser_session_id:data.browser_session_id}),{headers});
+              const shot=await snapshot.json();
+              if(shot.data) delete shot.data.image;
+              return {status:status.status,state,snapshot_status:snapshot.status,snapshot:shot};
+            }""")
+            (evidence / "navigation-diagnostic.json").write_text(
+                json.dumps(diagnostic, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
             raise
 
     process = None
@@ -645,6 +668,27 @@ addEventListener('focusin',report);
 })();
 """)
                 page = await context.new_page()
+                if args.recovery:
+                    await context.add_init_script("""
+(() => {
+  const NativeSocket = window.WebSocket;
+  window.WebSocket = class extends NativeSocket {
+    constructor(...args) {
+      super(...args);
+      this.addEventListener('message', event => {
+        const ack = JSON.parse(event.data);
+        if ((window.__h05DropClick && ack.operation === 'click') ||
+            (window.__h05DropRelease && ack.operation === 'release')) {
+          window.__h05DropClick = false;
+          window.__h05DropRelease = false;
+          event.stopImmediatePropagation();
+          this.close();
+        }
+      });
+    }
+  };
+})();
+""")
                 wheel_acks = []
                 feedback_acks = []
 
@@ -953,10 +997,11 @@ addEventListener('focusin',report);
                             y: Remote CSS vertical coordinate.
                         """
                         box = await image.bounding_box()
+                        viewport = await status()
                         await image.click(
                             position={
-                                "x": box["width"] * x / 1280,
-                                "y": box["height"] * y / 720,
+                                "x": box["width"] * x / viewport["viewport_width"],
+                                "y": box["height"] * y / viewport["viewport_height"],
                             }
                         )
 
@@ -1628,6 +1673,217 @@ addEventListener('focusin',report);
                     metrics["checks"].append(
                         "H04: actual host consumes/replays stale wheel ack without dispatch; stays human until explicit handback"
                     )
+                if args.recovery:
+                    second_context = await browser.new_context(
+                        viewport={"width": 1600, "height": 1000}
+                    )
+                    await second_context.add_init_script(
+                        "localStorage.setItem('astrbot-locale','en-US')"
+                    )
+                    second = await second_context.new_page()
+                    await second.goto(origin + "/#/auth/login")
+                    await second.locator('input[name="username"]').fill("b06")
+                    await second.locator('input[name="password"]').fill(password)
+                    await second.locator('button[type="submit"]').click()
+                    await second.wait_for_function(
+                        "!!localStorage.getItem('token') && !location.hash.includes('/auth/')"
+                    )
+                    await second.goto(origin + f"/#/chat/{chat_id}")
+                    await second.locator(".chat-text-input, .chat-textarea").wait_for()
+                    await asyncio.sleep(1)
+                    popup = second.get_by_role(
+                        "button", name=re.compile("^(关闭|Close)$")
+                    )
+                    if await popup.count():
+                        await popup.first.click()
+                    await open_browser_panel(second)
+
+                    async def acquire_ui(view):
+                        """Acquire only through the real UI and wait for decoded current pixels.
+
+                        Args:
+                            view: Independently authenticated production ChatUI page.
+                        """
+                        await view.locator(".agent-browser-takeover").click()
+                        await view.locator(
+                            '.agent-browser-view[data-human-control="true"]'
+                        ).wait_for(timeout=30000)
+                        await view.wait_for_function(
+                            "document.querySelector('.agent-browser-image img')?.naturalWidth > 0"
+                        )
+                        await asyncio.sleep(0.4)
+
+                    async def paused_without_effects():
+                        """Verify authoritative paused ownership and preserved private lifetime.
+
+                        Returns:
+                            Fresh server metadata after disconnect revocation.
+                        """
+                        for _ in range(100):
+                            current_state = await status()
+                            if current_state["control_mode"] == "paused":
+                                assert all(
+                                    current_state[k] == v for k, v in identity.items()
+                                )
+                                return current_state
+                            await asyncio.sleep(0.1)
+                        raise AssertionError("Controller was not revoked")
+
+                    baseline_effects = (counter, post_effects, len(model_requests))
+                    await acquire_ui(page)
+                    await second.locator(".agent-browser-occupied").wait_for()
+                    assert await second.locator(".agent-browser-takeover").is_disabled()
+                    await second.screenshot(
+                        path=str(evidence / "recovery-occupied.png")
+                    )
+                    # A forged/racing second connection also fails at the server.
+                    async with client.post(
+                        ticket_url, headers=auth_headers, json=ticket_body
+                    ) as response:
+                        rival = await response.json()
+                    async with client.ws_connect(
+                        origin + rival["websocket_path"]
+                    ) as ws:
+                        await ws.send_json({"ticket": rival["ticket"]})
+                        assert (await ws.receive_json())["status"] == "rejected"
+                    assert (await status())["control_mode"] == "human"
+                    metrics["checks"].append(
+                        "H05: two independently logged-in production clients show one controller and read-only occupancy; racing socket cannot steal ownership"
+                    )
+                    for exit_path in (
+                        "refresh",
+                        "network",
+                        "sidebar",
+                        "chat",
+                        "hidden",
+                        "pagehide",
+                    ):
+                        print(f"H05 recovery exit: {exit_path}", flush=True)
+                        if exit_path == "refresh":
+                            await page.reload()
+                        elif exit_path == "network":
+                            await context.set_offline(True)
+                        elif exit_path == "sidebar":
+                            await page.locator("button.sp-ghost-btn").click()
+                        elif exit_path == "chat":
+                            async with client.get(
+                                origin + "/api/v1/chat/sessions/new",
+                                headers=auth_headers,
+                            ) as response:
+                                another_chat = (await response.json())["data"][
+                                    "session_id"
+                                ]
+                            await page.goto(origin + f"/#/chat/{another_chat}")
+                        elif exit_path == "hidden":
+                            # Deterministic browser lifecycle fault, through production listeners.
+                            await page.evaluate(
+                                "Object.defineProperty(document,'visibilityState',{value:'hidden',configurable:true}); document.dispatchEvent(new Event('visibilitychange'))"
+                            )
+                        else:
+                            await page.evaluate(
+                                "dispatchEvent(new PageTransitionEvent('pagehide'))"
+                            )
+                        await paused_without_effects()
+                        assert (
+                            counter,
+                            post_effects,
+                            len(model_requests),
+                        ) == baseline_effects
+                        if exit_path == "network":
+                            await context.set_offline(False)
+                        if exit_path == "hidden":
+                            await page.evaluate(
+                                "delete document.visibilityState; document.dispatchEvent(new Event('visibilitychange'))"
+                            )
+                        await page.goto(origin + f"/#/chat/{chat_id}")
+                        await page.reload()
+                        await page.locator(".chat-text-input, .chat-textarea").wait_for(
+                            timeout=30000
+                        )
+                        await open_browser_panel(page)
+                        await page.locator(".agent-browser-paused").wait_for()
+                        assert (
+                            await page.locator(".agent-browser-view").get_attribute(
+                                "data-human-control"
+                            )
+                            == "false"
+                        )
+                        await acquire_ui(page)
+                        metrics["checks"].append(
+                            f"H05: {exit_path} revokes control and drops queued input; synchronized reconnect stays paused until explicit reacquire, no page/model effects"
+                        )
+                    # Drop a real successful input acknowledgement, then close its socket.
+                    # A second queued click must be discarded, never replayed after refresh.
+                    await page.evaluate("window.__h05DropClick=true")
+                    before_unknown = counter
+                    box = await image.bounding_box()
+                    await image.dblclick(
+                        position={
+                            "x": box["width"] * 160 / 1280,
+                            "y": box["height"] * 100 / 720,
+                        }
+                    )
+                    await paused_without_effects()
+                    assert counter == before_unknown + 1
+                    recovery_clicks += 1
+                    await page.wait_for_function(
+                        "document.querySelector('.agent-browser-notice')?.textContent.match(/输入确认丢失|Input confirmation was lost/)"
+                    )
+                    await page.screenshot(
+                        path=str(evidence / "recovery-unknown-zh.png")
+                    )
+                    await page.reload()
+                    await page.locator(".chat-text-input, .chat-textarea").wait_for()
+                    await open_browser_panel(page)
+                    await acquire_ui(second)
+                    await second.locator(".agent-browser-takeover").click()
+                    await second.locator(
+                        '.agent-browser-view[data-human-control="false"]'
+                    ).wait_for()
+                    await asyncio.sleep(0.5)
+                    assert counter == before_unknown + 1
+                    recovered_state = await status()
+                    assert all(recovered_state[k] == v for k, v in identity.items())
+                    await acquire_ui(page)
+                    await page.evaluate("window.__h05DropRelease=true")
+                    await page.locator(".agent-browser-takeover").click()
+                    await page.wait_for_function(
+                        "document.querySelector('.agent-browser-notice')?.textContent.match(/输入确认丢失|Input confirmation was lost/)"
+                    )
+                    assert (await status())["control_mode"] == "agent"
+                    assert counter == before_unknown + 1
+                    assert await page.locator(".agent-browser-paused").count() == 0
+                    metrics["checks"].append(
+                        "H05: real handback ack lost after successful server release; UI reports unknown and resynchronizes Agent state without falsely claiming paused or replaying handback"
+                    )
+                    await second_context.close()
+                    if args.pointer_input:
+                        # Reproduce the earlier auxiliary-CDP detach, then demand
+                        # new decoded pixels from the production observer.
+                        old_pixels = await image.get_attribute("src")
+                        await remote_page.evaluate(
+                            "setTimeout(()=>document.body.style.backgroundColor='#f97316',700)"
+                        )
+                        await remote_cdp.detach()
+                        await private_view.close()
+                        for _ in range(100):
+                            if await image.get_attribute(
+                                "src"
+                            ) != old_pixels and await image.evaluate(
+                                "e=>e.complete && e.naturalWidth>0"
+                            ):
+                                break
+                            await asyncio.sleep(0.1)
+                        else:
+                            raise AssertionError(
+                                "Production observer did not recover after auxiliary CDP detach"
+                            )
+                        metrics["checks"].append(
+                            "H05: real auxiliary CDP session and transport detached; production read-only observer receives newly changed decoded page pixels without restarting Chromium"
+                        )
+                    metrics["checks"].append(
+                        "H05: real click ack lost after dispatch; UI reports unknown, queued double-click discarded; other authenticated client reacquires and explicitly hands back without replay"
+                    )
                 scenarios = (
                     ("H02_PRE_RESET", "H02_BUDGET", "H02_RECOVERY", "H02_CANCEL_EDGE")
                     if args.handoff_boundaries
@@ -1676,6 +1932,28 @@ addEventListener('focusin',report);
                         current["browser_session_id"] == identity["browser_session_id"]
                     )
                     while_human = len(model_requests)
+                    if args.recovery and scenario in {"H02_MODEL", "H02_PRE_RESET"}:
+                        await context.set_offline(True)
+                        await paused_without_effects()
+                        await asyncio.sleep(0.5)
+                        assert len(model_requests) == while_human
+                        assert (
+                            counter == baseline_count
+                            and post_effects == baseline_effects
+                        )
+                        await context.set_offline(False)
+                        await page.reload()
+                        await page.locator(
+                            ".chat-text-input, .chat-textarea"
+                        ).wait_for()
+                        await open_browser_panel(page)
+                        await page.locator(".agent-browser-paused").wait_for()
+                        assert len(model_requests) == while_human
+                        await acquire_ui(page)
+                        current = await status()
+                        metrics["checks"].append(
+                            "H05: real running Agent remains paused through network outage and production ChatUI refresh; no model/page effects before explicit reacquire and handback"
+                        )
                     actions = current["action_cursor"]
                     # Allow the already-issued fixture response to arrive late.
                     model_release.set()
@@ -2018,6 +2296,119 @@ addEventListener('focusin',report);
                 metrics["checks"].append(
                     "real ordinary-account login and takeover; both roles reject another account's chat"
                 )
+                if args.recovery:
+                    ordinary_identity = await ordinary_page.evaluate(
+                        "({account:localStorage.getItem('account_id'),token:localStorage.getItem('token')})"
+                    )
+                    ordinary_state_url = base + "/status"
+                    async with client.get(
+                        ordinary_state_url,
+                        headers=ordinary_auth,
+                        params={"chat_id": ordinary_chat},
+                    ) as response:
+                        ordinary_state = (await response.json())["data"]
+                    ordinary_body = {
+                        "chat_id": ordinary_chat,
+                        **{k: ordinary_state[k] for k in identity},
+                    }
+                    await acquire_ui(ordinary_page)
+                    before_logout = (counter, post_effects, len(model_requests))
+                    await ordinary_page.locator(".chat-account-actions button").click()
+                    await ordinary_page.wait_for_function(
+                        "!localStorage.getItem('token')", timeout=15000
+                    )
+                    await asyncio.sleep(31)
+                    await ordinary_page.goto(origin + "/#/auth/login")
+                    await ordinary_page.locator('input[name="username"]').fill(
+                        "h01-user"
+                    )
+                    await ordinary_page.locator('input[name="password"]').fill(
+                        ordinary_password
+                    )
+                    await ordinary_page.locator('button[type="submit"]').click()
+                    await ordinary_page.wait_for_function(
+                        "!!localStorage.getItem('token') && !location.hash.includes('/auth/')"
+                    )
+                    ordinary_auth = {
+                        "Authorization": "Bearer "
+                        + await ordinary_page.evaluate("localStorage.getItem('token')")
+                    }
+                    await ordinary_page.goto(origin + f"/#/chat/{ordinary_chat}")
+                    await ordinary_page.locator(
+                        ".chat-text-input, .chat-textarea"
+                    ).wait_for()
+                    await open_browser_panel(ordinary_page)
+                    await ordinary_page.locator(".agent-browser-paused").wait_for()
+                    assert (counter, post_effects, len(model_requests)) == before_logout
+                    await acquire_ui(ordinary_page)
+                    metrics["checks"].append(
+                        "H05: production logout button clears client credentials and closes input/observation while controlling; fresh login retains paused browser and cannot replay or resume Agent"
+                    )
+                    before_revoke = (counter, post_effects, len(model_requests))
+                    async with client.post(
+                        ticket_url, headers=ordinary_auth, json=ordinary_body
+                    ) as response:
+                        old_ticket = await response.json()
+                    async with client.post(
+                        origin
+                        + f"/api/v1/accounts/{ordinary_identity['account']}/disable",
+                        headers=auth_headers,
+                    ) as response:
+                        assert response.status == 200
+                    await ordinary_page.wait_for_function(
+                        "!localStorage.getItem('token')", timeout=15000
+                    )
+                    # The host cannot authorize cleanup through a revoked account;
+                    # the independent runtime deadline must still revoke it.
+                    await asyncio.sleep(31)
+                    async with client.post(
+                        origin
+                        + f"/api/v1/accounts/{ordinary_identity['account']}/enable",
+                        headers=auth_headers,
+                    ) as response:
+                        assert response.status == 200
+                    async with client.ws_connect(
+                        origin + old_ticket["websocket_path"]
+                    ) as ws:
+                        await ws.send_json({"ticket": old_ticket["ticket"]})
+                        assert (await ws.receive_json())["status"] == "rejected"
+                    await ordinary_page.goto(origin + "/#/auth/login")
+                    await ordinary_page.locator('input[name="username"]').fill(
+                        "h01-user"
+                    )
+                    await ordinary_page.locator('input[name="password"]').fill(
+                        ordinary_password
+                    )
+                    await ordinary_page.locator('button[type="submit"]').click()
+                    await ordinary_page.wait_for_function(
+                        "!!localStorage.getItem('token') && !location.hash.includes('/auth/')"
+                    )
+                    ordinary_token = await ordinary_page.evaluate(
+                        "localStorage.getItem('token')"
+                    )
+                    ordinary_auth = {"Authorization": f"Bearer {ordinary_token}"}
+                    async with client.get(
+                        ordinary_state_url,
+                        headers=ordinary_auth,
+                        params={"chat_id": ordinary_chat},
+                    ) as response:
+                        after_revoke = (await response.json())["data"]
+                    assert after_revoke["control_mode"] == "paused"
+                    assert all(after_revoke[k] == ordinary_body[k] for k in identity)
+                    assert (counter, post_effects, len(model_requests)) == before_revoke
+                    await ordinary_page.goto(origin + f"/#/chat/{ordinary_chat}")
+                    await ordinary_page.locator(
+                        ".chat-text-input, .chat-textarea"
+                    ).wait_for()
+                    await open_browser_panel(ordinary_page)
+                    await ordinary_page.locator(".agent-browser-paused").wait_for()
+                    await ordinary_page.screenshot(
+                        path=str(evidence / "recovery-revoked.png")
+                    )
+                    await acquire_ui(ordinary_page)
+                    metrics["checks"].append(
+                        "H05: ordinary account access revoked while controlling; UI input stops, runtime deadline revokes ownership; fresh login preserves paused Chromium, old ticket cannot revive it"
+                    )
                 async with client.patch(
                     origin + "/api/v1/plugins/astrbot_plugin_browser_use/enabled",
                     headers=auth_headers,
@@ -2029,6 +2420,70 @@ addEventListener('focusin',report);
                 ) as response:
                     assert response.status in {403, 409, 503}, response.status
                 metrics["checks"].append("disabled plugin refuses control")
+                if args.recovery:
+                    await ordinary_page.locator(
+                        '.agent-browser-view[data-human-control="false"]'
+                    ).wait_for(timeout=15000)
+                    before_restart = (counter, post_effects, len(model_requests))
+                    async with client.patch(
+                        origin + "/api/v1/plugins/astrbot_plugin_browser_use/enabled",
+                        headers=auth_headers,
+                        json={"enabled": True},
+                    ) as response:
+                        assert response.status == 200, await response.text()
+                    async with client.post(
+                        ticket_url, headers=ordinary_auth, json=ordinary_body
+                    ) as response:
+                        assert response.status == 409
+                    assert (
+                        counter,
+                        post_effects,
+                        len(model_requests),
+                    ) == before_restart
+                    await ordinary_page.reload()
+                    await ordinary_page.locator(
+                        ".chat-text-input, .chat-textarea"
+                    ).wait_for()
+                    await ordinary_page.locator(".session-item.active").wait_for(
+                        timeout=30000
+                    )
+                    await asyncio.sleep(1)
+                    await ordinary_page.locator(
+                        ".chat-text-input, .chat-textarea"
+                    ).fill("H01_RUN after plugin restart")
+                    await ordinary_page.screenshot(
+                        path=str(evidence / "recovery-restart-ready.png")
+                    )
+                    await ordinary_page.locator(".send-btn[aria-label]").click()
+                    for _ in range(120):
+                        async with client.get(
+                            base + "/status",
+                            headers=ordinary_auth,
+                            params={"chat_id": ordinary_chat},
+                        ) as response:
+                            restarted = (await response.json())["data"]
+                        if restarted.get("available"):
+                            break
+                        await asyncio.sleep(0.5)
+                    assert restarted["generation"] != ordinary_body["generation"]
+                    assert (
+                        restarted["browser_session_id"]
+                        != ordinary_body["browser_session_id"]
+                    )
+                    await open_browser_panel(ordinary_page)
+                    await acquire_ui(ordinary_page)
+                    await ordinary_page.screenshot(
+                        path=str(evidence / "recovery-restarted.png")
+                    )
+                    async with client.patch(
+                        origin + "/api/v1/plugins/astrbot_plugin_browser_use/enabled",
+                        headers=auth_headers,
+                        json={"enabled": False},
+                    ) as response:
+                        assert response.status == 200
+                    metrics["checks"].append(
+                        "H05: plugin disabled during real human ownership; explicit restart keeps old identity invalid and cannot resume work; new explicit task creates a new generation/browser and can acquire"
+                    )
                 if args.text_input:
                     logs = (evidence / "host.log").read_text(
                         encoding="utf-8", errors="replace"
@@ -2042,7 +2497,9 @@ addEventListener('focusin',report);
                     metrics["checks"].append(
                         "H03: password and pasted content absent from host logs and model tool summaries"
                     )
-                assert len(cookies) == (5 if args.handoff_boundaries else 4) and all(
+                assert len(cookies) == (
+                    5 if args.handoff_boundaries else 4
+                ) + recovery_clicks and all(
                     cookie == login_cookie for cookie in cookies
                 )
                 metrics.update(

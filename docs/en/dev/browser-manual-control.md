@@ -1,4 +1,4 @@
-# Browser manual control protocol (H01–H04)
+# Browser manual control protocol (H01–H05)
 
 The existing `browser-use/status`, `snapshot`, `stream`, `stop`, and `close`
 extensions retain their methods and ownership rules. `manual_control_version: 1`
@@ -63,8 +63,41 @@ Its random loopback bearer credential is never delivered to the frontend. The
 legacy extension URL `/plugins/extensions/browser-use/manual` cannot accept public
 control bodies; only host-created request context can enter the audited handler.
 
-H05 adds full lifecycle and multiwindow recovery. It must
-retain these identity, acknowledgement and explicit-handback contracts.
+## Recovery and lifecycle (H05)
+
+Other windows show read-only occupancy and cannot steal the server-owned control
+lease. Refresh, offline, hidden view, sidebar close, chat switch, page exit and
+account reset discard unsent input and close its socket immediately. Account and
+chat access are rechecked on every command, including heartbeats. If revoked access
+prevents authorized disconnect cleanup, the independent 30-second private lease
+still expires. Reconnect first reads server status and fresh pixels; takeover and
+handback remain explicit. A cancelled task cannot restart.
+
+Lost input confirmation means an unknown outcome. The UI stops, reports that the
+action may have happened, and never replays it. Old socket replies cannot enable
+input. During explicit handback, SSE may precede the socket acknowledgement; input
+stays disabled while waiting for that confirmation.
+
+Every revocation and terminal path releases keys and any possibly held mouse on
+their original CDP sessions within a shared bounded deadline. Mouse cleanup releases
+outside the document so it cannot complete an uncertain click on a submit target.
+Failed releases remain tracked; acquisition retries cleanup, failed handback stays
+paused, and confirmed close clears the destroyed lifetime. Host handback responses
+are rechecked against cancellation, ownership and runtime/disable revisions before
+renewing admission. Stop preserves Chromium, close/disable destroys it, and explicit
+restart creates a new generation. Old credentials cannot revive the old lifetime.
+Read-only snapshots recover silent screencast loss without restarting Chromium.
+Native captures use one independent internal CDP connection/session bound to the
+owned browser and target, outside the Agent's input-session pool and without device
+emulation overrides. Target changes and shutdown release it; failed
+captures discard it for a fresh attachment. This prevents an Agent session's stale
+device metrics from resizing the page after an auxiliary debugger disconnects.
+
+The production acceptance fixture supports `--recovery --pointer-input --text-input
+--lost-key-target` with its normal arguments. It uses two independent logins and
+injects network, lifecycle and acknowledgement faults through production ChatUI,
+the installed plugin and private Chromium. This does not verify physical offline
+installation or physical Windows IME behavior.
 
 
 ## Keyboard, composition and paste (H03)

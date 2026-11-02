@@ -592,6 +592,16 @@ After takeover, double-click targets or scroll vertically and horizontally over 
 
 Navigation, tab/viewport changes and document or nested-container scrolling invalidate old position samples. Replaceable adjacent wheel deltas are merged, and stale wheel samples are discarded when the new image arrives. Clicks, text and keys remain ordered and separate from the image buffer. Failure stops input without replay. Human viewing targets up to 10 captures/second (actual rate depends on page and machine), with one pending image, bounded action/input queues and the existing JPEG size budget. Complex dragging, file transfer and system dialogs are outside this feature. Plugins without `pointer_input_version: 1` retain single clicks and show a scrolling/double-click upgrade hint.
 
+Other windows show **Read-only: another window controls this browser**. Refresh or
+reconnect first synchronizes status and a new image; a paused browser requires
+explicit takeover and handback. **Input confirmation was lost** means the action
+may already have happened. Check the page before acting again; queued input is
+discarded and no click or submission is replayed. Logout and revoked account/chat
+access stop input too. Stop preserves the browser; Close or disabling the plugin
+ends its lifetime. Restarting the plugin cannot reuse old control credentials.
+
+![Another signed-in window is read-only while the browser is occupied](images/agent-browser-recovery.png)
+
 ![Human scrolling and double-click feedback](images/agent-browser-pointer.png)
 
 Fullscreen keeps status notices and **Hand back** visible, and fits the image to the space left by the controls. Blank margins stay local.

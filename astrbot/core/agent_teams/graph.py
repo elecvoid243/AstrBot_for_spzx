@@ -9,6 +9,7 @@ from referencing import Registry, Resource
 from referencing.jsonschema import DRAFT202012
 
 from astrbot.core.agent_teams.assets import (
+    HumanWaitPolicy,
     RoleAssetError,
     RoleDefinition,
     RoleInstallation,
@@ -48,6 +49,7 @@ class HumanTask(BaseModel):
     recommendation_task_id: str | None = None
     recommendation_value_field: str | None = None
     recommendation_reason_field: str | None = None
+    human_wait: HumanWaitPolicy = Field(default_factory=HumanWaitPolicy)
 
 
 class TeamCall(BaseModel):

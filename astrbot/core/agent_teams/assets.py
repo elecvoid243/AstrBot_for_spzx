@@ -6,7 +6,7 @@ import uuid
 from collections.abc import Awaitable, Callable
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from sqlalchemy import exists
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import col, select, update
@@ -32,6 +32,30 @@ from astrbot.core.tools.file_tool_mode import (
 SlotName = Annotated[str, Field(min_length=1, max_length=128)]
 
 
+class HumanWaitPolicy(BaseModel):
+    """Designer-selected deadline behavior, independent of ordinary chat timeouts."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    timeout_seconds: int | None = Field(default=None, ge=1, le=31_536_000)
+    timeout_action: Literal["wait", "use_recommendation"] = "wait"
+
+    @model_validator(mode="after")
+    def require_automatic_deadline(self):
+        """Require an explicit deadline before allowing automatic decisions.
+
+        Returns:
+            The validated waiting policy.
+
+        Raises:
+            ValueError: Automatic recommendation use has no configured deadline.
+        """
+        if self.timeout_action == "use_recommendation" and self.timeout_seconds is None:
+            raise ValueError(
+                "Set a deadline before using a recommendation automatically"
+            )
+        return self
+
+
 class RoleOverrides(BaseModel):
     """Optional configuration; lists inherit on null and disable when empty."""
 
@@ -49,6 +73,7 @@ class RoleOverrides(BaseModel):
     max_parallel: int | None = Field(default=None, ge=1, le=100)
     max_iterations: int | None = Field(default=None, ge=1, le=100)
     max_depth: int | None = Field(default=None, ge=1, le=20)
+    human_wait: HumanWaitPolicy | None = None
 
 
 class RoleDefinition(RoleOverrides):
@@ -675,6 +700,11 @@ class RoleAssetService:
                 )
         effective["persona_prompt"] = persona.get("prompt")
         sources["persona_prompt"] = f"persona:{persona_id}" if persona else "role"
+        effective["human_wait"] = (
+            task.get("human_wait", definition.get("human_wait"))
+            or HumanWaitPolicy().model_dump()
+        )
+        sources["human_wait"] = "task" if "human_wait" in task else "role"
         defaults = {
             "max_instances": 1,
             "max_parallel": 1,

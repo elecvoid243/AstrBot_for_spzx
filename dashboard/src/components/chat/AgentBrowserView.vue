@@ -329,7 +329,8 @@ function resetKeyboard() {
   localKeys.clear();
   if (keyboardSink.value) keyboardSink.value.value = "";
   inputQueue = [];
-  if (humanControl.value) enqueueInput({ operation: "reset_keys" });
+  if (humanControl.value && state.value?.keyboard_input_version === 1)
+    enqueueInput({ operation: "reset_keys" });
 }
 
 function clickPage(event: MouseEvent) {

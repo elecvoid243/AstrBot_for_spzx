@@ -160,6 +160,36 @@ describe("Agent browser snapshots", () => {
       await flushPromises();
       expect(view.text()).toContain("已交还控制权");
       expect(view.text()).not.toContain("控制连接已断开");
+      stream.enqueue(
+        new TextEncoder().encode(
+          `data: ${JSON.stringify({
+            ...frame,
+            type: "frame",
+            image: "legacy",
+            mime_type: "image/jpeg",
+            width: 1280,
+            height: 720,
+            keyboard_input_version: undefined,
+            document_id: "next",
+            sequence: 3,
+          })}\n\n`,
+        ),
+      );
+      await flushPromises();
+      await view.get(".agent-browser-takeover").trigger("click");
+      await flushPromises();
+      const legacySocket = ControlSocket.instance;
+      legacySocket.onopen?.();
+      legacySocket.ack("acquire");
+      await flushPromises();
+      expect(view.find("textarea").exists()).toBe(false);
+      expect(view.text()).toContain("升级 Browser Use 后可使用键盘输入");
+      await view.get(".agent-browser-takeover").trigger("click");
+      expect(legacySocket.sent.at(-1)?.operation).toBe("release");
+      expect(legacySocket.sent.some((x) => x.operation === "reset_keys")).toBe(
+        false,
+      );
+      legacySocket.ack("release", "agent");
     } finally {
       view.unmount();
       vi.unstubAllGlobals();

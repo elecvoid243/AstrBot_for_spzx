@@ -365,13 +365,14 @@ def test_human_http_uuid_answers_reconnect_and_owner_permissions(tmp_path):
         events = client.get(path + "/events", params={"after": run["cursor"]}).json()[
             "data"
         ]
-        assert events["snapshot"]["todos"] == after["todos"]
-        assert events["reset"] is True
+        assert events["snapshot"] is None
+        assert events["reset"] is False
+        assert events["cursor"] >= after["cursor"]
         assert (
             len(
                 [
                     e
-                    for e in events["snapshot"]["events"]
+                    for e in events["events"]
                     if e["kind"] == "human.consumed"
                 ]
             )

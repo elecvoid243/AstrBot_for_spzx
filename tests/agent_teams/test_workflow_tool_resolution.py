@@ -155,7 +155,7 @@ def test_unknown_tool_effect_resolution_survives_process_termination(
     thread.start()
     root = Path(__file__).resolve().parents[2]
     command = [sys.executable, "-m", "tests.agent_teams.checkpoint_worker", str(tmp_path), f"http://127.0.0.1:{server.server_port}"]
-    environment = {**os.environ, "PYTHONUTF8": "1"}
+    environment = {**os.environ, "PYTHONUTF8": "1", "ASTRBOT_ROOT": str(tmp_path / "runtime")}
     log = (tmp_path / "worker.log").open("w", encoding="utf-8")
     process = subprocess.Popen([*command, "start", scenario], cwd=root, stdout=log, stderr=subprocess.STDOUT, env=environment)
     try:
@@ -315,7 +315,7 @@ def test_unknown_tool_effect_resolution_survives_process_termination(
             assert [raw["content"][0]["text"] for raw in call["raw_results"]] == expected
             assert [block["content"] for block in call["recovery"]["retries"][0]["protocol_before"]] == ([] if scenario.endswith("raw") else expected[:-1])
             # A third authorized retry retains normal repeated-call guidance.
-            assert [message["content"].split("\n\n[SYSTEM NOTICE]", 1)[0] for message in requests[1]["contexts"] if message.get("tool_call_id") == "evidence-original"] == expected
+            assert [message["content"].split("\n\n[SYSTEM NOTICE]", 1)[0] for message in requests[1]["contexts"] if message.get("tool_call_id") == "evidence-original"] == ["\n\n".join(expected)]
             records = [record["data"]["raw_result"]["content"][0]["text"] for record in evidence["after"]["process"] if record["kind"] == "tool_result" and record["data"]["name"] == "external_evidence" and record["data"].get("raw_result")]
             assert records == expected
             assert len(calls) == 1 and call["status"] == "applied"
@@ -353,7 +353,7 @@ def test_unknown_tool_effect_resolution_survives_process_termination(
             expected = ["Partial verified evidence.", "Verified terminal failure." if scenario.endswith("failed") else "Complete verified evidence."]
             assert raw_text == expected
             applied = [message["content"] for message in requests[1]["contexts"] if message.get("tool_call_id") == "evidence-original"]
-            assert applied == expected
+            assert applied == ["\n\n".join(expected) + ("\n\n[Tool result status: error]" if scenario.endswith("failed") else "")]
             assert calls[0]["raw_results"][0] == evidence["before"]["tool_calls"][0]["raw_results"][0]
             assert len(effects) == len(deliveries) == len(queries) == 1
         elif scenario.startswith("reconcile_"):

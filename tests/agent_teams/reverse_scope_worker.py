@@ -137,7 +137,8 @@ async def run_reverse_scenario(
             {
                 "definition": {
                     "name": "Fixed research workflow with a long name for small screens",
-                    "required_inputs": ["topic"],
+                    "result_task_id": "evidence",
+                    "required_inputs": ["topic", "evidence_text"],
                     "max_parallel": 1,
                     "tasks": [
                         {
@@ -146,7 +147,7 @@ async def run_reverse_scenario(
                             "member": name,
                             "role_id": writer["role_id"],
                             "role_version": 1,
-                            "task": "Reverse effect {topic}"
+                            "task": "Reverse effect {topic} {evidence_text}"
                             if name == "evidence"
                             else "Reverse independent"
                             if name == "independent"
@@ -160,7 +161,7 @@ async def run_reverse_scenario(
                                 "evidence": {"task_id": "evidence", "field": "text"}
                             }
                             if name == "dependent"
-                            else {},
+                            else {"topic": {"input": "topic"}, "evidence_text": {"input": "evidence_text"}} if name == "evidence" else {},
                         }
                         for name in ["evidence", "independent", "dependent"]
                     ]
@@ -196,17 +197,17 @@ async def run_reverse_scenario(
                     "kind": "autonomous",
                     "name": "Team invoking a pinned workflow at concurrency one",
                     "coordinator": {
+                        "id": "coordinator",
                         "role_id": coordinator["role_id"],
                         "role_version": 1,
                     },
                     "allowed_roles": [
-                        {"role_id": writer["role_id"], "role_version": 1}
+                        {"id": "writer", "role_id": writer["role_id"], "role_version": 1}
                     ],
                     "allowed_workflows": [
                         {
                             "asset_id": child["asset_id"],
                             "version": 1,
-                            "result_task_id": "evidence",
                         }
                     ],
                     "max_parallel": 1,
@@ -224,10 +225,8 @@ async def run_reverse_scenario(
             {
                 "definition": {
                     "name": "Pinned input source",
-                    "role_id": writer["role_id"],
-                    "role_version": 1,
-                    "task": "Reverse input source",
-                    "output_contract": contract,
+                    "result_task_id": "source",
+                    "tasks": [{"id": "source", "name": "Source", "member": "source", "role_id": writer["role_id"], "role_version": 1, "task": "Reverse input source", "output_contract": contract}],
                 }
             },
         )
@@ -489,23 +488,30 @@ async def run_reverse_scenario(
             private_file = json.loads(
                 private_call["raw_results"][0]["content"][0]["text"]
             )["file_id"]
-            try:
-                await service.revise_artifact(
-                    "alice",
-                    ref["artifact_id"],
-                    {
-                        "expected_version": 2,
-                        "request_id": "deny-unsubmitted",
-                        "content": {
-                            "text": "Unauthorized",
-                            "files": [{"file_id": private_file}],
-                        },
-                    },
-                )
-            except RoleAssetError as exc:
-                assert exc.fields[0]["code"] == "NOT_READY"
-            else:
-                raise AssertionError("Unsubmitted child file was silently inherited")
+            for version in (1, 2):
+                try:
+                    await service.get_file("alice", ref["artifact_id"], version, private_file, download=False)
+                except RoleAssetError as exc:
+                    assert exc.status == 404
+                else:
+                    raise AssertionError("Unsubmitted child file was silently inherited")
+            await service.revise_artifact(
+                "alice",
+                ref["artifact_id"],
+                {
+                    "expected_version": 2,
+                    "request_id": "include-private-file",
+                    "content": {"text": "Explicit revision", "files": [{"file_id": private_file}]},
+                },
+            )
+            assert (await service.get_file("alice", ref["artifact_id"], 3, private_file, download=False))["content"] == b"UNSUBMITTED_PRIVATE"
+            for username, version in (("alice", 1), ("alice", 2), ("other", 3)):
+                try:
+                    await service.get_file(username, ref["artifact_id"], version, private_file, download=False)
+                except RoleAssetError as exc:
+                    assert exc.status == 404
+                else:
+                    raise AssertionError("Private file crossed its version or owner boundary")
             file_verified = True
         (folder / "recovered.json").write_text(
             json.dumps(

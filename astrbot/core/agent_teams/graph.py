@@ -56,9 +56,7 @@ class TeamCall(BaseModel):
 
 
 class WorkflowCall(TeamCall):
-    """An allowed workflow version and the task whose exact result is returned."""
-
-    result_task_id: str = Field(min_length=1, max_length=128)
+    """An exact workflow version invoked in an independent scope."""
 
 
 class ConditionTask(BaseModel):

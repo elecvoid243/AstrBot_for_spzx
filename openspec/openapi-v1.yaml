@@ -11492,7 +11492,7 @@ components:
 
     WorkflowCall:
       additionalProperties: false
-      description: An allowed workflow version and the task whose exact result is returned.
+      description: An exact workflow version invoked in an independent scope.
       properties:
         asset_id:
           maxLength: 128
@@ -11503,15 +11503,9 @@ components:
           minimum: 1
           title: Version
           type: integer
-        result_task_id:
-          maxLength: 128
-          minLength: 1
-          title: Result Task Id
-          type: string
       required:
       - asset_id
       - version
-      - result_task_id
       title: WorkflowCall
       type: object
 

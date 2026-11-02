@@ -501,7 +501,11 @@ class WorkflowPackage(PackageAsset):
                     refs = definition.allowed_workflows
                 elif isinstance(definition, GraphDefinition):
                     contexts = [task for task in definition.tasks if task.role_id]
-                    refs = [task.team for task in definition.tasks if task.team]
+                    refs = [
+                        task.team or task.workflow
+                        for task in definition.tasks
+                        if task.team or task.workflow
+                    ]
                 else:
                     contexts, refs = [definition], []
                 roles.update(
@@ -1088,73 +1092,105 @@ class WorkflowService:
                             }
                         ],
                     )
-                nodes = child_definition.get("tasks", [{"id": "result"}])
-                if not any(node["id"] == ref.result_task_id for node in nodes):
+                result_id = child_definition.get("result_task_id")
+                if not any(
+                    node["id"] == result_id and not node.get("control")
+                    for node in child_definition.get("tasks", [])
+                ):
                     raise RoleAssetError(
-                        "Choose an existing return task",
+                        "Pinned workflow has no public result",
                         [
                             {
-                                "path": path + ".result_task_id",
+                                "path": path,
                                 "code": "REFERENCE",
-                                "message": "Choose a task in this exact workflow version",
+                                "message": "Choose a workflow with a valid public result",
                             }
                         ],
                     )
         elif isinstance(definition, GraphDefinition):
             validate_graph(definition)
             for task_index, task in enumerate(definition.tasks):
-                if task.workflow is not None:
-                    raise RoleAssetError(
-                        "Workflow calls are created by the coordinator"
-                    )
                 if task.human is not None or task.control is not None:
                     continue
-                if task.team is not None:
+                call = task.team or task.workflow
+                if call is not None:
+                    kind = "team" if task.team else "workflow"
+                    path = f"definition.tasks.{task_index}"
                     try:
                         child = await self.get_asset(
-                            username, task.team.asset_id, task.team.version
+                            username, call.asset_id, call.version
                         )
                     except RoleAssetError as exc:
                         raise RoleAssetError(
-                            "Pinned team version is not accessible",
+                            "Pinned child version is not accessible",
                             [
                                 {
-                                    "path": f"definition.tasks.{definition.tasks.index(task)}.team",
+                                    "path": f"{path}.{kind}",
                                     "code": "REFERENCE",
-                                    "message": "Choose an accessible exact team version",
+                                    "message": "Choose an accessible exact asset version",
                                 }
                             ],
                             status=exc.status,
                         ) from exc
                     child_definition = child["definition"]
                     fields = []
-                    path = f"definition.tasks.{definition.tasks.index(task)}"
-                    if child_definition.get("kind") != "autonomous":
+                    autonomous = child_definition.get("kind") == "autonomous"
+                    if autonomous != (kind == "team"):
                         fields.append(
                             {
-                                "path": path + ".team",
+                                "path": f"{path}.{kind}",
                                 "code": "INCOMPATIBLE",
-                                "message": "Choose a pinned autonomous team",
+                                "message": "Choose an asset of the matching kind",
                             }
                         )
-                    elif set(task.inputs) != set(child_definition["required_inputs"]):
+                    result_task = (
+                        None
+                        if autonomous
+                        else next(
+                            (
+                                node
+                                for node in child_definition.get("tasks", [])
+                                if node["id"] == child_definition.get("result_task_id")
+                                and not node.get("control")
+                            ),
+                            None,
+                        )
+                    )
+                    if not autonomous and result_task is None:
                         fields.append(
                             {
-                                "path": path + ".inputs",
-                                "code": "CONTRACT",
-                                "message": "Declare exactly the team's required inputs",
+                                "path": f"{path}.{kind}",
+                                "code": "REFERENCE",
+                                "message": "The pinned workflow has no valid public result",
                             }
                         )
-                    if task.output_contract != child_definition.get("output_contract"):
+                    if set(task.inputs) != set(
+                        child_definition.get("required_inputs", [])
+                    ):
                         fields.append(
                             {
-                                "path": path + ".output_contract",
+                                "path": f"{path}.inputs",
                                 "code": "CONTRACT",
-                                "message": "Use the pinned team's output contract",
+                                "message": "Declare exactly the pinned asset's required inputs",
+                            }
+                        )
+                    contract = (
+                        child_definition.get("output_contract")
+                        if autonomous
+                        else result_task.get("output_contract")
+                        if result_task
+                        else None
+                    )
+                    if task.output_contract != contract:
+                        fields.append(
+                            {
+                                "path": f"{path}.output_contract",
+                                "code": "CONTRACT",
+                                "message": "Use the pinned asset's public output contract",
                             }
                         )
                     if fields:
-                        raise RoleAssetError("Invalid team call", fields)
+                        raise RoleAssetError("Invalid child call", fields)
                     continue
                 try:
                     await self._validate_task_definition(
@@ -1441,9 +1477,9 @@ class WorkflowService:
             references = [
                 *content.get("allowed_workflows", []),
                 *[
-                    task["team"]
+                    task.get("team") or task.get("workflow")
                     for task in content.get("tasks", [])
-                    if task.get("team")
+                    if task.get("team") or task.get("workflow")
                 ],
             ]
             for reference in references:
@@ -2005,19 +2041,18 @@ class WorkflowService:
                         raise RoleAssetError(
                             "Choose a saved workflow, not an autonomous team"
                         )
-                    nodes = (
-                        [task.id for task in child.tasks]
-                        if isinstance(child, GraphDefinition)
-                        else ["result"]
-                    )
-                    if ref.result_task_id not in nodes:
+                    if not isinstance(
+                        child, GraphDefinition
+                    ) or child.result_task_id not in {
+                        task.id for task in child.tasks if not task.control
+                    }:
                         raise RoleAssetError(
                             "Choose an existing pinned workflow return task"
                         )
             for index, task in enumerate(contexts):
                 if getattr(task, "workflow", None):
                     raise RoleAssetError(
-                        "Workflow calls are created by the coordinator"
+                        "Nested workflow package format is not supported"
                     )
                 if getattr(task, "human", None):
                     continue
@@ -3719,9 +3754,12 @@ class WorkflowService:
                         "revision": control.revision if control else 0,
                         "root_run_id": root_id,
                     },
-                    "result_ref": {"artifact_id": current.run_id, "version": 1}
-                    if current_artifacts
-                    else None,
+                    "result_ref": current.state.get("child_result_ref")
+                    or (
+                        {"artifact_id": current.run_id, "version": 1}
+                        if current_artifacts
+                        else None
+                    ),
                     "artifacts": [
                         {
                             "artifact_id": a.artifact_id,
@@ -5556,6 +5594,7 @@ class WorkflowService:
             if (
                 task.human is not None
                 or task.team is not None
+                or task.workflow is not None
                 or task.control is not None
             ):
                 continue
@@ -5658,6 +5697,7 @@ class WorkflowService:
                     task.id not in loop.body
                     or task.human is not None
                     or task.team is not None
+                    or task.workflow is not None
                     or task.control is not None
                 ):
                     continue
@@ -5674,24 +5714,83 @@ class WorkflowService:
                         ],
                     )
         child_assets = {}
-        for task in definition.tasks:
-            if task.team is None:
+        for task_index, task in enumerate(definition.tasks):
+            call = task.team or task.workflow
+            if call is None:
                 continue
-            child = await self.get_asset(
-                username, task.team.asset_id, task.team.version
-            )
-            if child["definition"].get("kind") != "autonomous":
-                raise RoleAssetError("Choose a pinned autonomous team")
-            if set(task.inputs) != set(
-                child["definition"]["required_inputs"]
-            ) or task.output_contract != child["definition"].get("output_contract"):
+            path = f"definition.tasks.{task_index}"
+            kind = "team" if task.team else "workflow"
+            try:
+                child = await self.get_asset(username, call.asset_id, call.version)
+            except RoleAssetError as exc:
                 raise RoleAssetError(
-                    "Team call contracts no longer match the pinned asset"
+                    "Pinned child version is not accessible",
+                    [
+                        {
+                            "path": f"{path}.{kind}",
+                            "code": "REFERENCE",
+                            "message": "Choose an accessible exact asset version",
+                        }
+                    ],
+                    status=exc.status,
+                ) from exc
+            child_definition = child["definition"]
+            autonomous = child_definition.get("kind") == "autonomous"
+            if autonomous != (task.team is not None):
+                raise RoleAssetError("Pinned child asset kind does not match the call")
+            result_task = (
+                None
+                if autonomous
+                else next(
+                    (
+                        node
+                        for node in child_definition.get("tasks", [])
+                        if node["id"] == child_definition.get("result_task_id")
+                        and not node.get("control")
+                    ),
+                    None,
+                )
+            )
+            contract = (
+                child_definition.get("output_contract")
+                if autonomous
+                else result_task.get("output_contract")
+                if result_task
+                else None
+            )
+            fields = []
+            if not autonomous and result_task is None:
+                fields.append(
+                    {
+                        "path": f"{path}.{kind}",
+                        "code": "REFERENCE",
+                        "message": "The pinned workflow has no valid public result",
+                    }
+                )
+            if set(task.inputs) != set(child_definition.get("required_inputs", [])):
+                fields.append(
+                    {
+                        "path": f"{path}.inputs",
+                        "code": "CONTRACT",
+                        "message": "Declare exactly the pinned asset's required inputs",
+                    }
+                )
+            if task.output_contract != contract:
+                fields.append(
+                    {
+                        "path": f"{path}.output_contract",
+                        "code": "CONTRACT",
+                        "message": "Use the pinned asset's public output contract",
+                    }
+                )
+            if fields:
+                raise RoleAssetError(
+                    "Child call contracts no longer match the pinned asset", fields
                 )
             child_assets[task.id] = await self._freeze_graph(
                 username,
                 child,
-                WorkflowStartRequest(version=task.team.version, source=request.source),
+                WorkflowStartRequest(version=call.version, source=request.source),
                 nesting_depth + 1,
                 min(depth_limit, definition.max_depth)
                 if depth_limit is not None
@@ -5715,14 +5814,9 @@ class WorkflowService:
                 if depth_limit is not None
                 else None,
             )
-            if not any(
-                task["id"] == ref["result_task_id"]
-                for task in frozen["definition"]["tasks"]
-            ):
-                raise RoleAssetError("Pinned workflow return task is not available")
             allowed_workflows[f"{ref['asset_id']}:{ref['version']}"] = {
                 **frozen,
-                "result_task_id": ref["result_task_id"],
+                "result_task_id": frozen["definition"]["result_task_id"],
             }
         if definition.limits:
             remote_members = [*members.values(), *allowed_roles.values()]
@@ -6083,7 +6177,10 @@ class WorkflowService:
             passed = matches_condition(
                 cast(str | bool | int | float | None, value), rule
             )
-            iteration["exit_reference"] = {"artifact_id": source.run_id, "version": 1}
+            iteration["exit_reference"] = source.state.get("child_result_ref") or {
+                "artifact_id": source.run_id,
+                "version": 1,
+            }
             iteration["exit_value"] = value
             iteration["status"] = "passed" if passed else "rejected"
             exhausted = iteration["iteration"] >= definition["max_iterations"]
@@ -6156,7 +6253,8 @@ class WorkflowService:
                     "value": value
                     if isinstance(value, str)
                     else json.dumps(value, ensure_ascii=False),
-                    "reference": {"artifact_id": previous.run_id, "version": 1},
+                    "reference": previous.state.get("child_result_ref")
+                    or {"artifact_id": previous.run_id, "version": 1},
                     "field": feedback["field"],
                 }
             next_runs = {}
@@ -6826,7 +6924,6 @@ class WorkflowService:
                         "workflow": {
                             "asset_id": request.asset_id,
                             "version": request.version,
-                            "result_task_id": child["result_task_id"],
                         },
                         "inputs": {},
                         "output_contract": contract,
@@ -7130,9 +7227,9 @@ class WorkflowService:
                         returned_task = await session.get(
                             AgentWorkflowRun,
                             _current_task_runs(child)[
-                                row.snapshot.get("workflow", {}).get(
-                                    "result_task_id", "coordinator"
-                                )
+                                "coordinator"
+                                if child.snapshot.get("team_definition")
+                                else child.snapshot["definition"]["result_task_id"]
                             ],
                         )
                         assert returned_task is not None
@@ -7165,23 +7262,14 @@ class WorkflowService:
                             row.state = {
                                 **row.state,
                                 "reason": None,
-                                "child_result_ref": {
+                                "child_result_ref": returned_task.state.get(
+                                    "child_result_ref"
+                                )
+                                or {
                                     "artifact_id": returned_task.run_id,
                                     "version": 1,
                                 },
                             }
-                            session.add(
-                                AgentWorkflowArtifact(
-                                    artifact_id=row.run_id,
-                                    version=1,
-                                    run_id=row.run_id,
-                                    submission_id=row.state["attempt_id"],
-                                    contract=row.snapshot["definition"].get(
-                                        "output_contract"
-                                    ),
-                                    content=row.result,
-                                )
-                            )
                         session.add(row)
                         session.add(
                             AgentWorkflowEvent(
@@ -7455,7 +7543,7 @@ class WorkflowService:
                                 if human["kind"] == "approval":
                                     source = rows[human["artifact_task_id"]]
                                     assert source is not None
-                                    ref = {
+                                    ref = source.state.get("child_result_ref") or {
                                         "artifact_id": source.run_id,
                                         "version": human["artifact_version"],
                                     }
@@ -7535,12 +7623,20 @@ class WorkflowService:
                             retrying = row.state.get("retry_pending")
                             inputs = dict(
                                 row.snapshot["inputs"]
-                                if retrying or task.get("workflow")
+                                if retrying
+                                or (
+                                    task.get("workflow")
+                                    and not row.snapshot.get("graph_task")
+                                )
                                 else {}
                             )
                             refs = list(
                                 row.snapshot.get("input_artifacts", [])
-                                if retrying or task.get("workflow")
+                                if retrying
+                                or (
+                                    task.get("workflow")
+                                    and not row.snapshot.get("graph_task")
+                                )
                                 else []
                                 if child_call
                                 else root.snapshot.get("input_artifacts", [])
@@ -7550,12 +7646,13 @@ class WorkflowService:
                                 and not retrying
                                 and not task.get("workflow")
                             ):
-                                refs.extend(
-                                    {"artifact_id": source.run_id, "version": 1}
-                                    for source in matched
-                                    if {"artifact_id": source.run_id, "version": 1}
-                                    not in refs
-                                )
+                                for source in matched:
+                                    ref = source.state.get("child_result_ref") or {
+                                        "artifact_id": source.run_id,
+                                        "version": 1,
+                                    }
+                                    if ref not in refs:
+                                        refs.append(ref)
                             selected_fields = (
                                 dict(row.snapshot.get("selected_fields", {}))
                                 if retrying
@@ -7594,7 +7691,7 @@ class WorkflowService:
                                         if isinstance(value, str)
                                         else json.dumps(value, ensure_ascii=False)
                                     )
-                                    pinned = {
+                                    pinned = source.state.get("child_result_ref") or {
                                         "artifact_id": source.run_id,
                                         "version": 1,
                                     }
@@ -7616,11 +7713,13 @@ class WorkflowService:
                                         f"{child_call['asset_id']}:{child_call['version']}"
                                     ]
                                     if task.get("workflow")
+                                    and not row.snapshot.get("graph_task")
                                     else root.snapshot["child_assets"][task["id"]]
                                 )
                                 frozen["inputs"] = (
                                     inputs
                                     if task.get("workflow")
+                                    and not row.snapshot.get("graph_task")
                                     else {key: inputs[key] for key in task["inputs"]}
                                 )
                                 # A graph field reference grants only its value, not
@@ -8209,6 +8308,20 @@ class WorkflowService:
                     == consumer.snapshot.get("parent_run_id")
                     and origin.state.get("scope_id") == consumer.state.get("scope_id")
                 )
+                if consumer.snapshot.get("coordinator") and not team_output:
+                    scope = await session.get(
+                        AgentWorkflowRun, consumer.snapshot.get("parent_run_id")
+                    )
+                    if scope is not None:
+                        for task_run_id in _current_task_runs(scope).values():
+                            task_run = await session.get(AgentWorkflowRun, task_run_id)
+                            if (
+                                task_run
+                                and task_run.status == "completed"
+                                and task_run.state.get("child_result_ref") == ref
+                            ):
+                                team_output = True
+                                break
                 own_output = (
                     origin.snapshot.get("parent_run_id")
                     == consumer.snapshot.get("parent_run_id")
@@ -9756,7 +9869,6 @@ class WorkflowService:
                                 "required_inputs": child["definition"][
                                     "required_inputs"
                                 ],
-                                "result_task_id": child["result_task_id"],
                                 "output_contract": next(
                                     task.get("output_contract")
                                     for task in child["definition"]["tasks"]

@@ -692,7 +692,7 @@
     "version": "Pinned team version",
     "independent": "Independent scope and members",
     "contractHint": "The child receives declared inputs and returns its pinned output contract. Parent waits release root capacity; member contexts stay independent.",
-    "unavailable": "The pinned team version is unavailable. Choose an accessible version.",
+    "unavailable": "The pinned child asset version is unavailable. Choose an accessible version.",
     "maxDepth": "Root nesting depth limit",
     "scope": "Child scope",
     "root": "Root run",
@@ -702,10 +702,12 @@
   },
   "workflowCall": {
     "allowed": "Allowed workflows",
-    "hint": "Choose saved workflow versions and the task result returned to the coordinator. Only declared inputs and exact artifact versions cross the independent scope.",
+    "call": "Call workflow",
+    "asset": "Pinned child workflow asset",
+    "hint": "Choose saved workflow versions. The coordinator receives each version’s public result.",
     "add": "Allow a saved workflow",
     "version": "Pinned workflow version",
-    "returnTask": "Return task",
+    "returnTask": "Original artifact reference",
     "open": "View child workflow",
     "remove": "Remove allowed workflow"
   },

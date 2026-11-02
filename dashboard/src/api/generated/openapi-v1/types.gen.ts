@@ -1498,12 +1498,11 @@ export type ValidationError = {
 };
 
 /**
- * An allowed workflow version and the task whose exact result is returned.
+ * An exact workflow version invoked in an independent scope.
  */
 export type WorkflowCall = {
     asset_id: string;
     version: number;
-    result_task_id: string;
 };
 
 /**

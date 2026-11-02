@@ -117,6 +117,48 @@
       </template>
       <p v-else class="text-body-2 mt-3">{{ tm("child.unavailable") }}</p>
     </details>
+    <details
+      v-for="task in draft.tasks.filter((item) => item.workflow)"
+      :key="task.id"
+      class="graph-child-preview ma-3 pa-3"
+      data-testid="workflow-call-preview"
+    >
+      <summary class="text-wrap">
+        {{ task.name }} →
+        {{
+          pinnedTeams[`${task.workflow!.asset_id}:${task.workflow!.version}`]
+            ?.definition.name ?? task.workflow!.asset_id
+        }}
+        · v{{ task.workflow!.version }} · {{ tm("child.independent") }}
+      </summary>
+      <template
+        v-if="
+          pinnedTeams[`${task.workflow!.asset_id}:${task.workflow!.version}`]
+        "
+      >
+        <p class="text-body-2 mt-3">{{ tm("child.contractHint") }}</p>
+        <p
+          v-for="childTask in pinnedTeams[
+            `${task.workflow!.asset_id}:${task.workflow!.version}`
+          ].definition.tasks"
+          :key="childTask.id"
+          class="text-body-2 mt-2"
+        >
+          {{ childTask.name
+          }}<span
+            v-if="
+              childTask.id ===
+              pinnedTeams[
+                `${task.workflow!.asset_id}:${task.workflow!.version}`
+              ].definition.result_task_id
+            "
+          >
+            · {{ tm("graph.outputs") }}</span
+          >
+        </p>
+      </template>
+      <p v-else class="text-body-2 mt-3">{{ tm("child.unavailable") }}</p>
+    </details>
     <v-alert
       v-if="localError || Object.keys(contractErrors).length"
       type="error"
@@ -194,6 +236,19 @@
             team.version
           }}</v-btn
         >
+        <v-btn
+          v-for="workflow in workflows"
+          :key="workflow.asset_id"
+          variant="tonal"
+          size="small"
+          class="graph-team-button mb-3"
+          data-testid="add-workflow-call"
+          @click="addTask(`workflow:${workflow.asset_id}`)"
+        >
+          {{ tm("workflowCall.call") }}: {{ workflow.definition.name }} · v{{
+            workflow.version
+          }}
+        </v-btn>
         <button
           v-for="role in roles"
           :key="role.role_id"
@@ -271,6 +326,7 @@
               !selectedTask.control &&
               !selectedTask.human &&
               !selectedTask.team &&
+              !selectedTask.workflow &&
               !selectedTask.role
             "
             v-model="selectedTask.role_id"
@@ -286,6 +342,7 @@
               !selectedTask.control &&
               !selectedTask.human &&
               !selectedTask.team &&
+              !selectedTask.workflow &&
               !selectedTask.role
             "
             v-model="selectedTask.role_version"
@@ -316,7 +373,10 @@
           </v-alert>
           <v-text-field
             v-if="
-              !selectedTask.control && !selectedTask.human && !selectedTask.team
+              !selectedTask.control &&
+              !selectedTask.human &&
+              !selectedTask.team &&
+              !selectedTask.workflow
             "
             v-model="selectedTask.member"
             :label="tm('graph.memberKey')"
@@ -327,7 +387,10 @@
           />
           <v-textarea
             v-if="
-              !selectedTask.control && !selectedTask.human && !selectedTask.team
+              !selectedTask.control &&
+              !selectedTask.human &&
+              !selectedTask.team &&
+              !selectedTask.workflow
             "
             v-model="selectedTask.task"
             :label="tm('v2.task')"
@@ -565,6 +628,31 @@
             />
             <p class="text-caption my-3">{{ tm("child.contractHint") }}</p>
           </template>
+          <template v-if="selectedTask.workflow">
+            <v-select
+              :model-value="selectedTask.workflow.asset_id"
+              :items="workflows"
+              item-title="definition.name"
+              item-value="asset_id"
+              :label="tm('workflowCall.asset')"
+              data-testid="workflow-call-asset"
+              @update:model-value="changeTeam($event)"
+            />
+            <v-select
+              :model-value="selectedTask.workflow.version"
+              :items="
+                workflows.find(
+                  (item) => item.asset_id === selectedTask?.workflow?.asset_id,
+                )?.versions ?? [selectedTask.workflow.version]
+              "
+              :label="tm('workflowCall.version')"
+              data-testid="workflow-call-version"
+              @update:model-value="
+                changeTeam(selectedTask!.workflow!.asset_id, $event)
+              "
+            />
+            <p class="text-caption my-3">{{ tm("child.contractHint") }}</p>
+          </template>
           <template v-if="selectedTask.human">
             <v-textarea
               v-model="selectedTask.human.question"
@@ -632,6 +720,7 @@
                   aliasTexts[`${selectedTask.id}:${alias}`] ?? alias
                 "
                 :label="tm('graph.inputAlias')"
+                :readonly="!!selectedTask.team || !!selectedTask.workflow"
                 density="compact"
                 @update:model-value="
                   aliasTexts[`${selectedTask.id}:${alias}`] = $event
@@ -688,7 +777,7 @@
                 @update:model-value="resetControlValue"
               />
               <v-btn
-                v-if="!selectedTask.control"
+                v-if="!selectedTask.control && !selectedTask.team && !selectedTask.workflow"
                 variant="text"
                 size="small"
                 color="error"
@@ -700,7 +789,7 @@
               >
             </div>
             <v-btn
-              v-if="!selectedTask.control"
+              v-if="!selectedTask.control && !selectedTask.team && !selectedTask.workflow"
               variant="tonal"
               size="small"
               @click="addInput"
@@ -751,17 +840,34 @@
               <h3 class="text-subtitle-2 mt-4 mb-2">
                 {{ tm("graph.outputs") }}
               </h3>
+              <pre
+                v-if="selectedTask.team || selectedTask.workflow"
+                class="text-caption child-output-contract"
+                data-testid="child-output-contract"
+                >{{
+                  JSON.stringify(
+                    selectedTask.output_contract ?? {
+                      type: "object",
+                      properties: { text: { type: "string" } },
+                      required: ["text"],
+                    },
+                    null,
+                    2,
+                  )
+                }}</pre
+              >
               <v-switch
                 :model-value="!!selectedTask.output_contract"
                 :label="tm('graph.structured')"
                 data-testid="structured-output"
-                :disabled="!!selectedTask.team"
+                :disabled="!!selectedTask.team || !!selectedTask.workflow"
                 @update:model-value="setStructured"
               />
               <p
                 v-if="
                   selectedTask.output_contract &&
                   !selectedTask.team &&
+                  !selectedTask.workflow &&
                   !editableContract
                 "
                 class="text-caption"
@@ -772,6 +878,7 @@
                 v-if="
                   selectedTask.output_contract &&
                   !selectedTask.team &&
+                  !selectedTask.workflow &&
                   editableContract
                 "
               >
@@ -940,6 +1047,7 @@ const props = withDefaults(
     catalog?: Record<string, any[]>;
     issues?: { path: string; message: string }[];
     teams?: any[];
+    workflows?: any[];
     childAssets?: Record<string, any>;
     readonly?: boolean;
     tasks?: any[];
@@ -957,6 +1065,7 @@ const props = withDefaults(
     }),
     issues: () => [],
     teams: () => [],
+    workflows: () => [],
     childAssets: () => ({}),
     readonly: false,
     tasks: () => [],
@@ -1347,7 +1456,7 @@ const taskNodes = computed<FlowNode[]>(() =>
                 : "graph.joinNode",
             )
           : task.workflow
-          ? tm("workflowCall.open")
+          ? tm("workflowCall.call")
           : task.team
           ? tm("child.independent")
           : task.human
@@ -1366,7 +1475,7 @@ const taskNodes = computed<FlowNode[]>(() =>
               )} ${JSON.stringify(task.control.value)}`
             : tm("graph.joinHint")
           : task.workflow
-          ? `${task.workflow.asset_id} → ${task.workflow.result_task_id}`
+          ? `${task.workflow.asset_id} → ${tm("graph.outputs")}`
           : task.team
           ? pinnedTeams.value[`${task.team.asset_id}:${task.team.version}`]
               ?.definition.name ?? task.team.asset_id
@@ -1392,6 +1501,10 @@ const taskNodes = computed<FlowNode[]>(() =>
           ? task.control.kind === "condition"
             ? `${tm("graph.trueExit")} / ${tm("graph.falseExit")}`
             : "ALL"
+          : task.workflow || task.team
+          ? fieldsForTask(task.id)
+              .map((field) => field.title)
+              .join(", ")
           : task.output_contract
           ? tm("graph.structured")
           : tm("graph.text"),
@@ -1557,8 +1670,9 @@ const edges = computed(() =>
 
 watch(
   () => [
-    draft.value.tasks.map((task) => task.team),
+    draft.value.tasks.map((task) => task.team ?? task.workflow),
     props.teams,
+    props.workflows,
     props.childAssets,
   ],
   async () => {
@@ -1574,17 +1688,22 @@ watch(
     teamReadError.value = false;
     emit("validation", true);
     for (const task of definition.tasks) {
-      if (!task.team) continue;
-      const { asset_id, version } = task.team;
+      const call = task.team ?? task.workflow;
+      if (!call) continue;
+      const { asset_id, version } = call;
       const key = `${asset_id}:${version}`;
       if (pinnedTeams.value[key]) continue;
       const frozen = props.childAssets[task.id];
-      const listed = props.teams.find(
+      const listed = [...props.teams, ...props.workflows].find(
         (team) => team.asset_id === asset_id && team.version === version,
       );
       try {
         const team = frozen
-          ? { asset_id, version, definition: frozen.team_definition }
+          ? {
+              asset_id,
+              version,
+              definition: frozen.team_definition ?? frozen.definition,
+            }
           : listed ?? (await workflowAssetsApi.get(asset_id, version));
         if (!isCurrent()) return;
         pinnedTeams.value[key] = team;
@@ -1675,6 +1794,9 @@ function addTask(roleId: string, position?: { x: number; y: number }) {
   const team = roleId.startsWith("team:")
     ? props.teams.find((item) => item.asset_id === roleId.slice(5))
     : null;
+  const workflow = roleId.startsWith("workflow:")
+    ? props.workflows.find((item) => item.asset_id === roleId.slice(9))
+    : null;
   const humanKind =
     roleId === "human:question"
       ? "question"
@@ -1687,7 +1809,7 @@ function addTask(roleId: string, position?: { x: number; y: number }) {
       : roleId === "control:join"
       ? "join"
       : null;
-  if (!role && !humanKind && !team && !controlKind) return;
+  if (!role && !humanKind && !team && !workflow && !controlKind) return;
   const seed =
     typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
       ? crypto.randomUUID().replace(/-/g, "").slice(0, 8)
@@ -1708,6 +1830,8 @@ function addTask(roleId: string, position?: { x: number; y: number }) {
         )
       : team
       ? team.definition.name
+      : workflow
+      ? workflow.definition.name
       : humanKind
       ? tm(`human.${humanKind}Node`)
       : role!.definition.name,
@@ -1726,6 +1850,14 @@ function addTask(roleId: string, position?: { x: number; y: number }) {
       ? {
           team: { asset_id: team.asset_id, version: team.version },
           output_contract: team.definition.output_contract,
+        }
+      : workflow
+      ? {
+          workflow: { asset_id: workflow.asset_id, version: workflow.version },
+          output_contract:
+            workflow.definition.tasks.find(
+              (item: any) => item.id === workflow.definition.result_task_id,
+            )?.output_contract ?? null,
         }
       : humanKind
       ? {
@@ -1747,9 +1879,9 @@ function addTask(roleId: string, position?: { x: number; y: number }) {
               field: "text",
             },
           }
-        : team
+        : team || workflow
         ? Object.fromEntries(
-            team.definition.required_inputs.map((key: string) => [
+            (team ?? workflow).definition.required_inputs.map((key: string) => [
               key,
               draft.value.required_inputs?.includes(key) ? { input: key } : {},
             ]),
@@ -1773,8 +1905,11 @@ function addTask(roleId: string, position?: { x: number; y: number }) {
  */
 async function changeTeam(assetId: string, version?: number) {
   const task = selectedTask.value;
-  if (!task?.team || props.readonly) return;
-  const listed = props.teams.find((item) => item.asset_id === assetId);
+  if ((!task?.team && !task?.workflow) || props.readonly) return;
+  const isTeam = !!task.team;
+  const listed = (isTeam ? props.teams : props.workflows).find(
+    (item) => item.asset_id === assetId,
+  );
   const pinnedVersion = version ?? listed?.version;
   if (!pinnedVersion) return;
   const request = ++teamSelectionRequest;
@@ -1797,10 +1932,11 @@ async function changeTeam(assetId: string, version?: number) {
         ? listed
         : await workflowAssetsApi.get(assetId, pinnedVersion));
     if (!isCurrent()) return;
-    if (team.definition.kind !== "autonomous")
+    if ((team.definition.kind === "autonomous") !== isTeam)
       throw new Error("Invalid team asset");
     pinnedTeams.value[`${assetId}:${pinnedVersion}`] = team;
-    task.team = { asset_id: assetId, version: pinnedVersion };
+    if (isTeam) task.team = { asset_id: assetId, version: pinnedVersion };
+    else task.workflow = { asset_id: assetId, version: pinnedVersion };
     task.inputs = Object.fromEntries(
       team.definition.required_inputs.map((key: string) => [
         key,
@@ -1808,7 +1944,11 @@ async function changeTeam(assetId: string, version?: number) {
           (draft.value.required_inputs?.includes(key) ? { input: key } : {}),
       ]),
     );
-    task.output_contract = team.definition.output_contract;
+    task.output_contract = isTeam
+      ? team.definition.output_contract
+      : team.definition.tasks.find(
+          (item: any) => item.id === team.definition.result_task_id,
+        )?.output_contract ?? null;
     delete contractTexts.value[task.id];
     teamReadError.value = false;
     localError.value = "";
@@ -2076,6 +2216,12 @@ function layout() {
 </script>
 
 <style scoped>
+.child-output-contract {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 180px;
+  overflow: auto;
+}
 .graph-child-preview {
   border: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
   border-radius: 10px;

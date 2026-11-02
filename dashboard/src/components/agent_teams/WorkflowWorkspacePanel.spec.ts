@@ -248,7 +248,7 @@ describe("single-task workflow workspace", () => {
       snapshot: {
         ...run.snapshot,
         engine: "workflow_call_v2",
-        workflow: { asset_id: "report", version: 1, result_task_id: "result" },
+        workflow: { asset_id: "report", version: 1 },
         created_by_task_id: "coordinator-task",
         definition: { name: "Pinned report call" },
       },
@@ -297,6 +297,54 @@ describe("single-task workflow workspace", () => {
       await flushPromises();
       expect(wrapper.get('[data-testid="run-detail"]').text()).toContain(
         "Independent report writer",
+      );
+    } finally {
+      wrapper.unmount();
+    }
+  });
+  it("opens the selected static team call in its own scope", async () => {
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: "/", component: slotStub }],
+    });
+    await router.push("/?workflow_run=run-1");
+    const call = {
+      ...run,
+      run_id: "team-call",
+      snapshot: {
+        ...run.snapshot,
+        engine: "team_call_v2",
+        definition: { name: "Fixed team" },
+      },
+      state: { ...run.state, child_scope_run_id: "team-scope" },
+    };
+    const coordinator = {
+      ...run,
+      run_id: "team-coordinator",
+      snapshot: { ...run.snapshot, definition: { name: "Team coordinator" } },
+    };
+    api.run.mockResolvedValue({
+      ...run,
+      tasks: [call],
+      scopes: [{ run_id: "team-scope", tasks: [coordinator] }],
+    });
+    const wrapper = mount(WorkflowWorkspacePanel, {
+      props: { mode: "runs" },
+      global: {
+        plugins: [router],
+        stubs: { ...stubs, WorkflowRunProgress: true },
+      },
+    });
+    try {
+      await flushPromises();
+      wrapper
+        .findComponent({ name: "WorkflowRunProgress" })
+        .vm.$emit("select", call.run_id);
+      await flushPromises();
+      await wrapper.get('[data-testid="open-child-workflow"]').trigger("click");
+      await flushPromises();
+      expect(wrapper.get('[data-testid="run-detail"]').text()).toContain(
+        "Team coordinator",
       );
     } finally {
       wrapper.unmount();

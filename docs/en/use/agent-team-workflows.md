@@ -149,13 +149,19 @@ Waiting releases active execution capacity, including at a concurrency limit of 
 
 For the versioned autonomous path, **team sidebar / Run Monitor → Assets → Teams → New Autonomous Team / Runs → View Run**. Member communication and workflow calls to autonomous teams use the versioned paths described below.
 
+## Fixed child calls on the canvas
+
+Add a saved workflow or autonomous team from the canvas toolbox, then select its fixed version in the node properties. Map every declared input to a workflow input or an upstream field. The node exposes the pinned asset’s public output contract; the child workflow chooses its own result at its output node. Each call runs in a separate scope and receives only the mapped values. In the run workspace, select the call and open its child scope to inspect its tasks and results.
+
+![Fixed child asset calls on the workflow canvas](/images/agent-teams-nested-assets-en.jpg)
+
 ## Coordinator calls to saved workflows
 
-In **Assets → Teams → New Autonomous Team / Edit Asset → Allowed workflows**, choose **Allow a saved workflow**. Select its **Pinned workflow version** and **Return task**. The panel shows that version's required text inputs and the return task's output contract. Single-task workflows return their **result** task; canvas workflows return the task you select. Save the team as a new version. Workflows omitted from this list remain unavailable to its coordinator.
+In **Assets → Teams → New Autonomous Team / Edit Asset → Allowed workflows**, choose **Allow a saved workflow**. Select its **Pinned workflow version**. The panel shows that version's required text inputs and public output contract. A workflow returns the task selected by its own output node. Save the team as a new version. Workflows omitted from this list remain unavailable to its coordinator.
 
 Set **Root nesting depth limit** and **Maximum concurrent tasks**, then choose **Start Run** and enter the goal. The coordinator may call an allowed workflow with every declared input and optional visible, exact artifact references. Each call creates independent members; parent conversations and unrelated artifacts are not inherited. The coordinator waits for the call's task, then reads its complete result and immutable artifact. The chosen return task must have a validated result; a skipped return requires attention even if the workflow's other paths completed.
 
-In **Runs → View Run**, select the coordinator and choose **View child workflow** beside its call. This route also works for coordinators inside a nested team. The call shows the returned result, its own artifact and the exact child return reference. Choose **View child workflow** again to inspect the child tasks, or expand **Child scope** to see the saved workflow graph. **Human requests**, progress and **Saved member process** show the actual tasks and their waits, attempts and tool results.
+In **Runs → View Run**, select the coordinator and choose **View child workflow** beside its call. This route also works for coordinators inside a nested team. The call shows the returned result and the exact original child artifact reference. Choose **View child workflow** again to inspect the child tasks, or expand **Child scope** to see the saved workflow graph. **Human requests**, progress and **Saved member process** show the actual tasks and their waits, attempts and tool results.
 
 Waiting releases the shared root capacity, so calls can finish with concurrency one. Team and workflow nesting share one bounded depth; role limits still apply. Whole-run pause, continue and cancellation reach the child workflow. A local human or failed branch leaves independent branches free to proceed. Continue keeps local waits; use the selected task's normal same-Attempt recovery or unknown-tool decision when required. Saved tool results are reused after a restart, and unknown external effects remain stopped for confirmation.
 

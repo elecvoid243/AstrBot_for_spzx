@@ -262,7 +262,7 @@
           <h3 class="text-h6 mt-6 mb-3">{{ tm("progress.artifacts") }}</h3>
           <v-btn
             v-if="
-              detailRun.snapshot.engine === 'workflow_call_v2' &&
+              ['workflow_call_v2', 'team_call_v2'].includes(detailRun.snapshot.engine) &&
               detailRun.state.child_scope_run_id
             "
             variant="tonal"
@@ -580,6 +580,7 @@
             :teams="
               assets.filter((asset) => asset.definition.kind === 'autonomous')
             "
+            :workflows="assets.filter((asset) => asset.definition.kind !== 'autonomous')"
             @validation="graphInvalid = $event"
             @role-saved="
               roleAssetsApi

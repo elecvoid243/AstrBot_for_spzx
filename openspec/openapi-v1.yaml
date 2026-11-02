@@ -7035,6 +7035,44 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/workflow_assets/{asset_id}/trials/preview:
+    post:
+      tags: [Agent Teams workflows]
+      summary: Preview draft trial scope
+      operationId: preview_trial_api_v1_workflow_assets__asset_id__trials_preview_post
+      parameters:
+      - name: asset_id
+        in: path
+        required: true
+        schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TrialRunRequest'
+      responses:
+        '200': {description: Successful Response}
+        '422': {description: Validation Error}
+  /api/v1/workflow_assets/{asset_id}/trials:
+    post:
+      tags: [Agent Teams workflows]
+      summary: Start draft trial
+      operationId: start_trial_api_v1_workflow_assets__asset_id__trials_post
+      parameters:
+      - name: asset_id
+        in: path
+        required: true
+        schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TrialRunRequest'
+      responses:
+        '200': {description: Successful Response}
+        '422': {description: Validation Error}
   /api/v1/workflow_human_requests:
     get:
       tags:
@@ -10809,6 +10847,38 @@ components:
       - source
       title: ChatAccessRequest
       description: A deliberate local grant; importing an asset never grants access.
+    TrialSource:
+      type: object
+      additionalProperties: false
+      properties:
+        content:
+          anyOf:
+          - type: object
+            additionalProperties: true
+          - type: 'null'
+        artifact:
+          anyOf:
+          - $ref: '#/components/schemas/ArtifactReference'
+          - type: 'null'
+    TrialRunRequest:
+      type: object
+      additionalProperties: false
+      required: [kind, revision, mode]
+      properties:
+        kind: {type: string, enum: [workflow, autonomous]}
+        revision: {type: integer, minimum: 1}
+        mode: {type: string, enum: [full, single, partial]}
+        node_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+        inputs:
+          type: object
+          additionalProperties: {type: string}
+        sources:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/TrialSource'
     WorkflowStartRequest:
       properties:
         version:

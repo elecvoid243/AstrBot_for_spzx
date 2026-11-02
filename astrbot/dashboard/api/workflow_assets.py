@@ -17,6 +17,7 @@ from astrbot.core.agent_teams.workflows import (
     ArtifactRevisionRequest,
     HumanAnswerRequest,
     ToolResolutionRequest,
+    TrialRunRequest,
     WorkflowControlRequest,
     WorkflowImportRequest,
     WorkflowRetryRequest,
@@ -546,6 +547,58 @@ async def start_run(
 ):
     try:
         return ok(await service.start_run(username, asset_id, payload.model_dump()))
+    except RoleAssetError as exc:
+        return JSONResponse(
+            error(str(exc), {"fields": exc.fields}), status_code=exc.status
+        )
+
+
+@router.post("/workflow_assets/{asset_id}/trials/preview")
+async def preview_trial(
+    asset_id: str,
+    payload: TrialRunRequest,
+    username: str = Depends(require_dashboard_user),
+    service: WorkflowService = Depends(get_workflow_service),
+):
+    """Preview a saved draft trial scope without dispatching tasks.
+
+    Args:
+        asset_id: Saved draft identity.
+        payload: Requested revision and scope.
+        username: Authenticated dashboard owner.
+        service: Shared workflow service.
+
+    Returns:
+        Selected nodes and the required input contracts.
+    """
+    try:
+        return ok(await service.preview_trial(username, asset_id, payload.model_dump()))
+    except RoleAssetError as exc:
+        return JSONResponse(
+            error(str(exc), {"fields": exc.fields}), status_code=exc.status
+        )
+
+
+@router.post("/workflow_assets/{asset_id}/trials")
+async def start_trial(
+    asset_id: str,
+    payload: TrialRunRequest,
+    username: str = Depends(require_dashboard_user),
+    service: WorkflowService = Depends(get_workflow_service),
+):
+    """Start a draft trial using the shared workflow scheduler.
+
+    Args:
+        asset_id: Saved draft identity.
+        payload: Requested scope and explicitly selected inputs.
+        username: Authenticated dashboard owner.
+        service: Shared workflow service.
+
+    Returns:
+        The independent trial run snapshot.
+    """
+    try:
+        return ok(await service.start_trial(username, asset_id, payload.model_dump()))
     except RoleAssetError as exc:
         return JSONResponse(
             error(str(exc), {"fields": exc.fields}), status_code=exc.status

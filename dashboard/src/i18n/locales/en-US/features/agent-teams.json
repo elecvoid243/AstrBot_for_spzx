@@ -1,4 +1,7 @@
 {
+  "trial": {
+    "title": "Test draft", "start": "Start test", "realCalls": "Selected steps make real model and tool calls and may cause external effects or costs.", "scope": "Test scope", "full": "Full workflow", "single": "Selected node only", "partial": "From selected node", "startNode": "Start node", "selected": "Steps to execute", "dynamicTeam": "Autonomous team and dynamic members", "source": "Data source", "manual": "Enter test data", "artifact": "Exact historical artifact", "history": "Choose an artifact version", "artifactId": "Artifact ID", "artifactVersion": "Artifact version", "advancedMode": "Enter an object for advanced contracts", "advancedJson": "Advanced object data (JSON)", "required": "Required", "valueType": "Value type", "filter": "Run type", "all": "All runs", "test": "Draft test", "production": "Published run", "revision": "Draft revision"
+  },
   "deletion": {
     "title": "Delete asset?",
     "delete": "Delete",

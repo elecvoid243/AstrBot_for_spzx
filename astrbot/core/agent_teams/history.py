@@ -68,6 +68,7 @@ class RunHistoryService:
                     "source": {"kind": "v2_run", "id": identity},
                     "title": run["snapshot"]["definition"]["name"],
                     "status": run["status"],
+                    "trial": run["snapshot"].get("trial"),
                     "goal": run["snapshot"].get("task", ""),
                     "created_at": created_at,
                 }

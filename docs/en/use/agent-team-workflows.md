@@ -364,6 +364,14 @@ Dify workflows submit structured objects from the configured output key through 
 
 Dify Agent's original `agent_thought` events appear under **Saved member process → Remote process event**, with the provider's thought ID, thinking, tool input and observation. Workflow and chatflow process events retain their actual node execution IDs, inputs, process data and outputs, including supplied reasoning and agent logs. Later observations for the same thought remain separate snapshots; repeated snapshots and recovery do not duplicate records, while identical unsequenced reasoning deltas retain their arrival order. Repeated execution of one node remains distinguishable by its original execution and iteration IDs. These are observations of remote work. A storage failure blocks the task before accepting a complete answer; recovery replays saved observations before querying the original run. Team DashScope calls also stop for confirmation after an ambiguous connection loss or redirect instead of resending a creation request.
 
+## Test a draft
+
+Open a workflow or autonomous team editor and choose **Test draft**. The editor saves the current draft first. For a workflow, choose the full workflow, a single node, or the selected node and its reachable successors. The dialog shows the server-computed steps and required inputs before launch. Autonomous teams support a full test, including dynamically assigned members.
+
+For each missing upstream result, enter typed test data or select an exact artifact ID and version from a previous run. Approval targets and recommendation evidence must be real artifacts; manual data cannot stand in for them. An isolated ALL join, an incomplete loop, or a partial scope with an omitted parallel predecessor is rejected. Testing one loop member executes it once and asks for its initial feedback explicitly.
+
+Selected steps make real model and tool calls and may incur costs or external effects. A test has its own run and freezes the draft revision, execution scope, sources and resources. Later edits do not change it. In **Runs**, use **Run type** to distinguish draft tests from published runs; the same workbench supports process inspection, human decisions, pause, cancellation and recovery.
+
 ## Root usage and limits
 
 Open **Assets → Teams / Workflows → Edit Asset → Scope limits** to configure total call steps, subtree member instances, rounds per loop, token allowance and output tokens per model call. Single tasks, canvas workflows and autonomous teams share this form. Blank fields add no ceiling. Save a new version and start a run; existing runs retain their frozen limits. Existing concurrency, depth and local team instance limits still apply, together with ancestor scope limits.

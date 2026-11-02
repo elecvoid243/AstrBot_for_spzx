@@ -7,6 +7,14 @@ vi.mock("@/i18n/composables", () => ({
 }));
 
 describe("nested run progress", () => {
+  it("labels a draft revision without rendering a null asset version", () => {
+    const wrapper = mount(WorkflowRunProgress, {
+      props: {selectedTask: null, run: {run_id: "trial", status: "completed", snapshot: {asset_version: null, trial: {draft_revision: 3}, definition: {name: "Trial", tasks: []}}, tasks: []}},
+      global: {stubs: {WorkflowGraphCanvas: true, WorkflowLoopHistory: true, RunUsagePanel: true, "v-icon": true, "v-chip": true, "v-card": true, "v-card-title": true, "v-card-text": true, "v-progress-linear": true, "v-spacer": true}},
+    });
+    expect(wrapper.text()).toContain("trial.test · trial.revision 3");
+    expect(wrapper.text()).not.toContain("vnull");
+  });
   it("shows real child tasks and selects their unique run identities", async () => {
     const child = {
       run_id: "child-task",

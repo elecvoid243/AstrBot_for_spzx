@@ -9,6 +9,7 @@ import type {
   HumanAnswerRequest,
   WorkflowImportRequest,
   ChatAccessRequest,
+  TrialRunRequest,
 } from "./generated/openapi-v1";
 
 export const workflowAssetsApi = {
@@ -96,6 +97,22 @@ export const workflowAssetsApi = {
     return (
       await httpClient.post(
         `/api/v1/workflow_assets/${encodeURIComponent(assetId)}/runs`,
+        payload,
+      )
+    ).data.data;
+  },
+  async previewTrial(assetId: string, payload: TrialRunRequest) {
+    return (
+      await httpClient.post(
+        `/api/v1/workflow_assets/${encodeURIComponent(assetId)}/trials/preview`,
+        payload,
+      )
+    ).data.data;
+  },
+  async startTrial(assetId: string, payload: TrialRunRequest) {
+    return (
+      await httpClient.post(
+        `/api/v1/workflow_assets/${encodeURIComponent(assetId)}/trials`,
         payload,
       )
     ).data.data;

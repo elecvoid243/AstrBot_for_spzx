@@ -105,6 +105,9 @@
         <v-textarea v-model="contract" :label="tm('v2.contract')" rows="3" />
       </v-card-text>
       <v-card-actions class="flex-wrap">
+        <v-btn variant="tonal" :disabled="saving || draft.busy.value" @click="openTrial">{{
+          tm("trial.title")
+        }}</v-btn>
         <v-spacer />
         <v-btn variant="text" :disabled="saving" @click="closeEditor">{{
           tm("v2.close")
@@ -136,10 +139,20 @@
       ></v-card
     >
   </v-dialog>
+  <TrialRunDialog
+    v-if="trialDraft"
+    v-model="trialOpen"
+    :asset-id="trialDraft.asset_id"
+    :revision="trialDraft.revision"
+    kind="autonomous"
+    :nodes="[]"
+    @started="onTrialStarted"
+  />
 </template>
 
 <script setup lang="ts">
 import DraftStatus from "./DraftStatus.vue";
+import TrialRunDialog from "./TrialRunDialog.vue";
 import TeamPresetEditor from "./TeamPresetEditor.vue";
 import RunLimitsForm from "./RunLimitsForm.vue";
 import { nextTick, onBeforeUnmount, ref, watch } from "vue";
@@ -158,10 +171,35 @@ const props = defineProps<{
 const emit = defineEmits<{
   "update:modelValue": [value: boolean];
   saved: [];
+  started: [runId: string];
 }>();
 const { tm } = useModuleI18n("features/agent-teams");
 const saving = ref(false);
 const draft = useAssetDraft("autonomous");
+const trialOpen = ref(false);
+const trialDraft = ref<any>(null);
+async function openTrial() {
+  try {
+    draft.change({
+      definition: {
+        ...form.value,
+        approval_question: approval.value.trim() || null,
+        output_contract: contract.value.trim() ? JSON.parse(contract.value) : null,
+      },
+      editor: { approval: approval.value, contract: contract.value },
+    });
+    if (draft.status.value === "failed" || draft.status.value === "conflict")
+      throw new Error(tm(`draft.${draft.status.value}`));
+    trialDraft.value = await draft.flush();
+    trialOpen.value = true;
+  } catch (cause) {
+    error.value = extractApiError(cause, tm("errors.operationFailed")).message;
+  }
+}
+function onTrialStarted(runId: string) {
+  emit("update:modelValue", false);
+  emit("started", runId);
+}
 const draftReady = ref(false);
 const error = ref("");
 const workflowInvalid = ref(false);

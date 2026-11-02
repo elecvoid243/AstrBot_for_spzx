@@ -165,13 +165,20 @@
           ></v-btn
         >
       </nav>
+      <v-select
+        v-model="runType"
+        :label="tm('trial.filter')"
+        :items="runTypeOptions"
+        style="max-width: 260px"
+      />
       <section
         v-if="runView === 'pending'"
         :aria-label="tm('human.inbox')"
         data-testid="human-inbox"
       >
-        <h3 class="text-h6">{{ tm("human.inbox") }} · {{ humanRequests.length }}</h3>
-        <div v-for="todo in humanRequests" :key="todo.todo_id">
+        <h3 class="text-h6">{{ tm("human.inbox") }} · {{ visibleHumanRequests.length }}</h3>
+        <div v-for="todo in visibleHumanRequests" :key="todo.todo_id">
+          <v-chip size="small">{{ tm(todo.trial ? "trial.test" : "trial.production") }}</v-chip>
           <v-btn variant="text" @click="openRequest(todo)">{{ tm("human.openProcess") }}</v-btn>
           <WorkflowHumanTodo
             :todo="todo"
@@ -184,6 +191,7 @@
       </section>
       <UnifiedRunHistory
         v-if="runView === 'history'"
+        :run-type="runType"
         @open-run="
           runView = 'all';
           openRun($event);
@@ -220,6 +228,9 @@
           <v-card-text class="d-flex flex-wrap align-center ga-2">
             <div class="flex-grow-1 workflow-name">
               <strong>{{ run.snapshot.definition.name }}</strong>
+              <v-chip size="small" class="ml-2">{{
+                tm(run.snapshot.trial ? "trial.test" : "trial.production")
+              }}</v-chip>
               <p class="text-body-2">
                 {{ tm(`v2.states.${run.status}`) }} · {{ run.run_id }}
               </p>
@@ -569,6 +580,7 @@
       :roles="roles"
       :catalog="catalog"
       @saved="refresh"
+      @started="trialStarted"
     />
     <v-dialog
       class="workbench-dialog"
@@ -635,6 +647,7 @@
             "
             :workflows="assets.filter((asset) => asset.definition.kind !== 'autonomous')"
             @validation="graphInvalid = $event"
+            @select-task="graphSelectedNode = $event"
             @role-saved="
               roleAssetsApi
                 .list()
@@ -659,7 +672,9 @@
           <p class="text-caption mt-3">{{ tm("graph.saveHint") }}</p>
         </v-card-text>
         <v-card-actions
-          ><v-spacer /><v-btn
+          ><v-btn variant="tonal" :disabled="saving || graphDraft.busy.value" @click="openGraphTrial">{{
+            tm("trial.title")
+          }}</v-btn><v-spacer /><v-btn
             variant="text"
             :disabled="saving || graphDraft.busy.value"
             @click="closeGraph"
@@ -675,6 +690,17 @@
         >
       </v-card>
     </v-dialog>
+
+    <TrialRunDialog
+      v-if="trialDraft"
+      v-model="trialOpen"
+      :asset-id="trialDraft.asset_id"
+      :revision="trialDraft.revision"
+      kind="workflow"
+      :nodes="graphForm.tasks"
+      :initial-node="graphSelectedNode"
+      @started="trialStarted"
+    />
 
     <v-dialog
       class="workbench-dialog"
@@ -863,6 +889,7 @@ import WorkflowRunControls from "./WorkflowRunControls.vue";
 import WorkflowHumanTodo from "./WorkflowHumanTodo.vue";
 import RunnerCapabilities from "./RunnerCapabilities.vue";
 import DeleteAssetDialog from "./DeleteAssetDialog.vue";
+import TrialRunDialog from "./TrialRunDialog.vue";
 import type {
   GraphDefinition,
   ToolResolutionRequest,
@@ -903,6 +930,27 @@ async function deleteAsset() {
 }
 const drafts = ref<any[]>([]);
 const graphDraft = useAssetDraft("workflow");
+const trialOpen = ref(false);
+const trialDraft = ref<any>(null);
+const graphSelectedNode = ref<string | null>(null);
+async function openGraphTrial() {
+  try {
+    graphDraft.change({ definition: graphForm.value });
+    if (graphDraft.status.value === "failed" || graphDraft.status.value === "conflict")
+      throw new Error(tm(`draft.${graphDraft.status.value}`));
+    trialDraft.value = await graphDraft.flush();
+    trialOpen.value = true;
+  } catch (cause) {
+    formError.value = extractApiError(
+      cause, tm("errors.operationFailed"),
+    ).message;
+  }
+}
+async function trialStarted(runId: string) {
+  graphEditing.value = false;
+  await router.replace({ query: { ...route.query, workflow_run: runId } });
+  emit("started", runId);
+}
 const visibleDrafts = computed(() =>
   drafts.value.filter(
     (item) =>
@@ -972,8 +1020,22 @@ async function answerInbox(
 }
 
 const runView = ref<"all" | "active" | "pending" | "history">("all");
+const runType = ref<"all" | "test" | "production">("all");
+const runTypeOptions = computed(() =>
+  (["all", "test", "production"] as const).map((value) => ({
+    title: tm(`trial.${value}`), value,
+  })),
+);
+const visibleHumanRequests = computed(() =>
+  humanRequests.value.filter((todo) => {
+    if (runType.value === "all") return true;
+    return (runType.value === "test") === !!todo.trial;
+  }),
+);
 const visibleRuns = computed(() =>
   runs.value.filter((run) => {
+    if (runType.value !== "all" && (runType.value === "test") !== !!run.snapshot.trial)
+      return false;
     const terminal = ["completed", "cancelled", "skipped"].includes(run.status);
     if (runView.value === "history")
       return terminal || ["failed", "interrupted"].includes(run.status);
@@ -1458,6 +1520,7 @@ async function refresh() {
 }
 
 async function editGraph(asset: any) {
+  graphSelectedNode.value = null;
   graphEditing.value = false;
   graphDraft.close();
   editingAsset.value = asset;

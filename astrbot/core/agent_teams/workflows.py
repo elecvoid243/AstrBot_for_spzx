@@ -791,7 +791,18 @@ class WorkflowService:
                     )
                 except RoleAssetError as exc:
                     if exc.status != 404 or task.role_id is None:
-                        raise
+                        raise RoleAssetError(
+                            str(exc),
+                            [
+                                {
+                                    **field,
+                                    "path": f"definition.tasks.{task_index}."
+                                    + field["path"].removeprefix("definition."),
+                                }
+                                for field in exc.fields
+                            ],
+                            status=exc.status,
+                        ) from exc
                     raise RoleAssetError(
                         str(exc),
                         [

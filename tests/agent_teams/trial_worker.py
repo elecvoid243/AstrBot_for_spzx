@@ -25,6 +25,54 @@ async def run_trial_scenario(folder, action, scenario, service, roles):
         service: Real workflow service and main execution pipeline.
         roles: Real role asset service.
     """
+    if scenario in {"loop_trial_full", "loop_trial_single", "loop_trial_partial"}:
+        role = await roles.save_role(
+            "alice",
+            {
+                "definition": {
+                    "name": "Trial role",
+                    "prompt": "Follow the task.",
+                    "provider_id": "model-original",
+                    "tools": ["external_evidence"],
+                    "max_steps": 5,
+                    "max_instances": 2,
+                },
+                "installation": {"profile_id": "default"},
+            },
+        )
+        shared = {"member": "writer", "role_id": role["role_id"], "role_version": 1}
+        definition = {
+            "name": "Trial pipeline",
+            "result_task_id": "b",
+            "tasks": [
+                {**shared, "id": "a", "name": "A", "task": "TRIAL-A"},
+                {
+                    **shared,
+                    "id": "b",
+                    "name": "B",
+                    "task": "TRIAL-B {value}",
+                    "inputs": {"value": {"task_id": "a"}},
+                },
+            ],
+            "edges": [{"source": "a", "target": "b"}],
+        }
+        draft = await roles.create_draft(
+            "alice", "workflow", {"definition": definition}
+        )
+        mode = scenario.removeprefix("loop_trial_")
+        request = {"kind": "workflow", "revision": draft["revision"], "mode": mode}
+        if mode != "full":
+            request.update(
+                node_id="b", sources={"a": {"content": {"text": "fixed boundary"}}}
+            )
+        run = await service.start_trial("alice", draft["asset_id"], request)
+        for _ in range(2000):
+            run = await service.get_run("alice", run["run_id"])
+            if run["status"] != "running":
+                break
+            await asyncio.sleep(0.01)
+        (folder / "completed.json").write_text(json.dumps(run), encoding="utf-8")
+        return
     if action == "start":
         role = await roles.save_role(
             "alice",

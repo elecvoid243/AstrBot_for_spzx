@@ -15,7 +15,9 @@
   "chatAccess": {
     "title": "Chat access",
     "scope": "Open this fixed version, its human requests and final result to an exact platform sender and source conversation. Every reachable role must use that source configuration profile. Process, thinking and tool records remain private to the asset owner.",
-    "identityHelp": "Ask the caller to send /asset whoami in the intended conversation. Copy its platform_id, sender_id, source and profile_id below. For groups, this explicitly allows the final result to be visible in that group.",
+    "identityHelp": "Ask the caller to send /asset whoami in the intended conversation and paste the complete response. Check the parsed fields before saving. For groups, the final result is visible in that group. The pasted text does not prove identity or grant management permission.",
+    "identity": "Complete /asset whoami response",
+    "invalidIdentity": "Enter a complete, consistent /asset whoami response.",
     "platform": "Platform instance ID",
     "sender": "Sender ID",
     "source": "Source conversation (UMO)",

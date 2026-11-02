@@ -56,6 +56,13 @@ def test_http_owner_opens_and_revokes_fixed_version_without_granting_dashboard_i
         assert client.put(url, json=grant).status_code == 200
         assert client.get(url).json()["data"] == {"grants": [grant]}
         assert (
+            client.put(
+                url, json={k: v for k, v in grant.items() if k != "source"}
+            ).status_code
+            == 422
+        )
+        assert client.get(url).json()["data"] == {"grants": [grant]}
+        assert (
             client.put(url, json={**grant, "owner_username": "other"}).status_code
             == 422
         )

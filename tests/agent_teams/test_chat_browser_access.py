@@ -22,6 +22,7 @@ from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
 )
 from astrbot.dashboard.api.workflow_assets import router
 from astrbot.dashboard.responses import ApiError, error
+from astrbot.dashboard.services.auth_service import AuthService
 from tests.agent_teams.test_chat_invocations import chat_env as chat_env
 
 
@@ -40,7 +41,16 @@ async def browser_http(chat_env, monkeypatch):
     service, _, _, _ = chat_env
     app = FastAPI()
     app.state.jwt_secret = "isolated-chat-browser-fixture-key-at-least-32-bytes"
-    app.state.services = SimpleNamespace(workflow_assets=service)
+    config = {
+        "dashboard": {
+            "username": "operator",
+            "password": "test-hash",
+            "password_storage_upgraded": False,
+        }
+    }
+    app.state.services = SimpleNamespace(
+        workflow_assets=service, auth=AuthService(service.db, config)
+    )
     app.include_router(router, prefix="/api/v1")
 
     @app.exception_handler(ApiError)
@@ -160,7 +170,7 @@ async def test_initiator_connects_through_returned_entry_and_answers_original_to
     )
     assert (
         await client.get(old_path, headers={"Authorization": "Bearer " + caller_jwt})
-    ).status_code == 404
+    ).status_code == 401
     owner_jwt = jwt.encode({"username": "operator"}, jwt_secret, algorithm="HS256")
     assert (
         await client.get(old_path, headers={"Authorization": "Bearer " + owner_jwt})
@@ -449,7 +459,7 @@ async def test_browser_previews_only_the_version_named_by_its_approval_request(
             f"/api/v1/workflow_artifacts/{artifact['artifact_id']}/versions/2",
             headers={"Authorization": "Bearer " + caller_jwt},
         )
-    ).status_code == 404
+    ).status_code == 401
     approved = await client.post(
         path + "/todos/" + todo["todo_id"] + "/answer",
         headers=headers,
@@ -491,15 +501,15 @@ async def test_other_authorized_group_sender_cannot_connect_or_read_the_initiato
     )
     callers = []
     for sender in ("12345", "54321"):
-        event, _ = await send_chat_command(
+        event, messages = await send_chat_command(
             service, "/asset whoami", sender=sender, source="88888", group=True
         )
-        caller = ChatCaller(
-            platform_id=event.get_platform_id(),
-            sender_id=event.get_sender_id(),
-            source=event.unified_msg_origin,
-            profile_id="default",
+        caller = ChatCaller.model_validate_json(
+            messages[0]["message"][0]["data"]["text"]
         )
+        assert caller.sender_id == event.get_sender_id()
+        assert caller.source == event.unified_msg_origin
+        assert caller.source == "qq-main:GroupMessage:88888"
         callers.append(caller)
         await service.chat.save_access(
             "operator", asset["asset_id"], {**caller.model_dump(), "version": 1}

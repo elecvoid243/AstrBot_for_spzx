@@ -15,7 +15,9 @@
   "chatAccess": {
     "title": "聊天访问",
     "scope": "向指定平台发送者和来源会话开放此固定版本、人工待办及最终结果。所有可达角色必须使用来源配置档案。运行过程、思考和工具记录仍仅向资产所有者开放。",
-    "identityHelp": "请调用者在目标会话发送 /asset whoami，将返回的 platform_id、sender_id、source 和 profile_id 填入下方。群聊授权明确允许最终结果在该群中可见。",
+    "identityHelp": "请调用者在目标会话发送 /asset whoami，粘贴完整返回内容，并在保存前核对解析字段。群聊授权允许最终结果在该群中可见。粘贴内容不能证明身份或授予管理权限。",
+    "identity": "完整的 /asset whoami 返回内容",
+    "invalidIdentity": "请输入完整且一致的 /asset whoami 返回内容。",
     "platform": "平台实例 ID",
     "sender": "发送者 ID",
     "source": "来源会话（UMO）",

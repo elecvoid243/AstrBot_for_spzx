@@ -70,9 +70,15 @@ The existing **Assets → Teams / Workflows → Edit Asset / Start Run** entries
 
 ## Explicit invocation from ordinary chat
 
-In the intended platform conversation, send `/asset whoami`. It returns the actual platform instance ID, sender ID, source conversation (UMO) and source profile ID. A display name or a sender ID that matches a Dashboard account does not link those identities.
+In the intended platform conversation, send `/asset whoami` and paste the entire response into **Chat access**. For example:
 
-An asset owner opens **Agent Teams → Assets** and chooses **Teams** for an autonomous team or **Workflows** for a single-task or canvas workflow. On the asset card, open **Chat access**, enter the four values above and choose **Open this version**. The grant pins the displayed asset version and allows its final result to be delivered to that exact conversation. A group conversation grant therefore explicitly allows the result to be visible in that group. Every reachable role, allowed team member and nested workflow must use the source profile; existing model/persona pools and tool, skill and knowledge-base restrictions still apply. Importing a package does not open it to chat callers. Use **Revoke access** to stop subsequent external work and result delivery; already delivered work remains recorded.
+```json
+{"platform_id":"qq-main","sender_id":"12345","source":"qq-main:GroupMessage:88888","profile_id":"default"}
+```
+
+Check the read-only fields before opening the fixed version. The group UMO identifies the conversation, not its sender. Copying this text does not prove identity or bypass asset management permissions. A display name or a sender ID that matches a Dashboard account does not link those identities.
+
+An asset owner opens **Agent Teams → Assets** and chooses **Teams** for an autonomous team or **Workflows** for a single-task or canvas workflow. On the asset card, open **Chat access**, paste the complete response, check the read-only fields and choose **Open this version**. The grant pins the displayed asset version and allows its final result to be delivered to that exact conversation. A group conversation grant therefore explicitly allows the result to be visible in that group. Every reachable role, allowed team member and nested workflow must use the source profile; existing model/persona pools and tool, skill and knowledge-base restrictions still apply. Importing a package does not open it to chat callers. Use **Revoke access** to stop subsequent external work and result delivery; already delivered work remains recorded.
 
 Use `/asset list` to see accessible names, IDs, pinned versions and required input names. Invoke an asset explicitly, for example:
 

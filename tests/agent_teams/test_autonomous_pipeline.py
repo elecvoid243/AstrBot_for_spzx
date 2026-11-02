@@ -533,8 +533,14 @@ def test_autonomous_team_uses_main_pipeline_and_recovers_without_duplicate_decis
         inline = next(task for task in member_tasks if task["snapshot"]["preset_id"] == "inline")
         assert inline["snapshot"]["effective"]["persona_id"] is None
         assert inline["snapshot"]["effective"]["prompt"] == "Inline responsibility."
-        inline_requests = [request for request in requests if "team_manage" not in request["tools"] and "Inline responsibility." in json.dumps(request, ensure_ascii=False)]
+        inline_member_id = inline["snapshot"]["member"]["member_id"]
+        writer = next(task for task in member_tasks if task["snapshot"]["preset_id"] == "writer")
+        writer_member_id = writer["snapshot"]["member"]["member_id"]
+        inline_requests = [request for request in requests if request["member_id"] == inline_member_id]
         assert inline_requests
+        assert any("Inline responsibility." in json.dumps(request["contexts"]) for request in inline_requests)
+        coordinator_member_id = current["tasks"][0]["snapshot"]["member"]["member_id"]
+        assert {request["member_id"] for request in requests} == {coordinator_member_id, writer_member_id, inline_member_id}
         assert all(request["provider_id"] == "model-original" for request in inline_requests)
         assert all("Original verified persona." not in json.dumps(request, ensure_ascii=False) for request in inline_requests)
         assert len(current["tasks"]) == 4
@@ -581,31 +587,24 @@ def test_autonomous_team_uses_main_pipeline_and_recovers_without_duplicate_decis
             request
             for request in requests
             if "writer-followup" in json.dumps(request["contexts"])
-            and "team_manage" not in request["tools"]
+            and request["member_id"] == writer_member_id
         )
         assert "Complete evidence writer-one-first" in json.dumps(followup["contexts"])
         second = next(
             request
             for request in requests
             if "writer-two-first" in json.dumps(request["contexts"])
-            and "team_manage" not in request["tools"]
+            and request["member_id"] == inline_member_id
         )
         assert "writer-one-first" not in json.dumps(second["contexts"])
         assert all(
-            ("Original verified persona" in json.dumps(request["contexts"])) == (request not in inline_requests)
+            ("Original verified persona" in json.dumps(request["contexts"])) == (request["member_id"] != inline_member_id)
             and "profile=original" in json.dumps(request["contexts"])
             for request in requests
         )
-        member_requests = [
-            request
-            for request in requests
-            if any(
-                "Original role prompt" in json.dumps(message)
-                for message in request["contexts"]
-                if message["role"] == "user"
-            )
-        ]
+        member_requests = [request for request in requests if request["member_id"] == writer_member_id]
         assert len(member_requests) >= 3
+        assert any("Original role prompt" in json.dumps(request["contexts"]) for request in member_requests)
         assert all("team_manage" not in request["tools"] for request in member_requests)
         assert current["tasks"][0]["read_artifacts"] == [
             {"artifact_id": current["tasks"][1]["run_id"], "version": 1}

@@ -333,7 +333,7 @@ async def run_worker(
                     "repair_query": "Do not return an empty response." in str(kwargs["contexts"]),
                     **({"llm_params": kwargs.get("llm_params")} if scenario.startswith("usage_") else {}),
                     **({"system_prompt": kwargs.get("system_prompt"), "provider_id": self.provider_config["id"], "tool_descriptions": {tool.name: tool.description for tool in kwargs["func_tool"].tools}} if scenario.startswith(("team_", "child_", "reverse_", "inline_")) else {}),
-                    **({"run_id": execution.run_id, "member_id": execution.member_id, "attempt_id": execution.turn_id} if execution and scenario.startswith(("team_message_", "child_", "reverse_", "file_mode_")) else {}),
+                    **({"run_id": execution.run_id, "member_id": execution.member_id, "attempt_id": execution.turn_id} if execution and scenario.startswith(("team_", "child_", "reverse_", "file_mode_")) else {}),
                 })
                 if action == "start" and scenario in {"request", "control_request"}:
                     from astrbot.core.agent_team_execution import current_team_execution

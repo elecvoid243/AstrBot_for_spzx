@@ -110,20 +110,6 @@ from astrbot.core.platform.sources.webchat.webchat_queue_mgr import webchat_queu
 from astrbot.dashboard.services.agent_team_ports import TeamPorts, build_ports_for_test
 
 
-class WorkflowDefinition(BaseModel):
-    """A single task with a pinned role and declared input/output contracts."""
-
-    model_config = ConfigDict(extra="forbid", strict=True, str_strip_whitespace=True)
-    name: str = Field(min_length=1, max_length=128)
-    role_id: str = Field(min_length=1, max_length=128)
-    role_version: int = Field(ge=1)
-    task: str = Field(min_length=1, max_length=100_000)
-    required_inputs: list[str] = Field(default_factory=list, max_length=30)
-    overrides: RoleOverrides = Field(default_factory=RoleOverrides)
-    output_contract: dict | None = None
-    limits: RunLimits | None = None
-
-
 def _capacity_key(snapshot: dict) -> tuple:
     """Identify the template quota, preset quota, or inline graph member quota.
 
@@ -885,7 +871,7 @@ class WorkflowService:
     async def _validate_task_definition(
         self,
         username: str,
-        definition: WorkflowDefinition | GraphTask,
+        definition: GraphTask,
         package_roles: set[tuple[str, int]] | None = None,
         required_inputs: list[str] | None = None,
     ) -> None:
@@ -893,7 +879,7 @@ class WorkflowService:
 
         Args:
             username: Authenticated asset author.
-            definition: One task, from either a single-task asset or a graph.
+            definition: One task in the unified workflow graph.
             package_roles: Portable references validated before local installation.
             required_inputs: Declared graph and task inputs for a graph task.
 
@@ -953,9 +939,7 @@ class WorkflowService:
                     ],
                 ) from exc
         names = (
-            required_inputs
-            if required_inputs is not None
-            else definition.required_inputs
+            required_inputs if required_inputs is not None else list(definition.inputs)
         )
         if len(set(names)) != len(names) or any(
             not name.isidentifier() for name in names
@@ -1116,11 +1100,6 @@ class WorkflowService:
                 and "tasks" not in content
             ):
                 raise RoleAssetError("Legacy workflow definitions cannot be exported")
-            if (content.get("migration") or {}).get("issues"):
-                raise RoleAssetError(
-                    "Configure the migrated definition before export",
-                    content["migration"]["issues"],
-                )
             references = [
                 *content.get("allowed_workflows", []),
                 *[
@@ -2314,11 +2293,6 @@ class WorkflowService:
         asset = await self.get_asset(username, asset_id, request.version)
         definition = asset["definition"]
         input_refs = [ref.model_dump() for ref in request.input_artifacts]
-        if definition.get("migration", {}).get("issues"):
-            raise RoleAssetError(
-                "Configure the migrated definition before launch",
-                definition["migration"]["issues"],
-            )
         for ref in input_refs:
             await self.read_artifact(username, **ref)
         required = definition["required_inputs"]
@@ -2810,46 +2784,6 @@ class WorkflowService:
                 .scalars()
                 .all()
             ]
-            historical_ids = {
-                item.run_id
-                for item in rows
-                if "member" in item.snapshot
-                and item.snapshot.get("usage_protocol") != 1
-                and item.status not in {"pending", "skipped", "dependency_failed"}
-            }
-            metered_process_ids = {
-                uuid.uuid5(
-                    uuid.NAMESPACE_URL,
-                    f"{receipt['run_id']}:{receipt['attempt_id']}:{receipt['invocation_id']}",
-                ).hex
-                for receipt in usage_receipts
-                if receipt["kind"] == "model"
-            }
-            # Old responses lack delivery receipts. Read only their associations;
-            # neither prompt bodies nor provider-specific usage can prove admission.
-            historical_responses = (
-                [
-                    dict(item)
-                    for item in (
-                        await session.execute(
-                            sa_select(
-                                col(AgentWorkflowProcess.record_id),
-                                col(AgentWorkflowProcess.run_id),
-                                col(AgentWorkflowProcess.attempt_id),
-                                col(AgentWorkflowProcess.member_id),
-                            ).where(
-                                col(AgentWorkflowProcess.run_id).in_(historical_ids),
-                                col(AgentWorkflowProcess.kind) == "model_response",
-                            )
-                        )
-                    )
-                    .mappings()
-                    .all()
-                    if item["record_id"] not in metered_process_ids
-                ]
-                if historical_ids
-                else []
-            )
             for current in rows:
                 boundary = checkpoints.get(current.run_id)
                 runner = current.snapshot.get("effective", {}).get("runner")
@@ -3394,22 +3328,6 @@ class WorkflowService:
                     }
                 )
             view["usage"]["constraints"] = record.snapshot.get("scope_limits", [])
-            if historical_ids & selected_ids:
-                historical = [
-                    response
-                    for response in historical_responses
-                    if response["run_id"] in selected_ids
-                ]
-                view["usage"]["historical"] = {
-                    "unmetered": True,
-                    "model_responses": len(historical),
-                    "records": historical if include_details else [],
-                }
-                # The unknown historical delivery count cannot become zero when
-                # the first modern receipt supplies only the newly metered portion.
-                view["usage"]["tokens"]["unknown_calls"] = None
-                if not selected:
-                    view["usage"]["count_basis"] = "checkpoint"
             if (
                 not selected
                 and record.snapshot.get("usage_protocol") == 1
@@ -4691,11 +4609,6 @@ class WorkflowService:
         """
         if nesting_depth > 20:
             raise RoleAssetError("Nested references exceed the supported depth limit")
-        if asset["definition"].get("migration", {}).get("issues"):
-            raise RoleAssetError(
-                "Configure the migrated definition before launch",
-                asset["definition"]["migration"]["issues"],
-            )
         if depth_limit is not None and nesting_depth > depth_limit:
             raise RoleAssetError("Nested references exceed the declared depth limit")
         team = (
@@ -4810,6 +4723,7 @@ class WorkflowService:
                         if (
                             path.startswith("definition.")
                             and path != "definition.default_provider_id"
+                            and not path.startswith(f"definition.tasks.{index}.")
                         ):
                             path = (
                                 f"definition.tasks.{index}.role."
@@ -4980,33 +4894,61 @@ class WorkflowService:
                 raise RoleAssetError(
                     "Child call contracts no longer match the pinned asset", fields
                 )
-            child_assets[task.id] = await self._freeze_graph(
-                username,
-                child,
-                WorkflowStartRequest(version=call.version, source=request.source),
-                nesting_depth + 1,
-                min(depth_limit, definition.max_depth)
-                if depth_limit is not None
-                else None,
-            )
+            try:
+                child_assets[task.id] = await self._freeze_graph(
+                    username,
+                    child,
+                    WorkflowStartRequest(version=call.version, source=request.source),
+                    nesting_depth + 1,
+                    min(depth_limit, definition.max_depth)
+                    if depth_limit is not None
+                    else None,
+                )
+            except RoleAssetError as exc:
+                raise RoleAssetError(
+                    str(exc),
+                    [
+                        {
+                            **issue,
+                            "path": f"{path}.{kind}."
+                            + issue["path"].removeprefix("definition."),
+                        }
+                        for issue in exc.fields
+                    ],
+                    exc.status,
+                ) from exc
         allowed_workflows = {}
-        for ref in team.get("allowed_workflows", []) if team else []:
+        for index, ref in enumerate(team.get("allowed_workflows", []) if team else []):
             child = await self.get_asset(username, ref["asset_id"], ref["version"])
             if child["definition"].get("kind") == "autonomous":
                 raise RoleAssetError("Choose a pinned saved workflow")
-            frozen = await self._freeze_graph(
-                username,
-                child,
-                WorkflowStartRequest(version=ref["version"], source=request.source),
-                nesting_depth + 1,
-                min(
-                    depth_limit,
-                    definition.max_depth,
-                    members["coordinator"]["effective"].get("max_depth") or 20,
+            try:
+                frozen = await self._freeze_graph(
+                    username,
+                    child,
+                    WorkflowStartRequest(version=ref["version"], source=request.source),
+                    nesting_depth + 1,
+                    min(
+                        depth_limit,
+                        definition.max_depth,
+                        members["coordinator"]["effective"].get("max_depth") or 20,
+                    )
+                    if depth_limit is not None
+                    else None,
                 )
-                if depth_limit is not None
-                else None,
-            )
+            except RoleAssetError as exc:
+                raise RoleAssetError(
+                    str(exc),
+                    [
+                        {
+                            **issue,
+                            "path": f"definition.allowed_workflows.{index}."
+                            + issue["path"].removeprefix("definition."),
+                        }
+                        for issue in exc.fields
+                    ],
+                    exc.status,
+                ) from exc
             allowed_workflows[f"{ref['asset_id']}:{ref['version']}"] = {
                 **frozen,
                 "result_task_id": frozen["definition"]["result_task_id"],
@@ -8642,38 +8584,14 @@ class WorkflowService:
                 raise RoleAssetError("No resumable execution checkpoint", status=409)
             checkpoint.data = copy.deepcopy(checkpoint.data)
             calls = checkpoint.data.get("tool_calls", [])
-            if (
-                "remote" not in checkpoint.data
-                and "tool_result_files" not in checkpoint.data
+            if "remote" not in checkpoint.data and (
+                checkpoint.data.get("format_version") != 2
+                or "tool_result_files" not in checkpoint.data
+                or "tool_calls" not in checkpoint.data
             ):
-                # Older request boundaries keep prior raw results in durable calls.
-                messages = [
-                    message
-                    for message in checkpoint.data["messages"]
-                    if message["role"] != "_checkpoint"
-                ]
-                current_call_ids = {call["record_id"] for call in calls}
-                sources = []
-                for call in run["tool_calls"]:
-                    position = call["context_position"]
-                    if (
-                        call["record_id"] in current_call_ids
-                        or call["attempt_id"] != row.state["attempt_id"]
-                        or call["status"] != "applied"
-                        or position is None
-                    ):
-                        continue
-                    protocols = []
-                    for message in messages[position:]:
-                        if (
-                            message["role"] != "tool"
-                            or message.get("tool_call_id") != call["call_id"]
-                        ):
-                            break
-                        protocols.append(message)
-                    if protocols:
-                        sources.append({**call, "protocol_results": protocols})
-                checkpoint.data["tool_result_sources"] = sources
+                raise RoleAssetError(
+                    "Unsupported execution checkpoint format", status=409
+                )
             for call in calls:
                 if call["name"] == "submit_task_result" and call["status"] in {
                     "started",

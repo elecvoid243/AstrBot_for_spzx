@@ -204,8 +204,6 @@ async def run_worker(
         Raises:
             RuntimeError: The external completion outcome is unavailable.
         """
-        if scenario == "overflow_legacy_unaligned":
-            yield CallToolResult.model_validate({"content": [{"type": "resource_link", "name": "Progress reference", "uri": "https://example.org/evidence"}]})
         async with httpx.AsyncClient(trust_env=False) as client:
             if live_partial:
                 from astrbot.core.agent.tool import current_tool_invocation
@@ -221,10 +219,8 @@ async def run_worker(
                 identity = {"identity": current_tool_invocation.get()}
             else:
                 identity = {}
-            initial = await client.post(endpoint + "/tool", json={"value": value, **identity, **({} if scenario == "overflow_legacy_unaligned" else {"part": "initial"})})
+            initial = await client.post(endpoint + "/tool", json={"value": value, **identity, "part": "initial"})
             yield initial.json()["text"]
-            if scenario == "overflow_legacy_unaligned":
-                return
             if scenario == "generator_error":
                 raise RuntimeError("External completion outcome is unavailable")
             final = await client.post(endpoint + "/tool", json={"value": value, "part": "final"})
@@ -233,7 +229,7 @@ async def run_worker(
     providers.llm_tools.func_list = [FunctionTool(
         name="external_evidence", description="Read external evidence.",
         parameters={"type": "object", "properties": {"value": {"type": "string"}}, "required": ["value"]},
-        handler=external_stream if scenario.startswith(("reconcile_partial", "idempotent_partial", "safe_partial")) or scenario in {"partial_generator", "manual_retry_partial", "generator_error", "completed_generator", "overflow_generator", "overflow_legacy_unaligned"} else external_tool,
+        handler=external_stream if scenario.startswith(("reconcile_partial", "idempotent_partial", "safe_partial")) or scenario in {"partial_generator", "manual_retry_partial", "generator_error", "completed_generator", "overflow_generator"} else external_tool,
     )]
     if scenario.startswith("reconcile_") or scenario == "tool_progress_gap" or guarded_case == "legacy" and action != "start":
         from astrbot.core.agent.tool import ToolRecovery, ToolRecoveryResult
@@ -475,36 +471,6 @@ async def run_worker(
     lifecycle = SimpleNamespace(conversation_manager=conversations, provider_manager=providers, persona_mgr=personas, astrbot_config_mgr=acm, kb_manager=knowledge)
     roles = RoleAssetService(db, lifecycle)
     service = WorkflowService(db, roles, ports_factory=lambda username: build_ports_for_test(queue_manager, username, lambda event: None))
-    if action == "start" and scenario.startswith("usage_legacy_"):
-        # Replay committed native T16 inputs, independent of checkout history.
-        # Recovery still runs in a new process through the actual current pipeline.
-        fixture_path = Path(__file__).parent / "fixtures" / "usage_pre_protocol.json"
-        fixture = json.loads(fixture_path.read_text(encoding="utf-8").replace("{data_dir}", folder.as_posix()))
-        assert fixture["format_version"] == 1
-        for filename, encoded in fixture["files"].items():
-            assert Path(filename).name == filename
-            (folder / filename).write_bytes(base64.b64decode(encoded))
-        prepared = fixture["cases"][scenario]
-        async with httpx.AsyncClient(trust_env=False) as client:
-            for request in prepared["external"]["requests"]:
-                response = await client.post(endpoint + "/model", json=request)
-                response.raise_for_status()
-                assert response.json()["id"] == "plan-original"
-            for effect in prepared["external"]["effects"]:
-                response = await client.post(endpoint + "/tool", json=effect)
-                response.raise_for_status()
-                assert response.json()["text"] == "Verified evidence."
-        async with db.engine.begin() as connection:
-            for table_name, rows in prepared["tables"].items():
-                assert table_name.isidentifier()
-                for row in rows:
-                    assert all(column.isidentifier() for column in row)
-                    columns = ", ".join('"' + column + '"' for column in row)
-                    values = ", ".join(":" + column for column in row)
-                    await connection.execute(text(f'INSERT OR REPLACE INTO "{table_name}" ({columns}) VALUES ({values})'), row)
-        run_id = prepared["tables"]["agent_workflow_runs"][0]["run_id"]
-        (folder / "kill-ready.json").write_text(json.dumps({"run_id": run_id}), encoding="utf-8")
-        await asyncio.Future()
     if action == "recover_first":
         def retry_flush(session, flush_context):
             """Select a complete retried result transaction for a second crash.
@@ -531,24 +497,21 @@ async def run_worker(
         sql_event.listen(Session, "after_flush", retry_flush)
         sql_event.listen(Session, "after_commit", retry_commit)
     if action == "start" and not scenario.startswith(("file_mode_", "inline_", "loop_", "choice_")):
-        if scenario in {"legacy_response", "legacy_upgrade_failure"} or scenario.startswith("overflow_legacy"):
+        if scenario == "unsupported_checkpoint":
             def before_flush(session, flush_context, instances):
-                """Construct a pre-T08 saved response through the real storage seam.
+                """Seed an unsupported response to verify rejection without effects.
 
                 Args:
-                    session: Transaction preparing the first complete response.
-                    flush_context: SQLAlchemy's flush context.
-                    instances: Explicitly flushed instances, if supplied.
+                    session: Real workflow transaction.
+                    flush_context: SQLAlchemy flush context.
+                    instances: Explicitly flushed instances.
                 """
                 for checkpoint in [*session.new, *session.dirty]:
-                    if isinstance(checkpoint, AgentWorkflowCheckpoint) and scenario.startswith("overflow_legacy"):
-                        checkpoint.data = {key: value for key, value in checkpoint.data.items() if key != "tool_result_files"}
-                    elif isinstance(checkpoint, AgentWorkflowCheckpoint) and checkpoint.phase == "response":
+                    if isinstance(checkpoint, AgentWorkflowCheckpoint) and checkpoint.phase == "response":
                         checkpoint.data = {**{key: value for key, value in checkpoint.data.items() if key != "tool_calls"}, "format_version": 1}
-                        session.info["legacy_response_run_id"] = checkpoint.run_id
-                # Autoflush can persist the checkpoint before its call rows are added.
+                        session.info["unsupported_run_id"] = checkpoint.run_id
                 for call in list(session.new):
-                    if isinstance(call, AgentWorkflowToolCall) and call.run_id == session.info.get("legacy_response_run_id"):
+                    if isinstance(call, AgentWorkflowToolCall) and call.run_id == session.info.get("unsupported_run_id"):
                         session.expunge(call)
             sql_event.listen(Session, "before_flush", before_flush)
         # Fault injection runs only AFTER the real response transaction commits.
@@ -574,7 +537,7 @@ async def run_worker(
                     session.info["kill_boundary"] = row.run_id
                 if scenario in {"submit_conflict_applied", "submit_conflict_pre"} and isinstance(row, AgentWorkflowCheckpoint) and row.phase == ("tools_applied" if scenario.endswith("applied") else "response") and row.data["response"]["id"] == "submission-conflict":
                     session.info["kill_boundary"] = row.run_id
-                if scenario in {"response", "no_thinking", "graph", "concurrent", "missing_model", "changed_tool", "legacy_response", "legacy_upgrade_failure", "usage_legacy_response"} and isinstance(row, AgentWorkflowProcess) and row.kind == "model_response" and row.data["id"] == "plan-original":
+                if scenario in {"response", "no_thinking", "graph", "concurrent", "missing_model", "changed_tool", "unsupported_checkpoint"} and isinstance(row, AgentWorkflowProcess) and row.kind == "model_response" and row.data["id"] == "plan-original":
                     session.info["kill_boundary"] = row.run_id
                 if scenario in {"parameters", "repair"} and isinstance(row, AgentWorkflowProcess) and row.kind == "model_response" and row.data["id"] == "parameters-original":
                     session.info["kill_boundary"] = row.run_id
@@ -589,8 +552,6 @@ async def run_worker(
                 if scenario == "tool_progress_gap" and isinstance(row, AgentWorkflowCheckpoint) and row.phase == "tool_progress" and row.data["tool_calls"][0]["raw_results"]:
                     session.info["kill_boundary"] = row.run_id
                 if scenario in {"tool_checkpoint", "tool_applied"} and isinstance(row, AgentWorkflowCheckpoint) and row.phase == ("tool_result" if scenario == "tool_checkpoint" else "tools_applied") and row.data["response"]["id"] == "plan-original":
-                    session.info["kill_boundary"] = row.run_id
-                if scenario == "usage_legacy_applied" and isinstance(row, AgentWorkflowCheckpoint) and row.phase == "tools_applied" and row.data["response"]["id"] == "plan-original":
                     session.info["kill_boundary"] = row.run_id
                 if scenario == "tool_image_protocol" and isinstance(row, AgentWorkflowCheckpoint) and row.phase == "tool_result" and row.data["tool_calls"][0]["protocol_results"]:
                     session.info["kill_boundary"] = row.run_id
@@ -620,7 +581,7 @@ async def run_worker(
             "definition": {"name": "Writer", "prompt": "Original role prompt.", "provider_id": "model-original", "persona_id": "writer", "tools": ["external_evidence", "astrbot_file_read_tool"] if scenario.startswith("overflow") else ["external_evidence"], "max_steps": 4, **({"context_length": 12000} if scenario == "usage_compression" else {}), **({"max_parallel": 2} if scenario == "control_mixed" else {}), **({"max_instances": 3} if scenario in {"manual_graph", "control_capacity", "control_mixed"} else {})},
             "installation": {"profile_id": "default"},
         })
-        definition = {"name": "Original report", "role_id": role["role_id"], "role_version": 1, "task": "Read evidence and submit a report."}
+        definition = {"name": "Original report", "result_task_id": "write", "tasks": [{"id": "write", "name": "Writer", "member": "writer", "role_id": role["role_id"], "role_version": 1, "task": "Read evidence and submit a report."}], "edges": []}
         if limits is not None:
             definition["limits"] = limits
         if scenario in {"usage_reservation_failure", "usage_report_failure"}:
@@ -646,27 +607,23 @@ async def run_worker(
             if scenario.startswith("submit_file"):
                 contract["properties"]["files"] = {"type": "array", "items": {"type": "object", "properties": {"file_id": {"type": "string"}}, "required": ["file_id"], "additionalProperties": False}}
                 contract["required"].append("files")
-            definition["output_contract"] = contract
-        if scenario.startswith("human_") or scenario in {"response", "parameters", "repair", "parameters_checkpoint", "repair_checkpoint", "parameters_checkpoint_failure", "tool_progress_gap"}:
-            definition = {"name": "Original report", "result_task_id": "write", "tasks": [{"id": "write", "name": "Writer", "member": "writer", "role_id": role["role_id"], "role_version": 1, "task": "Read evidence and submit a report."}], "edges": []}
-        if scenario.startswith("team_"):
-            definition = {"name": definition["name"], "result_task_id": "result", "tasks": [{"id": "result", "name": definition["name"], "member": "writer", "role_id": role["role_id"], "role_version": 1, "task": definition["task"]}]}
+            definition["tasks"][0]["output_contract"] = contract
         asset = await service.save_asset("alice", {"definition": definition})
         if scenario in {"usage_parallel", "usage_compression", "usage_shared_wait"}:
-            asset = await service.save_asset("alice", {"definition": {"name": "Shared last reservation", "max_parallel": 2, "limits": limits, "tasks": [
+            asset = await service.save_asset("alice", {"definition": {"name": "Shared last reservation", "result_task_id": "b", "max_parallel": 2, "limits": limits, "tasks": [
                 {"id": key, "name": key, "member": "shared" if scenario == "usage_compression" or scenario == "usage_shared_wait" and key.startswith("a") else key, "role_id": role["role_id"], "role_version": 1, "task": key + ": Read evidence and submit a report." if scenario == "usage_shared_wait" else "Read evidence and submit a report.", "overrides": {"max_instances": 2, "max_parallel": 2}}
                 for key in (["b", "a", "a2"] if scenario == "usage_shared_wait" else ["a", "b"])
             ], "edges": [{"source": "a", "target": "b"}] if scenario == "usage_compression" else []}})
         if scenario == "manual_graph":
-            asset = await service.save_asset("alice", {"definition": {"name": "Unknown effect graph", "max_parallel": 1, "tasks": [
+            asset = await service.save_asset("alice", {"definition": {"name": "Unknown effect graph", "result_task_id": "dependent", "max_parallel": 1, "tasks": [
                 {"id": "write", "name": "Unknown effect", "member": "writer", "role_id": role["role_id"], "role_version": 1, "task": "Read evidence and submit a report."},
                 {"id": "independent", "name": "Independent task", "member": "independent", "role_id": role["role_id"], "role_version": 1, "task": "Independent task: submit the independent report."},
                 {"id": "dependent", "name": "Dependent task", "member": "dependent", "role_id": role["role_id"], "role_version": 1, "task": "Dependent task: submit the dependent report."},
             ], "edges": [{"source": "write", "target": "dependent"}]}})
         if scenario == "graph":
-            asset = await service.save_asset("alice", {"definition": {"name": "Original graph", "tasks": [{"id": "write", "name": "Write", "member": "writer", "role_id": role["role_id"], "role_version": 1, "task": "Read evidence and submit a report."}], "edges": []}})
+            asset = await service.save_asset("alice", {"definition": {"name": "Original graph", "result_task_id": "write", "tasks": [{"id": "write", "name": "Write", "member": "writer", "role_id": role["role_id"], "role_version": 1, "task": "Read evidence and submit a report."}], "edges": []}})
         if scenario in {"control_capacity", "control_mixed"}:
-            asset = await service.save_asset("alice", {"definition": {"name": "Paused graph", "max_parallel": 2 if scenario == "control_mixed" else 1, "tasks": [{"id": name, "name": name, "member": name, "role_id": role["role_id"], "role_version": 1, "task": name} for name in ["a", "b"]], "edges": []}})
+            asset = await service.save_asset("alice", {"definition": {"name": "Paused graph", "result_task_id": "b", "max_parallel": 2 if scenario == "control_mixed" else 1, "tasks": [{"id": name, "name": name, "member": name, "role_id": role["role_id"], "role_version": 1, "task": name} for name in ["a", "b"]], "edges": []}})
         if scenario in {"save_failure", "observation_failure"}:
             async with db.engine.begin() as connection:
                 await connection.execute(text("CREATE TRIGGER reject_response_checkpoint BEFORE UPDATE ON agent_workflow_checkpoints WHEN NEW.phase = 'response' BEGIN SELECT RAISE(ABORT, 'checkpoint storage unavailable'); END" if scenario == "save_failure" else "CREATE TRIGGER reject_response_checkpoint BEFORE INSERT ON agent_workflow_process BEGIN SELECT RAISE(ABORT, 'observation storage unavailable'); END"))
@@ -772,19 +729,16 @@ async def run_worker(
             from hypercorn.asyncio import serve
             from hypercorn.config import Config
 
-            from astrbot.dashboard.api.agent_teams import router as team_router
             from astrbot.dashboard.api.auth import require_dashboard_user
             from astrbot.dashboard.api.role_assets import router as role_router
             from astrbot.dashboard.api.workflow_assets import router as workflow_router
-            from astrbot.dashboard.services.agent_team_service import AgentTeamService
-            from tests.agent_teams.test_agent_team_service import FakeChatService
+            from astrbot.core.agent_teams.history import RunHistoryService
             await service.boot_sweep()
             app = FastAPI()
-            app.state.services = SimpleNamespace(workflow_assets=service, role_assets=roles, agent_teams=AgentTeamService(db, lifecycle, FakeChatService()))
+            app.state.services = SimpleNamespace(workflow_assets=service, role_assets=roles, run_history=RunHistoryService(db, service))
             app.dependency_overrides[require_dashboard_user] = lambda: "alice"
             app.include_router(workflow_router, prefix="/api/v1")
             app.include_router(role_router, prefix="/api/v1")
-            app.include_router(team_router, prefix="/api/v1")
             if scenario.startswith("reverse_"):
                 @app.middleware("http")
                 async def delayed_fixed_version(request, call_next):
@@ -985,9 +939,6 @@ async def run_worker(
             if scenario == "parameters_checkpoint_failure":
                 async with db.engine.begin() as connection:
                     await connection.execute(text("CREATE TRIGGER reject_response_checkpoint BEFORE INSERT ON agent_workflow_process BEGIN SELECT RAISE(ABORT, 'observation storage unavailable'); END" if action == "recover" else "DROP TRIGGER reject_response_checkpoint"))
-            if scenario == "legacy_upgrade_failure":
-                async with db.engine.begin() as connection:
-                    await connection.execute(text("CREATE TRIGGER reject_response_checkpoint BEFORE UPDATE ON agent_workflow_checkpoints WHEN NEW.phase = 'response' BEGIN SELECT RAISE(ABORT, 'legacy upgrade storage unavailable'); END" if action == "recover" else "DROP TRIGGER reject_response_checkpoint"))
             if scenario in {"save_failure", "observation_failure", "tool_save_failure", "tool_observation_failure"}:
                 async with db.engine.begin() as connection:
                     await connection.execute(text("DROP TRIGGER reject_response_checkpoint"))
@@ -1287,7 +1238,6 @@ async def run_worker(
                     {
                         "before": before,
                         "after": current,
-                        **({"overview": await service.get_run("alice", run["run_id"], include_details=False)} if scenario.startswith("usage_legacy_") else {}),
                         "result": result,
                         "file": file_result,
                         "parent": parent,

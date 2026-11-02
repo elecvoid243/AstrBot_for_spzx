@@ -408,24 +408,21 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str) ->
             from hypercorn.asyncio import serve
             from hypercorn.config import Config
 
-            from astrbot.dashboard.api.agent_teams import router as team_router
             from astrbot.dashboard.api.auth import require_dashboard_user
             from astrbot.dashboard.api.role_assets import router as role_router
             from astrbot.dashboard.api.workflow_assets import router as workflow_router
-            from astrbot.dashboard.services.agent_team_service import AgentTeamService
-            from tests.agent_teams.test_agent_team_service import FakeChatService
+            from astrbot.core.agent_teams.history import RunHistoryService
 
             await service.boot_sweep()
             app = FastAPI()
             app.state.services = SimpleNamespace(
                 workflow_assets=service,
                 role_assets=roles,
-                agent_teams=AgentTeamService(db, lifecycle, FakeChatService()),
+                run_history=RunHistoryService(db, service),
             )
             app.dependency_overrides[require_dashboard_user] = lambda: "alice"
             app.include_router(workflow_router, prefix="/api/v1")
             app.include_router(role_router, prefix="/api/v1")
-            app.include_router(team_router, prefix="/api/v1")
             dist = Path(__file__).resolve().parents[2] / "dashboard" / "dist"
             app.mount("/assets", StaticFiles(directory=dist / "assets"), name="assets")
 

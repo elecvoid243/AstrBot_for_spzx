@@ -62,7 +62,7 @@ async def test_http_recovery_uses_the_authenticated_owner_and_original_run(workf
     assert len(env.observations) == 1
 
 
-@pytest.mark.parametrize("scenario", ["response", "request", "no_thinking", "started", "submit_pre", "submit_post", "save_failure", "observation_failure", "missing_model", "changed_tool", "parameters", "repair", "parameters_checkpoint", "repair_checkpoint", "parameters_checkpoint_failure", "tool_progress_gap", "graph", "concurrent", "tool_result", "tool_checkpoint", "tool_applied", "batch_unknown", "submit_mixed_pre", "submit_mixed_post", "submit_custom_pre", "submit_custom_post", "submit_file_pre", "submit_file_post", "parameters_tool_result", "tool_image_protocol", "tool_save_failure", "tool_observation_failure", "legacy_response", "legacy_upgrade_failure", "partial_generator", "generator_error", "completed_generator", "submit_conflict_result", "submit_conflict_applied", "submit_conflict_pre", "overflow_result", "overflow_applied", "overflow_legacy_result", "overflow_legacy_applied", "overflow_request", "overflow_generator", "overflow_legacy_unaligned", "overflow_legacy_request", "overflow_restore_failure"])
+@pytest.mark.parametrize("scenario", ["response", "request", "no_thinking", "started", "submit_pre", "submit_post", "save_failure", "observation_failure", "missing_model", "changed_tool", "parameters", "repair", "parameters_checkpoint", "repair_checkpoint", "parameters_checkpoint_failure", "tool_progress_gap", "graph", "concurrent", "tool_result", "tool_checkpoint", "tool_applied", "batch_unknown", "submit_mixed_pre", "submit_mixed_post", "submit_custom_pre", "submit_custom_post", "submit_file_pre", "submit_file_post", "parameters_tool_result", "tool_image_protocol", "tool_save_failure", "tool_observation_failure", "unsupported_checkpoint", "partial_generator", "generator_error", "completed_generator", "submit_conflict_result", "submit_conflict_applied", "submit_conflict_pre", "overflow_result", "overflow_applied", "overflow_request", "overflow_generator", "overflow_restore_failure"])
 def test_saved_model_plan_survives_forced_process_termination(tmp_path, scenario, preview=False):
     """Resume the real execution chain without repeating the saved model plan.
 
@@ -243,9 +243,7 @@ def test_saved_model_plan_survives_forced_process_termination(tmp_path, scenario
             if scenario == "overflow_generator":
                 assert len(raw_results) == 2
                 assert "Complete verified evidence." in protocol_results[0]["content"]
-            if scenario == "overflow_legacy_unaligned":
-                assert [raw["content"][0]["type"] for raw in raw_results] == ["resource_link", "text"]
-            assert raw_results[-1 if scenario == "overflow_legacy_unaligned" else 0]["content"][0]["text"] == large_result
+            assert raw_results[0]["content"][0]["text"] == large_result
             assert evidence["after"]["tool_calls"][0]["raw_results"] == evidence["before"]["tool_calls"][0]["raw_results"]
         if scenario.startswith("submit_conflict"):
             before = next(call for call in evidence["before"]["tool_calls"] if call["call_id"] == "submit-conflict")
@@ -268,8 +266,13 @@ def test_saved_model_plan_survives_forced_process_termination(tmp_path, scenario
             assert len(requests) == (4 if scenario.endswith("pre") else 3)
             assert effects == [{"value": "original-plan"}]
             return
-        if scenario in {"legacy_response", "legacy_upgrade_failure"}:
-            assert evidence["before"]["tool_calls"] == []
+        if scenario == "unsupported_checkpoint":
+            assert evidence["error"]["status"] == 409
+            assert "Unsupported execution checkpoint format" in evidence["error"]["message"]
+            assert evidence["after"]["snapshot"] == evidence["before"]["snapshot"]
+            assert evidence["after"]["tool_calls"] == []
+            assert len(requests) == 1 and effects == []
+            return
         if scenario in {"partial_generator", "generator_error"}:
             assert evidence["error"]["status"] == 409
             assert evidence["after"]["status"] in {"interrupted", "blocked"}
@@ -289,17 +292,6 @@ def test_saved_model_plan_survives_forced_process_termination(tmp_path, scenario
             assert effects == [{"value": "original-plan"}]
             assert len(requests) == 1
             return
-        if scenario == "legacy_upgrade_failure":
-            failed = evidence["after"]
-            assert failed["status"] == "failed"
-            assert "Failed to save execution checkpoint" in failed["state"]["reason"]
-            assert len(requests) == 1
-            assert effects == []
-            repaired = subprocess.run([*command, "recover_storage", scenario], cwd=root, capture_output=True, text=True, encoding="utf-8", timeout=40, env={**os.environ, "PYTHONUTF8": "1"})
-            assert repaired.returncode == 0, repaired.stdout + repaired.stderr
-            evidence = json.loads((tmp_path / "recovered.json").read_text(encoding="utf-8"))
-            assert evidence["after"]["state"]["attempt_id"] == failed["state"]["attempt_id"]
-            assert evidence["after"]["snapshot"] == failed["snapshot"]
         if scenario == "batch_unknown":
             assert evidence["after"]["status"] == "blocked"
             assert "confirmation" in evidence["after"]["state"]["reason"]
@@ -347,9 +339,6 @@ def test_saved_model_plan_survives_forced_process_termination(tmp_path, scenario
             assert evidence["after"]["snapshot"] == blocked["snapshot"]
             assert evidence["after"]["state"]["attempt_id"] == blocked["state"]["attempt_id"]
         assert evidence["after"]["status"] == "completed"
-        if scenario in {"legacy_response", "legacy_upgrade_failure"}:
-            assert [call["call_id"] for call in evidence["after"]["tool_calls"]] == ["evidence-original", "submit-original"]
-            assert all(call["status"] == "applied" for call in evidence["after"]["tool_calls"])
         assert evidence["after"]["snapshot"] == evidence["before"]["snapshot"]
         assert evidence["after"]["state"]["attempt_id"] == evidence["before"]["state"]["attempt_id"]
         if scenario.startswith("submit_file"):

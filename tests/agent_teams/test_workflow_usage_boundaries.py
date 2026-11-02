@@ -33,8 +33,6 @@ import pytest
         "usage_shared_wait",
         "usage_native_gemini_empty",
         "usage_native_gemini_components",
-        "usage_legacy_response",
-        "usage_legacy_applied",
     ],
 )
 def test_real_usage_boundaries_retain_consumption_and_stop_uncommitted_work(
@@ -321,7 +319,7 @@ def test_real_usage_boundaries_retain_consumption_and_stop_uncommitted_work(
                     "start",
                     scenario,
                     json.dumps(
-                        None if scenario.startswith("usage_legacy_") else limits
+                        limits
                     ),
                 ],
                 cwd=root,
@@ -376,7 +374,7 @@ def test_real_usage_boundaries_retain_consumption_and_stop_uncommitted_work(
                     else [{"value": "once"}] * 2
                     if scenario in {"usage_parallel", "usage_compression"}
                     else [{"value": "once"}]
-                    if scenario in {"usage_completed_limit", "usage_legacy_applied"}
+                    if scenario == "usage_completed_limit"
                     else []
                 )
                 assert (
@@ -443,33 +441,6 @@ def test_real_usage_boundaries_retain_consumption_and_stop_uncommitted_work(
         }
         ledger = after["usage"]["ledger"]
         assert len({r["receipt_id"] for r in ledger}) == len(ledger)
-        if scenario.startswith("usage_legacy_"):
-            assert before["snapshot"].get("usage_protocol") is None
-            assert after["status"] == "completed"
-            assert len(requests) == 3 and effects == [{"value": "once"}]
-            assert after["usage"]["model_calls"] == len(requests) - 1
-            assert after["usage"]["tokens"]["reported"] == 24
-            assert after["usage"]["tokens"]["unknown_calls"] is None
-            history = after["usage"]["historical"]
-            assert history["unmetered"] is True
-            assert history["model_responses"] == 1
-            assert {
-                record["record_id"]
-                for record in before["process"]
-                if record["kind"] == "model_response"
-            } <= {record["record_id"] for record in history["records"]}
-            assert {record["record_id"] for record in before["process"]} <= {
-                record["record_id"] for record in after["process"]
-            }
-            assert all(
-                record["attempt_id"] == before["state"]["attempt_id"]
-                for record in history["records"]
-            )
-            assert len(history["records"]) == 1
-            overview = evidence["overview"]["usage"]
-            assert overview["historical"] == {**history, "records": []}
-            assert overview["tokens"] == after["usage"]["tokens"]
-            return
         if scenario.startswith("usage_native_"):
             assert len(requests) == len(ledger) == limits["max_steps"]
             assert all(

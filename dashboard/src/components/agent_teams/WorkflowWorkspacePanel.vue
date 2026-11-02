@@ -114,25 +114,13 @@
             {{ tm("autonomous.title") }} · {{ tm("autonomous.allowedRoles") }}:
             {{ asset.definition.allowed_roles.length }}
           </p>
-          <p v-else-if="asset.definition.tasks">
+          <p v-else>
             {{ tm("graph.count", { count: asset.definition.tasks.length }) }} ·
             {{ tm("graph.parallel") }}: {{ asset.definition.max_parallel }}
           </p>
-          <p v-else>
-            {{ tm("v2.role") }}:
-            {{
-              roles.find((role) => role.role_id === asset.definition.role_id)
-                ?.definition.name ?? asset.definition.role_id
-            }}
-            · v{{ asset.definition.role_version }}
-          </p>
-          <p class="workflow-text mt-2">{{ asset.definition.task }}</p>
         </v-card-text>
         <v-card-actions class="flex-wrap">
           <v-btn
-            v-if="
-              asset.definition.kind === 'autonomous' || asset.definition.tasks
-            "
             variant="text"
             data-testid="open-chat-access"
             @click="chatAccessAsset = asset"

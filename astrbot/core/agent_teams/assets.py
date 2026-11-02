@@ -949,7 +949,6 @@ class RoleAssetService:
         from astrbot.core.agent_teams.workflows import (
             AutonomousDefinition,
             TeamRole,
-            WorkflowDefinition,
         )
 
         definition = body.get("definition", {})
@@ -960,9 +959,7 @@ class RoleAssetService:
         elif kind == "autonomous":
             allowed = set(AutonomousDefinition.model_fields)
         elif kind == "workflow":
-            allowed = set(GraphDefinition.model_fields) | set(
-                WorkflowDefinition.model_fields
-            )
+            allowed = set(GraphDefinition.model_fields)
         else:
             raise RoleAssetError("Invalid draft kind")
         if set(definition) - allowed:

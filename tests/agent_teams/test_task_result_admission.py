@@ -215,7 +215,9 @@ async def test_default_text_task_requires_result_protocol_before_dispatch(
             else "definition.coordinator.role_id"
             if kind == "coordinator"
             else "definition.allowed_roles.0.role_id"
-            if kind in {"allowed", "nested_team"}
+            if kind == "allowed"
+            else "definition.tasks.0.team.allowed_roles.0.role_id"
+            if kind == "nested_team"
             else "definition.allowed_workflows.0.tasks.0.role_id"
         )
     finally:

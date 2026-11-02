@@ -103,7 +103,7 @@ describe("pinned child team selection", () => {
           wrapper
             .getComponent(TeamsFlowCanvas)
             .props("nodes")
-            .find((node: any) => node.id === "first").data.configLabel,
+            .find((node: any) => node.id === "first")?.data.configLabel,
         ).toBe("v3");
         expect(wrapper.emitted("update:definition")).toBeUndefined();
       } finally {
@@ -164,7 +164,7 @@ describe("pinned child team selection", () => {
           wrapper
             .getComponent(TeamsFlowCanvas)
             .props("nodes")
-            .find((node: any) => node.id === "first").data.configLabel,
+            .find((node: any) => node.id === "first")?.data.configLabel,
         ).toBe(`v${expected}`);
         const saved: any =
           wrapper.emitted("update:definition")?.at(-1)?.[0] ?? definition;
@@ -307,7 +307,7 @@ describe("pinned child team selection", () => {
           wrapper
             .getComponent(TeamsFlowCanvas)
             .props("nodes")
-            .find((node: any) => node.id === "first").data.configLabel,
+            .find((node: any) => node.id === "first")?.data.configLabel,
         ).toBe("v3");
       } finally {
         wrapper.unmount();

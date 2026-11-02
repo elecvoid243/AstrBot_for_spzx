@@ -711,6 +711,8 @@ describe("single-task workflow workspace", () => {
           await wrapper.get('[data-testid="human-preview"]').trigger("click");
           await flushPromises();
         } else {
+          await wrapper.get('[data-testid="human-preview"]').trigger("click");
+          await flushPromises();
           await wrapper
             .get('[data-testid="human-feedback"]')
             .setValue("Second report needs verified evidence.");
@@ -757,10 +759,13 @@ describe("single-task workflow workspace", () => {
         else if (action === "approve") {
           await wrapper.get('[data-testid="human-preview"]').trigger("click");
           await flushPromises();
-        } else
+        } else {
+          await wrapper.get('[data-testid="human-preview"]').trigger("click");
+          await flushPromises();
           await wrapper
             .get('[data-testid="human-feedback"]')
             .setValue("Second report needs verified evidence.");
+        }
         if (outcome === "failure") {
           failCurrent(new Error("Current response failed"));
           await flushPromises();

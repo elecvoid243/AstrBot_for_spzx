@@ -460,6 +460,10 @@ async def test_same_member_is_serial_while_another_member_finishes(graph_script)
         "pending",
         "completed",
     ]
+    assert current["tasks"][1]["state"]["wait_kind"] == "capacity"
+    overview = (await env.service.list_runs("alice"))["runs"][0]
+    assert overview["tasks"][1]["state"]["wait_kind"] == "capacity"
+    assert not current["tasks"][1]["todos"]
     script.holds["first"].set()
     finished = await wait_graph(env.service, run["run_id"])
     assert finished["status"] == "completed"
@@ -971,3 +975,82 @@ async def test_selected_skipped_result_blocks_graph(graph_script):
     with pytest.raises(RoleAssetError) as missing:
         await env.service.get_result("alice", run["run_id"])
     assert missing.value.status == 409
+
+
+@pytest.mark.asyncio
+async def test_control_condition_and_join_execute_without_agent_sessions(workflow_env):
+    env = workflow_env
+    calls = []
+    completed = asyncio.Event()
+
+    async def deliver(
+        session_id, text, context=None, execution_token=None, message_id=None
+    ):
+        calls.append(text)
+        return message_id
+
+    async def collect(session_id, message_id, member_id):
+        tools = AgentTeamToolRegistry.get_tools(f"webchat:FriendMessage:{session_id}")
+        await tools[0].call(None, text="done")
+        if len(calls) == 2:
+            completed.set()
+        return "Done", []
+
+    env.service.ports_factory = lambda _: TeamPorts(
+        deliver=deliver, collect=collect, is_busy=lambda _: False, emit=lambda _: None
+    )
+    agents = [
+        {
+            "id": name,
+            "name": name,
+            "member": "writer",
+            "role_id": env.role["role_id"],
+            "role_version": 1,
+            "task": name,
+        }
+        for name in ("yes", "no", "result")
+    ]
+    definition = {
+        "name": "Control",
+        "required_inputs": ["choice"],
+        "result_task_id": "result",
+        "tasks": [
+            {
+                "id": "condition",
+                "name": "Condition",
+                "control": {"kind": "condition", "value": "yes"},
+                "inputs": {"value": {"input": "choice"}},
+            },
+            *agents[:2],
+            {"id": "join", "name": "Join", "control": {"kind": "join"}},
+            agents[2],
+        ],
+        "edges": [
+            {
+                "source": "condition",
+                "target": branch,
+                "condition": {"field": "matched", "value": matched},
+            }
+            for branch, matched in (("yes", True), ("no", False))
+        ]
+        + [{"source": branch, "target": "join"} for branch in ("yes", "no")]
+        + [{"source": "join", "target": "result"}],
+    }
+    asset = await env.service.save_asset("alice", {"definition": definition})
+    run = await env.service.start_run(
+        "alice", asset["asset_id"], {"version": 1, "inputs": {"choice": "yes"}}
+    )
+    await asyncio.wait_for(completed.wait(), 5)
+    for _ in range(200):
+        current = await env.service.get_run("alice", run["run_id"])
+        if current["status"] != "running":
+            break
+        await asyncio.sleep(0.01)
+    assert current["status"] == "completed", current
+    assert calls == ["yes", "result"]
+    tasks = {task["node_id"]: task for task in current["tasks"]}
+    assert tasks["no"]["status"] == "skipped"
+    assert tasks["condition"]["result"] == {"matched": True}
+    assert tasks["join"]["status"] == "completed"
+    assert "member" not in tasks["condition"]["snapshot"]
+    assert "member" not in tasks["join"]["snapshot"]

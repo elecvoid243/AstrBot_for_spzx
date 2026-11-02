@@ -275,6 +275,7 @@ def test_human_http_uuid_answers_reconnect_and_owner_permissions(tmp_path):
             json={
                 "definition": {
                     "name": "Question",
+                    "result_task_id": "q",
                     "tasks": [
                         {
                             "id": "q",

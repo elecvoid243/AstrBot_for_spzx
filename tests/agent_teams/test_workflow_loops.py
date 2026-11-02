@@ -807,3 +807,52 @@ async def test_pause_or_cancel_preserves_round_boundary_and_history(
         assert finished["loops"][0]["status"] == "cancelled"
         assert len(finished["loops"][0]["iterations"]) == 1
         assert len(loop_script.observations) == 2
+
+
+@pytest.mark.asyncio
+async def test_control_nodes_in_loop_recreate_without_conversations_and_apply_feedback(
+    loop_script,
+):
+    env = loop_script.env
+    definition = revision_definition(env.role["role_id"])
+    definition["tasks"][1:1] = [
+        {
+            "id": "condition",
+            "name": "Condition",
+            "control": {"kind": "condition", "operator": "ne", "value": ""},
+            "inputs": {"value": {"task_id": "write", "field": "text"}},
+        },
+        {"id": "join", "name": "Join", "control": {"kind": "join"}},
+    ]
+    definition["edges"] = [
+        {"source": "write", "target": "condition"},
+        {
+            "source": "condition",
+            "target": "join",
+            "condition": {"field": "matched", "value": True},
+        },
+        {"source": "join", "target": "review"},
+        {"source": "review", "target": "publish"},
+    ]
+    loop = definition["loops"][0]
+    loop["body"] = ["write", "condition", "join", "review"]
+    loop["feedback"].append(
+        {"target": "condition", "input": "value", "source": "review", "field": "text"}
+    )
+    asset = await env.service.save_asset("alice", {"definition": definition})
+    run = await env.service.start_run(
+        "alice",
+        asset["asset_id"],
+        {"version": 1, "inputs": {"draft": "Original", "feedback": "Initial"}},
+    )
+    finished = await wait_graph(env.service, run["run_id"])
+    assert finished["status"] == "completed", finished
+    rounds = finished["loops"][0]["iterations"]
+    assert len(rounds) == 2
+    for iteration in rounds:
+        tasks = {task["node_id"]: task for task in iteration["tasks"]}
+        for node in ("condition", "join"):
+            assert tasks[node]["status"] == "completed"
+            assert "member" not in tasks[node]["snapshot"]
+            assert tasks[node]["result_ref"] is None
+        assert tasks["condition"]["result"] == {"matched": True}

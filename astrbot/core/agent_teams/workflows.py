@@ -1107,7 +1107,7 @@ class WorkflowService:
                     raise RoleAssetError(
                         "Workflow calls are created by the coordinator"
                     )
-                if task.human is not None:
+                if task.human is not None or task.control is not None:
                     continue
                 if task.team is not None:
                     try:
@@ -3955,6 +3955,8 @@ class WorkflowService:
                                     "reason",
                                     "issues",
                                     "capacity_released",
+                                    "waiting_on",
+                                    "wait_kind",
                                     "waiting_tasks",
                                     "scope_id",
                                     "child_scope_run_id",
@@ -5547,7 +5549,11 @@ class WorkflowService:
         members = {}
         role_counts: dict[tuple, int] = {}
         for index, task in enumerate(definition.tasks):
-            if task.human is not None or task.team is not None:
+            if (
+                task.human is not None
+                or task.team is not None
+                or task.control is not None
+            ):
                 continue
             if task.member not in members:
                 try:
@@ -5648,6 +5654,7 @@ class WorkflowService:
                     task.id not in loop.body
                     or task.human is not None
                     or task.team is not None
+                    or task.control is not None
                 ):
                     continue
                 limit = members[task.member]["effective"].get("max_iterations")
@@ -5887,7 +5894,7 @@ class WorkflowService:
         for task in definition.tasks:
             task_member = None
             if not snapshot.get("team_definition") and not (
-                task.human or task.team or task.workflow
+                task.human or task.team or task.workflow or task.control
             ):
                 task_member = copy.deepcopy(members[task.member])
                 session_id = uuid.uuid4().hex
@@ -5938,6 +5945,8 @@ class WorkflowService:
                         if task.team
                         else "human_task_v2"
                         if task.human
+                        else "control_task_v2"
+                        if task.control
                         else "single_task_v2",
                         "parent_run_id": run_id,
                         "usage_protocol": 1,
@@ -5974,6 +5983,8 @@ class WorkflowService:
                             if task.team is not None
                             else {"workflow": task.workflow.model_dump()}
                             if task.workflow is not None
+                            else {"control": task.control.model_dump()}
+                            if task.control is not None
                             else task_member or members[task.member]
                         ),
                         "inputs": snapshot["inputs"],
@@ -6130,6 +6141,7 @@ class WorkflowService:
                 feedback_inputs.setdefault(feedback["target"], {})[
                     feedback["input"]
                 ] = {
+                    "raw_value": value,
                     "value": value
                     if isinstance(value, str)
                     else json.dumps(value, ensure_ascii=False),
@@ -7276,8 +7288,8 @@ class WorkflowService:
                             if edge["target"] == task["id"]
                         ]
                         matched = []
-                        unresolved = False
-                        failed = False
+                        waiting_on = []
+                        failed_on = []
                         for edge in incoming:
                             source = rows[edge["source"]]
                             assert source is not None
@@ -7287,12 +7299,12 @@ class WorkflowService:
                             ):
                                 loop_status = root.state["loops"][source_loop]["status"]
                                 if loop_status == "running":
-                                    unresolved = True
+                                    waiting_on.append(edge["source"])
                                     continue
                                 if loop_status == "skipped":
                                     continue
                                 if loop_status != "passed":
-                                    failed = True
+                                    failed_on.append(edge["source"])
                                     continue
                             if source.status in {
                                 "pending",
@@ -7300,7 +7312,7 @@ class WorkflowService:
                                 "waiting_human",
                                 "waiting_child",
                             }:
-                                unresolved = True
+                                waiting_on.append(edge["source"])
                             elif source.status == "completed":
                                 rule = edge.get("condition")
                                 match = True
@@ -7316,22 +7328,116 @@ class WorkflowService:
                                 if match:
                                     matched.append(source)
                             elif source.status != "skipped":
-                                failed = True
-                        if failed:
+                                failed_on.append(edge["source"])
+                        if failed_on:
                             row.status = "dependency_failed"
                             row.state = {
                                 **row.state,
                                 "reason": "An upstream task has no validated result.",
+                                "waiting_on": failed_on,
+                                "wait_kind": "dependency_failed",
                             }
-                        elif unresolved:
+                        elif waiting_on:
+                            changed = (
+                                row.state.get("wait_kind") != "predecessors"
+                                or row.state.get("waiting_on") != waiting_on
+                            )
+                            row.state = {
+                                **row.state,
+                                "waiting_on": waiting_on,
+                                "wait_kind": "predecessors",
+                                "reason": "Waiting for upstream tasks: "
+                                + ", ".join(waiting_on),
+                            }
+                            session.add(row)
+                            if changed:
+                                session.add(
+                                    AgentWorkflowEvent(
+                                        run_id=row.run_id,
+                                        kind="task.waiting",
+                                        data={
+                                            "node_id": task["id"],
+                                            "attempt_id": row.state["attempt_id"],
+                                            "wait_kind": "predecessors",
+                                            "waiting_on": waiting_on,
+                                        },
+                                    )
+                                )
                             continue
-                        elif incoming and not matched:
+                        elif not matched and (
+                            incoming
+                            or (task.get("control") or {}).get("kind") == "join"
+                        ):
                             row.status = "skipped"
                             row.state = {
                                 **row.state,
                                 "reason": "No incoming path matched its field conditions.",
+                                "waiting_on": [],
+                                "wait_kind": "skipped",
                             }
                         else:
+                            previous_wait_kind = row.state.get("wait_kind")
+                            row.state = {
+                                key: value
+                                for key, value in row.state.items()
+                                if key not in {"waiting_on", "wait_kind", "reason"}
+                            }
+                            if task.get("control"):
+                                control = task["control"]
+                                if control["kind"] == "condition":
+                                    ref = task["inputs"]["value"]
+                                    iteration_input = row.snapshot.get(
+                                        "iteration_inputs", {}
+                                    ).get("value")
+                                    if iteration_input is not None:
+                                        value = iteration_input["raw_value"]
+                                    elif ref.get("input") is not None:
+                                        value = root.snapshot["inputs"][ref["input"]]
+                                    else:
+                                        source = rows[ref["task_id"]]
+                                        assert source is not None
+                                        if source.status != "completed":
+                                            row.status = "skipped"
+                                            row.state = {
+                                                **row.state,
+                                                "reason": "The condition input was skipped.",
+                                            }
+                                            session.add(row)
+                                            session.add(
+                                                AgentWorkflowEvent(
+                                                    run_id=row.run_id,
+                                                    kind="task.skipped",
+                                                    data={
+                                                        "node_id": task["id"],
+                                                        "attempt_id": row.state[
+                                                            "attempt_id"
+                                                        ],
+                                                        "reason": row.state["reason"],
+                                                    },
+                                                )
+                                            )
+                                            progress = True
+                                            continue
+                                        value = source.result
+                                        for name in ref["field"].split("."):
+                                            value = value[name]
+                                    row.result = {
+                                        "matched": matches_condition(value, control)
+                                    }
+                                row.status = "completed"
+                                session.add(row)
+                                session.add(
+                                    AgentWorkflowEvent(
+                                        run_id=row.run_id,
+                                        kind="task.completed",
+                                        data={
+                                            "node_id": task["id"],
+                                            "attempt_id": row.state["attempt_id"],
+                                        },
+                                    )
+                                )
+                                progress = True
+                                continue
                             if task.get("human"):
                                 human = task["human"]
                                 ref = None
@@ -7394,6 +7500,26 @@ class WorkflowService:
                                     and role_active.get(role_id, 0) >= role_limit
                                 )
                             ):
+                                row.state = {
+                                    **row.state,
+                                    "wait_kind": "capacity",
+                                    "waiting_on": [],
+                                    "reason": "Waiting for execution capacity.",
+                                }
+                                session.add(row)
+                                if previous_wait_kind != "capacity":
+                                    session.add(
+                                        AgentWorkflowEvent(
+                                            run_id=row.run_id,
+                                            kind="task.waiting",
+                                            data={
+                                                "node_id": task["id"],
+                                                "attempt_id": row.state["attempt_id"],
+                                                "wait_kind": "capacity",
+                                                "waiting_on": [],
+                                            },
+                                        )
+                                    )
                                 continue
                             retrying = row.state.get("retry_pending")
                             inputs = dict(
@@ -7597,6 +7723,7 @@ class WorkflowService:
                                 data={
                                     "node_id": task["id"],
                                     "attempt_id": row.state["attempt_id"],
+                                    "reason": row.state.get("reason"),
                                 },
                             )
                         )
@@ -7991,7 +8118,7 @@ class WorkflowService:
             RoleAssetError: Run is inaccessible or has not submitted a result.
         """
         run = await self.get_run(username, run_id)
-        if run["result"] is None:
+        if run["snapshot"].get("engine") == "control_task_v2" or run["result"] is None:
             raise RoleAssetError("Run has no completed result", status=409)
         return run["result"]
 

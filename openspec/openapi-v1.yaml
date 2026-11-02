@@ -10820,6 +10820,41 @@ components:
       - target
       title: GraphEdge
       type: object
+    ConditionTask:
+      additionalProperties: false
+      description: A scalar comparison evaluated by the graph scheduler.
+      properties:
+        kind:
+          const: condition
+          title: Kind
+          type: string
+        operator:
+          default: eq
+          enum: [eq, ne, gt, ge, lt, le]
+          title: Operator
+          type: string
+        value:
+          anyOf:
+          - type: string
+          - type: boolean
+          - type: integer
+          - type: number
+          - type: 'null'
+          title: Value
+      required: [kind, value]
+      title: ConditionTask
+      type: object
+    JoinTask:
+      additionalProperties: false
+      description: An ALL join evaluated by the graph scheduler.
+      properties:
+        kind:
+          const: join
+          title: Kind
+          type: string
+      required: [kind]
+      title: JoinTask
+      type: object
     GraphTask:
       additionalProperties: false
       description: A task bound to a named member with inline or pinned configuration.
@@ -10870,6 +10905,13 @@ components:
           maxLength: 100000
           title: Task
           type: string
+        control:
+          anyOf:
+          - $ref: '#/components/schemas/ConditionTask'
+          - $ref: '#/components/schemas/JoinTask'
+          - type: 'null'
+          default: null
+          title: Control
         human:
           anyOf:
           - $ref: '#/components/schemas/HumanTask'

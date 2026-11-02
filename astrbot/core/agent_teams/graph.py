@@ -61,6 +61,22 @@ class WorkflowCall(TeamCall):
     result_task_id: str = Field(min_length=1, max_length=128)
 
 
+class ConditionTask(BaseModel):
+    """A scalar comparison evaluated by the graph scheduler."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    kind: Literal["condition"]
+    operator: Literal["eq", "ne", "gt", "ge", "lt", "le"] = "eq"
+    value: str | bool | int | float | None
+
+
+class JoinTask(BaseModel):
+    """An ALL join evaluated by the graph scheduler."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    kind: Literal["join"]
+
+
 class GraphTask(BaseModel):
     """A task bound to a named member with inline or pinned configuration."""
 
@@ -74,6 +90,7 @@ class GraphTask(BaseModel):
     installation: RoleInstallation | None = None
     task: str = Field(default="", max_length=100_000)
     human: HumanTask | None = None
+    control: ConditionTask | JoinTask | None = None
     team: TeamCall | None = None
     workflow: WorkflowCall | None = None
     inputs: dict[str, TaskInput] = Field(default_factory=dict, max_length=30)
@@ -103,7 +120,26 @@ class GraphTask(BaseModel):
         Raises:
             ValueError: The selected node kind has missing or conflicting fields.
         """
-        if self.team is not None or self.workflow is not None:
+        if self.control is not None:
+            if (
+                self.human is not None
+                or self.team is not None
+                or self.workflow is not None
+                or self.member
+                or self.role_id
+                or self.role_version
+                or self.role is not None
+                or self.installation is not None
+                or self.task
+                or self.output_contract is not None
+                or self.overrides.model_dump(exclude_unset=True)
+                or set(self.inputs)
+                != ({"value"} if self.control.kind == "condition" else set())
+            ):
+                raise ValueError(
+                    "Control nodes cannot configure execution and conditions require exactly one value input"
+                )
+        elif self.team is not None or self.workflow is not None:
             if (
                 self.team is not None
                 and self.workflow is not None
@@ -403,10 +439,34 @@ def validate_graph(definition: GraphDefinition) -> None:
         if not exit_rule:
             seen.add((edge.source, edge.target))
             predecessors[edge.target].add(edge.source)
+        source_control = tasks[edge.source].control
+        if source_control and (
+            exit_rule or (source_control.kind == "condition" and not edge.condition)
+        ):
+            fields.append(
+                {
+                    "path": path + ".condition",
+                    "code": "CONDITION",
+                    "message": "Condition exits must explicitly select matched true or false",
+                }
+            )
         if edge.condition:
             rule = edge.condition
             try:
-                schema = field_schema(tasks[edge.source].output_contract, rule.field)
+                source_task = tasks[edge.source]
+                if source_task.control:
+                    if (
+                        source_task.control.kind != "condition"
+                        or rule.field != "matched"
+                        or rule.operator != "eq"
+                        or type(rule.value) is not bool
+                    ):
+                        raise ValueError(
+                            "Condition exits must compare matched to true or false"
+                        )
+                    schema = {"type": ["boolean"]}
+                else:
+                    schema = field_schema(source_task.output_contract, rule.field)
                 kinds = set(schema["type"])
                 value = rule.value
                 valid = (
@@ -479,6 +539,10 @@ def validate_graph(definition: GraphDefinition) -> None:
                         "Feedback must explicitly connect tasks within the loop body"
                     )
                 target = tasks[feedback.target]
+                if tasks[feedback.source].control:
+                    raise ValueError(
+                        "Feedback requires an upstream artifact, not a control node"
+                    )
                 if target.human or feedback.input not in target.inputs:
                     raise ValueError(
                         "Feedback must override a declared agent task input"
@@ -488,7 +552,26 @@ def validate_graph(definition: GraphDefinition) -> None:
                         "Each next-round input has exactly one feedback source"
                     )
                 targets.add((feedback.target, feedback.input))
-                field_schema(tasks[feedback.source].output_contract, feedback.field)
+                feedback_schema = field_schema(
+                    tasks[feedback.source].output_contract, feedback.field
+                )
+                if target.control and target.control.kind == "condition":
+                    kinds = set(feedback_schema["type"])
+                    value = target.control.value
+                    valid = (
+                        ("boolean" in kinds and type(value) is bool)
+                        or ("string" in kinds and isinstance(value, str))
+                        or ("null" in kinds and value is None)
+                        or ("integer" in kinds and type(value) is int)
+                        or ("number" in kinds and type(value) in (int, float))
+                    )
+                    if not valid or (
+                        target.control.operator not in {"eq", "ne"}
+                        and not kinds <= {"integer", "number"}
+                    ):
+                        raise ValueError(
+                            "Feedback comparison must match the declared field type"
+                        )
         except ValueError as exc:
             fields.append({"path": path, "code": "LOOP", "message": str(exc)})
         grouped |= body
@@ -500,6 +583,7 @@ def validate_graph(definition: GraphDefinition) -> None:
             if task.human.kind == "approval" and (
                 task.human.artifact_task_id not in ancestors.get(task.id, set())
                 or tasks[task.human.artifact_task_id].human is not None
+                or tasks[task.human.artifact_task_id].control is not None
             ):
                 fields.append(
                     {
@@ -520,7 +604,12 @@ def validate_graph(definition: GraphDefinition) -> None:
                 if value is not None or key in ("persona_id", "provider_id")
             },
         )
-        if not task.team and task.member in members and members[task.member] != config:
+        if (
+            not task.team
+            and not task.control
+            and task.member in members
+            and members[task.member] != config
+        ):
             fields.append(
                 {
                     "path": path + ".member",
@@ -528,7 +617,7 @@ def validate_graph(definition: GraphDefinition) -> None:
                     "message": "A member must use the same frozen role and configuration across tasks",
                 }
             )
-        if not task.team:
+        if not task.team and not task.control:
             members[task.member] = config
         for key, ref in task.inputs.items():
             try:
@@ -544,12 +633,49 @@ def validate_graph(definition: GraphDefinition) -> None:
                         "Result input must refer to an upstream dependency"
                     )
                 else:
+                    if tasks[ref.task_id].control:
+                        raise ValueError("Control nodes cannot be referenced as data")
                     field_schema(tasks[ref.task_id].output_contract, ref.field)
             except ValueError as exc:
                 fields.append(
                     {
                         "path": path + f".inputs.{key}",
                         "code": "REFERENCE",
+                        "message": str(exc),
+                    }
+                )
+        if task.control and task.control.kind == "condition" and "value" in task.inputs:
+            ref = task.inputs["value"]
+            try:
+                kinds = (
+                    {"string"}
+                    if ref.input is not None
+                    else set(
+                        field_schema(tasks[ref.task_id].output_contract, ref.field)[
+                            "type"
+                        ]
+                    )
+                )
+                value = task.control.value
+                valid = (
+                    ("boolean" in kinds and type(value) is bool)
+                    or ("string" in kinds and isinstance(value, str))
+                    or ("null" in kinds and value is None)
+                    or ("integer" in kinds and type(value) is int)
+                    or ("number" in kinds and type(value) in (int, float))
+                )
+                if not valid or (
+                    task.control.operator not in {"eq", "ne"}
+                    and not kinds <= {"integer", "number"}
+                ):
+                    raise ValueError(
+                        "Comparison and value must match the declared field type"
+                    )
+            except (ValueError, KeyError) as exc:
+                fields.append(
+                    {
+                        "path": path + ".control",
+                        "code": "CONDITION",
                         "message": str(exc),
                     }
                 )
@@ -563,5 +689,13 @@ def validate_graph(definition: GraphDefinition) -> None:
             fields.append(
                 {"path": path + ".task", "code": "INVALID", "message": str(exc)}
             )
+    if definition.result_task_id in tasks and tasks[definition.result_task_id].control:
+        fields.append(
+            {
+                "path": "definition.result_task_id",
+                "code": "REFERENCE",
+                "message": "Control nodes cannot be workflow results",
+            }
+        )
     if fields:
         raise RoleAssetError("Invalid workflow graph", fields)

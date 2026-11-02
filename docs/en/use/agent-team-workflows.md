@@ -12,6 +12,16 @@ In the Agent inspector, choose **Direct configuration** or **Role template**. A 
 
 ![Role overrides and effective configuration preview](/images/agent-teams-role-overrides-en.jpg)
 
+## Conditions and ALL joins
+
+Add **Condition** or **ALL join** from the workflow canvas toolbox. Select a condition and choose its `value` from a declared workflow input or a required scalar field of an upstream task. Set a comparison and a value of the same type, then connect the named **True** and **False** handles to the paths to run. Select an existing dependency to change its condition exit. The condition is a control step: it does not call a model or produce an artifact, and cannot be selected as the workflow result or referenced as ordinary data.
+
+Connect parallel paths to an **ALL join**. It waits for all entered paths to succeed, ignores skipped paths, and is skipped if no path was entered. A failed path blocks its dependants while unrelated paths continue. The run view distinguishes waiting for predecessors (with their node names), waiting for capacity, skipped paths and dependency failures; these waits do not create human requests. Select an Agent after the join and explicitly choose any upstream fields it needs.
+
+![Condition exits and an ALL join in the workflow canvas](/images/agent-teams-branches-en.jpg)
+
+The screenshot shows the actual canvas with isolated example data, not an actual model run.
+
 ## Navigation and previous entry points
 
 | Previous entry | Current entry |

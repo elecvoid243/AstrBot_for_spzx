@@ -713,4 +713,126 @@ describe("canvas asset editing", () => {
     expect(saved.tasks[0].role_version).toBe(2);
     wrapper.unmount();
   });
+  it("authors condition exits and an ALL join with undo, redo and reopen", async () => {
+    const stubs = {
+      TeamsFlowCanvas: {
+        name: "TeamsFlowCanvas",
+        props: ["nodes", "edges"],
+        emits: ["selectNode", "selectEdge", "connect"],
+        template: "<div />",
+      },
+      WorkflowLoopPanel: true,
+      "v-icon": true,
+      "v-chip": true,
+      "v-btn": { template: "<button><slot /></button>" },
+      "v-select": true,
+      "v-text-field": true,
+      "v-textarea": true,
+      "v-spacer": true,
+      "v-alert": true,
+      "v-switch": true,
+      "v-expansion-panels": true,
+    };
+    const wrapper = mount(WorkflowGraphCanvas, {
+      props: {
+        definition: {
+          name: "Branch",
+          required_inputs: ["choice"],
+          tasks: [],
+          edges: [],
+        },
+      },
+      global: { stubs },
+    });
+    try {
+      await wrapper.get('[data-testid="add-condition"]').trigger("click");
+      let saved: any = wrapper.emitted("update:definition")!.at(-1)![0];
+      const condition = saved.tasks[0].id;
+      expect(saved.tasks[0].control).toEqual({
+        kind: "condition",
+        operator: "eq",
+        value: "",
+      });
+      expect(saved.tasks[0].inputs.value.input).toBe("choice");
+      (wrapper.getComponent('[data-testid="control-value"]') as any).vm.$emit(
+        "update:modelValue",
+        "yes",
+      );
+      await wrapper.get('[data-testid="add-join"]').trigger("click");
+      saved = wrapper.emitted("update:definition")!.at(-1)![0];
+      const join = saved.tasks[1].id;
+      expect(saved.tasks[1].control).toEqual({ kind: "join" });
+      const canvas = wrapper.getComponent({ name: "TeamsFlowCanvas" });
+      canvas.vm.$emit("connect", {
+        from: condition,
+        to: join,
+        sourceHandle: "matched-false",
+      });
+      await flushPromises();
+      saved = wrapper.emitted("update:definition")!.at(-1)![0];
+      expect(saved.tasks[0].control.value).toBe("yes");
+      expect(saved.edges[0].condition).toEqual({
+        field: "matched",
+        operator: "eq",
+        value: false,
+      });
+      expect(
+        (canvas.props("nodes") as any[]).find((node) => node.id === condition)
+          .data.controlKind,
+      ).toBe("condition");
+      expect((canvas.props("edges") as any[])[0].sourceHandle).toBe(
+        "matched-false",
+      );
+      canvas.vm.$emit("selectEdge", `${condition}:${join}`);
+      await flushPromises();
+      (wrapper.getComponent('[data-testid="edge-exit"]') as any).vm.$emit(
+        "update:modelValue",
+        true,
+      );
+      await flushPromises();
+      expect(
+        (wrapper.emitted("update:definition")!.at(-1)![0] as any).edges[0]
+          .condition.value,
+      ).toBe(true);
+      await wrapper
+        .findAll("button")
+        .find((button) => button.text() === "graph.undo")!
+        .trigger("click");
+      expect(
+        (wrapper.emitted("update:definition")!.at(-1)![0] as any).edges[0]
+          .condition.value,
+      ).toBe(false);
+      await wrapper
+        .findAll("button")
+        .find((button) => button.text() === "graph.redo")!
+        .trigger("click");
+      saved = wrapper.emitted("update:definition")!.at(-1)![0];
+      expect(saved.edges[0].condition.value).toBe(true);
+      const reopened = mount(WorkflowGraphCanvas, {
+        props: { definition: saved },
+        global: { stubs },
+      });
+      try {
+        const reopenedCanvas = reopened.getComponent({
+          name: "TeamsFlowCanvas",
+        });
+        expect((reopenedCanvas.props("edges") as any[])[0].sourceHandle).toBe(
+          "matched-true",
+        );
+        reopenedCanvas.vm.$emit("selectNode", join);
+        await flushPromises();
+        await reopened
+          .findAll("button")
+          .find((button) => button.text() === "graph.removeTask")!
+          .trigger("click");
+        const deleted: any = reopened.emitted("update:definition")!.at(-1)![0];
+        expect(deleted.tasks).toHaveLength(1);
+        expect(deleted.edges).toHaveLength(0);
+      } finally {
+        reopened.unmount();
+      }
+    } finally {
+      wrapper.unmount();
+    }
+  });
 });

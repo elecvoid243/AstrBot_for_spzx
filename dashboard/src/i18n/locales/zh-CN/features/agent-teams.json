@@ -393,6 +393,18 @@
     "toolStates": { "running": "执行中", "completed": "已完成", "error": "出错", "unknown": "结果未知", "incomplete": "未完成" }
   },
   "graph": {
+    "operators": { "eq": "等于", "ne": "不等于", "gt": "大于", "ge": "大于或等于", "lt": "小于", "le": "小于或等于" },
+    "conditionNode": "条件",
+    "joinNode": "全部汇合",
+    "joinHint": "等待所有已进入的分支成功；跳过的分支不计入。",
+    "trueExit": "成立",
+    "falseExit": "不成立",
+    "exit": "条件出口",
+    "waitingPredecessors": "等待前驱",
+    "waitingCapacity": "等待执行配额",
+    "notStarted": "未开始",
+    "failedDependencies": "失败的前驱",
+    "waitingOn": "等待节点",
     "canvas": "工作流画布",
     "create": "新建工作流",
     "design": "资产设计",

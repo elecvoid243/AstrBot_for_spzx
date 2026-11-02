@@ -99,7 +99,32 @@
                 {{ task.snapshot.member?.name }} · {{ tm("v2.attempt") }}
                 {{ task.state.attempt_id }}
               </p>
-              <p v-if="task.state.reason" class="run-text text-body-2 mt-2">
+              <p
+                v-if="task.state.waiting_on?.length"
+                class="run-text text-body-2 mt-2"
+                data-testid="waiting-on"
+              >
+                {{
+                  tm(
+                    task.status === "dependency_failed"
+                      ? "graph.failedDependencies"
+                      : "graph.waitingOn",
+                  )
+                }}:
+                {{
+                  task.state.waiting_on
+                    .map(
+                      (id: string) =>
+                        tasks.find((item) => item.node_id === id)?.snapshot
+                          .definition.name ?? id,
+                    )
+                    .join(", ")
+                }}
+              </p>
+              <p
+                v-else-if="task.state.reason"
+                class="run-text text-body-2 mt-2"
+              >
                 {{ task.state.reason }}
               </p>
               <p v-else class="run-text text-body-2 text-medium-emphasis mt-2">
@@ -108,7 +133,13 @@
             </div>
             <span class="text-caption run-status">{{
               tm(
-                task.status === "running" && task.state.capacity_released
+                task.status === "pending"
+                  ? task.state.wait_kind === "predecessors"
+                    ? "graph.waitingPredecessors"
+                    : task.state.wait_kind === "capacity"
+                    ? "graph.waitingCapacity"
+                    : "graph.notStarted"
+                  : task.status === "running" && task.state.capacity_released
                   ? "autonomous.waiting"
                   : `v2.states.${task.status}`,
               )

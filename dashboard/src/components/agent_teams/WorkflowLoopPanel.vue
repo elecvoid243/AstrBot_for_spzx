@@ -53,7 +53,9 @@
           <v-select
             density="compact"
             :model-value="loop.exit_task_id"
-            :items="taskItems.filter((task) => loop.body.includes(task.value))"
+            :items="
+              artifactTaskItems.filter((task) => loop.body.includes(task.value))
+            "
             :label="tm('loops.exitTask')"
             @update:model-value="change(loop.id, { exit_task_id: $event })"
           />
@@ -135,7 +137,9 @@
           <v-select
             density="compact"
             :model-value="feedback.source"
-            :items="taskItems.filter((task) => loop.body.includes(task.value))"
+            :items="
+              artifactTaskItems.filter((task) => loop.body.includes(task.value))
+            "
             :label="tm('loops.source')"
             @update:model-value="
               setFeedback(loop.id, index, { source: $event })
@@ -218,6 +222,12 @@ const emit = defineEmits<{
 const { tm } = useModuleI18n("features/agent-teams");
 const taskItems = computed(() =>
   props.definition.tasks.map((task) => ({ title: task.name, value: task.id })),
+);
+
+const artifactTaskItems = computed(() =>
+  props.definition.tasks
+    .filter((task) => !task.control)
+    .map((task) => ({ title: task.name, value: task.id })),
 );
 
 function addLoop() {

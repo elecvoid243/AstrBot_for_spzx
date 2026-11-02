@@ -165,6 +165,22 @@
           >{{ tm("human.approvalNode") }}</v-btn
         >
         <v-btn
+          variant="tonal"
+          size="small"
+          class="mb-3"
+          data-testid="add-condition"
+          @click="addTask('control:condition')"
+          >{{ tm("graph.conditionNode") }}</v-btn
+        >
+        <v-btn
+          variant="tonal"
+          size="small"
+          class="mb-3"
+          data-testid="add-join"
+          @click="addTask('control:join')"
+          >{{ tm("graph.joinNode") }}</v-btn
+        >
+        <v-btn
           v-for="team in teams"
           :key="team.asset_id"
           variant="tonal"
@@ -235,6 +251,7 @@
           />
           <v-select
             v-if="
+              !selectedTask.control &&
               !selectedTask.human &&
               !selectedTask.team &&
               !selectedTask.workflow
@@ -249,7 +266,10 @@
           />
           <v-select
             v-if="
-              !selectedTask.human && !selectedTask.team && !selectedTask.role
+              !selectedTask.control &&
+              !selectedTask.human &&
+              !selectedTask.team &&
+              !selectedTask.role
             "
             v-model="selectedTask.role_id"
             :items="roles"
@@ -261,7 +281,10 @@
           />
           <v-select
             v-if="
-              !selectedTask.human && !selectedTask.team && !selectedTask.role
+              !selectedTask.control &&
+              !selectedTask.human &&
+              !selectedTask.team &&
+              !selectedTask.role
             "
             v-model="selectedTask.role_version"
             :items="selectedRole?.versions ?? [selectedTask.role_version]"
@@ -290,7 +313,9 @@
             >
           </v-alert>
           <v-text-field
-            v-if="!selectedTask.human && !selectedTask.team"
+            v-if="
+              !selectedTask.control && !selectedTask.human && !selectedTask.team
+            "
             v-model="selectedTask.member"
             :label="tm('graph.memberKey')"
             :hint="tm('graph.memberHint')"
@@ -299,7 +324,9 @@
             @update:model-value="checkpoint"
           />
           <v-textarea
-            v-if="!selectedTask.human && !selectedTask.team"
+            v-if="
+              !selectedTask.control && !selectedTask.human && !selectedTask.team
+            "
             v-model="selectedTask.task"
             :label="tm('v2.task')"
             :hint="tm('v2.taskHint')"
@@ -549,7 +576,7 @@
                 :items="
                   draft.tasks
                     .filter(
-                      (task) => task.id !== selectedTask?.id && !task.human,
+                      (task) => task.id !== selectedTask?.id && !task.human && !task.control,
                     )
                     .map((task) => ({ title: task.name, value: task.id }))
                 "
@@ -587,7 +614,7 @@
               />
             </template>
           </template>
-          <template v-else>
+          <template v-else-if="selectedTask.control?.kind !== 'join'">
             <h3 class="text-subtitle-2 mt-4 mb-2">{{ tm("graph.inputs") }}</h3>
             <div
               v-for="(ref, alias) in selectedTask.inputs"
@@ -595,6 +622,7 @@
               class="graph-input"
             >
               <v-text-field
+                v-if="!selectedTask.control"
                 :model-value="
                   aliasTexts[`${selectedTask.id}:${alias}`] ?? alias
                 "
@@ -652,9 +680,10 @@
                 :hint="tm('graph.fieldHint')"
                 persistent-hint
                 density="compact"
-                @update:model-value="checkpoint"
+                @update:model-value="resetControlValue"
               />
               <v-btn
+                v-if="!selectedTask.control"
                 variant="text"
                 size="small"
                 color="error"
@@ -665,74 +694,123 @@
                 >{{ tm("graph.removeInput") }}</v-btn
               >
             </div>
-            <v-btn variant="tonal" size="small" @click="addInput">{{
-              tm("graph.addInput")
-            }}</v-btn>
-            <p class="text-caption my-2">{{ tm("graph.referenceHint") }}</p>
-            <h3 class="text-subtitle-2 mt-4 mb-2">{{ tm("graph.outputs") }}</h3>
-            <v-switch
-              :model-value="!!selectedTask.output_contract"
-              :label="tm('graph.structured')"
-              data-testid="structured-output"
-              :disabled="!!selectedTask.team"
-              @update:model-value="setStructured"
-            />
-            <p
-              v-if="
-                selectedTask.output_contract &&
-                !selectedTask.team &&
-                !editableContract
-              "
-              class="text-caption"
+            <v-btn
+              v-if="!selectedTask.control"
+              variant="tonal"
+              size="small"
+              @click="addInput"
+              >{{ tm("graph.addInput") }}</v-btn
             >
-              {{ tm("graph.complexContract") }}
-            </p>
-            <template
-              v-if="
-                selectedTask.output_contract &&
-                !selectedTask.team &&
-                editableContract
-              "
-            >
-              <p class="text-caption">{{ tm("graph.structuredHint") }}</p>
-              <div
-                v-for="(schema, name) in selectedTask.output_contract
-                  .properties ?? {}"
-                :key="name"
-                class="graph-input"
+            <template v-if="selectedTask.control?.kind === 'condition'">
+              <v-select
+                v-model="selectedTask.control.operator"
+                :items="operatorsForControl"
+                :label="tm('graph.operator')"
+                data-testid="control-operator"
+                @update:model-value="checkpoint"
+              />
+              <v-select
+                v-if="controlValueType === 'null'"
+                :model-value="null"
+                :items="[{ title: 'null', value: null }]"
+                :label="tm('graph.value')"
+                disabled
+              />
+              <v-select
+                v-else-if="controlValueType === 'boolean'"
+                :model-value="selectedTask.control.value"
+                :items="[
+                  { title: tm('graph.trueExit'), value: true },
+                  { title: tm('graph.falseExit'), value: false },
+                ]"
+                :label="tm('graph.value')"
+                data-testid="control-value-boolean"
+                @update:model-value="setControlValue"
+              />
+              <v-text-field
+                v-else
+                :model-value="selectedTask.control.value"
+                :type="
+                  controlValueType === 'number' ||
+                  controlValueType === 'integer'
+                    ? 'number'
+                    : 'text'
+                "
+                :label="tm('graph.value')"
+                data-testid="control-value"
+                @update:model-value="setControlValue"
+              />
+            </template>
+            <template v-else>
+              <p class="text-caption my-2">{{ tm("graph.referenceHint") }}</p>
+              <h3 class="text-subtitle-2 mt-4 mb-2">
+                {{ tm("graph.outputs") }}
+              </h3>
+              <v-switch
+                :model-value="!!selectedTask.output_contract"
+                :label="tm('graph.structured')"
+                data-testid="structured-output"
+                :disabled="!!selectedTask.team"
+                @update:model-value="setStructured"
+              />
+              <p
+                v-if="
+                  selectedTask.output_contract &&
+                  !selectedTask.team &&
+                  !editableContract
+                "
+                class="text-caption"
               >
-                <v-text-field
-                  :model-value="name"
-                  :label="tm('graph.field')"
-                  density="compact"
-                  @change="
-                    renameOutput(
-                      String(name),
-                      ($event.target as HTMLInputElement).value,
-                    )
-                  "
-                />
-                <v-select
-                  :model-value="(schema as any).type"
-                  :items="['string', 'integer', 'number', 'boolean']"
-                  :label="tm('graph.fieldType')"
-                  data-testid="output-field-type"
-                  density="compact"
-                  @update:model-value="setOutputType(String(name), $event)"
-                />
-                <v-btn
-                  variant="text"
-                  size="small"
-                  color="error"
-                  @click="removeOutput(String(name))"
-                  >{{ tm("graph.removeInput") }}</v-btn
+                {{ tm("graph.complexContract") }}
+              </p>
+              <template
+                v-if="
+                  selectedTask.output_contract &&
+                  !selectedTask.team &&
+                  editableContract
+                "
+              >
+                <p class="text-caption">{{ tm("graph.structuredHint") }}</p>
+                <div
+                  v-for="(schema, name) in selectedTask.output_contract
+                    .properties ?? {}"
+                  :key="name"
+                  class="graph-input"
                 >
-              </div>
-              <v-btn variant="tonal" size="small" @click="addOutput">{{
-                tm("graph.addField")
-              }}</v-btn>
+                  <v-text-field
+                    :model-value="name"
+                    :label="tm('graph.field')"
+                    density="compact"
+                    @change="
+                      renameOutput(
+                        String(name),
+                        ($event.target as HTMLInputElement).value,
+                      )
+                    "
+                  />
+                  <v-select
+                    :model-value="(schema as any).type"
+                    :items="['string', 'integer', 'number', 'boolean']"
+                    :label="tm('graph.fieldType')"
+                    data-testid="output-field-type"
+                    density="compact"
+                    @update:model-value="setOutputType(String(name), $event)"
+                  />
+                  <v-btn
+                    variant="text"
+                    size="small"
+                    color="error"
+                    @click="removeOutput(String(name))"
+                    >{{ tm("graph.removeInput") }}</v-btn
+                  >
+                </div>
+                <v-btn variant="tonal" size="small" @click="addOutput">{{
+                  tm("graph.addField")
+                }}</v-btn>
+              </template>
             </template>
           </template>
+          <p v-else class="text-caption">{{ tm("graph.joinHint") }}</p>
           <v-btn
             variant="text"
             color="error"
@@ -755,7 +833,9 @@
           <v-select
             v-model="draft.result_task_id"
             :items="
-              draft.tasks.map((task) => ({ title: task.name, value: task.id }))
+              draft.tasks
+                .filter((task) => !task.control)
+                .map((task) => ({ title: task.name, value: task.id }))
             "
             :label="tm('graph.resultTask')"
             data-testid="result-task"
@@ -772,14 +852,26 @@
               draft.tasks.find((task) => task.id === selectedEdge?.target)?.name
             }}
           </p>
+          <v-select
+            v-if="edgeSourceControl"
+            :model-value="selectedEdge.condition?.value"
+            :items="[
+              { title: tm('graph.trueExit'), value: true },
+              { title: tm('graph.falseExit'), value: false },
+            ]"
+            :label="tm('graph.exit')"
+            data-testid="edge-exit"
+            @update:model-value="setEdgeExit"
+          />
           <v-switch
+            v-else
             :model-value="!!selectedEdge.condition"
             :label="tm('graph.condition')"
             color="primary"
             density="compact"
             @update:model-value="toggleCondition"
           />
-          <template v-if="selectedEdge.condition">
+          <template v-if="selectedEdge.condition && !edgeSourceControl">
             <v-text-field
               v-model="selectedEdge.condition.field"
               :label="tm('graph.field')"
@@ -788,7 +880,7 @@
             />
             <v-select
               v-model="selectedEdge.condition.operator"
-              :items="operators"
+              :items="operatorItems"
               :label="tm('graph.operator')"
               density="compact"
               @update:model-value="checkpoint"
@@ -1100,7 +1192,7 @@ const inputSources = computed(() => [
     value: `input:${name}`,
   })),
   ...draft.value.tasks
-    .filter((task) => ancestors.value.has(task.id))
+    .filter((task) => ancestors.value.has(task.id) && !task.control)
     .map((task) => ({ title: task.name, value: task.id })),
 ]);
 function fieldsForTask(id: string) {
@@ -1178,6 +1270,55 @@ function removeOutput(name: string) {
   checkpoint();
 }
 const operators = ["eq", "ne", "gt", "ge", "lt", "le"];
+const edgeSourceControl = computed(
+  () =>
+    draft.value.tasks.find((task) => task.id === selectedEdge.value?.source)
+      ?.control?.kind === "condition",
+);
+const controlValueType = computed(() => {
+  const ref = selectedTask.value?.inputs?.value;
+  if (!ref || ref.input != null) return "string";
+  const field = fieldsForTask(ref.task_id ?? "").find(
+    (item) => item.value === ref.field,
+  );
+  return field?.title.split(" · ").pop() ?? "string";
+});
+const operatorItems = computed(() =>
+  operators.map((value) => ({ title: tm(`graph.operators.${value}`), value })),
+);
+const operatorsForControl = computed(() =>
+  ["integer", "number"].includes(controlValueType.value)
+    ? operatorItems.value
+    : operatorItems.value.filter((item) => ["eq", "ne"].includes(item.value)),
+);
+function resetControlValue() {
+  const control = selectedTask.value?.control;
+  if (control?.kind === "condition") {
+    control.operator = "eq";
+    control.value =
+      controlValueType.value === "boolean"
+        ? false
+        : controlValueType.value === "null"
+        ? null
+        : ["integer", "number"].includes(controlValueType.value)
+        ? 0
+        : "";
+  }
+  checkpoint();
+}
+function setControlValue(value: any) {
+  const control = selectedTask.value?.control;
+  if (!control || control.kind !== "condition") return;
+  control.value = ["integer", "number"].includes(controlValueType.value)
+    ? Number(value)
+    : value;
+  checkpoint();
+}
+function setEdgeExit(value: string | number | boolean) {
+  if (!selectedEdge.value || typeof value !== "boolean") return;
+  selectedEdge.value.condition = { field: "matched", operator: "eq", value };
+  checkpoint();
+}
 const taskNodes = computed<FlowNode[]>(() =>
   draft.value.tasks.map((task, index) => {
     const running = props.tasks.find((item) => item.node_id === task.id);
@@ -1191,7 +1332,16 @@ const taskNodes = computed<FlowNode[]>(() =>
       },
       data: {
         label: task.name,
-        memberName: task.workflow
+        controlKind: task.control?.kind,
+        trueLabel: tm("graph.trueExit"),
+        falseLabel: tm("graph.falseExit"),
+        memberName: task.control
+          ? tm(
+              task.control.kind === "condition"
+                ? "graph.conditionNode"
+                : "graph.joinNode",
+            )
+          : task.workflow
           ? tm("workflowCall.open")
           : task.team
           ? tm("child.independent")
@@ -1204,14 +1354,22 @@ const taskNodes = computed<FlowNode[]>(() =>
               task.role_id
             } · ${task.member}`,
         memberColor: collabMemberColor(task.member ?? task.id),
-        taskPreview: task.workflow
+        taskPreview: task.control
+          ? task.control.kind === "condition"
+            ? `${tm(`graph.operators.${task.control.operator ?? "eq"}`)} ${JSON.stringify(
+                task.control.value,
+              )}`
+            : tm("graph.joinHint")
+          : task.workflow
           ? `${task.workflow.asset_id} → ${task.workflow.result_task_id}`
           : task.team
           ? pinnedTeams.value[`${task.team.asset_id}:${task.team.version}`]
               ?.definition.name ?? task.team.asset_id
           : task.human?.question ?? task.task,
         nodeNumber: index + 1,
-        configLabel: task.workflow
+        configLabel: task.control
+          ? ""
+          : task.workflow
           ? `v${task.workflow.version}`
           : task.team
           ? `v${task.team.version}`
@@ -1225,7 +1383,11 @@ const taskNodes = computed<FlowNode[]>(() =>
         inputLabel: `${tm("graph.inputs")} · ${
           Object.keys(task.inputs ?? {}).length
         }`,
-        outputLabel: task.output_contract
+        outputLabel: task.control
+          ? task.control.kind === "condition"
+            ? `${tm("graph.trueExit")} / ${tm("graph.falseExit")}`
+            : "ALL"
+          : task.output_contract
           ? tm("graph.structured")
           : tm("graph.text"),
         status:
@@ -1236,7 +1398,18 @@ const taskNodes = computed<FlowNode[]>(() =>
               )
             ? "failed"
             : state,
-        statusLabel: state ? tm(`v2.states.${state}`) : "",
+        statusLabel:
+          state === "pending"
+            ? tm(
+                running?.state.wait_kind === "predecessors"
+                  ? "graph.waitingPredecessors"
+                  : running?.state.wait_kind === "capacity"
+                  ? "graph.waitingCapacity"
+                  : "graph.notStarted",
+              )
+            : state
+            ? tm(`v2.states.${state}`)
+            : "",
         error: running?.state.reason ?? "",
         inDegree:
           draft.value.edges?.filter((edge) => edge.target === task.id).length ??
@@ -1246,7 +1419,9 @@ const taskNodes = computed<FlowNode[]>(() =>
   }),
 );
 const validResultTask = computed(() =>
-  draft.value.tasks.some((task) => task.id === draft.value.result_task_id),
+  draft.value.tasks.some(
+    (task) => task.id === draft.value.result_task_id && !task.control,
+  ),
 );
 const showInterfaceNodes = computed(
   () => !props.readonly || validResultTask.value,
@@ -1338,14 +1513,23 @@ const edges = computed(() =>
         id: `${edge.source}:${edge.target}`,
         source: sourceGroup ? `loop:${sourceGroup.id}` : edge.source,
         target: targetGroup ? `loop:${targetGroup.id}` : edge.target,
-        label: edge.condition
-          ? `${edge.condition.field} ${
-              edge.condition.operator
-            } ${JSON.stringify(edge.condition.value)}`
-          : props.dispatchTasks.includes(edge.target) &&
-            edge.source === "coordinator"
-          ? tm("autonomous.dispatched")
-          : undefined,
+        sourceHandle:
+          draft.value.tasks.find((task) => task.id === edge.source)?.control
+            ?.kind === "condition" && edge.condition
+            ? `matched-${edge.condition.value}`
+            : undefined,
+        label:
+          draft.value.tasks.find((task) => task.id === edge.source)?.control
+            ?.kind === "condition" && edge.condition
+            ? tm(edge.condition.value ? "graph.trueExit" : "graph.falseExit")
+            : edge.condition
+            ? `${edge.condition.field} ${
+                edge.condition.operator
+              } ${JSON.stringify(edge.condition.value)}`
+            : props.dispatchTasks.includes(edge.target) &&
+              edge.source === "coordinator"
+            ? tm("autonomous.dispatched")
+            : undefined,
         style:
           props.dispatchTasks.includes(edge.target) &&
           edge.source === "coordinator"
@@ -1482,7 +1666,13 @@ function addTask(roleId: string, position?: { x: number; y: number }) {
       : roleId === "human:approval"
       ? "approval"
       : null;
-  if (!role && !humanKind && !team) return;
+  const controlKind =
+    roleId === "control:condition"
+      ? "condition"
+      : roleId === "control:join"
+      ? "join"
+      : null;
+  if (!role && !humanKind && !team && !controlKind) return;
   const seed =
     typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
       ? crypto.randomUUID().replace(/-/g, "").slice(0, 8)
@@ -1495,12 +1685,29 @@ function addTask(roleId: string, position?: { x: number; y: number }) {
   const index = draft.value.tasks.length;
   draft.value.tasks.push({
     id,
-    name: team
+    name: controlKind
+      ? tm(
+          controlKind === "condition"
+            ? "graph.conditionNode"
+            : "graph.joinNode",
+        )
+      : team
       ? team.definition.name
       : humanKind
       ? tm(`human.${humanKind}Node`)
-      : role.definition.name,
-    ...(team
+      : role!.definition.name,
+    ...(controlKind
+      ? {
+          control:
+            controlKind === "condition"
+              ? {
+                  kind: "condition" as const,
+                  operator: "eq" as const,
+                  value: "",
+                }
+              : { kind: "join" as const },
+        }
+      : team
       ? {
           team: { asset_id: team.asset_id, version: team.version },
           output_contract: team.definition.output_contract,
@@ -1515,16 +1722,24 @@ function addTask(roleId: string, position?: { x: number; y: number }) {
             artifact_version: 1,
           },
         }
-      : { member: id, role_id: roleId, role_version: role.version }),
+      : { member: id, role_id: roleId, role_version: role!.version }),
     task: "",
-    inputs: team
-      ? Object.fromEntries(
-          team.definition.required_inputs.map((key: string) => [
-            key,
-            draft.value.required_inputs?.includes(key) ? { input: key } : {},
-          ]),
-        )
-      : {},
+    inputs:
+      controlKind === "condition"
+        ? {
+            value: {
+              input: draft.value.required_inputs?.[0] ?? "",
+              field: "text",
+            },
+          }
+        : team
+        ? Object.fromEntries(
+            team.definition.required_inputs.map((key: string) => [
+              key,
+              draft.value.required_inputs?.includes(key) ? { input: key } : {},
+            ]),
+          )
+        : {},
     overrides: {},
     position: position ?? {
       x: (index % 3) * 300,
@@ -1675,7 +1890,15 @@ async function saveInlineRole() {
     savingRole.value = false;
   }
 }
-function connect({ from, to }: { from: string; to: string }) {
+function connect({
+  from,
+  to,
+  sourceHandle,
+}: {
+  from: string;
+  to: string;
+  sourceHandle?: string | null;
+}) {
   if (from.startsWith("__") || to.startsWith("__")) return;
   if (from.startsWith("loop:") || to.startsWith("loop:")) return;
   if (
@@ -1683,7 +1906,20 @@ function connect({ from, to }: { from: string; to: string }) {
       (edge) => edge.source === from && edge.target === to,
     )
   ) {
-    (draft.value.edges ??= []).push({ source: from, target: to });
+    const condition =
+      draft.value.tasks.find((task) => task.id === from)?.control?.kind ===
+      "condition"
+        ? {
+            field: "matched",
+            operator: "eq" as const,
+            value: sourceHandle !== "matched-false",
+          }
+        : undefined;
+    (draft.value.edges ??= []).push({
+      source: from,
+      target: to,
+      ...(condition ? { condition } : {}),
+    });
     checkpoint();
   }
 }
@@ -1753,6 +1989,17 @@ function setInputSource(alias: string, source: string) {
   selectedTask.value.inputs[alias] = source.startsWith("input:")
     ? { input: source.slice(6), field: "text" }
     : { task_id: source, field: fieldsForTask(source)[0]?.value ?? "text" };
+  if (selectedTask.value.control?.kind === "condition") {
+    selectedTask.value.control.operator = "eq";
+    selectedTask.value.control.value =
+      controlValueType.value === "boolean"
+        ? false
+        : controlValueType.value === "null"
+        ? null
+        : ["integer", "number"].includes(controlValueType.value)
+        ? 0
+        : "";
+  }
   checkpoint();
 }
 function toggleCondition(enabled: boolean | null) {
@@ -1817,7 +2064,7 @@ function layout() {
   overflow-wrap: anywhere;
 }
 .graph-workbench {
-  --graph-height: clamp(240px, calc(100vh - 410px), 560px);
+  --graph-height: clamp(460px, calc(100vh - 250px), 640px);
   border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
   border-radius: 16px;
   overflow: hidden;
@@ -1853,7 +2100,20 @@ function layout() {
   overflow-wrap: anywhere;
 }
 .graph-toolbox {
+  overflow-x: hidden;
   border-right: 1px solid rgba(var(--v-theme-on-surface), 0.1);
+}
+.graph-toolbox :deep(.v-btn) {
+  width: 100%;
+  min-width: 0;
+  height: auto;
+  min-height: 36px;
+  white-space: normal;
+}
+.graph-toolbox :deep(.v-btn__content) {
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 .graph-inspector {
   border-left: 1px solid rgba(var(--v-theme-on-surface), 0.1);

@@ -10,8 +10,14 @@
       role="button"
       :aria-label="tm('editor.handleTarget')"
     />
+    <template v-if="data.controlKind === 'condition' && data.interactive !== false">
+      <span class="control-exit control-exit-true">{{ data.trueLabel }}</span>
+      <Handle id="matched-true" type="source" :position="Position.Right" class="at-node-handle control-handle-true" :aria-label="data.trueLabel" />
+      <span class="control-exit control-exit-false">{{ data.falseLabel }}</span>
+      <Handle id="matched-false" type="source" :position="Position.Right" class="at-node-handle control-handle-false" :aria-label="data.falseLabel" />
+    </template>
     <Handle
-      v-if="data.interactive !== false"
+      v-else-if="data.interactive !== false"
       type="source"
       :position="Position.Right"
       class="at-node-handle"
@@ -84,6 +90,9 @@ export interface MemberFlowNodeData {
   error?: string;
   configLabel?: string;
   personaLabel?: string;
+  controlKind?: string;
+  trueLabel?: string;
+  falseLabel?: string;
   missingMember?: boolean;
   inDegree?: number;
   /**
@@ -128,6 +137,7 @@ const statusText = computed(() =>
 
 const cardClasses = computed(() => ({
   selected: !!props.selected,
+  'is-control': !!props.data.controlKind,
   'is-missing': !!props.data.missingMember,
   'has-error': !!props.data.error,
   [`at-node-${props.data.status}`]: !!props.data.status,
@@ -135,6 +145,13 @@ const cardClasses = computed(() => ({
 </script>
 
 <style scoped>
+.is-control { border-style: dashed; border-color: #7c3aed; }
+.control-handle-true { top: 32%; }
+.control-handle-false { top: 68%; }
+.control-exit { position: absolute; right: 12px; font-size: 10px; color: #6d28d9; }
+.control-exit-true { top: 29%; }
+.control-exit-false { top: 65%; }
+
 /* Base card = the pending palette; status classes restyle border/background
    with the same colors the canvas used for the old default nodes. */
 .member-flow-node {

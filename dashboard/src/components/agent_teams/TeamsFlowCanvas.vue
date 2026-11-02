@@ -137,7 +137,7 @@ const props = withDefaults(
 );
 
 const emit = defineEmits<{
-  (e: 'connect', params: { from: string; to: string }): void;
+  (e: 'connect', params: { from: string; to: string; sourceHandle?: string | null }): void;
   (e: 'positionChange', positions: Record<string, { x: number; y: number }>): void;
   (e: 'selectNode', nodeId: string | null): void;
   (e: 'dropAt', memberId: string, position: { x: number; y: number }): void;
@@ -230,7 +230,7 @@ const displayEdges = computed(() => {
 function onConnect(connection: Connection) {
   const { source, target } = connection ?? ({} as Connection);
   if (!source || !target || source === target) return;
-  emit('connect', { from: source, to: target });
+  emit('connect', { from: source, to: target, ...(connection.sourceHandle ? { sourceHandle: connection.sourceHandle } : {}) });
 }
 
 /**

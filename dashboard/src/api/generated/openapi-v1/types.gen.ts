@@ -608,6 +608,17 @@ export type CommandPatchRequest = {
     permission_group?: string;
 };
 
+/**
+ * A scalar comparison evaluated by the graph scheduler.
+ */
+export type ConditionTask = {
+    kind: "condition";
+    operator?: 'eq' | 'ne' | 'gt' | 'ge' | 'lt' | 'le';
+    value: (string | boolean | number | null);
+};
+
+export type operator = 'eq' | 'ne' | 'gt' | 'ge' | 'lt' | 'le';
+
 export type ConfigRoutesReplaceRequest = {
     routing: {
         [key: string]: (string);
@@ -708,8 +719,6 @@ export type FieldCondition = {
     value: (string | boolean | number | null);
 };
 
-export type operator = 'eq' | 'ne' | 'gt' | 'ge' | 'lt' | 'le';
-
 export type FileUploadRequest = {
     file: (Blob | File);
 };
@@ -768,6 +777,7 @@ export type GraphTask = {
     role?: (RoleDefinition | null);
     installation?: (RoleInstallation | null);
     task?: string;
+    control?: (ConditionTask | JoinTask | null);
     human?: (HumanTask | null);
     team?: (TeamCall | null);
     workflow?: (WorkflowCall | null);
@@ -816,6 +826,13 @@ export type kind = 'question' | 'approval';
 export type ImMessageRequest = {
     umo: string;
     message: (string | Array<MessagePart>);
+};
+
+/**
+ * An ALL join evaluated by the graph scheduler.
+ */
+export type JoinTask = {
+    kind: "join";
 };
 
 export type JsonSchema = {

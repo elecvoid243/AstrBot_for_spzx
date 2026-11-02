@@ -13,6 +13,7 @@ describe("bounded loop canvas", () => {
       props: {
         definition: {
           name: "Review",
+          result_task_id: "review",
           tasks: [
             {
               id: "write",
@@ -64,13 +65,13 @@ describe("bounded loop canvas", () => {
     try {
       expect(
         wrapper.findComponent(TeamsFlowCanvas).props("nodes"),
-      ).toHaveLength(2);
+      ).toHaveLength(4);
       await wrapper
         .get('[data-testid="collapse-loop-revision"]')
         .trigger("click");
       expect(
         wrapper.findComponent(TeamsFlowCanvas).props("nodes"),
-      ).toHaveLength(1);
+      ).toHaveLength(3);
       expect(
         wrapper
           .get('[data-testid="collapse-loop-revision"]')
@@ -92,7 +93,7 @@ describe("bounded loop canvas", () => {
         .trigger("click");
       expect(
         wrapper.findComponent(TeamsFlowCanvas).props("nodes"),
-      ).toHaveLength(2);
+      ).toHaveLength(4);
     } finally {
       wrapper.unmount();
     }

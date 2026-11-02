@@ -1,5 +1,11 @@
 {
   "agentBrowser": {
+    "staleWheel": "页面位置已变化，旧滚轮操作已拒绝。请等待新画面后继续滚动。",
+    "inputPending": "正在依次发送操作…",
+    "waitingFrame": "操作已确认 · 等待页面画面",
+    "frameReady": "已显示更新画面",
+    "upgradePointer": "升级 Browser Use 以使用滚轮和双击",
+    "humanActor": "人工",
     "changingControl": "正在切换控制权，等待浏览器动作静止。",
     "takeOver": "接管浏览器",
     "handBack": "交还控制权",

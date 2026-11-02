@@ -32,17 +32,23 @@ class BrowserControlTarget(BaseModel):
     viewport_height: float = Field(gt=0, le=32768, allow_inf_nan=False)
     scroll_x: float = Field(allow_inf_nan=False)
     scroll_y: float = Field(allow_inf_nan=False)
+    position_revision: int | None = Field(default=None, ge=0)
 
 
 class BrowserControlCommand(BaseModel):
     """Closed input vocabulary; browser targets can only be validated, not chosen."""
 
     model_config = ConfigDict(extra="forbid", strict=True)
-    operation: Literal["click", "key", "text", "reset_keys", "heartbeat", "release"]
+    operation: Literal[
+        "click", "wheel", "key", "text", "reset_keys", "heartbeat", "release"
+    ]
     control_epoch: int = Field(ge=1)
     input_id: int | None = Field(default=None, ge=1)
     x: float | None = Field(default=None, ge=0, allow_inf_nan=False)
     y: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    click_count: Literal[1, 2] = 1
+    delta_x: float | None = Field(default=None, ge=-2048, le=2048, allow_inf_nan=False)
+    delta_y: float | None = Field(default=None, ge=-2048, le=2048, allow_inf_nan=False)
     target: BrowserControlTarget | None = None
     code: str | None = Field(default=None, max_length=32)
     key: str | None = Field(default=None, max_length=32)

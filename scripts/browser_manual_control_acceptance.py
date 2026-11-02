@@ -61,6 +61,11 @@ async def main() -> None:
         action="store_true",
         help="Destroy the real held-key CDP target, then stop/close through production ChatUI.",
     )
+    parser.add_argument(
+        "--pointer-input",
+        action="store_true",
+        help="Exercise actual wheel/double-click and viewport feedback.",
+    )
     args = parser.parse_args()
     if args.lost_key_target and not args.text_input:
         parser.error("--lost-key-target requires --text-input")
@@ -100,6 +105,8 @@ async def main() -> None:
     form_state = {}
     private_text = "H03-" + secrets.token_urlsafe(12)
 
+    pointer_state = {}
+
     async def website(request):
         """Serve a deterministic authenticated counter page for actual CDP clicks.
 
@@ -109,7 +116,22 @@ async def main() -> None:
         Returns:
             Counter fixture or its acknowledged click number.
         """
-        nonlocal counter, post_effects, form_state
+        nonlocal counter, post_effects, form_state, pointer_state
+        if request.path == "/pointer-report":
+            assert request.cookies.get("fixture_login") == login_cookie
+            pointer_state = await request.json()
+            return web.Response(text="ok")
+        if request.path == "/pointer":
+            return web.Response(
+                text="""<!doctype html><meta charset="utf-8"><title>H04 pointer fixture</title>
+<style>body{margin:0;font:24px Arial;background:#eff6ff;height:4000px}#nested{position:absolute;left:40px;top:120px;width:500px;height:300px;overflow:auto;border:2px solid #222}#long{width:2000px;height:2500px;background:repeating-linear-gradient(#e9d5ff 0px,#e9d5ff 80px,#bbf7d0 80px,#bbf7d0 160px)}#double{position:absolute;left:600px;top:60px;width:200px;height:80px;background:#fca5a5}a{position:fixed;left:40px;top:20px}</style>
+<a href="/">Return to form</a><button id="double">Double-click me</button><div id="nested"><div id="long">Nested long list</div></div><div style="position:absolute;top:550px">Main page long list</div>
+<script>let doubles=0;const nested=document.getElementById('nested'),button=document.getElementById('double');
+const report=()=>fetch('/pointer-report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({x:nested.scrollLeft,y:nested.scrollTop,pageY:scrollY,doubles,doc:String(performance.timeOrigin)})});
+button.ondblclick=()=>{doubles++;button.style.background='#22c55e';button.textContent='Double '+doubles;report()};
+addEventListener('scroll',report,true);report();</script>""",
+                content_type="text/html",
+            )
         if request.path == "/form-report":
             assert request.cookies.get("fixture_login") == login_cookie
             form_state = await request.json()
@@ -153,6 +175,7 @@ addEventListener('keyup',e=>{held.delete(e.code);released.push(e.code);report()}
 addEventListener('input',report);
 addEventListener('focusin',report);
 </script>
+<a style="position:absolute;left:60px;top:430px" href="/pointer">Pointer fixture</a>
 <p>Signed in: H01 fixture · Count: <b id="count">0</b></p>""",
             content_type="text/html",
         )
@@ -359,6 +382,7 @@ addEventListener('focusin',report);
     fixture.router.add_post("/v1/chat/completions", completion)
     fixture.router.add_post("/pre-reset", website)
     fixture.router.add_post("/form-report", website)
+    fixture.router.add_post("/pointer-report", website)
     fixture.router.add_get(
         "/v1/models",
         lambda _: web.json_response(
@@ -548,9 +572,38 @@ addEventListener('focusin',report);
                     executable_path=str(chromium), headless=True
                 )
                 context = await browser.new_context(
-                    viewport={"width": 1600, "height": 1000}
+                    viewport={"width": 1600, "height": 1000},
+                    device_scale_factor=1.5 if args.pointer_input else 1,
                 )
                 page = await context.new_page()
+                wheel_acks = []
+
+                def socket_opened(ws):
+                    """Collect only category/ID/status for pointer acceptance.
+
+                    Args:
+                        ws: Actual production socket opened by this isolated page.
+                    """
+
+                    def received(raw):
+                        """Record wheel confirmation without retaining input contents.
+
+                        Args:
+                            raw: A server frame from the authenticated socket.
+                        """
+                        with contextlib.suppress(ValueError, TypeError):
+                            ack = json.loads(raw)
+                            if ack.get("operation") == "wheel":
+                                wheel_acks.append(
+                                    {
+                                        key: ack.get(key)
+                                        for key in ("input_id", "status")
+                                    }
+                                )
+
+                    ws.on("framereceived", received)
+
+                page.on("websocket", socket_opened)
                 page.on(
                     "pageerror",
                     lambda error: print(f"PAGE_ERROR: {error}", flush=True),
@@ -1017,6 +1070,283 @@ addEventListener('focusin',report);
                     '.agent-browser-view[data-human-control="true"]'
                 ).wait_for(timeout=20000)
                 await page.screenshot(path=str(evidence / "manual-en.png"))
+                if args.pointer_input:
+                    view = page.locator(".agent-browser-view")
+
+                    async def pointer_at(x, y, double=False):
+                        """Map fixture CSS coordinates through the actual displayed image.
+
+                        Args:
+                            x: Remote CSS viewport x.
+                            y: Remote CSS viewport y.
+                            double: Whether to send the native local double-click sequence.
+                        """
+                        try:
+                            await page.wait_for_function(
+                                "document.querySelector('.agent-browser-image img')?.complete && document.querySelector('.agent-browser-image img')?.naturalWidth > 0"
+                            )
+                        except PlaywrightError:
+                            async with client.get(
+                                base + "/snapshot",
+                                params=ticket_body,
+                                headers=auth_headers,
+                            ) as diagnostic:
+                                (
+                                    evidence / "pointer-snapshot-diagnostic.txt"
+                                ).write_text(
+                                    str(diagnostic.status)
+                                    + "\n"
+                                    + (await diagnostic.text()),
+                                    encoding="utf-8",
+                                )
+                            raise
+                        remote = await status()
+                        box = await image.bounding_box()
+                        action = image.dblclick if double else image.click
+                        await action(
+                            position={
+                                "x": box["width"] * x / remote["viewport_width"],
+                                "y": box["height"] * y / remote["viewport_height"],
+                            }
+                        )
+                        await asyncio.sleep(0.2)
+
+                    await pointer_at(150, 440)
+                    for _ in range(100):
+                        if pointer_state and (await status())["url"].endswith(
+                            "/pointer"
+                        ):
+                            break
+                        await asyncio.sleep(0.1)
+                    else:
+                        raise AssertionError(
+                            "Human navigation to actual pointer fixture failed"
+                        )
+                    await asyncio.sleep(0.4)
+                    await pointer_at(700, 100, double=True)
+                    for _ in range(50):
+                        if pointer_state.get("doubles") == 1:
+                            break
+                        await asyncio.sleep(0.1)
+                    assert pointer_state["doubles"] == 1, pointer_state
+                    latencies = []
+                    for dx, dy in [(0, 80), (0, 100), (90, 0), (120, 0), (0, 120)]:
+                        box = await image.bounding_box()
+                        await page.mouse.move(
+                            box["x"] + box["width"] * 200 / 1280,
+                            box["y"] + box["height"] * 220 / 720,
+                        )
+                        before = dict(pointer_state)
+                        frame_before = int(
+                            await view.get_attribute("data-frame-input") or 0
+                        )
+                        started = time.perf_counter()
+                        await page.mouse.wheel(dx, dy)
+                        for _ in range(100):
+                            if (
+                                (
+                                    pointer_state.get("x") != before.get("x")
+                                    or pointer_state.get("y") != before.get("y")
+                                )
+                                and int(
+                                    await view.get_attribute("data-frame-input") or 0
+                                )
+                                > frame_before
+                                and await view.get_attribute("data-awaiting-frame")
+                                == "false"
+                                and await view.get_attribute("data-pending-input")
+                                == "0"
+                            ):
+                                break
+                            await asyncio.sleep(0.025)
+                        else:
+                            raise AssertionError(
+                                (
+                                    "Wheel did not update real nested list and loaded frame",
+                                    pointer_state,
+                                    before,
+                                )
+                            )
+                        latencies.append(
+                            round((time.perf_counter() - started) * 1000, 1)
+                        )
+                        await asyncio.sleep(0.25)
+                    assert pointer_state["x"] > 0 and pointer_state["y"] > 0
+                    assert pointer_state["pageY"] == 0
+                    encoded = (await image.get_attribute("src")).split(",", 1)[1]
+                    with Image.open(io.BytesIO(base64.b64decode(encoded))) as pixels:
+                        red, green, blue = pixels.convert("RGB").getpixel((700, 100))
+                        assert red < 80 and green > 150 and blue < 150, (
+                            red,
+                            green,
+                            blue,
+                        )
+                    await page.screenshot(path=str(evidence / "pointer-en.png"))
+                    metrics["pointer_latency_ms"] = latencies
+                    metrics["pointer_state"] = dict(pointer_state)
+                    metrics["wheel_acks"] = wheel_acks
+                    # Scroll the long document outside the nested container, then return.
+                    box = await image.bounding_box()
+                    await page.mouse.move(
+                        box["x"] + box["width"] * 1000 / 1280,
+                        box["y"] + box["height"] * 600 / 720,
+                    )
+                    await page.mouse.wheel(0, 240)
+                    for _ in range(80):
+                        if pointer_state.get("pageY", 0) > 0:
+                            break
+                        await asyncio.sleep(0.025)
+                    assert pointer_state["pageY"] > 0
+                    metrics["main_document_scroll_y"] = pointer_state["pageY"]
+                    await asyncio.sleep(0.3)
+                    await page.mouse.wheel(0, -600)
+                    for _ in range(80):
+                        if pointer_state.get("pageY") == 0:
+                            break
+                        await asyncio.sleep(0.025)
+                    assert pointer_state["pageY"] == 0
+                    await asyncio.sleep(0.3)
+                    metrics["checks"].append(
+                        "H04: actual long document scrolls independently of the nested list and ChatUI"
+                    )
+                    # Change the actual private CSS viewport and its device scale.
+                    ports = set()
+                    for child in psutil.Process(process.pid).children(recursive=True):
+                        with contextlib.suppress(psutil.Error):
+                            for argument in child.cmdline():
+                                if (
+                                    child.name().lower() == "chrome.exe"
+                                    and argument.startswith("--remote-debugging-port=")
+                                ):
+                                    ports.add(int(argument.split("=", 1)[1]))
+                    assert len(ports) == 1
+                    private_view = await playwright.chromium.connect_over_cdp(
+                        f"http://127.0.0.1:{ports.pop()}"
+                    )
+                    remote_page = next(
+                        p
+                        for c in private_view.contexts
+                        for p in c.pages
+                        if p.url.endswith("/pointer")
+                    )
+                    remote_cdp = await remote_page.context.new_cdp_session(remote_page)
+                    await remote_cdp.send(
+                        "Emulation.setDeviceMetricsOverride",
+                        {
+                            "width": 960,
+                            "height": 600,
+                            "deviceScaleFactor": 1.25,
+                            "mobile": False,
+                        },
+                    )
+                    await asyncio.sleep(0.5)
+                    assert (await status())["viewport_width"] == 960
+                    await pointer_at(700, 100, double=True)
+                    assert pointer_state["doubles"] == 2
+                    await remote_cdp.send(
+                        "Emulation.setDeviceMetricsOverride",
+                        {
+                            "width": 1280,
+                            "height": 720,
+                            "deviceScaleFactor": 1,
+                            "mobile": False,
+                        },
+                    )
+                    await asyncio.sleep(0.5)
+                    assert (await status())["viewport_width"] == 1280
+                    metrics["checks"].append(
+                        "H04: actual private CSS viewport resize and DPR 1.25 retain coordinate hits with bounded JPEG scaling"
+                    )
+                    # Host zoom/DPR, narrow sidebar and fullscreen all use image CSS bounds.
+                    await page.set_viewport_size({"width": 1050, "height": 850})
+                    await asyncio.sleep(0.4)
+                    await pointer_at(700, 100, double=True)
+                    assert pointer_state["doubles"] == 3
+                    await page.locator(".agent-browser-fullscreen").click()
+                    await asyncio.sleep(0.2)
+                    await pointer_at(700, 100, double=True)
+                    assert pointer_state["doubles"] == 4
+                    await page.screenshot(
+                        path=str(evidence / "pointer-fullscreen-en.png")
+                    )
+                    await (
+                        page.locator(".agent-browser-stage.is-fullscreen button")
+                        .filter(has_text="Hand back")
+                        .click()
+                    )
+                    await page.locator(
+                        '.agent-browser-view[data-human-control="false"]'
+                    ).wait_for()
+                    await page.keyboard.press("Escape")
+                    await page.set_viewport_size({"width": 1600, "height": 1000})
+                    await page.locator(".agent-browser-takeover").click()
+                    await page.locator(
+                        '.agent-browser-view[data-human-control="true"]'
+                    ).wait_for()
+                    metrics["checks"].append(
+                        "H04: fullscreen handback explicitly restores Agent admission without leaving the fullscreen UI first"
+                    )
+                    await asyncio.sleep(0.3)
+                    # A burst may reject stale samples, but must stay bounded and owned.
+                    box = await image.bounding_box()
+                    await page.mouse.move(
+                        box["x"] + box["width"] * 200 / 1280,
+                        box["y"] + box["height"] * 220 / 720,
+                    )
+                    queue_sizes = []
+                    for _ in range(24):
+                        await page.mouse.wheel(0, 24)
+                        queue_sizes.append(
+                            int(await view.get_attribute("data-pending-input") or 0)
+                        )
+                    await asyncio.sleep(0.6)
+                    assert await view.get_attribute("data-human-control") == "true"
+                    assert max(queue_sizes) <= 128
+                    assert await view.get_attribute("data-pending-input") == "0"
+                    metrics["pointer_max_pending"] = max(queue_sizes)
+                    # Wheel outside the image must retain ordinary browser default behavior.
+                    await page.evaluate(
+                        "window.__outsideWheel=null; addEventListener('wheel',e=>setTimeout(()=>window.__outsideWheel=e.defaultPrevented,0),{capture:true,once:true})"
+                    )
+                    await page.locator(".chat-text-input, .chat-textarea").hover()
+                    await page.mouse.wheel(0, 50)
+                    await asyncio.sleep(0.1)
+                    assert await page.evaluate("window.__outsideWheel") is False
+                    await page.locator(".agent-browser-takeover").click()
+                    await view.locator(
+                        'xpath=self::*[@data-human-control="false"]'
+                    ).wait_for()
+                    await page.evaluate(
+                        "localStorage.setItem('themeMode','dark'); localStorage.setItem('astrbot-locale','zh-CN')"
+                    )
+                    await page.reload()
+                    await page.locator(".chat-text-input, .chat-textarea").wait_for(
+                        timeout=30000
+                    )
+                    await open_browser_panel(page)
+                    await image.wait_for()
+                    await page.locator(".agent-browser-takeover").click()
+                    await page.locator(
+                        '.agent-browser-view[data-human-control="true"]'
+                    ).wait_for()
+                    await asyncio.sleep(0.4)
+                    await page.screenshot(path=str(evidence / "pointer-zh-dark.png"))
+                    metrics["checks"].append(
+                        "H04: high-frequency wheel queue bounded with ordered acks; outside image wheel keeps browser default; real dark Chinese UI checked"
+                    )
+                    await pointer_at(120, 35)
+                    for _ in range(50):
+                        if not (await status())["url"].endswith("/pointer"):
+                            break
+                        await asyncio.sleep(0.1)
+                    await asyncio.sleep(0.3)
+                    metrics["checks"].extend(
+                        [
+                            "H04: real authenticated nested list vertical/horizontal wheel; parent page remains fixed",
+                            "H04: native double-click hits at DPR 1.5, normal/narrow/sidebar and fullscreen after layout changes",
+                            "H04: continuous input-to-loaded-frame latency measured; actual navigation invalidates old position",
+                        ]
+                    )
                 await page.locator(".agent-browser-takeover").click()
                 # Wait for confirmed handback before querying the renewed host lease.
                 await page.locator(
@@ -1026,6 +1356,61 @@ addEventListener('focusin',report);
                     if (await status())["control_mode"] == "agent":
                         break
                     await asyncio.sleep(0.1)
+                if args.pointer_input:
+                    async with client.post(
+                        ticket_url, headers=auth_headers, json=ticket_body
+                    ) as response:
+                        issued = await response.json()
+                    async with client.ws_connect(
+                        origin + issued["websocket_path"]
+                    ) as ws:
+                        await ws.send_json({"ticket": issued["ticket"]})
+                        acquired = await ws.receive_json()
+                        target = {
+                            key: acquired["state"][key]
+                            for key in (
+                                "tab_id",
+                                "document_id",
+                                "viewport_width",
+                                "viewport_height",
+                                "scroll_x",
+                                "scroll_y",
+                                "position_revision",
+                            )
+                        }
+                        target["position_revision"] += 1
+                        stale = {
+                            "operation": "wheel",
+                            "input_id": 1,
+                            "control_epoch": acquired["control_epoch"],
+                            "target": target,
+                            "x": 100,
+                            "y": 100,
+                            "delta_x": 0,
+                            "delta_y": 80,
+                        }
+                        for _ in range(2):
+                            await ws.send_json(stale)
+                            assert (await ws.receive_json())["status"] == "stale"
+                        assert (await status())["control_mode"] == "human"
+                        await ws.send_json(
+                            {
+                                "operation": "reset_keys",
+                                "input_id": 2,
+                                "control_epoch": acquired["control_epoch"],
+                            }
+                        )
+                        assert (await ws.receive_json())["status"] == "applied"
+                        await ws.send_json(
+                            {
+                                "operation": "release",
+                                "control_epoch": acquired["control_epoch"],
+                            }
+                        )
+                        assert (await ws.receive_json())["status"] == "applied"
+                    metrics["checks"].append(
+                        "H04: actual host consumes/replays stale wheel ack without dispatch; stays human until explicit handback"
+                    )
                 scenarios = (
                     ("H02_PRE_RESET", "H02_BUDGET", "H02_RECOVERY", "H02_CANCEL_EDGE")
                     if args.handoff_boundaries

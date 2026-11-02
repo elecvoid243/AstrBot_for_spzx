@@ -40,6 +40,176 @@ afterEach(() => {
 });
 
 describe("Agent browser snapshots", () => {
+  it("maps displayed CSS bounds and merges only adjacent wheel input until a loaded frame", async () => {
+    class Socket {
+      static OPEN = 1;
+      static instance: Socket;
+      readyState = 1;
+      sent: Record<string, any>[] = [];
+      onopen?: () => void;
+      onmessage?: (event: { data: string }) => void;
+      constructor() {
+        Socket.instance = this;
+      }
+      send(raw: string) {
+        this.sent.push(JSON.parse(raw));
+      }
+      close() {
+        this.readyState = 3;
+      }
+      ack(operation: string, id?: number, status = "applied") {
+        this.onmessage?.({
+          data: JSON.stringify({
+            operation,
+            input_id: id,
+            status,
+            control_epoch: 2,
+            state: { control_mode: "human" },
+          }),
+        });
+      }
+    }
+    vi.stubGlobal("WebSocket", Socket);
+    const frame = {
+      ...current,
+      manual_control_version: 1,
+      keyboard_input_version: 1,
+      pointer_input_version: 1,
+      viewport_width: 1280,
+      viewport_height: 720,
+      document_id: "doc",
+      scroll_x: 0,
+      scroll_y: 0,
+      position_revision: 0,
+      control_epoch: 2,
+      applied_input_id: 0,
+      mime_type: "image/jpeg",
+      image: "pixels",
+      sequence: 1,
+    };
+    get.mockResolvedValueOnce(ok(frame)).mockResolvedValueOnce(ok(frame));
+    createSession.mockResolvedValue({
+      data: { ticket: "ticket", websocket_path: "/control" },
+    });
+    const view = mount(AgentBrowserView, {
+      props: { chatId: "chat-1", visible: true },
+      attachTo: document.body,
+    });
+    try {
+      await flushPromises();
+      const image = view.get("img");
+      Object.defineProperties(image.element, {
+        currentSrc: { get: () => image.attributes("src") },
+        complete: { get: () => true },
+        naturalWidth: { get: () => 1280 },
+      });
+      vi.spyOn(image.element, "getBoundingClientRect").mockReturnValue({
+        left: 10,
+        top: 20,
+        right: 650,
+        bottom: 380,
+        width: 640,
+        height: 360,
+      } as DOMRect);
+      await image.trigger("load");
+      await view.get(".agent-browser-takeover").trigger("click");
+      await flushPromises();
+      const socket = Socket.instance;
+      socket.ack("acquire");
+      await flushPromises();
+      await image.trigger("click", { clientX: 330, clientY: 200, detail: 2 });
+      expect(socket.sent.at(-1)).toMatchObject({
+        operation: "click",
+        click_count: 2,
+        x: 640,
+        y: 360,
+        input_id: 1,
+        target: { position_revision: 0 },
+      });
+      await image.trigger("wheel", {
+        clientX: 330,
+        clientY: 200,
+        deltaX: 2,
+        deltaY: 3,
+        deltaMode: 1,
+      });
+      await image.trigger("wheel", {
+        clientX: 330,
+        clientY: 200,
+        deltaX: 3,
+        deltaY: 2,
+        deltaMode: 1,
+      });
+      socket.ack("click", 1);
+      await flushPromises();
+      expect(view.attributes("data-awaiting-frame")).toBe("true");
+      expect(socket.sent.filter((x) => x.operation === "wheel")).toHaveLength(
+        0,
+      );
+      stream.enqueue(
+        new TextEncoder().encode(
+          `data: ${JSON.stringify({
+            ...frame,
+            type: "frame",
+            sequence: 2,
+            applied_input_id: 1,
+            width: 1280,
+            height: 720,
+          })}\n\n`,
+        ),
+      );
+      await flushPromises();
+      expect(socket.sent.at(-1)).toMatchObject({
+        operation: "wheel",
+        delta_x: 80,
+        delta_y: 80,
+        input_id: 2,
+      });
+      socket.ack("wheel", 2, "stale");
+      await flushPromises();
+      expect(view.attributes("data-human-control")).toBe("true");
+      expect(socket.sent.filter((x) => x.operation === "wheel")).toHaveLength(
+        1,
+      );
+      socket.ack("reset_keys", 3);
+      socket.ack("reset_keys", 4);
+      stream.enqueue(
+        new TextEncoder().encode(
+          `data: ${JSON.stringify({
+            ...frame,
+            type: "frame",
+            sequence: 3,
+            applied_input_id: 3,
+            width: 1280,
+            height: 720,
+          })}\n\n`,
+        ),
+      );
+      await flushPromises();
+      expect(socket.sent.filter((x) => x.operation === "wheel")).toHaveLength(
+        1,
+      );
+      await image.trigger("wheel", {
+        clientX: 330,
+        clientY: 200,
+        deltaX: 0,
+        deltaY: 10,
+        deltaMode: 0,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(socket.sent.filter((x) => x.operation === "wheel")).toHaveLength(
+        2,
+      );
+      expect(socket.sent.at(-1)).not.toHaveProperty("queuedAt");
+      socket.ack("wheel", Number(socket.sent.at(-1)?.input_id), "uncertain");
+      await flushPromises();
+      expect(view.attributes("data-human-control")).toBe("false");
+    } finally {
+      view.unmount();
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("orders text, commits composition once and drops queued content on blur", async () => {
     class ControlSocket {
       static OPEN = 1;

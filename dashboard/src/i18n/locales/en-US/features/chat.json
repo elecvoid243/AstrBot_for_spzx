@@ -1,5 +1,11 @@
 {
   "agentBrowser": {
+    "staleWheel": "Page moved · old wheel input rejected. Wait for the new image and scroll again.",
+    "inputPending": "Sending ordered input…",
+    "waitingFrame": "Input confirmed · waiting for updated page",
+    "frameReady": "Updated page displayed",
+    "upgradePointer": "Upgrade Browser Use for scrolling and double-click",
+    "humanActor": "You",
     "changingControl": "Changing control. Waiting for browser actions to settle.",
     "takeOver": "Take control",
     "handBack": "Hand back",

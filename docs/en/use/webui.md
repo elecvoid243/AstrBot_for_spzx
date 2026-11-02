@@ -587,7 +587,13 @@ again and hand back before starting a new task. Stop execution and Close browser
 keep their existing meanings. Plugins without `manual_control_version` remain
 read-only and show an update hint. Plugins with click takeover but without
 `keyboard_input_version` retain clicks and handback, and show a keyboard upgrade hint.
-Double-click and scrolling are added by later tickets.
+
+After takeover, double-click targets or scroll vertically and horizontally over the image. Wheel gestures inside the controlled image stay on the remote page; scrolling outside it remains local. The actual image rectangle maps to the remote CSS viewport, including narrow sidebars, host zoom and fullscreen. **Sending ordered input** means an acknowledgement is pending; **Input confirmed · waiting for updated page** means the runtime accepted the operation but its new image has not loaded yet. **Updated page displayed** confirms a later consistent image loaded, rather than only a successful API response. The controller is shown as human control and human actions are marked **You** in the timeline. Fullscreen also provides **Hand back**.
+
+Navigation, tab/viewport changes and document or nested-container scrolling invalidate old position samples. Replaceable adjacent wheel deltas are merged, and stale wheel samples are discarded when the new image arrives. Clicks, text and keys remain ordered and separate from the image buffer. Failure stops input without replay. Human viewing targets up to 10 captures/second (actual rate depends on page and machine), with one pending image, bounded action/input queues and the existing JPEG size budget. Complex dragging, file transfer and system dialogs are outside this feature. Plugins without `pointer_input_version: 1` retain single clicks and show a scrolling/double-click upgrade hint.
+
+![Human scrolling and double-click feedback](images/agent-browser-pointer.png)
+
 
 After confirmed takeover, click the image to focus remote keyboard input. Type English or Chinese, use Tab, Enter, arrows, Backspace and editing shortcuts, or explicitly paste plain text (up to 2048 characters / 4096 UTF-8 bytes). IME preedit stays local and commits once; cancelled composition inserts nothing. Tab/Escape reach the remote page while the image owns keyboard focus, including fullscreen. Use **Leave keyboard control** to return to local controls, or **Hand back control** to explicitly return the browser to the Agent. Clicking the chat composer or another local control releases held keys. Target changes discard queued input and require focusing the image again. Passwords and input payloads are absent from action summaries; after handback the Agent can still read visible page content.
 

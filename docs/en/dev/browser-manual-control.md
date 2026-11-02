@@ -1,4 +1,4 @@
-# Browser manual control protocol (H01/H02/H03)
+# Browser manual control protocol (H01–H04)
 
 The existing `browser-use/status`, `snapshot`, `stream`, `stop`, and `close`
 extensions retain their methods and ownership rules. `manual_control_version: 1`
@@ -29,7 +29,7 @@ announces support. Missing capability means read-only compatibility.
    resolves its own current target and compares every field before dispatch.
    There is no user-selected CDP target, command or script proxy. During human
    control, the existing consistent-snapshot capture path supplies bounded JPEGs
-   over SSE at no more than four frames per second, including static pages.
+   over SSE at a target of no more than ten captures per second, including static pages.
    Frame and control-state slots remain separate so metadata cannot erase the
    only changed frame. Read-only screencast observation remains compatible.
 5. Input IDs start at 1 and increase by one. The runtime consumes an ID before
@@ -63,8 +63,7 @@ Its random loopback bearer credential is never delivered to the frontend. The
 legacy extension URL `/plugins/extensions/browser-use/manual` cannot accept public
 control bodies; only host-created request context can enter the audited handler.
 
-H04 scrolling,
-double-click and feedback; H05 full lifecycle and multiwindow recovery. They must
+H05 adds full lifecycle and multiwindow recovery. It must
 retain these identity, acknowledgement and explicit-handback contracts.
 
 
@@ -103,3 +102,37 @@ events, but does not emulate a physical Windows IME candidate window or OS hotke
 Those platform interactions still require a human Windows IME check.
 
 `keyboard_input_version: 1` announces keyboard/paste support separately from click control. Older plugins retain clicks and display a keyboard upgrade hint; older read-only clients ignore the new field.
+
+
+## Pointer and feedback (H04)
+
+`pointer_input_version: 1` independently announces wheel and double-click support.
+`click` optionally carries `click_count: 1|2`; a native local double-click sends
+one press/release with count 1 followed by count 2, without an extra duplicated
+single click. `wheel` carries CSS `x/y`, `delta_x/delta_y`, the ordered ID, epoch
+and displayed target. Deltas are finite CSS pixels bounded to ±2048; the client
+normalizes DOM line and page modes before dispatch. Only adjacent wheel samples
+at identical target and position can merge; clicks, key transitions and text are
+never merged or placed in the replaceable image slot. There are at most 128
+queued commands. Stale wheel samples are discarded rather than rebound; uncertain
+results stop input and are never automatically replayed.
+
+New targets include `position_revision`, sampled by a document scroll/resize
+listener including nested scrollers. This revision is independent of image sequence
+and control epoch. Legacy targets without the optional field remain compatible.
+Snapshot capture compares the revision before/after taking pixels, rejects mixed
+coordinate spaces, and scales images to at most 1280×720 while retaining remote
+CSS viewport dimensions. The existing 512 KiB JPEG/768 KiB event budgets remain.
+Human capture waits 100 ms between captures (read-only mode keeps 250 ms); queues,
+subscriber limits and deadlines remain bounded. Actual capture rate is machine-dependent.
+
+`applied_input_id` in a frame is sampled before capture. The client distinguishes
+queued/unacknowledged input from acknowledged input waiting for a later loaded
+image of the same epoch containing that input ID. Identical JPEGs are reusable
+only after the existing image has actually decoded. `data-frame-latency` exposes
+the latest input-to-loaded-frame milliseconds for local acceptance; no payload is
+logged. The authenticated production fixture supports `--pointer-input` and
+records observed end-to-end latency and screenshots.
+
+
+Stale wheel samples receive a consumed-ID `status: stale` acknowledgement, without dispatch or automatic replay. Human ownership remains active while the next image synchronizes. Other rejected/uncertain commands retain fail-closed behavior.

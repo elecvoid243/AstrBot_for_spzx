@@ -208,11 +208,14 @@ export type action = 'start' | 'poll';
  * Closed input vocabulary; browser targets can only be validated, not chosen.
  */
 export type BrowserControlCommand = {
-    operation: 'click' | 'key' | 'text' | 'reset_keys' | 'heartbeat' | 'release';
+    operation: 'click' | 'wheel' | 'key' | 'text' | 'reset_keys' | 'heartbeat' | 'release';
     control_epoch: number;
     input_id?: (number | null);
     x?: (number | null);
     y?: (number | null);
+    click_count?: 1 | 2;
+    delta_x?: (number | null);
+    delta_y?: (number | null);
     target?: (BrowserControlTarget | null);
     code?: (string | null);
     key?: (string | null);
@@ -223,7 +226,9 @@ export type BrowserControlCommand = {
     source?: ('typing' | 'composition' | 'paste' | null);
 };
 
-export type operation = 'click' | 'key' | 'text' | 'reset_keys' | 'heartbeat' | 'release';
+export type operation = 'click' | 'wheel' | 'key' | 'text' | 'reset_keys' | 'heartbeat' | 'release';
+
+export type click_count = 1 | 2;
 
 export type BrowserControlSessionRequest = {
     chat_id: string;
@@ -244,6 +249,7 @@ export type BrowserControlTarget = {
     viewport_height: number;
     scroll_x: number;
     scroll_y: number;
+    position_revision?: (number | null);
 };
 
 /**

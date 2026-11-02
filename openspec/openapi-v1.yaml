@@ -8425,6 +8425,13 @@ components:
         scroll_y:
           title: Scroll Y
           type: number
+        position_revision:
+          anyOf:
+          - minimum: 0
+            type: integer
+          - type: 'null'
+          default: null
+          title: Position Revision
       required:
       - tab_id
       - document_id
@@ -8442,6 +8449,7 @@ components:
         operation:
           enum:
           - click
+          - wheel
           - key
           - text
           - reset_keys
@@ -8474,6 +8482,29 @@ components:
           - type: 'null'
           default: null
           title: Y
+        click_count:
+          default: 1
+          enum:
+          - 1
+          - 2
+          title: Click Count
+          type: integer
+        delta_x:
+          anyOf:
+          - maximum: 2048
+            minimum: -2048
+            type: number
+          - type: 'null'
+          default: null
+          title: Delta X
+        delta_y:
+          anyOf:
+          - maximum: 2048
+            minimum: -2048
+            type: number
+          - type: 'null'
+          default: null
+          title: Delta Y
         target:
           anyOf:
           - $ref: '#/components/schemas/BrowserControlTarget'

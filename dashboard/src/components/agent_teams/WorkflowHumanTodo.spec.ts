@@ -212,6 +212,31 @@ describe("persistent human request handling", () => {
     }
   });
 
+  it("keeps the reviewed version and feedback when polling replaces a request", async () => {
+    api.artifact.mockResolvedValue({ content: { text: "Reviewed report" }, files: [] });
+    const wrapper = mount(WorkflowHumanTodo, {
+      props: { todo, busy: false, paused: false, cancelled: false },
+      global: { stubs },
+    });
+    try {
+      await wrapper.get('[data-testid="human-preview"]').trigger("click");
+      await flushPromises();
+      await wrapper.get('[data-testid="human-feedback"]').setValue("Add evidence");
+      await wrapper.setProps({ todo: JSON.parse(JSON.stringify(todo)) });
+      expect(wrapper.text()).toContain("Reviewed report");
+      await wrapper.get('[data-testid="human-reject"]').trigger("click");
+      expect(wrapper.emitted("submit")?.[0]?.[1]).toMatchObject({
+        action: "reject", feedback: "Add evidence", artifact_ref: todo.artifact_ref,
+      });
+      await wrapper.setProps({ todo: { ...todo, artifact_ref: { artifact_id: "report", version: 2 } } });
+      expect(wrapper.text()).not.toContain("Reviewed report");
+      expect((wrapper.get('[data-testid="human-feedback"]').element as HTMLTextAreaElement).value).toBe("");
+      expect(wrapper.get('[data-testid="human-submit"]').attributes("disabled")).toBeDefined();
+    } finally {
+      wrapper.unmount();
+    }
+  });
+
   it("requires rejection feedback and reuses request identity on repeated submit", async () => {
     const wrapper = mount(WorkflowHumanTodo, {
       props: { todo, busy: false, paused: true, cancelled: false },
@@ -303,6 +328,9 @@ describe("persistent human request handling", () => {
     expect(wrapper.find('[data-testid="human-reject"]').exists()).toBe(false);
     await wrapper.get('input[value="a"]').setValue();
     await wrapper.get('[data-testid="human-choice-text"]').setValue("a note");
+    await wrapper.setProps({ todo: JSON.parse(JSON.stringify(choice)) });
+    expect((wrapper.get('input[value="a"]').element as HTMLInputElement).checked).toBe(true);
+    expect((wrapper.get('[data-testid="human-choice-text"]').element as HTMLTextAreaElement).value).toBe("a note");
     await wrapper.get('[data-testid="human-submit"]').trigger("click");
     await wrapper.get('[data-testid="human-submit"]').trigger("click");
     expect(wrapper.emitted("submit")?.[0]).toEqual(

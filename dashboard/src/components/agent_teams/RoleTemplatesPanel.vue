@@ -509,7 +509,7 @@ async function load() {
       const published = roles.value.find(
         (role) => role.role_id === item.asset_id,
       );
-      if (published) published.hasDraft = true;
+      if (published) published.hasDraft = item.published_revision !== item.revision;
       else
         roles.value.push({
           role_id: item.asset_id,

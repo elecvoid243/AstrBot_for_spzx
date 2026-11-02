@@ -10,6 +10,28 @@ vi.mock("@/i18n/composables", () => ({
 }));
 
 describe("canvas asset editing", () => {
+  it("adds a directly configured Agent without any role templates", async () => {
+    const wrapper = mount(WorkflowGraphCanvas, {
+      props: { definition: { name: "Direct", tasks: [], edges: [], required_inputs: [] }, roles: [] },
+      global: { stubs: {
+        TeamsFlowCanvas: true, WorkflowLoopPanel: true, RoleResourcesEditor: true,
+        "v-btn": { template: "<button><slot /></button>" },
+        "v-icon": true, "v-chip": true, "v-select": true, "v-text-field": true,
+        "v-textarea": true, "v-spacer": true, "v-alert": true, "v-switch": true,
+        "v-expansion-panels": true,
+      } },
+    });
+    try {
+      await wrapper.get('[data-testid="add-inline-agent"]').trigger('click');
+      const saved: any = wrapper.emitted('update:definition')!.at(-1)![0];
+      expect(saved.tasks).toHaveLength(1);
+      expect(saved.tasks[0]).toMatchObject({ role: { name: 'Agent' }, installation: { profile_id: 'default' } });
+      expect(saved.tasks[0].role_id).toBeUndefined();
+      expect(saved.tasks[0].member).toBe(saved.tasks[0].id);
+      await wrapper.findAll('button').find((button) => button.text() === 'graph.undo')!.trigger('click');
+      expect((wrapper.emitted('update:definition')!.at(-1)![0] as any).tasks).toEqual([]);
+    } finally { wrapper.unmount(); }
+  });
   it("upgrades a pinned template without discarding explicit overrides", async () => {
     const wrapper = mount(WorkflowGraphCanvas, {
       props: {

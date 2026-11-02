@@ -1,6 +1,6 @@
 <template>
   <section class="workflow-workspace">
-    <div class="d-flex flex-wrap align-center ga-2 mb-4">
+    <div v-if="mode === 'assets' || !selectedRun" class="d-flex flex-wrap align-center ga-2 mb-4">
       <h2 class="text-h5">
         {{
           tm(
@@ -52,7 +52,7 @@
       role="alert"
       >{{ error }}</v-alert
     >
-    <p class="text-body-2 text-medium-emphasis mb-4">
+    <p v-if="mode === 'assets' || !selectedRun" class="text-body-2 text-medium-emphasis mb-4">
       {{
         tm(
           mode === "runs"
@@ -109,7 +109,7 @@
           >{{ asset.definition.name }} · v{{ asset.version }}</v-card-title
         >
         <v-card-text class="text-wrap">
-          <p v-if="drafts.some((item) => item.asset_id === asset.asset_id)" data-testid="editing-draft">{{ tm("draft.editing") }}</p>
+          <p v-if="drafts.some((item) => item.asset_id === asset.asset_id && item.published_revision !== item.revision)" data-testid="editing-draft">{{ tm("draft.editing") }}</p>
           <p v-if="asset.definition.kind === 'autonomous'">
             {{ tm("autonomous.title") }} · {{ tm("autonomous.allowedRoles") }}:
             {{ asset.definition.allowed_roles.length }}
@@ -164,6 +164,8 @@
             · {{ humanRequests.length }}</span
           ></v-btn
         >
+        <v-spacer />
+        <v-btn v-if="selectedRun" variant="text" :disabled="!!currentOperation" @click="refresh">{{ tm('page.refresh') }}</v-btn>
       </nav>
       <section
         v-if="runView === 'pending'"
@@ -253,17 +255,25 @@
         class="mt-4"
         data-testid="run-detail"
       >
-        <v-card-text>
-          <v-alert
-            type="info"
-            variant="tonal"
-            class="mb-4"
-            icon="mdi-lock-outline"
-            >{{ tm("workbench.snapshotHint") }}</v-alert
-          >
-          <div class="workbench-columns">
-            <div class="workbench-column">
+        <v-card-text class="workbench-body">
+          <div class="d-flex flex-wrap align-center ga-3 mb-4">
+            <h2 class="text-h5 font-weight-bold flex-grow-1">{{ selectedRun.snapshot.definition.name }}</h2>
+            <v-chip variant="tonal" :color="selectedRun.status === 'completed' ? 'success' : 'primary'">{{ tm(`v2.states.${selectedRun.status}`) }}</v-chip>
+            <v-btn variant="text" :aria-pressed="runDisplay === 'workbench'" @click="runDisplay = 'workbench'">{{ tm('workbench.workspace') }}</v-btn>
+            <v-btn variant="text" :aria-pressed="runDisplay === 'graph'" @click="runDisplay = 'graph'">{{ tm('progress.graph') }}</v-btn>
+          </div>
+          <p class="workflow-text text-body-2 mb-3" data-testid="run-goal">{{ selectedRun.snapshot.task ?? Object.values(selectedRun.snapshot.inputs ?? {}).join(' · ') }}</p>
+          <p class="text-caption text-medium-emphasis mb-4">
+            <v-icon size="small" class="mr-1">mdi-lock-outline</v-icon>{{ tm("workbench.snapshotHint") }}
+          </p>
+          <nav v-show="runDisplay === 'workbench'" class="workbench-panel-nav mb-4" :aria-label="tm('workbench.panels')">
+            <v-btn v-for="panel in ['tasks', 'process', 'results'] as const" :key="panel" :variant="activeRunPanel === panel ? 'tonal' : 'text'" :aria-pressed="activeRunPanel === panel" @click="activeRunPanel = panel">{{ tm(`workbench.panel${panel}`) }}</v-btn>
+          </nav>
+          <WorkflowGraphCanvas v-if="runDisplay === 'graph'" :definition="selectedRun.runtime_definition ?? selectedRun.snapshot.definition" :tasks="selectedRun.tasks" :child-assets="selectedRun.snapshot.child_assets ?? {}" readonly @select-task="selectRunTask" />
+          <div v-show="runDisplay === 'workbench'" class="workbench-columns" :data-active-panel="activeRunPanel">
+            <div class="workbench-column workbench-tasks">
               <WorkflowRunProgress
+                compact
                 :run="selectedRun"
                 :selected-task="selectedTaskNode"
                 @select="selectRunTask"
@@ -282,7 +292,7 @@
               <p v-if="historyErrors[detailRun.run_id]" role="alert">{{ historyErrors[detailRun.run_id] }}</p>
               <WorkflowRunProcess :run="detailRun" :busy="!!currentOperation" @resolve="resolveTool" />
             </div>
-            <div class="workbench-column">
+            <div class="workbench-column workbench-results">
           <section
             v-if="selectedRun.todos?.length"
             :aria-label="tm('human.title')"
@@ -307,6 +317,12 @@
             :busy="!!currentOperation"
             @submit="applyRunControl"
           />
+          <details class="my-3 text-caption">
+            <summary>{{ tm('workbench.identifiers') }}</summary>
+            <p class="workflow-text mt-2">{{ tm('v2.attempt') }}: {{ detailRun.state.attempt_id }}</p>
+            <p class="workflow-text">{{ tm('v2.member') }}: {{ detailRun.snapshot.member?.member_id ?? '—' }}</p>
+            <p class="workflow-text">{{ tm('child.root') }}: {{ selectedRun.run_id }}</p>
+          </details>
           <h3 class="text-h6 mt-6 mb-3">{{ tm("progress.artifacts") }}</h3>
           <v-btn
             v-if="
@@ -439,14 +455,14 @@
               }}</v-btn
             >
           </v-alert>
+          <details v-if="!['interrupted', 'failed', 'blocked'].includes(detailRun.status)" class="my-3">
+            <summary>{{ tm('workbench.executionDetails') }}</summary>
           <RunnerCapabilities
-            v-if="
-              !['interrupted', 'failed', 'blocked'].includes(detailRun.status)
-            "
             :runner="detailRun.snapshot.effective?.runner"
             :identity="detailRun.recovery?.remote_identity"
             class="my-3"
           />
+          </details>
           <v-alert
             v-if="detailRun.state.reason"
             type="warning"
@@ -512,13 +528,13 @@
             @click="prepareRevision"
             >{{ tm("v2.revise") }}</v-btn
           >
-          <p
+          <details
             v-if="detailRun.snapshot.input_artifacts?.length"
             class="workflow-text mt-3"
           >
-            {{ tm("v2.pinnedInputs") }}:
-            {{ JSON.stringify(detailRun.snapshot.input_artifacts) }}
-          </p>
+            <summary>{{ tm("v2.pinnedInputs") }}</summary>
+            <p v-for="ref in detailRun.snapshot.input_artifacts" :key="`${ref.artifact_id}:${ref.version}`" class="text-caption mt-2">{{ ref.artifact_id }} · v{{ ref.version }}</p>
+          </details>
           <v-expansion-panels class="mt-4" variant="accordion">
             <v-expansion-panel :title="tm('v2.contract')">
               <v-expansion-panel-text>
@@ -588,6 +604,8 @@
             <v-text-field
               v-model="graphForm.name"
               :label="tm('v2.name')"
+              density="compact"
+              hide-details
               style="min-width: 180px"
             />
             <v-select
@@ -596,9 +614,15 @@
               item-title="name"
               item-value="id"
               :label="tm('graph.defaultModel')"
+              density="compact"
+              hide-details
               clearable
               style="min-width: 220px"
             />
+          </div>
+          <details :open="graphUsageInvalid" class="mb-3">
+            <summary class="text-subtitle-1">{{ tm("graph.executionSettings") }}</summary>
+            <div class="d-flex flex-wrap ga-3 mt-3">
             <v-text-field
               v-model.number="graphForm.max_parallel"
               type="number"
@@ -615,9 +639,7 @@
               :label="tm('child.maxDepth')"
               style="max-width: 220px"
             />
-          </div>
-          <details :open="graphUsageInvalid" class="mb-3">
-            <summary class="text-subtitle-1">{{ tm("usage.limits") }}</summary>
+            </div>
             <RunLimitsForm
               v-model="graphForm.limits"
               @validation="graphUsageInvalid = $event"
@@ -701,12 +723,15 @@
               {{ issue.path }} · {{ issue.message }}
             </p>
           </v-alert>
+          <details v-if="readiness?.roles?.length" class="mb-4">
+            <summary>{{ tm('workbench.executionDetails') }}</summary>
           <RunnerCapabilities
             v-for="role in readiness?.roles ?? []"
             :key="role.role_id + ':' + role.version"
             :runner="role.runner"
             class="mb-3"
           />
+          </details>
           <p class="mb-4">
             {{ runAsset.definition.name }} · v{{ runAsset.version }}
           </p>
@@ -951,7 +976,14 @@ const humanRequests = ref<any[]>([]);
 const inboxBusy = ref(false);
 async function openRequest(todo: any) {
   await openRun(todo.root_run_id);
-  selectedTaskNode.value = todo.recommendation_ref?.artifact_id ?? todo.task_run_id;
+  if (selectedRun.value?.run_id !== todo.root_run_id) return;
+  runView.value = "all";
+  const source = allRunTasks.value.find((task) =>
+    todo.recommendation_ref &&
+    task.result_ref?.artifact_id === todo.recommendation_ref.artifact_id &&
+    task.result_ref?.version === todo.recommendation_ref.version,
+  );
+  selectRunTask(source?.run_id ?? todo.task_run_id);
 }
 async function answerInbox(
   rootId: string,
@@ -996,6 +1028,8 @@ const visibleRuns = computed(() =>
   }),
 );
 const selectedRun = ref<any>(null);
+const runDisplay = ref<'workbench' | 'graph'>('workbench');
+const activeRunPanel = ref<'tasks' | 'process' | 'results'>('process');
 const runOperations = ref(
   new Map<
     string,
@@ -1569,6 +1603,8 @@ async function saveGraph() {
 }
 
 function selectRunTask(nodeId: string | null) {
+  runDisplay.value = 'workbench';
+  activeRunPanel.value = 'process';
   if (nodeId)
     selectedTaskNode.value =
       allRunTasks.value.find((task) => task.run_id === nodeId)?.run_id ??
@@ -1944,10 +1980,23 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
-.workbench-columns { display: grid; grid-template-columns: minmax(220px, 1fr) minmax(300px, 1.5fr) minmax(220px, 1fr); gap: 16px; align-items: start; }
+.workbench-columns { display: grid; grid-template-columns: minmax(210px, 0.8fr) minmax(320px, 1.65fr) minmax(250px, 1fr); gap: 20px; align-items: start; }
 .workbench-column { min-width: 0; }
 .workbench-process { max-height: 75vh; overflow-y: auto; }
-@media (max-width: 1200px) { .workbench-columns { grid-template-columns: 1fr; } .workbench-process { max-height: none; } }
+.workbench-panel-nav { display: none; }
+@media (max-width: 1100px) {
+  .workbench-columns { grid-template-columns: minmax(0, 1fr); }
+  .workbench-process { max-height: 70vh; }
+  .workbench-panel-nav { display: flex; flex-wrap: wrap; gap: 4px; }
+  .workbench-columns:not([data-active-panel='tasks']) > .workbench-tasks,
+  .workbench-columns:not([data-active-panel='process']) > .workbench-process,
+  .workbench-columns:not([data-active-panel='results']) > .workbench-results { display: none; }
+}
+@media (max-width: 600px) {
+  .workbench-body { padding: 16px; }
+  .workbench-panel-nav { display: grid; grid-template-columns: auto auto auto; }
+  .workbench-panel-nav :deep(.v-btn) { min-width: 0; padding-inline: 6px; font-size: 12px; }
+}
 
 :deep(.graph-dialog-overlay) {
   height: min(900px, calc(100vh - 48px));
@@ -1961,9 +2010,10 @@ onUnmounted(() => {
   flex-direction: column;
   min-height: 0;
   flex: 1 1 0;
+  overflow-y: auto;
 }
 :deep(.graph-dialog-overlay > .graph-dialog-card > .graph-dialog-content) {
-  overflow-y: hidden;
+  overflow-y: auto;
 }
 .graph-dialog-content > :not(.graph-dialog-canvas) {
   flex: 0 0 auto;
@@ -1972,7 +2022,7 @@ onUnmounted(() => {
   display: flex;
   flex: 1 1 auto;
   flex-direction: column;
-  min-height: 0;
+  min-height: min(480px, 65vh);
 }
 .graph-dialog-canvas :deep(.graph-columns) {
   flex: 1 1 0;

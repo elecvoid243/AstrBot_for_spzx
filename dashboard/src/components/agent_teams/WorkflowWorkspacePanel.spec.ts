@@ -173,6 +173,32 @@ describe("workflow workspace", () => {
     wrapper.unmount();
   });
 
+  it("opens the exact recommendation task from the inbox in the workbench", async () => {
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: "/", component: slotStub }] });
+    await router.push("/");
+    const todo = { todo_id: "todo-1", root_run_id: "run-1", task_run_id: "question", kind: "question", question: "Choose a region", status: "pending", constraints: { choices: [], max_length: 100 }, recommendation_ref: { artifact_id: "source-1", version: 1 } };
+    api.humanRequests.mockResolvedValue({ requests: [todo] });
+    api.run.mockResolvedValue({ ...run, tasks: [
+      { ...run, run_id: "question" },
+      { ...run, run_id: "recommendation-task", result_ref: todo.recommendation_ref },
+    ] });
+    const wrapper = mount(WorkflowWorkspacePanel, { props: { mode: "runs" }, global: { plugins: [router], stubs: {
+      ...stubs,
+      WorkflowRunProcess: { props: ["run"], template: '<div data-testid="selected-process">{{ run.run_id }}</div>' },
+    } } });
+    try {
+      await flushPromises();
+      await wrapper.get('[data-testid="runs-pending"]').trigger("click");
+      await wrapper.get('[data-testid="human-inbox"]').findAll("button").find((button) => button.text() === "human.openProcess")!.trigger("click");
+      await flushPromises();
+      expect(wrapper.find('[data-testid="human-inbox"]').exists()).toBe(false);
+      expect(wrapper.get('[data-testid="runs-all"]').attributes("aria-pressed")).toBe("true");
+      expect(wrapper.get('[data-testid="selected-process"]').text()).toBe("recommendation-task");
+    } finally {
+      wrapper.unmount();
+    }
+  });
+
   it("finds active, waiting and historical runs without editing their definitions", async () => {
     const router = createRouter({
       history: createMemoryHistory(),

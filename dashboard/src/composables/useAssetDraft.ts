@@ -5,6 +5,7 @@ type Kind = "role" | "workflow" | "autonomous";
 export type Draft = {
   asset_id: string;
   revision: number;
+  published_revision?: number | null;
   body: any;
   base_version: number | null;
 };

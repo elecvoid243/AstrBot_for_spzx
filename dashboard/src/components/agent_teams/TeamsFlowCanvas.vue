@@ -7,7 +7,6 @@
       :nodes-draggable="isEdit"
       :nodes-connectable="isEdit"
       :elements-selectable="isEdit"
-      :selection-key-code="['Control', 'Meta']"
       :selection-mode="SelectionMode.Partial"
       :snap-to-grid="isEdit && snapToGrid"
       :snap-grid="[16, 16]"
@@ -25,7 +24,7 @@
     >
       <Background :gap="16" />
       <Controls />
-      <MiniMap v-if="minimapVisible" pannable zoomable />
+      <MiniMap v-if="minimapVisible" :width="140" :height="90" pannable zoomable />
     </VueFlow>
   </div>
 </template>
@@ -299,7 +298,7 @@ function onEdgeDoubleClick(event: EdgeMouseEvent) {
   }
 }
 
-/** Forward a Ctrl/Cmd-drag box selection as the selected node id list. */
+/** Forward a Shift-drag box selection as the selected node id list. */
 function onSelectionDragStop(event: { nodes?: { id: string }[] }) {
   const ids = (event?.nodes ?? []).map((node) => node.id).filter((id): id is string => Boolean(id));
   emit('selectionChange', ids);

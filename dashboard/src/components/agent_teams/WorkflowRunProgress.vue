@@ -1,6 +1,6 @@
 <template>
   <div class="run-overview">
-    <div class="d-flex flex-wrap align-start ga-3 mb-5">
+    <div v-if="!compact" class="d-flex flex-wrap align-start ga-3 mb-5">
       <div class="run-name flex-grow-1">
         <h2 class="text-h5 font-weight-bold">
           {{ run.snapshot.definition.name }}
@@ -45,7 +45,7 @@
         >{{ tm(`v2.states.${run.status}`) }}</v-chip
       >
     </div>
-    <div class="run-columns">
+    <div class="run-columns" :class="{ 'is-compact': compact }">
       <v-card variant="outlined" class="run-progress">
         <v-card-title
           class="d-flex flex-wrap align-center ga-2 text-subtitle-1"
@@ -97,7 +97,7 @@
                 <span v-if="scopeNames[task.run_id]">{{ tm("child.scope") }}: {{ scopeNames[task.run_id] }}</span>
                 <span v-if="task.snapshot.iteration != null"> · {{ tm("loops.iteration") }} {{ task.snapshot.iteration }}</span>
               </p>
-              <p class="text-caption text-medium-emphasis mt-1">
+              <p v-if="!compact" class="text-caption text-medium-emphasis mt-1">
                 {{ task.snapshot.member?.name }} · {{ tm("v2.attempt") }}
                 {{ task.state.attempt_id }}
               </p>
@@ -149,7 +149,7 @@
           </button>
         </v-card-text>
       </v-card>
-      <aside class="run-aside">
+      <aside v-if="!compact" class="run-aside">
         <v-card
           variant="outlined"
           class="mb-4"
@@ -252,7 +252,7 @@
         "
       />
     </details>
-    <details v-if="run.snapshot.definition.tasks" class="mt-4">
+    <details v-if="!compact && run.snapshot.definition.tasks" class="mt-4">
       <summary>{{ tm("progress.graph") }}</summary>
       <WorkflowGraphCanvas
         :definition="run.runtime_definition ?? run.snapshot.definition"
@@ -279,7 +279,7 @@ import { computed } from "vue";
 import { useModuleI18n } from "@/i18n/composables";
 import WorkflowGraphCanvas from "./WorkflowGraphCanvas.vue";
 import WorkflowLoopHistory from "./WorkflowLoopHistory.vue";
-const props = defineProps<{ run: any; selectedTask: string | null }>();
+const props = defineProps<{ run: any; selectedTask: string | null; compact?: boolean }>();
 defineEmits<{ select: [nodeId: string | null] }>();
 const { tm } = useModuleI18n("features/agent-teams");
 const tasks = computed<any[]>(() => [
@@ -349,6 +349,8 @@ const members = computed(() =>
 .run-aside {
   min-width: 0;
 }
+.run-columns.is-compact { grid-template-columns: minmax(0, 1fr); }
+.run-columns.is-compact .run-task { padding: 14px 12px; }
 .run-attention {
   border-color: rgba(var(--v-theme-warning), 0.55);
 }

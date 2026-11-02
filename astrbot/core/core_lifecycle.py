@@ -360,6 +360,12 @@ class AstrBotCoreLifecycle:
                     name="asset_chat_delivery",
                 )
             )
+            tasks_.append(
+                asyncio.create_task(
+                    self.workflow_service.run_human_deadlines(),
+                    name="asset_human_deadlines",
+                )
+            )
         if cron_task:
             tasks_.append(cron_task)
         if temp_dir_cleaner_task:

@@ -554,7 +554,8 @@ class RoleAssetService:
             task = {
                 key: value
                 for key, value in task.items()
-                if value is not None or key in ("persona_id", "provider_id")
+                if value is not None
+                or key in ("persona_id", "provider_id", "human_wait")
             }
         except ValidationError as exc:
             raise RoleAssetError(

@@ -101,6 +101,7 @@ async def run_choice_scenario(
                 "request": "human.requested",
                 "answer": "human.answered",
                 "consume": "human.consumed",
+                "deadline": "human.requested",
             }.get(boundary):
                 if scenario.endswith("_pre"):
                     (folder / "kill-ready.json").write_text("ready", encoding="utf-8")
@@ -144,6 +145,16 @@ async def run_choice_scenario(
                                 "skills": [],
                                 "knowledge_bases": [],
                                 "max_steps": 8,
+                                **(
+                                    {
+                                        "human_wait": {
+                                            "timeout_seconds": 1,
+                                            "timeout_action": "use_recommendation",
+                                        }
+                                    }
+                                    if scenario == "choice_deadline_post"
+                                    else {}
+                                ),
                             },
                             "installation": {"profile_id": "default"},
                         },
@@ -207,7 +218,12 @@ async def run_choice_scenario(
                 "data"
             ]["requests"]
             for todo in requests:
-                assert todo["source_kind"] == "tool_call" and todo["deadline"] is None
+                assert todo["source_kind"] == "tool_call"
+                if scenario == "choice_deadline_post":
+                    assert todo["deadline"] is not None
+                    await service.sweep_human_deadlines()
+                    continue
+                assert todo["deadline"] is None
                 assert todo["scope_run_id"] == run["run_id"]
                 if (
                     scenario == "choice_independent"

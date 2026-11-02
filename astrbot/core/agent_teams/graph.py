@@ -659,7 +659,8 @@ def validate_graph(definition: GraphDefinition) -> None:
             {
                 key: value
                 for key, value in task.overrides.model_dump(exclude_unset=True).items()
-                if value is not None or key in ("persona_id", "provider_id")
+                if value is not None
+                or key in ("persona_id", "provider_id", "human_wait")
             },
         )
         if (

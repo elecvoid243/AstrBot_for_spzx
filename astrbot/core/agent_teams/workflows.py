@@ -44,6 +44,7 @@ from astrbot.core.agent_team_execution import (
 )
 from astrbot.core.agent_team_tools import AgentTeamToolRegistry
 from astrbot.core.agent_teams.assets import (
+    HumanWaitPolicy,
     RoleAssetError,
     RoleAssetService,
     RoleDefinition,
@@ -6841,7 +6842,14 @@ class WorkflowService:
                                         ),
                                         "node_id": task["id"],
                                         "answerable_by": [username],
-                                        "deadline": None,
+                                        "human_wait": human["human_wait"],
+                                        "deadline": time.time()
+                                        + human["human_wait"]["timeout_seconds"]
+                                        if human["human_wait"]["timeout_seconds"]
+                                        is not None
+                                        else None,
+                                        "timeout_checked_at": None,
+                                        "timeout_reason": None,
                                         "question": human["question"],
                                         "constraints": {
                                             "choices": human["choices"],
@@ -7316,6 +7324,10 @@ class WorkflowService:
             if todo is None:
                 root = await session.get(AgentWorkflowRun, _root_run_id(row))
                 assert root is not None
+                human_wait = (
+                    row.snapshot["effective"].get("human_wait")
+                    or HumanWaitPolicy().model_dump()
+                )
                 todo = AgentWorkflowTodo(
                     todo_id=todo_id,
                     root_run_id=root.run_id,
@@ -7342,7 +7354,12 @@ class WorkflowService:
                         "recommendation_error": None,
                         "artifact_ref": None,
                         "answerable_by": [username],
-                        "deadline": None,
+                        "human_wait": human_wait,
+                        "deadline": time.time() + human_wait["timeout_seconds"]
+                        if human_wait["timeout_seconds"] is not None
+                        else None,
+                        "timeout_checked_at": None,
+                        "timeout_reason": None,
                         "status": "pending",
                         "response": None,
                         "consumed_at": None,
@@ -7424,7 +7441,13 @@ class WorkflowService:
                 pass
 
     async def answer_todo(
-        self, username: str, run_id: str, todo_id: str, payload: dict
+        self,
+        username: str,
+        run_id: str,
+        todo_id: str,
+        payload: dict,
+        *,
+        timed_out: bool = False,
     ) -> dict:
         """Save a human response before attempting any dependency release.
 
@@ -7433,6 +7456,8 @@ class WorkflowService:
             run_id: Root run containing the request.
             todo_id: Frozen request identity shown with its preview.
             payload: Unique response identity, answer or explicit decision.
+            timed_out: Trusted service scheduler requesting the saved deadline action;
+                never accepted from the external answer payload.
 
         Returns:
             Current persisted run, including a response awaiting resume if paused.
@@ -7440,10 +7465,12 @@ class WorkflowService:
         Raises:
             RoleAssetError: Inaccessible request, invalid answer or conflicting response.
         """
-        try:
-            request = HumanAnswerRequest.model_validate(payload)
-        except ValidationError as exc:
-            raise RoleAssetError("Invalid human response") from exc
+        request = None
+        if not timed_out:
+            try:
+                request = HumanAnswerRequest.model_validate(payload)
+            except ValidationError as exc:
+                raise RoleAssetError("Invalid human response") from exc
         async with self.db.get_db() as session:
             root = await session.get(AgentWorkflowRun, run_id)
             if root is None or root.owner_username != username:
@@ -7454,6 +7481,118 @@ class WorkflowService:
                 raise RoleAssetError("Human request not found", status=404)
             if username not in todo.data.get("answerable_by", []):
                 raise RoleAssetError("Human request not found", status=404)
+            if timed_out:
+                now = time.time()
+                if (
+                    control.status == "cancelled"
+                    or todo.data["status"] != "pending"
+                    or todo.data.get("timeout_checked_at") is not None
+                    or todo.data.get("deadline") is None
+                    or todo.data["deadline"] > now
+                ):
+                    await session.commit()
+                    return await self.get_run(username, run_id)
+                policy = todo.data["human_wait"]
+                recommendation = todo.data.get("recommendation")
+                reason = None
+                value = recommendation.get("value") if recommendation else None
+                rationale = recommendation.get("reason") if recommendation else None
+                if policy["timeout_action"] != "use_recommendation":
+                    reason = "wait_policy"
+                elif not recommendation:
+                    reason = "missing_recommendation"
+                elif (
+                    not isinstance(value, str)
+                    or not isinstance(rationale, str)
+                    or not rationale.strip()
+                ):
+                    reason = "invalid_recommendation"
+                elif todo.data.get("source_kind") == "tool_call":
+                    call = await session.get(
+                        AgentWorkflowToolCall, todo.data["tool_record_id"]
+                    )
+                    if (
+                        call is None
+                        or call.run_id != todo.task_run_id
+                        or call.attempt_id != todo.data["attempt_id"]
+                        or todo.data["choice_spec"].get("recommendation")
+                        != recommendation
+                    ):
+                        reason = "evidence_unavailable"
+                    elif value not in todo.data["constraints"]["choices"]:
+                        reason = "invalid_recommendation"
+                else:
+                    ref = todo.data.get("recommendation_ref")
+                    artifact = (
+                        await session.get(
+                            AgentWorkflowArtifact, (ref["artifact_id"], ref["version"])
+                        )
+                        if ref
+                        else None
+                    )
+                    fields = todo.data.get("recommendation_fields") or {}
+                    values = []
+                    for key in ("value", "reason"):
+                        content = artifact.content if artifact else None
+                        for part in (fields.get(key) or "").split("."):
+                            content = (
+                                content.get(part) if isinstance(content, dict) else None
+                            )
+                        values.append(content)
+                    if values != [value, rationale]:
+                        reason = "evidence_unavailable"
+                    elif todo.data["kind"] == "approval":
+                        ref = todo.data["artifact_ref"]
+                        artifact = await session.get(
+                            AgentWorkflowArtifact, (ref["artifact_id"], ref["version"])
+                        )
+                        if artifact is None:
+                            reason = "evidence_unavailable"
+                        elif value not in {"approve", "reject"}:
+                            reason = "invalid_recommendation"
+                    elif (
+                        not value.strip()
+                        or len(value) > todo.data["constraints"]["max_length"]
+                        or todo.data["constraints"]["choices"]
+                        and value not in todo.data["constraints"]["choices"]
+                    ):
+                        reason = "invalid_recommendation"
+                if reason is None:
+                    automatic = {
+                        "request_id": "deadline:" + todo.todo_id,
+                        "action": "answer",
+                    }
+                    if todo.data.get("source_kind") == "tool_call":
+                        automatic["choice_id"] = value
+                    elif todo.data["kind"] == "approval":
+                        automatic.update(
+                            action=value, artifact_ref=todo.data["artifact_ref"]
+                        )
+                        if value == "reject":
+                            automatic["feedback"] = rationale
+                    else:
+                        automatic["answer"] = value
+                    try:
+                        request = HumanAnswerRequest.model_validate(automatic)
+                    except ValidationError:
+                        reason = "invalid_recommendation"
+                todo.data = {
+                    **todo.data,
+                    "timeout_checked_at": now,
+                    "timeout_reason": reason,
+                }
+                session.add(todo)
+                if reason is not None:
+                    session.add(
+                        AgentWorkflowEvent(
+                            run_id=todo.task_run_id,
+                            kind="human.deadline_waiting",
+                            data={"todo_id": todo.todo_id, "reason": reason},
+                        )
+                    )
+                    await session.commit()
+                    return await self.get_run(username, run_id)
+            assert request is not None
             decision = request.model_dump()
             if todo.data["kind"] == "approval":
                 if decision["artifact_ref"] != todo.data["artifact_ref"]:
@@ -7530,7 +7669,14 @@ class WorkflowService:
                     **todo.data,
                     "status": "answered",
                     "response": decision,
-                    "decision_source": {"type": "human", "username": username},
+                    "decision_source": {
+                        "type": "recommendation",
+                        "recommendation": todo.data["recommendation"],
+                        "recommendation_ref": todo.data.get("recommendation_ref"),
+                        "artifact_ref": todo.data.get("artifact_ref"),
+                    }
+                    if timed_out
+                    else {"type": "human", "username": username},
                 }
                 session.add(todo)
                 session.add(
@@ -7541,6 +7687,7 @@ class WorkflowService:
                             "todo_id": todo_id,
                             "request_id": request.request_id,
                             "action": request.action,
+                            "decision_source": todo.data["decision_source"]["type"],
                         },
                     )
                 )
@@ -7554,6 +7701,63 @@ class WorkflowService:
                 logger.exception("Saved human response awaits scheduling: %s", todo_id)
             await self._resume_human_choices(username, run_id)
         return await self.get_run(username, run_id)
+
+    async def sweep_human_deadlines(self) -> int:
+        """Consider a bounded batch of expired requests without model calls.
+
+        Returns:
+            Number of expired requests considered; each decision is fenced again.
+        """
+        if self._closing:
+            return 0
+        async with self.db.get_db() as session:
+            rows = (
+                await session.execute(
+                    select(
+                        AgentWorkflowTodo.todo_id,
+                        AgentWorkflowTodo.root_run_id,
+                        AgentWorkflowRun.owner_username,
+                    )
+                    .join(
+                        AgentWorkflowRun,
+                        AgentWorkflowRun.run_id == AgentWorkflowTodo.root_run_id,
+                    )
+                    .where(
+                        AgentWorkflowTodo.data["status"].as_string() == "pending",
+                        AgentWorkflowTodo.data["deadline"].as_float() <= time.time(),
+                        AgentWorkflowTodo.data["timeout_checked_at"]
+                        .as_float()
+                        .is_(None),
+                    )
+                    .order_by(
+                        AgentWorkflowTodo.data["deadline"].as_float(),
+                        AgentWorkflowTodo.todo_id,
+                    )
+                    .limit(100)
+                )
+            ).all()
+        for todo_id, run_id, owner in rows:
+            await self.answer_todo(owner, run_id, todo_id, {}, timed_out=True)
+        return len(rows)
+
+    async def run_human_deadlines(self) -> None:
+        """Check persisted deadlines during the core lifetime, even without viewers.
+
+        Returns:
+            None when the workflow service is closing.
+        """
+        task = asyncio.current_task()
+        assert task is not None
+        self._tasks.add(task)
+        try:
+            while not self._closing:
+                try:
+                    await self.sweep_human_deadlines()
+                except Exception:
+                    logger.exception("Failed to process persisted human deadlines")
+                await asyncio.sleep(1)
+        finally:
+            self._tasks.discard(task)
 
     async def _execute_graph_task(
         self,
@@ -9384,6 +9588,7 @@ class WorkflowService:
             ).all()
         for owner, root_id in waiting_roots:
             await self._resume_human_choices(owner, root_id)
+        await self.sweep_human_deadlines()
 
     async def shutdown(self) -> None:
         """Stop core-owned tasks before providers and database are terminated.

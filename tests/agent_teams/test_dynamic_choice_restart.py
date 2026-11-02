@@ -27,6 +27,7 @@ import pytest
         "consume_pause",
         "request_failure",
         "independent",
+        "deadline_post",
     ],
 )
 def test_dynamic_choice_original_call_survives_process_loss(tmp_path, boundary):
@@ -209,6 +210,14 @@ def test_dynamic_choice_original_call_survives_process_loss(tmp_path, boundary):
             "choice-one",
             "choice-two",
         ]
+        if boundary == "deadline_post":
+            assert all(
+                todo["decision_source"]["type"] == "recommendation" for todo in todos
+            )
+            assert all(
+                item["content"] == "User selected: Detailed (id=B)" for item in choices
+            )
+            return
         assert (
             choices[0]["content"]
             == "User selected: Detailed (id=B)\nAdditional note: Reviewed evidence"

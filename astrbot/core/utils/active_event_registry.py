@@ -73,7 +73,26 @@ class ActiveEventRegistry:
         return gate
 
     def register(self, event: AstrMessageEvent) -> None:
-        self._events[event.unified_msg_origin].add(event)
+        """Admit an event before asynchronous request preparation can begin.
+
+        Args:
+            event: Trusted platform event whose current control boundary is retained.
+        """
+        events = self._events[event.unified_msg_origin]
+        if event in events:
+            return
+        events.add(event)
+        if not hasattr(event, "set_extra"):
+            return
+        try:
+            gate = self.get_agent_manual_pause(event.unified_msg_origin)
+        except RuntimeError:
+            # Synchronous registry clients do not prepare asynchronous Agent turns.
+            return
+        event.set_extra(
+            "_agent_manual_pause_boundary",
+            (gate, gate.revision - int(gate.requested.is_set())),
+        )
 
     def has_active_agent(self, umo: str) -> bool:
         """Check running foreground or background Agent executions.

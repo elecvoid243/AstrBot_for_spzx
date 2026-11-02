@@ -6,6 +6,7 @@ from collections.abc import AsyncGenerator
 
 from astrbot.core import logger
 from astrbot.core.agent.message import Message
+from astrbot.core.agent.runners.base import AgentState
 from astrbot.core.agent.runners.tool_loop_agent_runner import ToolLoopAgentRunner
 from astrbot.core.astr_agent_context import AstrAgentContext
 from astrbot.core.message.components import BaseMessageComponent, Json, Plain
@@ -349,6 +350,10 @@ async def run_agent(
                     pass
             if agent_runner.done():
                 break
+            if agent_runner.state == AgentState.PAUSED:
+                # A revoked model wait did not complete a round. Keep this slot,
+                # including the last denial recovery slot, until handback or stop.
+                step_idx -= 1
 
         except Exception as e:
             if "stop_watcher" in locals() and not stop_watcher.done():

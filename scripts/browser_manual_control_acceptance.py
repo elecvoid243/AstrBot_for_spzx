@@ -44,6 +44,11 @@ async def main() -> None:
     parser.add_argument("--private-runtime", type=Path, required=True)
     parser.add_argument("--dashboard-dir", type=Path, required=True)
     parser.add_argument("--evidence-dir", type=Path, required=True)
+    parser.add_argument(
+        "--handoff-boundaries",
+        action="store_true",
+        help="Use a one-round budget and hold the real pre-reset request hook.",
+    )
     args = parser.parse_args()
     evidence = args.evidence_dir.resolve()
     evidence.mkdir(parents=True, exist_ok=False)
@@ -75,6 +80,8 @@ async def main() -> None:
     slow_entered = asyncio.Event()
     model_waiting = asyncio.Event()
     model_release = asyncio.Event()
+    pre_reset_entered = asyncio.Event()
+    pre_reset_release = asyncio.Event()
     post_effects = 0
 
     async def website(request):
@@ -87,6 +94,13 @@ async def main() -> None:
             Counter fixture or its acknowledged click number.
         """
         nonlocal counter, post_effects
+        if request.path == "/pre-reset":
+            prepared = await request.json()
+            assert prepared["prompt"] == "H02_PRE_RESET" and prepared["tools_prepared"]
+            metrics["pre_reset_hook"] = prepared
+            pre_reset_entered.set()
+            await pre_reset_release.wait()
+            return web.Response(text="Continue normal image preparation and reset")
         if request.path == "/increment":
             cookies.append(request.cookies.get("fixture_login"))
             assert cookies[-1] == login_cookie
@@ -129,6 +143,8 @@ async def main() -> None:
             ("browser_navigate", {"url": fixture_url + ("/slow" if slow else "/")}),
             ("browser_get_state", {}),
         ]
+        if args.handoff_boundaries:
+            plan = plan[:1]
         handoff = next(
             (
                 mode
@@ -138,7 +154,11 @@ async def main() -> None:
                     "H01_SLOW",
                     "H02_MODEL",
                     "H02_BATCH",
+                    "H02_CANCEL_EDGE",
                     "H02_CANCEL",
+                    "H02_PRE_RESET",
+                    "H02_BUDGET",
+                    "H02_RECOVERY",
                 )
                 if item["role"] == "user"
                 and mode in str(item.get("content"))
@@ -146,6 +166,20 @@ async def main() -> None:
             ),
             None,
         )
+        if handoff is not None:
+            start = max(
+                i
+                for i, item in enumerate(messages)
+                if item["role"] == "user"
+                and handoff in str(item.get("content"))
+                and "SYSTEM NOTICE" not in str(item.get("content"))
+            )
+            results = [item for item in messages[start:] if item["role"] == "tool"]
+        if args.handoff_boundaries and "after cancellation" in str(messages[start]):
+            assert "Human browser handback" not in str(messages[start:]), (
+                "Old handback observation leaked into an unrelated request"
+            )
+            metrics["future_request_excludes_old_handback"] = True
         handoff = handoff if handoff and handoff.startswith("H02_") else None
         if handoff and body.get("tools"):
             task_start = max(
@@ -162,10 +196,31 @@ async def main() -> None:
                 if item["role"] == "user"
                 and "Human browser handback" in str(item.get("content"))
             ]
-            if not results:
-                calls = [("open", "browser_navigate", {"url": fixture_url + "/"})]
+            if (
+                args.handoff_boundaries
+                and not returned
+                and handoff in {"H02_RECOVERY", "H02_CANCEL_EDGE"}
+                and len(results) < 3
+            ):
+                calls = [(f"recovery_{len(results)}", "browser_get_state", {})]
+            elif args.handoff_boundaries and not returned:
+                assert handoff != "H02_PRE_RESET", (
+                    "Completed handback before reset lost its fresh observation"
+                )
+                model_waiting.set()
+                await model_release.wait()
+                calls = [
+                    (
+                        "stale",
+                        "browser_click",
+                        {"coordinate_x": 160, "coordinate_y": 100},
+                    )
+                ]
             elif returned:
-                if any(item.get("tool_call_id") == "h02_continue" for item in results):
+                assert "Human updated" in str(returned[-1]), returned[-1]
+                if handoff in {"H02_RECOVERY", "H02_CANCEL_EDGE"} or any(
+                    item.get("tool_call_id") == "h02_continue" for item in results
+                ):
                     calls = []
                 else:
                     assert "Human updated" in str(returned[-1]), returned[-1]
@@ -176,6 +231,8 @@ async def main() -> None:
                             {"coordinate_x": 160, "coordinate_y": 340},
                         )
                     ]
+            elif not results:
+                calls = [("open", "browser_navigate", {"url": fixture_url + "/"})]
             elif handoff == "H02_BATCH":
                 calls = [
                     ("slow", "browser_navigate", {"url": fixture_url + "/slow"}),
@@ -265,6 +322,7 @@ async def main() -> None:
 
     fixture = web.Application()
     fixture.router.add_post("/v1/chat/completions", completion)
+    fixture.router.add_post("/pre-reset", website)
     fixture.router.add_get(
         "/v1/models",
         lambda _: web.json_response(
@@ -308,10 +366,41 @@ async def main() -> None:
         ],
         "agent_runner": {
             "runner_type": "local",
-            "config": {"model": {"provider_id": "b06"}},
+            "config": {
+                "model": {"provider_id": "b06"},
+                "misc": {"max_steps": 1 if args.handoff_boundaries else 128},
+            },
         },
     }
     (data / "cmd_config.json").write_text(json.dumps(config), encoding="utf-8")
+    if args.handoff_boundaries:
+        hook_plugin = data / "plugins/astrbot_plugin_h02_fixture"
+        hook_plugin.mkdir()
+        (hook_plugin / "metadata.yaml").write_text(
+            "name: astrbot_plugin_h02_fixture\ndesc: Isolated pre-reset handoff acceptance\nversion: v0.0.0\nauthor: acceptance\n",
+            encoding="utf-8",
+        )
+        (hook_plugin / "main.py").write_text(
+            "import aiohttp\n"
+            "from astrbot.api.event import AstrMessageEvent, filter\n"
+            "from astrbot.api.provider import ProviderRequest\n"
+            "from astrbot.api.star import Star\n\n"
+            "class H02Fixture(Star):\n"
+            '    """Hold a real post-build, pre-reset lifecycle hook."""\n'
+            "    @filter.on_llm_request()\n"
+            "    async def hold_pre_reset(self, event: AstrMessageEvent, req: ProviderRequest):\n"
+            '        """Wait for explicit handback before normal request preparation.\n\n'
+            "        Args:\n"
+            "            event: Trusted production platform event.\n"
+            "            req: Provider request constructed by build_main_agent.\n"
+            '        """\n'
+            '        if req.prompt != "H02_PRE_RESET":\n'
+            "            return\n"
+            "        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=90)) as client:\n"
+            f'            async with client.post({fixture_url + "/pre-reset"!r}, json={{"prompt": req.prompt, "tools_prepared": bool(req.func_tool), "phase": "OnLLMRequestEvent after build_main_agent, before reset"}}) as response:\n'
+            "                response.raise_for_status()\n",
+            encoding="utf-8",
+        )
     (data / "config").mkdir(exist_ok=True)
     (data / "config/astrbot_plugin_browser_use_config.json").write_text(
         json.dumps(
@@ -656,7 +745,12 @@ async def main() -> None:
                     if (await status())["control_mode"] == "agent":
                         break
                     await asyncio.sleep(0.1)
-                for scenario in ("H02_MODEL", "H02_BATCH", "H02_CANCEL"):
+                scenarios = (
+                    ("H02_PRE_RESET", "H02_BUDGET", "H02_RECOVERY", "H02_CANCEL_EDGE")
+                    if args.handoff_boundaries
+                    else ("H02_MODEL", "H02_BATCH", "H02_CANCEL")
+                )
+                for scenario in scenarios:
                     locale = "zh-CN" if scenario == "H02_MODEL" else "en-US"
                     await page.evaluate(
                         "locale => localStorage.setItem('astrbot-locale', locale)",
@@ -670,6 +764,8 @@ async def main() -> None:
                     model_waiting.clear()
                     model_release.clear()
                     slow_entered.clear()
+                    pre_reset_entered.clear()
+                    pre_reset_release.clear()
                     baseline_count = counter
                     baseline_effects = post_effects
                     await page.locator(".chat-text-input, .chat-textarea").fill(
@@ -678,7 +774,11 @@ async def main() -> None:
                     await page.locator(".send-btn[aria-label]").click()
                     await asyncio.wait_for(
                         (
-                            slow_entered if scenario == "H02_BATCH" else model_waiting
+                            pre_reset_entered
+                            if scenario == "H02_PRE_RESET"
+                            else slow_entered
+                            if scenario == "H02_BATCH"
+                            else model_waiting
                         ).wait(),
                         45,
                     )
@@ -704,7 +804,7 @@ async def main() -> None:
                         scenario
                         + ": no late model action or remaining batch call during human control"
                     )
-                    if scenario == "H02_CANCEL":
+                    if scenario in {"H02_CANCEL", "H02_CANCEL_EDGE"}:
                         await page.locator(".chat-text-input, .chat-textarea").fill("")
                         await (
                             page.locator(".send-btn")
@@ -746,7 +846,19 @@ async def main() -> None:
                     await page.locator(
                         '.agent-browser-view[data-human-control="false"]'
                     ).wait_for(timeout=20000)
-                    if scenario == "H02_CANCEL":
+                    if scenario == "H02_PRE_RESET":
+                        for _ in range(150):
+                            if (await status())["control_mode"] == "agent":
+                                break
+                            await asyncio.sleep(0.1)
+                        assert len(model_requests) == while_human
+                        assert post_effects == baseline_effects
+                        assert (await status())["control_mode"] == "agent"
+                        metrics["checks"].append(
+                            "acquire and release completed inside the real OnLLMRequestEvent before reset or first model request"
+                        )
+                        pre_reset_release.set()
+                    if scenario in {"H02_CANCEL", "H02_CANCEL_EDGE"}:
                         await asyncio.sleep(1)
                         assert len(model_requests) == while_human
                         assert (
@@ -760,8 +872,31 @@ async def main() -> None:
                         await page.get_by_text(
                             scenario + "_DONE", exact=False
                         ).first.wait_for(timeout=45000)
-                        assert post_effects == baseline_effects + 1
+                        assert post_effects == baseline_effects + (
+                            scenario != "H02_RECOVERY"
+                        )
                         assert counter == baseline_count + 1
+                        if args.handoff_boundaries:
+                            latest = next(
+                                item
+                                for item in reversed(model_requests)
+                                if item.get("tools")
+                            )["messages"]
+                            task_start = max(
+                                i
+                                for i, item in enumerate(latest)
+                                if item["role"] == "user"
+                                and scenario in str(item.get("content"))
+                                and "SYSTEM NOTICE" not in str(item.get("content"))
+                            )
+                            task_messages = latest[task_start:]
+                            assert "Human updated" in str(task_messages)
+                            if scenario != "H02_RECOVERY":
+                                assert "Permission denied" not in str(task_messages)
+                            metrics["checks"].append(
+                                scenario
+                                + ": production max_steps=1 preserves correct tool budget and completes after fresh observation"
+                            )
                         if scenario == "H02_BATCH":
                             paired = next(
                                 item
@@ -781,7 +916,11 @@ async def main() -> None:
                             )
                         metrics["checks"].append(
                             scenario
-                            + ": fresh observed human change drives one new Agent action after explicit handback"
+                            + (
+                                ": fresh observation completes the last recovery slot"
+                                if scenario == "H02_RECOVERY"
+                                else ": fresh observed human change drives one new Agent action after explicit handback"
+                            )
                         )
                     assert (await status())["control_mode"] == "agent"
                     await page.locator(".send-btn .mdi-stop").wait_for(
@@ -891,7 +1030,7 @@ async def main() -> None:
                 ) as response:
                     assert response.status in {403, 409, 503}, response.status
                 metrics["checks"].append("disabled plugin refuses control")
-                assert len(cookies) == 4 and all(
+                assert len(cookies) == (5 if args.handoff_boundaries else 4) and all(
                     cookie == login_cookie for cookie in cookies
                 )
                 metrics.update(
@@ -908,6 +1047,7 @@ async def main() -> None:
                 print(json.dumps(metrics, ensure_ascii=False), flush=True)
     finally:
         model_release.set()
+        pre_reset_release.set()
         if page is not None and not metrics["passed"]:
             with contextlib.suppress(Exception):
                 await page.screenshot(path=str(evidence / "failure.png"))

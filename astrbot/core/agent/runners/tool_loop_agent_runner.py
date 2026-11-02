@@ -443,6 +443,16 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         self._manual_seen_revision = self._manual_revision - int(
             self._manual_pause is not None and self._manual_pause.requested.is_set()
         )
+        boundary = getattr(event, "get_extra", lambda *_args: None)(
+            "_agent_manual_pause_boundary"
+        )
+        if (
+            isinstance(boundary, tuple)
+            and len(boundary) == 2
+            and boundary[0] is self._manual_pause
+            and type(boundary[1]) is int
+        ):
+            self._manual_seen_revision = boundary[1]
         self._pending_follow_ups: list[FollowUpTicket] = []
         self._pending_system_notices: list[str] = []
         """Dashboard-originated notices (e.g. user shell-session actions),
@@ -2066,6 +2076,11 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                     )
                 )
                 self._manual_seen_revision = gate.revision
+                event = getattr(self.run_context.context, "event", None)
+                if hasattr(event, "set_extra"):
+                    event.set_extra(
+                        "_agent_manual_pause_boundary", (gate, gate.revision)
+                    )
             self._manual_revision = gate.revision
         previous_budget = self._step_budget_used
         step = self._step()

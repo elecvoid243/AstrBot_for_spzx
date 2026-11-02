@@ -11,16 +11,67 @@ from astrbot.core.agent.run_context import ContextWrapper
 from astrbot.core.agent.runners.base import AgentState
 from astrbot.core.agent.runners.tool_loop_agent_runner import ToolLoopAgentRunner
 from astrbot.core.agent.tool import FunctionTool, ToolSet
+from astrbot.core.astr_agent_run_util import run_agent
 from astrbot.core.provider.entities import LLMResponse, ProviderRequest
+from astrbot.core.utils.active_event_registry import active_event_registry
 from test_tool_loop_agent_runner import MockEvent, MockHooks, MockProvider
 
 
-async def make_runner(provider, executor=None):
+class HandoffEvent(MockEvent):
+    """Provide the external platform event contract used by the production driver."""
+
+    def __init__(self):
+        super().__init__("handoff-chat", "owner")
+        self.extras = {}
+        self.send = AsyncMock()
+        self.set_result = lambda result: None
+        self.clear_result = lambda: None
+
+    def get_extra(self, key, default=None):
+        """Read event-scoped metadata.
+
+        Args:
+            key: Metadata name.
+            default: Value used when the name is absent.
+
+        Returns:
+            Stored metadata or the supplied default.
+        """
+        return self.extras.get(key, default)
+
+    def set_extra(self, key, value):
+        """Store event-scoped metadata.
+
+        Args:
+            key: Metadata name.
+            value: Metadata value.
+        """
+        self.extras[key] = value
+
+    def is_stopped(self):
+        """Report whether platform processing has stopped.
+
+        Returns:
+            False, since Agent cancellation uses its separate event flag.
+        """
+        return False
+
+    def get_platform_id(self):
+        """Return the test platform identity.
+
+        Returns:
+            The external test platform's identifier.
+        """
+        return "test"
+
+
+async def make_runner(provider, executor=None, event=None):
     """Create a real runner with a trusted chat and a short tool deadline.
 
     Args:
         provider: Deterministic model implementation.
         executor: Optional controlled tool executor.
+        event: Optional event admitted before request construction.
 
     Returns:
         A runner whose pause is shared with the browser owner.
@@ -33,7 +84,7 @@ async def make_runner(provider, executor=None):
             func_tool=ToolSet(tools=[FunctionTool(name="browser_click", description="Click", parameters={"type": "object", "properties": {"x": {"type": "integer"}}})]),
         ),
         run_context=ContextWrapper(
-            context=SimpleNamespace(event=MockEvent("handoff-chat", "owner")),
+            context=SimpleNamespace(event=event or MockEvent("handoff-chat", "owner")),
             tool_call_timeout=0.05,
         ),
         tool_executor=executor,
@@ -43,16 +94,19 @@ async def make_runner(provider, executor=None):
     return runner
 
 
-async def collect(runner, max_step=8):
+async def collect(runner, max_step=8, production=False):
     """Consume normal Agent events until completion.
 
     Args:
         runner: Initialized local runner.
         max_step: Model round budget for the current turn.
+        production: Use the ChatUI production driver instead of the runner helper.
 
     Returns:
         All emitted Agent events.
     """
+    if production:
+        return [item async for item in run_agent(runner, max_step=max_step, stream_to_general=True)]
     return [item async for item in runner.step_until_done(max_step)]
 
 
@@ -199,3 +253,109 @@ async def test_pause_before_runner_start_observes_handback_and_keeps_begin_hook(
     await asyncio.wait_for(running, 2)
     pending_runner.agent_hooks.on_agent_begin.assert_awaited_once()
     assert "page changed before the runner began" in str(provider.text_chat.call_args)
+
+
+@pytest.mark.asyncio
+async def test_completed_handback_before_reset_refreshes_only_the_already_started_turn():
+    """Retain a handback during construction without leaking it into future turns."""
+    provider = MockProvider()
+    provider.text_chat = AsyncMock(return_value=LLMResponse(role="assistant", completion_text="done"))
+    event = HandoffEvent()
+    active_event_registry.register(event)
+    gate = active_event_registry.get_agent_manual_pause(event.unified_msg_origin)
+    try:
+        gate.pause()
+        gate.resume("current page: use the new green button")
+        active_event_registry.register(event)
+        runner = await make_runner(provider, event=event)
+        _ = [item async for item in run_agent(runner, max_step=1, stream_to_general=True)]
+        assert "new green button" in str(provider.text_chat.call_args.kwargs["contexts"])
+    finally:
+        active_event_registry.unregister(event)
+
+    provider.text_chat.reset_mock()
+    future_event = HandoffEvent()
+    active_event_registry.register(future_event)
+    try:
+        future_runner = await make_runner(provider, event=future_event)
+        _ = [item async for item in run_agent(future_runner, max_step=1, stream_to_general=True)]
+        assert "new green button" not in str(provider.text_chat.call_args.kwargs["contexts"])
+    finally:
+        active_event_registry.unregister(future_event)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pause_round", [1, 4])
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_production_driver_refunds_interrupted_model_at_normal_and_last_recovery_boundary(pause_round, cancel):
+    """Keep the real driver alive without spending cancelled model round budget.
+
+    Args:
+        pause_round: First normal request or last denial recovery request.
+        cancel: Stop the paused turn instead of completing its handback.
+    """
+    provider = MockProvider()
+    entered, cancelled = asyncio.Event(), asyncio.Event()
+    requests, effects = [], []
+
+    async def model(**kwargs):
+        """Return completed rounds around one externally blocked model request.
+
+        Args:
+            **kwargs: Real runner request including its model-facing context.
+
+        Returns:
+            A tool request or final completion.
+        """
+        requests.append(kwargs)
+        number = len(requests)
+        if number == pause_round:
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+        if number < pause_round or pause_round == 1 and number == 2:
+            return LLMResponse(role="assistant", tools_call_name=["browser_click"], tools_call_args=[{"x": number}], tools_call_ids=[f"call-{number}"])
+        return LLMResponse(role="assistant", completion_text="fresh completion")
+
+    class Executor:
+        @classmethod
+        async def execute(cls, tool, run_context, **kwargs):
+            """Record the externally observable browser action.
+
+            Args:
+                tool: Selected browser tool.
+                run_context: Current Agent context.
+                **kwargs: Browser action arguments.
+
+            Yields:
+                A real tool protocol result for the recorded effect.
+            """
+            effects.append(kwargs["x"])
+            yield CallToolResult(content=[TextContent(type="text", text="effect completed")])
+
+    provider.text_chat = model
+    event = HandoffEvent()
+    runner = await make_runner(provider, Executor, event)
+    running = asyncio.create_task(collect(runner, 1, production=True))
+    await asyncio.wait_for(entered.wait(), 2)
+    gate = active_event_registry.get_agent_manual_pause(event.unified_msg_origin)
+    gate.pause()
+    await asyncio.wait_for(cancelled.wait(), 2)
+    await asyncio.sleep(0.1)
+    assert not running.done(), "The last recovery boundary must retain its paused turn"
+    if cancel:
+        event.set_extra("agent_stop_requested", True)
+        await asyncio.wait_for(running, 2)
+        assert runner.was_aborted() and runner.done()
+        gate.resume("new green button")
+        assert len(requests) == pause_round
+    else:
+        gate.resume("current page: use the new green button")
+        await asyncio.wait_for(running, 2)
+        assert runner.done()
+        assert runner.get_final_llm_resp().completion_text == "fresh completion"
+        assert "new green button" in str(requests[pause_round]["contexts"])
+        assert effects == ([2] if pause_round == 1 else [1])

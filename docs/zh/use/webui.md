@@ -509,9 +509,9 @@ WebChat 未显式选择人格时，仍使用聊天页的默认系统提示词开
 
 当前主聊天执行 Browser Use 浏览器工具时，如果工作区侧栏处于关闭状态，会自动展开并进入 **Web 预览 → Agent 浏览器**，无需逐级点击。已打开的工作区侧栏保留当前页面。每轮回复最多自动展开一次；主动关闭后，该轮后续操作不会反复弹出。切换聊天或在等待期间手动打开其他面板会取消旧的自动展开。历史消息、普通回复中的工具名称和其他聊天的操作不会触发此行为；插件不可用或浏览器被其他聊天占用时保留手动入口。
 
-Windows 离线部署需同时携带 Browser Use `0.2.0` 完整插件包、包含本功能的 AstrBot 后端以及匹配的 Dashboard 构建。插件 ZIP 不升级宿主或前端；仅有 AstrBot `4.28.1` 版本号不足以判断是否包含这些改动。对照插件 `runtime/manifest.json` 的 `astrbot_revision`、`dashboard_sha256` 和前端 `dist/assets/browser-observer-build.json`。停止 AstrBot 后分别安装，并通过 `--webui-dir` 指向匹配的 `dist`。下方打包命令还会在前端 ZIP 旁输出匹配后端源码 ZIP 和 SHA256；后端源码包需要已有的兼容 AstrBot Python 环境，现有 data 目录应与新代码分开保留。插件安装器拒绝覆盖现有插件，持久数据保存在独立的 `plugin_data` 中。
+Windows 离线部署需同时携带 Browser Use `0.3.0` 完整插件包、包含本功能的 AstrBot 后端以及匹配的 Dashboard 构建。插件 ZIP 不升级宿主或前端；仅有 AstrBot `4.28.1` 版本号不足以判断是否包含这些改动。对照插件 `runtime/manifest.json` 的 `astrbot_revision`、`dashboard_sha256` 和前端 `dist/assets/browser-observer-build.json`。停止 AstrBot 后分别安装，并通过 `--webui-dir` 指向匹配的 `dist`。下方打包命令还会在前端 ZIP 旁输出匹配后端源码 ZIP 和 SHA256；后端源码包需要已有的兼容 AstrBot Python 环境，现有 data 目录应与新代码分开保留。插件安装器拒绝覆盖现有插件，持久数据保存在独立的 `plugin_data` 中。
 
-维护者先执行 Dashboard 生产构建，再用 `python scripts/package_browser_observer_dashboard.py --output <dashboard.zip>` 生成含版本和提交信息的前端包及 SHA256。完整链路可用 `python scripts/browser_observer_acceptance.py --plugin-zip <完整插件.zip> --dashboard-dir <dist> --evidence-dir <尚不存在的临时目录>` 验证：从最终 ZIP 安装、真实登录、完整聊天界面、确定性本地模型、真实插件管理与 Chromium。需要 AstrBot 开发依赖及 `aiohttp playwright psutil`。该本机代理隔离验证不替代实际断网目标机和真实 vLLM 联调。入口缺失时先核对配套版本和缓存；`runtime_unavailable` 查看插件加载日志与独立解释器路径；`busy` 在占用聊天关闭浏览器；401/403 需登录并使用自己拥有的聊天。
+维护者先执行 Dashboard 生产构建，再用 `python scripts/package_browser_observer_dashboard.py --plugin-revision <plugin-commit> --output <dashboard.zip>` 生成含版本和提交信息的前端包及 SHA256。完整链路可用 `python scripts/browser_observer_acceptance.py --plugin-zip <完整插件.zip> --dashboard-dir <dist> --evidence-dir <尚不存在的临时目录>` 验证：从最终 ZIP 安装、真实登录、完整聊天界面、确定性本地模型、真实插件管理与 Chromium。需要 AstrBot 开发依赖及 `aiohttp playwright psutil`。该本机代理隔离验证不替代实际断网目标机和真实 vLLM 联调。入口缺失时先核对配套版本和缓存；`runtime_unavailable` 查看插件加载日志与独立解释器路径；`busy` 在占用聊天关闭浏览器；401/403 需登录并使用自己拥有的聊天。
 
 启用配套的 Browser Use 插件后，在当前聊天让 Agent 打开网页。未加载代码项目时，从输入框上方的 **文件与浏览器 → Web 预览 → Agent 浏览器** 进入观测；加载项目后，入口保持为 **工作区 → Web 预览 → Agent 浏览器**，先显示当前快照，再持续更新实际 Chromium 的画面。画面会跟随 Agent 选择的标签页，当前标签关闭后也会跟随到新的当前页。顶部地址栏显示页面标题、网址、连接状态和标签页；图像尺寸与观测序号位于画面底部。刷新入口从文字按钮调整为地址栏右侧的刷新图标，可悬停查看“刷新快照”提示。画面中的登录态和表单值来自 Agent 控制的浏览器，默认画面只读，接管确认后可操作；观测图片不会加入模型上下文。
 
@@ -617,3 +617,15 @@ Agent 操作。运行中的本地 Agent 会暂停，不占工具超时或持续�
 手机端同样通过顶部栏选择模型和退出登录：
 
 ![手机端普通账户顶部栏](./images/chat-account-header-mobile.png)
+
+### 离线人工登录验收
+
+Browser Use 0.3.0 需配套宿主和 Dashboard 提交，不能仅核对 AstrBot 版本号。两仓库先提交最终源码；Dashboard 打包传入 `--plugin-revision <插件精确提交>`，核对前端元数据与插件 manifest 的 `plugin_revision`、`astrbot_revision` 一致，核对插件所记 Dashboard ZIP SHA256 和各交付包 `.zip.sha256`。后端源码包需要已有兼容的 AstrBot Python 环境；完整插件只携带 Windows x64 私有 Python/Chromium。
+
+升级先停宿主，备份配套三组件与 data，将旧插件移出 `data/plugins` 后使用原安装器；不可同时加载两份插件，保留独立 `plugin_data`。回退也需停宿主并整体恢复配套组件。重启宿主会结束当前浏览器会话；运行中接管同一任务则保留原会话。
+
+登录任务中等待“人工接管”确认，聚焦远端输入框，输入账号和密码并提交网页表单；登录成功后明确点击“交还 Agent”。隐藏、失联或刷新只会暂停，需明确恢复。摘要隐藏输入，但交还后的可见网页内容仍可被 Agent 观察。
+
+执行 `python scripts/browser_manual_control_acceptance.py --plugin-zip <完整插件.zip> --dashboard-dir <dist> --evidence-dir <新目录> --login-handoff --pointer-input --text-input --lost-key-target --recovery`，再用新目录加 `--handoff-boundaries`。脚本从最终 ZIP 经原 PowerShell 安装器安装，将完整 data 树搬迁到中文/空格路径，保留空白执行文件配置，使用真实生产 ChatUI、已安装插件、私有 Chromium 和确定性本地 OpenAI 兼容模型；输出截图、源码/提交核对、延迟/资源/清理测量及网络审计。
+
+仅临时解释器注入 Python socket/DNS 与安装器拦截；私有 Chromium 使用不可达 SOCKS 代理、仅回环绕过、禁止外部解析与 QUIC。实际外部连接拒绝探针、逐进程审计及进程连接采样用于核对这些约束。这是进程内测试隔离，不是系统防火墙或物理断网目标机证明；机制外的原生网络、真实 vLLM、实体 Windows 输入法候选窗口与其他平台仍需独立验证。兼容宿主依赖必须事先安装。

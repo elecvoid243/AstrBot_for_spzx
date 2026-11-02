@@ -22,6 +22,7 @@ import socket
 import subprocess
 import sys
 import time
+import zipfile
 from pathlib import Path
 
 import aiohttp
@@ -43,8 +44,10 @@ async def main() -> None:
     """
     parser = argparse.ArgumentParser(description=__doc__)
     sys.stdout.reconfigure(encoding="utf-8")
-    parser.add_argument("--plugin-source", type=Path, required=True)
-    parser.add_argument("--private-runtime", type=Path, required=True)
+    parser.add_argument("--plugin-source", type=Path)
+    parser.add_argument("--private-runtime", type=Path)
+    parser.add_argument("--plugin-zip", type=Path)
+    parser.add_argument("--login-handoff", action="store_true")
     parser.add_argument("--dashboard-dir", type=Path, required=True)
     parser.add_argument("--evidence-dir", type=Path, required=True)
     parser.add_argument(
@@ -75,28 +78,104 @@ async def main() -> None:
     args = parser.parse_args()
     if args.lost_key_target and not args.text_input:
         parser.error("--lost-key-target requires --text-input")
+    if not args.plugin_zip and not (args.plugin_source and args.private_runtime):
+        parser.error(
+            "Supply --plugin-zip or both --plugin-source and --private-runtime"
+        )
+    if args.plugin_zip and (args.plugin_source or args.private_runtime):
+        parser.error("Final ZIP acceptance cannot use source/runtime overrides")
     evidence = args.evidence_dir.resolve()
     evidence.mkdir(parents=True, exist_ok=False)
     runtime_root = evidence / "isolated-host"
     data = runtime_root / "data"
     installed = data / "plugins/astrbot_plugin_browser_use"
-    shutil.copytree(
-        args.plugin_source.resolve(),
-        installed,
-        ignore=shutil.ignore_patterns(
-            ".git",
-            "runtime",
-            "tests",
-            "dist",
-            ".build",
-            ".dev",
-            "__pycache__",
-            ".pytest_cache",
-            ".ruff_cache",
-        ),
-    )
-    chromium = args.private_runtime.resolve() / "chromium/chrome.exe"
     metrics = {"passed": False, "checks": []}
+    if args.plugin_zip:
+        distribution = evidence / "离线 安装包"
+        with zipfile.ZipFile(args.plugin_zip) as archive:
+            archive.extractall(distribution)
+        (data / "plugins").mkdir(parents=True)
+        sentinel = (
+            data / "plugin_data/astrbot_plugin_browser_use/existing-user-data.txt"
+        )
+        sentinel.parent.mkdir(parents=True)
+        sentinel.write_text("preserve", encoding="utf-8")
+        command = [
+            "powershell.exe",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(distribution / "install.ps1"),
+            "-AstrBotDataDir",
+            str(data),
+        ]
+        installed_result = await asyncio.to_thread(
+            subprocess.run,
+            command,
+            capture_output=True,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        assert installed_result.returncode == 0, installed_result.stderr.decode(
+            errors="replace"
+        )
+        assert (
+            await asyncio.to_thread(
+                subprocess.run,
+                command,
+                capture_output=True,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+        ).returncode != 0
+        moved = evidence / "搬迁后的 AstrBot"
+        assert runtime_root.resolve().is_relative_to(evidence)
+        assert moved.resolve().is_relative_to(evidence)
+        runtime_root.rename(moved)
+        runtime_root = moved
+        data = runtime_root / "data"
+        installed = data / "plugins/astrbot_plugin_browser_use"
+        args.private_runtime = installed / "runtime"
+        assert (
+            data / "plugin_data/astrbot_plugin_browser_use/existing-user-data.txt"
+        ).read_text() == "preserve"
+        manifest = json.loads((args.private_runtime / "manifest.json").read_text())
+        for name, digest in manifest["source_sha256"].items():
+            assert (
+                hashlib.sha256((installed / name).read_bytes()).hexdigest() == digest
+            ), name
+        build = json.loads(
+            (args.dashboard_dir / "assets/browser-observer-build.json").read_text()
+        )
+        assert build["astrbot_revision"] == manifest["astrbot_revision"]
+        assert build["plugin_revision"] == manifest["plugin_revision"]
+        metrics.update(
+            plugin_zip_sha256=hashlib.sha256(args.plugin_zip.read_bytes()).hexdigest(),
+            manifest=manifest,
+            installation="final ZIP; relocated; bundled defaults",
+        )
+        metrics["checks"].extend(
+            [
+                "final ZIP installed with shipped PowerShell installer; overwrite refused; persistent data retained",
+                "whole isolated data tree relocated through Chinese/space paths; source hashes and matched revisions verified",
+            ]
+        )
+    else:
+        shutil.copytree(
+            args.plugin_source.resolve(),
+            installed,
+            ignore=shutil.ignore_patterns(
+                ".git",
+                "runtime",
+                "tests",
+                "dist",
+                ".build",
+                ".dev",
+                "__pycache__",
+                ".pytest_cache",
+                ".ruff_cache",
+            ),
+        )
+    chromium = args.private_runtime.resolve() / "chromium/chrome.exe"
     counter = 0
     cookies = []
     login_cookie = secrets.token_urlsafe(24)
@@ -110,6 +189,9 @@ async def main() -> None:
     post_effects = 0
     form_state = {}
     private_text = "H03-" + secrets.token_urlsafe(12)
+    website_password = "H06-" + secrets.token_urlsafe(18)
+    website_login = {"submitted": 0, "continued": 0, "stale": 0}
+    website_session = secrets.token_urlsafe(20)
 
     pointer_state = {}
     recovery_clicks = 0
@@ -124,6 +206,38 @@ async def main() -> None:
             Counter fixture or its acknowledged click number.
         """
         nonlocal counter, post_effects, form_state, pointer_state
+        if request.path == "/stale-login-action":
+            website_login["stale"] += 1
+            return web.Response(text="Stale action must never execute")
+        if request.path == "/login-submit":
+            form = await request.post()
+            assert form["username"] == "Offline 用户"
+            assert form["password"] == website_password
+            website_login["submitted"] += 1
+            response = web.HTTPFound("/authenticated")
+            response.set_cookie("h06_session", website_session, httponly=True)
+            return response
+        if request.path in {"/authenticated", "/login-continue"}:
+            assert request.cookies.get("h06_session") == website_session
+            if request.path == "/login-continue":
+                website_login["continued"] += 1
+            return web.Response(
+                text="""<!doctype html><meta charset="utf-8"><title>H06 authenticated account</title>
+<style>body{font:24px Arial;background:#dcfce7}button{position:absolute;left:60px;top:60px;width:260px;height:80px}</style>
+<button onclick="location.href='/login-continue'">Continue signed-in task</button>
+<p style="position:absolute;top:200px">H06 authenticated account · Offline 用户</p>""",
+                content_type="text/html",
+            )
+        if request.path == "/login":
+            return web.Response(
+                text="""<!doctype html><meta charset="utf-8"><title>H06 sign in</title>
+<style>body{font:24px Arial;background:#eff6ff}input,button{display:block;width:400px;height:55px;font-size:24px;margin:20px}</style>
+<form action="/login-submit" method="post" style="position:absolute;left:60px;top:30px">
+<label>English / 中文账号<input name="username" autocomplete="off"></label>
+<label>Test password<input name="password" type="password" autocomplete="off"></label>
+<button type="submit">Sign in / 登录</button></form>""",
+                content_type="text/html",
+            )
         if request.path == "/pointer-report":
             assert request.cookies.get("fixture_login") == login_cookie
             pointer_state = await request.json()
@@ -216,6 +330,7 @@ addEventListener('focusin',report);
                 for item in reversed(messages)
                 for mode in (
                     "H01_RUN",
+                    "H06_LOGIN",
                     "H01_SLOW",
                     "H02_MODEL",
                     "H02_BATCH",
@@ -246,7 +361,56 @@ addEventListener('focusin',report);
             )
             metrics["future_request_excludes_old_handback"] = True
         handoff = handoff if handoff and handoff.startswith("H02_") else None
-        if handoff and body.get("tools"):
+        login_task = "H06_LOGIN" in str(messages[start])
+        if login_task and body.get("tools"):
+            returned = [
+                item
+                for item in messages[start:]
+                if item["role"] == "user"
+                and "Human browser handback" in str(item.get("content"))
+            ]
+            if returned:
+                assert "H06 authenticated account" in str(returned[-1])
+                assert website_login["submitted"] == 1
+                if any(item.get("tool_call_id") == "h06_continue" for item in results):
+                    login_calls = []
+                else:
+                    login_calls = [
+                        (
+                            "continue",
+                            "browser_click",
+                            {"coordinate_x": 160, "coordinate_y": 100},
+                        )
+                    ]
+            elif not results:
+                login_calls = [
+                    ("open", "browser_navigate", {"url": fixture_url + "/login"})
+                ]
+            else:
+                model_waiting.set()
+                await model_release.wait()
+                login_calls = [
+                    (
+                        "stale",
+                        "browser_navigate",
+                        {"url": fixture_url + "/stale-login-action"},
+                    )
+                ]
+            message = {
+                "role": "assistant",
+                "content": None if login_calls else "H06_LOGIN_DONE",
+            }
+            if login_calls:
+                message["tool_calls"] = [
+                    {
+                        "id": "h06_" + call_id,
+                        "type": "function",
+                        "function": {"name": name, "arguments": json.dumps(arguments)},
+                    }
+                    for call_id, name, arguments in login_calls
+                ]
+            finish = "tool_calls" if login_calls else "stop"
+        elif handoff and body.get("tools"):
             task_start = max(
                 i
                 for i, item in enumerate(messages)
@@ -390,6 +554,7 @@ addEventListener('focusin',report);
     fixture.router.add_post("/pre-reset", website)
     fixture.router.add_post("/form-report", website)
     fixture.router.add_post("/pointer-report", website)
+    fixture.router.add_post("/login-submit", website)
     fixture.router.add_get(
         "/v1/models",
         lambda _: web.json_response(
@@ -473,10 +638,10 @@ addEventListener('focusin',report);
         json.dumps(
             {
                 "allowed_domains": ["http://127.0.0.1"],
-                "python_path": str(
-                    args.private_runtime.resolve() / "python/python.exe"
-                ),
-                "browser_path": str(chromium),
+                "python_path": ""
+                if args.plugin_zip
+                else str(args.private_runtime.resolve() / "python/python.exe"),
+                "browser_path": "" if args.plugin_zip else str(chromium),
             }
         ),
         encoding="utf-8",
@@ -511,6 +676,21 @@ addEventListener('focusin',report);
         encoding="utf-8",
     )
     environment["PYTHONPATH"] = os.pathsep.join((str(guard), str(ROOT)))
+    if args.plugin_zip:
+        audit_dir = evidence / "network-audit"
+        environment["BROWSER_OFFLINE_AUDIT"] = str(audit_dir)
+        # Embedded Python ignores PYTHONPATH; a disposable .pth installs the same
+        # audit guard without changing application modules or bundled defaults.
+        guard_source = ROOT / "scripts/browser_offline_guard.py"
+        shutil.copy2(guard_source, guard / "browser_offline_guard.py")
+        (guard / "sitecustomize.py").write_text(
+            "import browser_offline_guard\n", encoding="utf-8"
+        )
+        embedded_site = args.private_runtime / "python/Lib/site-packages"
+        shutil.copy2(guard_source, embedded_site / "browser_offline_guard.py")
+        (embedded_site / "h06_acceptance.pth").write_text(
+            "import browser_offline_guard\n", encoding="utf-8"
+        )
 
     async def open_browser_panel(view):
         """Open the unchanged production Files & Browser navigation.
@@ -555,6 +735,35 @@ addEventListener('focusin',report);
     page = None
     auth_headers = {}
     private_debug_browser = None
+    resource_task = None
+    resources = {
+        "samples": 0,
+        "peak_rss_bytes": 0,
+        "peak_processes": 0,
+        "non_loopback_peers": [],
+    }
+
+    async def sample_resources():
+        """Sample only the isolated host tree without collecting command secrets."""
+        while process is not None and process.poll() is None:
+            tree = [psutil.Process(process.pid)]
+            with contextlib.suppress(psutil.Error):
+                tree.extend(tree[0].children(recursive=True))
+            rss = 0
+            for child in tree:
+                with contextlib.suppress(psutil.Error):
+                    rss += child.memory_info().rss
+                    for connection in child.net_connections(kind="inet"):
+                        if connection.raddr and connection.raddr.ip not in {
+                            "127.0.0.1",
+                            "::1",
+                        }:
+                            resources["non_loopback_peers"].append(connection.raddr.ip)
+            resources["samples"] += 1
+            resources["peak_processes"] = max(resources["peak_processes"], len(tree))
+            resources["peak_rss_bytes"] = max(resources["peak_rss_bytes"], rss)
+            await asyncio.sleep(0.5)
+
     try:
         with (evidence / "host.log").open("w", encoding="utf-8") as log:
             process = await asyncio.to_thread(
@@ -571,6 +780,7 @@ addEventListener('focusin',report);
                 stderr=subprocess.STDOUT,
                 creationflags=subprocess.CREATE_NO_WINDOW,
             )
+            resource_task = asyncio.create_task(sample_resources())
             async with aiohttp.ClientSession() as client:
                 for _ in range(180):
                     if process.poll() is not None:
@@ -1884,6 +2094,96 @@ addEventListener('focusin',report);
                     metrics["checks"].append(
                         "H05: real click ack lost after dispatch; UI reports unknown, queued double-click discarded; other authenticated client reacquires and explicitly hands back without replay"
                     )
+                if args.login_handoff:
+                    model_waiting.clear()
+                    model_release.clear()
+                    await page.locator(".chat-text-input, .chat-textarea").fill(
+                        "H06_LOGIN"
+                    )
+                    await page.locator(".send-btn[aria-label]").click()
+                    await asyncio.wait_for(model_waiting.wait(), 45)
+                    await page.locator(".agent-browser-takeover").click()
+                    await page.locator(
+                        '.agent-browser-view[data-human-control="true"]'
+                    ).wait_for(timeout=30000)
+                    login_identity = await status()
+                    assert all(login_identity[k] == identity[k] for k in identity)
+                    requests_before_login = len(model_requests)
+                    agent_cursor = login_identity["action_cursor"]
+                    model_release.set()
+                    await asyncio.sleep(1)
+                    assert (await status())["action_cursor"] == agent_cursor
+                    assert len(model_requests) == requests_before_login
+                    box = await image.bounding_box()
+                    await image.click(
+                        position={
+                            "x": box["width"] * 160 / 1280,
+                            "y": box["height"] * 105 / 720,
+                        }
+                    )
+                    await page.keyboard.insert_text("Offline 用户")
+                    await page.wait_for_function(
+                        "document.querySelector('.agent-browser-view')?.dataset.pendingInput==='0'"
+                    )
+                    await page.keyboard.press("Tab")
+                    await page.keyboard.insert_text(website_password)
+                    await page.wait_for_function(
+                        "document.querySelector('.agent-browser-view')?.dataset.pendingInput==='0'"
+                    )
+                    await page.screenshot(path=str(evidence / "h06-login-human.png"))
+                    login_started = time.perf_counter()
+                    await page.keyboard.press("Tab")
+                    await page.keyboard.press("Enter")
+                    for _ in range(150):
+                        if website_login["submitted"] == 1 and (await status())[
+                            "url"
+                        ].endswith("/authenticated"):
+                            break
+                        await asyncio.sleep(0.1)
+                    else:
+                        raise AssertionError("Real remote form login was not submitted")
+                    assert len(model_requests) == requests_before_login
+                    authenticated = await status()
+                    assert all(authenticated[k] == identity[k] for k in identity)
+                    assert authenticated["action_cursor"] == agent_cursor
+                    assert website_login == {"submitted": 1, "continued": 0, "stale": 0}
+                    await page.screenshot(
+                        path=str(evidence / "h06-login-authenticated.png")
+                    )
+                    await page.locator(".agent-browser-takeover").click()
+                    await page.get_by_text(
+                        "H06_LOGIN_DONE", exact=False
+                    ).first.wait_for(timeout=45000)
+                    assert website_login == {"submitted": 1, "continued": 1, "stale": 0}
+                    resumed_login = await status()
+                    assert all(resumed_login[k] == identity[k] for k in identity)
+                    metrics["login_handoff"] = {
+                        "identity": identity,
+                        "side_effects": website_login,
+                        "login_to_agent_done_ms": round(
+                            (time.perf_counter() - login_started) * 1000, 1
+                        ),
+                        "human_model_requests": 0,
+                        "human_agent_actions": 0,
+                    }
+                    metrics["checks"].append(
+                        "H06: real POST English/Chinese/password login; same browser/cookie; zero Agent actions during takeover; fresh authenticated handback continues once without stale replay"
+                    )
+                    await page.screenshot(
+                        path=str(evidence / "h06-login-agent-continued.png")
+                    )
+                    # Restore the pre-existing fixture for every unchanged H02 assertion.
+                    await page.locator(".chat-text-input, .chat-textarea").fill(
+                        "H01_RUN after login"
+                    )
+                    await page.locator(".send-btn[aria-label]").click()
+                    await page.locator(".send-btn .mdi-stop").wait_for(
+                        state="hidden", timeout=45000
+                    )
+                    for _ in range(100):
+                        if (await status())["url"].endswith("/"):
+                            break
+                        await asyncio.sleep(0.1)
                 scenarios = (
                     ("H02_PRE_RESET", "H02_BUDGET", "H02_RECOVERY", "H02_CANCEL_EDGE")
                     if args.handoff_boundaries
@@ -2409,6 +2709,7 @@ addEventListener('focusin',report);
                     metrics["checks"].append(
                         "H05: ordinary account access revoked while controlling; UI input stops, runtime deadline revokes ownership; fresh login preserves paused Chromium, old ticket cannot revive it"
                     )
+                disable_started = time.perf_counter()
                 async with client.patch(
                     origin + "/api/v1/plugins/astrbot_plugin_browser_use/enabled",
                     headers=auth_headers,
@@ -2420,6 +2721,9 @@ addEventListener('focusin',report);
                 ) as response:
                     assert response.status in {403, 409, 503}, response.status
                 metrics["checks"].append("disabled plugin refuses control")
+                metrics["disable_response_ms"] = round(
+                    (time.perf_counter() - disable_started) * 1000, 1
+                )
                 if args.recovery:
                     await ordinary_page.locator(
                         '.agent-browser-view[data-human-control="false"]'
@@ -2497,6 +2801,64 @@ addEventListener('focusin',report);
                     metrics["checks"].append(
                         "H03: password and pasted content absent from host logs and model tool summaries"
                     )
+                if args.plugin_zip:
+                    cleanup_started = time.perf_counter()
+                    for _ in range(150):
+                        survivors = [
+                            p.pid
+                            for p in psutil.process_iter(["cmdline"])
+                            if str(installed).lower()
+                            in " ".join(p.info["cmdline"] or []).lower()
+                        ]
+                        if not survivors:
+                            break
+                        await asyncio.sleep(0.1)
+                    assert not survivors, survivors
+                    metrics["disable_process_convergence_ms"] = round(
+                        (time.perf_counter() - cleanup_started) * 1000, 1
+                    )
+                    assert not list(
+                        (data / "plugin_data/astrbot_plugin_browser_use").glob(
+                            "**/observer.json"
+                        )
+                    )
+                    audit_files = list(audit_dir.glob("*.jsonl"))
+                    audit_records = [
+                        json.loads(line)
+                        for path in audit_files
+                        for line in path.read_text().splitlines()
+                    ]
+                    loaded = [
+                        r["executable"]
+                        for r in audit_records
+                        if r["event"] == "guard_loaded"
+                    ]
+                    assert str(args.private_runtime / "python/python.exe") in loaded, (
+                        loaded
+                    )
+                    assert any(r.get("browser_proxy") for r in audit_records)
+                    assert any(r.get("allowed") is False for r in audit_records)
+                    metrics["offline_audit"] = {
+                        "guarded_interpreters": sorted(set(loaded)),
+                        "events": len(audit_records),
+                        "blocked_external_events": sum(
+                            r.get("allowed") is False for r in audit_records
+                        ),
+                        "strength": "Python audited sockets/DNS/installers; native Chromium dead SOCKS proxy, loopback bypass, DNS/QUIC disabled; no OS firewall or physical offline claim",
+                    }
+                    logs = (evidence / "host.log").read_text(
+                        encoding="utf-8", errors="replace"
+                    )
+                    assert (
+                        website_password not in logs
+                        and website_password not in json.dumps(model_requests)
+                    )
+                    metrics["checks"].extend(
+                        [
+                            "H06: relocated bundled interpreter runs under audited loopback-only networking; no pip/Chromium download; native browser proxy constraints recorded",
+                            "H06: disable leaves no installed MCP/Chromium process or observer discovery file; password absent from host logs and model requests",
+                        ]
+                    )
                 assert len(cookies) == (
                     5 if args.handoff_boundaries else 4
                 ) + recovery_clicks and all(
@@ -2517,6 +2879,11 @@ addEventListener('focusin',report);
     finally:
         model_release.set()
         pre_reset_release.set()
+        if resource_task:
+            resource_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await resource_task
+        metrics["resources"] = resources
         if page is not None and not metrics["passed"]:
             with contextlib.suppress(Exception):
                 await page.screenshot(path=str(evidence / "failure.png"))

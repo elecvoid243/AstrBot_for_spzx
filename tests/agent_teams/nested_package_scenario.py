@@ -33,6 +33,7 @@ async def exercise_nested(
                 {
                     "definition": {
                         "name": "Nested evidence role",
+                        "provider_id": model_id,
                         "prompt": f"NESTED_V{version}: preserve the complete evidence report.",
                         "tools": [],
                         "skills": [],
@@ -47,10 +48,7 @@ async def exercise_nested(
                             "task_tools",
                         ],
                     },
-                    "installation": {
-                        "profile_id": profile_id,
-                        "bindings": {"model": model_id},
-                    },
+                    "installation": {"profile_id": profile_id},
                     **({"expected_version": version - 1} if version > 1 else {}),
                 },
                 identities.get("role"),
@@ -61,10 +59,19 @@ async def exercise_nested(
                 {
                     "definition": {
                         "name": "Pinned evidence workflow",
-                        "role_id": role["role_id"],
-                        "role_version": version,
-                        "task": "Research {topic}",
                         "required_inputs": ["topic"],
+                        "result_task_id": "result",
+                        "tasks": [
+                            {
+                                "id": "result",
+                                "name": "Research",
+                                "member": "researcher",
+                                "role_id": role["role_id"],
+                                "role_version": version,
+                                "task": "Research {topic}",
+                                "inputs": {"topic": {"input": "topic"}},
+                            }
+                        ],
                     },
                     **({"expected_version": version - 1} if version > 1 else {}),
                 },
@@ -80,17 +87,21 @@ async def exercise_nested(
                         "max_parallel": 1,
                         "max_depth": 6,
                         "coordinator": {
+                            "id": "coordinator",
                             "role_id": role["role_id"],
                             "role_version": version,
                         },
                         "allowed_roles": [
-                            {"role_id": role["role_id"], "role_version": version}
+                            {
+                                "id": "member",
+                                "role_id": role["role_id"],
+                                "role_version": version,
+                            }
                         ],
                         "allowed_workflows": [
                             {
                                 "asset_id": leaf["asset_id"],
                                 "version": version,
-                                "result_task_id": "result",
                             }
                         ],
                         "output_contract": {
@@ -114,6 +125,7 @@ async def exercise_nested(
                     "definition": {
                         "name": "Portable mixed nested report",
                         "required_inputs": ["goal"],
+                        "result_task_id": "evidence",
                         "max_parallel": 1,
                         "max_depth": 6,
                         "tasks": [
@@ -170,8 +182,17 @@ async def exercise_nested(
         return
     if action == "nested-prepare":
         package = json.loads((folder / "input-v1.json").read_text(encoding="utf-8"))
-        preview = await service.preview_import("alice", {"package": package})
-        installed = await service.import_asset("alice", {"package": package})
+        selections = [
+            {
+                "kind": r["kind"],
+                "source_id": r["source_id"],
+                "target_id": profile_id if r["kind"] == "profiles" else model_id,
+            }
+            for r in package["requirements"]
+        ]
+        payload = {"package": package, "selections": selections}
+        preview = await service.preview_import("alice", payload)
+        installed = await service.import_asset("alice", payload)
         run = await service.start_run(
             "alice",
             installed["asset"]["asset_id"],
@@ -204,9 +225,18 @@ async def exercise_nested(
         before = json.loads((folder / "before-crash.json").read_text(encoding="utf-8"))
         original = await service.get_run("alice", before["run"]["run_id"])
         package = json.loads((folder / "input-v2.json").read_text(encoding="utf-8"))
-        preview = await service.preview_import("alice", {"package": package})
-        installed = await service.import_asset("alice", {"package": package})
-        repeated = await service.import_asset("alice", {"package": package})
+        selections = [
+            {
+                "kind": r["kind"],
+                "source_id": r["source_id"],
+                "target_id": profile_id if r["kind"] == "profiles" else model_id,
+            }
+            for r in package["requirements"]
+        ]
+        payload = {"package": package, "selections": selections}
+        preview = await service.preview_import("alice", payload)
+        installed = await service.import_asset("alice", payload)
+        repeated = await service.import_asset("alice", payload)
         after = await service.get_run("alice", original["run_id"])
         todo = original["todos"][0]
         old_artifact = await service.read_artifact("alice", **todo["artifact_ref"])

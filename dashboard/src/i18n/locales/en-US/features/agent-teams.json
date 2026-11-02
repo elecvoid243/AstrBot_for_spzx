@@ -791,13 +791,15 @@
     "resourceDetails": "Candidate description and input schema",
     "import": "Import asset package",
     "export": "Export asset JSON",
-    "scope": "Packages include pinned roles, bounded loops, teams and workflow definitions. Review dependencies across every included version. Plugins and services are configured separately; import runs no scripts and carries no local authorization. Every declared dependency is checked again before execution.",
+    "scope": "Packages include fixed role, team and workflow versions. Choose a local resource for every source requirement, even when IDs match. Credentials and permissions are not included.",
     "closure": "Included exact asset versions",
-    "versionSafety": "Upgrades create new selectable versions. Existing runs, pinned children, artifacts and approvals retain their original snapshots.",
+    "versionSafety": "Imported versions remain fixed. Conflicting content or resource choices cannot overwrite them.",
     "actions": {
       "install": "Install",
       "reuse": "Reuse identical version",
-      "new_version": "Add new version"
+      "new_version": "Add new version",
+      "review": "Review resource choices",
+      "conflict": "Conflicting version"
     },
     "includedPrompt": "Actual prompt content included in this package",
     "content": "Workflow JSON package",
@@ -805,9 +807,9 @@
     "preview": "Validate and preview",
     "existing": "Identical content is already installed. Confirmation preserves its identity; explicit choices can configure its local bindings.",
     "ready": "Dependencies ready — review and confirm installation",
-    "pending": "Configuration required — saved pending assets cannot run",
+    "pending": "Choose compatible local resources before importing.",
     "promptOrigin": "Prompt origin",
-    "verifiedSource": "Source fingerprint must match; names do not establish compatibility.",
+    "verifiedSource": "Compare the source fingerprint when reviewing candidates.",
     "manualSource": "Source compatibility is unverified. Review this resource before selecting it.",
     "localResource": "Local resource",
     "configureResources": "Configure local resources",
@@ -820,7 +822,36 @@
       "ambiguous": "Ambiguous — choose one",
       "missing": "Missing or incompatible",
       "confirmation_required": "Review and choose"
-    }
+    },
+    "effective": "Effective configuration and sources",
+    "autoRecheck": "Each choice is checked automatically. Select every source requirement to review the effective configuration.",
+    "kinds": {
+      "profiles": "Profile",
+      "models": "Model",
+      "personas": "Persona",
+      "tools": "Tool",
+      "skills": "Skill",
+      "knowledge_bases": "Knowledge base"
+    },
+    "source": "Source",
+    "fields": {
+      "prompt": "Responsibility",
+      "provider_id": "Model",
+      "persona_id": "Persona",
+      "tools": "Tools",
+      "skills": "Skills",
+      "knowledge_bases": "Knowledge bases"
+    },
+    "sources": {
+      "role": "Role",
+      "task": "Agent override",
+      "persona": "Persona",
+      "profile": "Profile",
+      "runner": "Executor",
+      "workflow": "Workflow default"
+    },
+    "requiredCapabilities": "Required capabilities",
+    "differentSource": "Source fingerprint differs; review before choosing."
   },
   "workbench": {
     "intro": "Design reusable assets. Follow each run from its fixed snapshot to the final result.",

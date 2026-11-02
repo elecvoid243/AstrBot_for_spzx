@@ -11841,178 +11841,175 @@ components:
       type: object
 
     PackageDependency:
+      additionalProperties: false
+      description: A source resource identity and its non-secret compatibility contract.
       properties:
-        slot:
-          type: string
-          maxLength: 128
-          minLength: 1
-          title: Slot
         kind:
-          type: string
           enum:
           - profiles
           - models
+          - personas
           - tools
           - skills
           - knowledge_bases
           title: Kind
+          type: string
+        source_id:
+          maxLength: 128
+          minLength: 1
+          title: Source Id
+          type: string
+        display_name:
+          default: ''
+          title: Display Name
+          type: string
+        description:
+          default: ''
+          title: Description
+          type: string
         fingerprint:
           anyOf:
           - type: string
-            maxLength: 128
-            minLength: 1
           - type: 'null'
+          default: null
           title: Fingerprint
         runner_type:
           anyOf:
           - type: string
-            maxLength: 64
-            minLength: 1
           - type: 'null'
+          default: null
           title: Runner Type
         capabilities:
           items:
             type: string
-          type: array
-          maxItems: 20
           title: Capabilities
-        logical_slots:
-          items:
-            type: string
           type: array
-          maxItems: 500
-          title: Logical Slots
-        uses:
-          anyOf:
-          - additionalProperties:
-              items:
-                type: string
-              type: array
-            type: object
-          - type: 'null'
-          title: Uses
-          description: Original aliases used by role defaults or exact asset_id:version
-            contexts; omitted provenance keeps all declared requirements global.
-        description:
-          type: string
-          title: Description
-          default: ''
-        display_name:
-          type: string
-          title: Display Name
-          default: ''
         input_schema:
           anyOf:
           - additionalProperties: true
             type: object
           - type: 'null'
+          default: null
           title: Input Schema
-      additionalProperties: false
-      type: object
       required:
-      - slot
       - kind
+      - source_id
       title: PackageDependency
-      description: A logical resource requirement; fingerprints contain no local identity.
+      type: object
     PackageRole:
+      additionalProperties: false
+      description: An exact role version and its source profile identity.
       properties:
         role_id:
-          type: string
           maxLength: 128
           minLength: 1
           title: Role Id
+          type: string
         version:
-          type: integer
-          minimum: 1.0
+          minimum: 1
           title: Version
+          type: integer
         definition:
           $ref: '#/components/schemas/RoleDefinition'
-        prompt_source:
-          type: string
-          enum:
-          - role
-          - persona
-          - profile
-          - task
-          title: Prompt Source
-        dependencies:
-          items:
-            $ref: '#/components/schemas/PackageDependency'
-          type: array
-          maxItems: 500
-          title: Dependencies
-      additionalProperties: false
-      type: object
+        installation:
+          $ref: '#/components/schemas/RoleInstallation'
       required:
       - role_id
       - version
       - definition
-      - prompt_source
-      - dependencies
+      - installation
       title: PackageRole
-      description: Fixed role content with an explicit description of included prompt
-        origin.
+      type: object
+    ResourceSelection:
+      additionalProperties: false
+      description: One explicit source-to-local resource choice.
+      properties:
+        kind:
+          enum:
+          - profiles
+          - models
+          - personas
+          - tools
+          - skills
+          - knowledge_bases
+          title: Kind
+          type: string
+        source_id:
+          maxLength: 128
+          minLength: 1
+          title: Source Id
+          type: string
+        target_id:
+          maxLength: 128
+          minLength: 1
+          title: Target Id
+          type: string
+      required:
+      - kind
+      - source_id
+      - target_id
+      title: ResourceSelection
+      type: object
     WorkflowImportRequest:
+      additionalProperties: false
+      description: Untrusted package and deliberate choices of this machine's resources.
       properties:
         package:
           $ref: '#/components/schemas/WorkflowPackage'
-        installations:
-          additionalProperties:
-            $ref: '#/components/schemas/RoleInstallation'
-          type: object
-          title: Installations
-        save_pending:
-          type: boolean
-          title: Save Pending
-          default: false
-      additionalProperties: false
-      type: object
+        selections:
+          items:
+            $ref: '#/components/schemas/ResourceSelection'
+          maxItems: 500
+          title: Selections
+          type: array
       required:
       - package
       title: WorkflowImportRequest
-      description: Untrusted package and deliberate choices of this machine's resources.
-
+      type: object
     WorkflowPackage:
+      additionalProperties: false
+      description: A complete source closure with direct resource requirements.
       properties:
         asset_id:
-          type: string
           maxLength: 128
           minLength: 1
           title: Asset Id
+          type: string
         version:
-          type: integer
-          minimum: 1.0
+          minimum: 1
           title: Version
+          type: integer
         definition:
           anyOf:
-          - $ref: '#/components/schemas/WorkflowDefinition'
           - $ref: '#/components/schemas/GraphDefinition'
           - $ref: '#/components/schemas/AutonomousDefinition'
           title: Definition
         format:
-          type: string
           const: astrbot.workflow
           title: Format
+          type: string
         format_version:
-          type: integer
-          enum:
-          - 1
-          - 2
+          const: 3
           title: Format Version
+          type: integer
         roles:
           items:
             $ref: '#/components/schemas/PackageRole'
-          type: array
           maxItems: 100
           title: Roles
+          type: array
         assets:
           items:
             $ref: '#/components/schemas/PackageAsset'
-          type: array
           maxItems: 100
           title: Assets
-      additionalProperties: false
-      type: object
+          type: array
+        requirements:
+          items:
+            $ref: '#/components/schemas/PackageDependency'
+          maxItems: 500
+          title: Requirements
+          type: array
       required:
       - asset_id
       - version
@@ -12021,29 +12018,28 @@ components:
       - format_version
       - roles
       title: WorkflowPackage
-      description: A self-contained definition closure without local authorization.
+      type: object
     PackageAsset:
+      additionalProperties: false
+      description: One exact asset version in the entry's reference closure.
       properties:
         asset_id:
-          type: string
           maxLength: 128
           minLength: 1
           title: Asset Id
+          type: string
         version:
-          type: integer
-          minimum: 1.0
+          minimum: 1
           title: Version
+          type: integer
         definition:
           anyOf:
-          - $ref: '#/components/schemas/WorkflowDefinition'
           - $ref: '#/components/schemas/GraphDefinition'
           - $ref: '#/components/schemas/AutonomousDefinition'
           title: Definition
-      additionalProperties: false
-      type: object
       required:
       - asset_id
       - version
       - definition
       title: PackageAsset
-      description: One exact portable asset version in the entry's reference closure.
+      type: object

@@ -356,8 +356,6 @@ def test_mixed_package_runs_in_second_instance_and_survives_upgrade_after_proces
     assert all(request["model"] == "portable-test-model" for request in requests)
     for private in (
         "private-key-a",
-        "profile-a",
-        "model-a",
         "conversation_id",
         "bindings",
     ):

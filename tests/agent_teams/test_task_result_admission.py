@@ -263,8 +263,8 @@ def test_unsupported_frozen_task_is_blocked_after_process_loss(tmp_path, runner)
 
 
 @pytest.mark.asyncio
-async def test_import_derives_result_protocol_even_when_manifest_omits_it(tmp_path):
-    """Keep import candidates and pending nested assets consistent with launch.
+async def test_import_requires_result_protocol_before_atomic_install(tmp_path):
+    """A target executor without result submission cannot install a package.
 
     Args:
         tmp_path: Isolated durable source and target installations.
@@ -301,36 +301,40 @@ async def test_import_derives_result_protocol_even_when_manifest_omits_it(tmp_pa
             {
                 "definition": {
                     "name": "Evidence",
-                    "role_id": role["role_id"],
-                    "role_version": 1,
-                    "task": "Check evidence.",
+                    "result_task_id": "check",
+                    "tasks": [
+                        {
+                            "id": "check",
+                            "name": "Check",
+                            "member": "check",
+                            "role_id": role["role_id"],
+                            "role_version": 1,
+                            "task": "Check evidence.",
+                        }
+                    ],
                 }
             },
         )
         package = await service.export_asset("alice", asset["asset_id"], 1)
-        dependency = package["roles"][0]["dependencies"][0]
-        assert dependency["capabilities"] == ["task_result"]
-        untrusted = copy.deepcopy(package)
-        untrusted["roles"][0]["dependencies"][0]["capabilities"] = []
-        catalog["profiles"][0]["runner_config"]["dify_api_type"] = "chat"
-        key = f"{role['role_id']}:1"
-        payload = {
-            "package": untrusted,
-            "installations": {key: {"profile_id": "default"}},
-        }
-        preview = await service.preview_import("bob", payload)
-        assert preview["ready"] is False
-        assert preview["roles"][0]["dependencies"][0]["capabilities"] == ["task_result"]
-        assert preview["roles"][0]["dependencies"][0]["candidates"] == []
-        installed = await service.import_asset("bob", {**payload, "save_pending": True})
-        readiness = await service.check_readiness(
-            "bob", installed["asset"]["asset_id"], 1
+        dependency = next(
+            item for item in package["requirements"] if item["kind"] == "profiles"
         )
-        assert readiness["ready"] is False
+        assert "task_result" in dependency["capabilities"]
+        untrusted = copy.deepcopy(package)
+        untrusted["requirements"][0]["capabilities"] = []
         with pytest.raises(RoleAssetError):
-            await service.start_run(
-                "bob", installed["asset"]["asset_id"], {"version": 1}
-            )
+            await service.preview_import("bob", {"package": untrusted})
+        catalog["profiles"][0]["runner_config"]["dify_api_type"] = "chat"
+        selections = [
+            {"kind": "profiles", "source_id": "default", "target_id": "default"}
+        ]
+        payload = {"package": package, "selections": selections}
+        preview = await service.preview_import("bob", payload)
+        assert not preview["ready"]
+        assert preview["requirements"][0]["candidates"][0]["disabled"]
+        with pytest.raises(RoleAssetError):
+            await service.import_asset("bob", payload)
+        assert (await service.list_assets("bob"))["assets"] == []
         assert (await service.list_runs("bob"))["runs"] == []
         assert await db.get_platform_sessions_by_creator("bob") == []
     finally:

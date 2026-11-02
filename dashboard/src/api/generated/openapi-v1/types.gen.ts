@@ -1006,51 +1006,41 @@ export type NeoReleaseActionRequest = {
 };
 
 /**
- * One exact portable asset version in the entry's reference closure.
+ * One exact asset version in the entry's reference closure.
  */
 export type PackageAsset = {
     asset_id: string;
     version: number;
-    definition: (WorkflowDefinition | GraphDefinition | AutonomousDefinition);
+    definition: (GraphDefinition | AutonomousDefinition);
 };
 
 /**
- * A logical resource requirement; fingerprints contain no local identity.
+ * A source resource identity and its non-secret compatibility contract.
  */
 export type PackageDependency = {
-    slot: string;
-    kind: 'profiles' | 'models' | 'tools' | 'skills' | 'knowledge_bases';
+    kind: 'profiles' | 'models' | 'personas' | 'tools' | 'skills' | 'knowledge_bases';
+    source_id: string;
+    display_name?: string;
+    description?: string;
     fingerprint?: (string | null);
     runner_type?: (string | null);
     capabilities?: Array<(string)>;
-    logical_slots?: Array<(string)>;
-    /**
-     * Original aliases used by role defaults or exact asset_id:version contexts; omitted provenance keeps all declared requirements global.
-     */
-    uses?: ({
-    [key: string]: Array<(string)>;
-} | null);
-    description?: string;
-    display_name?: string;
     input_schema?: ({
     [key: string]: unknown;
 } | null);
 };
 
-export type kind2 = 'profiles' | 'models' | 'tools' | 'skills' | 'knowledge_bases';
+export type kind2 = 'profiles' | 'models' | 'personas' | 'tools' | 'skills' | 'knowledge_bases';
 
 /**
- * Fixed role content with an explicit description of included prompt origin.
+ * An exact role version and its source profile identity.
  */
 export type PackageRole = {
     role_id: string;
     version: number;
     definition: RoleDefinition;
-    prompt_source: 'role' | 'persona' | 'profile' | 'task';
-    dependencies: Array<PackageDependency>;
+    installation: RoleInstallation;
 };
-
-export type prompt_source = 'role' | 'persona' | 'profile' | 'task';
 
 export type ParameterAttachmentId = string;
 
@@ -1256,6 +1246,15 @@ export type ReorderRequest = {
         type: 'persona' | 'folder';
         sort_order: number;
     }>;
+};
+
+/**
+ * One explicit source-to-local resource choice.
+ */
+export type ResourceSelection = {
+    kind: 'profiles' | 'models' | 'personas' | 'tools' | 'skills' | 'knowledge_bases';
+    source_id: string;
+    target_id: string;
 };
 
 /**
@@ -1588,10 +1587,7 @@ export type WorkflowGraph = {
  */
 export type WorkflowImportRequest = {
     package: WorkflowPackage;
-    installations?: {
-        [key: string]: RoleInstallation;
-    };
-    save_pending?: boolean;
+    selections?: Array<ResourceSelection>;
 };
 
 export type WorkflowNode = {
@@ -1602,19 +1598,18 @@ export type WorkflowNode = {
 };
 
 /**
- * A self-contained definition closure without local authorization.
+ * A complete source closure with direct resource requirements.
  */
 export type WorkflowPackage = {
     asset_id: string;
     version: number;
-    definition: (WorkflowDefinition | GraphDefinition | AutonomousDefinition);
+    definition: (GraphDefinition | AutonomousDefinition);
     format: "astrbot.workflow";
-    format_version: 1 | 2;
+    format_version: 3;
     roles: Array<PackageRole>;
     assets?: Array<PackageAsset>;
+    requirements?: Array<PackageDependency>;
 };
-
-export type format_version = 1 | 2;
 
 /**
  * Explicit new attempt using the failed attempt's exact frozen inputs.

@@ -330,6 +330,16 @@ async def run_choice_scenario(
                         )
                         or todo["tool_call_id"] == "choice-two"
                     )
+                    if todo["tool_call_id"] == "choice-one":
+                        text = "\n".join(notices)
+                        assert "- A: Brief" in text
+                        assert "- B: Detailed — Include evidence" in text
+                        assert "Recommended: Detailed" in text
+                        assert "Reason: The evidence is available." in text
+                        assert "Use the verified source." in text
+                        assert '"choice_id": "__free_text__"' in text
+                        assert '"free_text": "YOUR_TEXT"' in text
+                        assert '"choice_spec"' not in text
                     payload = {
                         key: value
                         for key, value in response.items()

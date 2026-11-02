@@ -619,12 +619,27 @@ class WorkflowChat:
                             "source_kind",
                             "choice_spec",
                             "recommendation",
+                            "deadline",
+                            "timeout_reason",
                             "question",
                             "constraints",
                             "artifact_ref",
                             "status",
                         )
                     },
+                    "human_wait": (
+                        {
+                            key: todo["human_wait"].get(key)
+                            for key in ("timeout_seconds", "timeout_action")
+                        }
+                        if todo.get("human_wait") is not None
+                        else None
+                    ),
+                    "decision_source": (
+                        {"type": todo["decision_source"].get("type")}
+                        if todo.get("decision_source") is not None
+                        else None
+                    ),
                     "response": None,
                 }
                 for todo in run.get("todos", [])
@@ -709,35 +724,95 @@ class WorkflowChat:
                         t for t in run.get("todos", []) if t["status"] == "pending"
                     ]
                     for todo in pending:
-                        details = {
-                            key: todo.get(key)
-                            for key in (
-                                "todo_id",
-                                "question",
-                                "choice_spec",
-                                "constraints",
-                                "recommendation",
-                                "artifact_ref",
-                            )
-                        }
-                        if todo.get("source_kind") == "tool_call":
+                        dynamic = todo.get("source_kind") == "tool_call"
+                        spec = todo.get("choice_spec") or {}
+                        lines = [
+                            f"Human request {todo['todo_id']}",
+                            f"Run: {row.run_id}",
+                        ]
+                        if spec.get("title"):
+                            lines.append(str(spec["title"]))
+                        lines.append(f"Question: {todo['question']}")
+                        if spec.get("extra_content"):
+                            lines.append(str(spec["extra_content"]))
+                        if dynamic:
+                            options = spec.get("options", [])
+                            for option in options:
+                                line = f"- {option['id']}: {option['label']}"
+                                if option.get("description"):
+                                    line += f" — {option['description']}"
+                                lines.append(line)
                             example = {"action": "answer", "choice_id": "OPTION_ID"}
                         elif todo["kind"] == "approval":
-                            example = {
-                                "action": "approve",
-                                "artifact_ref": todo["artifact_ref"],
-                            }
+                            options = []
+                            ref = todo["artifact_ref"]
+                            lines.append(
+                                f"Artifact: {ref['artifact_id']} · v{ref['version']}"
+                            )
+                            example = {"action": "approve", "artifact_ref": ref}
                         else:
+                            options = []
+                            for choice in todo.get("constraints", {}).get(
+                                "choices", []
+                            ):
+                                lines.append(f"- {choice}")
                             example = {"action": "answer", "answer": "YOUR_ANSWER"}
-                        text = (
-                            f"Human request for run {row.run_id}:\n"
-                            + json.dumps(details, ensure_ascii=False)
-                            + f"\nReview: {link}\nAnswer: /asset answer {row.run_id} {todo['todo_id']} "
+                        recommendation = todo.get("recommendation")
+                        if recommendation:
+                            value = recommendation["value"]
+                            label = next(
+                                (
+                                    item["label"]
+                                    for item in options
+                                    if item["id"] == value
+                                ),
+                                value,
+                            )
+                            lines.append(f"Recommended: {label}")
+                            lines.append(f"Reason: {recommendation['reason']}")
+                        lines.append(f"Review and evidence: {link}")
+                        command = f"/asset answer {row.run_id} {todo['todo_id']} "
+                        lines.append(
+                            "Answer: "
+                            + command
                             + json.dumps(example, ensure_ascii=False)
                         )
+                        if dynamic:
+                            lines.append(
+                                "Free text: "
+                                + command
+                                + json.dumps(
+                                    {
+                                        "action": "answer",
+                                        "choice_id": "__free_text__",
+                                        "free_text": "YOUR_TEXT",
+                                    },
+                                    ensure_ascii=False,
+                                )
+                            )
                         if todo["kind"] == "approval":
-                            text += '\nTo reject, use action "reject" and include "feedback" with the same artifact_ref.'
-                        parts = [text[i : i + 1500] for i in range(0, len(text), 1500)]
+                            lines.append(
+                                "Reject with feedback: "
+                                + command
+                                + json.dumps(
+                                    {
+                                        "action": "reject",
+                                        "artifact_ref": todo["artifact_ref"],
+                                        "feedback": "YOUR_FEEDBACK",
+                                    },
+                                    ensure_ascii=False,
+                                )
+                            )
+                        text = "\n".join(lines)
+                        parts = []
+                        while text:
+                            end = min(len(text), 1500)
+                            if end < len(text):
+                                line_end = text.rfind("\n", 0, end)
+                                if line_end > 0:
+                                    end = line_end + 1
+                            parts.append(text[:end])
+                            text = text[end:]
                         notices.extend(
                             (f"todo:{todo['todo_id']}:{index}", part)
                             for index, part in enumerate(parts)

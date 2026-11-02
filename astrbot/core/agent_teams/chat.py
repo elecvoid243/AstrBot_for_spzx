@@ -205,7 +205,9 @@ class WorkflowChat:
             if row is None:
                 raise RoleAssetError("Run not found", status=404)
             owner = row.owner_username
-        await self.service.answer_todo(owner, run_id, todo_id, payload)
+        await self.service.answer_todo(
+            owner, run_id, todo_id, payload, caller=caller.model_dump()
+        )
         return await self.get_run(caller, run_id, include_todos=True)
 
     async def read_browser_artifact(
@@ -610,10 +612,13 @@ class WorkflowChat:
             projection["todos"] = [
                 {
                     **{
-                        key: todo[key]
+                        key: todo.get(key)
                         for key in (
                             "todo_id",
                             "kind",
+                            "source_kind",
+                            "choice_spec",
+                            "recommendation",
                             "question",
                             "constraints",
                             "artifact_ref",
@@ -701,16 +706,41 @@ class WorkflowChat:
                         ("accepted", f"Accepted run {row.run_id}. Details: {link}")
                     ]
                     pending = [
-                        t["todo_id"]
-                        for t in run.get("todos", [])
-                        if t["status"] == "pending"
+                        t for t in run.get("todos", []) if t["status"] == "pending"
                     ]
-                    if pending:
-                        notices.append(
-                            (
-                                "waiting:" + ":".join(sorted(pending)),
-                                f"Run {row.run_id} needs human input. Answer the existing pending request in WebUI: {link}",
+                    for todo in pending:
+                        details = {
+                            key: todo.get(key)
+                            for key in (
+                                "todo_id",
+                                "question",
+                                "choice_spec",
+                                "constraints",
+                                "recommendation",
+                                "artifact_ref",
                             )
+                        }
+                        if todo.get("source_kind") == "tool_call":
+                            example = {"action": "answer", "choice_id": "OPTION_ID"}
+                        elif todo["kind"] == "approval":
+                            example = {
+                                "action": "approve",
+                                "artifact_ref": todo["artifact_ref"],
+                            }
+                        else:
+                            example = {"action": "answer", "answer": "YOUR_ANSWER"}
+                        text = (
+                            f"Human request for run {row.run_id}:\n"
+                            + json.dumps(details, ensure_ascii=False)
+                            + f"\nReview: {link}\nAnswer: /asset answer {row.run_id} {todo['todo_id']} "
+                            + json.dumps(example, ensure_ascii=False)
+                        )
+                        if todo["kind"] == "approval":
+                            text += '\nTo reject, use action "reject" and include "feedback" with the same artifact_ref.'
+                        parts = [text[i : i + 1500] for i in range(0, len(text), 1500)]
+                        notices.extend(
+                            (f"todo:{todo['todo_id']}:{index}", part)
+                            for index, part in enumerate(parts)
                         )
                     terminal = projected["status"] in {
                         "completed",

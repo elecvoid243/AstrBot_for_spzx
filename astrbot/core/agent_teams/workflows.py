@@ -7448,6 +7448,7 @@ class WorkflowService:
         payload: dict,
         *,
         timed_out: bool = False,
+        caller: dict | None = None,
     ) -> dict:
         """Save a human response before attempting any dependency release.
 
@@ -7458,6 +7459,7 @@ class WorkflowService:
             payload: Unique response identity, answer or explicit decision.
             timed_out: Trusted service scheduler requesting the saved deadline action;
                 never accepted from the external answer payload.
+            caller: Verified platform event identity, if submitted from chat.
 
         Returns:
             Current persisted run, including a response awaiting resume if paused.
@@ -7676,7 +7678,11 @@ class WorkflowService:
                         "artifact_ref": todo.data.get("artifact_ref"),
                     }
                     if timed_out
-                    else {"type": "human", "username": username},
+                    else {
+                        "type": "human",
+                        "username": username,
+                        **({"caller": caller} if caller is not None else {}),
+                    },
                 }
                 session.add(todo)
                 session.add(

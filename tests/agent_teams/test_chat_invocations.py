@@ -41,8 +41,8 @@ async def chat_env(tmp_path, monkeypatch):
     role = await roles.save_role(
         "operator",
         {
-            "definition": {"name": "Writer", "prompt": "Use evidence."},
-            "installation": {"bindings": {"model": "model"}},
+            "definition": {"name": "Writer", "prompt": "Use evidence.", "provider_id": "model"},
+            "installation": {"profile_id": "default"},
         },
     )
     observations = []

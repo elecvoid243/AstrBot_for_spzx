@@ -273,9 +273,17 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str) ->
             {
                 "definition": {
                     "name": "Remote evidence",
-                    "role_id": role["role_id"],
-                    "role_version": 1,
-                    "task": "Find the original evidence.",
+                    "result_task_id": "research",
+                    "tasks": [
+                        {
+                            "id": "research",
+                            "name": "Research",
+                            "member": "researcher",
+                            "role_id": role["role_id"],
+                            "role_version": 1,
+                            "task": "Find the original evidence.",
+                        }
+                    ],
                 }
             },
         )
@@ -408,10 +416,10 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str) ->
             from hypercorn.asyncio import serve
             from hypercorn.config import Config
 
+            from astrbot.core.agent_teams.history import RunHistoryService
             from astrbot.dashboard.api.auth import require_dashboard_user
             from astrbot.dashboard.api.role_assets import router as role_router
             from astrbot.dashboard.api.workflow_assets import router as workflow_router
-            from astrbot.core.agent_teams.history import RunHistoryService
 
             await service.boot_sweep()
             app = FastAPI()
@@ -449,7 +457,13 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str) ->
         if action == "start":
             run = await service.start_run("alice", asset["asset_id"], {"version": 1})
             (folder / "started.json").write_text(
-                json.dumps({"run_id": run["run_id"]}), encoding="utf-8"
+                json.dumps(
+                    {
+                        "run_id": run["snapshot"]["task_runs"]["research"],
+                        "root_run_id": run["run_id"],
+                    }
+                ),
+                encoding="utf-8",
             )
             if window in {
                 "identity_save_failure",
@@ -470,7 +484,10 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str) ->
                         break
                     await asyncio.sleep(0.02)
                 (folder / "kill-ready.json").write_text(
-                    json.dumps({"run_id": run["run_id"]}), encoding="utf-8"
+                    json.dumps(
+                        {"run_id": current["snapshot"]["task_runs"]["research"]}
+                    ),
+                    encoding="utf-8",
                 )
             await asyncio.Future()
         else:

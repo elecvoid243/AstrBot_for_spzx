@@ -41,7 +41,11 @@ async def chat_env(tmp_path, monkeypatch):
     role = await roles.save_role(
         "operator",
         {
-            "definition": {"name": "Writer", "prompt": "Use evidence.", "provider_id": "model"},
+            "definition": {
+                "name": "Writer",
+                "prompt": "Use evidence.",
+                "provider_id": "model",
+            },
             "installation": {"profile_id": "default"},
         },
     )
@@ -93,9 +97,18 @@ async def test_only_explicitly_opened_pinned_assets_are_offered_to_the_actual_ca
         {
             "definition": {
                 "name": "Research report",
-                "role_id": role["role_id"],
-                "role_version": 1,
-                "task": "Research {topic}",
+                "result_task_id": "write",
+                "tasks": [
+                    {
+                        "id": "write",
+                        "name": "Write",
+                        "member": "writer",
+                        "role_id": role["role_id"],
+                        "role_version": 1,
+                        "task": "Research {topic}",
+                        "inputs": {"topic": {"input": "topic"}},
+                    }
+                ],
                 "required_inputs": ["topic"],
             }
         },
@@ -136,14 +149,24 @@ async def test_chat_and_dashboard_share_execution_and_return_only_the_final_resu
     service, role, caller, observations = chat_env
     definition = {
         "name": "Report",
-        "role_id": role["role_id"],
-        "role_version": 1,
-        "task": "Research {topic}",
+        "result_task_id": "write",
+        "tasks": [
+            {
+                "id": "write",
+                "name": "Write",
+                "member": "writer",
+                "role_id": role["role_id"],
+                "role_version": 1,
+                "task": "Research {topic}",
+                "inputs": {"topic": {"input": "topic"}},
+            }
+        ],
         "required_inputs": ["topic"],
     }
     if kind == "workflow":
         definition = {
             "name": "Report",
+            "result_task_id": "write",
             "required_inputs": ["topic"],
             "tasks": [
                 {
@@ -153,6 +176,7 @@ async def test_chat_and_dashboard_share_execution_and_return_only_the_final_resu
                     "role_id": role["role_id"],
                     "role_version": 1,
                     "task": "Research {topic}",
+                    "inputs": {"topic": {"input": "topic"}},
                 }
             ],
         }
@@ -161,10 +185,13 @@ async def test_chat_and_dashboard_share_execution_and_return_only_the_final_resu
             "kind": "autonomous",
             "name": "Report",
             "coordinator": {
+                "id": "coordinator",
                 "role_id": role["role_id"],
                 "role_version": 1,
             },
-            "allowed_roles": [{"role_id": role["role_id"], "role_version": 1}],
+            "allowed_roles": [
+                {"id": "writer", "role_id": role["role_id"], "role_version": 1}
+            ],
         }
     asset = await service.save_asset("operator", {"definition": definition})
     await service.chat.save_access(
@@ -230,9 +257,18 @@ async def test_name_ambiguity_and_required_inputs_are_clarified_before_any_run(
             {
                 "definition": {
                     "name": "Report",
-                    "role_id": role["role_id"],
-                    "role_version": 1,
-                    "task": "Research {topic}",
+                    "result_task_id": "write",
+                    "tasks": [
+                        {
+                            "id": "write",
+                            "name": "Write",
+                            "member": "writer",
+                            "role_id": role["role_id"],
+                            "role_version": 1,
+                            "task": "Research {topic}",
+                            "inputs": {"topic": {"input": "topic"}},
+                        }
+                    ],
                     "required_inputs": ["topic"],
                 }
             },
@@ -278,8 +314,12 @@ async def test_source_profile_and_revoked_access_block_chat_execution_and_result
     private = await service.roles.save_role(
         "operator",
         {
-            "definition": {"name": "Private", "prompt": "Private evidence."},
-            "installation": {"profile_id": "private", "bindings": {"model": "model"}},
+            "definition": {
+                "name": "Private",
+                "prompt": "Private evidence.",
+                "provider_id": "model",
+            },
+            "installation": {"profile_id": "private"},
         },
     )
     asset = await service.save_asset(
@@ -287,9 +327,17 @@ async def test_source_profile_and_revoked_access_block_chat_execution_and_result
         {
             "definition": {
                 "name": "Private asset",
-                "role_id": private["role_id"],
-                "role_version": 1,
-                "task": "Read private resources",
+                "result_task_id": "write",
+                "tasks": [
+                    {
+                        "id": "write",
+                        "name": "Write",
+                        "member": "writer",
+                        "role_id": private["role_id"],
+                        "role_version": 1,
+                        "task": "Read private resources",
+                    }
+                ],
             }
         },
     )
@@ -331,9 +379,17 @@ async def test_source_receives_acceptance_then_final_result_without_process_or_d
         {
             "definition": {
                 "name": "Report",
-                "role_id": role["role_id"],
-                "role_version": 1,
-                "task": "Produce report",
+                "result_task_id": "write",
+                "tasks": [
+                    {
+                        "id": "write",
+                        "name": "Write",
+                        "member": "writer",
+                        "role_id": role["role_id"],
+                        "role_version": 1,
+                        "task": "Produce report",
+                    }
+                ],
             }
         },
     )
@@ -389,6 +445,7 @@ async def test_revocation_prevents_later_model_or_tool_work_and_result_delivery(
         {
             "definition": {
                 "name": "Human gate",
+                "result_task_id": "write",
                 "tasks": [
                     {
                         "id": "question",
@@ -477,9 +534,17 @@ async def test_a_retried_failed_run_still_returns_its_eventual_final_result(chat
         {
             "definition": {
                 "name": "Report",
-                "role_id": role["role_id"],
-                "role_version": 1,
-                "task": "Write",
+                "result_task_id": "write",
+                "tasks": [
+                    {
+                        "id": "write",
+                        "name": "Write",
+                        "member": "writer",
+                        "role_id": role["role_id"],
+                        "role_version": 1,
+                        "task": "Write",
+                    }
+                ],
             }
         },
     )
@@ -497,10 +562,12 @@ async def test_a_retried_failed_run_still_returns_its_eventual_final_result(chat
     accepted = await service.chat.invoke(caller, asset["asset_id"], {})
     for _ in range(200):
         run = await service.get_run("operator", accepted["run_id"])
-        if run["status"] == "failed":
+        if run["status"] == "blocked":
             break
         await asyncio.sleep(0.01)
-    assert run["status"] == "failed"
+    assert run["status"] == "blocked"
+    leaf = await service.get_run("operator", run["snapshot"]["task_runs"]["write"])
+    assert leaf["status"] == "failed"
     messages = []
 
     async def send(actual, text):
@@ -508,14 +575,14 @@ async def test_a_retried_failed_run_still_returns_its_eventual_final_result(chat
         return True
 
     await service.chat.deliver_pending(send)
-    assert "failed" in messages[-1]
+    assert "blocked" in messages[-1]
     service.ports_factory = original_ports
     await service.retry_task(
         "operator",
-        run["run_id"],
+        leaf["run_id"],
         {
             "request_id": "retry",
-            "attempt_id": run["state"]["attempt_id"],
+            "attempt_id": leaf["state"]["attempt_id"],
             "input_policy": "original",
         },
     )
@@ -544,6 +611,7 @@ async def test_chat_cannot_read_unapproved_child_results_even_when_the_run_id_is
         {
             "definition": {
                 "name": "Approved report",
+                "result_task_id": "write",
                 "tasks": [
                     {
                         "id": "write",
@@ -606,9 +674,17 @@ async def test_shared_launch_cannot_reuse_a_chat_grant_for_another_asset(chat_en
                 {
                     "definition": {
                         "name": name,
-                        "role_id": role["role_id"],
-                        "role_version": 1,
-                        "task": "Write",
+                        "result_task_id": "write",
+                        "tasks": [
+                            {
+                                "id": "write",
+                                "name": "Write",
+                                "member": "writer",
+                                "role_id": role["role_id"],
+                                "role_version": 1,
+                                "task": "Write",
+                            }
+                        ],
                     }
                 },
             )

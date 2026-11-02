@@ -9,7 +9,11 @@
               preset.role?.name ||
               preview?.effective?.name ||
               preview?.definition?.name ||
-              tm("graph.previewLoading")
+              (previewError
+                ? tm("roles.previewFailed")
+                : previewLoading
+                ? tm("graph.previewLoading")
+                : tm("roles.none"))
             }}</strong
           >
           <div class="text-caption">
@@ -24,7 +28,11 @@
               {{
                 preview
                   ? preview.effective?.provider_id || tm("graph.noModel")
-                  : tm("graph.previewLoading")
+                  : previewError
+                  ? tm("roles.previewFailed")
+                  : previewLoading
+                  ? tm("graph.previewLoading")
+                  : tm("graph.noModel")
               }}</span
             >
             · {{ tm("roles.tools") }}:
@@ -165,6 +173,21 @@
             </v-expansion-panel-text>
           </v-expansion-panel>
         </v-expansion-panels>
+        <v-alert
+          v-if="previewError"
+          type="error"
+          variant="tonal"
+          class="mt-3"
+          data-testid="preset-preview-error"
+        >
+          {{ tm("roles.previewFailed") }}
+          <v-btn
+            variant="text"
+            data-testid="preset-preview-retry"
+            @click="previewRetry++"
+            >{{ tm("roles.preview") }}</v-btn
+          >
+        </v-alert>
         <div v-if="preview" class="mt-3">
           <strong>{{ tm("graph.effectiveRole") }}</strong>
           <p
@@ -232,6 +255,9 @@ const roleItems = computed(() =>
 const roleById = (id: string) =>
   props.roles.find((role) => role.role_id === id);
 const preview = ref<any>(null);
+const previewLoading = ref(false);
+const previewError = ref(false);
+const previewRetry = ref(0);
 let generation = 0;
 watch(
   () => [props.preset.role, props.preset.overrides],
@@ -253,10 +279,13 @@ watch(
       props.preset.installation,
       props.preset.overrides,
       props.defaultProvider,
+      previewRetry.value,
     ]),
   async () => {
     const request = ++generation;
     preview.value = null;
+    previewError.value = false;
+    previewLoading.value = true;
     try {
       if (props.preset.role && props.preset.installation) {
         const definition = {
@@ -289,7 +318,9 @@ watch(
         );
       if (request === generation) preview.value = result;
     } catch {
-      if (request === generation) preview.value = null;
+      if (request === generation) previewError.value = true;
+    } finally {
+      if (request === generation) previewLoading.value = false;
     }
   },
   { immediate: true },

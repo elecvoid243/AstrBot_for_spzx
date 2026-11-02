@@ -158,3 +158,136 @@ it.each([
     expect(resolve).toHaveBeenCalledTimes(calls);
   },
 );
+
+it("shows an actionable error and retries a failed preview", async () => {
+  resolve
+    .mockReset()
+    .mockRejectedValueOnce(new Error("network"))
+    .mockResolvedValueOnce({
+      definition: { name: "Writer" },
+      effective: { runner: { type: "local" }, provider_id: "model", tools: [] },
+      sources: {},
+      issues: [],
+    });
+  const wrapper = mount(TeamPresetEditor, {
+    props: {
+      preset: {
+        id: "writer",
+        role_id: "writer",
+        role_version: 1,
+        overrides: {},
+      },
+      title: "Member",
+      roles: [],
+      catalog: {
+        profiles: [],
+        models: [],
+        personas: [],
+        tools: [],
+        skills: [],
+        knowledge_bases: [],
+      },
+    },
+    global: {
+      stubs: {
+        RoleResourcesEditor: true,
+        "v-expansion-panels": { template: "<div><slot /></div>" },
+        "v-expansion-panel": { template: "<div><slot /></div>" },
+        "v-expansion-panel-title": { template: "<div><slot /></div>" },
+        "v-expansion-panel-text": { template: "<div><slot /></div>" },
+        "v-alert": { template: "<div><slot /></div>" },
+        "v-btn": { template: "<button><slot /></button>" },
+        "v-select": true,
+        "v-switch": true,
+        "v-textarea": true,
+        "v-text-field": true,
+      },
+    },
+  });
+  await flushPromises();
+  expect(wrapper.get('[data-testid="preset-model"]').text()).toContain(
+    "roles.previewFailed",
+  );
+  expect(wrapper.get('[data-testid="preset-preview-error"]').text()).toContain(
+    "roles.previewFailed",
+  );
+  await wrapper.get('[data-testid="preset-preview-retry"]').trigger("click");
+  await flushPromises();
+  expect(wrapper.find('[data-testid="preset-preview-error"]').exists()).toBe(
+    false,
+  );
+  expect(wrapper.get('[data-testid="preset-model"]').text()).toContain("model");
+  expect(resolve).toHaveBeenCalledTimes(2);
+});
+
+it("ignores a stale failure after a newer preview succeeds", async () => {
+  let rejectOld!: (reason: Error) => void;
+  resolve
+    .mockReset()
+    .mockImplementationOnce(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectOld = reject;
+        }),
+    )
+    .mockResolvedValueOnce({
+      definition: { name: "New version" },
+      effective: {
+        runner: { type: "local" },
+        provider_id: "new-model",
+        tools: [],
+      },
+      sources: {},
+      issues: [],
+    });
+  const wrapper = mount(TeamPresetEditor, {
+    props: {
+      preset: {
+        id: "writer",
+        role_id: "writer",
+        role_version: 1,
+        overrides: {},
+      },
+      title: "Member",
+      roles: [],
+      catalog: {
+        profiles: [],
+        models: [],
+        personas: [],
+        tools: [],
+        skills: [],
+        knowledge_bases: [],
+      },
+    },
+    global: {
+      stubs: {
+        RoleResourcesEditor: true,
+        "v-expansion-panels": { template: "<div><slot /></div>" },
+        "v-expansion-panel": { template: "<div><slot /></div>" },
+        "v-expansion-panel-title": { template: "<div><slot /></div>" },
+        "v-expansion-panel-text": { template: "<div><slot /></div>" },
+        "v-select": true,
+        "v-switch": true,
+        "v-textarea": true,
+        "v-text-field": true,
+        "v-alert": true,
+        "v-btn": true,
+      },
+    },
+  });
+  await wrapper.setProps({
+    preset: { id: "writer", role_id: "writer", role_version: 2, overrides: {} },
+  });
+  await flushPromises();
+  rejectOld(new Error("old failure"));
+  await flushPromises();
+  expect(wrapper.get('[data-testid="preset-name"]').text()).toContain(
+    "New version",
+  );
+  expect(wrapper.get('[data-testid="preset-model"]').text()).toContain(
+    "new-model",
+  );
+  expect(wrapper.find('[data-testid="preset-preview-error"]').exists()).toBe(
+    false,
+  );
+});

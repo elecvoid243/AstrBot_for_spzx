@@ -67,7 +67,12 @@ from astrbot.core.message.message_event_result import (
 from astrbot.core.persona_error_reply import (
     extract_persona_custom_error_message_from_event,
 )
-from astrbot.core.pipeline.llm_request_trace import read_injections
+from astrbot.core.pipeline.llm_request_trace import (
+    TEAM_SOURCES_KEY,
+    bounded_context_value,
+    read_injections,
+    record_team_source,
+)
 from astrbot.core.provider.entities import (
     LLMResponse,
     ProviderRequest,
@@ -1610,6 +1615,14 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                         "streaming": use_stream,
                     },
                 )
+            await self._record_model_context(
+                invocation_id,
+                receipt,
+                contexts,
+                func_tool,
+                payload.get("model") or self.provider.get_model(),
+                "main",
+            )
             if use_stream:
                 stream = self.provider.text_chat_stream(**payload)
                 pending_text = ""
@@ -2129,6 +2142,68 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             else tool_name
             for tool_name in llm_resp.tools_call_name
         ]
+
+    async def _record_model_context(
+        self,
+        invocation_id: str,
+        receipt: dict | None,
+        contexts: list,
+        tools: ToolSet | None,
+        model: str | None,
+        stage: str,
+    ) -> None:
+        """Save the bounded input at the actual model delivery boundary.
+
+        Args:
+            invocation_id: Original model invocation.
+            receipt: Admitted delivery identity.
+            contexts: Final provider-facing messages.
+            tools: Final provider-facing tools.
+            model: Effective selected model.
+            stage: Main, parameter generation or repair.
+        """
+        execution = current_team_execution.get()
+        if not execution or not execution.record_process or not receipt:
+            return
+        event = getattr(getattr(self.run_context, "context", None), "event", None)
+        sources = (event.get_extra(TEAM_SOURCES_KEY) or []) if event else []
+        messages = []
+        for message in contexts:
+            data = (
+                message.model_dump(mode="json")
+                if isinstance(message, Message)
+                else message
+            )
+            data = {
+                key: data[key]
+                for key in ("role", "content", "tool_calls", "tool_call_id", "name")
+                if key in data
+            }
+            messages.append(data)
+        observation = bounded_context_value(
+            {
+                "messages": messages,
+                "tools": tools.openai_schema() if tools else [],
+            }
+        )
+        source_observation = bounded_context_value(
+            {
+                "sources": sources,
+                "injections": read_injections(event),
+            }
+        )
+        await execution.record_process(
+            f"{receipt['receipt_id']}:context",
+            "model_context",
+            {
+                "invocation_id": invocation_id,
+                "receipt_id": receipt["receipt_id"],
+                "stage": stage,
+                "model": model,
+                "observation": observation,
+                "assembly": source_observation,
+            },
+        )
 
     async def _record_model_response(self, response: LLMResponse) -> None:
         """Save complete provider output on all three model response paths.
@@ -2969,6 +3044,19 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                     "tool_result",
                     record_data,
                 )
+            if execution and func_tool_name in {"read_task_artifact", "astr_kb_search"}:
+                event = getattr(
+                    getattr(self.run_context, "context", None), "event", None
+                )
+                if event is not None and isinstance(content, str):
+                    record_team_source(
+                        event,
+                        "upstream"
+                        if func_tool_name == "read_task_artifact"
+                        else "knowledge",
+                        content,
+                        tool_call_id=tool_call_id,
+                    )
             tool_call_result_blocks.append(block)
 
         # 获取 trace span：优先使用 subagent trace_span，否则回退到 event.trace
@@ -3909,6 +3997,14 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                             "is_subagent"
                         )
                     ),
+                )
+                await self._record_model_context(
+                    invocation_id,
+                    receipt,
+                    prepared["contexts"],
+                    prepared["func_tool"],
+                    prepared.get("model") or self.provider.get_model(),
+                    stage,
                 )
                 with model_delivery(
                     receipt, output_limit=prepared.pop("output_token_budget")

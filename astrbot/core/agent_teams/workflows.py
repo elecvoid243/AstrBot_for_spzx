@@ -5153,6 +5153,7 @@ class WorkflowService:
                 "model_response",
                 "model_delta",
                 "model_delivery",
+                "model_context",
                 "tool_start",
                 "tool_progress",
                 "tool_status",

@@ -389,11 +389,65 @@
     "readerTitle": "Agent 执行过程",
     "capabilityNote": "仅展示模型实际提供的思考与执行过程。",
     "finalOnly": "此模型提供方仅返回最终结果，未提供流式片段。",
-    "deliveryStates": { "started": "接收中", "completed": "已完成", "error": "出错", "incomplete": "未完成" },
-    "toolStates": { "running": "执行中", "completed": "已完成", "error": "出错", "unknown": "结果未知", "incomplete": "未完成" }
+    "deliveryStates": {
+      "started": "接收中",
+      "completed": "已完成",
+      "error": "出错",
+      "incomplete": "未完成"
+    },
+    "toolStates": {
+      "running": "执行中",
+      "completed": "已完成",
+      "error": "出错",
+      "unknown": "结果未知",
+      "incomplete": "未完成"
+    },
+    "actualContext": "模型实际上下文",
+    "contextUnavailable": "此执行器未提供或本次调用无法获取。",
+    "contextTruncated": "记录超过 {limit} 字符而截断（原始记录长度：{length}）。",
+    "contextTools": "工具定义",
+    "sourceNote": "装配来源记录在插件修改前，可能不再完整存在于最终请求；插件追踪不能识别所有替换或裁剪。",
+    "sourceAbsent": "未提供。",
+    "sourceKinds": {
+      "persona": "人格",
+      "role": "职责",
+      "task": "任务",
+      "explicit_inputs": "显式输入说明",
+      "skills": "技能",
+      "knowledge": "知识",
+      "upstream": "显式选择的上游产物"
+    },
+    "contextStages": {
+      "main": "主模型",
+      "parameters": "参数生成",
+      "repair": "输出修复"
+    },
+    "messageRoles": {
+      "system": "系统",
+      "user": "用户",
+      "assistant": "助手",
+      "tool": "工具"
+    },
+    "contextDiagnostics": "调用身份",
+    "referenceRedacted": "地址中的凭证、查询和片段已去除",
+    "mediaLength": "原始长度 {length}",
+    "mediaOmissions": {
+      "binary or local media content": "二进制或本地媒体已省略",
+      "binary data URI": "二进制数据地址已省略",
+      "no authorized file reference": "没有可授权的文件引用",
+      "invalid URL": "地址无效",
+      "binary media content": "二进制媒体已省略"
+    }
   },
   "graph": {
-    "operators": { "eq": "等于", "ne": "不等于", "gt": "大于", "ge": "大于或等于", "lt": "小于", "le": "小于或等于" },
+    "operators": {
+      "eq": "等于",
+      "ne": "不等于",
+      "gt": "大于",
+      "ge": "大于或等于",
+      "lt": "小于",
+      "le": "小于或等于"
+    },
     "conditionNode": "条件",
     "joinNode": "全部汇合",
     "joinHint": "等待所有已进入的分支成功；跳过的分支不计入。",

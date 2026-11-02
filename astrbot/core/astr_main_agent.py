@@ -40,6 +40,7 @@ from astrbot.core.persona_error_reply import (
     extract_persona_custom_error_message_from_persona,
     set_persona_custom_error_message_on_event,
 )
+from astrbot.core.pipeline.llm_request_trace import record_team_source
 from astrbot.core.platform.astr_message_event import AstrMessageEvent
 from astrbot.core.platform.message_type import MessageType
 from astrbot.core.provider import Provider
@@ -371,11 +372,15 @@ async def _apply_kb(
                 context=plugin_context,
             )
             if not kb_result:
+                record_team_source(event, "knowledge", None)
                 return
-            req.extra_user_content_parts.append(
-                TextPart(
-                    text=f"[Related Knowledge Base Results]:\n{kb_result}",
-                ).mark_as_temp()
+            kb_text = f"[Related Knowledge Base Results]:\n{kb_result}"
+            req.extra_user_content_parts.append(TextPart(text=kb_text).mark_as_temp())
+            record_team_source(
+                event,
+                "knowledge",
+                kb_text,
+                ids=getattr(event.get_extra("agent_team_execution"), "kb_ids", None),
             )
         except Exception as exc:  # noqa: BLE001
             logger.error("Error occurred while retrieving knowledge base: %s", exc)
@@ -692,6 +697,9 @@ async def _ensure_persona_and_skills(
         event, extract_persona_custom_error_message_from_persona(persona)
     )
 
+    record_team_source(
+        event, "persona", persona.get("prompt") if persona else None, id=persona_id
+    )
     if persona:
         # Inject persona system prompt
         if prompt := persona["prompt"]:
@@ -741,13 +749,20 @@ async def _ensure_persona_and_skills(
                 allowed = set(node_skills)
                 skills = [skill for skill in skills if skill.name in allowed]
         if skills:
-            req.system_prompt += f"\n{build_skills_prompt(skills)}\n"
+            skills_prompt = build_skills_prompt(skills)
+            req.system_prompt += f"\n{skills_prompt}\n"
+            record_team_source(
+                event, "skills", skills_prompt, ids=[skill.name for skill in skills]
+            )
             if runtime == "none":
                 req.system_prompt += (
                     "User has not enabled the Computer Use feature. "
                     "You cannot use shell or Python to perform skills. "
                     "If you need to use these capabilities, ask the user to enable Computer Use in the AstrBot WebUI -> Config."
                 )
+
+    if not skills:
+        record_team_source(event, "skills", None)
 
     # One-shot skill-guide nudges queued from the dashboard skill-guide menu:
     # drain the queue (one-shot semantics even when nothing resolves) and
@@ -2079,6 +2094,13 @@ async def build_main_agent(
         )
     if team_context := event.get_extra("team_context"):
         req.extra_user_content_parts.append(TextPart(text=team_context).mark_as_temp())
+        execution = event.get_extra("agent_team_execution")
+        if execution:
+            record_team_source(event, "role", getattr(execution, "role_prompt", None))
+            record_team_source(
+                event, "explicit_inputs", getattr(execution, "task_framing", None)
+            )
+    record_team_source(event, "task", req.prompt)
     cfg = config.provider_settings or plugin_context.get_config(
         umo=event.unified_msg_origin
     ).get("provider_settings", {})

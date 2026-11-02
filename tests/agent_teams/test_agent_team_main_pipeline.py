@@ -71,6 +71,7 @@ from tests.unit.test_knowledge_base_service_contract import FakeEmbeddingProvide
         "auto_inherited_role",
         "v2_role",
         "v2_live_role",
+        "v2_no_persona_role",
         "v2_final_only_role",
         "v2_reused_tool_id_role",
         "v2_timer_failure_role",
@@ -181,6 +182,7 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
     history_read = asyncio.Event()
     model_cancelled = asyncio.Event()
     model_requests = []
+    delivered_messages = []
     migrated_requests = []
     observed_tool_messages = []
 
@@ -257,6 +259,7 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
             """
             tools = kwargs.get("func_tool")
             model_requests.append(self.provider_config["id"])
+            delivered_messages.append([message.model_dump(mode="json") if hasattr(message, "model_dump") else dict(message) for message in kwargs.get("contexts", [])])
             if mode.startswith("v2_graph"):
                 with (tmp_path / "model-calls.log").open(
                     "a", encoding="utf-8"
@@ -595,6 +598,8 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
             f"\nprofile={context.get_config().get('test_profile')};"
             f"sender={event.get_sender_id()};role={event.role}"
         )
+        if mode == "v2_live_role":
+            request.system_prompt = "Plugin replacement after assembly"
         if request.func_tool is not None:
             request.func_tool.add_tool(providers.llm_tools.func_list[0])
             if mode == "v2_partial_error_role":
@@ -644,7 +649,7 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
                         "name": "Writer",
                         "prompt": "Write with evidence.",
                         "provider_id": "research-model",
-                        "persona_id": "researcher",
+                        "persona_id": None if mode == "v2_no_persona_role" else "researcher",
                         "skills": ["alpha"],
                         "tools": ["partial_then_error"]
                         if mode == "v2_partial_error_role"
@@ -1051,6 +1056,19 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
                 assert body.startswith(b"data: ") and b"First fragment." in body
                 assert (await observer.get_run("alice", run["run_id"]))["status"] == "running"
                 live_records = live["snapshot"]["tasks"][0]["process"]
+                context_records = [record["data"] for record in live_records if record["kind"] == "model_context"]
+                assert context_records
+                latest = context_records[-1]
+                assert latest["stage"] == "main"
+                observed = latest["observation"]["value"]["messages"]
+                for actual, recorded in zip(delivered_messages[-1], observed):
+                    if isinstance(actual.get("content"), str) and isinstance(recorded.get("content"), str):
+                        assert actual["content"].startswith(recorded["content"])
+                assert {source["kind"] for source in latest["assembly"]["value"]["sources"]} >= {"persona", "role", "task", "explicit_inputs"}
+                assert "Plugin replacement after assembly" in str(observed)
+                assert expected_persona_prompt not in str(observed)
+                assert any(source["kind"] == "persona" and source["content"] == expected_persona_prompt for source in latest["assembly"]["value"]["sources"])
+                assert latest["assembly"]["value"]["injections"]
                 assert any(record["kind"] == "model_delta" and record["data"]["text"] == "First fragment." for record in live_records)
                 assert not any(record["kind"] == "model_delivery" and record["data"]["status"] == "completed" and record["data"].get("text") == "First fragment. Second fragment." for record in live_records)
                 history_read.set()
@@ -1160,19 +1178,14 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
             if mode == "v2_graph_role":
                 assert current["status"] == "completed", current
                 assert (
-                    current["tasks"][0]["snapshot"]["member"]
-                    == current["tasks"][1]["snapshot"]["member"]
+                    current["tasks"][0]["snapshot"]["member"]["conversation_id"]
+                    != current["tasks"][1]["snapshot"]["member"]["conversation_id"]
                 )
-                result = await service.get_result("alice", run["run_id"])
-                assert (
-                    json.loads(result["tasks"]["first"]["text"])["previous_task"]
-                    is False
-                )
-                assert (
-                    json.loads(result["tasks"]["second"]["text"])["previous_task"]
-                    is True
-                )
-                assert json.loads(result["tasks"]["second"]["text"])["persona"] is True
+                first = await service.get_result("alice", current["tasks"][0]["run_id"])
+                second = await service.get_result("alice", current["tasks"][1]["run_id"])
+                assert json.loads(first["text"])["previous_task"] is False
+                assert json.loads(second["text"])["previous_task"] is False
+                assert json.loads(second["text"])["persona"] is True
                 return
             if mode in {
                 "v2_role",
@@ -1193,6 +1206,18 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
                     if record["kind"] == "tool_result"
                 ]
                 assert len(responses) == 3
+                contexts = [r["data"] for r in current["process"] if r["kind"] == "model_context"]
+                assert len(contexts) == len(delivered_messages) == 3
+                assert len({c["receipt_id"] for c in contexts}) == 3
+                for actual, saved in zip(delivered_messages, contexts):
+                    recorded = saved["observation"]["value"]["messages"]
+                    for message, visible in zip(actual, recorded):
+                        if isinstance(message.get("content"), str) and isinstance(visible.get("content"), str):
+                            assert message["content"].startswith(visible["content"])
+                sources = contexts[0]["assembly"]["value"]["sources"]
+                assert any(x["kind"] == "skills" and "Alpha research skill" in x["content"] for x in sources)
+                assert any(x["kind"] == "knowledge" and "Verified research knowledge" in x["content"] for x in sources)
+                assert contexts[0]["observation"]["value"]["messages"] != contexts[-1]["observation"]["value"]["messages"]
                 if mode == "v2_final_only_role":
                     starts = [r for r in current["process"] if r["kind"] == "model_delivery" and r["data"]["status"] == "started"]
                     assert len(starts) == 3 and all(not r["data"]["streaming"] for r in starts)
@@ -1233,6 +1258,22 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
                 assert current["status"] == expected_status, current
                 with pytest.raises(ValueError, match="no completed result"):
                     await service.get_result("alice", run["run_id"])
+            if mode == "v2_chat_role":
+                observations = [r for r in current["process"] if r["kind"] == "model_context"]
+                assert observations
+                projection = await service.chat.get_run(caller, root_run_id)
+                assert "model_context" not in str(projection)
+                assert expected_persona_prompt not in str(projection)
+                with pytest.raises(RoleAssetError):
+                    await service.get_run("12345", root_run_id)
+
+            if mode == "v2_no_persona_role":
+                context_records = [r["data"] for r in current["process"] if r["kind"] == "model_context"]
+                assert context_records
+                sources = context_records[0]["assembly"]["value"]["sources"]
+                assert any(item["kind"] == "persona" and item["content"] is None for item in sources)
+                assert expected_persona_prompt not in str(context_records[0]["observation"])
+
             if mode == "v2_partial_error_role":
                 assert current["state"]["response"] is None
             else:

@@ -10,6 +10,9 @@ forward to ChatUI.
 from __future__ import annotations
 
 import hashlib
+import json
+import re
+from urllib.parse import urlsplit, urlunsplit
 
 EVENT_EXTRA_KEY = "_llm_request_injections"
 """Event extra key holding the per-turn list of injection records."""
@@ -233,3 +236,220 @@ def read_injections(event: object | None) -> list[dict]:
         # store; a trace is telemetry and must never break the run.
         return []
     return items if isinstance(items, list) else []
+
+
+TEAM_SOURCES_KEY = "_team_context_sources"
+
+
+def record_team_source(
+    event: object, kind: str, content: str | None, **metadata
+) -> None:
+    """Record an actually assembled team input on the current event.
+
+    Args:
+        event: Current team event with a trusted execution binding.
+        kind: Origin of the assembled input.
+        content: Text actually assembled, or None when absent.
+        **metadata: Non-secret source identities.
+    """
+    if not getattr(event, "get_extra", lambda *_: None)("agent_team_execution"):
+        return
+    items = event.get_extra(TEAM_SOURCES_KEY) or []
+    items.append({"kind": kind, "content": content, **metadata})
+    event.set_extra(TEAM_SOURCES_KEY, items)
+
+
+def bounded_context_value(value: object) -> dict:
+    """Bound and sanitize a provider-facing observation without altering the request.
+
+    Args:
+        value: JSON-compatible observation containing only explicitly chosen fields.
+
+    Returns:
+        Sanitized value and truncation information.
+    """
+    budget = FULL_CHARS
+    truncated = False
+
+    def visit(item):
+        nonlocal budget, truncated
+        budget -= 1
+        if budget <= 0:
+            truncated = True
+            return None
+        if hasattr(item, "model_dump"):
+            item = item.model_dump(mode="json")
+        if isinstance(item, dict):
+            part_type = item.get("type")
+            if isinstance(part_type, str) and part_type in {
+                "image_url",
+                "audio_url",
+                "input_audio",
+                "input_image",
+                "image",
+                "audio",
+                "video",
+                "video_url",
+                "file",
+                "input_file",
+            }:
+                result = {"type": part_type, "omitted": "binary or local media content"}
+                pending = [item]
+                while pending:
+                    part = pending.pop()
+                    if isinstance(part, dict):
+                        for key, child in part.items():
+                            if key in {
+                                "url",
+                                "image_url",
+                                "audio_url",
+                                "video_url",
+                            } and isinstance(child, str):
+                                result["original_length"] = len(child)
+                                try:
+                                    parsed = urlsplit(child)
+                                    if (
+                                        parsed.scheme in {"http", "https"}
+                                        and parsed.hostname
+                                    ):
+                                        host = parsed.hostname
+                                        if ":" in host:
+                                            host = f"[{host}]"
+                                        if parsed.port:
+                                            host += f":{parsed.port}"
+                                        result["url"] = visit(
+                                            urlunsplit(
+                                                (
+                                                    parsed.scheme,
+                                                    host,
+                                                    parsed.path,
+                                                    "",
+                                                    "",
+                                                )
+                                            )
+                                        )
+                                        result.pop("omitted", None)
+                                        if (
+                                            parsed.username
+                                            or parsed.password
+                                            or parsed.query
+                                            or parsed.fragment
+                                        ):
+                                            result["reference_redacted"] = True
+                                    elif child.startswith("data:"):
+                                        result["omitted"] = "binary data URI"
+                                    else:
+                                        result["omitted"] = (
+                                            "no authorized file reference"
+                                        )
+                                except ValueError:
+                                    result["omitted"] = "invalid URL"
+                            elif key in {
+                                "data",
+                                "file_data",
+                                "bytes",
+                                "base64",
+                                "b64_json",
+                            } and isinstance(child, str):
+                                result["original_length"] = len(child)
+                                result["omitted"] = "binary media content"
+                                result.pop("url", None)
+                            elif isinstance(child, (dict, list)):
+                                pending.append(child)
+                    elif isinstance(part, list):
+                        pending.extend(part)
+                return result
+            result = {}
+            for k, v in item.items():
+                key = str(k)
+                if budget <= 0 or len(key) > budget:
+                    truncated = True
+                    break
+                budget -= len(key)
+                if key.lower() in {
+                    "provider_config",
+                    "api_key",
+                    "authorization",
+                    "password",
+                    "secret",
+                    "token",
+                    "encrypted",
+                    "data",
+                    "file_data",
+                    "base64",
+                    "b64_json",
+                    "bytes",
+                    "blob",
+                    "filename",
+                }:
+                    result[key] = {
+                        "omitted": "sensitive or binary field",
+                        "original_length": len(v)
+                        if isinstance(v, (str, bytes))
+                        else None,
+                    }
+                    budget -= 1
+                else:
+                    result[key] = visit(v)
+            return result
+        if isinstance(item, (list, tuple)):
+            result = []
+            for v in item:
+                if budget <= 0:
+                    truncated = True
+                    break
+                result.append(visit(v))
+            return result
+        if isinstance(item, str):
+            if item.startswith("{") and '"base64"' in item:
+                try:
+                    encoded = json.loads(item)
+                except ValueError:
+                    encoded = None
+                if (
+                    isinstance(encoded, dict)
+                    and encoded.get("encoding") == "base64"
+                    and "content" in encoded
+                ):
+                    binary = encoded.pop("content")
+                    encoded["content_omitted"] = "binary file content"
+                    encoded["encoded_length"] = (
+                        len(binary) if isinstance(binary, str) else None
+                    )
+                    item = json.dumps(encoded, ensure_ascii=False)
+            if item.startswith("{") and re.search(
+                r'"(?:provider_config|api_key|authorization|password|secret|token|file_data|base64|b64_json)"\s*:',
+                item,
+                flags=re.IGNORECASE,
+            ):
+                try:
+                    structured = json.loads(item)
+                except ValueError:
+                    structured = None
+                if isinstance(structured, dict):
+                    item = json.dumps(visit(structured), ensure_ascii=False)
+            item = re.sub(
+                r"data:(?:image|audio|video|application)/[^\s,;]+(?:;[^\s,]*)?,[A-Za-z0-9+/=_-]+",
+                "[binary data URI omitted]",
+                item,
+                flags=re.IGNORECASE,
+            )
+            length = len(item)
+            result = item[:budget]
+            budget -= len(result)
+            if len(result) < length:
+                truncated = True
+            return result
+        if item is None or isinstance(item, (bool, int, float)):
+            return item
+        return "[unsupported value omitted]"
+
+    # Count original content without retaining the original serialization.
+    sanitized = visit(value)
+    return {
+        "value": sanitized,
+        "truncated": truncated,
+        "limit": FULL_CHARS,
+        "original_length": len(json.dumps(value, ensure_ascii=False, default=str)),
+        "reason": "content limit" if truncated else None,
+    }

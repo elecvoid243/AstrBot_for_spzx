@@ -56,6 +56,10 @@ class NodeExecutionBinding:
     """
     config_id: str | None
     """The config profile id whose PipelineScheduler should execute the turn."""
+    role_prompt: str | None = None
+    """Role text actually used to assemble the team framing."""
+    task_framing: str | None = None
+    """Explicit task and input framing used in the delivered turn."""
     persona_id: str | None = None
     """The persona override for this member, if any."""
     tools: list[str] | None = None
@@ -298,6 +302,8 @@ async def execute_team_turn(
         umo=member["umo"],
         owner_username=username,
         config_id=config_id,
+        role_prompt=member.get("system_prompt"),
+        task_framing=context,
         persona_id=execution.get("persona_id") or None,
         provider_id=execution.get("provider_id") or None,
         tools=execution.get("tools"),

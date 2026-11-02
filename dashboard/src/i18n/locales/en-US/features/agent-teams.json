@@ -389,11 +389,65 @@
     "readerTitle": "Agent process",
     "capabilityNote": "Only reasoning and execution details actually provided by the model are shown.",
     "finalOnly": "This provider returned a final response without streaming.",
-    "deliveryStates": { "started": "Receiving", "completed": "Complete", "error": "Error", "incomplete": "Incomplete" },
-    "toolStates": { "running": "Running", "completed": "Complete", "error": "Error", "unknown": "Outcome unknown", "incomplete": "Not completed" }
+    "deliveryStates": {
+      "started": "Receiving",
+      "completed": "Complete",
+      "error": "Error",
+      "incomplete": "Incomplete"
+    },
+    "toolStates": {
+      "running": "Running",
+      "completed": "Complete",
+      "error": "Error",
+      "unknown": "Outcome unknown",
+      "incomplete": "Not completed"
+    },
+    "actualContext": "Actual model context",
+    "contextUnavailable": "Not supplied by this executor or unavailable for this delivery.",
+    "contextTruncated": "Truncated at {limit} characters (original record length: {length}).",
+    "contextTools": "Tool schemas",
+    "sourceNote": "Assembly sources precede plugin changes and may not remain in the final request. Plugin tracing cannot identify every replacement or trim.",
+    "sourceAbsent": "None supplied.",
+    "sourceKinds": {
+      "persona": "Persona",
+      "role": "Role",
+      "task": "Task",
+      "explicit_inputs": "Explicit input framing",
+      "skills": "Skills",
+      "knowledge": "Knowledge",
+      "upstream": "Selected upstream artifact"
+    },
+    "contextStages": {
+      "main": "Main model",
+      "parameters": "Parameter generation",
+      "repair": "Output repair"
+    },
+    "messageRoles": {
+      "system": "System",
+      "user": "User",
+      "assistant": "Assistant",
+      "tool": "Tool"
+    },
+    "contextDiagnostics": "Call identities",
+    "referenceRedacted": "URL credentials, query and fragment removed",
+    "mediaLength": "original length {length}",
+    "mediaOmissions": {
+      "binary or local media content": "Binary or local media omitted",
+      "binary data URI": "Binary data URI omitted",
+      "no authorized file reference": "No authorized file reference",
+      "invalid URL": "Invalid URL",
+      "binary media content": "Binary media omitted"
+    }
   },
   "graph": {
-    "operators": { "eq": "Equal to", "ne": "Not equal to", "gt": "Greater than", "ge": "Greater than or equal to", "lt": "Less than", "le": "Less than or equal to" },
+    "operators": {
+      "eq": "Equal to",
+      "ne": "Not equal to",
+      "gt": "Greater than",
+      "ge": "Greater than or equal to",
+      "lt": "Less than",
+      "le": "Less than or equal to"
+    },
     "conditionNode": "Condition",
     "joinNode": "ALL join",
     "joinHint": "Wait for every entered branch to succeed; skipped branches do not count.",

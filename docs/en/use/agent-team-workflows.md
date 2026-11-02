@@ -308,6 +308,14 @@ Optional conditional body paths may be skipped when the exit still produces a pa
 
 A loop runs independently without a human node. To confirm a report, add a **Version approval** task after its review dependency and select the writer artifact task. The todo pins the passing iteration's concrete artifact. Export uses that approved reference. New manual revisions never automatically reschedule consumers or inherit old approvals.
 
+## Inspect actual model context
+
+Open **Runs → View Run**, select a task, and expand **Actual model context** on a model delivery. The message roles and text, model and tool schemas reflect the final request observed immediately before the built-in provider call. Parameter and repair calls have their own receipt and context. Expand the assembly sources and plugin injection trail to see the persona, role, task, explicit input framing, skills and retrieved knowledge that were actually assembled. These sources precede plugin changes and do not guarantee that every fragment survived replacement or trimming.
+
+Records have an 8192-character content budget; the panel identifies truncation and the original record length. Binary media is omitted, remote media URLs are stripped of credentials and query/fragment, and local paths without an authorized file reference are omitted. An absent persona is shown as absent; older runs and remote executors may not provide context. Context follows the run owner's existing permissions: permission to answer a human request does not grant access to the owner's process. Reading the process does not inject it into downstream agents.
+
+![Actual model context with assembly sources](/images/agent-teams-actual-context-en.jpg)
+
 ## Executor readiness and remote recovery
 
 Open **Assets → Teams / Workflows → Start Run**. The dialog checks the saved version's dependencies and executor capabilities before enabling **Start Run**. **Check readiness** refreshes the same check used by launch. Blocked requirements show field paths. Roles, canvas workflows and autonomous teams share these rules; coordinators need local task/team tools.

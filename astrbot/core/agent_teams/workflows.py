@@ -61,7 +61,9 @@ from astrbot.core.agent_teams.autonomous_tools import (
 from astrbot.core.agent_teams.graph import (
     GraphDefinition,
     GraphTask,
+    TaskInput,
     WorkflowCall,
+    field_schema,
     matches_condition,
     validate_graph,
 )
@@ -337,6 +339,40 @@ class WorkflowStartRequest(BaseModel):
     input_artifacts: list[ArtifactReference] = Field(
         default_factory=list, max_length=30
     )
+
+
+class TrialSource(BaseModel):
+    """A manually supplied result or an exact existing artifact."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    content: dict | None = None
+    artifact: ArtifactReference | None = None
+
+    @model_validator(mode="after")
+    def validate_source(self):
+        """Require exactly one data source.
+
+        Returns:
+            The validated source.
+
+        Raises:
+            ValueError: Both or neither source was selected.
+        """
+        if (self.content is None) == (self.artifact is None):
+            raise ValueError("Choose exactly one source")
+        return self
+
+
+class TrialRunRequest(BaseModel):
+    """A trial scope and its explicit inputs against one saved draft revision."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    kind: Literal["workflow", "autonomous"]
+    revision: int = Field(ge=1)
+    mode: Literal["full", "single", "partial"]
+    node_id: str | None = None
+    inputs: dict[str, str] = Field(default_factory=dict)
+    sources: dict[str, TrialSource] = Field(default_factory=dict)
 
 
 class ToolResolutionRequest(BaseModel):
@@ -3468,6 +3504,18 @@ class WorkflowService:
                                 "definition": {
                                     "name": current.snapshot["definition"]["name"]
                                 },
+                                **(
+                                    {
+                                        "trial": {
+                                            "draft_revision": current.snapshot["trial"][
+                                                "draft_revision"
+                                            ],
+                                            "mode": current.snapshot["trial"]["mode"],
+                                        }
+                                    }
+                                    if current.snapshot.get("trial")
+                                    else {}
+                                ),
                                 "task": current.snapshot.get(
                                     "task", current.snapshot["definition"]["name"]
                                 )[:200],
@@ -5337,6 +5385,7 @@ class WorkflowService:
                         "root_run_id": todo.root_run_id,
                         "task_run_id": todo.task_run_id,
                         **todo.data,
+                        "trial": bool(root.snapshot.get("trial")),
                         "control_status": control.status if control else "active",
                     }
                 )
@@ -5379,6 +5428,423 @@ class WorkflowService:
                 for identity in identities
             ]
         }
+
+    async def _compile_trial(
+        self, username: str, asset_id: str, request: TrialRunRequest
+    ) -> dict:
+        """Compile a saved draft into a bounded trial scope without executing it.
+
+        Args:
+            username: Authenticated draft owner.
+            asset_id: Draft identity.
+            request: Revision and requested scope.
+
+        Returns:
+            The original draft, selected definition, and boundary requirements.
+
+        Raises:
+            RoleAssetError: The draft or requested scope is invalid.
+        """
+        draft = await self.roles.get_draft(username, request.kind, asset_id)
+        if draft["revision"] != request.revision:
+            raise RoleAssetError("Draft revision changed", status=409)
+        original = copy.deepcopy(draft["body"].get("definition", {}))
+        if request.kind == "autonomous":
+            if request.mode != "full" or request.node_id is not None:
+                raise RoleAssetError("Autonomous teams support full trials only")
+            try:
+                team = AutonomousDefinition.model_validate(original)
+            except ValidationError as exc:
+                raise RoleAssetError(
+                    "Invalid autonomous draft",
+                    [
+                        {
+                            "path": ".".join(map(str, item["loc"])),
+                            "code": item["type"],
+                            "message": item["msg"],
+                        }
+                        for item in exc.errors()
+                    ],
+                ) from exc
+            return {
+                "draft": draft,
+                "definition": team.model_dump(),
+                "selected_nodes": [],
+                "required_inputs": team.required_inputs,
+                "requirements": {},
+                "external": {},
+                "feedback": {},
+            }
+        try:
+            graph = GraphDefinition.model_validate(original)
+        except ValidationError as exc:
+            raise RoleAssetError(
+                "Invalid workflow draft",
+                [
+                    {
+                        "path": ".".join(map(str, item["loc"])),
+                        "code": item["type"],
+                        "message": item["msg"],
+                    }
+                    for item in exc.errors()
+                ],
+            ) from exc
+        validate_graph(graph)
+        tasks = {task.id: task for task in graph.tasks}
+        if request.mode == "full":
+            if request.node_id is not None:
+                raise RoleAssetError("Full trials do not select a start node")
+            selected = set(tasks)
+        else:
+            if request.node_id not in tasks:
+                raise RoleAssetError("Choose an existing start node")
+            selected = {request.node_id}
+            if request.mode == "partial":
+                while True:
+                    expanded = selected | {
+                        edge.target for edge in graph.edges if edge.source in selected
+                    }
+                    if expanded == selected:
+                        break
+                    selected = expanded
+                for edge in graph.edges:
+                    if (
+                        edge.target in selected
+                        and edge.source not in selected
+                        and edge.target != request.node_id
+                    ):
+                        raise RoleAssetError(
+                            "Partial scope requires an omitted parallel predecessor",
+                            [
+                                {
+                                    "path": "definition.edges",
+                                    "code": "SCOPE",
+                                    "message": f"{edge.source} -> {edge.target}",
+                                }
+                            ],
+                        )
+        feedback = {}
+        loops = []
+        for loop in graph.loops:
+            overlap = set(loop.body) & selected
+            if overlap and request.mode == "single":
+                for item in loop.feedback:
+                    if item.target == request.node_id:
+                        feedback[item.input] = {
+                            "task_id": item.source,
+                            "field": item.field,
+                        }
+            elif overlap and overlap != set(loop.body):
+                raise RoleAssetError("Partial trials must include complete loops")
+            elif overlap:
+                loops.append(loop)
+        if request.mode != "full" and any(
+            task.control
+            and task.control.kind == "join"
+            and not any(
+                edge.target == task.id and edge.source in selected
+                for edge in graph.edges
+            )
+            for task in graph.tasks
+            if task.id in selected
+        ):
+            raise RoleAssetError("An isolated ALL join cannot assume upstream success")
+        chosen = [task for task in graph.tasks if task.id in selected]
+        external = {}
+        requirements: dict[str, dict] = {}
+        required_inputs = set()
+        for task in chosen:
+            refs = dict(task.inputs)
+            if task.id == request.node_id:
+                refs.update(
+                    {
+                        name: TaskInput.model_validate(ref)
+                        for name, ref in feedback.items()
+                    }
+                )
+            for input_name, ref in refs.items():
+                if ref.input is not None:
+                    required_inputs.add(ref.input)
+                elif ref.task_id not in selected or (
+                    task.id == request.node_id and input_name in feedback
+                ):
+                    source = tasks[ref.task_id]
+                    requirement = requirements.setdefault(
+                        source.id,
+                        {
+                            "name": source.name,
+                            "fields": {},
+                            "pinned_only": False,
+                            "contract": source.output_contract,
+                        },
+                    )
+                    requirement["fields"][ref.field] = field_schema(
+                        source.output_contract, ref.field
+                    )["type"]
+                    if source.id not in selected:
+                        external[source.id] = source
+            if task.human:
+                for source_id, fields in (
+                    (task.human.artifact_task_id, []),
+                    (
+                        task.human.recommendation_task_id,
+                        [
+                            task.human.recommendation_value_field,
+                            task.human.recommendation_reason_field,
+                        ],
+                    ),
+                ):
+                    if source_id and source_id not in selected:
+                        source = tasks[source_id]
+                        external[source_id] = source
+                        requirement = requirements.setdefault(
+                            source_id,
+                            {
+                                "name": source.name,
+                                "fields": {},
+                                "pinned_only": False,
+                                "contract": source.output_contract,
+                            },
+                        )
+                        requirement["pinned_only"] = True
+                        for name in fields:
+                            requirement["fields"][name] = field_schema(
+                                source.output_contract, name
+                            )["type"]
+        selected_definition = graph.model_dump()
+        selected_definition["tasks"] = [task.model_dump() for task in chosen]
+        selected_definition["edges"] = [
+            edge.model_dump()
+            for edge in graph.edges
+            if edge.source in selected and edge.target in selected
+        ]
+        selected_definition["loops"] = [loop.model_dump() for loop in loops]
+        selected_inputs = [
+            name for name in graph.required_inputs if name in required_inputs
+        ]
+        if graph.result_task_id not in selected:
+            selected_definition["result_task_id"] = (
+                chosen[0].id
+                if request.mode == "single" and not chosen[0].control
+                else None
+            )
+        compiled = GraphDefinition.model_validate(selected_definition)
+        feedback_inputs = (
+            {
+                request.node_id: {
+                    name: TaskInput.model_validate(ref)
+                    for name, ref in feedback.items()
+                }
+            }
+            if feedback
+            else {}
+        )
+        validate_graph(
+            compiled, external_sources=external, feedback_inputs=feedback_inputs
+        )
+        return {
+            "draft": draft,
+            "definition": compiled.model_dump(),
+            "selected_nodes": [task.id for task in chosen],
+            "required_inputs": selected_inputs,
+            "requirements": requirements,
+            "external": external,
+            "feedback": feedback,
+        }
+
+    async def preview_trial(self, username: str, asset_id: str, payload: dict) -> dict:
+        """Return the server-computed scope and inputs for a draft trial.
+
+        Args:
+            username: Authenticated draft owner.
+            asset_id: Draft identity.
+            payload: Trial scope and revision.
+
+        Returns:
+            Selected nodes and required boundary data.
+
+        Raises:
+            RoleAssetError: The draft or requested scope is invalid.
+        """
+        try:
+            request = TrialRunRequest.model_validate(payload)
+        except ValidationError as exc:
+            raise RoleAssetError(
+                "Invalid trial request",
+                [
+                    {
+                        "path": ".".join(map(str, issue["loc"])),
+                        "code": issue["type"],
+                        "message": issue["msg"],
+                    }
+                    for issue in exc.errors()
+                ],
+            ) from exc
+        compiled = await self._compile_trial(username, asset_id, request)
+        return {
+            key: compiled[key]
+            for key in ("selected_nodes", "required_inputs", "requirements")
+        }
+
+    async def start_trial(self, username: str, asset_id: str, payload: dict) -> dict:
+        """Freeze and start a draft trial under the ordinary graph scheduler.
+
+        Args:
+            username: Authenticated draft owner.
+            asset_id: Draft identity.
+            payload: Scope, revision, workflow inputs and exact boundary sources.
+
+        Returns:
+            The independent persisted run.
+
+        Raises:
+            RoleAssetError: Scope, sources, resources or revision are invalid.
+        """
+        try:
+            request = TrialRunRequest.model_validate(payload)
+        except ValidationError as exc:
+            raise RoleAssetError(
+                "Invalid trial request",
+                [
+                    {
+                        "path": ".".join(map(str, issue["loc"])),
+                        "code": issue["type"],
+                        "message": issue["msg"],
+                    }
+                    for issue in exc.errors()
+                ],
+            ) from exc
+        compiled = await self._compile_trial(username, asset_id, request)
+        required = set(compiled["required_inputs"])
+        issues = [
+            {
+                "path": f"inputs.{name}",
+                "code": "REQUIRED",
+                "message": "Provide non-empty text",
+            }
+            for name in required
+            if not request.inputs.get(name, "").strip()
+        ]
+        issues += [
+            {
+                "path": f"inputs.{name}",
+                "code": "UNKNOWN",
+                "message": "Input is not required by this scope",
+            }
+            for name in set(request.inputs) - required
+        ]
+        expected_sources = set(compiled["requirements"])
+        issues += [
+            {
+                "path": f"sources.{name}",
+                "code": "REQUIRED",
+                "message": "Provide this boundary source",
+            }
+            for name in expected_sources - set(request.sources)
+        ]
+        issues += [
+            {
+                "path": f"sources.{name}",
+                "code": "UNKNOWN",
+                "message": "Source is not required by this scope",
+            }
+            for name in set(request.sources) - expected_sources
+        ]
+        if issues:
+            raise RoleAssetError("Invalid trial inputs", issues)
+        originals = (
+            {
+                item.id: item
+                for item in GraphDefinition.model_validate(
+                    compiled["draft"]["body"]["definition"]
+                ).tasks
+            }
+            if request.kind == "workflow"
+            else {}
+        )
+        sources = {}
+        for source_id, source in request.sources.items():
+            requirement = compiled["requirements"][source_id]
+            if requirement["pinned_only"] and source.artifact is None:
+                raise RoleAssetError(
+                    "Approval and recommendation sources require an exact artifact"
+                )
+            reference = source.artifact.model_dump() if source.artifact else None
+            content = (
+                (await self.read_artifact(username, **reference))["content"]
+                if reference
+                else source.content
+            )
+            issues = validate_result(originals[source_id].output_contract, content)
+            if issues:
+                raise RoleAssetError(
+                    "Invalid boundary source",
+                    [
+                        {**issue, "path": f"sources.{source_id}." + issue["path"]}
+                        for issue in issues
+                    ],
+                )
+            sources[source_id] = {
+                "content": copy.deepcopy(content),
+                "artifact": reference,
+            }
+        asset = {
+            "asset_id": asset_id,
+            "version": None,
+            "definition": compiled["definition"],
+        }
+        start = WorkflowStartRequest(
+            version=1, inputs=request.inputs, source="dashboard"
+        )
+        feedback_inputs = (
+            {
+                request.node_id: {
+                    name: TaskInput.model_validate(ref)
+                    for name, ref in compiled["feedback"].items()
+                }
+            }
+            if compiled["feedback"]
+            else {}
+        )
+        frozen = await self._freeze_graph(
+            username,
+            asset,
+            start,
+            external_sources=compiled["external"],
+            feedback_inputs=feedback_inputs,
+            trial=True,
+        )
+        max_depth = frozen["definition"].get("max_depth", 3)
+        for child in frozen["child_assets"].values():
+            for member in [
+                *child["members"].values(),
+                *child.get("allowed_roles", {}).values(),
+            ]:
+                limit = member["effective"].get("max_depth")
+                if max_depth < 1 or limit is not None and limit < 1:
+                    raise RoleAssetError("Nested team exceeds the frozen depth limit")
+        frozen["trial"] = {
+            "draft_revision": request.revision,
+            "draft": copy.deepcopy(compiled["draft"]["body"]),
+            "mode": request.mode,
+            "node_id": request.node_id,
+            "selected_nodes": compiled["selected_nodes"],
+            "sources": sources,
+            "feedback": compiled["feedback"],
+        }
+        async with self.db.get_db() as session:
+            await session.execute(text("BEGIN IMMEDIATE"))
+            current = await session.get(AgentAssetDraft, (request.kind, asset_id))
+            if current is None or current.owner_username != username:
+                raise RoleAssetError("Draft not found", status=404)
+            if current.revision != request.revision:
+                raise RoleAssetError("Draft revision changed", status=409)
+            if await session.get(AgentAssetTombstone, ("workflow", asset_id)):
+                raise RoleAssetError("Asset has been deleted", status=409)
+            run_id = await self._create_scope(session, username, frozen)
+            await session.commit()
+        await self.advance_run(username, run_id)
+        return await self.get_run(username, run_id)
 
     async def _start_graph(
         self,
@@ -5430,6 +5896,10 @@ class WorkflowService:
         request: WorkflowStartRequest,
         nesting_depth: int = 0,
         depth_limit: int | None = None,
+        *,
+        external_sources: dict[str, GraphTask] | None = None,
+        feedback_inputs: dict[str, dict[str, TaskInput]] | None = None,
+        trial: bool = False,
     ) -> dict:
         """Resolve a complete graph and its pinned child resources before any write.
 
@@ -5439,6 +5909,9 @@ class WorkflowService:
             request: Declared inputs and source for this scope.
             nesting_depth: Reference traversal bounded by the supported nesting ceiling.
             depth_limit: Ancestor and caller ceiling for nested assets.
+            external_sources: Trusted trial boundary contracts for this scope.
+            feedback_inputs: Trusted initial feedback for a single-node trial.
+            trial: Whether this is a draft trial root.
 
         Returns:
             Frozen scope template; member identities are assigned at scope creation.
@@ -5519,10 +5992,16 @@ class WorkflowService:
                     "edges": [{"source": "coordinator", "target": "approval"}],
                 }
             )
-        validate_graph(definition)
-        if not team and definition.result_task_id not in {
-            task.id for task in definition.tasks
-        }:
+        validate_graph(
+            definition,
+            external_sources=external_sources,
+            feedback_inputs=feedback_inputs,
+        )
+        if (
+            not team
+            and not trial
+            and definition.result_task_id not in {task.id for task in definition.tasks}
+        ):
             raise RoleAssetError(
                 "Choose a workflow result task",
                 [
@@ -7499,8 +7978,33 @@ class WorkflowService:
                                     ).get("value")
                                     if iteration_input is not None:
                                         value = iteration_input["raw_value"]
+                                    elif task["id"] == root.snapshot.get(
+                                        "trial", {}
+                                    ).get("node_id") and "value" in root.snapshot.get(
+                                        "trial", {}
+                                    ).get("feedback", {}):
+                                        fixed = root.snapshot["trial"]["feedback"][
+                                            "value"
+                                        ]
+                                        value = root.snapshot["trial"]["sources"][
+                                            fixed["task_id"]
+                                        ]["content"]
+                                        for name in fixed["field"].split("."):
+                                            value = value[name]
                                     elif ref.get("input") is not None:
                                         value = root.snapshot["inputs"][ref["input"]]
+                                    elif (
+                                        ref["task_id"]
+                                        in root.snapshot.get("trial", {}).get(
+                                            "sources", {}
+                                        )
+                                        and ref["task_id"] not in rows
+                                    ):
+                                        value = root.snapshot["trial"]["sources"][
+                                            ref["task_id"]
+                                        ]["content"]
+                                        for name in ref["field"].split("."):
+                                            value = value[name]
                                     else:
                                         source = rows[ref["task_id"]]
                                         assert source is not None
@@ -7550,12 +8054,18 @@ class WorkflowService:
                                 human = task["human"]
                                 ref = None
                                 if human["kind"] == "approval":
-                                    source = rows[human["artifact_task_id"]]
-                                    assert source is not None
-                                    ref = source.state.get("child_result_ref") or {
-                                        "artifact_id": source.run_id,
-                                        "version": human["artifact_version"],
-                                    }
+                                    source_id = human["artifact_task_id"]
+                                    if source_id not in rows:
+                                        ref = root.snapshot["trial"]["sources"][
+                                            source_id
+                                        ]["artifact"]
+                                    else:
+                                        source = rows[source_id]
+                                        assert source is not None
+                                        ref = source.state.get("child_result_ref") or {
+                                            "artifact_id": source.run_id,
+                                            "version": human["artifact_version"],
+                                        }
                                     # A requested revision may arrive later through
                                     # an explicit edit. Keep its exact waiting
                                     # reference; never substitute the latest one.
@@ -7564,14 +8074,23 @@ class WorkflowService:
                                 recommendation_ref = None
                                 source_id = human.get("recommendation_task_id")
                                 if source_id:
-                                    source = rows[source_id]
-                                    assert source is not None
-                                    recommendation_ref = {
-                                        "artifact_id": source.run_id,
-                                        "version": 1,
-                                    }
+                                    if source_id not in rows:
+                                        recommendation_ref = root.snapshot["trial"][
+                                            "sources"
+                                        ][source_id]["artifact"]
+                                    else:
+                                        source = rows[source_id]
+                                        assert source is not None
+                                        recommendation_ref = {
+                                            "artifact_id": source.run_id,
+                                            "version": 1,
+                                        }
                                     artifact = await session.get(
-                                        AgentWorkflowArtifact, (source.run_id, 1)
+                                        AgentWorkflowArtifact,
+                                        (
+                                            recommendation_ref["artifact_id"],
+                                            recommendation_ref["version"],
+                                        ),
                                     )
                                     values = []
                                     for field in (
@@ -7763,6 +8282,11 @@ class WorkflowService:
                             if row.snapshot.get("graph_task") and not retrying:
                                 refs = []
                             missing = False
+                            trial_input_sources = (
+                                dict(row.snapshot.get("trial_input_sources", {}))
+                                if retrying
+                                else {}
+                            )
                             iteration_inputs = row.snapshot.get("iteration_inputs", {})
                             for key, ref in [] if retrying else task["inputs"].items():
                                 if key in iteration_inputs:
@@ -7775,9 +8299,46 @@ class WorkflowService:
                                             fixed["reference"]["artifact_id"], []
                                         ).append(fixed["field"])
                                     continue
+                                feedback = root.snapshot.get("trial", {}).get(
+                                    "feedback", {}
+                                )
+                                trial_source = None
+                                if (
+                                    task["id"]
+                                    == root.snapshot.get("trial", {}).get("node_id")
+                                    and key in feedback
+                                ):
+                                    trial_source = feedback[key]
+                                elif ref.get("task_id") not in rows and ref.get(
+                                    "task_id"
+                                ) in root.snapshot.get("trial", {}).get("sources", {}):
+                                    trial_source = ref
+                                if trial_source is not None:
+                                    boundary = root.snapshot["trial"]["sources"][
+                                        trial_source["task_id"]
+                                    ]
+                                    trial_input_sources[key] = {
+                                        "task_id": trial_source["task_id"],
+                                        "field": trial_source["field"],
+                                        "artifact": boundary["artifact"],
+                                    }
+                                    value = boundary["content"]
+                                    for name in trial_source["field"].split("."):
+                                        value = value[name]
+                                    inputs[key] = (
+                                        value
+                                        if isinstance(value, str)
+                                        else json.dumps(value, ensure_ascii=False)
+                                    )
+                                    continue
                                 if ref.get("input") is not None:
                                     # Earlier task aliases must not change the source.
                                     inputs[key] = root.snapshot["inputs"][ref["input"]]
+                                    inherited = root.snapshot.get(
+                                        "trial_inputs", {}
+                                    ).get(ref["input"])
+                                    if inherited is not None:
+                                        trial_input_sources[key] = inherited
                                 else:
                                     source = rows[ref["task_id"]]
                                     assert source is not None
@@ -7824,6 +8385,10 @@ class WorkflowService:
                                     and not row.snapshot.get("graph_task")
                                     else {key: inputs[key] for key in task["inputs"]}
                                 )
+                                if trial_input_sources:
+                                    frozen["trial_inputs"] = copy.deepcopy(
+                                        trial_input_sources
+                                    )
                                 # A graph field reference grants only its value, not
                                 # full artifact access to a nested coordinator.
                                 frozen["input_artifacts"] = (
@@ -7833,6 +8398,7 @@ class WorkflowService:
                                     **row.snapshot,
                                     "inputs": frozen["inputs"],
                                     "input_artifacts": refs,
+                                    "trial_input_sources": trial_input_sources,
                                 }
                                 try:
                                     fields = [
@@ -7921,6 +8487,7 @@ class WorkflowService:
                                     "inputs": inputs,
                                     "input_artifacts": refs,
                                     "selected_fields": selected_fields,
+                                    "trial_input_sources": trial_input_sources,
                                 }
                                 row.status = "running"
                                 occupied.add(member_id)
@@ -7959,21 +8526,31 @@ class WorkflowService:
                     result_id = root.snapshot["definition"].get("result_task_id")
                     if not root.snapshot.get("team_definition"):
                         selected = rows.get(result_id)
-                        success = (
-                            success
-                            and selected is not None
-                            and selected.status == "completed"
-                            and selected.result is not None
-                            and not (
-                                (
-                                    selected.snapshot["definition"].get("human") or {}
-                                ).get("kind")
-                                == "approval"
-                                and selected.result.get("approved") is False
+                        no_trial_result = (
+                            bool(root.snapshot.get("trial")) and result_id is None
+                        )
+                        success = success and (
+                            no_trial_result
+                            or (
+                                selected is not None
+                                and selected.status == "completed"
+                                and selected.result is not None
+                                and not (
+                                    (
+                                        selected.snapshot["definition"].get("human")
+                                        or {}
+                                    ).get("kind")
+                                    == "approval"
+                                    and selected.result.get("approved") is False
+                                )
                             )
                         )
                     approval_missing = False
-                    if success and not root.snapshot.get("team_definition"):
+                    if (
+                        success
+                        and not root.snapshot.get("team_definition")
+                        and selected is not None
+                    ):
                         result_ref = selected.state.get("child_result_ref") or {
                             "artifact_id": selected.run_id,
                             "version": 1,
@@ -8023,7 +8600,9 @@ class WorkflowService:
                         and selected.result.get("approved") is False
                         else "One or more branches require attention; independent branches were allowed to finish.",
                     }
-                    if success:
+                    if success and (
+                        root.snapshot.get("team_definition") or result_id is not None
+                    ):
                         root.result = rows[
                             "coordinator"
                             if root.snapshot.get("team_definition")
@@ -10885,6 +11464,20 @@ class WorkflowService:
                     )
                     + "Pinned input references: "
                     + json.dumps(snapshot.get("input_artifacts", []))
+                    + (
+                        "\nTrial input sources: "
+                        + json.dumps(
+                            {
+                                name: {**source, "value": snapshot["inputs"][name]}
+                                for name, source in snapshot[
+                                    "trial_input_sources"
+                                ].items()
+                            },
+                            ensure_ascii=False,
+                        )
+                        if snapshot.get("trial_input_sources")
+                        else ""
+                    )
                     + (
                         # Frozen inputs are data, never a second task template.
                         "\nDeclared run inputs (JSON):\n"

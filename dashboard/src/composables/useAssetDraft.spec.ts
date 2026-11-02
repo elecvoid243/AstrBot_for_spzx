@@ -34,7 +34,8 @@ describe("draft save queue", () => {
       body: { text: "middle" },
       base_version: null,
     });
-    await draft.flush();
+    const saved = await draft.flush();
+    expect(saved.revision).toBe(3);
     expect(update).toHaveBeenLastCalledWith("role", "a", { text: "latest" }, 2);
     expect(draft.status.value).toBe("saved");
     vi.restoreAllMocks();

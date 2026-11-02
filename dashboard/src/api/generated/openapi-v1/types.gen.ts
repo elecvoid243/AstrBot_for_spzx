@@ -1478,6 +1478,30 @@ export type TraceSettingsRequest = {
     [key: string]: unknown | boolean | string;
 };
 
+export type TrialRunRequest = {
+    kind: 'workflow' | 'autonomous';
+    revision: number;
+    mode: 'full' | 'single' | 'partial';
+    node_id?: (string | null);
+    inputs?: {
+        [key: string]: (string);
+    };
+    sources?: {
+        [key: string]: TrialSource;
+    };
+};
+
+export type kind3 = 'workflow' | 'autonomous';
+
+export type mode3 = 'full' | 'single' | 'partial';
+
+export type TrialSource = {
+    content?: ({
+    [key: string]: unknown;
+} | null);
+    artifact?: (ArtifactReference | null);
+};
+
 export type UmoListRequest = {
     umo?: string;
     umos?: Array<(string)>;
@@ -5466,6 +5490,28 @@ export type StartRunApiV1WorkflowAssetsAssetIdRunsPostData = {
 export type StartRunApiV1WorkflowAssetsAssetIdRunsPostResponse = (unknown);
 
 export type StartRunApiV1WorkflowAssetsAssetIdRunsPostError = (HTTPValidationError);
+
+export type PreviewTrialApiV1WorkflowAssetsAssetIdTrialsPreviewPostData = {
+    body: TrialRunRequest;
+    path: {
+        asset_id: string;
+    };
+};
+
+export type PreviewTrialApiV1WorkflowAssetsAssetIdTrialsPreviewPostResponse = (unknown);
+
+export type PreviewTrialApiV1WorkflowAssetsAssetIdTrialsPreviewPostError = (unknown);
+
+export type StartTrialApiV1WorkflowAssetsAssetIdTrialsPostData = {
+    body: TrialRunRequest;
+    path: {
+        asset_id: string;
+    };
+};
+
+export type StartTrialApiV1WorkflowAssetsAssetIdTrialsPostResponse = (unknown);
+
+export type StartTrialApiV1WorkflowAssetsAssetIdTrialsPostError = (unknown);
 
 export type ListHumanRequestsApiV1WorkflowHumanRequestsGetResponse = (unknown);
 

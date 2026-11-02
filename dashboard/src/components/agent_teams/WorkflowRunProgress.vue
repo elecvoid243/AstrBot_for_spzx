@@ -6,7 +6,7 @@
           {{ run.snapshot.definition.name }}
         </h2>
         <p class="text-body-2 text-medium-emphasis mt-2">
-          {{ run.run_id }} · v{{ run.snapshot.asset_version }} ·
+          {{ run.run_id }} · {{ run.snapshot.trial ? `${tm('trial.test')} · ${tm('trial.revision')} ${run.snapshot.trial.draft_revision}` : `v${run.snapshot.asset_version}` }} ·
           {{ run.snapshot.source }}
         </p>
         <p class="run-text mt-3" data-testid="run-goal">

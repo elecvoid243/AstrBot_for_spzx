@@ -1,4 +1,7 @@
 {
+  "trial": {
+    "title": "试运行草稿", "start": "开始试运行", "realCalls": "所选步骤会真实调用模型和工具，可能产生费用或外部效果。", "scope": "试运行范围", "full": "完整流程", "single": "仅选中节点", "partial": "从选中节点开始", "startNode": "起始节点", "selected": "实际执行步骤", "dynamicTeam": "自主团队及动态成员", "source": "数据来源", "manual": "填写测试数据", "artifact": "精确历史产物", "history": "选择产物版本", "artifactId": "产物 ID", "artifactVersion": "产物版本", "advancedMode": "为高级契约填写对象", "advancedJson": "高级对象数据（JSON）", "required": "必填", "valueType": "值类型", "filter": "运行类型", "all": "全部运行", "test": "草稿试运行", "production": "正式运行", "revision": "草稿修订"
+  },
   "deletion": {
     "title": "删除资产？",
     "delete": "删除",

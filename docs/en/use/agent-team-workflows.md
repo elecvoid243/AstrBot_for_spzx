@@ -28,6 +28,8 @@ In the editor choose **Test draft** and check the displayed draft revision. For 
 
 Tests make real model and tool calls and may incur costs or external effects. They use the selected draft revision without publishing a fixed version. Filter the run list by **Draft test** or **Published run**, and inspect both in the same workbench.
 
+Approval targets and recommendations require real artifacts. An isolated ALL join, an incomplete loop, or a partial scope missing a parallel predecessor cannot start. Testing an Agent inside a loop on its own runs it once and requires explicit initial feedback.
+
 <!-- Insert real English draft trial screenshot here. -->
 
 ## Connect inputs, outputs and control paths

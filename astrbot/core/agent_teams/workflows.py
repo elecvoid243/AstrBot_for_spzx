@@ -2961,8 +2961,13 @@ class WorkflowService:
                                 }
                                 for message in messages
                                 if message.sender_task_run_id == current.run_id
-                                or message.recipient_member_id
-                                == current.snapshot.get("member", {}).get("member_id")
+                                or (
+                                    message.scope_id == current.state.get("scope_id")
+                                    and message.recipient_member_id
+                                    == current.snapshot.get("member", {}).get(
+                                        "member_id"
+                                    )
+                                )
                             ],
                             "recovery": {
                                 "capability": boundary.remote_runner["recovery"]
@@ -3333,8 +3338,11 @@ class WorkflowService:
                 if row.snapshot.get("engine") == "graph_v2"
                 and message.scope_id in {item.state["scope_id"] for item in tree}
                 or message.sender_task_run_id == run_id
-                or message.recipient_member_id
-                == row.snapshot.get("member", {}).get("member_id")
+                or (
+                    message.scope_id == row.state.get("scope_id")
+                    and message.recipient_member_id
+                    == row.snapshot.get("member", {}).get("member_id")
+                )
             ]
             result["cursor"] = max(
                 (event["cursor"] for event in result["events"]), default=0

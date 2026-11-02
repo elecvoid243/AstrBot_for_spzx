@@ -70,14 +70,12 @@
             class="run-task"
             :class="{
               'run-task-selected':
-                task.node_id === selectedTask || task.run_id === selectedTask,
+                task.run_id === selectedTask,
             }"
             @click="
               $emit(
                 'select',
-                task.snapshot.parent_run_id !== run.run_id
-                  ? task.run_id
-                  : task.node_id ?? null,
+                task.run_id,
               )
             "
           >
@@ -167,9 +165,7 @@
               @click="
                 $emit(
                   'select',
-                  task.snapshot.parent_run_id !== run.run_id
-                    ? task.run_id
-                    : task.node_id ?? null,
+                  task.run_id,
                 )
               "
             >

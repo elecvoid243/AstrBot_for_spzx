@@ -1981,6 +1981,30 @@ describe("single-task workflow workspace", () => {
     wrapper.unmount();
   });
 
+  it("routes duplicate nested and loop observations to their own run", async () => {
+    vi.useFakeTimers();
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: "/", component: slotStub }] });
+    await router.push("/?workflow_run=run-1");
+    const child = { ...run, run_id: "child", node_id: "same", process: [], snapshot: { ...run.snapshot, definition: { name: "Child" } } };
+    const round = { ...run, run_id: "round", node_id: "same", process: [], snapshot: { ...run.snapshot, definition: { name: "Round" } } };
+    api.run.mockResolvedValue({ ...run, cursor: 10, tasks: [run], scopes: [{ run_id: "scope", tasks: [child] }], loops: [{ iterations: [{ tasks: [round] }] }] });
+    const record = (id: string, text: string) => ({ record_id: id, run_id: id, attempt_id: "attempt-1", kind: "model_response", data: { text } });
+    api.events.mockResolvedValue({ cursor: 11, reset: false, records: [record("child", "Child output"), record("round", "Round output")], snapshot: null });
+    const wrapper = mount(WorkflowWorkspacePanel, { props: { mode: "runs" }, global: { plugins: [router], stubs: { ...stubs, WorkflowRunProgress: true } } });
+    await flushPromises();
+    await vi.advanceTimersByTimeAsync(4000);
+    wrapper.findComponent({ name: "WorkflowRunProgress" }).vm.$emit("select", "child");
+    await flushPromises();
+    expect(wrapper.text()).toContain("Child output");
+    expect(wrapper.text()).not.toContain("Round output");
+    wrapper.findComponent({ name: "WorkflowRunProgress" }).vm.$emit("select", "round");
+    await flushPromises();
+    expect(wrapper.text()).toContain("Round output");
+    expect(wrapper.text()).not.toContain("Child output");
+    expect(wrapper.findAll('[data-testid="process-record"]')).toHaveLength(1);
+    wrapper.unmount();
+  });
+
   it("merges incremental records without replacing the reader or forcing scroll", async () => {
     vi.useFakeTimers();
     const router = createRouter({ history: createMemoryHistory(), routes: [{ path: "/", component: slotStub }] });

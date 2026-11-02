@@ -1128,10 +1128,16 @@ async function refresh() {
               selectedRun.value = changes.snapshot;
           } else {
             const root = selectedRun.value;
-            const runs = [root, ...(root.tasks ?? []), ...(root.scopes ?? [])];
+            const runs = [
+              root,
+              ...(root.tasks ?? []),
+              ...(root.scopes ?? []).flatMap((scope: any) => [scope, ...scope.tasks]),
+              ...(root.loops ?? []).flatMap((loop: any) =>
+                loop.iterations.flatMap((iteration: any) => iteration.tasks),
+              ),
+            ];
             for (const record of changes.records ?? []) {
-              const target = runs.find((run: any) => run.run_id === record.run_id);
-              if (target) {
+              for (const target of runs.filter((run: any) => run.run_id === record.run_id)) {
                 target.process ??= [];
                 if (!target.process.some((item: any) => item.record_id === record.record_id))
                   target.process.push(record);

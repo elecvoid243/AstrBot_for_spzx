@@ -15,7 +15,15 @@ from typing import Literal, cast
 
 from jsonschema import Draft202012Validator, SchemaError
 from mcp.types import CallToolResult, TextContent
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 from referencing import Registry, Resource
 from referencing.exceptions import Unresolvable
 from referencing.jsonschema import DRAFT202012, Schema
@@ -113,7 +121,7 @@ class WorkflowDefinition(BaseModel):
 
 
 def _capacity_key(snapshot: dict) -> tuple:
-    """Identify the role quota or the inline member's own quota.
+    """Identify the template quota, preset quota, or inline graph member quota.
 
     Args:
         snapshot: Frozen task execution snapshot.
@@ -124,16 +132,61 @@ def _capacity_key(snapshot: dict) -> tuple:
     definition = snapshot["definition"]
     if definition.get("role_id"):
         return ("role", definition["role_id"], definition["role_version"])
-    return ("member", snapshot["member"]["member_id"])
+    return (
+        ("preset", snapshot["asset_id"], snapshot["preset_id"])
+        if snapshot.get("preset_id")
+        else ("member", snapshot["member"]["member_id"])
+    )
 
 
 class TeamRole(BaseModel):
-    """A pinned role permitted by an autonomous asset."""
+    """A stable preset with an inline or pinned role source."""
 
-    model_config = ConfigDict(extra="forbid", strict=True)
-    role_id: str = Field(min_length=1, max_length=128)
-    role_version: int = Field(ge=1)
+    model_config = ConfigDict(extra="forbid", strict=True, str_strip_whitespace=True)
+    id: str = Field(min_length=1, max_length=128)
+    role_id: str | None = Field(default=None, min_length=1, max_length=128)
+    role_version: int | None = Field(default=None, ge=1)
+    role: RoleDefinition | None = None
+    installation: RoleInstallation | None = None
     overrides: RoleOverrides = Field(default_factory=RoleOverrides)
+
+    @field_serializer("overrides")
+    def serialize_overrides(self, overrides: RoleOverrides) -> dict:
+        """Preserve explicit overrides, including null values.
+
+        Args:
+            overrides: Local settings.
+
+        Returns:
+            Explicitly supplied settings.
+        """
+        return overrides.model_dump(exclude_unset=True)
+
+    @model_validator(mode="after")
+    def validate_source(self):
+        """Validate the same role sources accepted by a graph agent.
+
+        Returns:
+            The validated preset.
+
+        Raises:
+            ValueError: The role source is incomplete or ambiguous.
+        """
+        if (
+            self.installation is not None
+            and "profile_id" not in self.installation.model_fields_set
+        ):
+            raise ValueError("Inline agents require an explicit profile_id")
+        GraphTask.model_validate(
+            {
+                "id": "preset",
+                "name": "preset",
+                "member": "preset",
+                "task": "preset",
+                **self.model_dump(exclude={"id"}, exclude_none=True),
+            }
+        )
+        return self
 
 
 class AutonomousDefinition(BaseModel):
@@ -142,6 +195,7 @@ class AutonomousDefinition(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True, str_strip_whitespace=True)
     kind: Literal["autonomous"]
     name: str = Field(min_length=1, max_length=128)
+    default_provider_id: str | None = None
     coordinator: TeamRole
     allowed_roles: list[TeamRole] = Field(min_length=1, max_length=100)
     required_inputs: list[str] = Field(default_factory=lambda: ["goal"], max_length=30)
@@ -954,8 +1008,14 @@ class WorkflowService:
         if isinstance(definition, AutonomousDefinition):
             if "goal" not in definition.required_inputs:
                 raise RoleAssetError("Autonomous teams require a goal input")
-            if len({role.role_id for role in definition.allowed_roles}) != len(
-                definition.allowed_roles
+            if (
+                len(
+                    {
+                        role.id
+                        for role in [definition.coordinator, *definition.allowed_roles]
+                    }
+                )
+                != len(definition.allowed_roles) + 1
             ):
                 raise RoleAssetError(
                     "Allowed role identities must be unique",
@@ -963,20 +1023,28 @@ class WorkflowService:
                         {
                             "path": "definition.allowed_roles",
                             "code": "DUPLICATE",
-                            "message": "Pin one version per role",
+                            "message": "Choose a unique preset ID",
                         }
                     ],
                 )
             for role in [definition.coordinator, *definition.allowed_roles]:
                 await self._validate_task_definition(
                     username,
-                    WorkflowDefinition(
-                        name=definition.name,
-                        task="{goal}",
-                        required_inputs=definition.required_inputs,
-                        output_contract=definition.output_contract,
-                        **role.model_dump(),
+                    GraphTask.model_validate(
+                        {
+                            "id": "preset",
+                            "name": definition.name,
+                            "member": "preset",
+                            "task": "{goal}",
+                            "inputs": {
+                                name: {"input": name}
+                                for name in definition.required_inputs
+                            },
+                            "output_contract": definition.output_contract,
+                            **role.model_dump(exclude={"id"}, exclude_none=True),
+                        }
                     ),
+                    required_inputs=definition.required_inputs,
                 )
             references = set()
             for index, ref in enumerate(definition.allowed_workflows):
@@ -1126,9 +1194,7 @@ class WorkflowService:
                     version=version,
                     owner_username=username,
                     # Null is a meaningful condition value, not an unset option.
-                    definition=definition.model_dump(
-                        exclude_none=not isinstance(definition, GraphDefinition)
-                    ),
+                    definition=definition.model_dump(exclude_none=False),
                 )
             )
             try:
@@ -1922,7 +1988,7 @@ class WorkflowService:
             if isinstance(definition, AutonomousDefinition):
                 if "goal" not in definition.required_inputs:
                     raise RoleAssetError("Autonomous teams require a goal input")
-                if len({role.role_id for role in definition.allowed_roles}) != len(
+                if len({role.id for role in definition.allowed_roles}) != len(
                     definition.allowed_roles
                 ):
                     raise RoleAssetError("Allowed role identities must be unique")
@@ -3083,6 +3149,17 @@ class WorkflowService:
             for issue in preview["issues"]:
                 if issue["path"] == "overrides.provider_id":
                     issue["path"] = "definition.default_provider_id"
+        if asset["definition"].get("kind") == "autonomous" and role.get("role_id"):
+            # A local override can reduce, but cannot increase, the template quota.
+            base_preview = await self.roles.preview_role(role)
+            for field in ("max_instances", "max_parallel"):
+                template_limit = base_preview["effective"].get(field)
+                effective_limit = preview["effective"].get(field)
+                if template_limit is not None and (
+                    effective_limit is None or effective_limit > template_limit
+                ):
+                    preview["effective"][field] = template_limit
+                    preview["sources"][field] = base_preview["sources"][field]
         role.update(preview)
         if not role["ready"]:
             raise RoleAssetError("Role resources are not ready", role["issues"])
@@ -5306,10 +5383,12 @@ class WorkflowService:
                     role_path=f"definition.allowed_roles.{index}.role_id",
                 )
                 frozen.pop("member")
-                allowed_roles[role["role_id"]] = frozen
+                frozen["preset_id"] = role["id"]
+                allowed_roles[role["id"]] = frozen
             definition = GraphDefinition.model_validate(
                 {
                     "name": team["name"],
+                    "default_provider_id": team.get("default_provider_id"),
                     "required_inputs": team["required_inputs"],
                     "max_parallel": team["max_parallel"],
                     "max_depth": team.get("max_depth", 3),
@@ -5324,7 +5403,11 @@ class WorkflowService:
                                 name: {"input": name}
                                 for name in team["required_inputs"]
                             },
-                            **team["coordinator"],
+                            **{
+                                k: v
+                                for k, v in team["coordinator"].items()
+                                if k != "id"
+                            },
                             "output_contract": team.get("output_contract"),
                         }
                     ],
@@ -5409,6 +5492,8 @@ class WorkflowService:
                             }
                         )
                     raise RoleAssetError(str(exc), fields, exc.status) from exc
+                if team and task.id == "coordinator":
+                    frozen["preset_id"] = team["coordinator"]["id"]
                 if (
                     team
                     and task.id == "coordinator"
@@ -6383,24 +6468,29 @@ class WorkflowService:
             if result is None and request.action == "create_member":
                 if (
                     not request.name
-                    or request.role_id not in root.snapshot["allowed_roles"]
+                    or request.preset_id not in root.snapshot["allowed_roles"]
                 ):
                     raise RoleAssetError(
                         "Choose a named instance of an allowed role",
                         [
                             {
-                                "path": "role_id",
+                                "path": "preset_id",
                                 "code": "FORBIDDEN",
                                 "message": "Role is not allowed by the frozen asset",
                             }
                         ],
                     )
-                frozen = copy.deepcopy(root.snapshot["allowed_roles"][request.role_id])
+                frozen = copy.deepcopy(
+                    root.snapshot["allowed_roles"][request.preset_id]
+                )
                 await self.roles.validate_frozen_role(
                     frozen["role"], frozen.get("profile")
                 )
                 count = sum(
-                    item["role"]["role_id"] == request.role_id
+                    (item["role"]["role_id"], item["role"]["version"])
+                    == (frozen["role"]["role_id"], frozen["role"]["version"])
+                    if frozen["role"]["role_id"]
+                    else item.get("preset_id") == request.preset_id
                     for item in members.values()
                 )
                 limit = frozen["effective"].get("max_instances")
@@ -6452,7 +6542,7 @@ class WorkflowService:
                 result = {
                     "member_id": member_id,
                     "name": request.name,
-                    "role_id": request.role_id,
+                    "preset_id": request.preset_id,
                 }
             elif result is None and request.action in {"dispatch", "call_workflow"}:
                 if request.action == "dispatch" and (
@@ -6566,13 +6656,27 @@ class WorkflowService:
                     literal_task = request.task.replace("{", "{{").replace("}", "}}")
                     await self._validate_task_definition(
                         username,
-                        WorkflowDefinition(
-                            name=request.name,
-                            role_id=frozen["role"]["role_id"],
-                            role_version=frozen["role"]["version"],
-                            task=literal_task,
-                            output_contract=request.output_contract,
+                        GraphTask.model_validate(
+                            {
+                                "id": "dispatch",
+                                "name": request.name,
+                                "member": request.member_id,
+                                "task": literal_task,
+                                "output_contract": request.output_contract,
+                                **(
+                                    {
+                                        "role_id": frozen["role"]["role_id"],
+                                        "role_version": frozen["role"]["version"],
+                                    }
+                                    if frozen["role"]["role_id"]
+                                    else {
+                                        "role": frozen["role"]["definition"],
+                                        "installation": frozen["role"]["installation"],
+                                    }
+                                ),
+                            }
                         ),
+                        required_inputs=[],
                     )
                 identity, node_id = uuid.uuid4().hex, "task_" + uuid.uuid4().hex
                 node = (
@@ -6580,8 +6684,17 @@ class WorkflowService:
                         "id": node_id,
                         "name": request.name,
                         "member": request.member_id,
-                        "role_id": frozen["role"]["role_id"],
-                        "role_version": frozen["role"]["version"],
+                        **(
+                            {
+                                "role_id": frozen["role"]["role_id"],
+                                "role_version": frozen["role"]["version"],
+                            }
+                            if frozen["role"]["role_id"]
+                            else {
+                                "role": frozen["role"]["definition"],
+                                "installation": frozen["role"]["installation"],
+                            }
+                        ),
                         "task": literal_task,
                         "inputs": {},
                         "overrides": {},

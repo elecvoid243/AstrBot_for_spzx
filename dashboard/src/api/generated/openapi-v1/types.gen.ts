@@ -122,6 +122,7 @@ export type AuthSessionResponse = {
 export type AutonomousDefinition = {
     kind: "autonomous";
     name: string;
+    default_provider_id?: (string | null);
     coordinator: TeamRole;
     allowed_roles: Array<TeamRole>;
     required_inputs?: Array<(string)>;
@@ -1387,11 +1388,14 @@ export type TeamCall = {
 };
 
 /**
- * A pinned role permitted by an autonomous asset.
+ * A stable preset with an inline or pinned role source.
  */
 export type TeamRole = {
-    role_id: string;
-    role_version: number;
+    id: string;
+    role_id?: (string | null);
+    role_version?: (number | null);
+    role?: (RoleDefinition | null);
+    installation?: (RoleInstallation | null);
     overrides?: RoleOverrides;
 };
 

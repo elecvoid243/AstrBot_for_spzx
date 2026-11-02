@@ -593,11 +593,13 @@
     "readVersion": "读取完整版本"
   },
   "autonomous": {
+    "removePreset": "删除预设",
+    "addPreset": "添加预设",
     "create": "新建自主团队",
     "title": "自主团队",
-    "explanation": "固定协调者和允许角色模板的版本。运行会冻结配置，协调者按限制动态创建独立成员；启动时输入目标。",
+    "explanation": "直接配置协调者与成员预设，或引用固定版本的角色模板。",
     "coordinator": "协调者角色",
-    "allowedRoles": "允许角色模板",
+    "allowedRoles": "允许创建的成员预设",
     "maxMembers": "成员上限",
     "maxTasks": "成员任务上限",
     "approval": "最终版本审批问题（可选）",

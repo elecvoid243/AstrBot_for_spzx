@@ -16,6 +16,14 @@ it("saves pinned coordinator and allowed templates with explicit team limits", a
     props: {
       modelValue: true,
       asset: null,
+      catalog: {
+        profiles: [],
+        models: [],
+        personas: [],
+        tools: [],
+        skills: [],
+        knowledge_bases: [],
+      },
       roles: [
         {
           role_id: "coordinator",
@@ -33,6 +41,7 @@ it("saves pinned coordinator and allowed templates with explicit team limits", a
     },
     global: {
       stubs: {
+        TeamPresetEditor: true,
         "v-dialog": { template: "<div><slot /></div>" },
         "v-card": { template: "<div><slot /></div>" },
         "v-card-text": { template: "<div><slot /></div>" },
@@ -60,11 +69,9 @@ it("saves pinned coordinator and allowed templates with explicit team limits", a
   });
   await wrapper.get('[data-testid="team-name"]').setValue("Research team");
   await wrapper
-    .getComponent<any>('[data-testid="team-coordinator"]')
-    .vm.$emit("update:modelValue", "coordinator");
-  await wrapper
-    .getComponent<any>('[data-testid="team-roles"]')
-    .vm.$emit("update:modelValue", ["writer"]);
+    .findAll("button")
+    .find((button) => button.text() === "autonomous.addPreset")!
+    .trigger("click");
   await flushPromises();
   await wrapper.get('[data-testid="team-save"]').trigger("click");
   await flushPromises();
@@ -72,8 +79,16 @@ it("saves pinned coordinator and allowed templates with explicit team limits", a
     definition: expect.objectContaining({
       kind: "autonomous",
       name: "Research team",
-      coordinator: { role_id: "coordinator", role_version: 2, overrides: {} },
-      allowed_roles: [{ role_id: "writer", role_version: 3, overrides: {} }],
+      coordinator: expect.objectContaining({
+        id: "coordinator",
+        role: { name: "Coordinator" },
+      }),
+      allowed_roles: [
+        expect.objectContaining({
+          id: expect.any(String),
+          role: { name: "Member" },
+        }),
+      ],
       required_inputs: ["goal"],
       max_parallel: 4,
       max_members: 8,
@@ -101,8 +116,15 @@ it.each(["success", "failure"])(
       definition: {
         kind: "autonomous",
         name: "Team A",
-        coordinator: { role_id: "writer", role_version: 1 },
-        allowed_roles: [{ role_id: "writer", role_version: 1 }],
+        coordinator: {
+          id: "coordinator",
+          role_id: "writer",
+          role_version: 1,
+          overrides: {},
+        },
+        allowed_roles: [
+          { id: "writer", role_id: "writer", role_version: 1, overrides: {} },
+        ],
         required_inputs: ["goal"],
       },
     };
@@ -110,6 +132,14 @@ it.each(["success", "failure"])(
       props: {
         modelValue: true,
         asset,
+        catalog: {
+          profiles: [],
+          models: [],
+          personas: [],
+          tools: [],
+          skills: [],
+          knowledge_bases: [],
+        },
         roles: [
           {
             role_id: "writer",
@@ -131,6 +161,7 @@ it.each(["success", "failure"])(
             ].map((name) => [name, { template: "<div><slot /></div>" }]),
           ),
           AllowedWorkflowsPanel: true,
+          TeamPresetEditor: true,
           "v-spacer": true,
           "v-select": true,
           "v-textarea": true,

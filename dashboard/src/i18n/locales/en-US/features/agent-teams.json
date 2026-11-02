@@ -593,11 +593,13 @@
     "readVersion": "Read complete version"
   },
   "autonomous": {
+    "removePreset": "Remove preset",
+    "addPreset": "Add preset",
     "create": "New Autonomous Team",
     "title": "Autonomous Team",
-    "explanation": "Pin the coordinator and allowed role templates. Each run freezes their configuration; the coordinator creates independent members within these limits. Enter the goal when starting the run.",
+    "explanation": "Configure the coordinator and member presets directly or use fixed role template versions.",
     "coordinator": "Coordinator role",
-    "allowedRoles": "Allowed role templates",
+    "allowedRoles": "Allowed member presets",
     "maxMembers": "Maximum members",
     "maxTasks": "Maximum member tasks",
     "approval": "Final version approval question (optional)",

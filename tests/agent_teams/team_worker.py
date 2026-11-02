@@ -11,7 +11,11 @@ from sqlalchemy.orm import Session
 
 from astrbot.core.agent_teams.assets import RoleAssetError, RoleAssetService
 from astrbot.core.agent_teams.workflows import WorkflowService
-from astrbot.core.db.po import AgentWorkflowCheckpoint, AgentWorkflowEvent, AgentWorkflowMessage
+from astrbot.core.db.po import (
+    AgentWorkflowCheckpoint,
+    AgentWorkflowEvent,
+    AgentWorkflowMessage,
+)
 
 
 async def run_team_scenario(
@@ -160,7 +164,7 @@ async def run_team_scenario(
                 "definition": {
                     **writer["definition"],
                     "name": "Researcher",
-                    "max_instances": 2,
+                    "max_instances": 1,
                     "max_parallel": 1,
                     **({"max_steps": 12} if scenario.startswith("team_message_") else {}),
                 },
@@ -185,16 +189,20 @@ async def run_team_scenario(
             {
                 "definition": {
                     "kind": "autonomous",
+                    "default_provider_id": "model-original",
                     "name": "Autonomous research team with a deliberately long name to verify wrapping",
                     "coordinator": {
+                        "id": "coordinator",
                         "role_id": coordinator["role_id"],
                         "role_version": 1,
                     },
                     "allowed_roles": [
-                        {"role_id": writer["role_id"], "role_version": 1}
+                        {"id": "writer", "role_id": writer["role_id"], "role_version": 1},
+                        {"id": "writer-copy", "role_id": writer["role_id"], "role_version": 1, "overrides": {"prompt": "Other responsibility", "max_instances": 3, "max_parallel": 3}},
+                        {"id": "inline", "role": {**writer["definition"], "name": "Inline researcher", "prompt": "Inline responsibility.", "provider_id": None, "persona_id": None}, "installation": writer["installation"]},
                     ],
                     "max_parallel": 1,
-                    "max_members": 3,
+                    "max_members": 5,
                     "max_tasks": 5,
                     "required_inputs": ["goal", "constraints"]
                     if scenario == "team_inputs"

@@ -124,8 +124,8 @@ async def run_worker(
         config["agent_runner"]["config"]["compression"].update({"overflow_strategy": "llm_compress", "provider_id": "model-original", "keep_recent_ratio": 0.15, "max_turns": 50})
     if scenario.startswith(("parameters", "repair", "team_message_parameters")):
         config["agent_runner"]["config"]["misc"]["tool_schema_mode"] = "skills_like"
-    config["agent_runner"]["config"]["model"]["provider_id"] = "model-alternate" if scenario.startswith("inline_") else "model-original"
-    if scenario.startswith("inline_"):
+    config["agent_runner"]["config"]["model"]["provider_id"] = "model-alternate" if scenario.startswith(("inline_", "team_")) else "model-original"
+    if scenario.startswith(("inline_", "team_")):
         config["agent_runner"]["config"]["persona"]["persona_id"] = "writer"
     config["test_profile"] = "original" if action == "start" else "edited"
     acm = AstrBotConfigManager(config, UmopConfigRouter(preferences), preferences)
@@ -369,7 +369,7 @@ async def run_worker(
         )
     providers.inst_map["model-original"] = provider
     providers.provider_insts.append(provider)
-    if scenario.startswith("inline_"):
+    if scenario.startswith(("inline_", "team_")):
         alternate = RecordedProvider({"id": "model-alternate", "type": "openai_chat_completion", "modalities": ["text", "tool_use"]}, {})
         alternate.set_model("model-alternate")
         providers.inst_map["model-alternate"] = alternate
@@ -614,10 +614,16 @@ async def run_worker(
 
         sql_event.listen(Session, "after_flush", after_flush)
         sql_event.listen(Session, "after_commit", after_commit)
-        role = await roles.save_role("alice", {
-            "definition": {"name": "Writer", "prompt": "Original role prompt.", "persona_slot": "persona", "tools": ["evidence", "read"] if scenario.startswith("overflow") else ["evidence"], "max_steps": 4, **({"context_length": 12000} if scenario == "usage_compression" else {}), **({"max_parallel": 2} if scenario == "control_mixed" else {}), **({"max_instances": 3} if scenario in {"manual_graph", "control_capacity", "control_mixed"} else {})},
-            "installation": {"bindings": {"model": "model-original", "persona": "writer", "evidence": "external_evidence", **({"read": "astrbot_file_read_tool"} if scenario.startswith("overflow") else {})}},
-        })
+        if scenario.startswith("team_"):
+            role = await roles.save_role("alice", {
+                "definition": {"name": "Writer", "prompt": "Original role prompt.", "persona_id": "writer", "provider_id": "model-original", "tools": ["external_evidence", "astrbot_file_read_tool"] if scenario.startswith("overflow") else ["external_evidence"], "max_steps": 4, **({"context_length": 12000} if scenario == "usage_compression" else {}), **({"max_parallel": 2} if scenario == "control_mixed" else {}), **({"max_instances": 3} if scenario in {"manual_graph", "control_capacity", "control_mixed"} else {})},
+                "installation": {"profile_id": "default"},
+            })
+        else:
+            role = await roles.save_role("alice", {
+                "definition": {"name": "Writer", "prompt": "Original role prompt.", "persona_slot": "persona", "tools": ["evidence", "read"] if scenario.startswith("overflow") else ["evidence"], "max_steps": 4, **({"context_length": 12000} if scenario == "usage_compression" else {}), **({"max_parallel": 2} if scenario == "control_mixed" else {}), **({"max_instances": 3} if scenario in {"manual_graph", "control_capacity", "control_mixed"} else {})},
+                "installation": {"bindings": {"model": "model-original", "persona": "writer", "evidence": "external_evidence", **({"read": "astrbot_file_read_tool"} if scenario.startswith("overflow") else {})}},
+            })
         definition = {"name": "Original report", "role_id": role["role_id"], "role_version": 1, "task": "Read evidence and submit a report."}
         if limits is not None:
             definition["limits"] = limits
@@ -645,7 +651,7 @@ async def run_worker(
                 contract["properties"]["files"] = {"type": "array", "items": {"type": "object", "properties": {"file_id": {"type": "string"}}, "required": ["file_id"], "additionalProperties": False}}
                 contract["required"].append("files")
             definition["output_contract"] = contract
-        asset = await service.save_asset("alice", {"definition": definition})
+        asset = await service.save_asset("alice", {"definition": {"name": definition["name"], "tasks": [{"id": "result", "name": definition["name"], "member": "writer", "role_id": role["role_id"], "role_version": 1, "task": definition["task"]}]}}) if scenario.startswith("team_") else await service.save_asset("alice", {"definition": definition})
         if scenario in {"usage_parallel", "usage_compression", "usage_shared_wait"}:
             asset = await service.save_asset("alice", {"definition": {"name": "Shared last reservation", "max_parallel": 2, "limits": limits, "tasks": [
                 {"id": key, "name": key, "member": "shared" if scenario == "usage_compression" or scenario == "usage_shared_wait" and key.startswith("a") else key, "role_id": role["role_id"], "role_version": 1, "task": key + ": Read evidence and submit a report." if scenario == "usage_shared_wait" else "Read evidence and submit a report.", "overrides": {"max_instances": 2, "max_parallel": 2}}

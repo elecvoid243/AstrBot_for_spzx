@@ -20,44 +20,35 @@
           data-testid="team-name"
         />
         <v-select
-          v-model="form.coordinator.role_id"
-          :items="roleItems"
-          :label="tm('autonomous.coordinator')"
-          data-testid="team-coordinator"
-          @update:model-value="
-            form.coordinator.role_version = roleById($event)?.version ?? 1
-          "
+          v-model="form.default_provider_id"
+          :items="catalog.models"
+          item-title="name"
+          item-value="id"
+          :label="tm('graph.defaultModel')"
+          clearable
         />
-        <v-select
-          v-model="form.coordinator.role_version"
-          :items="roleById(form.coordinator.role_id)?.versions ?? []"
-          :label="tm('v2.roleVersion')"
+        <TeamPresetEditor
+          :preset="form.coordinator"
+          :initially-open="!asset"
+          :title="tm('autonomous.coordinator')"
+          :roles="roles"
+          :catalog="catalog"
+          :default-provider="form.default_provider_id"
         />
-        <v-select
-          v-model="allowedIds"
-          :items="roleItems"
-          multiple
-          chips
-          :label="tm('autonomous.allowedRoles')"
-          data-testid="team-roles"
-          @update:model-value="selectAllowed"
+        <TeamPresetEditor
+          v-for="(preset, index) in form.allowed_roles"
+          :key="preset.id"
+          :preset="preset"
+          :title="`${tm('autonomous.allowedRoles')} ${index + 1}`"
+          :roles="roles"
+          :catalog="catalog"
+          :default-provider="form.default_provider_id"
+          removable
+          @remove="form.allowed_roles.splice(index, 1)"
         />
-        <div
-          v-for="role in form.allowed_roles"
-          :key="role.role_id"
-          class="team-role"
-        >
-          <strong class="text-body-2">{{
-            roleItems.find((item) => item.value === role.role_id)?.title ??
-            role.role_id
-          }}</strong>
-          <v-select
-            v-model="role.role_version"
-            :items="roleById(role.role_id)?.versions ?? []"
-            :label="tm('v2.roleVersion')"
-            density="compact"
-          />
-        </div>
+        <v-btn variant="tonal" class="mb-4" @click="addPreset">{{
+          tm("autonomous.addPreset")
+        }}</v-btn>
         <div class="team-limits">
           <v-text-field
             v-model.number="form.max_members"
@@ -121,7 +112,7 @@
           :loading="saving"
           :disabled="
             !form.name.trim() ||
-            !form.coordinator.role_id ||
+            (!form.coordinator.role_id && !form.coordinator.role) ||
             !form.allowed_roles.length ||
             workflowInvalid ||
             usageInvalid
@@ -136,15 +127,21 @@
 </template>
 
 <script setup lang="ts">
+import TeamPresetEditor from "./TeamPresetEditor.vue";
 import RunLimitsForm from "./RunLimitsForm.vue";
-import { computed, onBeforeUnmount, ref, watch } from "vue";
+import { onBeforeUnmount, ref, watch } from "vue";
 import AllowedWorkflowsPanel from "./AllowedWorkflowsPanel.vue";
 import { workflowAssetsApi } from "@/api/workflowAssets";
 import { useModuleI18n } from "@/i18n/composables";
 import { extractApiError } from "@/utils/extractApiError";
 import type { AutonomousDefinition } from "@/api/generated/openapi-v1";
 
-const props = defineProps<{ modelValue: boolean; asset: any; roles: any[] }>();
+const props = defineProps<{
+  modelValue: boolean;
+  asset: any;
+  roles: any[];
+  catalog: Record<string, any[]>;
+}>();
 const emit = defineEmits<{
   "update:modelValue": [value: boolean];
   saved: [];
@@ -160,11 +157,15 @@ onBeforeUnmount(() => {
 const approval = ref("");
 const contract = ref("");
 const usageInvalid = ref(false);
-const allowedIds = ref<string[]>([]);
 const form = ref<AutonomousDefinition>({
   kind: "autonomous",
   name: "",
-  coordinator: { role_id: "", role_version: 1, overrides: {} },
+  coordinator: {
+    id: "coordinator",
+    role: { name: "Coordinator" },
+    installation: { profile_id: "default" },
+    overrides: {},
+  },
   allowed_roles: [],
   required_inputs: ["goal"],
   max_members: 8,
@@ -173,14 +174,6 @@ const form = ref<AutonomousDefinition>({
   max_depth: 3,
   allowed_workflows: [],
 });
-const roleItems = computed(() =>
-  props.roles.map((role) => ({
-    title: role.definition.name,
-    value: role.role_id,
-  })),
-);
-const roleById = (identity: string) =>
-  props.roles.find((role) => role.role_id === identity);
 
 watch(
   () => [props.modelValue, props.asset] as const,
@@ -193,7 +186,12 @@ watch(
       : {
           kind: "autonomous",
           name: "",
-          coordinator: { role_id: "", role_version: 1, overrides: {} },
+          coordinator: {
+            id: "coordinator",
+            role: { name: "Coordinator" },
+            installation: { profile_id: "default" },
+            overrides: {},
+          },
           allowed_roles: [],
           required_inputs: ["goal"],
           max_members: 8,
@@ -204,7 +202,6 @@ watch(
         };
     form.value.allowed_workflows ??= [];
     form.value.max_depth ??= 3;
-    allowedIds.value = form.value.allowed_roles.map((role) => role.role_id);
     approval.value = form.value.approval_question ?? "";
     contract.value = form.value.output_contract
       ? JSON.stringify(form.value.output_contract, null, 2)
@@ -214,15 +211,13 @@ watch(
   { immediate: true },
 );
 
-function selectAllowed(identities: string[]) {
-  form.value.allowed_roles = identities.map(
-    (identity) =>
-      form.value.allowed_roles.find((role) => role.role_id === identity) ?? {
-        role_id: identity,
-        role_version: roleById(identity)?.version ?? 1,
-        overrides: {},
-      },
-  );
+function addPreset() {
+  form.value.allowed_roles.push({
+    id: crypto.randomUUID(),
+    role: { name: "Member" },
+    installation: { profile_id: "default" },
+    overrides: {},
+  });
 }
 
 async function save() {

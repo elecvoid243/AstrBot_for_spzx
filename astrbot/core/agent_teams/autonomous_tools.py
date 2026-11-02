@@ -17,7 +17,7 @@ class TeamOperationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True, str_strip_whitespace=True)
     action: Literal["create_member", "dispatch", "call_workflow", "wait", "inspect"]
     request_id: str = Field(min_length=1, max_length=128)
-    role_id: str | None = Field(default=None, min_length=1, max_length=128)
+    preset_id: str | None = Field(default=None, min_length=1, max_length=128)
     member_id: str | None = Field(default=None, min_length=1, max_length=128)
     name: str | None = Field(default=None, min_length=1, max_length=128)
     task: str | None = Field(default=None, min_length=1, max_length=100_000)
@@ -45,20 +45,20 @@ class TeamManageTool(FunctionTool):
 
         Args:
             manage: Public runtime operation validating authority and constraints.
-            allowed_roles: Frozen permitted templates, shown to the coordinator.
+            allowed_roles: Frozen permitted presets, shown to the coordinator.
             allowed_workflows: Explicit pinned workflow inputs and return contracts.
         """
         super().__init__(
             name="team_manage",
             description=(
-                "Create allowed role instances, dispatch tasks, wait for selected task_ids, "
+                "Create allowed preset instances, dispatch tasks, wait for selected task_ids, "
                 "or inspect members, tasks and complete results. Use a unique request_id "
                 "per decision; repeating the same decision is safe. create_member requires "
-                "role_id and name; dispatch requires member_id, name and task, with optional "
+                "preset_id and name; dispatch requires member_id, name and task, with optional "
                 "dependencies and output_contract. wait requires nonempty task_ids and "
                 "releases execution capacity while members work. inspect returns full "
                 "validated outputs, never just summaries. Finish with submit_task_result "
-                "only after all member tasks have valid results. Allowed roles: "
+                "only after all member tasks have valid results. Allowed presets: "
                 + json.dumps(
                     {
                         identity: frozen["role"]["definition"]["name"]

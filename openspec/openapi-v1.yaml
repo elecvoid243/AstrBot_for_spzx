@@ -11266,106 +11266,137 @@ components:
       type: object
     TeamRole:
       additionalProperties: false
-      description: A pinned role permitted by an autonomous asset.
+      description: A stable preset with an inline or pinned role source.
       properties:
-        role_id:
+        id:
           maxLength: 128
           minLength: 1
-          title: Role Id
+          title: Id
           type: string
+        role_id:
+          anyOf:
+          - maxLength: 128
+            minLength: 1
+            type: string
+          - type: 'null'
+          default: null
+          title: Role Id
         role_version:
-          minimum: 1
+          anyOf:
+          - minimum: 1
+            type: integer
+          - type: 'null'
+          default: null
           title: Role Version
-          type: integer
+        role:
+          anyOf:
+          - $ref: '#/components/schemas/RoleDefinition'
+          - type: 'null'
+          default: null
+        installation:
+          anyOf:
+          - $ref: '#/components/schemas/RoleInstallation'
+          - type: 'null'
+          default: null
         overrides:
           $ref: '#/components/schemas/RoleOverrides'
       required:
-      - role_id
-      - role_version
+      - id
       title: TeamRole
       type: object
+
     AutonomousDefinition:
+      additionalProperties: false
+      description: A coordinator and allowed role templates sharing the workflow executor.
       properties:
         kind:
-          type: string
           const: autonomous
           title: Kind
-        name:
           type: string
+        name:
           maxLength: 128
           minLength: 1
           title: Name
+          type: string
+        default_provider_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Default Provider Id
         coordinator:
           $ref: '#/components/schemas/TeamRole'
         allowed_roles:
           items:
             $ref: '#/components/schemas/TeamRole'
-          type: array
           maxItems: 100
           minItems: 1
           title: Allowed Roles
+          type: array
         required_inputs:
           items:
             type: string
-          type: array
           maxItems: 30
           title: Required Inputs
+          type: array
         max_members:
-          type: integer
-          maximum: 100.0
-          minimum: 2.0
-          title: Max Members
           default: 8
+          maximum: 100
+          minimum: 2
+          title: Max Members
+          type: integer
         max_parallel:
-          type: integer
-          maximum: 100.0
-          minimum: 1.0
-          title: Max Parallel
           default: 4
+          maximum: 100
+          minimum: 1
+          title: Max Parallel
+          type: integer
         max_tasks:
-          type: integer
-          maximum: 100.0
-          minimum: 1.0
-          title: Max Tasks
           default: 50
-        max_depth:
+          maximum: 100
+          minimum: 1
+          title: Max Tasks
           type: integer
-          maximum: 20.0
-          minimum: 1.0
-          title: Max Depth
+        max_depth:
           default: 3
+          maximum: 20
+          minimum: 1
+          title: Max Depth
+          type: integer
         limits:
           anyOf:
           - $ref: '#/components/schemas/RunLimits'
           - type: 'null'
+          default: null
         allowed_workflows:
           items:
             $ref: '#/components/schemas/WorkflowCall'
-          type: array
           maxItems: 30
           title: Allowed Workflows
+          type: array
         output_contract:
           anyOf:
           - additionalProperties: true
             type: object
           - type: 'null'
+          default: null
           title: Output Contract
         approval_question:
           anyOf:
-          - type: string
-            maxLength: 100000
+          - maxLength: 100000
             minLength: 1
+            type: string
           - type: 'null'
+          default: null
           title: Approval Question
-      additionalProperties: false
-      type: object
       required:
       - kind
       - name
       - coordinator
       - allowed_roles
       title: AutonomousDefinition
-      description: A coordinator and allowed role templates sharing the workflow executor.
+      type: object
+
     TeamCall:
       additionalProperties: false
       description: An exact autonomous asset version invoked in an independent scope.

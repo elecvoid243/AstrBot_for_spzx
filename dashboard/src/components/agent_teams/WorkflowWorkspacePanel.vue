@@ -511,6 +511,7 @@
       v-model="teamEditing"
       :asset="editingAsset"
       :roles="roles"
+      :catalog="catalog"
       @saved="refresh"
     />
     <v-dialog

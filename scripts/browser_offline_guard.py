@@ -72,7 +72,7 @@ class GuardedPopen(subprocess.Popen):
                 [
                     "--proxy-server=socks5://127.0.0.1:9",
                     "--proxy-bypass-list=localhost;127.0.0.1;[::1]",
-                    "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE localhost",
+                    "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE localhost, EXCLUDE 127.0.0.1, EXCLUDE [::1]",
                     "--disable-quic",
                 ]
             )

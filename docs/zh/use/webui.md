@@ -626,6 +626,6 @@ Browser Use 0.3.0 需配套宿主和 Dashboard 提交，不能仅核对 AstrBot 
 
 登录任务中等待“人工接管”确认，聚焦远端输入框，输入账号和密码并提交网页表单；登录成功后明确点击“交还 Agent”。隐藏、失联或刷新只会暂停，需明确恢复。摘要隐藏输入，但交还后的可见网页内容仍可被 Agent 观察。
 
-执行 `python scripts/browser_manual_control_acceptance.py --plugin-zip <完整插件.zip> --dashboard-dir <dist> --evidence-dir <新目录> --login-handoff --pointer-input --text-input --lost-key-target --recovery`，再用新目录加 `--handoff-boundaries`。脚本从最终 ZIP 经原 PowerShell 安装器安装，将完整 data 树搬迁到中文/空格路径，保留空白执行文件配置，使用真实生产 ChatUI、已安装插件、私有 Chromium 和确定性本地 OpenAI 兼容模型；输出截图、源码/提交核对、延迟/资源/清理测量及网络审计。
+执行 `python scripts/browser_manual_control_acceptance.py --plugin-zip <完整插件.zip> --dashboard-dir <dist> --evidence-dir <新目录> --login-handoff --pointer-input --text-input --lost-key-target --recovery`，单轮预算回归另用新目录加 `--handoff-boundaries`，不带 `--login-handoff`。脚本从最终 ZIP 经原 PowerShell 安装器安装，将完整 data 树搬迁到中文/空格路径，保留空白执行文件配置，使用真实生产 ChatUI、已安装插件、私有 Chromium 和确定性本地 OpenAI 兼容模型；输出截图、源码/提交核对、延迟/资源/清理测量及网络审计。
 
 仅临时解释器注入 Python socket/DNS 与安装器拦截；私有 Chromium 使用不可达 SOCKS 代理、仅回环绕过、禁止外部解析与 QUIC。实际外部连接拒绝探针、逐进程审计及进程连接采样用于核对这些约束。这是进程内测试隔离，不是系统防火墙或物理断网目标机证明；机制外的原生网络、真实 vLLM、实体 Windows 输入法候选窗口与其他平台仍需独立验证。兼容宿主依赖必须事先安装。

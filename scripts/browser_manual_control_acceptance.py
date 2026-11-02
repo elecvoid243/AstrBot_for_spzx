@@ -370,7 +370,13 @@ addEventListener('focusin',report);
                 and "Human browser handback" in str(item.get("content"))
             ]
             if returned:
-                assert "H06 authenticated account" in str(returned[-1])
+                observation = json.loads(returned[-1]["content"].split("\n", 1)[1])
+                assert observation["url"].endswith("/authenticated")
+                continue_element = next(
+                    element
+                    for element in observation["interactive_elements"]
+                    if element.get("text") == "Continue signed-in task"
+                )
                 assert website_login["submitted"] == 1
                 if any(item.get("tool_call_id") == "h06_continue" for item in results):
                     login_calls = []
@@ -379,7 +385,7 @@ addEventListener('focusin',report);
                         (
                             "continue",
                             "browser_click",
-                            {"coordinate_x": 160, "coordinate_y": 100},
+                            {"index": continue_element["index"]},
                         )
                     ]
             elif not results:
@@ -736,6 +742,7 @@ addEventListener('focusin',report);
     auth_headers = {}
     private_debug_browser = None
     resource_task = None
+    owned_process_ids = set()
     resources = {
         "samples": 0,
         "peak_rss_bytes": 0,
@@ -749,6 +756,7 @@ addEventListener('focusin',report);
             tree = [psutil.Process(process.pid)]
             with contextlib.suppress(psutil.Error):
                 tree.extend(tree[0].children(recursive=True))
+            owned_process_ids.update(child.pid for child in tree[1:])
             rss = 0
             for child in tree:
                 with contextlib.suppress(psutil.Error):
@@ -815,7 +823,8 @@ addEventListener('focusin',report);
 (() => {
   const nativeFetch = window.fetch.bind(window);
   const gate = window.__h04Frames = {hold:false,holdMetadata:false,pending:null,
-    metadata:[],metadataCount:0,blockedFrames:0,lastMetadata:null,latest:null};
+    metadata:[],metadataCount:0,blockedFrames:0,lastMetadata:null,latest:null,
+    limits:{frames:0,maxEventBytes:0,maxImageBytes:0,maxWidth:0,maxHeight:0}};
   window.fetch = async (...args) => {
     const response = await nativeFetch(...args);
     const url = typeof args[0] === 'string' ? args[0] : args[0].url;
@@ -849,6 +858,13 @@ addEventListener('focusin',report);
                 const data = block.split('\n').find(line => line.startsWith('data: '));
                 if (data) {
                   const event = JSON.parse(data.slice(6));
+                  gate.limits.maxEventBytes = Math.max(gate.limits.maxEventBytes,encoder.encode(block).length);
+                  if (event.type === 'frame') {
+                    gate.limits.frames++;
+                    gate.limits.maxImageBytes = Math.max(gate.limits.maxImageBytes,atob(event.image).length);
+                    gate.limits.maxWidth = Math.max(gate.limits.maxWidth,event.width);
+                    gate.limits.maxHeight = Math.max(gate.limits.maxHeight,event.height);
+                  }
                   if (event.type === 'frame' && gate.hold) {
                     gate.pending = block;
                     gate.latest = {sequence:event.sequence,input_id:event.applied_input_id};
@@ -1629,6 +1645,11 @@ addEventListener('focusin',report);
                         )
                     await page.screenshot(path=str(evidence / "pointer-en.png"))
                     metrics["pointer_latency_ms"] = latencies
+                    limits = await page.evaluate("window.__h04Frames.limits")
+                    assert limits["maxEventBytes"] <= 768 * 1024
+                    assert limits["maxImageBytes"] <= 512 * 1024
+                    assert limits["maxWidth"] <= 1280 and limits["maxHeight"] <= 720
+                    metrics["observed_frame_limits"] = limits
                     metrics["pointer_state"] = dict(pointer_state)
                     metrics["wheel_acks"] = wheel_acks
                     # Scroll the long document outside the nested container, then return.
@@ -1675,6 +1696,13 @@ addEventListener('focusin',report);
                         for p in c.pages
                         if p.url.endswith("/pointer")
                     )
+                    if args.plugin_zip:
+                        network_probe = await remote_page.evaluate("""async () => {
+                          try { await fetch('http://192.0.2.1:81/offline-probe',{signal:AbortSignal.timeout(3000)});return 'unexpected-success'; }
+                          catch(error) { return error.name; }
+                        }""")
+                        assert network_probe != "unexpected-success"
+                        metrics["native_browser_external_probe"] = network_probe
                     remote_cdp = await remote_page.context.new_cdp_session(remote_page)
                     await remote_cdp.send(
                         "Emulation.setDeviceMetricsOverride",
@@ -2110,6 +2138,11 @@ addEventListener('focusin',report);
                     assert all(login_identity[k] == identity[k] for k in identity)
                     requests_before_login = len(model_requests)
                     agent_cursor = login_identity["action_cursor"]
+                    agent_actions = {
+                        action["action_id"]
+                        for action in login_identity["recent_actions"]
+                        if action.get("actor") != "human"
+                    }
                     model_release.set()
                     await asyncio.sleep(1)
                     assert (await status())["action_cursor"] == agent_cursor
@@ -2144,8 +2177,19 @@ addEventListener('focusin',report);
                         raise AssertionError("Real remote form login was not submitted")
                     assert len(model_requests) == requests_before_login
                     authenticated = await status()
+                    assert website_password not in json.dumps(authenticated)
                     assert all(authenticated[k] == identity[k] for k in identity)
-                    assert authenticated["action_cursor"] == agent_cursor
+                    assert authenticated["current_action"] is None
+                    assert {
+                        action["action_id"]
+                        for action in authenticated["recent_actions"]
+                        if action.get("actor") != "human"
+                    } <= agent_actions
+                    assert all(
+                        action.get("actor") == "human"
+                        for action in authenticated["recent_actions"]
+                        if action["action_id"] not in agent_actions
+                    )
                     assert website_login == {"submitted": 1, "continued": 0, "stale": 0}
                     await page.screenshot(
                         path=str(evidence / "h06-login-authenticated.png")
@@ -2267,10 +2311,17 @@ addEventListener('focusin',report);
                     )
                     if scenario in {"H02_CANCEL", "H02_CANCEL_EDGE"}:
                         await page.locator(".chat-text-input, .chat-textarea").fill("")
+                        cancel_started = time.perf_counter()
                         await (
                             page.locator(".send-btn")
                             .filter(has=page.locator(".mdi-stop"))
                             .click()
+                        )
+                        await page.locator(".send-btn .mdi-stop").wait_for(
+                            state="hidden", timeout=15000
+                        )
+                        metrics.setdefault("cancel_convergence_ms", []).append(
+                            round((time.perf_counter() - cancel_started) * 1000, 1)
                         )
                         await asyncio.sleep(1)
                     else:
@@ -2485,8 +2536,12 @@ addEventListener('focusin',report);
                             "/browser-use/stop" in r.url and r.request.method == "POST"
                         )
                     ) as stopped:
+                        stop_started = time.perf_counter()
                         await page.locator(".agent-browser-stop").click(timeout=15000)
                     stopped_response = await stopped.value
+                    metrics["lost_key_target"]["stop_response_ms"] = round(
+                        (time.perf_counter() - stop_started) * 1000, 1
+                    )
                     metrics["lost_key_target"]["stop_status"] = stopped_response.status
                     assert stopped_response.status == 200, (
                         "Stopping was blocked by a keyUp to the destroyed target"
@@ -2508,8 +2563,12 @@ addEventListener('focusin',report);
                             "/browser-use/close" in r.url and r.request.method == "POST"
                         )
                     ) as closed:
+                        close_started = time.perf_counter()
                         await page.locator(".agent-browser-close").click(timeout=15000)
                     close_response = await closed.value
+                    metrics["lost_key_target"]["close_response_ms"] = round(
+                        (time.perf_counter() - close_started) * 1000, 1
+                    )
                     metrics["lost_key_target"]["close_status"] = close_response.status
                     assert close_response.status == 200
                     await page.locator(
@@ -2802,18 +2861,25 @@ addEventListener('focusin',report);
                         "H03: password and pasted content absent from host logs and model tool summaries"
                     )
                 if args.plugin_zip:
+                    assert not resources["non_loopback_peers"], resources
                     cleanup_started = time.perf_counter()
                     for _ in range(150):
                         survivors = [
                             p.pid
                             for p in psutil.process_iter(["cmdline"])
-                            if str(installed).lower()
+                            if p.pid in owned_process_ids
+                            and str(installed).lower()
                             in " ".join(p.info["cmdline"] or []).lower()
                         ]
                         if not survivors:
                             break
                         await asyncio.sleep(0.1)
                     assert not survivors, survivors
+                    metrics["owned_process_cleanup"] = {
+                        "observed_child_pids": sorted(owned_process_ids),
+                        "remaining_installed_children": survivors,
+                        "fixture_ui_browser": "separate test-process child, closed in finally",
+                    }
                     metrics["disable_process_convergence_ms"] = round(
                         (time.perf_counter() - cleanup_started) * 1000, 1
                     )

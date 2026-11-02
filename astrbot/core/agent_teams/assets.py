@@ -645,8 +645,10 @@ class RoleAssetService:
             pool = profile.get(
                 "provider_pool" if kind == "models" else "persona_pool", ["*"]
             )
-            if resource.get("enabled", True) is False or (
-                "*" not in pool and resource_id not in pool
+            if (
+                resource.get("enabled", True) is False
+                or profile_id not in resource.get("enabled_profiles", [profile_id])
+                or ("*" not in pool and resource_id not in pool)
             ):
                 issues.append(
                     {

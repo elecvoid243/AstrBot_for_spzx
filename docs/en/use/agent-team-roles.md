@@ -33,14 +33,18 @@ Dify, Coze and DashScope Application receive the frozen role/persona framing as 
 | Creating a reusable role | Agent Teams → Assets → Role templates → New role; templates are independent of legacy teams and members. |
 | Workflow Editor, Run Monitor, History | Assets → Workflows pins role versions; Runs and History display frozen snapshots. |
 
-See [Asset and run workspace](./agent-team-workflows.md) for scheduling, invocation recovery, human tasks and bounded loops. Role, readiness and launch checks use the same executor rules. Edits do not change existing runs' pinned roles and configuration; recovery still checks current access and remote binding compatibility.
+See [Asset and run workspace](./agent-team-workflows.md) for scheduling, invocation recovery, human tasks and bounded loops. Role, readiness and launch checks use the same executor rules. Edits do not change existing runs' pinned roles and configuration; recovery still checks current access and remote executor configuration compatibility.
 
 Previews use current local resources. Historical definitions never silently fall back to a default model. Deleting or disabling a resource produces a diagnostic on the next preview. See the workspace instructions for existing run and recovery behavior.
 
 Previous entry: **Role templates → Assets → Role templates**. Template identity is separate from runtime member state; editing a template does not change the fixed configuration of an existing run.
 
-![Actual role overview and template identity](/images/agent-teams-roles-t25-en.jpg)
+The following screenshots show the real role component with an isolated example resource catalog and a preview produced by the role service. The error response is simulated; no model was called.
 
+![Role template overview with example resources](/images/agent-teams-roles-t25-en.jpg)
 
+![Role editor and effective configuration](/images/agent-teams-role-config-t25-en.jpg)
+
+![Direct selection of tools, skills and knowledge bases](/images/agent-teams-role-resources-en.jpg)
 
 ![The error path expands the limits section and focuses the invalid field](/images/agent-teams-role-error-focus-en.jpg)

@@ -12,13 +12,15 @@ const stubs = {
       "<button @click=\"$emit('update:modelValue', !modelValue)\">{{ label }}</button>",
   },
   "v-select": {
+    name: "v-select",
     props: ["modelValue", "items"],
     emits: ["update:modelValue"],
     template:
       '<select :value="modelValue" @change="$emit(\'update:modelValue\', $event.target.value)"><option v-for="item in items" :value="item.value">{{ item.title }}</option></select>',
   },
   "v-text-field": {
-    props: ["modelValue"],
+    name: "v-text-field",
+    props: ["modelValue", "errorMessages", "min", "step"],
     emits: ["update:modelValue"],
     template:
       '<input :value="modelValue" @input="$emit(\'update:modelValue\', $event.target.value)" />',
@@ -88,4 +90,36 @@ it("persists and removes a local wait override in the shared resource editor", a
   expect(definition).toHaveProperty("human_wait", null);
   editor.vm.$emit("update:modelValue", undefined);
   expect(definition).not.toHaveProperty("human_wait");
+});
+
+it("changes units without changing the saved seconds and validates fractional minutes", async () => {
+  const wrapper = mount(HumanWaitPolicyEditor, {
+    props: { modelValue: { timeout_seconds: 90, timeout_action: "wait" } },
+    global: { stubs },
+  });
+  const selects = wrapper.findAllComponents({ name: "v-select" });
+  selects[0].vm.$emit("update:modelValue", 60);
+  await wrapper.vm.$nextTick();
+  const input = wrapper.findComponent({ name: "v-text-field" });
+  expect(input.props("modelValue")).toBe(1.5);
+  expect(input.props("errorMessages")).toEqual([]);
+  expect(input.props("min")).toBe(1 / 60);
+  expect(input.props("step")).toBe("any");
+  expect(wrapper.emitted("update:modelValue")).toBeUndefined();
+  await wrapper.get("input").setValue("2.5");
+  expect(wrapper.emitted("update:modelValue")?.at(-1)).toEqual([
+    { timeout_seconds: 150, timeout_action: "wait" },
+  ]);
+  await wrapper.get("input").setValue("0.01");
+  expect(input.props("errorMessages")).toEqual(["humanWait.invalid"]);
+  expect(wrapper.emitted("update:modelValue")?.at(-1)).toEqual([
+    { timeout_seconds: 0, timeout_action: "wait" },
+  ]);
+  await wrapper.setProps({
+    modelValue: { timeout_seconds: 61, timeout_action: "wait" },
+  });
+  expect(input.props("errorMessages")).toEqual([]);
+  await wrapper.get("input").setValue("525600.1");
+  expect(input.props("errorMessages")).toEqual(["humanWait.invalid"]);
+  wrapper.unmount();
 });

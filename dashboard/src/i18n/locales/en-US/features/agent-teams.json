@@ -906,7 +906,7 @@
     "seconds": "seconds",
     "minutes": "minutes",
     "unit": "Unit",
-    "invalid": "Enter a whole duration from 1 second to 1 year.",
+    "invalid": "Enter a duration from 1 second to 1 year, in whole seconds.",
     "action": "After the deadline",
     "wait": "Continue waiting for a person",
     "recommendation": "Automatically use the displayed valid recommendation",

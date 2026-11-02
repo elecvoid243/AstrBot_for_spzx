@@ -906,7 +906,7 @@
     "seconds": "秒",
     "minutes": "分钟",
     "unit": "单位",
-    "invalid": "请输入 1 秒至 1 年的整数时长。",
+    "invalid": "请输入 1 秒至 1 年的时长，精确到整秒。",
     "action": "到期后",
     "wait": "继续等待人工",
     "recommendation": "自动采用已展示的有效推荐",

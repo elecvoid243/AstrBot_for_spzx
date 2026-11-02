@@ -23,7 +23,8 @@
       <template v-else>
         <v-text-field
           type="number"
-          min="1"
+          :min="unit === 60 ? 1 / 60 : 1"
+          :step="unit === 60 ? 'any' : 1"
           :max="unit === 60 ? 525600 : 31536000"
           :model-value="duration"
           :label="tm('humanWait.duration')"
@@ -71,11 +72,12 @@ const emit = defineEmits<{
 const { tm } = useModuleI18n("features/agent-teams");
 const unit = ref(1);
 const duration = ref<number | string>(props.modelValue?.timeout_seconds ?? 60);
+const seconds = computed(() => Number(duration.value) * unit.value);
 const valid = computed(
   () =>
-    Number.isInteger(Number(duration.value)) &&
-    Number(duration.value) >= 1 &&
-    Number(duration.value) * unit.value <= 31536000,
+    seconds.value >= 1 &&
+    seconds.value <= 31536000 &&
+    Math.abs(seconds.value - Math.round(seconds.value)) < 1e-7,
 );
 watch(
   () => props.modelValue?.timeout_seconds,
@@ -92,7 +94,7 @@ function setDuration(value: string) {
   if (props.modelValue)
     emit("update:modelValue", {
       ...props.modelValue,
-      timeout_seconds: valid.value ? Number(value) * unit.value : 0,
+      timeout_seconds: valid.value ? Math.round(seconds.value) : 0,
     });
 }
 </script>

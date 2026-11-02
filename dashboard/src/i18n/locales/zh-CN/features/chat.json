@@ -1,10 +1,11 @@
 {
   "agentBrowser": {
+    "changingControl": "正在切换控制权，等待浏览器动作静止。",
     "takeOver": "接管浏览器",
     "handBack": "交还控制权",
-    "humanActive": "人工控制中：可点击网页",
+    "humanActive": "Agent 已暂停，人工控制：可单击页面",
     "manualDisconnected": "控制已断开，浏览器已暂停。请重新接管并明确交还。",
-    "manualFailed": "暂不能接管，请等待 Agent 结束后重试。",
+    "manualFailed": "接管暂不可用。如已开始接管，Agent 会保持暂停；请重新连接并明确交还。",
     "handedBack": "已交还控制权，浏览器及登录态保留。",
     "upgradeControl": "请更新 Browser Use 插件以启用人工控制。",
     "switchMode": "切换浏览模式",

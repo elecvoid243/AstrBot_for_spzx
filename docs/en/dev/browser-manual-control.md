@@ -1,4 +1,4 @@
-# Browser manual control protocol (H01)
+# Browser manual control protocol (H01/H02)
 
 The existing `browser-use/status`, `snapshot`, `stream`, `stop`, and `close`
 extensions retain their methods and ownership rules. `manual_control_version: 1`
@@ -14,7 +14,10 @@ announces support. Missing capability means read-only compatibility.
 2. Open the returned same-origin WebSocket and send `{ticket}` within five seconds.
    No credential belongs in a URL or log. The host consumes the ticket, resolves
    the enabled persisted account, creates the trusted client identity and requests
-   idle acquisition. A running/stopped Agent or another controller is rejected.
+   acquisition. A stopped browser or another controller is rejected. Acquisition
+   first closes Agent admission and invalidates its current plan. The runtime
+   cancels or drains in-flight tools and waits for dispatched page event handlers
+   to settle before acknowledging human control; an unconfirmed drain fails closed.
 3. Only an acknowledgement with `status: applied`, `operation: acquire` and a
    server-owned `control_epoch` enables input. `control_mode` is `agent`,
    `acquiring`, `human` or `paused`, independently of browser availability and
@@ -44,6 +47,14 @@ announces support. Missing capability means read-only compatibility.
    admission. Acknowledgement reports `state.control_mode: agent`; then the socket
    closes. Browser, tabs and login state survive. Model turns and retained browser
    tools explicitly reject while human control or paused admission is active.
+   An existing local Agent turn waits in `PAUSED` outside ordinary tool deadlines.
+   It cancels pending model reads, records truthful interrupted/unexecuted results
+   for every invalidated tool call in a batch, and makes no model requests while
+   waiting. Only explicit handback wakes this turn, with a fresh observation of
+   tabs, page and interactive elements obtained by the private runtime. The
+   observation reaches model context through the trusted host, never a client
+   command. Old queued clicks are discarded. Cancellation, stop, close and disable
+   remain terminal; handback cannot create a run or revive a completed one.
 
 The host rechecks account credential version, owned chat, profile and plugin guard
 on every command. The private bridge additionally checks trusted owner, socket,
@@ -52,6 +63,6 @@ Its random loopback bearer credential is never delivered to the frontend. The
 legacy extension URL `/plugins/extensions/browser-use/manual` cannot accept public
 control bodies; only host-created request context can enter the audited handler.
 
-H02 extends running-Agent handoff; H03 keyboard/composition/paste; H04 scrolling,
+H03 keyboard/composition/paste; H04 scrolling,
 double-click and feedback; H05 full lifecycle and multiwindow recovery. They must
 retain these identity, acknowledgement and explicit-handback contracts.

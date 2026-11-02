@@ -15,6 +15,7 @@ class AgentState(Enum):
 
     IDLE = auto()  # Initial state
     RUNNING = auto()  # Currently processing
+    PAUSED = auto()  # Waiting for explicit human handback
     DONE = auto()  # Completed
     ERROR = auto()  # Error state
 

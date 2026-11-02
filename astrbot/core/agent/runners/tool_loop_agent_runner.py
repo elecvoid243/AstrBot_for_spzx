@@ -79,6 +79,7 @@ from astrbot.core.provider.modalities import (
     sanitize_contexts_by_modalities,
 )
 from astrbot.core.provider.provider import Provider
+from astrbot.core.utils.active_event_registry import active_event_registry
 from astrbot.core.utils.async_generator import iterate_in_task
 from astrbot.core.utils.prefix_diagnostics import record_session_request
 
@@ -103,6 +104,10 @@ if sys.version_info >= (3, 12):
     from typing import override
 else:
     from typing_extensions import override
+
+
+class _AgentManualPause(Exception):
+    """Abort stale work without terminating the current Agent turn."""
 
 
 @dataclass(slots=True)
@@ -427,6 +432,17 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         self.run_context = run_context
         self._aborted = False
         self._abort_signal = asyncio.Event()
+        event = getattr(run_context.context, "event", None)
+        owner = getattr(event, "unified_msg_origin", None)
+        self._manual_pause = (
+            active_event_registry.get_agent_manual_pause(owner)
+            if isinstance(owner, str) and owner
+            else None
+        )
+        self._manual_revision = self._manual_pause.revision if self._manual_pause else 0
+        self._manual_seen_revision = self._manual_revision - int(
+            self._manual_pause is not None and self._manual_pause.requested.is_set()
+        )
         self._pending_follow_ups: list[FollowUpTicket] = []
         self._pending_system_notices: list[str] = []
         """Dashboard-originated notices (e.g. user shell-session actions),
@@ -1102,17 +1118,21 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
     async def _await_or_stop(
         self,
         awaitable: T.Awaitable[AwaitableResultT],
+        *,
+        pause_sensitive: bool = True,
     ) -> AwaitableResultT | None:
         """Await work while allowing a stop request to cancel it immediately.
 
         Args:
             awaitable: Provider or context-processing operation to execute.
+            pause_sensitive: Cancel stale work when manual takeover wins.
 
         Returns:
             The operation result, or None when user cancellation wins the race.
 
         Raises:
             asyncio.CancelledError: If the outer Agent task is cancelled.
+            _AgentManualPause: Human takeover invalidated the operation.
             Exception: Any exception raised by the awaited operation.
         """
         operation_task = asyncio.create_task(awaitable)
@@ -1120,9 +1140,22 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         if self._is_stop_requested():
             operation_task.cancel()
         abort_task = asyncio.create_task(self._abort_signal.wait())
+        pause_task = (
+            asyncio.create_task(self._manual_pause.requested.wait())
+            if pause_sensitive and self._manual_pause is not None
+            else None
+        )
         try:
+            if (
+                pause_sensitive
+                and self._manual_pause is not None
+                and self._manual_pause.revision != self._manual_revision
+            ):
+                operation_task.cancel()
+                await asyncio.gather(operation_task, return_exceptions=True)
+                raise _AgentManualPause()
             done, _ = await asyncio.wait(
-                {operation_task, abort_task},
+                {operation_task, abort_task, *([pause_task] if pause_task else [])},
                 return_when=asyncio.FIRST_COMPLETED,
             )
             if abort_task in done:
@@ -1130,6 +1163,14 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                     operation_task.cancel()
                 await asyncio.gather(operation_task, return_exceptions=True)
                 return None
+            if pause_task in done or (
+                pause_sensitive
+                and self._manual_pause is not None
+                and self._manual_pause.revision != self._manual_revision
+            ):
+                operation_task.cancel()
+                await asyncio.gather(operation_task, return_exceptions=True)
+                raise _AgentManualPause()
             return operation_task.result()
         except asyncio.CancelledError:
             if not operation_task.done():
@@ -1140,6 +1181,9 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             if not abort_task.done():
                 abort_task.cancel()
             await asyncio.gather(abort_task, return_exceptions=True)
+            if pause_task is not None:
+                pause_task.cancel()
+                await asyncio.gather(pause_task, return_exceptions=True)
 
     async def _prepare_llm_request(
         self,
@@ -1688,6 +1732,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                         ProcessPersistenceError,
                         ToolProtocolIntegrityError,
                         ContextCapacityError,
+                        _AgentManualPause,
                     ),
                 ):
                     raise
@@ -1990,8 +2035,60 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
 
     @override
     async def step(self):
-        """Process a single step of the agent.
-        This method should return the result of the step.
+        """Wait outside tool timeouts and run only plans from the current epoch.
+
+        Yields:
+            Normal Agent events; cancellation remains responsive while paused.
+        """
+        gate = self._manual_pause
+        previous_state = self._state
+        if gate is not None:
+            while gate.requested.is_set() and not self._is_stop_requested():
+                self._transition_state(AgentState.PAUSED)
+                await self._await_or_stop(gate.resumed.wait(), pause_sensitive=False)
+            if self._state == AgentState.PAUSED and not self._is_stop_requested():
+                self._transition_state(
+                    previous_state
+                    if previous_state != AgentState.PAUSED
+                    else AgentState.RUNNING
+                )
+            if (
+                not self._is_stop_requested()
+                and gate.revision != self._manual_seen_revision
+            ):
+                self.run_context.messages.append(
+                    Message(
+                        role="user",
+                        content="[SYSTEM NOTICE: Human browser handback] The user explicitly "
+                        "returned control. Previous pending actions were invalidated; do not "
+                        "replay them. Decide the next step from this fresh page observation:\n"
+                        + gate.observation,
+                    )
+                )
+                self._manual_seen_revision = gate.revision
+            self._manual_revision = gate.revision
+        previous_budget = self._step_budget_used
+        step = self._step()
+        try:
+            async for response in step:
+                yield response
+        except _AgentManualPause:
+            self._step_budget_used = previous_budget
+            self._pending_request_usage = None
+            self._context_usage_snapshot = None
+            self._transition_state(AgentState.PAUSED)
+        finally:
+            await step.aclose()
+
+    async def _step(self):
+        """Execute one model round and apply its tool protocol results.
+
+        Yields:
+            Model, tool and completion events from the current round.
+
+        Raises:
+            ValueError: The runner was not initialized.
+            _AgentManualPause: Human takeover invalidated pending model work.
         """
         if not self.req:
             raise ValueError("Request is not set. Please call reset() first.")
@@ -2129,6 +2226,12 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
 
         # 处理 LLM 响应
         llm_resp = llm_resp_result
+        if (
+            self._manual_pause is not None
+            and self._manual_pause.revision != self._manual_revision
+            and not llm_resp.tools_call_name
+        ):
+            raise _AgentManualPause()
 
         if llm_resp.role == "err":
             # 如果 LLM 响应错误，转换到错误状态
@@ -2413,6 +2516,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             step_count += 1
             async for resp in self.step():
                 yield resp
+            step_count = self._step_budget_used
 
         #  如果循环结束了但是 agent 还没有完成，说明是达到了 max_step
         if not self.done():
@@ -2733,6 +2837,17 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                 if self._checkpoint_enabled and self._call_checkpoint
                 else None
             )
+            if (
+                self._manual_pause is not None
+                and self._manual_pause.revision != self._manual_revision
+            ):
+                await _append_tool_call_result(
+                    func_tool_id,
+                    "error: Not executed. Human browser takeover invalidated this pending "
+                    "tool call. Observe the current page after explicit handback and replan; "
+                    "do not replay this call.",
+                )
+                continue
             reused = call_state is not None and call_state["status"] == "result_saved"
             retry_prefix: list[dict] | None = None
             if call_state is not None and call_state["status"] in {
@@ -3207,6 +3322,13 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                         )
                 except Exception as e:
                     logger.error(f"Error in on_tool_end hook: {e}", exc_info=True)
+            except _AgentManualPause:
+                await _append_tool_call_result(
+                    func_tool_id,
+                    "error: Interrupted by human browser takeover. The action may have "
+                    "partially completed. Inspect the fresh page after explicit handback; "
+                    "do not replay it or assume success.",
+                )
             except Exception as e:
                 if isinstance(
                     e,
@@ -3671,6 +3793,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
 
         Raises:
             _ToolExecutionInterrupted: Stop was requested during live execution.
+            _AgentManualPause: Human takeover invalidated live execution.
         """
         if saved_results is not None:
             for raw in saved_results:
@@ -3689,37 +3812,14 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                         "Tool execution interrupted before reading the next tool result."
                     )
 
-                next_result_task = asyncio.create_task(_next_executor_result())
-                abort_task = asyncio.create_task(self._abort_signal.wait())
                 try:
-                    done, _ = await asyncio.wait(
-                        {next_result_task, abort_task},
-                        return_when=asyncio.FIRST_COMPLETED,
+                    result = await self._await_or_stop(_next_executor_result())
+                except StopAsyncIteration:
+                    return
+                if self._is_stop_requested():
+                    raise _ToolExecutionInterrupted(
+                        "Tool execution interrupted by a stop request."
                     )
-
-                    if abort_task in done:
-                        if not next_result_task.done():
-                            next_result_task.cancel()
-                            with suppress(asyncio.CancelledError, StopAsyncIteration):
-                                await next_result_task
-                        raise _ToolExecutionInterrupted(
-                            "Tool execution interrupted by a stop request."
-                        )
-
-                    try:
-                        yield next_result_task.result()
-                    except StopAsyncIteration:
-                        return
-                except asyncio.CancelledError:
-                    if not next_result_task.done():
-                        next_result_task.cancel()
-                    # The reader must finish before its async generator can be closed.
-                    await asyncio.gather(next_result_task, return_exceptions=True)
-                    raise
-                finally:
-                    if not abort_task.done():
-                        abort_task.cancel()
-                        with suppress(asyncio.CancelledError):
-                            await abort_task
+                yield result
         finally:
             await executor.aclose()

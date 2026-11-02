@@ -567,13 +567,18 @@ The screenshot below shows the updated Agent browser using a local example page 
 
 ![Agent browser with an address bar, read-only viewport and action timeline](./images/agent-browser-panel.png)
 
-### Take control of an idle browser
+### Take control of an Agent browser
 
-In the same Agent Browser panel, click **Take control** after the Agent finishes.
+In the same Agent Browser panel, click **Take control** while the Agent is running
+or after it finishes. A waiting message appears while browser actions settle.
 The image stays read-only until the server confirms ownership. Click the displayed
 webpage to operate the existing private Chromium; the browser, tab and login state
 are retained. Click **Hand back** to restore Agent admission after a fresh page read.
-An Agent that is still running cannot be taken over in this release.
+A running local Agent pauses without timing out or calling the model repeatedly.
+Its pending actions are discarded. After explicit handback, it observes current tabs,
+page and elements and decides the next action. New messages do not release the pause.
+If the turn was cancelled or has ended, handback keeps the browser available for
+another request and does not start a task.
 
 The control belongs to one signed-in account, chat and client connection. Closing
 or hiding the panel, changing chats, losing observation or disconnecting input
@@ -582,7 +587,7 @@ again and hand back before starting a new task. Stop execution and Close browser
 keep their existing meanings. Older plugins remain read-only and show an update hint.
 Keyboard input, text paste, double-click and scrolling are added by later tickets.
 
-![Idle browser under confirmed human control](./images/agent-browser-manual-control.png)
+![Running Agent paused under confirmed human control](./images/agent-browser-manual-control.png)
 
 
 ## Customizing WebUI Port

@@ -1,4 +1,4 @@
-"""Verify H01 through real AstrBot login, production ChatUI and private Chromium.
+"""Verify H01/H02 through real AstrBot login, production ChatUI and private Chromium.
 
 Run with a development interpreter containing AstrBot dependencies, aiohttp and
 playwright. Only the supplied, newly created evidence directory is
@@ -73,6 +73,9 @@ async def main() -> None:
     ordinary_password = "H01" + secrets.token_urlsafe(20) + "9"
     model_requests = []
     slow_entered = asyncio.Event()
+    model_waiting = asyncio.Event()
+    model_release = asyncio.Event()
+    post_effects = 0
 
     async def website(request):
         """Serve a deterministic authenticated counter page for actual CDP clicks.
@@ -83,19 +86,24 @@ async def main() -> None:
         Returns:
             Counter fixture or its acknowledged click number.
         """
-        nonlocal counter
+        nonlocal counter, post_effects
         if request.path == "/increment":
             cookies.append(request.cookies.get("fixture_login"))
             assert cookies[-1] == login_cookie
             counter += 1
             return web.Response(text=str(counter))
+        if request.path == "/continue":
+            assert request.cookies.get("fixture_login") == login_cookie
+            post_effects += 1
+            return web.Response(text="Continued after fresh observation")
         if request.path == "/slow":
             slow_entered.set()
-            await asyncio.sleep(8)
+            await asyncio.sleep(3)
         response = web.Response(
             text="""<!doctype html><meta charset="utf-8"><title>H01 authenticated counter</title>
 <style>body{margin:0;font:24px Arial;background:#eff6ff}button{position:absolute;left:60px;top:60px;width:200px;height:80px;font-size:24px}p{position:absolute;left:60px;top:180px}</style>
-<button id="increment" onclick="fetch('/increment').then(r=>r.text()).then(n=>{document.getElementById('count').textContent=n;this.style.backgroundColor='#b9f6ca'})">Click counter</button>
+<button id="increment" onclick="fetch('/increment').then(r=>r.text()).then(n=>{document.getElementById('count').textContent=n;this.style.backgroundColor='#b9f6ca';this.textContent='Human updated '+n})">Click counter</button>
+<button style="top:300px;width:260px" onclick="fetch('/continue').then(r=>r.text()).then(n=>this.textContent=n)">Continue on fresh page</button>
 <p>Signed in: H01 fixture · Count: <b id="count">0</b></p>""",
             content_type="text/html",
         )
@@ -121,7 +129,95 @@ async def main() -> None:
             ("browser_navigate", {"url": fixture_url + ("/slow" if slow else "/")}),
             ("browser_get_state", {}),
         ]
-        if not body.get("tools"):
+        handoff = next(
+            (
+                mode
+                for item in reversed(messages)
+                for mode in (
+                    "H01_RUN",
+                    "H01_SLOW",
+                    "H02_MODEL",
+                    "H02_BATCH",
+                    "H02_CANCEL",
+                )
+                if item["role"] == "user"
+                and mode in str(item.get("content"))
+                and "SYSTEM NOTICE" not in str(item.get("content"))
+            ),
+            None,
+        )
+        handoff = handoff if handoff and handoff.startswith("H02_") else None
+        if handoff and body.get("tools"):
+            task_start = max(
+                i
+                for i, item in enumerate(messages)
+                if item["role"] == "user"
+                and handoff in str(item.get("content"))
+                and "SYSTEM NOTICE" not in str(item.get("content"))
+            )
+            results = [item for item in messages[task_start:] if item["role"] == "tool"]
+            returned = [
+                item
+                for item in messages[task_start:]
+                if item["role"] == "user"
+                and "Human browser handback" in str(item.get("content"))
+            ]
+            if not results:
+                calls = [("open", "browser_navigate", {"url": fixture_url + "/"})]
+            elif returned:
+                if any(item.get("tool_call_id") == "h02_continue" for item in results):
+                    calls = []
+                else:
+                    assert "Human updated" in str(returned[-1]), returned[-1]
+                    calls = [
+                        (
+                            "continue",
+                            "browser_click",
+                            {"coordinate_x": 160, "coordinate_y": 340},
+                        )
+                    ]
+            elif handoff == "H02_BATCH":
+                calls = [
+                    ("slow", "browser_navigate", {"url": fixture_url + "/slow"}),
+                    (
+                        "queued",
+                        "browser_click",
+                        {"coordinate_x": 160, "coordinate_y": 100},
+                    ),
+                ]
+            else:
+                model_waiting.set()
+                await model_release.wait()
+                calls = [
+                    (
+                        "stale",
+                        "browser_click",
+                        {"coordinate_x": 160, "coordinate_y": 100},
+                    )
+                ]
+            message = {
+                "role": "assistant",
+                "content": None if calls else handoff + "_DONE",
+                **(
+                    {
+                        "tool_calls": [
+                            {
+                                "id": "h02_" + call_id,
+                                "type": "function",
+                                "function": {
+                                    "name": name,
+                                    "arguments": json.dumps(arguments),
+                                },
+                            }
+                            for call_id, name, arguments in calls
+                        ]
+                    }
+                    if calls
+                    else {}
+                ),
+            }
+            finish = "tool_calls" if calls else "stop"
+        elif not body.get("tools"):
             message = {"role": "assistant", "content": "H01 fixture"}
             finish = "stop"
         elif len(results) < len(plan):
@@ -155,7 +251,8 @@ async def main() -> None:
         if body.get("stream"):
             delta = {key: value for key, value in message.items() if key != "role"}
             if "tool_calls" in delta:
-                delta["tool_calls"][0]["index"] = 0
+                for index, call in enumerate(delta["tool_calls"]):
+                    call["index"] = index
             payload.update(
                 object="chat.completion.chunk",
                 choices=[{"index": 0, "delta": delta, "finish_reason": finish}],
@@ -356,7 +453,7 @@ async def main() -> None:
                 if await popup.count():
                     await popup.first.click()
                 await page.locator(".chat-text-input, .chat-textarea").fill("H01_RUN")
-                await page.locator(".send-btn").click()
+                await page.locator(".send-btn[aria-label]").click()
                 await page.get_by_text("H01_DONE", exact=False).first.wait_for(
                     timeout=120000
                 )
@@ -428,7 +525,7 @@ async def main() -> None:
                 await page.locator(".chat-text-input, .chat-textarea").fill(
                     "H01_WHILE_HUMAN"
                 )
-                await page.locator(".send-btn").click()
+                await page.locator(".send-btn[aria-label]").click()
                 await page.get_by_text(
                     "Browser is under human control or paused.", exact=False
                 ).first.wait_for(timeout=15000)
@@ -559,26 +656,148 @@ async def main() -> None:
                     if (await status())["control_mode"] == "agent":
                         break
                     await asyncio.sleep(0.1)
-                await page.locator(".chat-text-input, .chat-textarea").fill("H01_SLOW")
-                await page.locator(".send-btn").click()
-                await asyncio.wait_for(slow_entered.wait(), 30)
-                async with client.post(
-                    ticket_url, headers=auth_headers, json=ticket_body
-                ) as response:
-                    active_ticket = await response.json()
-                    assert response.status == 200, active_ticket
-                async with client.ws_connect(
-                    origin + active_ticket["websocket_path"]
-                ) as control_ws:
-                    await control_ws.send_json({"ticket": active_ticket["ticket"]})
-                    rejected = await control_ws.receive_json()
-                    assert rejected["status"] == "rejected", rejected
-                    assert "running" in rejected["message"], rejected
-                await page.get_by_text("H01_SLOW_DONE", exact=False).first.wait_for(
-                    timeout=60000
+                for scenario in ("H02_MODEL", "H02_BATCH", "H02_CANCEL"):
+                    locale = "zh-CN" if scenario == "H02_MODEL" else "en-US"
+                    await page.evaluate(
+                        "locale => localStorage.setItem('astrbot-locale', locale)",
+                        locale,
+                    )
+                    await page.reload()
+                    await page.locator(".chat-text-input, .chat-textarea").wait_for(
+                        timeout=30000
+                    )
+                    await open_browser_panel(page)
+                    model_waiting.clear()
+                    model_release.clear()
+                    slow_entered.clear()
+                    baseline_count = counter
+                    baseline_effects = post_effects
+                    await page.locator(".chat-text-input, .chat-textarea").fill(
+                        scenario
+                    )
+                    await page.locator(".send-btn[aria-label]").click()
+                    await asyncio.wait_for(
+                        (
+                            slow_entered if scenario == "H02_BATCH" else model_waiting
+                        ).wait(),
+                        45,
+                    )
+                    await page.locator(".agent-browser-takeover").click()
+                    await page.locator(
+                        '.agent-browser-view[data-human-control="true"]'
+                    ).wait_for(timeout=30000)
+                    current = await status()
+                    assert current["control_mode"] == "human"
+                    assert current["current_action"] is None
+                    assert (
+                        current["browser_session_id"] == identity["browser_session_id"]
+                    )
+                    while_human = len(model_requests)
+                    actions = current["action_cursor"]
+                    # Allow the already-issued fixture response to arrive late.
+                    model_release.set()
+                    await asyncio.sleep(1)
+                    assert counter == baseline_count
+                    assert len(model_requests) == while_human
+                    assert (await status())["action_cursor"] == actions
+                    metrics["checks"].append(
+                        scenario
+                        + ": no late model action or remaining batch call during human control"
+                    )
+                    if scenario == "H02_CANCEL":
+                        await page.locator(".chat-text-input, .chat-textarea").fill("")
+                        await (
+                            page.locator(".send-btn")
+                            .filter(has=page.locator(".mdi-stop"))
+                            .click()
+                        )
+                        await asyncio.sleep(1)
+                    else:
+                        if scenario == "H02_MODEL":
+                            await page.locator(".chat-text-input, .chat-textarea").fill(
+                                "Do not resume while I control the page"
+                            )
+                            await page.locator(".send-btn[aria-label]").click()
+                            await page.locator(
+                                ".chat-text-input, .chat-textarea"
+                            ).press("Enter")
+                            await asyncio.sleep(1)
+                            assert len(model_requests) == while_human
+                            metrics["checks"].append(
+                                "same-chat follow-up does not resume the paused model"
+                            )
+                        bounds = await image.bounding_box()
+                        await image.click(
+                            position={
+                                "x": bounds["width"] * 160 / 1280,
+                                "y": bounds["height"] * 100 / 720,
+                            }
+                        )
+                        for _ in range(40):
+                            if counter == baseline_count + 1:
+                                break
+                            await asyncio.sleep(0.1)
+                        assert counter == baseline_count + 1, counter
+                        await asyncio.sleep(0.5)
+                        await page.screenshot(
+                            path=str(evidence / (scenario.lower() + "-human.png"))
+                        )
+                    await page.locator(".agent-browser-takeover").click()
+                    await page.locator(
+                        '.agent-browser-view[data-human-control="false"]'
+                    ).wait_for(timeout=20000)
+                    if scenario == "H02_CANCEL":
+                        await asyncio.sleep(1)
+                        assert len(model_requests) == while_human
+                        assert (
+                            counter == baseline_count
+                            and post_effects == baseline_effects
+                        )
+                        metrics["checks"].append(
+                            "cancel while paused remains terminal after explicit handback"
+                        )
+                    else:
+                        await page.get_by_text(
+                            scenario + "_DONE", exact=False
+                        ).first.wait_for(timeout=45000)
+                        assert post_effects == baseline_effects + 1
+                        assert counter == baseline_count + 1
+                        if scenario == "H02_BATCH":
+                            paired = next(
+                                item
+                                for item in reversed(model_requests)
+                                if item.get("tools")
+                            )["messages"]
+                            invalidated = [
+                                item
+                                for item in paired
+                                if item.get("tool_call_id") == "h02_queued"
+                            ]
+                            assert len(invalidated) == 1 and "Not executed" in str(
+                                invalidated[0]
+                            ), invalidated
+                            metrics["checks"].append(
+                                "real parallel batch has a truthful unexecuted result paired with its original call ID"
+                            )
+                        metrics["checks"].append(
+                            scenario
+                            + ": fresh observed human change drives one new Agent action after explicit handback"
+                        )
+                    assert (await status())["control_mode"] == "agent"
+                    await page.locator(".send-btn .mdi-stop").wait_for(
+                        state="hidden", timeout=15000
+                    )
+                # A new request after cancellation reuses the retained private browser.
+                await page.locator(".chat-text-input, .chat-textarea").fill(
+                    "H01_RUN after cancellation"
                 )
+                await page.locator(".send-btn[aria-label]").click()
+                await asyncio.sleep(4)
+                assert (await status())["browser_session_id"] == identity[
+                    "browser_session_id"
+                ]
                 metrics["checks"].append(
-                    "running real Agent explicitly refuses takeover"
+                    "new request after cancellation reuses the preserved browser"
                 )
                 async with client.post(
                     origin + "/api/v1/accounts",
@@ -642,7 +861,7 @@ async def main() -> None:
                 await ordinary_page.screenshot(
                     path=str(evidence / "ordinary-ready.png")
                 )
-                await ordinary_page.locator(".send-btn").click()
+                await ordinary_page.locator(".send-btn[aria-label]").click()
                 await ordinary_page.get_by_text("H01_DONE", exact=False).first.wait_for(
                     timeout=120000
                 )
@@ -672,7 +891,9 @@ async def main() -> None:
                 ) as response:
                     assert response.status in {403, 409, 503}, response.status
                 metrics["checks"].append("disabled plugin refuses control")
-                assert cookies == [login_cookie, login_cookie]
+                assert len(cookies) == 4 and all(
+                    cookie == login_cookie for cookie in cookies
+                )
                 metrics.update(
                     passed=True,
                     browser_identity={
@@ -682,9 +903,11 @@ async def main() -> None:
                     },
                     clicks=counter,
                     model_requests=len(model_requests),
+                    resumed_side_effects=post_effects,
                 )
                 print(json.dumps(metrics, ensure_ascii=False), flush=True)
     finally:
+        model_release.set()
         if page is not None and not metrics["passed"]:
             with contextlib.suppress(Exception):
                 await page.screenshot(path=str(evidence / "failure.png"))

@@ -156,7 +156,14 @@ function disconnectControl() {
 async function acquireControl() {
   const current = state.value;
   const chatId = props.chatId;
-  if (!current?.image || !chatId || manualPending.value) return;
+  if (
+    !current?.available ||
+    !current.generation ||
+    !current.browser_session_id ||
+    !chatId ||
+    manualPending.value
+  )
+    return;
   disconnectControl();
   const attempt = controlAttempt;
   manualPending.value = true;
@@ -181,7 +188,7 @@ async function acquireControl() {
     acknowledgementTimer = setTimeout(() => {
       manualMessage.value = t(`${key}.manualDisconnected`);
       disconnectControl();
-    }, 12000);
+    }, 25000);
     socket.onmessage = (message) => {
       if (controlSocket !== socket) return;
       const ack = JSON.parse(message.data);
@@ -280,7 +287,7 @@ function clickPage(event: MouseEvent) {
   acknowledgementTimer = setTimeout(() => {
     manualMessage.value = t(`${key}.manualDisconnected`);
     disconnectControl();
-  }, 12000);
+  }, 25000);
 }
 const connection = ref("loading");
 const resynchronized = ref(false);
@@ -779,7 +786,7 @@ onBeforeUnmount(() => {
             type="button"
             class="agent-browser-takeover agent-browser-button"
             :disabled="
-              !state?.image ||
+              !state?.available ||
               state?.manual_control_version !== 1 ||
               manualPending ||
               controlling
@@ -851,7 +858,10 @@ onBeforeUnmount(() => {
       </div>
     </header>
 
-    <div v-if="manualMessage" role="status" class="agent-browser-notice">
+    <div v-if="manualPending" role="status" class="agent-browser-notice">
+      {{ t(`${key}.changingControl`) }}
+    </div>
+    <div v-else-if="manualMessage" role="status" class="agent-browser-notice">
       {{ manualMessage }}
     </div>
 

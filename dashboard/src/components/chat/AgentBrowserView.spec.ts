@@ -1,11 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { flushPromises, mount } from "@vue/test-utils";
-const { get, post, fetchStream } = vi.hoisted(() => ({
+const { get, post, fetchStream, createSession } = vi.hoisted(() => ({
   get: vi.fn(),
   post: vi.fn(),
   fetchStream: vi.fn(),
+  createSession: vi.fn(),
 }));
-vi.mock("@/api/v1", () => ({ pluginExtensionApi: { get, post } }));
+vi.mock("@/api/v1", () => ({
+  pluginExtensionApi: { get, post },
+  browserControlApi: { createSession },
+}));
 vi.mock("@/api/http", () => ({ fetchWithAuth: fetchStream }));
 import AgentBrowserView from "./AgentBrowserView.vue";
 
@@ -21,6 +25,7 @@ beforeEach(() => {
   get.mockReset();
   post.mockReset();
   fetchStream.mockReset();
+  createSession.mockReset();
   fetchStream.mockImplementation(async () => ({
     ok: true,
     body: new ReadableStream<Uint8Array>({
@@ -35,6 +40,29 @@ afterEach(() => {
 });
 
 describe("Agent browser snapshots", () => {
+  it("allows takeover during navigation before the next image arrives", async () => {
+    const navigating = { ...current, manual_control_version: 1 };
+    get
+      .mockResolvedValueOnce(ok(navigating))
+      .mockResolvedValueOnce(ok({ ...navigating, sequence: 1 }));
+    createSession.mockImplementation(() => new Promise(() => {}));
+    const view = mount(AgentBrowserView, {
+      props: { chatId: "chat-1", visible: true },
+    });
+    await flushPromises();
+    expect(view.find("img").exists()).toBe(false);
+    expect(
+      view.get(".agent-browser-takeover").attributes("disabled"),
+    ).toBeUndefined();
+    await view.get(".agent-browser-takeover").trigger("click");
+    expect(createSession).toHaveBeenCalledWith({
+      chat_id: "chat-1",
+      generation: "run-1",
+      browser_session_id: "browser-1",
+    });
+    expect(view.attributes("data-human-control")).toBe("false");
+    view.unmount();
+  });
   it("expands only the viewport without replacing its image or observation stream", async () => {
     get.mockResolvedValueOnce(ok(current)).mockResolvedValueOnce(
       ok({

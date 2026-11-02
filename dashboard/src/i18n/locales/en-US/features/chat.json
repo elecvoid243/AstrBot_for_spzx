@@ -1,10 +1,11 @@
 {
   "agentBrowser": {
+    "changingControl": "Changing control. Waiting for browser actions to settle.",
     "takeOver": "Take control",
     "handBack": "Hand back",
-    "humanActive": "Human control: click the page",
+    "humanActive": "Agent paused. Human control: click the page",
     "manualDisconnected": "Control disconnected. The browser is paused; reconnect and hand back explicitly.",
-    "manualFailed": "Control unavailable. Wait for the Agent to finish, then retry.",
+    "manualFailed": "Control unavailable. The Agent remains paused if takeover started; reconnect and explicitly hand back control.",
     "handedBack": "Control handed back. Browser and login state retained.",
     "upgradeControl": "Update Browser Use to enable manual control.",
     "switchMode": "Switch browser mode",

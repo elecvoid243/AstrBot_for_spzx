@@ -56,3 +56,7 @@ The following screenshots show the real role component with an isolated example 
 ![Direct selection of tools, skills and knowledge bases](/images/agent-teams-role-resources-en.jpg)
 
 ![The error path expands the limits section and focuses the invalid field](/images/agent-teams-role-error-focus-en.jpg)
+
+## Human wait policy
+
+The role’s human wait policy controls dynamic choices requested by its Agent. The default is indefinite waiting. An explicit deadline may either keep waiting or use the valid recommendation already shown with the request. An Agent using a fixed role version can inherit this policy or override it, including resetting it to indefinite waiting. This does not change ordinary chat timeouts.

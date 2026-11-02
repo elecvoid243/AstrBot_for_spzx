@@ -306,7 +306,8 @@
     "saveFailed": "无法保存角色",
     "provider_id": "模型",
     "persona_id": "人格",
-    "persona_prompt": "人格提示词"
+    "persona_prompt": "人格提示词",
+    "human_wait": "人工等待"
   },
   "v2": {
     "assets": "工作流资产",
@@ -895,5 +896,27 @@
     "unpublished": "草稿 · 尚未发布",
     "editing": "存在编辑中草稿",
     "discardClose": "关闭并丢弃未保存的修改"
+  },
+  "humanWait": {
+    "title": "人工等待",
+    "override": "覆盖模板的人工等待策略",
+    "enableDeadline": "设置期限",
+    "unlimited": "无限期等待人工",
+    "duration": "时长",
+    "seconds": "秒",
+    "minutes": "分钟",
+    "unit": "单位",
+    "invalid": "请输入 1 秒至 1 年的整数时长。",
+    "action": "到期后",
+    "wait": "继续等待人工",
+    "recommendation": "自动采用已展示的有效推荐",
+    "hint": "推荐缺失、无效或证据不可用时继续等待，不会再次调用模型作决定。",
+    "deadline": "截止时间",
+    "decisionHuman": "人工决定",
+    "decisionRecommendation": "自动采用推荐",
+    "wait_policy": "策略要求继续等待人工。",
+    "missing_recommendation": "没有可用推荐，继续等待人工。",
+    "invalid_recommendation": "推荐无效，继续等待人工。",
+    "evidence_unavailable": "推荐证据不可用，继续等待人工。"
   }
 }

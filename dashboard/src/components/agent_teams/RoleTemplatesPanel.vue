@@ -306,7 +306,17 @@
                   }}</span>
                   <p>
                     {{
-                      Array.isArray(value)
+                      field === "human_wait"
+                        ? (value as any)?.timeout_seconds == null
+                          ? tm("humanWait.unlimited")
+                          : `${(value as any).timeout_seconds} ${tm(
+                              "humanWait.seconds",
+                            )} · ${tm(
+                              (value as any).timeout_action === "wait"
+                                ? "humanWait.wait"
+                                : "humanWait.recommendation",
+                            )}`
+                        : Array.isArray(value)
                         ? value.join(", ") || tm("roles.none")
                         : value ?? tm("roles.none")
                     }}
@@ -325,9 +335,12 @@
           </div>
         </v-card-text>
         <v-card-actions class="pa-4">
-          <v-btn variant="text" :disabled="saving || draft.busy.value" @click="closeEditor">{{
-            tm("v2.close")
-          }}</v-btn>
+          <v-btn
+            variant="text"
+            :disabled="saving || draft.busy.value"
+            @click="closeEditor"
+            >{{ tm("v2.close") }}</v-btn
+          >
           <v-spacer />
           <v-btn
             data-testid="save-role"

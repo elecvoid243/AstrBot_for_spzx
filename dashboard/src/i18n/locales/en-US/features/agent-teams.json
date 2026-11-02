@@ -306,7 +306,8 @@
     "saveFailed": "Unable to save role",
     "provider_id": "Model",
     "persona_id": "Persona",
-    "persona_prompt": "Persona prompt"
+    "persona_prompt": "Persona prompt",
+    "human_wait": "Human wait"
   },
   "v2": {
     "assets": "Workflow Assets",
@@ -895,5 +896,27 @@
     "unpublished": "Draft · Unpublished",
     "editing": "Draft in progress",
     "discardClose": "Close and discard unsaved changes"
+  },
+  "humanWait": {
+    "title": "Human wait",
+    "override": "Override template human wait",
+    "enableDeadline": "Set a deadline",
+    "unlimited": "Wait indefinitely for a person",
+    "duration": "Duration",
+    "seconds": "seconds",
+    "minutes": "minutes",
+    "unit": "Unit",
+    "invalid": "Enter a whole duration from 1 second to 1 year.",
+    "action": "After the deadline",
+    "wait": "Continue waiting for a person",
+    "recommendation": "Automatically use the displayed valid recommendation",
+    "hint": "If the recommendation is missing, invalid, or its evidence is unavailable, continue waiting. No new model decision is requested.",
+    "deadline": "Deadline",
+    "decisionHuman": "Decided by a person",
+    "decisionRecommendation": "Automatically adopted the recommendation",
+    "wait_policy": "The policy requires continued human waiting.",
+    "missing_recommendation": "No recommendation is available; still waiting for a person.",
+    "invalid_recommendation": "The recommendation is invalid; still waiting for a person.",
+    "evidence_unavailable": "Recommendation evidence is unavailable; still waiting for a person."
   }
 }

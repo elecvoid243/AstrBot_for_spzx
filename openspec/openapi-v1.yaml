@@ -10580,10 +10580,31 @@ components:
         input: { type: string }
         workflow_id: { type: [string, "null"] }
 
+    HumanWaitPolicy:
+      type: object
+      additionalProperties: false
+      properties:
+        timeout_seconds:
+          anyOf:
+          - type: integer
+            minimum: 1
+            maximum: 31536000
+          - type: 'null'
+          default: null
+        timeout_action:
+          type: string
+          enum: [wait, use_recommendation]
+          default: wait
+      description: Automatic recommendation use requires an explicit deadline.
     RoleDefinition:
       additionalProperties: false
       description: Role content with direct resource identities.
       properties:
+        human_wait:
+          anyOf:
+          - $ref: '#/components/schemas/HumanWaitPolicy'
+          - type: 'null'
+          default: null
         prompt:
           anyOf:
           - maxLength: 100000
@@ -10761,6 +10782,11 @@ components:
       additionalProperties: false
       description: Optional configuration; lists inherit on null and disable when empty.
       properties:
+        human_wait:
+          anyOf:
+          - $ref: '#/components/schemas/HumanWaitPolicy'
+          - type: 'null'
+          default: null
         prompt:
           anyOf:
           - maxLength: 100000
@@ -11491,6 +11517,8 @@ components:
       description: Explicit, idempotent revision without downstream scheduling effects.
     HumanTask:
       properties:
+        human_wait:
+          $ref: '#/components/schemas/HumanWaitPolicy'
         kind:
           type: string
           enum:

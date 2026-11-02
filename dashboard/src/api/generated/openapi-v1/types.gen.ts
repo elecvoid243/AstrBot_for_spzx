@@ -851,6 +851,7 @@ export type action2 = 'answer' | 'approve' | 'reject';
  * A frozen question or approval of one upstream artifact version.
  */
 export type HumanTask = {
+    human_wait?: HumanWaitPolicy;
     kind: 'question' | 'approval';
     question: string;
     choices?: Array<(string)>;
@@ -863,6 +864,16 @@ export type HumanTask = {
 };
 
 export type kind = 'question' | 'approval';
+
+/**
+ * Automatic recommendation use requires an explicit deadline.
+ */
+export type HumanWaitPolicy = {
+    timeout_seconds?: (number | null);
+    timeout_action?: 'wait' | 'use_recommendation';
+};
+
+export type timeout_action = 'wait' | 'use_recommendation';
 
 export type ImMessageRequest = {
     umo: string;
@@ -1261,6 +1272,7 @@ export type ResourceSelection = {
  * Role content with direct resource identities.
  */
 export type RoleDefinition = {
+    human_wait?: (HumanWaitPolicy | null);
     prompt?: (string | null);
     provider_id?: (string | null);
     persona_id?: (string | null);
@@ -1291,6 +1303,7 @@ export type RoleInstallation = {
  * Optional configuration; lists inherit on null and disable when empty.
  */
 export type RoleOverrides = {
+    human_wait?: (HumanWaitPolicy | null);
     prompt?: (string | null);
     provider_id?: (string | null);
     persona_id?: (string | null);

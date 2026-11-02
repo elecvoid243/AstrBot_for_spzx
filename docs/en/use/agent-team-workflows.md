@@ -397,3 +397,9 @@ The report must use real provider/tool resources in your installation. The docum
 | New workflows had no persistent human entry | Assets → Workflows → Edit Asset → Human question / Version approval; Runs → View Run → Human requests. |
 
 Single-task assets remain compatible. Dependency assets provide acyclic scheduling, field conditions and persistent human requests through the same task result protocol. Bounded revision loops and autonomous teams share the same scheduler. Unknown tool decisions are available inside the selected task's process details.
+
+## Human wait deadlines
+
+Human questions and approvals wait indefinitely by default. Set a deadline on the human node and choose whether to keep waiting or automatically use the valid recommendation shown when the request was created. For dynamic choices, configure the asking role or Agent’s human wait policy. Template-based Agents can inherit the fixed template policy or override it, including resetting it to indefinite waiting. This setting is independent of ordinary chat timeouts.
+
+The todo displays the persisted deadline and decision source. Missing or invalid recommendations, or unavailable evidence, leave the request waiting for a person. No new model decision is requested at the deadline.

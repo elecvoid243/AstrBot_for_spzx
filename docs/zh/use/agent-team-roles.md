@@ -58,3 +58,7 @@ Dify、Coze 和 DashScope Application 通过其支持的任务或用户输入，
 ![直接选择工具、技能和知识库](/images/agent-teams-role-resources-zh.jpg)
 
 ![点击错误路径后，展开限制分组并聚焦错误字段](/images/agent-teams-role-error-focus-zh.jpg)
+
+## 人工等待策略
+
+角色的人工等待策略控制其 Agent 发起的动态选择。默认无限期等待；明确设置期限后，可选择继续等待或采用请求中已展示的有效推荐。引用固定角色版本的 Agent 可以继承此策略，也可覆盖为其他策略或恢复无限等待。此设置不改变普通聊天超时。

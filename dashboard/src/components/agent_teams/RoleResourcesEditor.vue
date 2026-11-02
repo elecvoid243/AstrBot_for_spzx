@@ -36,15 +36,30 @@
       </template>
     </v-expansion-panel-text>
   </v-expansion-panel>
+  <v-expansion-panel value="human_wait">
+    <v-expansion-panel-title>{{
+      tm("humanWait.title")
+    }}</v-expansion-panel-title>
+    <v-expansion-panel-text>
+      <HumanWaitPolicyEditor
+        :model-value="definition.human_wait"
+        :override="override"
+        @update:model-value="setHumanWait"
+      />
+    </v-expansion-panel-text>
+  </v-expansion-panel>
 </template>
 
 <script setup lang="ts">
 import { computed } from "vue";
+import HumanWaitPolicyEditor from "./HumanWaitPolicyEditor.vue";
+import type { HumanWaitPolicy } from "@/api/generated/openapi-v1";
 import { useModuleI18n } from "@/i18n/composables";
 
 const props = withDefaults(
   defineProps<{
     definition: Record<string, any>;
+    override?: boolean;
     modes: Record<string, string>;
     catalog: Record<string, any[]>;
     fieldErrors?: (path: string) => string[];
@@ -58,6 +73,11 @@ const modeItems = computed(() => [
   { title: tm("roles.inherit"), value: "inherit" },
   { title: tm("roles.override"), value: "custom" },
 ]);
+function setHumanWait(value: HumanWaitPolicy | null | undefined) {
+  if (value === undefined) delete props.definition.human_wait;
+  else props.definition.human_wait = value;
+  emit("change");
+}
 function setMode(field: string, mode: string) {
   props.modes[field] = mode;
   props.definition[field] =

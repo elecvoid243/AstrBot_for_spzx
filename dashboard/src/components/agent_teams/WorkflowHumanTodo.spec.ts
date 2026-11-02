@@ -393,3 +393,39 @@ describe("persistent human request handling", () => {
     expect(wrapper.emitted("submit")).toBeUndefined();
   });
 });
+
+describe("persisted deadline display", () => {
+  it("shows the saved deadline and both decision sources across refreshes", async () => {
+    const deadline = 1800000000;
+    const wrapper = mount(WorkflowHumanTodo, {
+      props: {
+        todo: {
+          ...todo,
+          deadline,
+          human_wait: {
+            timeout_seconds: 60,
+            timeout_action: "use_recommendation",
+          },
+          timeout_reason: "missing_recommendation",
+        },
+        busy: false,
+        paused: false,
+        cancelled: false,
+      },
+      global: { stubs },
+    });
+    const displayed = new Date(deadline * 1000).toLocaleString();
+    expect(wrapper.text()).toContain(displayed);
+    expect(wrapper.text()).toContain("humanWait.missing_recommendation");
+    await wrapper.setProps({
+      todo: { ...todo, deadline, decision_source: { type: "human" } },
+    });
+    expect(wrapper.text()).toContain(displayed);
+    expect(wrapper.text()).toContain("humanWait.decisionHuman");
+    await wrapper.setProps({
+      todo: { ...todo, deadline, decision_source: { type: "recommendation" } },
+    });
+    expect(wrapper.text()).toContain(displayed);
+    expect(wrapper.text()).toContain("humanWait.decisionRecommendation");
+  });
+});

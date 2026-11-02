@@ -524,6 +524,7 @@
               ><RoleResourcesEditor
                 :key="selectedTask.id + ':overrides'"
                 :definition="selectedTask.overrides"
+                override
                 :modes="resourceModes"
                 :catalog="catalog"
                 @change="checkpoint"
@@ -551,6 +552,7 @@
                     'tools',
                     'skills',
                     'knowledge_bases',
+                    'human_wait',
                   ] as const"
                   :key="field"
                   :data-testid="`role-preview-${field}`"
@@ -659,6 +661,16 @@
               :label="tm('human.question')"
               data-testid="human-question"
               @update:model-value="checkpoint"
+            />
+            <HumanWaitPolicyEditor
+              :model-value="selectedTask.human.human_wait"
+              @update:model-value="
+                selectedTask.human.human_wait = $event ?? {
+                  timeout_seconds: null,
+                  timeout_action: 'wait',
+                };
+                checkpoint();
+              "
             />
             <template v-if="selectedTask.human.kind === 'approval'">
               <v-select
@@ -1095,6 +1107,7 @@ import { computed, onBeforeUnmount, ref, watch } from "vue";
 import TeamsFlowCanvas from "./TeamsFlowCanvas.vue";
 import WorkflowLoopPanel from "./WorkflowLoopPanel.vue";
 import RoleResourcesEditor from "./RoleResourcesEditor.vue";
+import HumanWaitPolicyEditor from "./HumanWaitPolicyEditor.vue";
 import type { FlowNode } from "./TeamsFlowCanvas.vue";
 import type { GraphDefinition } from "@/api/generated/openapi-v1";
 import { useModuleI18n } from "@/i18n/composables";
@@ -1221,6 +1234,15 @@ const rolePreviewDisplay = computed<Record<string, string>>(() => {
       ? tm("graph.noPersona")
       : tm("graph.noModel");
   }
+  const policy = effective.human_wait;
+  display.human_wait =
+    policy?.timeout_seconds == null
+      ? tm("humanWait.unlimited")
+      : `${policy.timeout_seconds} ${tm("humanWait.seconds")} · ${tm(
+          policy.timeout_action === "wait"
+            ? "humanWait.wait"
+            : "humanWait.recommendation",
+        )}`;
   return display;
 });
 const rolePreviewError = ref("");

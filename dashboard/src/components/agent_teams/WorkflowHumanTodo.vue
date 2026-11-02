@@ -24,6 +24,38 @@
           · {{ todo.root_run_id }} / {{ todo.task_run_id }}</span
         >
       </p>
+      <div class="text-caption mt-2" data-testid="human-deadline">
+        <p>
+          {{ tm("humanWait.deadline") }}:
+          {{
+            todo.deadline == null
+              ? tm("humanWait.unlimited")
+              : new Date(todo.deadline * 1000).toLocaleString()
+          }}
+        </p>
+        <p>
+          {{ tm("humanWait.action") }}:
+          {{
+            tm(
+              todo.human_wait?.timeout_action === "use_recommendation"
+                ? "humanWait.recommendation"
+                : "humanWait.wait",
+            )
+          }}
+        </p>
+        <p v-if="todo.timeout_reason">
+          {{ tm(`humanWait.${todo.timeout_reason}`) }}
+        </p>
+        <p v-if="todo.decision_source?.type">
+          {{
+            tm(
+              todo.decision_source.type === "recommendation"
+                ? "humanWait.decisionRecommendation"
+                : "humanWait.decisionHuman",
+            )
+          }}
+        </p>
+      </div>
       <div
         v-if="todo.recommendation"
         class="mt-2"

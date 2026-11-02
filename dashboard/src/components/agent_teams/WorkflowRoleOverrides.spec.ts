@@ -284,3 +284,46 @@ describe("role template inspector", () => {
     }
   });
 });
+
+it("keeps explicit unlimited and removes the override when returning to the template", async () => {
+  const { default: HumanWaitPolicyEditor } = await import(
+    "./HumanWaitPolicyEditor.vue"
+  );
+  const wrapper = mount(WorkflowGraphCanvas, {
+    props: {
+      definition: {
+        name: "Flow",
+        tasks: [
+          {
+            id: "a",
+            name: "Agent",
+            member: "a",
+            task: "Task",
+            role_id: "r",
+            role_version: 1,
+            overrides: {},
+          },
+        ],
+        edges: [],
+      },
+      roles: [{ role_id: "r", version: 1, definition: { name: "Role" } }],
+    },
+    global: { stubs },
+  });
+  wrapper
+    .getComponent({ name: "TeamsFlowCanvas" })
+    .vm.$emit("select-node", "a");
+  await flushPromises();
+  const editor = wrapper.getComponent(HumanWaitPolicyEditor);
+  editor.vm.$emit("update:modelValue", null);
+  expect(
+    (wrapper.emitted("update:definition")!.at(-1)![0] as any).tasks[0]
+      .overrides,
+  ).toHaveProperty("human_wait", null);
+  editor.vm.$emit("update:modelValue", undefined);
+  expect(
+    (wrapper.emitted("update:definition")!.at(-1)![0] as any).tasks[0]
+      .overrides,
+  ).not.toHaveProperty("human_wait");
+  wrapper.unmount();
+});

@@ -280,6 +280,14 @@
               />
             </div>
             <div ref="processPane" class="workbench-column workbench-process" @scroll="onProcessScroll">
+              <p class="text-caption text-medium-emphasis">{{ tm("progress.historyHint") }}</p>
+              <v-btn variant="tonal" :disabled="historyBusy || historyDone[detailRun.run_id]" @click="loadOlderProcess">{{ tm("progress.loadOlder") }}</v-btn>
+              <v-btn variant="text" :disabled="historyBusy || historyNext[detailRun.run_id + ':messages'] === null" @click="loadOlderHistory('messages')">{{ tm("progress.loadMessages") }}</v-btn>
+              <v-btn variant="text" :disabled="historyBusy || historyNext[detailRun.run_id + ':events'] === null" @click="loadOlderHistory('events')">{{ tm("progress.loadEvents") }}</v-btn>
+              <v-btn variant="text" :disabled="historyBusy || historyNext[detailRun.run_id + ':attempts'] === null" @click="loadOlderHistory('attempts')">{{ tm("progress.loadAttempts") }}</v-btn>
+              <v-btn v-if="historyTruncated[detailRun.run_id]" variant="text" @click="reloadLatestProcess">{{ tm("progress.reloadLatest") }}</v-btn>
+              <p v-if="historyTruncated[detailRun.run_id]" class="text-warning">{{ tm("progress.historyWindow") }}</p>
+              <p v-if="historyErrors[detailRun.run_id]" role="alert">{{ historyErrors[detailRun.run_id] }}</p>
               <WorkflowRunProcess :run="detailRun" :busy="!!currentOperation" @resolve="resolveTool" />
             </div>
             <div class="workbench-column">
@@ -357,6 +365,10 @@
             :items="
               allRunTasks.map((task: any) => ({
                 title: `${task.snapshot.definition.name}${
+                  taskScopeNames[task.run_id]
+                    ? ` · ${tm('child.scope')}: ${taskScopeNames[task.run_id]}`
+                    : ''
+                }${
                   task.snapshot.iteration
                     ? ` · ${tm('loops.iteration')} ${task.snapshot.iteration}`
                     : ''
@@ -537,7 +549,7 @@
                 <pre class="workflow-text">{{
                   JSON.stringify(
                     detailRun.events?.filter((event: any) =>
-                      event.kind.startsWith("result."),
+                      event.kind?.startsWith("result."),
                     ),
                     null,
                     2,
@@ -1002,22 +1014,138 @@ const allRunTasks = computed<any[]>(() => [
     [
       ...(selectedRun.value?.tasks ?? []),
       ...(selectedRun.value?.scopes ?? []).flatMap((scope: any) => scope.tasks),
-      ...(selectedRun.value?.loops ?? []).flatMap((loop: any) =>
-        loop.iterations.flatMap((iteration: any) => iteration.tasks),
+      ...[selectedRun.value, ...(selectedRun.value?.scopes ?? [])].flatMap((scope: any) =>
+        (scope?.loops ?? []).flatMap((loop: any) =>
+          loop.iterations.flatMap((iteration: any) => iteration.tasks),
+        ),
       ),
     ].map((task: any) => [task.run_id, task]),
   ).values(),
 ]);
+const taskScopeNames = computed<Record<string, string>>(() => Object.fromEntries(
+  (selectedRun.value?.scopes ?? []).flatMap((scope: any) => [
+    ...(scope.tasks ?? []),
+    ...(scope.loops ?? []).flatMap((loop: any) => loop.iterations.flatMap((iteration: any) => iteration.tasks)),
+  ].map((task: any) => [task.run_id, scope.snapshot?.definition?.name ?? scope.run_id])),
+));
 const detailRun = computed(
   () =>
     allRunTasks.value.find(
       (task: any) =>
-        task.node_id === selectedTaskNode.value ||
         task.run_id === selectedTaskNode.value,
     ) ??
     selectedRun.value?.tasks?.[0] ??
     selectedRun.value,
 );
+function runViews(root: any): any[] {
+  if (!root) return [];
+  return [root, ...(root.tasks ?? []),
+    ...(root.scopes ?? []).flatMap((scope: any) => [scope, ...scope.tasks]),
+    ...[root, ...(root.scopes ?? [])].flatMap((scope: any) =>
+      (scope.loops ?? []).flatMap((loop: any) =>
+        loop.iterations.flatMap((iteration: any) => iteration.tasks)))];
+}
+function messageBelongs(root: any, target: any, message: any): boolean {
+  return target.run_id === root.run_id ||
+    (target.snapshot?.engine === "graph_v2" && target.state?.scope_id === message.scope_id) ||
+    target.run_id === message.sender_task_run_id ||
+    (target.state?.scope_id === message.scope_id && target.snapshot?.member?.member_id === message.recipient_member_id);
+}
+const historyNext = ref<Record<string, string | null>>({});
+const historyDone = ref<Record<string, boolean>>({});
+const historyBusy = ref(false);
+const historyErrors = ref<Record<string, string>>({});
+const historyTruncated = ref<Record<string, boolean>>({});
+watch(() => selectedRun.value?.run_id, () => {
+  historyDone.value = {};
+  historyNext.value = {};
+  historyErrors.value = {};
+  historyTruncated.value = {};
+});
+async function loadOlderProcess() {
+  if (historyBusy.value || !selectedRun.value || !detailRun.value) return;
+  const rootId = selectedRun.value.run_id;
+  const taskId = detailRun.value.run_id;
+  const cursors = (detailRun.value.process ?? []).map((record: any) => record.cursor).filter((cursor: any) => Number.isInteger(cursor));
+  const before = cursors.length ? Math.min(...cursors) : selectedRun.value.cursor + 1;
+  historyBusy.value = true;
+  delete historyErrors.value[taskId];
+  try {
+    const page = await workflowAssetsApi.processPage(rootId, taskId, before);
+    if (selectedRun.value?.run_id !== rootId) return;
+    const pane = processPane.value;
+    const height = pane?.scrollHeight ?? 0;
+    const top = pane?.scrollTop ?? 0;
+    const targets = runViews(selectedRun.value);
+    for (const target of targets.filter((run: any) => run.run_id === taskId)) {
+      const records = new Map([...page.records, ...(target.process ?? [])].map((record: any) => [record.record_id, record]));
+      const merged = [...records.values()].sort((a: any, b: any) => a.cursor - b.cursor);
+      if (merged.length > 512) historyTruncated.value[taskId] = true;
+      target.process = merged.slice(0, 512);
+    }
+    historyDone.value = { ...historyDone.value, [taskId]: page.next_before === null };
+    await nextTick();
+    if (pane && detailRun.value?.run_id === taskId) pane.scrollTop = top + pane.scrollHeight - height;
+  } catch (cause) {
+    historyErrors.value[taskId] = extractApiError(cause, tm("errors.operationFailed")).message;
+  } finally {
+    historyBusy.value = false;
+  }
+}
+async function loadOlderHistory(kind: "events" | "messages" | "attempts") {
+  if (historyBusy.value || !selectedRun.value || !detailRun.value) return;
+  const rootId = selectedRun.value.run_id;
+  const taskId = detailRun.value.run_id;
+  const key = `${taskId}:${kind}`;
+  const next = historyNext.value[key];
+  if (next === null) return;
+  const before = next ?? String(detailRun.value[kind === "events" ? "event_history_before" : kind === "messages" ? "message_history_before" : "attempt_history_before"] ?? 1);
+  historyBusy.value = true;
+  delete historyErrors.value[taskId];
+  try {
+    const page = await workflowAssetsApi.runHistoryPage(rootId, taskId, kind, before);
+    if (selectedRun.value?.run_id !== rootId) return;
+    const pane = processPane.value;
+    const height = pane?.scrollHeight ?? 0;
+    const top = pane?.scrollTop ?? 0;
+    for (const target of runViews(selectedRun.value).filter((view: any) => view.run_id === taskId)) {
+      const id = kind === "events" ? "cursor" : kind === "messages" ? "message_id" : "attempt_id";
+      const entries = new Map([...page.items, ...(target[kind] ?? [])].map((entry: any) => [entry[id], entry]));
+      const merged = [...entries.values()].sort((a: any, b: any) => a.cursor - b.cursor);
+      if (merged.length > 512) historyTruncated.value[taskId] = true;
+      target[kind] = merged.slice(0, 512);
+    }
+    historyNext.value[key] = page.next_before;
+    await nextTick();
+    if (pane && detailRun.value?.run_id === taskId) pane.scrollTop = top + pane.scrollHeight - height;
+  } catch (cause) {
+    historyErrors.value[taskId] = extractApiError(cause, tm("errors.operationFailed")).message;
+  } finally {
+    historyBusy.value = false;
+  }
+}
+async function reloadLatestProcess() {
+  const rootId = selectedRun.value?.run_id;
+  if (!rootId || historyBusy.value) return;
+  historyBusy.value = true;
+  const read = ++runRead;
+  const taskId = detailRun.value.run_id;
+  try {
+    const snapshot = await workflowAssetsApi.run(rootId);
+    if (read === runRead && selectedRun.value?.run_id === rootId) {
+      selectedRun.value = snapshot;
+      historyDone.value = {};
+      historyNext.value = {};
+      historyTruncated.value = {};
+      historyErrors.value = {};
+    }
+  } catch (cause) {
+    historyErrors.value[taskId] = extractApiError(cause, tm("errors.operationFailed")).message;
+  } finally {
+    if (read === runRead) loading.value = false;
+    historyBusy.value = false;
+  }
+}
 const graphEditing = ref(false);
 const graphEditorKey = ref(0);
 const teamEditing = ref(false);
@@ -1123,24 +1251,77 @@ async function refresh() {
             selectedRun.value.cursor,
           );
           if (disposed || read !== runRead) return;
+          if (!changes.snapshot && changes.events?.some((event: any) =>
+            typeof event.kind === "string" && !event.kind.startsWith("process.") &&
+            !event.kind.startsWith("checkpoint.") &&
+            !["usage.started", "usage.reported", "usage.resumed"].includes(event.kind),
+          )) {
+            const state = await workflowAssetsApi.run(id);
+            if (disposed || read !== runRead) return;
+            changes.snapshot = { ...state, cursor: changes.cursor };
+          }
           if (changes.snapshot) {
-            if (changes.reset || changes.cursor > selectedRun.value.cursor)
-              selectedRun.value = changes.snapshot;
+            if (changes.reset || changes.cursor > selectedRun.value.cursor) {
+              const previous = selectedRun.value;
+              const snapshot = changes.snapshot;
+              if (changes.cursor >= previous.cursor) {
+                const oldViews = runViews(previous);
+                const newViews = runViews(snapshot);
+                for (const target of newViews) {
+                  const old = oldViews.find((view: any) => view.run_id === target.run_id);
+                  const records = new Map([...(old?.process ?? []), ...(target.process ?? []),
+                    ...(changes.records ?? []).filter((record: any) => record.run_id === target.run_id),
+                  ].map((record: any) => [record.record_id, record]));
+                  const merged = [...records.values()].sort((a: any, b: any) => a.cursor - b.cursor);
+                  if (merged.length > 512) historyTruncated.value[target.run_id] = true;
+                  target.process = merged.slice(0, 512);
+                  const attempts = new Map([...(old?.attempts ?? []), ...(target.attempts ?? [])].map((attempt: any) => [attempt.attempt_id, attempt]));
+                  const orderedAttempts = [...attempts.values()].sort((a: any, b: any) => a.cursor - b.cursor);
+                  if (orderedAttempts.length > 512) historyTruncated.value[target.run_id] = true;
+                  target.attempts = orderedAttempts.slice(0, 512);
+                  for (const kind of ["events", "messages"] as const) {
+                    const id = kind === "events" ? "cursor" : "message_id";
+                    const incoming = kind === "events"
+                      ? (changes.events ?? []).filter((event: any) => target.run_id === snapshot.run_id || target.run_id === event.run_id)
+                      : (changes.messages ?? []).filter((message: any) => messageBelongs(snapshot, target, message));
+                    const entries = new Map([...(old?.[kind] ?? []), ...(target[kind] ?? []), ...incoming].map((entry: any) => [entry[id], entry]));
+                    const history = [...entries.values()].sort((a: any, b: any) => a.cursor - b.cursor);
+                    if (history.length > 512) historyTruncated.value[target.run_id] = true;
+                    target[kind] = history.slice(0, 512);
+                  }
+                }
+              } else {
+                historyDone.value = {};
+                historyNext.value = {};
+                historyTruncated.value = {};
+              }
+              selectedRun.value = snapshot;
+            }
           } else {
             const root = selectedRun.value;
-            const runs = [
-              root,
-              ...(root.tasks ?? []),
-              ...(root.scopes ?? []).flatMap((scope: any) => [scope, ...scope.tasks]),
-              ...(root.loops ?? []).flatMap((loop: any) =>
-                loop.iterations.flatMap((iteration: any) => iteration.tasks),
-              ),
-            ];
+            const runs = runViews(root);
             for (const record of changes.records ?? []) {
               for (const target of runs.filter((run: any) => run.run_id === record.run_id)) {
                 target.process ??= [];
-                if (!target.process.some((item: any) => item.record_id === record.record_id))
-                  target.process.push(record);
+                if (!target.process.some((item: any) => item.record_id === record.record_id)) {
+                  if (target.process.length < 512) target.process.push(record);
+                  else historyTruncated.value[target.run_id] = true;
+                }
+              }
+            }
+            for (const target of runs) {
+              for (const kind of ["events", "messages"] as const) {
+                const id = kind === "events" ? "cursor" : "message_id";
+                const incoming = kind === "events"
+                  ? (changes.events ?? []).filter((event: any) => target.run_id === root.run_id || target.run_id === event.run_id)
+                  : (changes.messages ?? []).filter((message: any) => messageBelongs(root, target, message));
+                target[kind] ??= [];
+                for (const entry of incoming) {
+                  if (!target[kind].some((existing: any) => existing[id] === entry[id])) {
+                    if (target[kind].length < 512) target[kind].push(entry);
+                    else historyTruncated.value[target.run_id] = true;
+                  }
+                }
               }
             }
             root.cursor = changes.cursor;
@@ -1379,6 +1560,31 @@ async function start() {
   }
 }
 
+function applyOperationSnapshot(next: any) {
+  const previous = selectedRun.value;
+  const snapshot = { ...next };
+  if (previous?.run_id === snapshot.run_id && Number.isInteger(previous.cursor) && snapshot.cursor >= previous.cursor) {
+    const oldViews = runViews(previous);
+    for (const target of runViews(snapshot)) {
+      const old = oldViews.find((view: any) => view.run_id === target.run_id);
+      for (const kind of ["process", "events", "messages", "attempts"] as const) {
+        const key = kind === "process" ? "record_id" : kind === "events" ? "cursor" : kind === "messages" ? "message_id" : "attempt_id";
+        const entries = new Map([...(old?.[kind] ?? []), ...(target[kind] ?? [])].map((entry: any) => [entry[key], entry]));
+        const ordered = [...entries.values()].sort((a: any, b: any) => a.cursor - b.cursor);
+        if (ordered.length > 512) historyTruncated.value[target.run_id] = true;
+        target[kind] = ordered.slice(0, 512);
+      }
+    }
+    // A newer state snapshot does not acknowledge events that have not been read.
+    snapshot.cursor = previous.cursor;
+  } else {
+    historyDone.value = {};
+    historyNext.value = {};
+    historyTruncated.value = {};
+  }
+  selectedRun.value = snapshot;
+}
+
 async function openRun(runId: string) {
   const read = ++runRead;
   openingRun = true;
@@ -1388,6 +1594,10 @@ async function openRun(runId: string) {
     const snapshot = await workflowAssetsApi.run(runId);
     if (disposed || read !== runRead) return;
     selectedRun.value = snapshot;
+    historyDone.value = {};
+    historyNext.value = {};
+    historyErrors.value = {};
+    historyTruncated.value = {};
     selectedTaskNode.value = snapshot.tasks?.[0]?.run_id ?? null;
     await router.replace({ query: { ...route.query, workflow_run: runId } });
     if (disposed || read !== runRead) return;
@@ -1422,7 +1632,7 @@ async function recoverAttempt() {
     const recovered = await workflowAssetsApi.recover(taskId);
     const snapshot =
       rootId === taskId ? recovered : await workflowAssetsApi.run(rootId);
-    if (!disposed && read === runRead) selectedRun.value = snapshot;
+    if (!disposed && read === runRead) applyOperationSnapshot(snapshot);
   } catch (err) {
     if (!disposed && read === runRead)
       error.value = extractApiError(err, tm("errors.operationFailed")).message;
@@ -1448,7 +1658,7 @@ async function resolveTool(recordId: string, payload: ToolResolutionRequest) {
     );
     const snapshot =
       rootId === taskId ? resolved : await workflowAssetsApi.run(rootId);
-    if (!disposed && read === runRead) selectedRun.value = snapshot;
+    if (!disposed && read === runRead) applyOperationSnapshot(snapshot);
   } catch (err) {
     if (!disposed && read === runRead)
       error.value = extractApiError(err, tm("errors.operationFailed")).message;
@@ -1467,7 +1677,7 @@ async function answerTodo(todoId: string, payload: HumanAnswerRequest) {
   try {
     error.value = "";
     const updated = await workflowAssetsApi.answer(rootId, todoId, payload);
-    if (!disposed && read === runRead) selectedRun.value = updated;
+    if (!disposed && read === runRead) applyOperationSnapshot(updated);
   } catch (err) {
     // Returning to the same run keeps its pending response and failure visible.
     if (!disposed && !openingRun && selectedRun.value?.run_id === rootId)
@@ -1498,7 +1708,7 @@ async function applyRunControl(
       retry && rootId !== taskId
         ? await workflowAssetsApi.run(rootId)
         : updated;
-    if (!disposed && read === runRead) selectedRun.value = snapshot;
+    if (!disposed && read === runRead) applyOperationSnapshot(snapshot);
   } catch (err) {
     if (!disposed && read === runRead)
       error.value = extractApiError(err, tm("errors.operationFailed")).message;

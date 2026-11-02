@@ -141,9 +141,10 @@ async def team_env(tmp_path):
             "definition": {
                 "name": "Coordinator",
                 "prompt": "Coordinate",
+                "provider_id": "model",
                 "max_steps": 20,
             },
-            "installation": {"bindings": {"model": "model"}},
+            "installation": {"profile_id": "default"},
         },
     )
     writer = await roles.save_role(
@@ -152,11 +153,12 @@ async def team_env(tmp_path):
             "definition": {
                 "name": "Writer",
                 "prompt": "Original writer",
+                "provider_id": "model",
                 "max_instances": 2,
                 "max_parallel": 1,
                 "max_steps": 4,
             },
-            "installation": {"bindings": {"model": "model"}},
+            "installation": {"profile_id": "default"},
         },
     )
     observations = []
@@ -207,7 +209,7 @@ async def team_env(tmp_path):
                         {
                             "action": "create_member",
                             "request_id": "member-attack",
-                            "role_id": writer["role_id"],
+                            "preset_id": "writer",
                             "name": "Unauthorized",
                         },
                     )
@@ -240,8 +242,8 @@ async def team_env(tmp_path):
             "definition": {
                 "kind": "autonomous",
                 "name": "Team",
-                "coordinator": {"role_id": coordinator["role_id"], "role_version": 1},
-                "allowed_roles": [{"role_id": writer["role_id"], "role_version": 1}],
+                "coordinator": {"id": "coordinator", "role_id": coordinator["role_id"], "role_version": 1},
+                "allowed_roles": [{"id": "writer", "role_id": writer["role_id"], "role_version": 1}],
                 "max_parallel": 1,
                 "max_members": 3,
                 "max_tasks": 8,

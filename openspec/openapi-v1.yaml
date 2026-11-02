@@ -7567,7 +7567,7 @@ paths:
       tags:
       - Agent Teams workflows
       summary: Get Run
-      description: Complete task details include scoped member messages with sender, recipient, source task and attempt, exact artifact references, and durable consumption context positions. Overview queries omit message content.
+      description: Run details include at most 128 recent process observations. Read older observations through the process page endpoint. The snapshot cursor is the committed event high-water mark.
       operationId: get_run_api_v1_workflow_runs__run_id__get
       parameters:
       - name: run_id
@@ -7620,6 +7620,110 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/ToolResolutionRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/workflow_runs/{run_id}/history:
+    get:
+      tags:
+      - Agent Teams workflows
+      summary: Get Run History Page
+      description: Page authorized task or scope events, member messages, attempts, or usage receipts.
+      operationId: get_run_history_page_api_v1_workflow_runs__run_id__history_get
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Run Id
+      - name: task_run_id
+        in: query
+        required: true
+        schema:
+          type: string
+          title: Task Run Id
+      - name: kind
+        in: query
+        required: true
+        schema:
+          type: string
+          enum: [events, messages, usage, attempts]
+          title: Kind
+      - name: before
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Before
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 128
+          default: 128
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/workflow_runs/{run_id}/process:
+    get:
+      tags:
+      - Agent Teams workflows
+      summary: Get Process Page
+      description: Read older committed observations for an authorized task execution.
+      operationId: get_process_page_api_v1_workflow_runs__run_id__process_get
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Run Id
+      - name: task_run_id
+        in: query
+        required: true
+        schema:
+          type: string
+          title: Task Run Id
+      - name: before
+        in: query
+        required: true
+        schema:
+          type: integer
+          minimum: 1
+          title: Before
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 128
+          default: 128
+          title: Limit
       responses:
         '200':
           description: Successful Response
@@ -7695,6 +7799,8 @@ paths:
             text/event-stream:
               schema:
                 type: string
+        '429':
+          description: Observer capacity reached
         '422':
           description: Validation Error
           content:

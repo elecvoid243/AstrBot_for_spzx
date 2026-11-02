@@ -76,6 +76,16 @@ describe("persisted model delivery", () => {
     expect(wrapper.text().match(/Hello world/g)).toHaveLength(1);
     wrapper.unmount();
   });
+  it("marks a gap until the missing saved stream piece arrives", async () => {
+    const delta = (sequence: number) => ({record_id:`delta-${sequence}`,kind:"model_delta",run_id:"task",attempt_id:"attempt",data:{receipt_id:"receipt",sequence,text:String(sequence)}});
+    const run = {status:"running",state:{},process:[delta(0),delta(2)]};
+    const wrapper = mount(WorkflowRunProcess,{props:{run},global:{stubs:{MarkdownMessagePart:{props:["content"],template:"<p>{{ content }}</p>"}, ReasoningBlock:true, ToolCallCard:true}}});
+    expect(wrapper.find('[data-testid="missing-stream-chunks"]').exists()).toBe(true);
+    await wrapper.setProps({run:{...run,process:[delta(0),delta(2),delta(1)]}});
+    expect(wrapper.find('[data-testid="missing-stream-chunks"]').exists()).toBe(false);
+    expect(wrapper.text()).toContain("012");
+    wrapper.unmount();
+  });
   it("keeps persisted delivery and tool order and displays errors", () => {
     const record = (record_id: string, kind: string, data: any) => ({ record_id, kind, data, run_id: "task", attempt_id: "attempt" });
     const run = { status: "failed", state: {}, process: [

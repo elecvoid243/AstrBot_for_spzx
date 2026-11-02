@@ -19,6 +19,8 @@ const api = vi.hoisted(() => ({
   file: vi.fn(),
   storeFile: vi.fn(),
   events: vi.fn(),
+  processPage: vi.fn(),
+  runHistoryPage: vi.fn(),
   recover: vi.fn(),
   resolveTool: vi.fn(),
   control: vi.fn(),
@@ -1703,7 +1705,7 @@ describe("single-task workflow workspace", () => {
         await flushPromises();
         expect(api.events).toHaveBeenCalledWith(
           "run-1",
-          outcome === "success" ? 11 : 10,
+          10,
         );
         expect(wrapper.get('[data-testid="run-detail"]').text()).toContain(
           "v2.states.completed",
@@ -2002,6 +2004,94 @@ describe("single-task workflow workspace", () => {
     expect(wrapper.text()).toContain("Round output");
     expect(wrapper.text()).not.toContain("Child output");
     expect(wrapper.findAll('[data-testid="process-record"]')).toHaveLength(1);
+    wrapper.unmount();
+  });
+
+  it("pages older observations and keeps them when a state snapshot arrives", async () => {
+    vi.useFakeTimers();
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: "/", component: slotStub }] });
+    await router.push("/?workflow_run=run-1");
+    const current = { record_id: "current", cursor: 10, run_id: "run-1", attempt_id: "attempt-1", kind: "model_response", data: { text: "Current" } };
+    const old = { record_id: "old", cursor: 3, run_id: "run-1", attempt_id: "attempt-1", kind: "model_response", data: { text: "Older" } };
+    api.run.mockResolvedValue({ ...run, cursor: 10, process: [current] });
+    api.processPage.mockResolvedValue({ records: [old], next_before: null });
+    api.events.mockResolvedValue({ cursor: 11, reset: true, records: [], snapshot: { ...run, cursor: 11, process: [current] } });
+    const wrapper = mount(WorkflowWorkspacePanel, { props: { mode: "runs" }, global: { plugins: [router], stubs } });
+    await flushPromises();
+    const button = wrapper.findAll("button").find((element) => element.text() === "progress.loadOlder")!;
+    await button.trigger("click");
+    await flushPromises();
+    expect(api.processPage).toHaveBeenCalledWith("run-1", "run-1", 10);
+    expect(wrapper.text()).toContain("Older");
+    await vi.advanceTimersByTimeAsync(2000);
+    await flushPromises();
+    expect(api.events).toHaveBeenCalledWith("run-1", 10);
+    expect(wrapper.text()).toContain("Older");
+    expect(wrapper.text()).toContain("Current");
+    wrapper.unmount();
+  });
+
+  it("keeps the latest scroll intent when an older page finishes late", async () => {
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: "/", component: slotStub }] });
+    await router.push("/?workflow_run=run-1");
+    api.run.mockResolvedValue({ ...run, cursor: 10, process: [] });
+    let finish!: (page: any) => void;
+    api.processPage.mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+    const wrapper = mount(WorkflowWorkspacePanel, { props: { mode: "runs" }, global: { plugins: [router], stubs } });
+    await flushPromises();
+    const pane = wrapper.get(".workbench-process");
+    Object.defineProperty(pane.element, "scrollHeight", { get: () => wrapper.text().includes("Older page") ? 1100 : 1000 });
+    pane.element.scrollTop = 100;
+    await wrapper.findAll("button").find((button) => button.text() === "progress.loadOlder")!.trigger("click");
+    pane.element.scrollTop = 250;
+    finish({records:[{record_id:"old",cursor:5,run_id:"run-1",attempt_id:"attempt-1",kind:"model_response",data:{text:"Older page"}}],next_before:null});
+    await flushPromises();
+    expect(pane.element.scrollTop).toBe(350);
+    wrapper.unmount();
+  });
+
+  it("pages scoped message and event history without duplicating entries", async () => {
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: "/", component: slotStub }] });
+    await router.push("/?workflow_run=run-1");
+    api.run.mockResolvedValue({ ...run, cursor: 100, event_history_before: 50, message_history_before: 60, attempt_history_before: 70, messages: [], events: [] });
+    api.runHistoryPage.mockImplementation(async (_root: string, _task: string, kind: string) => kind === "events"
+      ? { items: [{ cursor: 10, kind: "task.changed", data: { event: "Older event" } }], next_before: null }
+      : kind === "attempts"
+      ? { items: [{ cursor: 11, attempt_id: "older-attempt", status: "failed", state: { reason: "Original failure" }, snapshot: { inputs: {} } }], next_before: null }
+      : { items: [{ cursor: 12, message_id: "older-message", sender_member_id: "one", recipient_member_id: "two", text: "Older message", artifact_refs: [] }], next_before: null });
+    const wrapper = mount(WorkflowWorkspacePanel, { props: { mode: "runs" }, global: { plugins: [router], stubs } });
+    await flushPromises();
+    await wrapper.findAll("button").find((button) => button.text() === "progress.loadMessages")!.trigger("click");
+    await flushPromises();
+    expect(wrapper.text()).toContain("Older message");
+    expect(api.runHistoryPage).toHaveBeenCalledWith("run-1", "run-1", "messages", "60");
+    await wrapper.findAll("button").find((button) => button.text() === "progress.loadEvents")!.trigger("click");
+    await flushPromises();
+    expect(wrapper.text()).toContain("Older event");
+    expect(api.runHistoryPage).toHaveBeenCalledWith("run-1", "run-1", "events", "50");
+    await wrapper.findAll("button").find((button) => button.text() === "progress.loadAttempts")!.trigger("click");
+    await flushPromises();
+    expect(wrapper.text()).toContain("Original failure");
+    expect(api.runHistoryPage).toHaveBeenCalledWith("run-1", "run-1", "attempts", "70");
+    wrapper.unmount();
+  });
+
+  it("keeps the applied event cursor when refreshing newer task state", async () => {
+    vi.useFakeTimers();
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: "/", component: slotStub }] });
+    await router.push("/?workflow_run=run-1");
+    const record = { record_id:"old-delivery", run_id:"run-1", cursor:11, attempt_id:"attempt-1", kind:"model_response", data:{text:"Read before refresh"} };
+    api.run.mockResolvedValueOnce({ ...run, cursor:10 }).mockResolvedValue({ ...run, cursor:200, status:"completed", process:[] });
+    api.events.mockResolvedValueOnce({ cursor:12, reset:false, events:[{cursor:11,kind:"process.model_response"},{cursor:12,kind:"task.completed"}], records:[record], snapshot:null })
+      .mockResolvedValue({ cursor:12, reset:false, events:[], records:[], snapshot:null });
+    const wrapper = mount(WorkflowWorkspacePanel, { props:{mode:"runs"}, global:{plugins:[router],stubs} });
+    await flushPromises();
+    await vi.advanceTimersByTimeAsync(2000);
+    await flushPromises();
+    expect(wrapper.text()).toContain("Read before refresh");
+    await vi.advanceTimersByTimeAsync(2000);
+    await flushPromises();
+    expect(api.events).toHaveBeenLastCalledWith("run-1",12);
     wrapper.unmount();
   });
 

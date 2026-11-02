@@ -388,8 +388,16 @@
     "emptyProcess": "尚无已完成的成员响应或工具结果。",
     "observation": "过程关联到任务、尝试和成员。观测游标用于页面重连，不代表调用检查点恢复。",
     "modelResponse": "模型回复",
+    "missingChunks": "当前显示的历史缺少部分流式片段。加载更早记录或重新连接以检查缺口。",
+    "historyHint": "首先显示最近的过程记录；点击加载更早过程查看之前的记录。",
+    "loadAttempts": "加载更早尝试",
+    "loadMessages": "加载更早消息",
+    "loadEvents": "加载更早事件",
+    "loadOlder": "加载更早过程",
+    "reloadLatest": "返回最新过程",
+    "historyWindow": "当前仅显示有界历史窗口。返回最新过程以查看较新的记录。",
     "readerTitle": "Agent 执行过程",
-    "capabilityNote": "仅展示模型实际提供的思考与执行过程。",
+    "capabilityNote": "仅展示实际观测到的思考和执行细节；未提供的信息不可用，远端执行器可能只暴露部分过程。",
     "finalOnly": "此模型提供方仅返回最终结果，未提供流式片段。",
     "deliveryStates": {
       "started": "接收中",
@@ -731,6 +739,8 @@
     "remove": "移除允许工作流"
   },
   "usage": {
+    "loadOlder": "加载更早用量",
+    "historicalTruncated": "仅显示最近的历史引用。",
     "title": "用量与限制",
     "limits": "作用域限制",
     "limitHint": "留空不增加上限。根额度包含协调者、成员、重试及嵌套调用。步骤按每次获准的模型、工具或状态查询投递计数；迭代上限适用于每个循环。",

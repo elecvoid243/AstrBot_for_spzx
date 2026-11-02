@@ -5808,6 +5808,37 @@ export type ResolveToolCallApiV1WorkflowRunsRunIdToolCallsRecordIdResolvePostRes
 
 export type ResolveToolCallApiV1WorkflowRunsRunIdToolCallsRecordIdResolvePostError = (HTTPValidationError);
 
+export type GetRunHistoryPageApiV1WorkflowRunsRunIdHistoryGetData = {
+    path: {
+        run_id: string;
+    };
+    query: {
+        before?: (string | null);
+        kind: 'events' | 'messages' | 'usage' | 'attempts';
+        limit?: number;
+        task_run_id: string;
+    };
+};
+
+export type GetRunHistoryPageApiV1WorkflowRunsRunIdHistoryGetResponse = (unknown);
+
+export type GetRunHistoryPageApiV1WorkflowRunsRunIdHistoryGetError = (HTTPValidationError);
+
+export type GetProcessPageApiV1WorkflowRunsRunIdProcessGetData = {
+    path: {
+        run_id: string;
+    };
+    query: {
+        before: number;
+        limit?: number;
+        task_run_id: string;
+    };
+};
+
+export type GetProcessPageApiV1WorkflowRunsRunIdProcessGetResponse = (unknown);
+
+export type GetProcessPageApiV1WorkflowRunsRunIdProcessGetError = (HTTPValidationError);
+
 export type GetEventsApiV1WorkflowRunsRunIdEventsGetData = {
     path: {
         run_id: string;
@@ -5832,7 +5863,7 @@ export type StreamEventsApiV1WorkflowRunsRunIdEventsStreamGetData = {
 
 export type StreamEventsApiV1WorkflowRunsRunIdEventsStreamGetResponse = (string);
 
-export type StreamEventsApiV1WorkflowRunsRunIdEventsStreamGetError = (HTTPValidationError);
+export type StreamEventsApiV1WorkflowRunsRunIdEventsStreamGetError = (HTTPValidationError | unknown);
 
 export type ControlRunApiV1WorkflowRunsRunIdControlPostData = {
     body: WorkflowControlRequest;

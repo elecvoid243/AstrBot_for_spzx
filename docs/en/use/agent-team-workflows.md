@@ -71,6 +71,12 @@ The screenshot shows the actual workspace components with isolated sample data; 
 
 Open **Runs → View Run** and select a task in the left column. Its saved model and tool observations appear in the middle; existing human requests and artifacts appear on the right. The execution graph remains available in the overview. A running local Agent displays real text and reasoning as its provider returns them; if the provider supplies only a final response, the workspace says so. Tool cards show the parameters and progress actually returned by the tool. No reasoning or internal tool progress is invented when unavailable.
 
+![Scoped task and process history with sample data](/images/agent-teams-process-history-en.jpg)
+
+The screenshot uses the real workspace components with isolated sample records; it is not a backend integration run.
+
+Select the coordinator or a member by its task entry. Expand a child scope to select its tasks and loop rounds; identical names remain separate executions. Each model and tool observation shows its attempt. **Load older process** reads earlier saved observations for the selected task. The initial snapshot includes up to 128 recent observations across the run, and the reader keeps at most 512 entries per task and history category. If the reader reaches that limit, it tells you that newer observations are outside the displayed window; choose **Return to latest** to reopen the recent window. Use **Load older messages**, **Load older events**, and **Load older attempts** for those histories, and **Load older usage** under usage details for earlier receipts. The totals include the complete usage ledger even when the displayed detail is paged. A remote executor may not expose internal reasoning or tool progress.
+
 Reopening the run reads saved observations. An interrupted delivery remains separate from a later retry. The page follows new content while you remain at the bottom; scrolling away keeps your position. Leaving the page stops observation, not execution. The status shown comes from the saved run state.
 
 ## Inspect v2 runs

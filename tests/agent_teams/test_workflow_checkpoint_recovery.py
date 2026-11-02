@@ -56,7 +56,7 @@ async def test_http_recovery_uses_the_authenticated_owner_and_original_run(workf
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
         result = await client.post(f"/api/v1/workflow_runs/{started['run_id']}/recover")
         assert result.status_code == 200
-        assert result.json()["data"] == finished
+        assert result.json()["data"] == await env.service.get_run("alice", finished["run_id"], history_limit=128)
         app.dependency_overrides[require_dashboard_user] = lambda: "bob"
         assert (await client.post(f"/api/v1/workflow_runs/{started['run_id']}/recover")).status_code == 404
     assert len(env.observations) == 1

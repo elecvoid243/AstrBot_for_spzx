@@ -1197,3 +1197,23 @@ async def test_cancelled_approval_cannot_release_result(loop_script):
     assert current["result"] is None
     with pytest.raises(RoleAssetError):
         await env.service.export_artifact("alice", **todo["artifact_ref"])
+
+
+@pytest.mark.asyncio
+async def test_root_detail_includes_child_scope_loop_rounds(loop_script):
+    env = loop_script.env
+    child = await env.service.save_asset("alice", {"definition": revision_definition(env.role["role_id"])})
+    parent = await env.service.save_asset("alice", {"definition": {
+        "name": "Parent", "required_inputs": ["draft", "feedback"], "result_task_id": "call",
+        "tasks": [{"id": "call", "name": "Call child", "workflow": {"asset_id": child["asset_id"], "version": 1},
+                   "inputs": {"draft": {"input": "draft"}, "feedback": {"input": "feedback"}}}],
+    }})
+    started = await env.service.start_run("alice", parent["asset_id"], {"version": 1, "inputs": {"draft": "Original", "feedback": "Check"}})
+    root = await wait_graph(env.service, started["run_id"])
+    assert root["status"] == "completed"
+    scope = root["scopes"][0]
+    iterations = scope["loops"][0]["iterations"]
+    assert len(iterations) == 2
+    assert [iteration["iteration"] for iteration in iterations] == [1, 2]
+    assert iterations[0]["tasks"][0]["run_id"] != iterations[1]["tasks"][0]["run_id"]
+    assert iterations[0]["tasks"][0]["state"]["scope_id"] == scope["state"]["scope_id"]

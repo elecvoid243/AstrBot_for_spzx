@@ -112,6 +112,18 @@ export const workflowAssetsApi = {
       await httpClient.get(`/api/v1/workflow_runs/${encodeURIComponent(runId)}`)
     ).data.data;
   },
+  async runHistoryPage(runId: string, taskRunId: string, kind: "events" | "messages" | "usage" | "attempts", before?: string | null) {
+    return (await httpClient.get(
+      `/api/v1/workflow_runs/${encodeURIComponent(runId)}/history`,
+      { params: { task_run_id: taskRunId, kind, before } },
+    )).data.data;
+  },
+  async processPage(runId: string, taskRunId: string, before: number) {
+    return (await httpClient.get(
+      `/api/v1/workflow_runs/${encodeURIComponent(runId)}/process`,
+      { params: { task_run_id: taskRunId, before } },
+    )).data.data;
+  },
   async events(runId: string, after: number) {
     return (
       await httpClient.get(

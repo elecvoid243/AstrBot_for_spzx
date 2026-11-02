@@ -131,11 +131,25 @@ async def test_retry_retains_failed_attempt_usage_and_fixed_inputs(workflow_env)
     env.service.ports_factory = lambda _: TeamPorts(
         deliver=deliver, collect=collect, is_busy=lambda _: False, emit=lambda _: None
     )
+    definition = {**env.asset["definition"], "required_inputs": ["topic"]}
+    definition["tasks"] = [
+        {
+            **definition["tasks"][0],
+            "task": "Write {topic}",
+            "inputs": {"topic": {"input": "topic"}},
+        }
+    ]
+    asset = await env.service.save_asset("alice", {"definition": definition})
     original = await env.service.start_run(
         "alice",
-        env.asset["asset_id"],
-        {"version": 1, "input_artifacts": [source["result_ref"]]},
+        asset["asset_id"],
+        {
+            "version": 1,
+            "inputs": {"topic": "Frozen subject"},
+            "input_artifacts": [source["result_ref"]],
+        },
     )
+    assert original["snapshot"]["input_artifacts"] == [source["result_ref"]]
     failed = await completed_run(env.service, original["run_id"])
     assert failed["status"] == "blocked"
     failed = failed["tasks"][0]
@@ -150,7 +164,8 @@ async def test_retry_retains_failed_attempt_usage_and_fixed_inputs(workflow_env)
     assert repeated["state"]["attempt_id"] == retried["state"]["attempt_id"]
     assert retried["state"]["attempt_id"] != failed["state"]["attempt_id"]
     assert retried["snapshot"] == failed["snapshot"]
-    assert retried["snapshot"]["input_artifacts"] == [source["result_ref"]]
+    assert retried["snapshot"]["inputs"] == {"topic": "Frozen subject"}
+    assert retried["snapshot"]["input_artifacts"] == []
     assert retried["attempts"][0]["status"] == "failed"
     assert retried["attempts"][0]["state"]["reason"] == "Provider rejected the request"
     assert retried["process"] == failed["process"]
@@ -210,6 +225,7 @@ async def test_pause_preserves_local_failure_and_retry_uses_graph_capacity(
         {
             "definition": {
                 "name": "Controlled graph",
+                "result_task_id": "successor",
                 "max_parallel": 1,
                 "tasks": [
                     {

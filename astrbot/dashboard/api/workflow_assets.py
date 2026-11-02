@@ -8,6 +8,7 @@ from urllib.parse import quote
 from fastapi import APIRouter, Depends, Query, Request, Security
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.security import APIKeyHeader
+from starlette.background import BackgroundTask
 
 from astrbot.core.agent_teams.assets import RoleAssetError
 from astrbot.core.agent_teams.chat import ChatAccessRequest
@@ -28,6 +29,7 @@ from astrbot.dashboard.responses import error, ok
 from .auth import require_dashboard_user
 
 router = APIRouter(tags=["Agent Teams workflows"])
+_process_observers = asyncio.Semaphore(32)
 chat_browser_header = APIKeyHeader(
     name="X-AstrBot-Chat-Session",
     scheme_name="ChatBrowserSession",
@@ -642,7 +644,7 @@ async def get_run(
     service: WorkflowService = Depends(get_workflow_service),
 ):
     try:
-        return ok(await service.get_run(username, run_id))
+        return ok(await service.get_run(username, run_id, history_limit=128))
     except RoleAssetError as exc:
         return JSONResponse(
             error(str(exc), {"fields": exc.fields}), status_code=exc.status
@@ -683,7 +685,8 @@ async def recover_run(
         through the existing idempotent result protocol.
     """
     try:
-        return ok(await service.recover_run(username, run_id))
+        await service.recover_run(username, run_id)
+        return ok(await service.get_run(username, run_id, history_limit=128))
     except RoleAssetError as exc:
         return JSONResponse(
             error(str(exc), {"fields": exc.fields}), status_code=exc.status
@@ -709,7 +712,8 @@ async def control_run(
         Persisted control and progress; in-flight external effects are not undone.
     """
     try:
-        return ok(await service.control_run(username, run_id, payload.model_dump()))
+        await service.control_run(username, run_id, payload.model_dump())
+        return ok(await service.get_run(username, run_id, history_limit=128))
     except RoleAssetError as exc:
         return JSONResponse(
             error(str(exc), {"fields": exc.fields}), status_code=exc.status
@@ -737,9 +741,8 @@ async def answer_todo(
         Persisted run with the saved response and its consumption state.
     """
     try:
-        return ok(
-            await service.answer_todo(username, run_id, todo_id, payload.model_dump())
-        )
+        await service.answer_todo(username, run_id, todo_id, payload.model_dump())
+        return ok(await service.get_run(username, run_id, history_limit=128))
     except RoleAssetError as exc:
         return JSONResponse(
             error(str(exc), {"fields": exc.fields}), status_code=exc.status
@@ -791,7 +794,8 @@ async def retry_task(
         New attempt and preserved failure history; uncertain tools require resolution.
     """
     try:
-        return ok(await service.retry_task(username, run_id, payload.model_dump()))
+        await service.retry_task(username, run_id, payload.model_dump())
+        return ok(await service.get_run(username, run_id, history_limit=128))
     except RoleAssetError as exc:
         return JSONResponse(
             error(str(exc), {"fields": exc.fields}), status_code=exc.status
@@ -819,10 +823,77 @@ async def resolve_tool_call(
         Current task detail, preserving the original call and replacement association.
     """
     try:
+        await service.resolve_tool_call(
+            username, run_id, record_id, payload.model_dump()
+        )
+        return ok(await service.get_run(username, run_id, history_limit=128))
+    except RoleAssetError as exc:
+        return JSONResponse(
+            error(str(exc), {"fields": exc.fields}), status_code=exc.status
+        )
+
+
+@router.get("/workflow_runs/{run_id}/history")
+async def get_run_history_page(
+    run_id: str,
+    task_run_id: str,
+    kind: Literal["events", "messages", "usage", "attempts"],
+    before: str | None = None,
+    limit: int = Query(default=128, ge=1, le=128),
+    username: str = Depends(require_dashboard_user),
+    service: WorkflowService = Depends(get_workflow_service),
+):
+    """Read a bounded page of authorized execution history.
+
+    Args:
+        run_id: Root or scope to observe.
+        task_run_id: Selected task or subtree.
+        kind: Event, scoped message, attempt or usage history.
+        before: Exclusive page boundary.
+        limit: Maximum entries in the page.
+        username: Authenticated owner.
+        service: Shared workflow service.
+
+    Returns:
+        Ordered entries and the next older page boundary.
+    """
+    try:
         return ok(
-            await service.resolve_tool_call(
-                username, run_id, record_id, payload.model_dump()
+            await service.get_run_history_page(
+                username, run_id, task_run_id, kind, before, limit
             )
+        )
+    except RoleAssetError as exc:
+        return JSONResponse(
+            error(str(exc), {"fields": exc.fields}), status_code=exc.status
+        )
+
+
+@router.get("/workflow_runs/{run_id}/process")
+async def get_process_page(
+    run_id: str,
+    task_run_id: str,
+    before: int = Query(ge=1),
+    limit: int = Query(default=128, ge=1, le=128),
+    username: str = Depends(require_dashboard_user),
+    service: WorkflowService = Depends(get_workflow_service),
+):
+    """Read older committed process observations of an authorized task.
+
+    Args:
+        run_id: Root or scope to observe.
+        task_run_id: Task execution in that subtree.
+        before: Exclusive event cursor.
+        limit: Maximum number of records.
+        username: Authenticated owner.
+        service: Shared workflow service.
+
+    Returns:
+        Ordered records and the next older page boundary.
+    """
+    try:
+        return ok(
+            await service.get_process_page(username, run_id, task_run_id, before, limit)
         )
     except RoleAssetError as exc:
         return JSONResponse(
@@ -888,17 +959,36 @@ async def stream_events(
             error(str(exc), {"fields": exc.fields}), status_code=exc.status
         )
 
-    async def observe():
-        cursor = after
-        batch = initial
-        while not await request.is_disconnected():
-            if batch["snapshot"] is not None or batch["events"]:
-                yield "data: " + json.dumps(batch, ensure_ascii=False) + "\n\n"
-                cursor = batch["cursor"]
-            await asyncio.sleep(0.5)
-            batch = await service.get_events(username, run_id, cursor)
+    if _process_observers.locked():
+        return JSONResponse(error("Too many process observers"), status_code=429)
+    await _process_observers.acquire()
+    released = False
 
-    return StreamingResponse(observe(), media_type="text/event-stream")
+    def release_observer():
+        """Release the slot once after disconnect or response cleanup."""
+        nonlocal released
+        if not released:
+            released = True
+            _process_observers.release()
+
+    async def observe():
+        try:
+            cursor = after
+            batch = initial
+            while not await request.is_disconnected():
+                if batch["snapshot"] is not None or batch["events"]:
+                    yield "data: " + json.dumps(batch, ensure_ascii=False) + "\n\n"
+                    cursor = batch["cursor"]
+                await asyncio.sleep(0.5)
+                batch = await service.get_events(username, run_id, cursor)
+        finally:
+            release_observer()
+
+    return StreamingResponse(
+        observe(),
+        media_type="text/event-stream",
+        background=BackgroundTask(release_observer),
+    )
 
 
 @router.get("/workflow_artifacts/{artifact_id}/versions/{version}")

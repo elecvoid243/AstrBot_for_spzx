@@ -696,6 +696,41 @@ export type CronJobRequest = {
     [key: string]: unknown | string | boolean;
 };
 
+/**
+ * Initial editable snapshot and optional existing asset identity.
+ */
+export type DraftCreateRequest = {
+    body: {
+        [key: string]: unknown;
+    };
+    asset_id?: (string | null);
+};
+
+/**
+ * Revision to publish as an immutable asset version.
+ */
+export type DraftPublishRequest = {
+    revision: number;
+};
+
+/**
+ * Expected draft revision and explicitly reviewed latest version.
+ */
+export type DraftRebaseRequest = {
+    expected_revision: number;
+    published_version: number;
+};
+
+/**
+ * Snapshot update guarded by an expected revision.
+ */
+export type DraftUpdateRequest = {
+    body: {
+        [key: string]: unknown;
+    };
+    expected_revision: number;
+};
+
 export type DynamicConfig = {
     [key: string]: unknown;
 };
@@ -5433,6 +5468,74 @@ export type StreamAgentTeamRunData = {
 export type StreamAgentTeamRunResponse = (string);
 
 export type StreamAgentTeamRunError = unknown;
+
+export type ListDraftsApiV1AgentDraftsKindGetData = {
+    path: {
+        kind: 'role' | 'workflow' | 'autonomous';
+    };
+};
+
+export type ListDraftsApiV1AgentDraftsKindGetResponse = (unknown);
+
+export type ListDraftsApiV1AgentDraftsKindGetError = (HTTPValidationError);
+
+export type CreateDraftApiV1AgentDraftsKindPostData = {
+    body: DraftCreateRequest;
+    path: {
+        kind: 'role' | 'workflow' | 'autonomous';
+    };
+};
+
+export type CreateDraftApiV1AgentDraftsKindPostResponse = (unknown);
+
+export type CreateDraftApiV1AgentDraftsKindPostError = (HTTPValidationError);
+
+export type GetDraftApiV1AgentDraftsKindAssetIdGetData = {
+    path: {
+        asset_id: string;
+        kind: 'role' | 'workflow' | 'autonomous';
+    };
+};
+
+export type GetDraftApiV1AgentDraftsKindAssetIdGetResponse = (unknown);
+
+export type GetDraftApiV1AgentDraftsKindAssetIdGetError = (HTTPValidationError);
+
+export type UpdateDraftApiV1AgentDraftsKindAssetIdPutData = {
+    body: DraftUpdateRequest;
+    path: {
+        asset_id: string;
+        kind: 'role' | 'workflow' | 'autonomous';
+    };
+};
+
+export type UpdateDraftApiV1AgentDraftsKindAssetIdPutResponse = (unknown);
+
+export type UpdateDraftApiV1AgentDraftsKindAssetIdPutError = (HTTPValidationError);
+
+export type PublishDraftApiV1AgentDraftsKindAssetIdPublishPostData = {
+    body: DraftPublishRequest;
+    path: {
+        asset_id: string;
+        kind: 'role' | 'workflow' | 'autonomous';
+    };
+};
+
+export type PublishDraftApiV1AgentDraftsKindAssetIdPublishPostResponse = (unknown);
+
+export type PublishDraftApiV1AgentDraftsKindAssetIdPublishPostError = (HTTPValidationError);
+
+export type RebaseDraftApiV1AgentDraftsKindAssetIdRebasePostData = {
+    body: DraftRebaseRequest;
+    path: {
+        asset_id: string;
+        kind: 'role' | 'workflow' | 'autonomous';
+    };
+};
+
+export type RebaseDraftApiV1AgentDraftsKindAssetIdRebasePostResponse = (unknown);
+
+export type RebaseDraftApiV1AgentDraftsKindAssetIdRebasePostError = (HTTPValidationError);
 
 export type ListRoleAssetsResponse = (SuccessEnvelope);
 

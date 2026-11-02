@@ -292,7 +292,7 @@
     "effective": "最终有效配置",
     "preview": "预览配置",
     "previewStale": "配置已修改，请重新预览以更新有效值。",
-    "versionNotice": "保存会生成新版本，历史定义保持不变。",
+    "versionNotice": "点击“保存版本”才会生成固定版本；草稿编辑不会改变历史定义。",
     "history": "查看历史版本",
     "exportPrompt": "职责",
     "personaDependency": "无",
@@ -502,7 +502,7 @@
     "parallel": "最大并发任务数",
     "tasks": "任务",
     "selectTask": "查看任务",
-    "saveHint": "保存后固定本版本。后续编辑只影响新运行。",
+    "saveHint": "点击“保存版本”才会固定定义并供新运行使用。",
     "dependency": "选择依赖",
     "defaultModel": "默认模型",
     "modelOverride": "Agent 模型覆盖",
@@ -838,5 +838,24 @@
     "empty": "暂无可访问的运行历史。",
     "moreRecords": "加载更多历史",
     "recordList": "历史记录列表"
+  },
+  "draft": {
+    "label": "草稿",
+    "untitled": "未命名草稿",
+    "saving": "正在保存草稿…",
+    "saved": "草稿已保存",
+    "failed": "草稿保存失败；本地修改已保留",
+    "conflict": "草稿已在其他位置更改；本地修改已保留",
+    "retry": "重试保存",
+    "reload": "放弃本地修改并读取服务器草稿",
+    "publish": "保存版本",
+    "review": "查看最新版本",
+    "baseComparison": "草稿基于 v{old}；最新固定版本为 v{current}。",
+    "rebaseExplanation": "保留草稿后，下次保存版本将使用整份草稿，不会自动合并字段。",
+    "keep": "保留草稿并使用最新基版本",
+    "useLatest": "使用最新版本重新编辑",
+    "unpublished": "草稿 · 尚未发布",
+    "editing": "存在编辑中草稿",
+    "discardClose": "关闭并丢弃未保存的修改"
   }
 }

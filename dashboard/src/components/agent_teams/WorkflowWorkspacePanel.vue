@@ -66,11 +66,39 @@
 
     <template v-if="mode === 'assets'">
       <v-alert
-        v-if="!visibleAssets.length && !loading"
+        v-if="!visibleAssets.length && !visibleDrafts.length && !loading"
         type="info"
         variant="tonal"
         >{{ tm("v2.emptyAssets") }}</v-alert
       >
+      <v-card
+        v-for="item in visibleDrafts"
+        :key="item.asset_id"
+        class="mb-3"
+        variant="outlined"
+      >
+        <v-card-title
+          >{{ item.body.definition?.name || tm("draft.untitled") }} ·
+          {{ tm("draft.unpublished") }}</v-card-title
+        >
+        <v-card-actions
+          ><v-btn
+            variant="text"
+            @click="
+              item.kind === 'autonomous'
+                ? editTeam({
+                    asset_id: item.asset_id,
+                    definition: item.body.definition,
+                  })
+                : editGraph({
+                    asset_id: item.asset_id,
+                    definition: item.body.definition,
+                  })
+            "
+            >{{ tm("v2.edit") }}</v-btn
+          ></v-card-actions
+        >
+      </v-card>
       <v-card
         v-for="asset in visibleAssets"
         :key="asset.asset_id"
@@ -81,6 +109,7 @@
           >{{ asset.definition.name }} · v{{ asset.version }}</v-card-title
         >
         <v-card-text class="text-wrap">
+          <p v-if="drafts.some((item) => item.asset_id === asset.asset_id)" data-testid="editing-draft">{{ tm("draft.editing") }}</p>
           <p v-if="asset.definition.kind === 'autonomous'">
             {{ tm("autonomous.title") }} · {{ tm("autonomous.allowedRoles") }}:
             {{ asset.definition.allowed_roles.length }}
@@ -542,14 +571,15 @@
       scrollable
       v-model="graphEditing"
       max-width="1600"
-      :persistent="saving"
+      persistent
       content-class="graph-dialog-overlay"
     >
       <v-card class="graph-dialog-card">
         <v-card-title class="text-h3 pa-4 pb-0 pl-6">{{
           tm("graph.canvas")
         }}</v-card-title>
-        <v-card-text class="graph-dialog-content">
+        <v-card-text class="graph-dialog-content" :inert="saving || graphDraft.busy.value ? '' : undefined">
+          <DraftStatus :draft="graphDraft" @reload="reloadGraphDraft" @discard="graphEditing = false" @use-latest="useLatestDraft" />
           <div class="d-flex flex-wrap ga-3 mb-3">
             <v-text-field
               v-model="graphForm.name"
@@ -627,16 +657,16 @@
         <v-card-actions
           ><v-spacer /><v-btn
             variant="text"
-            :disabled="saving"
-            @click="graphEditing = false"
+            :disabled="saving || graphDraft.busy.value"
+            @click="closeGraph"
             >{{ tm("v2.close") }}</v-btn
           ><v-btn
             variant="tonal"
             color="primary"
             :loading="saving"
-            :disabled="graphInvalid || graphUsageInvalid"
+            :disabled="graphInvalid || graphUsageInvalid || graphDraft.busy.value"
             @click="saveGraph"
-            >{{ tm("v2.save") }}</v-btn
+            >{{ tm("draft.publish") }}</v-btn
           ></v-card-actions
         >
       </v-card>
@@ -811,6 +841,8 @@ import PdfPreview from "@/components/chat/message_list_comps/binary_preview/PdfP
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { roleAssetsApi } from "@/api/roleAssets";
+import DraftStatus from "./DraftStatus.vue";
+import { draftApi, useAssetDraft } from "@/composables/useAssetDraft";
 import { workflowAssetsApi } from "@/api/workflowAssets";
 import { useModuleI18n } from "@/i18n/composables";
 import { extractApiError } from "@/utils/extractApiError";
@@ -846,6 +878,19 @@ const { tm } = useModuleI18n("features/agent-teams");
 const route = useRoute();
 const router = useRouter();
 const assets = ref<any[]>([]);
+const drafts = ref<any[]>([]);
+const graphDraft = useAssetDraft("workflow");
+const visibleDrafts = computed(() =>
+  drafts.value.filter(
+    (item) =>
+      !assets.value.some((asset) => asset.asset_id === item.asset_id) &&
+      (props.assetKind === "teams"
+        ? item.kind === "autonomous"
+        : props.assetKind === "workflows"
+        ? item.kind === "workflow"
+        : true),
+  ),
+);
 const visibleAssets = computed(() =>
   assets.value.filter(
     (asset) =>
@@ -1044,14 +1089,17 @@ async function refresh() {
   try {
     error.value = "";
     if (props.mode === "assets") {
-      const [assetData, roleData, runData, resources] = await Promise.all([
+      const [assetData, roleData, runData, resources, workflowDrafts, teamDrafts] = await Promise.all([
         workflowAssetsApi.list(),
         roleAssetsApi.list(),
         workflowAssetsApi.runs(),
         roleAssetsApi.resources(),
+        draftApi.list("workflow"),
+        draftApi.list("autonomous"),
       ]);
       if (disposed || read !== runRead) return;
       assets.value = assetData.assets;
+      drafts.value = [...workflowDrafts.map((item) => ({ ...item, kind: "workflow" })), ...teamDrafts.map((item) => ({ ...item, kind: "autonomous" }))];
       roles.value = roleData.roles;
       runs.value = runData.runs;
       if (resources) catalog.value = resources;
@@ -1117,7 +1165,9 @@ async function refresh() {
   }
 }
 
-function editGraph(asset: any) {
+async function editGraph(asset: any) {
+  graphEditing.value = false;
+  graphDraft.close();
   editingAsset.value = asset;
   graphEditorKey.value++;
   graphForm.value = asset
@@ -1146,7 +1196,52 @@ function editGraph(asset: any) {
   formError.value = "";
   graphInvalid.value = false;
   graphIssues.value = [];
+  try {
+    const item = await graphDraft.open(asset?.asset_id ?? null, {
+      definition: graphForm.value,
+    });
+    graphForm.value = item.body.definition;
+    await nextTick();
+    graphEditing.value = true;
+  } catch (err) {
+    error.value = extractApiError(err, tm("errors.operationFailed")).message;
+  }
+}
+
+async function reloadGraphDraft() {
+  const item = await graphDraft.reload();
+  graphEditing.value = false;
+  graphForm.value = item.body.definition;
+  graphEditorKey.value++;
+  await nextTick();
   graphEditing.value = true;
+}
+
+async function useLatestDraft(latest: any) {
+  graphForm.value = JSON.parse(JSON.stringify(latest.definition));
+  graphEditorKey.value++;
+  graphDraft.change({ definition: graphForm.value });
+  try { await graphDraft.rebase(); } catch (err) { formError.value = extractApiError(err, tm("errors.operationFailed")).message; }
+}
+
+watch(
+  [graphEditing, teamEditing],
+  ([graph, team], [previousGraph, previousTeam]) => {
+    if ((!graph && previousGraph) || (!team && previousTeam)) void refresh();
+  },
+);
+
+watch(
+  graphForm,
+  () => {
+    if (graphEditing.value) graphDraft.change({ definition: graphForm.value });
+  },
+  { deep: true },
+);
+
+async function closeGraph() {
+  if (graphDraft.status.value === "failed" || graphDraft.status.value === "conflict") return;
+  try { await graphDraft.flush(); graphEditing.value = false; } catch { /* The draft status retains the failure. */ }
 }
 
 function editTeam(asset: any) {
@@ -1159,11 +1254,8 @@ async function saveGraph() {
   saving.value = true;
   formError.value = "";
   try {
-    const definition = JSON.parse(JSON.stringify(graphForm.value));
-    await workflowAssetsApi.save(editingAsset.value?.asset_id ?? null, {
-      definition,
-      expected_version: editingAsset.value?.version,
-    });
+    graphDraft.change({ definition: graphForm.value });
+    await graphDraft.publish();
     graphEditing.value = false;
     await refresh();
   } catch (err) {

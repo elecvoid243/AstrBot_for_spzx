@@ -2,6 +2,10 @@
 
 Open **More Features → Agent Teams → Assets**. **Teams** contains versioned autonomous teams, **Workflows** contains graph workflows, and **Role templates** configures reusable responsibilities and local resources. A workflow can configure its Agent directly without a role template. Import, export, chat access, editing and launch actions remain on the asset cards. After installation, the workspace opens the Teams or Workflows directory for the imported entry.
 
+Workflow and autonomous team edits, including canvas layout, save automatically as drafts. Newly created drafts appear in the asset list even before a version exists. Check the save status; retry a failed save, or keep local content and deliberately load the server copy after a conflict. **Save version** validates the current draft and creates a fixed version. Formal runs and chat access use saved versions, not drafts.
+
+When a newer fixed version causes a conflict, review the old and current base versions. You can keep the entire draft on the reviewed latest base, or load that version to edit it; no fields are merged. If the draft or latest version changes during review, review the conflict again.
+
 ![The workflow asset workspace](/images/agent-teams-current-en.jpg)
 
 The workspace and canvas screenshots use the actual components with isolated sample assets and a simulated resource catalog. They do not depict a real model run.

@@ -1,5 +1,7 @@
 import { flushPromises, mount } from "@vue/test-utils";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { draftApi } from "@/composables/useAssetDraft";
+import { mockDrafts } from "./draftTestMocks";
 import RoleTemplatesPanel from "./RoleTemplatesPanel.vue";
 
 const api = vi.hoisted(() => ({
@@ -69,7 +71,9 @@ Object.assign(stubs, {
 
 describe("reusable role configuration", () => {
   beforeEach(() => {
+    vi.restoreAllMocks();
     vi.resetAllMocks();
+    mockDrafts((id, body) => api.save(id, body));
     api.list.mockResolvedValue({ roles: [] });
     api.resources.mockResolvedValue({
       profiles: [{ id: "default", name: "Default" }],
@@ -95,11 +99,53 @@ describe("reusable role configuration", () => {
     api.save.mockResolvedValue({ role_id: "r1", version: 1 });
   });
 
+  it("distinguishes unpublished and published roles with drafts", async () => {
+    api.list.mockResolvedValue({
+      roles: [
+        {
+          role_id: "published",
+          version: 1,
+          versions: [1],
+          definition: { name: "Published" },
+          installation: { profile_id: "default" },
+        },
+      ],
+    });
+    vi.mocked(draftApi.list).mockResolvedValueOnce([
+      {
+        asset_id: "new",
+        revision: 1,
+        base_version: null,
+        body: {
+          definition: { name: "New draft" },
+          installation: { profile_id: "default" },
+        },
+      },
+      {
+        asset_id: "published",
+        revision: 2,
+        base_version: 1,
+        body: { definition: { name: "Edited" } },
+      },
+    ]);
+    const panel = mount(RoleTemplatesPanel, { global: { stubs } });
+    await flushPromises();
+    expect(panel.get('[data-testid="unpublished-draft"]').text()).toBe(
+      "draft.unpublished",
+    );
+    expect(panel.get('[data-testid="editing-draft"]').text()).toBe(
+      "draft.editing",
+    );
+    expect(panel.text()).toContain("roles.version 1");
+    panel.unmount();
+  });
+
   it("saves a reusable definition and shows field readiness without creating a member", async () => {
     const panel = mount(RoleTemplatesPanel, { global: { stubs } });
     await flushPromises();
     expect(panel.text()).toContain("roles.empty");
     await panel.get('[data-testid="new-role"]').trigger("click");
+    await flushPromises();
     await panel.get('[data-testid="role-name"]').setValue("Researcher");
     await panel.get('[data-testid="role-prompt"]').setValue("Check evidence.");
     await panel.get('[data-testid="preview-role"]').trigger("click");
@@ -141,6 +187,7 @@ describe("reusable role configuration", () => {
     const panel = mount(RoleTemplatesPanel, { global: { stubs } });
     await flushPromises();
     await panel.get('[data-testid="new-role"]').trigger("click");
+    await flushPromises();
     await panel.get('[data-testid="preview-role"]').trigger("click");
     await flushPromises();
     expect(panel.get('[data-testid="runner-capabilities"]').text()).toContain(
@@ -180,6 +227,7 @@ describe("reusable role configuration", () => {
     try {
       await flushPromises();
       await panel.get('[data-testid="new-role"]').trigger("click");
+      await flushPromises();
       await panel.get('[data-testid="save-role"]').trigger("click");
       await flushPromises();
       const control = panel.get(selector).element;
@@ -211,6 +259,7 @@ describe("reusable role configuration", () => {
     const panel = mount(RoleTemplatesPanel, { global: { stubs } });
     await flushPromises();
     await panel.get('[data-testid="new-role"]').trigger("click");
+    await flushPromises();
     await panel.get('[data-testid="role-name"]').setValue("Writer");
     await panel.get('[data-issue-path="definition.provider_id"]').setValue("m");
     await panel.get('[data-issue-path="definition.persona_id"]').setValue("p");
@@ -272,6 +321,7 @@ describe("reusable role configuration", () => {
       .findAll("button")
       .find((button) => button.text() === "roles.edit")!
       .trigger("click");
+    await flushPromises();
     expect(
       panel.get<HTMLSelectElement>(
         'select[aria-label="roles.tools: roles.mode"]',
@@ -308,6 +358,7 @@ describe("reusable role configuration", () => {
     try {
       await flushPromises();
       await panel.get('[data-testid="new-role"]').trigger("click");
+      await flushPromises();
       await panel.get('[data-testid="preview-role"]').trigger("click");
       await flushPromises();
       const control = panel.get(

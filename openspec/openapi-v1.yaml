@@ -6613,6 +6613,228 @@ paths:
               schema:
                 type: string
 
+  /api/v1/agent_drafts/{kind}:
+    get:
+      tags:
+      - Agent Teams roles
+      summary: List Drafts
+      operationId: list_drafts_api_v1_agent_drafts__kind__get
+      parameters:
+      - name: kind
+        in: path
+        required: true
+        schema:
+          enum:
+          - role
+          - workflow
+          - autonomous
+          type: string
+          title: Kind
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    post:
+      tags:
+      - Agent Teams roles
+      summary: Create Draft
+      operationId: create_draft_api_v1_agent_drafts__kind__post
+      parameters:
+      - name: kind
+        in: path
+        required: true
+        schema:
+          enum:
+          - role
+          - workflow
+          - autonomous
+          type: string
+          title: Kind
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DraftCreateRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/agent_drafts/{kind}/{asset_id}:
+    get:
+      tags:
+      - Agent Teams roles
+      summary: Get Draft
+      operationId: get_draft_api_v1_agent_drafts__kind___asset_id__get
+      parameters:
+      - name: kind
+        in: path
+        required: true
+        schema:
+          enum:
+          - role
+          - workflow
+          - autonomous
+          type: string
+          title: Kind
+      - name: asset_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Asset Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    put:
+      tags:
+      - Agent Teams roles
+      summary: Update Draft
+      operationId: update_draft_api_v1_agent_drafts__kind___asset_id__put
+      parameters:
+      - name: kind
+        in: path
+        required: true
+        schema:
+          enum:
+          - role
+          - workflow
+          - autonomous
+          type: string
+          title: Kind
+      - name: asset_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Asset Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DraftUpdateRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/agent_drafts/{kind}/{asset_id}/publish:
+    post:
+      tags:
+      - Agent Teams roles
+      summary: Publish Draft
+      operationId: publish_draft_api_v1_agent_drafts__kind___asset_id__publish_post
+      parameters:
+      - name: kind
+        in: path
+        required: true
+        schema:
+          enum:
+          - role
+          - workflow
+          - autonomous
+          type: string
+          title: Kind
+      - name: asset_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Asset Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DraftPublishRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+
+  /api/v1/agent_drafts/{kind}/{asset_id}/rebase:
+    post:
+      tags:
+      - Agent Teams roles
+      summary: Rebase Draft
+      operationId: rebase_draft_api_v1_agent_drafts__kind___asset_id__rebase_post
+      parameters:
+      - name: kind
+        in: path
+        required: true
+        schema:
+          enum:
+          - role
+          - workflow
+          - autonomous
+          type: string
+          title: Kind
+      - name: asset_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Asset Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DraftRebaseRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+
   /api/v1/agent_roles:
     get:
       tags:
@@ -8441,6 +8663,69 @@ components:
       schema: { type: string }
 
   schemas:
+    DraftRebaseRequest:
+      properties:
+        expected_revision:
+          type: integer
+          minimum: 1.0
+          title: Expected Revision
+        published_version:
+          type: integer
+          minimum: 1.0
+          title: Published Version
+      additionalProperties: false
+      type: object
+      required:
+      - expected_revision
+      - published_version
+      title: DraftRebaseRequest
+      description: Expected draft revision and explicitly reviewed latest version.
+    DraftCreateRequest:
+      properties:
+        body:
+          additionalProperties: true
+          type: object
+          title: Body
+        asset_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Asset Id
+      additionalProperties: false
+      type: object
+      required:
+      - body
+      title: DraftCreateRequest
+      description: Initial editable snapshot and optional existing asset identity.
+    DraftPublishRequest:
+      properties:
+        revision:
+          type: integer
+          minimum: 1.0
+          title: Revision
+      additionalProperties: false
+      type: object
+      required:
+      - revision
+      title: DraftPublishRequest
+      description: Revision to publish as an immutable asset version.
+    DraftUpdateRequest:
+      properties:
+        body:
+          additionalProperties: true
+          type: object
+          title: Body
+        expected_revision:
+          type: integer
+          minimum: 1.0
+          title: Expected Revision
+      additionalProperties: false
+      type: object
+      required:
+      - body
+      - expected_revision
+      title: DraftUpdateRequest
+      description: Snapshot update guarded by an expected revision.
     BrowserControlTarget:
       additionalProperties: false
       properties:

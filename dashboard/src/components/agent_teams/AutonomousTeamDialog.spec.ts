@@ -1,5 +1,6 @@
 import { flushPromises, mount } from "@vue/test-utils";
-import { expect, it, vi } from "vitest";
+import { beforeEach, expect, it, vi } from "vitest";
+import { mockDrafts } from "./draftTestMocks";
 import AutonomousTeamDialog from "./AutonomousTeamDialog.vue";
 
 const save = vi.hoisted(() => vi.fn());
@@ -9,6 +10,11 @@ vi.mock("@/api/workflowAssets", () => ({
 vi.mock("@/i18n/composables", () => ({
   useModuleI18n: () => ({ tm: (key: string) => key }),
 }));
+
+beforeEach(() => {
+  vi.restoreAllMocks();
+  mockDrafts((id, body) => save(id, body));
+});
 
 it("saves pinned coordinator and allowed templates with explicit team limits", async () => {
   save.mockResolvedValue({ asset_id: "team" });
@@ -42,6 +48,7 @@ it("saves pinned coordinator and allowed templates with explicit team limits", a
     global: {
       stubs: {
         TeamPresetEditor: true,
+        AllowedWorkflowsPanel: true,
         "v-dialog": { template: "<div><slot /></div>" },
         "v-card": { template: "<div><slot /></div>" },
         "v-card-text": { template: "<div><slot /></div>" },
@@ -67,6 +74,7 @@ it("saves pinned coordinator and allowed templates with explicit team limits", a
       },
     },
   });
+  await flushPromises();
   await wrapper.get('[data-testid="team-name"]').setValue("Research team");
   await wrapper
     .findAll("button")
@@ -177,13 +185,16 @@ it.each(["success", "failure"])(
         },
       },
     });
+    await flushPromises();
     await wrapper.get('[data-testid="team-save"]').trigger("click");
+    await flushPromises();
     const replacement = {
       ...asset,
       asset_id: "team-b",
       definition: { ...asset.definition, name: "Team B" },
     };
     await wrapper.setProps({ asset: replacement });
+    await flushPromises();
     if (outcome === "success") finish({ asset_id: "team-a", version: 2 });
     else fail(new Error("Old save failed"));
     await flushPromises();

@@ -1,6 +1,8 @@
 import { flushPromises, mount } from "@vue/test-utils";
 import { createMemoryHistory, createRouter } from "vue-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { draftApi } from "@/composables/useAssetDraft";
+import { mockDrafts } from "./draftTestMocks";
 import WorkflowWorkspacePanel from "./WorkflowWorkspacePanel.vue";
 
 const api = vi.hoisted(() => ({
@@ -217,6 +219,24 @@ describe("single-task workflow workspace", () => {
     ).toBe(false);
     wrapper.unmount();
   });
+  it("labels unpublished drafts and published assets with edits", async () => {
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: "/", component: slotStub }] });
+    await router.push("/");
+    vi.mocked(draftApi.list).mockResolvedValueOnce([
+      { asset_id: "asset-1", revision: 2, base_version: 1, body: { definition: { name: "Edited" } } },
+      { asset_id: "new-flow", revision: 1, base_version: null, body: { definition: { name: "Unpublished" } } },
+    ]).mockResolvedValueOnce([
+      { asset_id: "new-team", revision: 1, base_version: null, body: { definition: { kind: "autonomous", name: "Team draft" } } },
+    ]);
+    const wrapper = mount(WorkflowWorkspacePanel, { props: { mode: "assets" }, global: { plugins: [router], stubs } });
+    await flushPromises();
+    expect(wrapper.text()).toContain("Unpublished · draft.unpublished");
+    expect(wrapper.text()).toContain("Team draft · draft.unpublished");
+    expect(wrapper.get('[data-testid="editing-draft"]').text()).toBe("draft.editing");
+    expect(wrapper.text()).toContain("Report · v1");
+    wrapper.unmount();
+  });
+
   it("keeps teams and workflows in their own asset directories", async () => {
     const router = createRouter({
       history: createMemoryHistory(),
@@ -1826,8 +1846,10 @@ describe("single-task workflow workspace", () => {
     blocked.unmount();
   });
   beforeEach(() => {
+    vi.restoreAllMocks();
     vi.resetAllMocks();
     api.humanRequests.mockResolvedValue({ requests: [] });
+    mockDrafts((id, body) => api.save(id, body));
     api.readiness.mockResolvedValue({ ready: true, issues: [], roles: [] });
     api.list.mockResolvedValue({ assets: [asset] });
     roles.list.mockResolvedValue({
@@ -2124,6 +2146,7 @@ describe("single-task workflow workspace", () => {
       .findAll("button")
       .find((button) => button.text() === "graph.create")!
       .trigger("click");
+    await flushPromises();
     expect(wrapper.find('[data-testid="graph-editor"]').exists()).toBe(true);
     await wrapper.find(".dialog input").setValue("My workflow");
     await wrapper
@@ -2161,7 +2184,7 @@ describe("single-task workflow workspace", () => {
     });
     await wrapper
       .findAll(".dialog button")
-      .find((button) => button.text() === "v2.save")!
+      .find((button) => button.text() === "draft.publish")!
       .trigger("click");
     await flushPromises();
     expect(api.save.mock.calls[0][1].definition.name).toBe("My workflow");

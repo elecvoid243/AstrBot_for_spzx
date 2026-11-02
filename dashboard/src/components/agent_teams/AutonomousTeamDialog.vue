@@ -4,12 +4,18 @@
     scrollable
     :model-value="modelValue"
     max-width="760"
-    :persistent="saving"
+    persistent
     @update:model-value="$emit('update:modelValue', $event)"
   >
-    <v-card>
+    <v-card v-if="draftReady">
       <h3 class="text-h3 pa-4 pb-0 pl-6">{{ tm("autonomous.title") }}</h3>
-      <v-card-text>
+      <v-card-text :inert="saving || draft.busy.value ? '' : undefined">
+        <DraftStatus
+          :draft="draft"
+          @reload="reloadDraft"
+          @discard="emit('update:modelValue', false)"
+          @use-latest="useLatestDraft"
+        />
         <v-alert v-if="error" type="error" variant="tonal" class="mb-4">{{
           error
         }}</v-alert>
@@ -100,17 +106,15 @@
       </v-card-text>
       <v-card-actions class="flex-wrap">
         <v-spacer />
-        <v-btn
-          variant="text"
-          :disabled="saving"
-          @click="$emit('update:modelValue', false)"
-          >{{ tm("roles.cancel") }}</v-btn
-        >
+        <v-btn variant="text" :disabled="saving" @click="closeEditor">{{
+          tm("v2.close")
+        }}</v-btn>
         <v-btn
           variant="tonal"
           color="primary"
           :loading="saving"
           :disabled="
+            draft.busy.value ||
             !form.name.trim() ||
             (!form.coordinator.role_id && !form.coordinator.role) ||
             !form.allowed_roles.length ||
@@ -119,19 +123,28 @@
           "
           data-testid="team-save"
           @click="save"
-          >{{ tm("v2.save") }}</v-btn
+          >{{ tm("draft.publish") }}</v-btn
         >
       </v-card-actions>
     </v-card>
+    <v-card v-else
+      ><v-card-text>{{ error || tm("draft.saving") }}</v-card-text
+      ><v-card-actions
+        ><v-btn variant="text" @click="$emit('update:modelValue', false)">{{
+          tm("v2.close")
+        }}</v-btn></v-card-actions
+      ></v-card
+    >
   </v-dialog>
 </template>
 
 <script setup lang="ts">
+import DraftStatus from "./DraftStatus.vue";
 import TeamPresetEditor from "./TeamPresetEditor.vue";
 import RunLimitsForm from "./RunLimitsForm.vue";
-import { onBeforeUnmount, ref, watch } from "vue";
+import { nextTick, onBeforeUnmount, ref, watch } from "vue";
+import { useAssetDraft } from "@/composables/useAssetDraft";
 import AllowedWorkflowsPanel from "./AllowedWorkflowsPanel.vue";
-import { workflowAssetsApi } from "@/api/workflowAssets";
 import { useModuleI18n } from "@/i18n/composables";
 import { extractApiError } from "@/utils/extractApiError";
 import type { AutonomousDefinition } from "@/api/generated/openapi-v1";
@@ -148,6 +161,8 @@ const emit = defineEmits<{
 }>();
 const { tm } = useModuleI18n("features/agent-teams");
 const saving = ref(false);
+const draft = useAssetDraft("autonomous");
+const draftReady = ref(false);
 const error = ref("");
 const workflowInvalid = ref(false);
 let editGeneration = 0;
@@ -177,8 +192,11 @@ const form = ref<AutonomousDefinition>({
 
 watch(
   () => [props.modelValue, props.asset] as const,
-  ([open]) => {
+  async ([open]) => {
     editGeneration++;
+    const generation = editGeneration;
+    draftReady.value = false;
+    draft.close();
     saving.value = false;
     if (!open) return;
     form.value = props.asset
@@ -207,9 +225,87 @@ watch(
       ? JSON.stringify(form.value.output_contract, null, 2)
       : "";
     error.value = "";
+    try {
+      const item = await draft.open(props.asset?.asset_id ?? null, {
+        definition: form.value,
+        editor: { approval: approval.value, contract: contract.value },
+      });
+      if (generation !== editGeneration) return;
+      form.value = item.body.definition;
+      approval.value =
+        item.body.editor?.approval ?? form.value.approval_question ?? "";
+      contract.value =
+        item.body.editor?.contract ??
+        (form.value.output_contract
+          ? JSON.stringify(form.value.output_contract, null, 2)
+          : "");
+      await nextTick();
+      draftReady.value = true;
+    } catch (err) {
+      if (generation === editGeneration)
+        error.value = extractApiError(
+          err,
+          tm("errors.operationFailed"),
+        ).message;
+    }
   },
   { immediate: true },
 );
+
+watch(
+  [form, approval, contract],
+  () => {
+    if (draftReady.value && props.modelValue)
+      draft.change({
+        definition: form.value,
+        editor: { approval: approval.value, contract: contract.value },
+      });
+  },
+  { deep: true },
+);
+
+async function reloadDraft() {
+  draftReady.value = false;
+  const item = await draft.reload();
+  form.value = item.body.definition;
+  approval.value =
+    item.body.editor?.approval ?? form.value.approval_question ?? "";
+  contract.value =
+    item.body.editor?.contract ??
+    (form.value.output_contract
+      ? JSON.stringify(form.value.output_contract, null, 2)
+      : "");
+  await nextTick();
+  draftReady.value = true;
+}
+
+async function useLatestDraft(latest: any) {
+  form.value = JSON.parse(JSON.stringify(latest.definition));
+  approval.value = form.value.approval_question ?? "";
+  contract.value = form.value.output_contract
+    ? JSON.stringify(form.value.output_contract, null, 2)
+    : "";
+  draft.change({
+    definition: form.value,
+    editor: { approval: approval.value, contract: contract.value },
+  });
+  try {
+    await draft.rebase();
+  } catch (err) {
+    error.value = extractApiError(err, tm("errors.operationFailed")).message;
+  }
+}
+
+async function closeEditor() {
+  if (draft.status.value === "failed" || draft.status.value === "conflict")
+    return;
+  try {
+    await draft.flush();
+    emit("update:modelValue", false);
+  } catch {
+    /* The draft status retains the failure. */
+  }
+}
 
 function addPreset() {
   form.value.allowed_roles.push({
@@ -236,10 +332,11 @@ async function save() {
         ? JSON.parse(contract.value)
         : null,
     };
-    await workflowAssetsApi.save(asset?.asset_id ?? null, {
+    draft.change({
       definition,
-      expected_version: asset?.version,
+      editor: { approval: approval.value, contract: contract.value },
     });
+    await draft.publish();
     if (!current()) return;
     emit("update:modelValue", false);
     emit("saved");

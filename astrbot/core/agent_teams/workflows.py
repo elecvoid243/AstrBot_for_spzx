@@ -80,6 +80,8 @@ from astrbot.core.config.agent_runner import (
 )
 from astrbot.core.db import BaseDatabase
 from astrbot.core.db.po import (
+    AgentAssetDraft,
+    AgentAssetDraftPublication,
     AgentRoleInstallation,
     AgentRoleVersion,
     AgentWorkflowArtifact,
@@ -979,7 +981,12 @@ class WorkflowService:
         self.chat = WorkflowChat(self)
 
     async def save_asset(
-        self, username: str, payload: dict, asset_id: str | None = None
+        self,
+        username: str,
+        payload: dict,
+        asset_id: str | None = None,
+        draft_revision: int | None = None,
+        draft_kind: str | None = None,
     ) -> dict:
         """Save a version without creating any execution context.
 
@@ -987,6 +994,8 @@ class WorkflowService:
             username: Authenticated owner.
             payload: Definition and optional expected version.
             asset_id: Existing asset identity, or None for a new asset.
+            draft_revision: Trusted draft revision to publish, when supplied.
+            draft_kind: Workflow or autonomous draft category.
 
         Returns:
             Persisted asset version.
@@ -994,6 +1003,30 @@ class WorkflowService:
         Raises:
             RoleAssetError: Invalid fields, inaccessible role or conflicting version.
         """
+        draft = None
+        if draft_revision is not None:
+            if asset_id is None or draft_kind not in {"workflow", "autonomous"}:
+                raise RoleAssetError("Draft identity and kind are required")
+            try:
+                draft = await self.roles.get_draft(username, draft_kind, asset_id)
+            except RoleAssetError as exc:
+                if exc.status == 404:
+                    raise RoleAssetError("Draft is inaccessible", status=409) from exc
+                raise
+            self.roles._validate_draft_body(draft_kind, draft["body"])
+            async with self.db.get_db() as session:
+                published = await session.get(
+                    AgentAssetDraftPublication, (draft_kind, asset_id, draft_revision)
+                )
+                published_version = published.version if published else None
+            if published_version is not None:
+                return await self.get_asset(username, asset_id, published_version)
+            if draft["revision"] != draft_revision:
+                raise RoleAssetError("Draft was edited elsewhere", status=409)
+            payload = {
+                **{k: v for k, v in draft["body"].items() if k != "editor"},
+                "expected_version": draft["base_version"],
+            }
         try:
             request = WorkflowSaveRequest.model_validate(payload)
         except ValidationError as exc:
@@ -1009,6 +1042,10 @@ class WorkflowService:
                 ],
             ) from exc
         definition = request.definition
+        if draft is not None and (
+            isinstance(definition, AutonomousDefinition) != (draft_kind == "autonomous")
+        ):
+            raise RoleAssetError("Draft kind does not match definition")
         if isinstance(definition, AutonomousDefinition):
             if "goal" not in definition.required_inputs:
                 raise RoleAssetError("Autonomous teams require a goal input")
@@ -1214,16 +1251,53 @@ class WorkflowService:
                     ) from exc
             validate_graph(definition)
         version = 1
-        if asset_id is not None:
+        if asset_id is not None and (
+            draft is None or draft["base_version"] is not None
+        ):
             current = await self.get_asset(username, asset_id)
             if current["version"] != request.expected_version:
                 raise RoleAssetError(
                     "Workflow was edited elsewhere; reload first", status=409
                 )
             version = current["version"] + 1
-        else:
+        elif asset_id is None:
             asset_id = uuid.uuid4().hex
         async with self.db.get_db() as session:
+            if draft is not None:
+                result = await session.execute(
+                    update(AgentAssetDraft)
+                    .where(
+                        AgentAssetDraft.kind == draft_kind,
+                        AgentAssetDraft.asset_id == asset_id,
+                        AgentAssetDraft.owner_username == username,
+                        AgentAssetDraft.revision == draft_revision,
+                        AgentAssetDraft.base_version == draft["base_version"],
+                    )
+                    .values(
+                        base_version=version,
+                        published_revision=draft_revision,
+                        published_version=version,
+                    )
+                )
+                if result.rowcount != 1:
+                    await session.rollback()
+                    published = await session.get(
+                        AgentAssetDraftPublication,
+                        (draft_kind, asset_id, draft_revision),
+                    )
+                    if published is not None:
+                        return await self.get_asset(
+                            username, asset_id, published.version
+                        )
+                    raise RoleAssetError("Draft was edited elsewhere", status=409)
+                session.add(
+                    AgentAssetDraftPublication(
+                        kind=draft_kind,
+                        asset_id=asset_id,
+                        revision=draft_revision,
+                        version=version,
+                    )
+                )
             session.add(
                 AgentWorkflowVersion(
                     asset_id=asset_id,

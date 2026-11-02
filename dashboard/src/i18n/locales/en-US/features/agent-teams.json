@@ -292,7 +292,7 @@
     "effective": "Effective configuration",
     "preview": "Preview configuration",
     "previewStale": "Configuration changed. Preview again to update effective values.",
-    "versionNotice": "Saving creates a new version. Historical definitions are preserved.",
+    "versionNotice": "Save version creates a fixed version. Draft edits do not change historical definitions.",
     "history": "View historical version",
     "exportPrompt": "Responsibility",
     "personaDependency": "None",
@@ -502,7 +502,7 @@
     "parallel": "Maximum concurrent tasks",
     "tasks": "Tasks",
     "selectTask": "Inspect task",
-    "saveHint": "Saving freezes this definition. Subsequent edits affect new runs.",
+    "saveHint": "Save version freezes this definition for new runs.",
     "dependency": "Select dependency",
     "defaultModel": "Default model",
     "modelOverride": "Agent model override",
@@ -838,5 +838,24 @@
     "empty": "No accessible run history.",
     "moreRecords": "Load more history",
     "recordList": "History records"
+  },
+  "draft": {
+    "label": "Draft",
+    "untitled": "Untitled draft",
+    "saving": "Saving draft…",
+    "saved": "Draft saved",
+    "failed": "Draft save failed; local changes are kept",
+    "conflict": "Draft changed elsewhere; local changes are kept",
+    "retry": "Retry saving",
+    "reload": "Discard local changes and load server draft",
+    "publish": "Save version",
+    "review": "Review latest version",
+    "baseComparison": "Draft base: v{old}; latest published: v{current}.",
+    "rebaseExplanation": "Keeping the draft publishes its entire content when you next save a version; no fields are merged.",
+    "keep": "Keep draft on latest base",
+    "useLatest": "Edit latest version",
+    "unpublished": "Draft · Unpublished",
+    "editing": "Draft in progress",
+    "discardClose": "Close and discard unsaved changes"
   }
 }

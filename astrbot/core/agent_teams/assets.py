@@ -7,8 +7,9 @@ from collections.abc import Awaitable, Callable
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from sqlalchemy import exists
 from sqlalchemy.exc import IntegrityError
-from sqlmodel import col, select
+from sqlmodel import col, select, update
 
 from astrbot.core.config.agent_runner import (
     get_agent_runner_capabilities,
@@ -16,8 +17,11 @@ from astrbot.core.config.agent_runner import (
 )
 from astrbot.core.db import BaseDatabase
 from astrbot.core.db.po import (
+    AgentAssetDraft,
+    AgentAssetDraftPublication,
     AgentRoleInstallation,
     AgentRoleVersion,
+    AgentWorkflowVersion,
 )
 from astrbot.core.tools.file_tool_mode import (
     DEFAULT_FILE_TOOL_MODE,
@@ -891,8 +895,291 @@ class RoleAssetService:
             ]
         }
 
+    @staticmethod
+    def _validate_draft_body(kind: str, body: dict) -> None:
+        """Limit draft size and reject obsolete or unknown configuration fields.
+
+        Args:
+            kind: Asset category.
+            body: Potentially incomplete editor state.
+
+        Raises:
+            RoleAssetError: The draft is oversized or contains unknown fields.
+        """
+        if kind not in {"role", "workflow", "autonomous"}:
+            raise RoleAssetError("Invalid draft kind")
+        if (
+            not isinstance(body, dict)
+            or set(body) - {"definition", "installation", "editor"}
+            or len(json.dumps(body).encode("utf-8")) > 1_000_000
+        ):
+            raise RoleAssetError("Invalid or oversized draft")
+        from astrbot.core.agent_teams.graph import GraphDefinition, GraphTask
+        from astrbot.core.agent_teams.workflows import (
+            AutonomousDefinition,
+            TeamRole,
+            WorkflowDefinition,
+        )
+
+        definition = body.get("definition", {})
+        if not isinstance(definition, dict):
+            raise RoleAssetError("Invalid draft definition")
+        if kind == "role":
+            allowed = set(RoleDefinition.model_fields)
+        elif kind == "autonomous":
+            allowed = set(AutonomousDefinition.model_fields)
+        elif kind == "workflow":
+            allowed = set(GraphDefinition.model_fields) | set(
+                WorkflowDefinition.model_fields
+            )
+        else:
+            raise RoleAssetError("Invalid draft kind")
+        if set(definition) - allowed:
+            raise RoleAssetError("Unknown draft definition fields")
+        installation = body.get("installation", {})
+        if not isinstance(installation, dict) or set(installation) - set(
+            RoleInstallation.model_fields
+        ):
+            raise RoleAssetError("Unknown draft installation fields")
+        if "editor" in body and (
+            not isinstance(body["editor"], dict)
+            or set(body["editor"]) - {"approval", "contract"}
+        ):
+            raise RoleAssetError("Unknown draft editor fields")
+        entries = []
+        if kind == "workflow" and isinstance(definition.get("tasks"), list):
+            entries = definition["tasks"]
+            entry_fields = set(GraphTask.model_fields)
+        elif kind == "autonomous":
+            entries = [
+                definition.get("coordinator"),
+                *(
+                    definition.get("allowed_roles")
+                    if isinstance(definition.get("allowed_roles"), list)
+                    else []
+                ),
+            ]
+            entry_fields = set(TeamRole.model_fields)
+        else:
+            entry_fields = set()
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            if set(entry) - entry_fields:
+                raise RoleAssetError("Unknown draft member fields")
+            for field, model in (
+                ("role", RoleDefinition),
+                ("installation", RoleInstallation),
+                ("overrides", RoleOverrides),
+            ):
+                value = entry.get(field)
+                if isinstance(value, dict) and set(value) - set(model.model_fields):
+                    raise RoleAssetError("Unknown draft member configuration fields")
+
+    async def create_draft(
+        self, username: str, kind: str, body: dict, asset_id: str | None = None
+    ) -> dict:
+        """Create a persistent editing snapshot with a stable asset identity.
+
+        Args:
+            username: Authenticated owner.
+            kind: Role, workflow or autonomous team.
+            body: Incomplete editing snapshot.
+            asset_id: Existing published identity, when editing one.
+
+        Returns:
+            The saved draft.
+
+        Raises:
+            RoleAssetError: Invalid content, identity or duplicate draft.
+        """
+        self._validate_draft_body(kind, body)
+        base_version = None
+        if asset_id:
+            if kind == "role":
+                base_version = (await self.get_role(username, asset_id))["version"]
+            else:
+                async with self.db.get_db() as session:
+                    row = (
+                        (
+                            await session.execute(
+                                select(AgentWorkflowVersion)
+                                .where(
+                                    AgentWorkflowVersion.asset_id == asset_id,
+                                    AgentWorkflowVersion.owner_username == username,
+                                )
+                                .order_by(col(AgentWorkflowVersion.version).desc())
+                            )
+                        )
+                        .scalars()
+                        .first()
+                    )
+                    if row is None or (row.definition.get("kind") == "autonomous") != (
+                        kind == "autonomous"
+                    ):
+                        raise RoleAssetError("Asset not found", status=404)
+                    base_version = row.version
+        else:
+            asset_id = uuid.uuid4().hex
+        async with self.db.get_db() as session:
+            row = AgentAssetDraft(
+                kind=kind,
+                asset_id=asset_id,
+                owner_username=username,
+                body=body,
+                base_version=base_version,
+            )
+            session.add(row)
+            try:
+                await session.flush()
+                saved = row.model_dump()
+                await session.commit()
+            except IntegrityError as exc:
+                raise RoleAssetError("Draft already exists", status=409) from exc
+        return saved
+
+    async def get_draft(self, username: str, kind: str, asset_id: str) -> dict:
+        """Read an owner-scoped draft.
+
+        Args:
+            username: Authenticated owner.
+            kind: Asset kind.
+            asset_id: Stable asset identity.
+
+        Returns:
+            The persisted draft fields.
+
+        Raises:
+            RoleAssetError: The draft is inaccessible.
+        """
+        async with self.db.get_db() as session:
+            row = await session.get(AgentAssetDraft, (kind, asset_id))
+            if row is None or row.owner_username != username:
+                raise RoleAssetError("Draft not found", status=404)
+            return row.model_dump()
+
+    async def list_drafts(self, username: str, kind: str) -> list[dict]:
+        """List an owner's editing snapshots for an asset kind.
+
+        Args:
+            username: Authenticated owner.
+            kind: Asset kind.
+
+        Returns:
+            Drafts including assets without published versions.
+        """
+        async with self.db.get_db() as session:
+            rows = (
+                (
+                    await session.execute(
+                        select(AgentAssetDraft).where(
+                            AgentAssetDraft.owner_username == username,
+                            AgentAssetDraft.kind == kind,
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            return [row.model_dump() for row in rows]
+
+    async def update_draft(
+        self, username: str, kind: str, asset_id: str, revision: int, body: dict
+    ) -> dict:
+        """Compare and update a draft without overwriting concurrent edits.
+
+        Args:
+            username: Authenticated owner.
+            kind: Asset kind.
+            asset_id: Stable asset identity.
+            revision: Expected current revision.
+            body: New incomplete editing snapshot.
+
+        Returns:
+            The updated draft.
+
+        Raises:
+            RoleAssetError: Invalid content or conflicting revision.
+        """
+        self._validate_draft_body(kind, body)
+        async with self.db.get_db() as session:
+            result = await session.execute(
+                update(AgentAssetDraft)
+                .where(
+                    AgentAssetDraft.kind == kind,
+                    AgentAssetDraft.asset_id == asset_id,
+                    AgentAssetDraft.owner_username == username,
+                    AgentAssetDraft.revision == revision,
+                )
+                .values(body=body, revision=revision + 1)
+                .returning(AgentAssetDraft)
+            )
+            row = result.scalars().first()
+            if row is None:
+                raise RoleAssetError("Draft was edited elsewhere", status=409)
+            saved = row.model_dump()
+            await session.commit()
+        return saved
+
+    async def rebase_draft(
+        self, username: str, kind: str, asset_id: str, revision: int, version: int
+    ) -> dict:
+        """Explicitly move a saved draft onto a reviewed published version.
+
+        Args:
+            username: Authenticated owner.
+            kind: Asset kind.
+            asset_id: Stable asset identity.
+            revision: Expected current draft revision.
+            version: Latest published version reviewed by the caller.
+
+        Returns:
+            The updated draft without changing its body.
+
+        Raises:
+            RoleAssetError: The draft or reviewed published version changed.
+        """
+        if kind not in {"role", "workflow", "autonomous"}:
+            raise RoleAssetError("Invalid draft kind")
+        model = AgentRoleVersion if kind == "role" else AgentWorkflowVersion
+        identity = model.role_id if kind == "role" else model.asset_id
+        matching = exists().where(
+            identity == asset_id,
+            model.owner_username == username,
+            model.version == version,
+        )
+        newer = exists().where(
+            identity == asset_id,
+            model.owner_username == username,
+            model.version > version,
+        )
+        async with self.db.get_db() as session:
+            result = await session.execute(
+                update(AgentAssetDraft)
+                .where(
+                    AgentAssetDraft.kind == kind,
+                    AgentAssetDraft.asset_id == asset_id,
+                    AgentAssetDraft.owner_username == username,
+                    AgentAssetDraft.revision == revision,
+                    matching,
+                    ~newer,
+                )
+                .values(base_version=version, revision=revision + 1)
+                .returning(AgentAssetDraft)
+            )
+            row = result.scalars().first()
+            if row is None:
+                raise RoleAssetError("Draft or reviewed version changed", status=409)
+            saved = row.model_dump()
+            await session.commit()
+        return saved
+
     async def save_role(
-        self, username: str, payload: dict, role_id: str | None = None
+        self,
+        username: str,
+        payload: dict,
+        role_id: str | None = None,
+        draft_revision: int | None = None,
     ) -> dict:
         """Create a role or append a version without overwriting history.
 
@@ -900,6 +1187,7 @@ class RoleAssetService:
             username: Authenticated owner.
             payload: Complete definition, installation and expected version.
             role_id: Existing identity when appending a version.
+            draft_revision: Trusted draft revision to publish, when supplied.
 
         Returns:
             The persisted role version and local installation.
@@ -907,18 +1195,74 @@ class RoleAssetService:
         Raises:
             RoleAssetError: Invalid fields, inaccessible role or stale version.
         """
+        draft = None
+        if draft_revision is not None:
+            if role_id is None:
+                raise RoleAssetError("Draft identity is required")
+            try:
+                draft = await self.get_draft(username, "role", role_id)
+            except RoleAssetError as exc:
+                if exc.status == 404:
+                    raise RoleAssetError("Draft is inaccessible", status=409) from exc
+                raise
+            self._validate_draft_body("role", draft["body"])
+            async with self.db.get_db() as session:
+                published = await session.get(
+                    AgentAssetDraftPublication, ("role", role_id, draft_revision)
+                )
+                published_version = published.version if published else None
+            if published_version is not None:
+                return await self.get_role(username, role_id, published_version)
+            if draft["revision"] != draft_revision:
+                raise RoleAssetError("Draft was edited elsewhere", status=409)
+            payload = {
+                **{k: v for k, v in draft["body"].items() if k != "editor"},
+                "expected_version": draft["base_version"],
+            }
         request = self._validate_request(payload)
         version = 1
-        if role_id is not None:
+        if role_id is not None and (draft is None or draft["base_version"] is not None):
             current = await self.get_role(username, role_id)
             if request.expected_version != current["version"]:
                 raise RoleAssetError(
                     "Role was edited elsewhere; reload first", status=409
                 )
             version = current["version"] + 1
-        else:
+        elif role_id is None:
             role_id = uuid.uuid4().hex
         async with self.db.get_db() as session:
+            if draft is not None:
+                result = await session.execute(
+                    update(AgentAssetDraft)
+                    .where(
+                        AgentAssetDraft.kind == "role",
+                        AgentAssetDraft.asset_id == role_id,
+                        AgentAssetDraft.owner_username == username,
+                        AgentAssetDraft.revision == draft_revision,
+                        AgentAssetDraft.base_version == draft["base_version"],
+                    )
+                    .values(
+                        base_version=version,
+                        published_revision=draft_revision,
+                        published_version=version,
+                    )
+                )
+                if result.rowcount != 1:
+                    await session.rollback()
+                    published = await session.get(
+                        AgentAssetDraftPublication, ("role", role_id, draft_revision)
+                    )
+                    if published is not None:
+                        return await self.get_role(username, role_id, published.version)
+                    raise RoleAssetError("Draft was edited elsewhere", status=409)
+                session.add(
+                    AgentAssetDraftPublication(
+                        kind="role",
+                        asset_id=role_id,
+                        revision=draft_revision,
+                        version=version,
+                    )
+                )
             session.add(
                 AgentRoleVersion(
                     role_id=role_id,

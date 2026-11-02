@@ -438,14 +438,14 @@ async def test_paused_time_does_not_exhaust_the_reply_timeout(workflow_env):
         collect=collect,
         is_busy=lambda _: False,
         emit=lambda _: None,
-        reply_timeout=0.1,
+        reply_timeout=1.0,
     )
     run = await env.service.start_run("alice", env.asset["asset_id"], {"version": 1})
     await asyncio.wait_for(entered.wait(), 3)
     await env.service.control_run(
         "alice", run["run_id"], {"request_id": "pause-timeout", "action": "pause"}
     )
-    await asyncio.sleep(0.3)
+    await asyncio.sleep(1.5)
     assert (await env.service.get_run("alice", run["run_id"]))["status"] == "running"
     await env.service.control_run(
         "alice", run["run_id"], {"request_id": "continue-timeout", "action": "continue"}

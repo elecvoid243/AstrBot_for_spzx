@@ -19,8 +19,11 @@ from astrbot.core.astr_agent_tool_exec import FunctionToolExecutor
 from astrbot.core.provider.entities import ProviderRequest
 from astrbot.core.provider.sources.anthropic_source import ProviderAnthropic
 from astrbot.core.provider.sources.gemini_source import ProviderGoogleGenAI
-from tests.agent_teams.test_workflow_artifacts import scripted_workflow
-from tests.agent_teams.test_workflow_assets import completed_run, workflow_env
+from tests.agent_teams.test_workflow_artifacts import (
+    scripted_workflow as scripted_workflow,
+)
+from tests.agent_teams.test_workflow_assets import completed_run
+from tests.agent_teams.test_workflow_assets import workflow_env as workflow_env
 
 
 @pytest.mark.asyncio
@@ -54,7 +57,14 @@ async def test_provider_requests_can_correct_and_submit_frozen_contract_results(
         contract = None
     asset = await env.service.save_asset(
         "alice",
-        {"definition": {**env.asset["definition"], "output_contract": contract}},
+        {
+            "definition": {
+                **env.asset["definition"],
+                "tasks": [
+                    {**env.asset["definition"]["tasks"][0], "output_contract": contract}
+                ],
+            }
+        },
     )
     config = {
         "id": "contract-model",
@@ -241,7 +251,12 @@ async def test_provider_requests_can_correct_and_submit_frozen_contract_results(
         run = await service.start_run("alice", asset["asset_id"], {"version": 1})
         done = await completed_run(service, run["run_id"])
         assert done["status"] == "completed", done
-        assert done["snapshot"]["definition"].get("output_contract") == contract
+        assert (
+            next(task for task in done["tasks"] if task["node_id"] == "writer")[
+                "snapshot"
+            ]["definition"].get("output_contract")
+            == contract
+        )
         assert done["result"] == (
             {"approved": True} if contract is not None else {"text": "Reviewed result."}
         )

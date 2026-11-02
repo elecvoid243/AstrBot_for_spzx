@@ -74,7 +74,11 @@ async def test_saved_tool_result_rejects_conflicting_duplicates_and_displaced_wr
             "alice", env.asset["asset_id"], {"version": 1}
         )
         await asyncio.wait_for(dispatched.wait(), 2)
-        run = await service.get_run("alice", started["run_id"])
+        run = next(
+            task
+            for task in (await service.get_run("alice", started["run_id"]))["tasks"]
+            if task["node_id"] == "writer"
+        )
         run_id, attempt_id, execution_id = (
             run["run_id"],
             run["state"]["attempt_id"],
@@ -213,7 +217,10 @@ async def test_saved_tool_result_rejects_conflicting_duplicates_and_displaced_wr
         ) as client:
             detail = await client.get(f"/api/v1/workflow_runs/{run_id}")
             assert detail.status_code == 200
-            assert detail.json()["data"]["tool_calls"] == original["tool_calls"]
+            assert detail.json()["data"]["tool_calls"] == []
+            assert (await service.get_run("alice", run_id))["tool_calls"] == original[
+                "tool_calls"
+            ]
             app.dependency_overrides[require_dashboard_user] = lambda: "bob"
             assert (
                 await client.get(f"/api/v1/workflow_runs/{run_id}")

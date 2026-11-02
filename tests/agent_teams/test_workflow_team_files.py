@@ -41,8 +41,12 @@ async def test_returned_file_revision_preserves_authorization_inputs_and_approva
     worker = await env.roles.save_role(
         "alice",
         {
-            "definition": {"name": "File worker", "prompt": "Produce evidence"},
-            "installation": {"bindings": {"model": "model-a"}},
+            "definition": {
+                "name": "File worker",
+                "prompt": "Produce evidence",
+                "provider_id": "model-a",
+            },
+            "installation": {"profile_id": "default"},
         },
     )
     role = {"role_id": env.role["role_id"], "role_version": 1}
@@ -52,8 +56,10 @@ async def test_returned_file_revision_preserves_authorization_inputs_and_approva
             "definition": {
                 "kind": "autonomous",
                 "name": "File team",
-                "coordinator": role,
-                "allowed_roles": [{"role_id": worker["role_id"], "role_version": 1}],
+                "coordinator": {"id": "coordinator", **role},
+                "allowed_roles": [
+                    {"id": "worker", "role_id": worker["role_id"], "role_version": 1}
+                ],
                 "max_parallel": 1,
                 "output_contract": contract,
             }
@@ -64,6 +70,7 @@ async def test_returned_file_revision_preserves_authorization_inputs_and_approva
         {
             "definition": {
                 "name": "Review child files",
+                "result_task_id": "consumer",
                 "required_inputs": ["goal"],
                 "max_parallel": 1,
                 "tasks": [
@@ -153,7 +160,7 @@ async def test_returned_file_revision_preserves_authorization_inputs_and_approva
                     None,
                     action="create_member",
                     request_id="create-worker",
-                    role_id=worker["role_id"],
+                    preset_id="worker",
                     name="File worker",
                 )
             )
@@ -265,26 +272,30 @@ async def test_returned_file_revision_preserves_authorization_inputs_and_approva
         task for task in scope["tasks"] if task["node_id"] == "coordinator"
     )
     member = next(task for task in scope["tasks"] if task["node_id"] != "coordinator")
-    original = await env.service.read_artifact("alice", call["run_id"], 1)
+    artifact_id = call["result_ref"]["artifact_id"]
+    original = await env.service.read_artifact("alice", artifact_id, 1)
     file_id = original["content"]["files"][0]["file_id"]
     assert (
-        await env.service.get_file("alice", call["run_id"], 1, file_id, download=False)
+        await env.service.get_file("alice", artifact_id, 1, file_id, download=False)
     )["content"] == b"Complete original file COMPLETE_END"
     assert current["todos"][0]["artifact_ref"] == {
-        "artifact_id": call["run_id"],
+        "artifact_id": artifact_id,
         "version": 1,
     }
 
     other = await env.service.start_run("alice", env.asset["asset_id"], {"version": 1})
-    await completed_run(env.service, other["run_id"])
+    other_done = await completed_run(env.service, other["run_id"])
+    other_leaf = next(
+        task for task in other_done["tasks"] if task["node_id"] == "writer"
+    )
     other_file = await env.service.store_file(
-        "alice", other["run_id"], None, "other.txt", b"Other run file"
+        "alice", other_leaf["run_id"], None, "other.txt", b"Other run file"
     )
     bob_role = await env.roles.save_role(
         "bob",
         {
-            "definition": {"name": "Bob", "prompt": "Write"},
-            "installation": {"bindings": {"model": "model-a"}},
+            "definition": {"name": "Bob", "prompt": "Write", "provider_id": "model-a"},
+            "installation": {"profile_id": "default"},
         },
     )
     bob_asset = await env.service.save_asset(
@@ -292,9 +303,17 @@ async def test_returned_file_revision_preserves_authorization_inputs_and_approva
         {
             "definition": {
                 "name": "Bob report",
-                "role_id": bob_role["role_id"],
-                "role_version": 1,
-                "task": "Write",
+                "result_task_id": "writer",
+                "tasks": [
+                    {
+                        "id": "writer",
+                        "name": "Writer",
+                        "member": "writer",
+                        "role_id": bob_role["role_id"],
+                        "role_version": 1,
+                        "task": "Write",
+                    }
+                ],
             }
         },
     )
@@ -305,11 +324,12 @@ async def test_returned_file_revision_preserves_authorization_inputs_and_approva
             break
         await asyncio.sleep(0.01)
     assert bob_done["status"] == "completed", bob_done
+    bob_leaf = next(task for task in bob_done["tasks"] if task["node_id"] == "writer")
     bob_file = await env.service.store_file(
-        "bob", bob["run_id"], None, "bob.txt", b"Other owner file"
+        "bob", bob_leaf["run_id"], None, "bob.txt", b"Other owner file"
     )
+    unused = files[coordinator["run_id"]][1]
     rejected = [
-        files[coordinator["run_id"]][1],
         files[member["run_id"]][0],
         sibling["result"]["files"][0],
         other_file,
@@ -319,7 +339,7 @@ async def test_returned_file_revision_preserves_authorization_inputs_and_approva
         with pytest.raises(RoleAssetError) as invalid:
             await env.service.revise_artifact(
                 "alice",
-                call["run_id"],
+                artifact_id,
                 {
                     "expected_version": 1,
                     "request_id": f"reject-{index}",
@@ -341,7 +361,7 @@ async def test_returned_file_revision_preserves_authorization_inputs_and_approva
         ]
         with pytest.raises(RoleAssetError) as invisible:
             await env.service.get_file(
-                "alice", call["run_id"], 1, forbidden["file_id"], download=False
+                "alice", artifact_id, 1, forbidden["file_id"], download=False
             )
         assert invisible.value.status == 404
 
@@ -350,20 +370,38 @@ async def test_returned_file_revision_preserves_authorization_inputs_and_approva
         "request_id": "caption-v2",
         "content": {**original["content"], "text": "Corrected caption"},
     }
-    revision = await env.service.revise_artifact("alice", call["run_id"], request)
-    assert revision == {"artifact_id": call["run_id"], "version": 2}
-    assert (
-        await env.service.revise_artifact("alice", call["run_id"], request) == revision
-    )
-    assert await env.service.read_artifact("alice", call["run_id"], 1) == original
+    revision = await env.service.revise_artifact("alice", artifact_id, request)
+    assert revision == {"artifact_id": artifact_id, "version": 2}
+    assert await env.service.revise_artifact("alice", artifact_id, request) == revision
+    assert await env.service.read_artifact("alice", artifact_id, 1) == original
     for version in [1, 2]:
         assert (
             await env.service.get_file(
-                "alice", call["run_id"], version, file_id, download=False
+                "alice", artifact_id, version, file_id, download=False
             )
         )["content"] == b"Complete original file COMPLETE_END"
+    for version in [1, 2]:
+        with pytest.raises(RoleAssetError) as invisible:
+            await env.service.get_file("alice", artifact_id, version, unused["file_id"])
+        assert invisible.value.status == 404
+    added = await env.service.revise_artifact(
+        "alice",
+        artifact_id,
+        {
+            "expected_version": 2,
+            "request_id": "add-unused-v3",
+            "content": {
+                **request["content"],
+                "files": [{"file_id": file_id}, {"file_id": unused["file_id"]}],
+            },
+        },
+    )
+    assert added == {"artifact_id": artifact_id, "version": 3}
+    assert (await env.service.get_file("alice", artifact_id, 3, unused["file_id"]))[
+        "content"
+    ] == b"Unsubmitted coordinator file"
     with pytest.raises(RoleAssetError) as owner:
-        await env.service.revise_artifact("bob", call["run_id"], request)
+        await env.service.revise_artifact("bob", artifact_id, request)
     assert owner.value.status == 404
     await env.service.answer_todo(
         "alice",
@@ -379,10 +417,10 @@ async def test_returned_file_revision_preserves_authorization_inputs_and_approva
     done = await completed_run(env.service, started["run_id"])
     assert done["status"] == "completed", done
     assert done["todos"][0]["artifact_ref"] == {
-        "artifact_id": call["run_id"],
+        "artifact_id": artifact_id,
         "version": 1,
     }
-    assert reads[0]["content"] == original["content"]
+    assert reads[0]["content"] == {"text": original["content"]["text"]}
     assert (
         deliveries.count(
             next(task for task in done["tasks"] if task["node_id"] == "consumer")[
@@ -397,14 +435,14 @@ async def test_returned_file_revision_preserves_authorization_inputs_and_approva
                 event
                 for event in done["events"]
                 if event["kind"] == "artifact.revised"
-                and event["run_id"] == call["run_id"]
+                and event["run_id"] == artifact_id
             ]
         )
-        == 1
+        == 2
     )
-    assert (await env.service.get_file("alice", call["run_id"], 1, file_id))[
+    assert (await env.service.get_file("alice", artifact_id, 1, file_id))[
         "content"
     ] == b"Complete original file COMPLETE_END"
-    with pytest.raises(RoleAssetError) as approval:
-        await env.service.get_file("alice", call["run_id"], 2, file_id)
-    assert approval.value.status == 409
+    assert (await env.service.get_file("alice", artifact_id, 2, file_id))[
+        "content"
+    ] == (b"Complete original file COMPLETE_END")

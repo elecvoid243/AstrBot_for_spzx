@@ -385,12 +385,17 @@ async def test_multiple_invocations_share_task_without_sharing_answers(workflow_
             "alice",
             run["run_id"],
             f"tool-{i}",
-            {"request_id": f"answer-{i}", "action": "answer", "answer": f"Result {i}"},
+            {
+                "request_id": f"answer-{i}",
+                "action": "answer",
+                "choice_id": "__free_text__",
+                "free_text": f"Result {i}",
+            },
         )
     current = await service.get_run("alice", run["run_id"])
     entries = {item["todo_id"]: item for item in current["todos"]}
-    assert entries["tool-1"]["response"]["answer"] == "Result 1"
-    assert entries["tool-2"]["response"]["answer"] == "Result 2"
+    assert entries["tool-1"]["response"]["free_text"] == "Result 1"
+    assert entries["tool-2"]["response"]["free_text"] == "Result 2"
     assert all(entries[f"tool-{i}"]["consumed_at"] is None for i in (1, 2))
     assert entries[original["todo_id"]]["status"] == "pending"
 

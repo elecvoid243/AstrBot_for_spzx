@@ -396,6 +396,7 @@ async def test_executed_loop_with_skipped_exit_cannot_release_final_consumer(
     ]
     loop = finished["loops"][0]
     assert loop["status"] == "blocked"
+    assert loop["iterations"][0]["status"] == "blocked"
     assert len(loop["iterations"]) == 1
     assert "exit_reference" not in loop["iterations"][0]
     assert len(loop_script.observations) == 1
@@ -419,6 +420,7 @@ async def test_exhausted_loop_keeps_history_and_never_releases_final_consumer(
     finished = await wait_graph(env.service, run["run_id"])
     assert finished["status"] == "blocked"
     assert finished["loops"][0]["status"] == "exhausted"
+    assert "maximum iterations" in finished["loops"][0]["reason"]
     assert len(finished["loops"][0]["iterations"]) == limit
     assert finished["tasks"][-1]["status"] == "dependency_failed"
     with pytest.raises(RoleAssetError, match="no completed result"):

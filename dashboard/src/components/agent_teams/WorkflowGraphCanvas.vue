@@ -66,6 +66,8 @@
       :definition="draft"
       :readonly="readonly"
       :collapsed="collapsedLoops"
+      :fields-for-task="fieldsForTask"
+      :issues="issues"
       @update:loops="
         draft.loops = $event;
         checkpoint();
@@ -576,7 +578,10 @@
                 :items="
                   draft.tasks
                     .filter(
-                      (task) => task.id !== selectedTask?.id && !task.human && !task.control,
+                      (task) =>
+                        task.id !== selectedTask?.id &&
+                        !task.human &&
+                        !task.control,
                     )
                     .map((task) => ({ title: task.name, value: task.id }))
                 "
@@ -1356,9 +1361,9 @@ const taskNodes = computed<FlowNode[]>(() =>
         memberColor: collabMemberColor(task.member ?? task.id),
         taskPreview: task.control
           ? task.control.kind === "condition"
-            ? `${tm(`graph.operators.${task.control.operator ?? "eq"}`)} ${JSON.stringify(
-                task.control.value,
-              )}`
+            ? `${tm(
+                `graph.operators.${task.control.operator ?? "eq"}`,
+              )} ${JSON.stringify(task.control.value)}`
             : tm("graph.joinHint")
           : task.workflow
           ? `${task.workflow.asset_id} → ${task.workflow.result_task_id}`
@@ -1436,7 +1441,12 @@ const nodes = computed<FlowNode[]>(() => [
     ? [
         {
           id: "__input",
-          position: { x: 0, y: 100 },
+          position: {
+            x:
+              Math.min(0, ...taskNodes.value.map((node) => node.position.x)) -
+              300,
+            y: 0,
+          },
           data: {
             label: tm("graph.workflowInput"),
             memberName: (draft.value.required_inputs ?? []).join(", "),
@@ -1445,7 +1455,12 @@ const nodes = computed<FlowNode[]>(() => [
         },
         {
           id: "__output",
-          position: { x: 620, y: 100 },
+          position: {
+            x:
+              Math.max(0, ...taskNodes.value.map((node) => node.position.x)) +
+              300,
+            y: 0,
+          },
           data: {
             label: tm("graph.outputs"),
             memberName: draft.value.tasks.find(
@@ -1944,6 +1959,19 @@ function removeEdge(key: string) {
   checkpoint();
 }
 function removeTask() {
+  const removed = selectedNode.value;
+  draft.value.loops = (draft.value.loops ?? [])
+    .filter(
+      (loop) =>
+        loop.exit_task_id !== removed && loop.body.some((id) => id !== removed),
+    )
+    .map((loop) => ({
+      ...loop,
+      body: loop.body.filter((id) => id !== removed),
+      feedback: (loop.feedback ?? []).filter(
+        (item) => item.source !== removed && item.target !== removed,
+      ),
+    }));
   draft.value.tasks = draft.value.tasks.filter(
     (task) => task.id !== selectedNode.value,
   );

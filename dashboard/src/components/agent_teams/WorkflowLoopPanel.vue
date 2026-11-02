@@ -12,12 +12,59 @@
       v-for="loop in definition.loops ?? []"
       :key="loop.id"
       class="loop-group"
-      open
+      :open="
+        newLoopId === loop.id ||
+        issues.some(
+          (issue) =>
+            issue.path ===
+              `definition.loops.${definition.loops?.indexOf(loop)}` ||
+            issue.path.startsWith(
+              `definition.loops.${definition.loops?.indexOf(loop)}.`,
+            ),
+        )
+          ? true
+          : undefined
+      "
     >
       <summary>
         {{ loop.name }} · {{ tm("loops.maximum") }} {{ loop.max_iterations }} ·
-        {{ loop.body.length }} {{ tm("loops.tasks") }}
+        {{ loop.body.length }} {{ tm("loops.tasks") }} · {{ tm("loops.edit") }}
+        <span class="loop-summary-detail">
+          {{ tm("loops.exitTask") }}:
+          {{
+            taskItems.find((task) => task.value === loop.exit_task_id)?.title ??
+            loop.exit_task_id
+          }}.{{ loop.exit_condition.field }}
+          {{ tm(`graph.operators.${loop.exit_condition.operator ?? "eq"}`) }}
+          {{ JSON.stringify(loop.exit_condition.value) }}
+          <span v-for="(feedback, index) in loop.feedback ?? []" :key="index">
+            ·
+            {{
+              taskItems.find((task) => task.value === feedback.source)?.title ??
+              feedback.source
+            }}.{{ feedback.field }} →
+            {{
+              taskItems.find((task) => task.value === feedback.target)?.title ??
+              feedback.target
+            }}.{{ feedback.input }}
+          </span>
+        </span>
       </summary>
+      <v-alert
+        v-for="issue in issues.filter(
+          (item) =>
+            item.path ===
+              `definition.loops.${definition.loops?.indexOf(loop)}` ||
+            item.path.startsWith(
+              `definition.loops.${definition.loops?.indexOf(loop)}.`,
+            ),
+        )"
+        :key="`${issue.path}:${issue.message}`"
+        type="warning"
+        variant="tonal"
+        :data-issue-path="issue.path"
+        >{{ issue.path }}: {{ issue.message }}</v-alert
+      >
       <v-btn
         variant="text"
         size="small"
@@ -28,11 +75,6 @@
           tm(collapsed.includes(loop.id) ? "loops.expand" : "loops.collapse")
         }}</v-btn
       >
-      <p class="text-caption mb-3">
-        {{ loop.exit_task_id }}.{{ loop.exit_condition.field }}
-        {{ loop.exit_condition.operator ?? "eq" }}
-        {{ JSON.stringify(loop.exit_condition.value) }}
-      </p>
       <template v-if="!readonly">
         <div class="loop-fields">
           <v-text-field
@@ -57,24 +99,31 @@
               artifactTaskItems.filter((task) => loop.body.includes(task.value))
             "
             :label="tm('loops.exitTask')"
-            @update:model-value="change(loop.id, { exit_task_id: $event })"
+            @update:model-value="changeExitTask(loop.id, $event)"
           />
         </div>
         <div class="loop-fields">
-          <v-text-field
+          <v-select
             density="compact"
+            :items="fieldsForTask(loop.exit_task_id)"
             :model-value="loop.exit_condition.field"
             :label="tm('graph.field')"
-            @update:model-value="
-              change(loop.id, {
-                exit_condition: { ...loop.exit_condition, field: $event },
-              })
-            "
+            @update:model-value="setExitField(loop.id, $event)"
           />
           <v-select
             density="compact"
             :model-value="loop.exit_condition.operator ?? 'eq'"
-            :items="['eq', 'ne', 'gt', 'ge', 'lt', 'le']"
+            :items="
+              ['integer', 'number'].includes(exitType(loop))
+                ? ['eq', 'ne', 'gt', 'ge', 'lt', 'le'].map((value) => ({
+                    title: tm(`graph.operators.${value}`),
+                    value,
+                  }))
+                : ['eq', 'ne'].map((value) => ({
+                    title: tm(`graph.operators.${value}`),
+                    value,
+                  }))
+            "
             :label="tm('graph.operator')"
             @update:model-value="
               change(loop.id, {
@@ -82,16 +131,29 @@
               })
             "
           />
-          <v-text-field
+          <v-select
+            v-if="exitType(loop) === 'boolean'"
             density="compact"
-            :model-value="
-              typeof loop.exit_condition.value === 'string'
-                ? loop.exit_condition.value
-                : JSON.stringify(loop.exit_condition.value)
-            "
+            :model-value="loop.exit_condition.value"
+            :items="[
+              { title: 'true', value: true },
+              { title: 'false', value: false },
+            ]"
             :label="tm('graph.value')"
-            :hint="tm('graph.valueHint')"
-            persistent-hint
+            @update:model-value="
+              change(loop.id, {
+                exit_condition: { ...loop.exit_condition, value: $event },
+              })
+            "
+          />
+          <v-text-field
+            v-else-if="exitType(loop) !== 'null'"
+            density="compact"
+            :type="
+              ['integer', 'number'].includes(exitType(loop)) ? 'number' : 'text'
+            "
+            :model-value="loop.exit_condition.value"
+            :label="tm('graph.value')"
             @update:model-value="setValue(loop.id, $event)"
           />
           <v-text-field
@@ -142,11 +204,15 @@
             "
             :label="tm('loops.source')"
             @update:model-value="
-              setFeedback(loop.id, index, { source: $event })
+              setFeedback(loop.id, index, {
+                source: $event,
+                field: fieldsForTask($event)[0]?.value ?? '',
+              })
             "
           />
-          <v-text-field
+          <v-select
             density="compact"
+            :items="fieldsForTask(feedback.source)"
             :model-value="feedback.field ?? 'text'"
             :label="tm('graph.field')"
             @update:model-value="setFeedback(loop.id, index, { field: $event })"
@@ -200,7 +266,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref } from "vue";
 import type {
   GraphDefinition,
   GraphLoop,
@@ -212,6 +278,8 @@ const props = withDefaults(
     definition: GraphDefinition;
     readonly?: boolean;
     collapsed: string[];
+    fieldsForTask: (id: string) => { title: string; value: string }[];
+    issues: { path: string; message: string }[];
   }>(),
   { readonly: false },
 );
@@ -230,10 +298,12 @@ const artifactTaskItems = computed(() =>
     .map((task) => ({ title: task.name, value: task.id })),
 );
 
+const newLoopId = ref<string | null>(null);
 function addLoop() {
   const loops = props.definition.loops ?? [];
   let index = 1;
   while (loops.some((loop) => loop.id === `loop_${index}`)) index++;
+  newLoopId.value = `loop_${index}`;
   emit("update:loops", [
     ...loops,
     {
@@ -255,15 +325,57 @@ function change(id: string, values: Partial<GraphLoop>) {
     ),
   );
 }
-function setValue(id: string, text: string) {
-  const loop = props.definition.loops?.find((loop) => loop.id === id);
+function changeExitTask(id: string, taskId: string) {
+  const loop = props.definition.loops?.find((item) => item.id === id);
   if (!loop) return;
-  let value;
-  try {
-    value = JSON.parse(text);
-  } catch {
-    value = text;
-  }
+  const field = props.fieldsForTask(taskId)[0];
+  const type = field?.title.split(" · ").pop();
+  const value =
+    type === "boolean"
+      ? false
+      : type === "null"
+      ? null
+      : ["integer", "number"].includes(type ?? "")
+      ? 0
+      : "";
+  change(id, {
+    exit_task_id: taskId,
+    exit_condition: { field: field?.value ?? "", operator: "eq", value },
+  });
+}
+function exitType(loop: GraphLoop) {
+  return (
+    props
+      .fieldsForTask(loop.exit_task_id)
+      .find((field) => field.value === loop.exit_condition.field)
+      ?.title.split(" · ")
+      .pop() ?? "string"
+  );
+}
+function setExitField(id: string, field: string) {
+  const loop = props.definition.loops?.find((item) => item.id === id);
+  if (!loop) return;
+  const type = props
+    .fieldsForTask(loop.exit_task_id)
+    .find((item) => item.value === field)
+    ?.title.split(" · ")
+    .pop();
+  const value =
+    type === "boolean"
+      ? false
+      : type === "null"
+      ? null
+      : ["integer", "number"].includes(type ?? "")
+      ? 0
+      : "";
+  change(id, { exit_condition: { field, operator: "eq", value } });
+}
+function setValue(id: string, text: string) {
+  const loop = props.definition.loops?.find((item) => item.id === id);
+  if (!loop) return;
+  const value = ["integer", "number"].includes(exitType(loop))
+    ? Number(text)
+    : text;
   change(id, { exit_condition: { ...loop.exit_condition, value } });
 }
 function setFeedback(id: string, index: number, values: Partial<LoopFeedback>) {
@@ -288,6 +400,12 @@ function setFeedback(id: string, index: number, values: Partial<LoopFeedback>) {
   border: 1px solid rgba(var(--v-theme-primary), 0.3);
   border-radius: 12px;
   overflow-wrap: anywhere;
+}
+.loop-summary-detail {
+  display: block;
+  margin: 4px 0 0 16px;
+  font-size: 12px;
+  font-weight: normal;
 }
 summary {
   cursor: pointer;

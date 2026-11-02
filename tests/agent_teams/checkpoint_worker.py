@@ -530,7 +530,7 @@ async def run_worker(
 
         sql_event.listen(Session, "after_flush", retry_flush)
         sql_event.listen(Session, "after_commit", retry_commit)
-    if action == "start" and not scenario.startswith(("file_mode_", "inline_")):
+    if action == "start" and not scenario.startswith(("file_mode_", "inline_", "loop_")):
         if scenario in {"legacy_response", "legacy_upgrade_failure"} or scenario.startswith("overflow_legacy"):
             def before_flush(session, flush_context, instances):
                 """Construct a pre-T08 saved response through the real storage seam.

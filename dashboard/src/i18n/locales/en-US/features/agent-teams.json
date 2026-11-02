@@ -575,6 +575,7 @@
   },
   "loops": {
     "add": "Add bounded loop",
+    "edit": "Edit loop",
     "new": "Review and revise",
     "body": "Loop body",
     "exitTask": "Exit result task",

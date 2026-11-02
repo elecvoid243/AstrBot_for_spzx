@@ -288,6 +288,12 @@ Switching or closing the page does not stop core execution. Refreshing a URL wit
 
 ## Configure a bounded review and revision loop
 
+![Bounded loop configuration with sample data](/images/agent-teams-bounded-loops-en.jpg)
+
+The screenshot shows the actual editor component with sample data.
+
+Choose the exit and feedback fields from the required scalar outputs of each task. The summary shows each previous-round result and its next-round input; expanding an iteration shows its actual feedback inputs and pinned result.
+
 Open **Agent Teams → Assets → Workflows → New Workflow / Edit Asset**. Configure the writer and independent review tasks, an acyclic dependency from writer to reviewer, and the review output contract with a required Boolean `approved` field. Use **Add bounded loop** to choose the explicit body, exit result task, field comparison (`approved eq true`) and maximum iterations (1–100, within the effective member limit). Arbitrary expressions, graph back edges, overlapping bodies and a body that leaves and reenters its group are rejected before execution.
 
 For the writer, declare first-round draft and feedback inputs. Under the loop, **Add feedback input** explicitly maps the previous writer's text to the next writer's draft and the previous review's text to its feedback. Ordinary dependency inputs within each round read that round's output. Collapse or expand the body to inspect the group on the actual canvas. Saving appends an asset version; existing runs retain their definition and configuration.

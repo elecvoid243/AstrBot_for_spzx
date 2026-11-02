@@ -44,16 +44,12 @@ async def run_loop_scenario(
                 "definition": {
                     "name": "Revision role",
                     "prompt": "Follow the explicit task.",
-                    "tools": ["evidence"],
+                    "provider_id": "model-original",
+                    "tools": ["external_evidence"],
                     "max_steps": 5,
                     "max_instances": 2,
                 },
-                "installation": {
-                    "bindings": {
-                        "model": "model-original",
-                        "evidence": "external_evidence",
-                    }
-                },
+                "installation": {"profile_id": "default"},
             },
         )
         definition = revision_definition(role["role_id"])
@@ -69,6 +65,7 @@ async def run_loop_scenario(
             },
         }
         definition["edges"][-1]["target"] = "approve"
+        definition["result_task_id"] = "approve"
         asset = await service.save_asset("alice", {"definition": definition})
 
         def stop(session, flush_context, instances):

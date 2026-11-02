@@ -51,10 +51,19 @@
           <p>{{ tm("v2.attempt") }} {{ task.state.attempt_id }}</p>
           <p>
             {{ tm("loops.usage") }}:
-            {{ task.usage?.model_calls ?? task.recovery?.model_calls ?? tm("loops.unknown") }}
+            {{
+              task.usage?.model_calls ??
+              task.recovery?.model_calls ??
+              tm("loops.unknown")
+            }}
           </p>
           <p>
-            {{ tm("graph.inputs") }}: {{ JSON.stringify(task.snapshot.inputs) }}
+            {{ tm("graph.inputs") }}:
+            {{
+              JSON.stringify(
+                task.snapshot.iteration_inputs ?? task.snapshot.inputs,
+              )
+            }}
           </p>
           <p>{{ tm("v2.result") }}: {{ JSON.stringify(task.result) }}</p>
           <p v-if="task.result_ref">

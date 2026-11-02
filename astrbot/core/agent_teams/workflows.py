@@ -4886,7 +4886,10 @@ class WorkflowService:
                     for loop in loops.values():
                         if loop["status"] not in {"passed", "exhausted", "skipped"}:
                             loop["status"] = "cancelled"
-                            if loop["iterations"][-1]["status"] == "running":
+                            if loop["iterations"][-1]["status"] in {
+                                "running",
+                                "blocked",
+                            }:
                                 loop["iterations"][-1]["status"] = "cancelled"
                     if loops:
                         row.state = {**row.state, "loops": loops}
@@ -6058,16 +6061,19 @@ class WorkflowService:
                 row.status in {"pending", "running", "waiting_human", "waiting_child"}
                 for row in body
             ):
-                loop["status"] = "running"
+                loop["status"] = iteration["status"] = "running"
+                loop.pop("reason", None)
                 continue
             if (
                 any(row.status not in {"completed", "skipped"} for row in body)
                 or rows[definition["exit_task_id"]].status != "completed"
             ):
-                loop["status"] = "blocked"
+                loop["status"] = iteration["status"] = "blocked"
+                loop["reason"] = "Loop tasks or exit did not complete"
                 continue
             if iteration.get("exit_reference") and loop["status"] == "blocked":
                 continue
+            loop.pop("reason", None)
             rule = definition["exit_condition"]
             source = rows[definition["exit_task_id"]]
             value = source.result
@@ -6105,6 +6111,10 @@ class WorkflowService:
             loop["status"] = (
                 "passed" if passed else "exhausted" if exhausted else "running"
             )
+            if exhausted and not passed and not loop.get("reason"):
+                loop["reason"] = (
+                    "Loop maximum iterations reached without satisfying the exit condition"
+                )
             session.add(
                 AgentWorkflowEvent(
                     run_id=root.run_id,
@@ -6127,7 +6137,7 @@ class WorkflowService:
                 if rows[feedback["source"]].status != "completed"
             ]
             if missing_feedback:
-                loop["status"] = "blocked"
+                loop["status"] = iteration["status"] = "blocked"
                 loop["reason"] = (
                     "Next-round feedback has no validated result: "
                     + ", ".join(missing_feedback)

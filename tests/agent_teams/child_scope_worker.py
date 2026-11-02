@@ -224,7 +224,11 @@ async def run_child_scenario(
                 "alice",
                 run_id,
                 before["todos"][0]["todo_id"],
-                {"request_id": "child-approval", "action": "approve"},
+                {
+                    "request_id": "child-approval",
+                    "action": "approve",
+                    "artifact_ref": before["todos"][0]["artifact_ref"],
+                },
             )
             assert answered["tasks"][0]["status"] == "waiting_child"
             assert answered["todos"][0]["status"] == "answered"

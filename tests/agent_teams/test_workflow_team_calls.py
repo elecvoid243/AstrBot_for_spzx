@@ -36,8 +36,14 @@ async def test_one_capacity_workflow_calls_pinned_team_with_declared_inputs(
             "definition": {
                 "kind": "autonomous",
                 "name": "Research child",
-                "coordinator": {"role_id": env.role["role_id"], "role_version": 1},
-                "allowed_roles": [{"role_id": env.role["role_id"], "role_version": 1}],
+                "coordinator": {
+                    "id": "coordinator",
+                    "role_id": env.role["role_id"],
+                    "role_version": 1,
+                },
+                "allowed_roles": [
+                    {"id": "worker", "role_id": env.role["role_id"], "role_version": 1}
+                ],
                 "required_inputs": ["goal", "notes"],
                 "max_parallel": 1,
                 "output_contract": contract,
@@ -162,8 +168,14 @@ async def test_child_required_input_rejects_empty_upstream_result(workflow_env, 
             "definition": {
                 "kind": "autonomous",
                 "name": "Child",
-                "coordinator": {"role_id": env.role["role_id"], "role_version": 1},
-                "allowed_roles": [{"role_id": env.role["role_id"], "role_version": 1}],
+                "coordinator": {
+                    "id": "coordinator",
+                    "role_id": env.role["role_id"],
+                    "role_version": 1,
+                },
+                "allowed_roles": [
+                    {"id": "worker", "role_id": env.role["role_id"], "role_version": 1}
+                ],
             }
         },
     )
@@ -279,8 +291,14 @@ async def test_root_cancel_reaches_child_scope_and_keeps_effects(workflow_env):
             "definition": {
                 "kind": "autonomous",
                 "name": "Child",
-                "coordinator": {"role_id": env.role["role_id"], "role_version": 1},
-                "allowed_roles": [{"role_id": env.role["role_id"], "role_version": 1}],
+                "coordinator": {
+                    "id": "coordinator",
+                    "role_id": env.role["role_id"],
+                    "role_version": 1,
+                },
+                "allowed_roles": [
+                    {"id": "worker", "role_id": env.role["role_id"], "role_version": 1}
+                ],
             }
         },
     )
@@ -354,8 +372,14 @@ async def test_child_wait_or_failure_leaves_independent_branch_ready(
             "definition": {
                 "kind": "autonomous",
                 "name": "Child",
-                "coordinator": {"role_id": env.role["role_id"], "role_version": 1},
-                "allowed_roles": [{"role_id": env.role["role_id"], "role_version": 1}],
+                "coordinator": {
+                    "id": "coordinator",
+                    "role_id": env.role["role_id"],
+                    "role_version": 1,
+                },
+                "allowed_roles": [
+                    {"id": "worker", "role_id": env.role["role_id"], "role_version": 1}
+                ],
                 **(
                     {}
                     if failure
@@ -445,7 +469,6 @@ async def test_child_wait_or_failure_leaves_independent_branch_ready(
     else:
         todo = current["todos"][0]
         assert todo["root_run_id"] == run["run_id"]
-        cursor = current["cursor"]
         paused = await env.service.control_run(
             "alice", run["run_id"], {"action": "pause", "request_id": "pause"}
         )
@@ -454,7 +477,11 @@ async def test_child_wait_or_failure_leaves_independent_branch_ready(
             "alice",
             run["run_id"],
             todo["todo_id"],
-            {"action": "approve", "request_id": "approval"},
+            {
+                "action": "approve",
+                "request_id": "approval",
+                "artifact_ref": todo["artifact_ref"],
+            },
         )
         assert answered["todos"][0]["status"] == "answered"
         assert answered["tasks"][0]["status"] == "waiting_child"
@@ -464,8 +491,10 @@ async def test_child_wait_or_failure_leaves_independent_branch_ready(
         completed = await completed_run(env.service, run["run_id"])
         assert completed["status"] == "completed"
         assert completed["tasks"][0]["result"] == {"text": "Pinned child report"}
-        changed = await env.service.get_events("alice", run["run_id"], cursor)
-        assert any(event["kind"] == "child.returned" for event in changed["events"])
+        assert (
+            completed["tasks"][0]["result_ref"]
+            == completed["scopes"][0]["tasks"][0]["result_ref"]
+        )
 
 
 @pytest.mark.asyncio
@@ -500,8 +529,14 @@ async def test_invalid_child_call_is_rejected_without_partial_execution(
             "definition": {
                 "kind": "autonomous",
                 "name": "Child",
-                "coordinator": {"role_id": env.role["role_id"], "role_version": 1},
-                "allowed_roles": [{"role_id": env.role["role_id"], "role_version": 1}],
+                "coordinator": {
+                    "id": "coordinator",
+                    "role_id": env.role["role_id"],
+                    "role_version": 1,
+                },
+                "allowed_roles": [
+                    {"id": "worker", "role_id": env.role["role_id"], "role_version": 1}
+                ],
             }
         },
     )
@@ -560,8 +595,14 @@ async def test_later_child_creation_uses_original_asset_and_role_snapshot(workfl
             "definition": {
                 "kind": "autonomous",
                 "name": "Original child",
-                "coordinator": {"role_id": env.role["role_id"], "role_version": 1},
-                "allowed_roles": [{"role_id": env.role["role_id"], "role_version": 1}],
+                "coordinator": {
+                    "id": "coordinator",
+                    "role_id": env.role["role_id"],
+                    "role_version": 1,
+                },
+                "allowed_roles": [
+                    {"id": "worker", "role_id": env.role["role_id"], "role_version": 1}
+                ],
             }
         },
     )
@@ -614,7 +655,11 @@ async def test_later_child_creation_uses_original_asset_and_role_snapshot(workfl
             "definition": {
                 **team["definition"],
                 "name": "Edited child",
-                "coordinator": {"role_id": env.role["role_id"], "role_version": 2},
+                "coordinator": {
+                    "id": "coordinator",
+                    "role_id": env.role["role_id"],
+                    "role_version": 2,
+                },
             },
         },
         team["asset_id"],
@@ -660,8 +705,14 @@ async def test_loop_creates_new_child_scope_and_task_without_sharing_context(
             "definition": {
                 "kind": "autonomous",
                 "name": "Review child",
-                "coordinator": {"role_id": env.role["role_id"], "role_version": 1},
-                "allowed_roles": [{"role_id": env.role["role_id"], "role_version": 1}],
+                "coordinator": {
+                    "id": "coordinator",
+                    "role_id": env.role["role_id"],
+                    "role_version": 1,
+                },
+                "allowed_roles": [
+                    {"id": "worker", "role_id": env.role["role_id"], "role_version": 1}
+                ],
                 "output_contract": contract,
             }
         },
@@ -776,8 +827,14 @@ async def test_retry_child_task_keeps_scope_and_parent_attempt(workflow_env):
             "definition": {
                 "kind": "autonomous",
                 "name": "Retry child",
-                "coordinator": {"role_id": env.role["role_id"], "role_version": 1},
-                "allowed_roles": [{"role_id": env.role["role_id"], "role_version": 1}],
+                "coordinator": {
+                    "id": "coordinator",
+                    "role_id": env.role["role_id"],
+                    "role_version": 1,
+                },
+                "allowed_roles": [
+                    {"id": "worker", "role_id": env.role["role_id"], "role_version": 1}
+                ],
             }
         },
     )
@@ -870,8 +927,14 @@ async def test_parent_ancestry_does_not_grant_child_member_visibility(workflow_e
             "definition": {
                 "kind": "autonomous",
                 "name": "Scope child",
-                "coordinator": {"role_id": env.role["role_id"], "role_version": 1},
-                "allowed_roles": [{"role_id": env.role["role_id"], "role_version": 1}],
+                "coordinator": {
+                    "id": "coordinator",
+                    "role_id": env.role["role_id"],
+                    "role_version": 1,
+                },
+                "allowed_roles": [
+                    {"id": "worker", "role_id": env.role["role_id"], "role_version": 1}
+                ],
             }
         },
     )
@@ -989,8 +1052,14 @@ async def test_missing_child_resources_cannot_leave_a_started_root(workflow_env)
             "definition": {
                 "kind": "autonomous",
                 "name": "Resource child",
-                "coordinator": {"role_id": env.role["role_id"], "role_version": 1},
-                "allowed_roles": [{"role_id": env.role["role_id"], "role_version": 1}],
+                "coordinator": {
+                    "id": "coordinator",
+                    "role_id": env.role["role_id"],
+                    "role_version": 1,
+                },
+                "allowed_roles": [
+                    {"id": "worker", "role_id": env.role["role_id"], "role_version": 1}
+                ],
             }
         },
     )
@@ -1030,8 +1099,14 @@ async def test_graph_field_handoff_does_not_grant_child_full_artifact(workflow_e
             "definition": {
                 "kind": "autonomous",
                 "name": "Child",
-                "coordinator": {"role_id": env.role["role_id"], "role_version": 1},
-                "allowed_roles": [{"role_id": env.role["role_id"], "role_version": 1}],
+                "coordinator": {
+                    "id": "coordinator",
+                    "role_id": env.role["role_id"],
+                    "role_version": 1,
+                },
+                "allowed_roles": [
+                    {"id": "worker", "role_id": env.role["role_id"], "role_version": 1}
+                ],
             }
         },
     )

@@ -8,6 +8,7 @@ from astrbot.core import logger
 from astrbot.core.agent.message import Message
 from astrbot.core.agent.runners.base import AgentState
 from astrbot.core.agent.runners.tool_loop_agent_runner import ToolLoopAgentRunner
+from astrbot.core.agent_team_execution import HumanInputRequired, current_team_execution
 from astrbot.core.astr_agent_context import AstrAgentContext
 from astrbot.core.message.components import BaseMessageComponent, Json, Plain
 from astrbot.core.message.message_event_result import (
@@ -362,6 +363,12 @@ async def run_agent(
                     await stop_watcher
                 except asyncio.CancelledError:
                     pass
+            if isinstance(e, HumanInputRequired):
+                execution = current_team_execution.get()
+                if execution is None or execution.request_human is None:
+                    raise
+                execution.human_wait = e
+                return
             logger.error(traceback.format_exc())
 
             custom_error_message = extract_persona_custom_error_message_from_event(

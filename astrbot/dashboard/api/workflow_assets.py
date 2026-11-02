@@ -452,7 +452,7 @@ async def export_asset(
     username: str = Depends(require_dashboard_user),
     service: WorkflowService = Depends(get_workflow_service),
 ):
-    """Download a validated definition package without local installation data.
+    """Download a fixed definition closure and source resource requirements.
 
     Args:
         asset_id: Workflow owned by the authenticated user.
@@ -485,7 +485,7 @@ async def preview_import(
         service: Shared public asset service.
 
     Returns:
-        Grouped dependency choices, issues and existing-installation identity.
+        Source requirements, local candidates and readiness diagnostics.
     """
     try:
         return ok(await service.preview_import(username, payload.model_dump()))
@@ -501,10 +501,10 @@ async def import_asset(
     username: str = Depends(require_dashboard_user),
     service: WorkflowService = Depends(get_workflow_service),
 ):
-    """Confirm one atomic installation or retain a non-runnable pending asset.
+    """Confirm one atomic installation of the complete selected closure.
 
     Args:
-        payload: Package, reviewed local choices and pending-save preference.
+        payload: Package and reviewed local resource choices.
         username: Authenticated installing owner; package content grants no rights.
         service: Shared public asset service.
 
@@ -532,6 +532,23 @@ async def start_run(
         return JSONResponse(
             error(str(exc), {"fields": exc.fields}), status_code=exc.status
         )
+
+
+@router.get("/workflow_human_requests")
+async def list_human_requests(
+    username: str = Depends(require_dashboard_user),
+    service: WorkflowService = Depends(get_workflow_service),
+):
+    """Return pending human requests visible to the authenticated owner.
+
+    Args:
+        username: Authenticated dashboard user.
+        service: Shared workflow service.
+
+    Returns:
+        Persisted pending requests.
+    """
+    return ok(await service.list_human_requests(username))
 
 
 @router.get("/workflow_runs")

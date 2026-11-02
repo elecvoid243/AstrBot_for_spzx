@@ -9,7 +9,8 @@ from astrbot.core.agent_team_execution import AgentTeamExecutionRegistry
 from astrbot.core.agent_team_tools import AgentTeamToolRegistry
 from astrbot.core.agent_teams.assets import RoleAssetError
 from astrbot.dashboard.services.agent_team_ports import TeamPorts
-from tests.agent_teams.test_workflow_assets import completed_run, workflow_env
+from tests.agent_teams.test_workflow_assets import completed_run
+from tests.agent_teams.test_workflow_assets import workflow_env as workflow_env
 
 
 @pytest.mark.asyncio
@@ -368,7 +369,11 @@ async def test_returned_file_revision_preserves_authorization_inputs_and_approva
         "alice",
         started["run_id"],
         current["todos"][0]["todo_id"],
-        {"request_id": "approve-v1", "action": "approve"},
+        {
+            "request_id": "approve-v1",
+            "action": "approve",
+            "artifact_ref": current["todos"][0]["artifact_ref"],
+        },
     )
     release.set()
     done = await completed_run(env.service, started["run_id"])

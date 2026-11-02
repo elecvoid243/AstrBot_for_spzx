@@ -35,6 +35,10 @@ class CheckpointRecoveryError(ProcessPersistenceError):
     """Block the original attempt until its saved capabilities can be restored."""
 
 
+class HumanInputRequired(Exception):
+    """Unwind an invocation after its durable human request has been saved."""
+
+
 @dataclass
 class NodeExecutionBinding:
     """Execution profile a dispatched team node turn must run with."""
@@ -56,6 +60,10 @@ class NodeExecutionBinding:
     """
     config_id: str | None
     """The config profile id whose PipelineScheduler should execute the turn."""
+    role_prompt: str | None = None
+    """Role text actually used to assemble the team framing."""
+    task_framing: str | None = None
+    """Explicit task and input framing used in the delivered turn."""
     persona_id: str | None = None
     """The persona override for this member, if any."""
     tools: list[str] | None = None
@@ -102,6 +110,10 @@ class NodeExecutionBinding:
     """Account for the admitted delivery, including late provider reports."""
     recovery_error: CheckpointRecoveryError | None = None
     """Restore failure retained when the main pipeline renders an error reply."""
+    request_human: Callable[[str, dict], Awaitable[dict]] | None = None
+    """Persist or read a choice for the trusted original tool invocation."""
+    human_wait: HumanInputRequired | None = None
+    """Durable suspension retained until the internal transport finishes."""
 
 
 current_team_execution: ContextVar[NodeExecutionBinding | None] = ContextVar(
@@ -252,6 +264,7 @@ async def execute_team_turn(
     pending_messages: Callable[[], Awaitable[list[dict]]] | None = None,
     begin_usage: Callable[[dict], Awaitable[dict]] | None = None,
     report_usage: Callable[[str, dict], Awaitable[dict]] | None = None,
+    request_human: Callable[[str, dict], Awaitable[dict]] | None = None,
 ) -> tuple[str, list]:
     """Execute a member or coordinator turn through the existing pipeline ports.
 
@@ -276,6 +289,7 @@ async def execute_team_turn(
         pending_messages: Scoped deliveries to commit with the next fresh context.
         begin_usage: Reserve an actual delivery under shared frozen limits.
         report_usage: Save consumption without altering the current executor fence.
+        request_human: Persist or read the original tool's human choice.
 
     Returns:
         Full reply text and existing chat message parts.
@@ -298,6 +312,8 @@ async def execute_team_turn(
         umo=member["umo"],
         owner_username=username,
         config_id=config_id,
+        role_prompt=member.get("system_prompt"),
+        task_framing=context,
         persona_id=execution.get("persona_id") or None,
         provider_id=execution.get("provider_id") or None,
         tools=execution.get("tools"),
@@ -319,6 +335,7 @@ async def execute_team_turn(
         pending_messages=pending_messages,
         begin_usage=begin_usage,
         report_usage=report_usage,
+        request_human=request_human,
     )
     token = AgentTeamExecutionRegistry.register(binding)
     framing = (
@@ -345,6 +362,8 @@ async def execute_team_turn(
             result = await ports.collect(
                 member["session_id"], binding.message_id, member["member_id"]
             )
+        if binding.human_wait is not None:
+            raise binding.human_wait
         if binding.recovery_error is not None:
             raise binding.recovery_error
         return result

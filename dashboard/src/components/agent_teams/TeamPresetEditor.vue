@@ -146,6 +146,7 @@
         <v-expansion-panels multiple>
           <RoleResourcesEditor
             :definition="preset.role ?? preset.overrides"
+            :override="!preset.role"
             :modes="modes"
             :catalog="catalog"
           />
@@ -198,13 +199,24 @@
               'tools',
               'skills',
               'knowledge_bases',
+              'human_wait',
             ]"
             :key="field"
             class="text-caption preview"
           >
             {{ tm(`roles.${field}`) }}:
             {{
-              Array.isArray(preview.effective[field])
+              field === "human_wait"
+                ? preview.effective[field]?.timeout_seconds == null
+                  ? tm("humanWait.unlimited")
+                  : `${preview.effective[field].timeout_seconds} ${tm(
+                      "humanWait.seconds",
+                    )} · ${tm(
+                      preview.effective[field].timeout_action === "wait"
+                        ? "humanWait.wait"
+                        : "humanWait.recommendation",
+                    )}`
+                : Array.isArray(preview.effective[field])
                 ? preview.effective[field].join(", ") ||
                   tm("graph.resourcesDisabled")
                 : preview.effective[field] || tm("roles.none")

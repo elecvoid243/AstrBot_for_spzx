@@ -22,7 +22,9 @@
     <div class="role-grid">
       <v-card v-for="role in roles" :key="role.role_id" variant="outlined">
         <v-card-text>
-          <h3 class="role-name text-h6">{{ role.definition.name }}</h3>
+          <h3 class="role-name text-h6">
+            {{ role.definition.name || tm("draft.untitled") }}
+          </h3>
           <v-chip
             size="x-small"
             variant="outlined"
@@ -30,8 +32,18 @@
             prepend-icon="mdi-account-outline"
             >{{ tm("workbench.template") }}</v-chip
           >
-          <p class="text-caption">
+          <p v-if="role.version" class="text-caption">
             {{ tm("roles.version") }} {{ role.version }}
+          </p>
+          <p v-else class="text-caption" data-testid="unpublished-draft">
+            {{ tm("draft.unpublished") }}
+          </p>
+          <p
+            v-if="role.version && role.hasDraft"
+            class="text-caption"
+            data-testid="editing-draft"
+          >
+            {{ tm("draft.editing") }}
           </p>
           <p class="role-name my-2">
             {{
@@ -41,6 +53,7 @@
             }}
           </p>
           <v-chip
+            v-if="role.version"
             size="small"
             :color="role.readiness?.ready ? 'success' : 'warning'"
             variant="tonal"
@@ -78,12 +91,19 @@
       max-width="1100"
       scrollable
       :fullscreen="mobile"
+      persistent
     >
       <v-card>
         <v-card-title class="text-h3 pa-4 pb-0 pl-6">{{
           currentId ? tm("roles.edit") : tm("roles.create")
         }}</v-card-title>
-        <v-card-text>
+        <v-card-text :inert="saving || draft.busy.value ? '' : undefined">
+          <DraftStatus
+            :draft="draft"
+            @reload="reloadDraft"
+            @discard="dialog = false"
+            @use-latest="useLatestDraft"
+          />
           <v-alert
             v-if="errorMessage"
             type="error"
@@ -286,7 +306,17 @@
                   }}</span>
                   <p>
                     {{
-                      Array.isArray(value)
+                      field === "human_wait"
+                        ? (value as any)?.timeout_seconds == null
+                          ? tm("humanWait.unlimited")
+                          : `${(value as any).timeout_seconds} ${tm(
+                              "humanWait.seconds",
+                            )} · ${tm(
+                              (value as any).timeout_action === "wait"
+                                ? "humanWait.wait"
+                                : "humanWait.recommendation",
+                            )}`
+                        : Array.isArray(value)
                         ? value.join(", ") || tm("roles.none")
                         : value ?? tm("roles.none")
                     }}
@@ -305,18 +335,21 @@
           </div>
         </v-card-text>
         <v-card-actions class="pa-4">
-          <v-btn variant="text" :disabled="saving" @click="dialog = false">{{
-            tm("roles.cancel")
-          }}</v-btn>
+          <v-btn
+            variant="text"
+            :disabled="saving || draft.busy.value"
+            @click="closeEditor"
+            >{{ tm("v2.close") }}</v-btn
+          >
           <v-spacer />
           <v-btn
             data-testid="save-role"
             color="primary"
             variant="tonal"
             :loading="saving"
-            :disabled="loading || previewing"
+            :disabled="loading || previewing || draft.busy.value"
             @click="save"
-            >{{ currentId ? tm("roles.saveVersion") : tm("roles.save") }}</v-btn
+            >{{ tm("draft.publish") }}</v-btn
           >
         </v-card-actions>
       </v-card>
@@ -328,6 +361,8 @@
 import { computed, nextTick, onMounted, ref, watch } from "vue";
 import { useDisplay } from "vuetify";
 import { roleAssetsApi } from "@/api/roleAssets";
+import { draftApi, useAssetDraft } from "@/composables/useAssetDraft";
+import DraftStatus from "./DraftStatus.vue";
 import { useModuleI18n } from "@/i18n/composables";
 import { extractApiError } from "@/utils/extractApiError";
 import RunnerCapabilities from "./RunnerCapabilities.vue";
@@ -336,6 +371,7 @@ import RoleResourcesEditor from "./RoleResourcesEditor.vue";
 const { tm } = useModuleI18n("features/agent-teams");
 const { mobile } = useDisplay();
 const roles = ref<any[]>([]);
+const draft = useAssetDraft("role");
 const catalog = ref<Record<string, any[]>>({
   profiles: [],
   models: [],
@@ -400,17 +436,26 @@ watch(
   () => {
     editorRevision++;
     previewStale.value = true;
+    if (dialog.value)
+      draft.change({
+        definition: payload().definition,
+        installation: payload().installation,
+      });
   },
   { deep: true },
 );
+watch(dialog, (open, wasOpen) => {
+  if (!open && wasOpen) void load();
+});
 
 async function load() {
   loading.value = true;
   loadError.value = "";
   try {
-    const [directory, resources] = await Promise.all([
+    const [directory, resources, drafts] = await Promise.all([
       roleAssetsApi.list(),
       roleAssetsApi.resources(),
+      draftApi.list("role"),
     ]);
     catalog.value = resources;
     roles.value = await Promise.all(
@@ -419,6 +464,20 @@ async function load() {
         readiness: await roleAssetsApi.preview(role),
       })),
     );
+    for (const item of drafts) {
+      const published = roles.value.find(
+        (role) => role.role_id === item.asset_id,
+      );
+      if (published) published.hasDraft = true;
+      else
+        roles.value.push({
+          role_id: item.asset_id,
+          version: null,
+          definition: item.body.definition,
+          installation: item.body.installation,
+          versions: [],
+        });
+    }
   } catch (err) {
     loadError.value = extractApiError(err, tm("roles.loadFailed")).message;
   } finally {
@@ -426,7 +485,9 @@ async function load() {
   }
 }
 
-function edit(role?: any) {
+async function edit(role?: any) {
+  dialog.value = false;
+  draft.close();
   currentId.value = role?.role_id ?? null;
   latestVersion.value = role?.versions?.[0] ?? role?.version ?? null;
   selectedVersion.value = role?.version ?? null;
@@ -451,13 +512,72 @@ function edit(role?: any) {
   resolved.value = null;
   errorMessage.value = "";
   groups.value = ["responsibility", "model"];
+  try {
+    const item = await draft.open(currentId.value, {
+      definition: payload().definition,
+      installation: payload().installation,
+    });
+    currentId.value = item.asset_id;
+    definition.value = item.body.definition;
+    installation.value = item.body.installation ?? { profile_id: "default" };
+    for (const field of resourceFields)
+      modes.value[field] =
+        definition.value[field] == null ? "inherit" : "custom";
+    await nextTick();
+    dialog.value = true;
+  } catch (err) {
+    loadError.value = extractApiError(err, tm("roles.loadFailed")).message;
+  }
+}
+
+async function reloadDraft() {
+  const item = await draft.reload();
+  dialog.value = false;
+  definition.value = item.body.definition;
+  installation.value = item.body.installation ?? { profile_id: "default" };
+  for (const field of resourceFields)
+    modes.value[field] = definition.value[field] == null ? "inherit" : "custom";
+  await nextTick();
   dialog.value = true;
+}
+
+async function useLatestDraft(latest: any) {
+  definition.value = JSON.parse(JSON.stringify(latest.definition));
+  installation.value = JSON.parse(JSON.stringify(latest.installation));
+  for (const field of resourceFields)
+    modes.value[field] = definition.value[field] == null ? "inherit" : "custom";
+  draft.change({
+    definition: payload().definition,
+    installation: payload().installation,
+  });
+  try {
+    await draft.rebase();
+  } catch (err) {
+    errorMessage.value = extractApiError(err, tm("roles.saveFailed")).message;
+  }
+}
+
+async function closeEditor() {
+  if (draft.status.value === "failed" || draft.status.value === "conflict")
+    return;
+  try {
+    await draft.flush();
+    dialog.value = false;
+  } catch {
+    /* The draft status retains the failure. */
+  }
 }
 
 async function openVersion(version: number) {
   if (!currentId.value) return;
   try {
-    edit(await roleAssetsApi.get(currentId.value, version));
+    const role = await roleAssetsApi.get(currentId.value, version);
+    definition.value = role.definition;
+    installation.value = role.installation;
+    for (const field of resourceFields)
+      modes.value[field] =
+        definition.value[field] == null ? "inherit" : "custom";
+    selectedVersion.value = version;
   } catch (err) {
     errorMessage.value = extractApiError(err, tm("roles.loadFailed")).message;
   }
@@ -513,7 +633,11 @@ async function save() {
   saving.value = true;
   errorMessage.value = "";
   try {
-    await roleAssetsApi.save(currentId.value, payload());
+    draft.change({
+      definition: payload().definition,
+      installation: payload().installation,
+    });
+    await draft.publish();
     dialog.value = false;
     await load();
   } catch (err) {

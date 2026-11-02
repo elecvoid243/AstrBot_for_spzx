@@ -696,6 +696,41 @@ export type CronJobRequest = {
     [key: string]: unknown | string | boolean;
 };
 
+/**
+ * Initial editable snapshot and optional existing asset identity.
+ */
+export type DraftCreateRequest = {
+    body: {
+        [key: string]: unknown;
+    };
+    asset_id?: (string | null);
+};
+
+/**
+ * Revision to publish as an immutable asset version.
+ */
+export type DraftPublishRequest = {
+    revision: number;
+};
+
+/**
+ * Expected draft revision and explicitly reviewed latest version.
+ */
+export type DraftRebaseRequest = {
+    expected_revision: number;
+    published_version: number;
+};
+
+/**
+ * Snapshot update guarded by an expected revision.
+ */
+export type DraftUpdateRequest = {
+    body: {
+        [key: string]: unknown;
+    };
+    expected_revision: number;
+};
+
 export type DynamicConfig = {
     [key: string]: unknown;
 };
@@ -805,6 +840,9 @@ export type HumanAnswerRequest = {
     action: 'answer' | 'approve' | 'reject';
     answer?: (string | null);
     feedback?: (string | null);
+    choice_id?: (string | null);
+    free_text?: (string | null);
+    artifact_ref?: (ArtifactReference | null);
 };
 
 export type action2 = 'answer' | 'approve' | 'reject';
@@ -813,15 +851,29 @@ export type action2 = 'answer' | 'approve' | 'reject';
  * A frozen question or approval of one upstream artifact version.
  */
 export type HumanTask = {
+    human_wait?: HumanWaitPolicy;
     kind: 'question' | 'approval';
     question: string;
     choices?: Array<(string)>;
     max_length?: number;
     artifact_task_id?: (string | null);
     artifact_version?: number;
+    recommendation_task_id?: (string | null);
+    recommendation_value_field?: (string | null);
+    recommendation_reason_field?: (string | null);
 };
 
 export type kind = 'question' | 'approval';
+
+/**
+ * Automatic recommendation use requires an explicit deadline.
+ */
+export type HumanWaitPolicy = {
+    timeout_seconds?: (number | null);
+    timeout_action?: 'wait' | 'use_recommendation';
+};
+
+export type timeout_action = 'wait' | 'use_recommendation';
 
 export type ImMessageRequest = {
     umo: string;
@@ -945,51 +997,41 @@ export type NeoReleaseActionRequest = {
 };
 
 /**
- * One exact portable asset version in the entry's reference closure.
+ * One exact asset version in the entry's reference closure.
  */
 export type PackageAsset = {
     asset_id: string;
     version: number;
-    definition: (WorkflowDefinition | GraphDefinition | AutonomousDefinition);
+    definition: (GraphDefinition | AutonomousDefinition);
 };
 
 /**
- * A logical resource requirement; fingerprints contain no local identity.
+ * A source resource identity and its non-secret compatibility contract.
  */
 export type PackageDependency = {
-    slot: string;
-    kind: 'profiles' | 'models' | 'tools' | 'skills' | 'knowledge_bases';
+    kind: 'profiles' | 'models' | 'personas' | 'tools' | 'skills' | 'knowledge_bases';
+    source_id: string;
+    display_name?: string;
+    description?: string;
     fingerprint?: (string | null);
     runner_type?: (string | null);
     capabilities?: Array<(string)>;
-    logical_slots?: Array<(string)>;
-    /**
-     * Original aliases used by role defaults or exact asset_id:version contexts; omitted provenance keeps all declared requirements global.
-     */
-    uses?: ({
-    [key: string]: Array<(string)>;
-} | null);
-    description?: string;
-    display_name?: string;
     input_schema?: ({
     [key: string]: unknown;
 } | null);
 };
 
-export type kind2 = 'profiles' | 'models' | 'tools' | 'skills' | 'knowledge_bases';
+export type kind2 = 'profiles' | 'models' | 'personas' | 'tools' | 'skills' | 'knowledge_bases';
 
 /**
- * Fixed role content with an explicit description of included prompt origin.
+ * An exact role version and its source profile identity.
  */
 export type PackageRole = {
     role_id: string;
     version: number;
     definition: RoleDefinition;
-    prompt_source: 'role' | 'persona' | 'profile' | 'task';
-    dependencies: Array<PackageDependency>;
+    installation: RoleInstallation;
 };
-
-export type prompt_source = 'role' | 'persona' | 'profile' | 'task';
 
 export type ParameterAttachmentId = string;
 
@@ -1198,9 +1240,19 @@ export type ReorderRequest = {
 };
 
 /**
+ * One explicit source-to-local resource choice.
+ */
+export type ResourceSelection = {
+    kind: 'profiles' | 'models' | 'personas' | 'tools' | 'skills' | 'knowledge_bases';
+    source_id: string;
+    target_id: string;
+};
+
+/**
  * Role content with direct resource identities.
  */
 export type RoleDefinition = {
+    human_wait?: (HumanWaitPolicy | null);
     prompt?: (string | null);
     provider_id?: (string | null);
     persona_id?: (string | null);
@@ -1231,6 +1283,7 @@ export type RoleInstallation = {
  * Optional configuration; lists inherit on null and disable when empty.
  */
 export type RoleOverrides = {
+    human_wait?: (HumanWaitPolicy | null);
     prompt?: (string | null);
     provider_id?: (string | null);
     persona_id?: (string | null);
@@ -1478,12 +1531,11 @@ export type ValidationError = {
 };
 
 /**
- * An allowed workflow version and the task whose exact result is returned.
+ * An exact workflow version invoked in an independent scope.
  */
 export type WorkflowCall = {
     asset_id: string;
     version: number;
-    result_task_id: string;
 };
 
 /**
@@ -1528,10 +1580,7 @@ export type WorkflowGraph = {
  */
 export type WorkflowImportRequest = {
     package: WorkflowPackage;
-    installations?: {
-        [key: string]: RoleInstallation;
-    };
-    save_pending?: boolean;
+    selections?: Array<ResourceSelection>;
 };
 
 export type WorkflowNode = {
@@ -1542,19 +1591,18 @@ export type WorkflowNode = {
 };
 
 /**
- * A self-contained definition closure without local authorization.
+ * A complete source closure with direct resource requirements.
  */
 export type WorkflowPackage = {
     asset_id: string;
     version: number;
-    definition: (WorkflowDefinition | GraphDefinition | AutonomousDefinition);
+    definition: (GraphDefinition | AutonomousDefinition);
     format: "astrbot.workflow";
-    format_version: 1 | 2;
+    format_version: 3;
     roles: Array<PackageRole>;
     assets?: Array<PackageAsset>;
+    requirements?: Array<PackageDependency>;
 };
-
-export type format_version = 1 | 2;
 
 /**
  * Explicit new attempt using the failed attempt's exact frozen inputs.
@@ -5411,6 +5459,10 @@ export type StartRunApiV1WorkflowAssetsAssetIdRunsPostData = {
 export type StartRunApiV1WorkflowAssetsAssetIdRunsPostResponse = (unknown);
 
 export type StartRunApiV1WorkflowAssetsAssetIdRunsPostError = (HTTPValidationError);
+
+export type ListHumanRequestsApiV1WorkflowHumanRequestsGetResponse = (unknown);
+
+export type ListHumanRequestsApiV1WorkflowHumanRequestsGetError = unknown;
 
 export type ListRunsApiV1WorkflowRunsGetData = {
     query?: {

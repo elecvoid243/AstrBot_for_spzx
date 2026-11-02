@@ -1,10 +1,103 @@
 <template>
   <v-card variant="outlined" class="my-3" data-testid="human-todo">
     <v-card-text>
+      <div v-if="dynamic && todo.choice_spec?.title" class="text-overline">
+        {{ todo.choice_spec.title }}
+      </div>
       <strong>{{ todo.question }}</strong>
+      <MarkdownView
+        v-if="dynamic && todo.choice_spec?.extra_content"
+        class="mt-3"
+        :source="todo.choice_spec.extra_content"
+      />
+      <p
+        v-if="!restricted && (todo.run_name || todo.task_name)"
+        class="text-body-2 mt-2"
+        data-testid="human-origin"
+      >
+        {{ tm("human.run") }}: {{ todo.run_name }} · {{ tm("human.task") }}:
+        {{ todo.task_name }}
+      </p>
       <p class="text-caption mt-2">
         {{ tm(`human.status.${todo.status}`)
-        }}<span v-if="!restricted"> · {{ todo.task_run_id }}</span>
+        }}<span v-if="!restricted">
+          · {{ todo.root_run_id }} / {{ todo.task_run_id }}</span
+        >
+      </p>
+      <div class="text-caption mt-2" data-testid="human-deadline">
+        <p>
+          {{ tm("humanWait.deadline") }}:
+          {{
+            todo.deadline == null
+              ? tm("humanWait.unlimited")
+              : new Date(todo.deadline * 1000).toLocaleString()
+          }}
+        </p>
+        <p>
+          {{ tm("humanWait.action") }}:
+          {{
+            tm(
+              todo.human_wait?.timeout_action === "use_recommendation"
+                ? "humanWait.recommendation"
+                : "humanWait.wait",
+            )
+          }}
+        </p>
+        <p v-if="todo.timeout_reason">
+          {{ tm(`humanWait.${todo.timeout_reason}`) }}
+        </p>
+        <p v-if="todo.decision_source?.type">
+          {{
+            tm(
+              todo.decision_source.type === "recommendation"
+                ? "humanWait.decisionRecommendation"
+                : "humanWait.decisionHuman",
+            )
+          }}
+        </p>
+      </div>
+      <div
+        v-if="todo.recommendation"
+        class="mt-2"
+        data-testid="human-recommendation"
+      >
+        <strong
+          >{{
+            tm(
+              todo.kind === "approval"
+                ? "human.recommendedAction"
+                : "human.recommendation",
+            )
+          }}:
+          {{
+            todo.kind === "approval" && todo.recommendation.value === "approve"
+              ? tm("human.approve")
+              : todo.kind === "approval" &&
+                todo.recommendation.value === "reject"
+              ? tm("human.returnForRevision")
+              : dynamic
+              ? todo.choice_spec?.options?.find(
+                  (option: any) => option.id === todo.recommendation.value,
+                )?.label ?? todo.recommendation.value
+              : todo.recommendation.value
+          }}</strong
+        >
+        <p>{{ todo.recommendation.reason }}</p>
+      </div>
+      <p v-else-if="todo.recommendation_error" class="text-caption mt-2">
+        {{ tm("human.recommendationMissing") }}
+      </p>
+      <p v-if="!restricted && todo.recommendation_ref" class="text-caption">
+        {{ tm("human.recommendationSource") }}:
+        {{ todo.recommendation_source_name }} ·
+        {{ todo.recommendation_ref.artifact_id }} · v{{
+          todo.recommendation_ref.version
+        }}
+        · {{ todo.recommendation_fields?.value }} /
+        {{ todo.recommendation_fields?.reason }}
+      </p>
+      <p v-if="paused && todo.status === 'pending' && !cancelled" class="mt-2">
+        {{ tm("human.canSavePaused") }}
       </p>
       <p v-if="paused && todo.status === 'answered'" class="mt-2">
         {{ tm("human.savedWaiting") }}
@@ -61,7 +154,57 @@
         </template>
       </template>
       <template v-if="todo.status === 'pending' && !cancelled">
-        <template v-if="todo.kind === 'question'">
+        <template v-if="dynamic">
+          <fieldset class="choice-list mt-4" :disabled="busy">
+            <legend class="text-body-2">{{ tm("human.answer") }}</legend>
+            <label
+              v-for="option in todo.choice_spec?.options ?? []"
+              :key="option.id"
+              class="choice-option"
+              :class="{ selected: answer === option.id }"
+            >
+              <input
+                v-model="answer"
+                type="radio"
+                :value="option.id"
+                :name="`choice-${todo.todo_id}`"
+              />
+              <span
+                ><strong>{{ option.label }}</strong
+                ><span v-if="option.description" class="choice-description">{{
+                  option.description
+                }}</span></span
+              >
+            </label>
+            <label
+              class="choice-option"
+              :class="{ selected: answer === '__free_text__' }"
+            >
+              <input
+                v-model="answer"
+                type="radio"
+                value="__free_text__"
+                :name="`choice-${todo.todo_id}`"
+              />
+              <span>{{ tm("human.freeChoice") }}</span>
+            </label>
+          </fieldset>
+          <v-textarea
+            v-model="feedback"
+            :maxlength="10000"
+            :counter="10000"
+            :label="
+              tm(
+                answer === '__free_text__'
+                  ? 'human.freeChoice'
+                  : 'human.optionalNote',
+              )
+            "
+            :placeholder="todo.choice_spec?.input_placeholder"
+            data-testid="human-choice-text"
+          />
+        </template>
+        <template v-else-if="todo.kind === 'question'">
           <v-select
             v-if="todo.constraints.choices.length"
             v-model="answer"
@@ -79,15 +222,27 @@
           />
         </template>
         <v-textarea
+          v-if="!dynamic"
           v-model="feedback"
-          :label="tm('human.feedback')"
+          :label="
+            tm(
+              todo.kind === 'approval'
+                ? 'human.reworkFeedback'
+                : 'human.feedback',
+            )
+          "
           data-testid="human-feedback"
         />
         <div class="d-flex flex-wrap ga-2">
           <v-btn
             variant="tonal"
             :disabled="
-              busy || (todo.kind === 'question' ? !answer.trim() : !preview)
+              busy ||
+              (dynamic
+                ? !answer || (answer === '__free_text__' && !feedback.trim())
+                : todo.kind === 'question'
+                ? !answer.trim()
+                : !preview)
             "
             data-testid="human-submit"
             @click="submit(todo.kind === 'question' ? 'answer' : 'approve')"
@@ -96,15 +251,38 @@
             }}</v-btn
           >
           <v-btn
+            v-if="!dynamic"
             variant="text"
-            :disabled="busy || !feedback.trim()"
+            :disabled="
+              busy || !feedback.trim() || (todo.kind === 'approval' && !preview)
+            "
             data-testid="human-reject"
             @click="submit('reject')"
-            >{{ tm("human.reject") }}</v-btn
+            >{{
+              tm(
+                todo.kind === "approval"
+                  ? "human.returnForRevision"
+                  : "human.reject",
+              )
+            }}</v-btn
           >
         </div>
       </template>
-      <pre v-if="todo.response" class="human-content">{{
+      <div
+        v-if="dynamic && todo.response"
+        class="human-content"
+        data-testid="human-choice-response"
+      >
+        <strong>{{
+          todo.response.choice_id === "__free_text__"
+            ? tm("human.freeChoice")
+            : todo.choice_spec?.options?.find(
+                (option: any) => option.id === todo.response.choice_id,
+              )?.label ?? todo.response.choice_id
+        }}</strong>
+        <p v-if="todo.response.free_text">{{ todo.response.free_text }}</p>
+      </div>
+      <pre v-else-if="todo.response" class="human-content">{{
         todo.response.answer ?? todo.response.feedback ?? tm("human.approve")
       }}</pre>
     </v-card-text>
@@ -139,7 +317,8 @@
 </template>
 
 <script setup lang="ts">
-import { onUnmounted, ref } from "vue";
+import { computed, onUnmounted, ref, watch } from "vue";
+import MarkdownView from "@/components/shared/MarkdownView.vue";
 import { workflowAssetsApi } from "@/api/workflowAssets";
 import type { HumanAnswerRequest } from "@/api/generated/openapi-v1";
 import { useModuleI18n } from "@/i18n/composables";
@@ -158,6 +337,10 @@ const emit = defineEmits<{
   (event: "submit", todoId: string, payload: HumanAnswerRequest): void;
 }>();
 const { tm } = useModuleI18n("features/agent-teams");
+const dynamic = computed(
+  () =>
+    props.todo.source_kind === "tool_call" && props.todo.kind === "question",
+);
 const answer = ref("");
 const feedback = ref("");
 const preview = ref<any>(null);
@@ -170,22 +353,53 @@ const fileUrl = ref("");
 const requests = new Map<string, string>();
 let disposed = false;
 let fileRead = 0;
+let previewRead = 0;
+watch(
+  () => [
+    props.todo.todo_id,
+    props.todo.artifact_ref?.artifact_id,
+    props.todo.artifact_ref?.version,
+  ],
+  () => {
+    previewRead++;
+    preview.value = null;
+    error.value = "";
+    reading.value = false;
+    feedback.value = "";
+    answer.value = "";
+  },
+);
 const urls: string[] = [];
 
 function submit(action: HumanAnswerRequest["action"]) {
   if (props.busy || props.cancelled || props.todo.status !== "pending") return;
-  if (action === "approve" && !preview.value) return;
-  const values = {
-    action,
-    answer: action === "answer" ? answer.value.trim() : null,
-    feedback: feedback.value.trim() || null,
-  };
+  if (props.todo.kind === "approval" && !preview.value) return;
   if (
-    (action === "reject" && !values.feedback) ||
-    (action === "answer" && !values.answer)
+    dynamic.value &&
+    (action !== "answer" ||
+      !answer.value ||
+      (answer.value === "__free_text__" && !feedback.value.trim()))
   )
     return;
-  const key = JSON.stringify(values);
+  const values: Omit<HumanAnswerRequest, "request_id"> = dynamic.value
+    ? {
+        action: "answer",
+        choice_id: answer.value,
+        free_text: feedback.value.trim() || null,
+      }
+    : {
+        action,
+        answer: action === "answer" ? answer.value.trim() : null,
+        feedback: feedback.value.trim() || null,
+        artifact_ref:
+          props.todo.kind === "approval" ? props.todo.artifact_ref : null,
+      };
+  if (
+    (action === "reject" && !values.feedback) ||
+    (!dynamic.value && action === "answer" && !values.answer)
+  )
+    return;
+  const key = JSON.stringify([props.todo.todo_id, values]);
   if (!requests.has(key))
     requests.set(
       key,
@@ -203,6 +417,7 @@ async function readPreview() {
   if (reading.value) return;
   reading.value = true;
   error.value = "";
+  const read = ++previewRead;
   try {
     const artifact = props.previewLoader
       ? await props.previewLoader(props.todo.todo_id)
@@ -210,12 +425,12 @@ async function readPreview() {
           props.todo.artifact_ref.artifact_id,
           props.todo.artifact_ref.version,
         );
-    if (!disposed) preview.value = artifact;
+    if (!disposed && read === previewRead) preview.value = artifact;
   } catch (err) {
-    if (!disposed)
+    if (!disposed && read === previewRead)
       error.value = extractApiError(err, tm("errors.operationFailed")).message;
   } finally {
-    reading.value = false;
+    if (read === previewRead) reading.value = false;
   }
 }
 
@@ -290,6 +505,33 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
+.choice-list {
+  border: 0;
+  padding: 0;
+}
+.choice-option {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 12px;
+  margin: 8px 0;
+  border: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
+  border-radius: 8px;
+  cursor: pointer;
+}
+.choice-option.selected {
+  border-color: rgb(var(--v-theme-primary));
+  background: rgba(var(--v-theme-primary), 0.06);
+}
+.choice-option input {
+  margin-top: 4px;
+  accent-color: rgb(var(--v-theme-primary));
+}
+.choice-description {
+  display: block;
+  opacity: 0.75;
+  margin-top: 3px;
+}
 .human-content {
   white-space: pre-wrap;
   overflow-wrap: anywhere;

@@ -192,6 +192,7 @@
       "running": "运行中",
       "paused": "已暂停",
       "stopped": "已停止",
+      "consumed": "回答已消费",
       "completed": "已完成",
       "failed": "失败",
       "interrupted": "已中断",
@@ -292,7 +293,7 @@
     "effective": "最终有效配置",
     "preview": "预览配置",
     "previewStale": "配置已修改，请重新预览以更新有效值。",
-    "versionNotice": "保存会生成新版本，历史定义保持不变。",
+    "versionNotice": "点击“保存版本”才会生成固定版本；草稿编辑不会改变历史定义。",
     "history": "查看历史版本",
     "exportPrompt": "职责",
     "personaDependency": "无",
@@ -305,7 +306,8 @@
     "saveFailed": "无法保存角色",
     "provider_id": "模型",
     "persona_id": "人格",
-    "persona_prompt": "人格提示词"
+    "persona_prompt": "人格提示词",
+    "human_wait": "人工等待"
   },
   "v2": {
     "assets": "工作流资产",
@@ -389,11 +391,65 @@
     "readerTitle": "Agent 执行过程",
     "capabilityNote": "仅展示模型实际提供的思考与执行过程。",
     "finalOnly": "此模型提供方仅返回最终结果，未提供流式片段。",
-    "deliveryStates": { "started": "接收中", "completed": "已完成", "error": "出错", "incomplete": "未完成" },
-    "toolStates": { "running": "执行中", "completed": "已完成", "error": "出错", "unknown": "结果未知", "incomplete": "未完成" }
+    "deliveryStates": {
+      "started": "接收中",
+      "completed": "已完成",
+      "error": "出错",
+      "incomplete": "未完成"
+    },
+    "toolStates": {
+      "running": "执行中",
+      "completed": "已完成",
+      "error": "出错",
+      "unknown": "结果未知",
+      "incomplete": "未完成"
+    },
+    "actualContext": "模型实际上下文",
+    "contextUnavailable": "此执行器未提供或本次调用无法获取。",
+    "contextTruncated": "记录超过 {limit} 字符而截断（原始记录长度：{length}）。",
+    "contextTools": "工具定义",
+    "sourceNote": "装配来源记录在插件修改前，可能不再完整存在于最终请求；插件追踪不能识别所有替换或裁剪。",
+    "sourceAbsent": "未提供。",
+    "sourceKinds": {
+      "persona": "人格",
+      "role": "职责",
+      "task": "任务",
+      "explicit_inputs": "显式输入说明",
+      "skills": "技能",
+      "knowledge": "知识",
+      "upstream": "显式选择的上游产物"
+    },
+    "contextStages": {
+      "main": "主模型",
+      "parameters": "参数生成",
+      "repair": "输出修复"
+    },
+    "messageRoles": {
+      "system": "系统",
+      "user": "用户",
+      "assistant": "助手",
+      "tool": "工具"
+    },
+    "contextDiagnostics": "调用身份",
+    "referenceRedacted": "地址中的凭证、查询和片段已去除",
+    "mediaLength": "原始长度 {length}",
+    "mediaOmissions": {
+      "binary or local media content": "二进制或本地媒体已省略",
+      "binary data URI": "二进制数据地址已省略",
+      "no authorized file reference": "没有可授权的文件引用",
+      "invalid URL": "地址无效",
+      "binary media content": "二进制媒体已省略"
+    }
   },
   "graph": {
-    "operators": { "eq": "等于", "ne": "不等于", "gt": "大于", "ge": "大于或等于", "lt": "小于", "le": "小于或等于" },
+    "operators": {
+      "eq": "等于",
+      "ne": "不等于",
+      "gt": "大于",
+      "ge": "大于或等于",
+      "lt": "小于",
+      "le": "小于或等于"
+    },
     "conditionNode": "条件",
     "joinNode": "全部汇合",
     "joinHint": "等待所有已进入的分支成功；跳过的分支不计入。",
@@ -448,7 +504,7 @@
     "parallel": "最大并发任务数",
     "tasks": "任务",
     "selectTask": "查看任务",
-    "saveHint": "保存后固定本版本。后续编辑只影响新运行。",
+    "saveHint": "点击“保存版本”才会固定定义并供新运行使用。",
     "dependency": "选择依赖",
     "defaultModel": "默认模型",
     "modelOverride": "Agent 模型覆盖",
@@ -562,6 +618,12 @@
     "feedback": "反馈（拒绝时必填）",
     "submit": "提交回答",
     "approve": "批准此版本",
+    "canSavePaused": "运行暂停时仍可保存回答。",
+    "freeChoice": "自行输入答案",
+    "optionalNote": "可选备注",
+    "recommendedAction": "推荐动作",
+    "reworkFeedback": "反馈（退回时必填）",
+    "returnForRevision": "退回修改",
     "reject": "拒绝并反馈",
     "preview": "预览批准对象",
     "export": "导出已批准版本",
@@ -570,11 +632,26 @@
       "answered": "回答已保存，等待消费",
       "approved": "版本已批准",
       "completed": "回答已消费",
-      "rejected": "已拒绝并反馈"
-    }
+      "rejected": "已拒绝并反馈",
+      "cancelled": "已取消"
+    },
+    "inbox": "需我处理",
+    "openProcess": "查看过程",
+    "recommendation": "推荐答案",
+    "recommendationSource": "来源",
+    "recommendationMissing": "推荐不可用，仍可人工回答。",
+    "recommendationTask": "推荐来源任务",
+    "recommendationValueField": "推荐答案字段",
+    "recommendationReasonField": "推荐理由字段",
+    "run": "运行",
+    "task": "节点"
   },
   "loops": {
     "add": "添加有界循环",
+    "edit": "编辑循环",
+    "structuredValue": "结构化内容；打开任务查看详情",
+    "openArtifact": "打开任务和产物",
+    "rawDetails": "原始诊断数据",
     "new": "审查与修订",
     "body": "循环体任务",
     "exitTask": "退出结果任务",
@@ -633,8 +710,8 @@
     "asset": "固定子团队资产",
     "version": "固定团队版本",
     "independent": "独立作用域与成员",
-    "contractHint": "子团队只接收声明输入，按固定输出契约返回。父等待释放根执行容量；不会共享父成员上下文。",
-    "unavailable": "固定团队版本不可用，请选择可访问的版本。",
+    "contractHint": "子资产只接收声明输入，按固定输出契约返回。父等待释放根执行容量；不会共享父成员上下文。",
+    "unavailable": "固定子资产版本不可用，请选择可访问的版本。",
     "maxDepth": "根嵌套深度上限",
     "scope": "子作用域",
     "root": "根运行",
@@ -644,10 +721,12 @@
   },
   "workflowCall": {
     "allowed": "允许调用的工作流",
-    "hint": "选择已保存的工作流版本和返回给协调者的任务结果。独立作用域仅交接声明输入和精确产物版本。",
+    "call": "调用工作流",
+    "asset": "固定子工作流资产",
+    "hint": "选择已保存的工作流版本。协调者收到该版本公开出口的结果。",
     "add": "允许一个已保存工作流",
     "version": "固定工作流版本",
-    "returnTask": "返回任务",
+    "returnTask": "原产物引用",
     "open": "查看子工作流",
     "remove": "移除允许工作流"
   },
@@ -713,13 +792,15 @@
     "resourceDetails": "候选资源的说明和输入结构",
     "import": "导入资产包",
     "export": "导出资产 JSON",
-    "scope": "资产包包含固定版本的角色、有界循环、团队和工作流定义。请统一核对各层各版本的依赖。插件与服务需另行配置；导入不运行脚本，也不携带本机授权。每次执行前都会重新检查全部已声明依赖。",
+    "scope": "资产包包含固定版本的角色、团队和工作流。请为每项来源需求选择本机资源，即使 ID 相同也须确认。包不包含凭证或授权。",
     "closure": "包含的固定资产版本",
-    "versionSafety": "升级会创建可选的新版本。已有运行、固定子定义、产物和审批保留原快照。",
+    "versionSafety": "导入版本保持固定，内容或资源选择冲突时不会覆盖。",
     "actions": {
       "install": "安装",
       "reuse": "复用相同版本",
-      "new_version": "添加新版本"
+      "new_version": "添加新版本",
+      "review": "核对资源选择",
+      "conflict": "版本冲突"
     },
     "includedPrompt": "此包实际包含的提示词内容",
     "content": "工作流 JSON 包",
@@ -727,9 +808,9 @@
     "preview": "校验并预览",
     "existing": "相同内容已安装。确认会保留资产身份；可通过明确选择补齐本机绑定。",
     "ready": "依赖已就绪，请检查后确认安装",
-    "pending": "需要配置；保存为待配置的资产不能运行",
+    "pending": "请选择兼容的本机资源后再导入。",
     "promptOrigin": "提示词来源",
-    "verifiedSource": "来源指纹必须匹配；同名不能证明兼容。",
+    "verifiedSource": "请选择时核对来源指纹提示。",
     "manualSource": "来源兼容性未验证，请审查本机资源后明确选择。",
     "localResource": "本机资源",
     "configureResources": "配置本机资源",
@@ -742,7 +823,36 @@
       "ambiguous": "存在歧义，请选择",
       "missing": "缺失或不兼容",
       "confirmation_required": "需要审查并选择"
-    }
+    },
+    "effective": "有效配置及来源",
+    "autoRecheck": "每次选择后自动重新校验。请选择每项来源需求，然后查看有效配置。",
+    "kinds": {
+      "profiles": "配置档案",
+      "models": "模型",
+      "personas": "人格",
+      "tools": "工具",
+      "skills": "技能",
+      "knowledge_bases": "知识库"
+    },
+    "source": "来源",
+    "fields": {
+      "prompt": "职责",
+      "provider_id": "模型",
+      "persona_id": "人格",
+      "tools": "工具",
+      "skills": "技能",
+      "knowledge_bases": "知识库"
+    },
+    "sources": {
+      "role": "角色",
+      "task": "Agent 覆盖",
+      "persona": "人格",
+      "profile": "配置档案",
+      "runner": "执行器",
+      "workflow": "工作流默认"
+    },
+    "requiredCapabilities": "所需能力",
+    "differentSource": "来源指纹不同，请选择前核对。"
   },
   "workbench": {
     "intro": "设计可复用资产，从每次运行的固定快照追踪到最终产物。",
@@ -767,5 +877,46 @@
     "empty": "暂无可访问的运行历史。",
     "moreRecords": "加载更多历史",
     "recordList": "历史记录列表"
+  },
+  "draft": {
+    "label": "草稿",
+    "untitled": "未命名草稿",
+    "saving": "正在保存草稿…",
+    "saved": "草稿已保存",
+    "failed": "草稿保存失败；本地修改已保留",
+    "conflict": "草稿已在其他位置更改；本地修改已保留",
+    "retry": "重试保存",
+    "reload": "放弃本地修改并读取服务器草稿",
+    "publish": "保存版本",
+    "review": "查看最新版本",
+    "baseComparison": "草稿基于 v{old}；最新固定版本为 v{current}。",
+    "rebaseExplanation": "保留草稿后，下次保存版本将使用整份草稿，不会自动合并字段。",
+    "keep": "保留草稿并使用最新基版本",
+    "useLatest": "使用最新版本重新编辑",
+    "unpublished": "草稿 · 尚未发布",
+    "editing": "存在编辑中草稿",
+    "discardClose": "关闭并丢弃未保存的修改"
+  },
+  "humanWait": {
+    "title": "人工等待",
+    "override": "覆盖模板的人工等待策略",
+    "enableDeadline": "设置期限",
+    "unlimited": "无限期等待人工",
+    "duration": "时长",
+    "seconds": "秒",
+    "minutes": "分钟",
+    "unit": "单位",
+    "invalid": "请输入 1 秒至 1 年的时长，精确到整秒。",
+    "action": "到期后",
+    "wait": "继续等待人工",
+    "recommendation": "自动采用已展示的有效推荐",
+    "hint": "推荐缺失、无效或证据不可用时继续等待，不会再次调用模型作决定。",
+    "deadline": "截止时间",
+    "decisionHuman": "人工决定",
+    "decisionRecommendation": "自动采用推荐",
+    "wait_policy": "策略要求继续等待人工。",
+    "missing_recommendation": "没有可用推荐，继续等待人工。",
+    "invalid_recommendation": "推荐无效，继续等待人工。",
+    "evidence_unavailable": "推荐证据不可用，继续等待人工。"
   }
 }

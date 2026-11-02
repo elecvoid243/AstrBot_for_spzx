@@ -494,6 +494,76 @@ describe("canvas asset editing", () => {
       wrapper.unmount();
     }
   });
+  it("adds a fixed workflow call using its public result contract", async () => {
+    const contract = {
+      type: "object",
+      properties: { proof: { type: "string" } },
+      required: ["proof"],
+    };
+    const wrapper = mount(WorkflowGraphCanvas, {
+      props: {
+        definition: {
+          name: "Parent",
+          required_inputs: ["topic"],
+          tasks: [],
+          edges: [],
+        },
+        workflows: [
+          {
+            asset_id: "child",
+            version: 2,
+            versions: [2, 1],
+            definition: {
+              name: "Child",
+              required_inputs: ["topic"],
+              result_task_id: "public",
+              tasks: [
+                { id: "private", output_contract: null },
+                { id: "public", output_contract: contract },
+              ],
+            },
+          },
+        ],
+      },
+      global: {
+        stubs: {
+          TeamsFlowCanvas: true,
+          WorkflowLoopPanel: true,
+          "v-icon": true,
+          "v-chip": true,
+          "v-btn": { template: "<button><slot /></button>" },
+          "v-text-field": true,
+          "v-select": true,
+          "v-textarea": true,
+          "v-spacer": true,
+          "v-alert": true,
+          "v-switch": true,
+          "v-expansion-panels": true,
+        },
+      },
+    });
+    try {
+      await wrapper.get('[data-testid="add-workflow-call"]').trigger("click");
+      const saved: any = wrapper.emitted("update:definition")?.at(-1)?.[0];
+      expect(saved.tasks[0].workflow).toEqual({
+        asset_id: "child",
+        version: 2,
+      });
+      expect(saved.tasks[0].inputs).toEqual({ topic: { input: "topic" } });
+      expect(saved.tasks[0].output_contract).toEqual(contract);
+      expect(
+        wrapper.find('[data-testid="workflow-call-version"]').exists(),
+      ).toBe(true);
+      expect(
+        wrapper.get('[data-testid="child-output-contract"]').text(),
+      ).toContain("proof");
+      expect(
+        wrapper.get('[data-testid="workflow-call-preview"]').text(),
+      ).toContain("Child");
+    } finally {
+      wrapper.unmount();
+    }
+  });
   it("authors human question and approval nodes without requiring a role", async () => {
     const wrapper = mount(WorkflowGraphCanvas, {
       props: { definition: { name: "Human graph", tasks: [], edges: [] } },
@@ -834,5 +904,26 @@ describe("canvas asset editing", () => {
     } finally {
       wrapper.unmount();
     }
+  });
+  it("connects named approval and return outlets to explicit conditions", async () => {
+    const wrapper = mount(WorkflowGraphCanvas, {
+      props: { definition: { name: "Review", tasks: [
+        { id: "approval", name: "Approval", human: { kind: "approval", question: "Approve?", artifact_task_id: "writer" } },
+        { id: "next", name: "Next", member: "writer", role_id: "role", role_version: 1, task: "Deliver" },
+      ], edges: [] } },
+      global: { stubs: {
+        TeamsFlowCanvas: { name: "TeamsFlowCanvas", props: ["nodes", "edges"], emits: ["connect"], template: "<div />" },
+        WorkflowLoopPanel: true, "v-btn": true, "v-icon": true, "v-chip": true, "v-select": true, "v-text-field": true, "v-textarea": true, "v-spacer": true, "v-alert": true, "v-switch": true, "v-expansion-panels": true,
+      } },
+    });
+    try {
+      const canvas = wrapper.getComponent({ name: "TeamsFlowCanvas" });
+      canvas.vm.$emit("connect", { from: "approval", to: "next", sourceHandle: "matched-false" });
+      await flushPromises();
+      const saved: any = wrapper.emitted("update:definition")!.at(-1)![0];
+      expect(saved.edges[0].condition).toEqual({ field: "approved", operator: "eq", value: false });
+      expect((canvas.props("nodes") as any[]).find((node) => node.id === "approval").data.approval).toBe(true);
+      expect((canvas.props("edges") as any[])[0].label).toBe("human.returnForRevision");
+    } finally { wrapper.unmount(); }
   });
 });

@@ -530,7 +530,7 @@ async def run_worker(
 
         sql_event.listen(Session, "after_flush", retry_flush)
         sql_event.listen(Session, "after_commit", retry_commit)
-    if action == "start" and not scenario.startswith(("file_mode_", "inline_")):
+    if action == "start" and not scenario.startswith(("file_mode_", "inline_", "loop_", "choice_")):
         if scenario in {"legacy_response", "legacy_upgrade_failure"} or scenario.startswith("overflow_legacy"):
             def before_flush(session, flush_context, instances):
                 """Construct a pre-T08 saved response through the real storage seam.
@@ -647,7 +647,7 @@ async def run_worker(
                 contract["properties"]["files"] = {"type": "array", "items": {"type": "object", "properties": {"file_id": {"type": "string"}}, "required": ["file_id"], "additionalProperties": False}}
                 contract["required"].append("files")
             definition["output_contract"] = contract
-        if scenario in {"response", "parameters", "repair", "parameters_checkpoint", "repair_checkpoint", "parameters_checkpoint_failure", "tool_progress_gap"}:
+        if scenario.startswith("human_") or scenario in {"response", "parameters", "repair", "parameters_checkpoint", "repair_checkpoint", "parameters_checkpoint_failure", "tool_progress_gap"}:
             definition = {"name": "Original report", "result_task_id": "write", "tasks": [{"id": "write", "name": "Writer", "member": "writer", "role_id": role["role_id"], "role_version": 1, "task": "Read evidence and submit a report."}], "edges": []}
         if scenario.startswith("team_"):
             definition = {"name": definition["name"], "result_task_id": "result", "tasks": [{"id": "result", "name": definition["name"], "member": "writer", "role_id": role["role_id"], "role_version": 1, "task": definition["task"]}]}
@@ -690,6 +690,15 @@ async def run_worker(
         sql_event.listen(Session, "after_commit", hold_inline_checkpoint)
     dispatch = asyncio.create_task(event_bus.dispatch())
     try:
+        if scenario.startswith("choice_"):
+            from astrbot.builtin_stars.ask_user_choice.ask_user_choice_tool import (
+                AskUserChoiceTool,
+            )
+            from tests.agent_teams.choice_worker import run_choice_scenario
+
+            providers.llm_tools.func_list.append(AskUserChoiceTool())
+            await run_choice_scenario(folder, action, scenario, service, roles)
+            return
         if scenario.startswith("inline_") and action == "start":
             definition = {"name": "Inline pipeline", "result_task_id": "agent", "default_provider_id": "model-original", "required_inputs": ["topic"], "tasks": [{
                 "id": "agent", "name": "Writer", "member": "writer", "task": "Unique task {topic}",

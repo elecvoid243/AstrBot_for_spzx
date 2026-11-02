@@ -37,21 +37,6 @@
           :data-testid="`allowed-workflow-version-${index}`"
           @update:model-value="changeVersion(index, $event)"
         />
-        <v-select
-          :model-value="ref.result_task_id"
-          :items="returnTasks[index]"
-          :label="tm('workflowCall.returnTask')"
-          :data-testid="`allowed-workflow-result-${index}`"
-          :disabled="loading || !definitions[`${ref.asset_id}:${ref.version}`]"
-          @update:model-value="
-            $emit(
-              'update:modelValue',
-              modelValue.map((item, i) =>
-                i === index ? { ...item, result_task_id: $event } : item,
-              ),
-            )
-          "
-        />
         <v-btn
           variant="text"
           :data-testid="`allowed-workflow-remove-${index}`"
@@ -75,9 +60,14 @@
         </p>
         <pre class="text-caption contract-preview">{{
           JSON.stringify(
-            returnTasks[index].find(
-              (task: any) => task.value === ref.result_task_id,
-            )?.contract ?? {
+            definitions[
+              `${ref.asset_id}:${ref.version}`
+            ].definition.tasks?.find(
+              (task: any) =>
+                task.id ===
+                definitions[`${ref.asset_id}:${ref.version}`].definition
+                  .result_task_id,
+            )?.output_contract ?? {
               type: "object",
               properties: { text: { type: "string" } },
               required: ["text"],
@@ -167,29 +157,6 @@ watch(
   { immediate: true, deep: true },
 );
 
-const returnTasks = computed(() =>
-  props.modelValue.map((ref) => {
-    const definition =
-      definitions.value[`${ref.asset_id}:${ref.version}`]?.definition;
-    return (
-      definition?.tasks ??
-      (definition
-        ? [
-            {
-              id: "result",
-              name: definition.name,
-              output_contract: definition.output_contract,
-            },
-          ]
-        : [])
-    ).map((task: any) => ({
-      title: task.name,
-      value: task.id,
-      contract: task.output_contract,
-    }));
-  }),
-);
-
 function addWorkflow(assetId: string | null) {
   newWorkflow.value = null;
   if (!assetId) return;
@@ -207,7 +174,6 @@ function addWorkflow(assetId: string | null) {
     {
       asset_id: assetId,
       version: asset.version,
-      result_task_id: asset.definition.tasks?.at(-1)?.id ?? "result",
     },
   ]);
 }
@@ -229,7 +195,6 @@ async function changeVersion(index: number, version: number) {
       (await workflowAssetsApi.get(selected.asset_id, version));
     if (!current()) return;
     definitions.value[key] = asset;
-    const tasks = asset.definition.tasks ?? [{ id: "result" }];
     emit(
       "update:modelValue",
       props.modelValue.map((item) =>
@@ -237,11 +202,6 @@ async function changeVersion(index: number, version: number) {
           ? {
               ...item,
               version,
-              result_task_id: tasks.some(
-                (task: any) => task.id === item.result_task_id,
-              )
-                ? item.result_task_id
-                : tasks.at(-1).id,
             }
           : item,
       ),

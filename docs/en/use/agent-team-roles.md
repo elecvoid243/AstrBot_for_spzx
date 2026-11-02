@@ -2,6 +2,14 @@
 
 Open **More Features → Agent Teams → Assets → Role templates**, then choose **New role**. A template stores responsibilities and capability requirements without creating a member chat session or starting a run.
 
+Edits are saved automatically as a draft, including incomplete settings. The status shows saving, saved, failure, or conflict. After a conflict, local edits remain visible; choose **Discard local changes and load server draft** only when ready to replace them. Select **Save version** to create an immutable version for references. Reopen the draft from the asset list after refreshing.
+
+When a newer fixed version causes a conflict, review the old and current base versions. You can keep the entire draft on the reviewed latest base, or load that version to edit it; no fields are merged. If the draft or latest version changes during review, review the conflict again.
+
+![Draft save status and manual version button](/images/agent-teams-drafts-en.jpg)
+
+The screenshot shows the actual component with isolated sample data; it is not a backend integration test.
+
 Assets retain their pinned role versions until you explicitly edit those references; existing runs retain their frozen configuration. Create and configure role templates directly, without migrating previous members.
 
 1. Enter a name and description. Under **Responsibility and prompt**, write the responsibility and optionally select a persona. The two remain separate; leaving persona empty does not inherit the profile default.
@@ -9,7 +17,7 @@ Assets retain their pinned role versions until you explicitly edit those referen
 3. Under **Tools, Skills, Knowledge bases**, choose **Inherit** or **Custom selection**. Select actual resources in a custom list; leave it empty to disable that category. Resource IDs, not display names, are saved.
 4. Configure instances, parallelism, steps, iterations, nesting depth, tool timeout and context length under **Instances and execution limits**. Empty values inherit. Workflow Agent runs freeze the effective configuration; see the [workflow instructions](./agent-team-workflows.md) for supported behavior and limits.
 5. Choose **Preview configuration** to inspect effective values, inheritance and overrides. Missing, ambiguous, disabled or incompatible resources have field paths; click a path to expand its group, scroll the field into view and focus its input. Preview again after changing the form.
-6. Choose **Save role**. Incomplete templates can be saved and are marked **Needs configuration**. Editing uses **Save new version**, preserving previous definitions and resource selections. **View historical version** reopens an old version; saving its edited content creates another new version.
+6. Choose **Save version**. Incomplete templates can be saved and are marked **Needs configuration**. Editing also uses **Save version**, preserving previous definitions and resource selections. **View historical version** reopens an old version; saving its edited content creates another new version.
 
 The preview shows the responsibility and persona content separately, with their sources. A persona reference stores its ID rather than embedding its prompt. Complete asset package import and export is available from the cards and toolbar in Assets → Teams / Workflows; see the [asset workspace](./agent-team-workflows.md).
 
@@ -48,3 +56,7 @@ The following screenshots show the real role component with an isolated example 
 ![Direct selection of tools, skills and knowledge bases](/images/agent-teams-role-resources-en.jpg)
 
 ![The error path expands the limits section and focuses the invalid field](/images/agent-teams-role-error-focus-en.jpg)
+
+## Human wait policy
+
+The role’s human wait policy controls dynamic choices requested by its Agent. The default is indefinite waiting. An explicit deadline may either keep waiting or use the valid recommendation already shown with the request. An Agent using a fixed role version can inherit this policy or override it, including resetting it to indefinite waiting. This does not change ordinary chat timeouts.

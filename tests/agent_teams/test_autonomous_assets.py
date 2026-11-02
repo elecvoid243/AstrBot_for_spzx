@@ -661,7 +661,11 @@ async def test_required_team_approval_blocks_root_completion(team_env):
         "alice",
         run["run_id"],
         todo["todo_id"],
-        {"request_id": "approval", "action": "approve"},
+        {
+            "request_id": "approval",
+            "action": "approve",
+            "artifact_ref": todo["artifact_ref"],
+        },
     )
     assert approved["status"] == "completed"
 

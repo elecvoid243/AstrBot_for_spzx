@@ -8,7 +8,7 @@ import json
 import mimetypes
 import time
 import uuid
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from contextlib import nullcontext
 from string import Formatter
 from typing import Literal, cast
@@ -38,11 +38,13 @@ from astrbot.core import logger
 from astrbot.core.agent.tool import FunctionTool, has_tool_recovery
 from astrbot.core.agent_team_execution import (
     CheckpointRecoveryError,
+    HumanInputRequired,
     ProcessPersistenceError,
     execute_team_turn,
 )
 from astrbot.core.agent_team_tools import AgentTeamToolRegistry
 from astrbot.core.agent_teams.assets import (
+    HumanWaitPolicy,
     RoleAssetError,
     RoleAssetService,
     RoleDefinition,
@@ -80,6 +82,8 @@ from astrbot.core.config.agent_runner import (
 )
 from astrbot.core.db import BaseDatabase
 from astrbot.core.db.po import (
+    AgentAssetDraft,
+    AgentAssetDraftPublication,
     AgentRoleInstallation,
     AgentRoleVersion,
     AgentWorkflowArtifact,
@@ -220,527 +224,94 @@ class WorkflowSaveRequest(BaseModel):
 
 
 class PackageDependency(BaseModel):
-    """A logical resource requirement; fingerprints contain no local identity."""
+    """A source resource identity and its non-secret compatibility contract."""
 
     model_config = ConfigDict(extra="forbid", strict=True)
-    slot: str = Field(min_length=1, max_length=128)
-    kind: Literal["profiles", "models", "tools", "skills", "knowledge_bases"]
-    fingerprint: str | None = Field(default=None, min_length=1, max_length=128)
-    runner_type: str | None = Field(default=None, min_length=1, max_length=64)
-    capabilities: list[str] = Field(default_factory=list, max_length=20)
-    logical_slots: list[str] = Field(default_factory=list, max_length=500)
-    uses: dict[str, list[str]] | None = Field(
-        default=None,
-        description="Original aliases used by role defaults or exact asset_id:version contexts; omitted provenance keeps all declared requirements global.",
-    )
-    description: str = ""
+    kind: Literal[
+        "profiles", "models", "personas", "tools", "skills", "knowledge_bases"
+    ]
+    source_id: str = Field(min_length=1, max_length=128)
     display_name: str = ""
+    description: str = ""
+    fingerprint: str | None = None
+    runner_type: str | None = None
+    capabilities: list[str] = Field(default_factory=list)
     input_schema: dict | None = None
-
-    def resource_content(self) -> dict:
-        """Read the resource contract independently of portable slot placement.
-
-        Returns:
-            Compatibility requirements without aliases or context provenance.
-        """
-        content = self.model_dump(exclude={"slot", "logical_slots", "uses"})
-        if self.kind == "profiles":
-            content["capabilities"] = sorted(
-                set(content["capabilities"]) | {"task_result"}
-            )
-        return content
 
 
 class PackageRole(BaseModel):
-    """Fixed role content with an explicit description of included prompt origin."""
+    """An exact role version and its source profile identity."""
 
     model_config = ConfigDict(extra="forbid", strict=True)
     role_id: str = Field(min_length=1, max_length=128)
     version: int = Field(ge=1)
     definition: RoleDefinition
-    prompt_source: Literal["role", "persona", "profile", "task"]
-    dependencies: list[PackageDependency] = Field(max_length=500)
-
-    def immutable_content(self) -> dict:
-        """Separate the fixed role contract from asset-specific task overrides.
-
-        Returns:
-            Base definition and requirements with placement-independent slots.
-        """
-        requirements = {}
-        for dependency in self.dependencies:
-            if dependency.uses is not None and "role" not in dependency.uses:
-                continue
-            requirements[dependency.slot] = json.dumps(
-                {
-                    **dependency.resource_content(),
-                    "logical_slots": sorted(
-                        dependency.logical_slots
-                        if dependency.uses is None
-                        else dependency.uses["role"]
-                    ),
-                },
-                sort_keys=True,
-                allow_nan=False,
-            )
-        definition = self.definition.model_dump()
-        if self.prompt_source == "task":
-            definition["prompt"] = None
-        definition["model_slot"] = requirements.get(
-            self.definition.model_slot, self.definition.model_slot
-        )
-        for kind in ("tools", "skills", "knowledge_bases"):
-            definition[kind] = [
-                requirements.get(slot, slot) for slot in definition[kind] or []
-            ]
-        return {
-            "definition": definition,
-            "prompt_source": self.prompt_source,
-            "requirements": sorted(requirements.values()),
-        }
-
-    def remap_installation(
-        self, source: "PackageRole", installation: RoleInstallation
-    ) -> RoleInstallation:
-        """Move deliberate resource choices into this closure's portable slots.
-
-        Args:
-            source: Manifest under which the choices were made.
-            installation: Explicit or previously saved local choices.
-
-        Returns:
-            The same profile and resources under this manifest's slot names.
-
-        Raises:
-            RoleAssetError: A required slot has no unique source provenance.
-        """
-        if set(installation.bindings) - {
-            dependency.slot
-            for dependency in source.dependencies
-            if dependency.kind != "profiles"
-        }:
-            raise RoleAssetError("Bindings contain undeclared package slots")
-        bindings = {}
-        for dependency in self.dependencies:
-            matches = [
-                candidate
-                for candidate in source.dependencies
-                if candidate.resource_content() == dependency.resource_content()
-                and set(dependency.logical_slots).issubset(candidate.logical_slots)
-                and (
-                    dependency.uses is None
-                    or candidate.uses is None
-                    or all(
-                        origin in candidate.uses
-                        and set(aliases).issubset(candidate.uses[origin])
-                        for origin, aliases in dependency.uses.items()
-                    )
-                )
-            ]
-            if dependency.kind in {"tools", "skills", "knowledge_bases"}:
-                own_slots = getattr(self.definition, dependency.kind) or []
-                source_slots = getattr(source.definition, dependency.kind) or []
-                if dependency.slot in own_slots:
-                    position = own_slots.index(dependency.slot)
-                    matches = [
-                        candidate
-                        for candidate in matches
-                        if position < len(source_slots)
-                        and candidate.slot == source_slots[position]
-                    ]
-            if len(matches) != 1:
-                same_slot = [
-                    candidate
-                    for candidate in matches
-                    if candidate.slot == dependency.slot
-                ]
-                if len(same_slot) == 1:
-                    matches = same_slot
-            if len(matches) != 1:
-                raise RoleAssetError(
-                    "Dependency choices have ambiguous source provenance"
-                )
-            selected = installation.bindings.get(matches[0].slot)
-            if selected is not None:
-                bindings[dependency.slot] = selected
-        return RoleInstallation(profile_id=installation.profile_id, bindings=bindings)
+    installation: RoleInstallation
 
 
 class PackageAsset(BaseModel):
-    """One exact portable asset version in the entry's reference closure."""
+    """One exact asset version in the entry's reference closure."""
 
     model_config = ConfigDict(extra="forbid", strict=True)
     asset_id: str = Field(min_length=1, max_length=128)
     version: int = Field(ge=1)
-    definition: WorkflowDefinition | GraphDefinition | AutonomousDefinition
+    definition: GraphDefinition | AutonomousDefinition
 
 
 class WorkflowPackage(PackageAsset):
-    """A self-contained definition closure without local authorization."""
+    """A complete source closure with direct resource requirements."""
 
     model_config = ConfigDict(extra="forbid", strict=True)
     format: Literal["astrbot.workflow"]
-    format_version: Literal[1, 2]
+    format_version: Literal[3]
     roles: list[PackageRole] = Field(max_length=100)
     assets: list[PackageAsset] = Field(default_factory=list, max_length=100)
-
-    def role_content(self, role: PackageRole) -> dict:
-        """Read a manifest with intrinsic task and coordinator requirements.
-
-        Args:
-            role: Included source role version.
-
-        Returns:
-            Complete contract for matching an isolated local installation.
-        """
-        content = role.model_dump()
-        for dependency, declared in zip(content["dependencies"], role.dependencies):
-            if dependency["kind"] == "profiles":
-                dependency["capabilities"] = declared.resource_content()["capabilities"]
-        if any(
-            isinstance(definition, AutonomousDefinition)
-            and (definition.coordinator.role_id, definition.coordinator.role_version)
-            == (role.role_id, role.version)
-            for definition in [
-                self.definition,
-                *[asset.definition for asset in self.assets],
-            ]
-        ):
-            for dependency in content["dependencies"]:
-                if dependency["kind"] == "profiles":
-                    dependency["capabilities"] = sorted(
-                        set(dependency["capabilities"]) | {"task_tools"}
-                    )
-        return content
+    requirements: list[PackageDependency] = Field(default_factory=list, max_length=500)
 
     @field_validator("format_version", mode="before")
     @classmethod
-    def validate_format_version(cls, value: object) -> int:
-        """Reject values that a literal validator would coerce to integer one.
+    def validate_format_version(cls, value: object) -> object:
+        """Reject non-integer JSON versions before literal validation.
 
         Args:
-            value: Original JSON value, before request normalization.
+            value: Untrusted format version.
 
         Returns:
-            The unmodified integer for supported-version validation.
+            The validated integer value.
 
         Raises:
-            ValueError: A boolean, float or another non-integer was supplied.
+            ValueError: The version is not an integer.
         """
         if type(value) is not int:
             raise ValueError("Package format_version must be an integer")
         return value
 
-    def asset_packages(self) -> list[dict]:
-        """Materialize each included asset's independent portable closure.
-
-        Returns:
-            Canonical packages for conflict detection, atomic storage and export.
-
-        Raises:
-            RoleAssetError: References are missing, cyclic, too deep or extraneous.
-        """
-        entry = (self.asset_id, self.version)
-        definitions = {
-            entry: PackageAsset(
-                asset_id=self.asset_id, version=self.version, definition=self.definition
-            )
-        }
-        for asset in self.assets:
-            key = (asset.asset_id, asset.version)
-            if key in definitions:
-                raise RoleAssetError("Duplicate package asset versions")
-            definitions[key] = asset
-        origins = {f"{key[0]}:{key[1]}" for key in definitions}
-        for role in self.roles:
-            for dependency in role.dependencies:
-                if dependency.uses is None:
-                    continue
-                if (
-                    not dependency.uses
-                    or dependency.kind in {"models", "profiles"}
-                    and "role" not in dependency.uses
-                    or set(dependency.uses) - origins - {"role"}
-                    or set(dependency.logical_slots)
-                    != {
-                        alias
-                        for aliases in dependency.uses.values()
-                        for alias in aliases
-                    }
-                ):
-                    raise RoleAssetError("Invalid dependency context provenance")
-        results = []
-        for identity, asset in definitions.items():
-            included, roles = set(), set()
-            checked_depths: dict[tuple[str, int, int], int] = {}
-            pending: list[tuple[tuple[str, int], tuple[tuple[str, int], ...], int]] = [
-                (identity, (), 20)
-            ]
-            while pending:
-                key, ancestors, depth_limit = pending.pop()
-                if key not in definitions:
-                    raise RoleAssetError(
-                        "Package is missing a pinned child definition",
-                        [
-                            {
-                                "path": f"package.assets.{key[0]}:{key[1]}",
-                                "code": "REFERENCE",
-                                "message": "Include the exact referenced asset version",
-                            }
-                        ],
-                    )
-                if key in ancestors:
-                    raise RoleAssetError("Package references contain a cycle")
-                if len(ancestors) > depth_limit:
-                    raise RoleAssetError(
-                        "Nested references exceed the declared depth limit"
-                    )
-                definition = definitions[key].definition
-                if isinstance(definition, AutonomousDefinition):
-                    contexts = [definition.coordinator, *definition.allowed_roles]
-                    refs = definition.allowed_workflows
-                elif isinstance(definition, GraphDefinition):
-                    contexts = [task for task in definition.tasks if task.role_id]
-                    refs = [task.team for task in definition.tasks if task.team]
-                else:
-                    contexts, refs = [definition], []
-                roles.update(
-                    (context.role_id, context.role_version) for context in contexts
-                )
-                limit = min(depth_limit, getattr(definition, "max_depth", 20))
-                for context in contexts:
-                    role = next(
-                        (
-                            role
-                            for role in self.roles
-                            if (role.role_id, role.version)
-                            == (context.role_id, context.role_version)
-                        ),
-                        None,
-                    )
-                    role_limit = context.overrides.max_depth or (
-                        role.definition.max_depth if role else None
-                    )
-                    if role_limit is not None:
-                        if len(ancestors) > role_limit:
-                            raise RoleAssetError(
-                                "Nested member exceeds the declared role depth limit"
-                            )
-                        if (
-                            isinstance(definition, AutonomousDefinition)
-                            and context is definition.coordinator
-                        ):
-                            # Only the coordinator calls the declared child workflows.
-                            limit = min(limit, role_limit)
-                # Descendant role limits also depend on absolute placement.
-                depth_context = (key[0], key[1], len(ancestors))
-                if checked_depths.get(depth_context, 21) <= limit:
-                    continue
-                checked_depths[depth_context] = limit
-                included.add(key)
-                for ref in refs:
-                    pending.append(
-                        ((ref.asset_id, ref.version), (*ancestors, key), limit)
-                    )
-            content = {
-                **asset.model_dump(),
-                "format": self.format,
-                "roles": [
-                    role.model_dump()
-                    for role in self.roles
-                    if (role.role_id, role.version) in roles
-                ],
-            }
-            children = [
-                definitions[key].model_dump()
-                for key in sorted(included)
-                if key != identity
-            ]
-            portable_definitions = {
-                identity: content["definition"],
-                **{
-                    (child["asset_id"], child["version"]): child["definition"]
-                    for child in children
-                },
-            }
-            contexts = []
-            for key, definition in sorted(portable_definitions.items()):
-                members = (
-                    [definition["coordinator"], *definition["allowed_roles"]]
-                    if definition.get("kind") == "autonomous"
-                    else definition.get("tasks", [definition])
-                )
-                contexts.extend(
-                    (f"{key[0]}:{key[1]}", member)
-                    for member in members
-                    if member.get("role_id")
-                )
-            included_origins = {f"{key[0]}:{key[1]}" for key in included}
-            for role in content["roles"]:
-                members = [
-                    (origin, member["overrides"])
-                    for origin, member in contexts
-                    if (member["role_id"], member["role_version"])
-                    == (role["role_id"], role["version"])
-                ]
-                if role["prompt_source"] == "task":
-                    if not members or any(
-                        not configuration.get("prompt") for _, configuration in members
-                    ):
-                        raise RoleAssetError(
-                            "Task-derived prompts must be explicit in every included context"
-                        )
-                    role["definition"]["prompt"] = members[0][1]["prompt"]
-                dependencies = []
-                for dependency in role["dependencies"]:
-                    if dependency["kind"] == "profiles":
-                        # Coordinator tools are inferred per closure, not inherited
-                        # as an explicit requirement by independently callable children.
-                        dependency.update(
-                            PackageDependency.model_validate(
-                                dependency
-                            ).resource_content()
-                        )
-                    uses = dependency.get("uses")
-                    if uses is not None:
-                        uses = {
-                            origin: aliases
-                            for origin, aliases in uses.items()
-                            if origin == "role" or origin in included_origins
-                        }
-                        if not uses:
-                            continue
-                        if "role" in uses:
-                            base_aliases = set(uses["role"])
-                            uses = {
-                                "role": uses["role"],
-                                **{
-                                    origin: [
-                                        alias
-                                        for alias in aliases
-                                        if alias not in base_aliases
-                                    ]
-                                    for origin, aliases in uses.items()
-                                    if origin != "role" and set(aliases) - base_aliases
-                                },
-                            }
-                        if set(uses) == {"role"}:
-                            dependency.pop("uses", None)
-                        else:
-                            dependency["uses"] = uses
-                        dependency["logical_slots"] = sorted(
-                            {alias for aliases in uses.values() for alias in aliases}
-                        )
-                    else:
-                        dependency.pop("uses", None)
-                    dependencies.append(dependency)
-                by_slot = {
-                    dependency["slot"]: dependency for dependency in dependencies
-                }
-                ordered = [
-                    dependency["slot"]
-                    for dependency in dependencies
-                    if dependency["kind"] == "profiles"
-                ]
-                ordered.append(role["definition"]["model_slot"])
-                for origin, configuration in [("role", role["definition"]), *members]:
-                    for kind in ("tools", "skills", "knowledge_bases"):
-                        for slot in configuration.get(kind) or []:
-                            dependency = by_slot.get(slot)
-                            if dependency is None or (
-                                dependency.get("uses") is not None
-                                and origin not in dependency["uses"]
-                                and "role" not in dependency["uses"]
-                            ):
-                                raise RoleAssetError(
-                                    "Dependency provenance omits a required slot"
-                                )
-                            ordered.append(slot)
-                ordered.extend(
-                    dependency["slot"]
-                    for dependency in sorted(
-                        dependencies,
-                        key=lambda dependency: json.dumps(
-                            {
-                                key: value
-                                for key, value in dependency.items()
-                                if key != "slot"
-                            },
-                            sort_keys=True,
-                        ),
-                    )
-                )
-                slots = {
-                    dependency["slot"]: dependency["slot"]
-                    for dependency in dependencies
-                    if dependency.get("uses") is None or "role" in dependency["uses"]
-                }
-                counters = {}
-                for slot in dict.fromkeys(ordered):
-                    if slot not in by_slot or slot in slots:
-                        continue
-                    kind = by_slot[slot]["kind"]
-                    while True:
-                        counters[kind] = counters.get(kind, 0) + 1
-                        target = f"{kind}_{counters[kind]}"
-                        if target not in slots.values():
-                            slots[slot] = target
-                            break
-                for _, configuration in [("role", role["definition"]), *members]:
-                    if "model_slot" in configuration:
-                        configuration["model_slot"] = slots.get(
-                            configuration["model_slot"], configuration["model_slot"]
-                        )
-                    for kind in ("tools", "skills", "knowledge_bases"):
-                        if configuration.get(kind) is not None:
-                            configuration[kind] = [
-                                slots[slot] for slot in configuration[kind]
-                            ]
-                role["dependencies"] = [
-                    {**by_slot[slot], "slot": target} for slot, target in slots.items()
-                ]
-            nested = (
-                len(included) > 1
-                or isinstance(asset.definition, AutonomousDefinition)
-                or any(
-                    dependency.get("uses") is not None
-                    for role in content["roles"]
-                    for dependency in role["dependencies"]
-                )
-            )
-            content["format_version"] = 2 if nested else 1
-            if nested:
-                content["assets"] = children
-            else:
-                for role in content["roles"]:
-                    for dependency in role["dependencies"]:
-                        dependency.pop("uses", None)
-            results.append(content)
-            if identity == entry and included != definitions.keys():
-                raise RoleAssetError("Package contains unreferenced child definitions")
-        return results
-
     @staticmethod
     def content_digest(content: dict) -> str:
-        """Hash a canonical package while rejecting non-finite JSON numbers.
+        """Hash canonical JSON content.
 
         Args:
-            content: Canonical package produced by asset_packages.
+            content: Package content to hash.
 
         Returns:
-            The immutable package content fingerprint.
-
-        Raises:
-            RoleAssetError: The content contains a non-finite number.
+            SHA-256 digest of the canonical representation.
         """
-        try:
-            return hashlib.sha256(
-                json.dumps(
-                    content, sort_keys=True, separators=(",", ":"), allow_nan=False
-                ).encode()
-            ).hexdigest()
-        except ValueError as exc:
-            raise RoleAssetError("Package numbers must be finite") from exc
+        return hashlib.sha256(
+            json.dumps(
+                content, sort_keys=True, separators=(",", ":"), allow_nan=False
+            ).encode()
+        ).hexdigest()
+
+
+class ResourceSelection(BaseModel):
+    """One explicit source-to-local resource choice."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    kind: Literal[
+        "profiles", "models", "personas", "tools", "skills", "knowledge_bases"
+    ]
+    source_id: str = Field(min_length=1, max_length=128)
+    target_id: str = Field(min_length=1, max_length=128)
 
 
 class WorkflowImportRequest(BaseModel):
@@ -748,8 +319,7 @@ class WorkflowImportRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid", strict=True)
     package: WorkflowPackage
-    installations: dict[str, RoleInstallation] = Field(default_factory=dict)
-    save_pending: bool = False
+    selections: list[ResourceSelection] = Field(default_factory=list, max_length=500)
 
 
 class ArtifactReference(BaseModel):
@@ -817,6 +387,9 @@ class HumanAnswerRequest(BaseModel):
     action: Literal["answer", "approve", "reject"]
     answer: str | None = Field(default=None, min_length=1, max_length=100_000)
     feedback: str | None = Field(default=None, min_length=1, max_length=100_000)
+    artifact_ref: ArtifactReference | None = None
+    choice_id: str | None = Field(default=None, min_length=1, max_length=128)
+    free_text: str | None = Field(default=None, min_length=1, max_length=10_000)
 
 
 def _current_task_runs(run: AgentWorkflowRun) -> dict[str, str]:
@@ -975,7 +548,12 @@ class WorkflowService:
         self.chat = WorkflowChat(self)
 
     async def save_asset(
-        self, username: str, payload: dict, asset_id: str | None = None
+        self,
+        username: str,
+        payload: dict,
+        asset_id: str | None = None,
+        draft_revision: int | None = None,
+        draft_kind: str | None = None,
     ) -> dict:
         """Save a version without creating any execution context.
 
@@ -983,6 +561,8 @@ class WorkflowService:
             username: Authenticated owner.
             payload: Definition and optional expected version.
             asset_id: Existing asset identity, or None for a new asset.
+            draft_revision: Trusted draft revision to publish, when supplied.
+            draft_kind: Workflow or autonomous draft category.
 
         Returns:
             Persisted asset version.
@@ -990,6 +570,30 @@ class WorkflowService:
         Raises:
             RoleAssetError: Invalid fields, inaccessible role or conflicting version.
         """
+        draft = None
+        if draft_revision is not None:
+            if asset_id is None or draft_kind not in {"workflow", "autonomous"}:
+                raise RoleAssetError("Draft identity and kind are required")
+            try:
+                draft = await self.roles.get_draft(username, draft_kind, asset_id)
+            except RoleAssetError as exc:
+                if exc.status == 404:
+                    raise RoleAssetError("Draft is inaccessible", status=409) from exc
+                raise
+            self.roles._validate_draft_body(draft_kind, draft["body"])
+            async with self.db.get_db() as session:
+                published = await session.get(
+                    AgentAssetDraftPublication, (draft_kind, asset_id, draft_revision)
+                )
+                published_version = published.version if published else None
+            if published_version is not None:
+                return await self.get_asset(username, asset_id, published_version)
+            if draft["revision"] != draft_revision:
+                raise RoleAssetError("Draft was edited elsewhere", status=409)
+            payload = {
+                **{k: v for k, v in draft["body"].items() if k != "editor"},
+                "expected_version": draft["base_version"],
+            }
         try:
             request = WorkflowSaveRequest.model_validate(payload)
         except ValidationError as exc:
@@ -1005,6 +609,10 @@ class WorkflowService:
                 ],
             ) from exc
         definition = request.definition
+        if draft is not None and (
+            isinstance(definition, AutonomousDefinition) != (draft_kind == "autonomous")
+        ):
+            raise RoleAssetError("Draft kind does not match definition")
         if isinstance(definition, AutonomousDefinition):
             if "goal" not in definition.required_inputs:
                 raise RoleAssetError("Autonomous teams require a goal input")
@@ -1088,73 +696,105 @@ class WorkflowService:
                             }
                         ],
                     )
-                nodes = child_definition.get("tasks", [{"id": "result"}])
-                if not any(node["id"] == ref.result_task_id for node in nodes):
+                result_id = child_definition.get("result_task_id")
+                if not any(
+                    node["id"] == result_id and not node.get("control")
+                    for node in child_definition.get("tasks", [])
+                ):
                     raise RoleAssetError(
-                        "Choose an existing return task",
+                        "Pinned workflow has no public result",
                         [
                             {
-                                "path": path + ".result_task_id",
+                                "path": path,
                                 "code": "REFERENCE",
-                                "message": "Choose a task in this exact workflow version",
+                                "message": "Choose a workflow with a valid public result",
                             }
                         ],
                     )
         elif isinstance(definition, GraphDefinition):
             validate_graph(definition)
             for task_index, task in enumerate(definition.tasks):
-                if task.workflow is not None:
-                    raise RoleAssetError(
-                        "Workflow calls are created by the coordinator"
-                    )
                 if task.human is not None or task.control is not None:
                     continue
-                if task.team is not None:
+                call = task.team or task.workflow
+                if call is not None:
+                    kind = "team" if task.team else "workflow"
+                    path = f"definition.tasks.{task_index}"
                     try:
                         child = await self.get_asset(
-                            username, task.team.asset_id, task.team.version
+                            username, call.asset_id, call.version
                         )
                     except RoleAssetError as exc:
                         raise RoleAssetError(
-                            "Pinned team version is not accessible",
+                            "Pinned child version is not accessible",
                             [
                                 {
-                                    "path": f"definition.tasks.{definition.tasks.index(task)}.team",
+                                    "path": f"{path}.{kind}",
                                     "code": "REFERENCE",
-                                    "message": "Choose an accessible exact team version",
+                                    "message": "Choose an accessible exact asset version",
                                 }
                             ],
                             status=exc.status,
                         ) from exc
                     child_definition = child["definition"]
                     fields = []
-                    path = f"definition.tasks.{definition.tasks.index(task)}"
-                    if child_definition.get("kind") != "autonomous":
+                    autonomous = child_definition.get("kind") == "autonomous"
+                    if autonomous != (kind == "team"):
                         fields.append(
                             {
-                                "path": path + ".team",
+                                "path": f"{path}.{kind}",
                                 "code": "INCOMPATIBLE",
-                                "message": "Choose a pinned autonomous team",
+                                "message": "Choose an asset of the matching kind",
                             }
                         )
-                    elif set(task.inputs) != set(child_definition["required_inputs"]):
+                    result_task = (
+                        None
+                        if autonomous
+                        else next(
+                            (
+                                node
+                                for node in child_definition.get("tasks", [])
+                                if node["id"] == child_definition.get("result_task_id")
+                                and not node.get("control")
+                            ),
+                            None,
+                        )
+                    )
+                    if not autonomous and result_task is None:
                         fields.append(
                             {
-                                "path": path + ".inputs",
-                                "code": "CONTRACT",
-                                "message": "Declare exactly the team's required inputs",
+                                "path": f"{path}.{kind}",
+                                "code": "REFERENCE",
+                                "message": "The pinned workflow has no valid public result",
                             }
                         )
-                    if task.output_contract != child_definition.get("output_contract"):
+                    if set(task.inputs) != set(
+                        child_definition.get("required_inputs", [])
+                    ):
                         fields.append(
                             {
-                                "path": path + ".output_contract",
+                                "path": f"{path}.inputs",
                                 "code": "CONTRACT",
-                                "message": "Use the pinned team's output contract",
+                                "message": "Declare exactly the pinned asset's required inputs",
+                            }
+                        )
+                    contract = (
+                        child_definition.get("output_contract")
+                        if autonomous
+                        else result_task.get("output_contract")
+                        if result_task
+                        else None
+                    )
+                    if task.output_contract != contract:
+                        fields.append(
+                            {
+                                "path": f"{path}.output_contract",
+                                "code": "CONTRACT",
+                                "message": "Use the pinned asset's public output contract",
                             }
                         )
                     if fields:
-                        raise RoleAssetError("Invalid team call", fields)
+                        raise RoleAssetError("Invalid child call", fields)
                     continue
                 try:
                     await self._validate_task_definition(
@@ -1178,16 +818,53 @@ class WorkflowService:
                     ) from exc
             validate_graph(definition)
         version = 1
-        if asset_id is not None:
+        if asset_id is not None and (
+            draft is None or draft["base_version"] is not None
+        ):
             current = await self.get_asset(username, asset_id)
             if current["version"] != request.expected_version:
                 raise RoleAssetError(
                     "Workflow was edited elsewhere; reload first", status=409
                 )
             version = current["version"] + 1
-        else:
+        elif asset_id is None:
             asset_id = uuid.uuid4().hex
         async with self.db.get_db() as session:
+            if draft is not None:
+                result = await session.execute(
+                    update(AgentAssetDraft)
+                    .where(
+                        AgentAssetDraft.kind == draft_kind,
+                        AgentAssetDraft.asset_id == asset_id,
+                        AgentAssetDraft.owner_username == username,
+                        AgentAssetDraft.revision == draft_revision,
+                        AgentAssetDraft.base_version == draft["base_version"],
+                    )
+                    .values(
+                        base_version=version,
+                        published_revision=draft_revision,
+                        published_version=version,
+                    )
+                )
+                if result.rowcount != 1:
+                    await session.rollback()
+                    published = await session.get(
+                        AgentAssetDraftPublication,
+                        (draft_kind, asset_id, draft_revision),
+                    )
+                    if published is not None:
+                        return await self.get_asset(
+                            username, asset_id, published.version
+                        )
+                    raise RoleAssetError("Draft was edited elsewhere", status=409)
+                session.add(
+                    AgentAssetDraftPublication(
+                        kind=draft_kind,
+                        asset_id=asset_id,
+                        revision=draft_revision,
+                        version=version,
+                    )
+                )
             session.add(
                 AgentWorkflowVersion(
                     asset_id=asset_id,
@@ -1433,7 +1110,13 @@ class WorkflowService:
             }
             included[key] = current
             content = current["definition"]
-            if content.get("migration", {}).get("issues"):
+            if (
+                asset_limit is not None
+                and content.get("kind") != "autonomous"
+                and "tasks" not in content
+            ):
+                raise RoleAssetError("Legacy workflow definitions cannot be exported")
+            if (content.get("migration") or {}).get("issues"):
                 raise RoleAssetError(
                     "Configure the migrated definition before export",
                     content["migration"]["issues"],
@@ -1441,9 +1124,9 @@ class WorkflowService:
             references = [
                 *content.get("allowed_workflows", []),
                 *[
-                    task["team"]
+                    task.get("team") or task.get("workflow")
                     for task in content.get("tasks", [])
-                    if task.get("team")
+                    if task.get("team") or task.get("workflow")
                 ],
             ]
             for reference in references:
@@ -1458,477 +1141,311 @@ class WorkflowService:
         return included
 
     @staticmethod
-    def _resolve_role_contract(
-        role: dict, assets: dict, packages: Sequence[AgentWorkflowPackage]
-    ) -> tuple[dict, dict]:
-        """Resolve declarations using the actual fixed asset and role selections.
+    def _package_contents(
+        package: WorkflowPackage, root: tuple[str, int] | None = None
+    ) -> dict:
+        """Validate and select a reachable fixed closure.
 
         Args:
-            role: Authorized local role version and its current definition.
-            assets: Authorized closure returned by _asset_closure.
-            packages: Immutable imported manifests belonging to the same owner.
+            package: Typed source package.
+            root: Optional included asset to use as the closure root.
 
         Returns:
-            Original slot declarations and the applicable portable dependencies.
+            Source asset, role and resource identities reachable from the root.
 
         Raises:
-            RoleAssetError: A selected logical alias has ambiguous provenance.
+            RoleAssetError: A reference is missing, duplicated, cyclic or unreachable.
         """
-        source_record = next(
-            (
-                record
-                for record in packages
-                if role["role_id"] in record.role_ids.values()
-            ),
-            None,
-        )
-        if source_record is None:
-            return {}, {}
-        source_key = next(
-            key
-            for key, identity in source_record.role_ids.items()
-            if identity == role["role_id"]
-        )
-        source_package = WorkflowPackage.model_validate(source_record.package)
-        source_role = next(
-            item
-            for item in source_package.roles
-            if f"{item.role_id}:{item.version}" == source_key
-        )
-        # Preserve declarations; coordinator requirements belong to the current closure.
-        declarations = {
-            item["slot"]: item for item in source_role.model_dump()["dependencies"]
-        }
-        selections = {}
-        contexts = []
-        for source_asset in [source_package, *source_package.assets, *assets.values()]:
-            content = (
-                source_asset["definition"]
-                if isinstance(source_asset, dict)
-                else source_asset.definition.model_dump()
-            )
-            members = (
-                [content["coordinator"], *content["allowed_roles"]]
-                if content.get("kind") == "autonomous"
-                else content.get("tasks", [content])
-            )
-            if isinstance(source_asset, dict):
-                origin = f"{source_asset['asset_id']}:{source_asset['version']}"
-                contexts.extend(
-                    (origin, member.get("overrides", {}))
-                    for member in members
-                    if (member.get("role_id"), member.get("role_version"))
-                    == (role["role_id"], role["version"])
+        assets = {(package.asset_id, package.version): package.definition.model_dump()}
+        for asset in package.assets:
+            key = (asset.asset_id, asset.version)
+            if key in assets:
+                raise RoleAssetError("Duplicate package asset versions")
+            assets[key] = asset.definition.model_dump()
+        roles = {}
+        for role in package.roles:
+            key = (role.role_id, role.version)
+            if key in roles:
+                raise RoleAssetError("Duplicate package role versions")
+            roles[key] = role.model_dump()
+        root = root or (package.asset_id, package.version)
+        included, used_roles, resources = set(), set(), set()
+        pending = [(root, ())]
+        while pending:
+            key, ancestors = pending.pop()
+            if key in ancestors or len(ancestors) > 20:
+                raise RoleAssetError(
+                    "Nested references contain a cycle or exceed the depth limit"
                 )
+            if key not in assets:
+                raise RoleAssetError("Package is missing a pinned asset")
+            if key in included:
                 continue
-            origin = f"{source_asset.asset_id}:{source_asset.version}"
-            selections[origin] = set()
-            for member in members:
-                if (member.get("role_id"), member.get("role_version")) != (
-                    source_role.role_id,
-                    source_role.version,
-                ):
-                    continue
-                for field in ("tools", "skills", "knowledge_bases"):
-                    selected = member.get("overrides", {}).get(field)
-                    if selected is None:
-                        selected = getattr(source_role.definition, field)
-                    selections[origin].update(selected or [])
-        current_origins = {origin for origin, _ in contexts}
-        origins = {}
-        for current in assets.values():
-            current_origin = f"{current['asset_id']}:{current['version']}"
-            # Exact imports retain their fixed scope. Local edits use the selected
-            # role variant when it occurs in this asset, rather than import order.
-            original = next(
-                (
-                    record
-                    for record in packages
-                    if (record.asset_id, record.installed_version)
-                    == (current["asset_id"], current["version"])
-                ),
-                None,
+            included.add(key)
+            definition = assets[key]
+            if definition.get("default_provider_id"):
+                resources.add(("models", definition["default_provider_id"]))
+            members = (
+                [definition["coordinator"], *definition["allowed_roles"]]
+                if definition.get("kind") == "autonomous"
+                else definition["tasks"]
             )
-            if original is None:
-                original = max(
-                    (
-                        record
-                        for record in packages
-                        if record.asset_id == current["asset_id"]
-                        and record.installed_version <= current["version"]
-                        and (
-                            current_origin not in current_origins
-                            or role["role_id"] in record.role_ids.values()
+            if definition.get("kind") == "autonomous":
+                if "goal" not in definition["required_inputs"] or len(
+                    {m["id"] for m in members}
+                ) != len(members):
+                    raise RoleAssetError("Invalid autonomous team presets or goal")
+                allowed = [
+                    (ref["asset_id"], ref["version"])
+                    for ref in definition.get("allowed_workflows", [])
+                ]
+                if len(allowed) != len(set(allowed)):
+                    raise RoleAssetError("Allowed workflow versions must be unique")
+            else:
+                validate_graph(GraphDefinition.model_validate(definition))
+            for member in members:
+                if member.get("role_id"):
+                    role_key = (member["role_id"], member["role_version"])
+                    if role_key not in roles:
+                        raise RoleAssetError("Package is missing a pinned role")
+                    used_roles.add(role_key)
+                for config in (member.get("role") or {}, member.get("overrides") or {}):
+                    for field, kind in (
+                        ("provider_id", "models"),
+                        ("persona_id", "personas"),
+                    ):
+                        if config.get(field):
+                            resources.add((kind, config[field]))
+                    for kind in ("tools", "skills", "knowledge_bases"):
+                        resources.update(
+                            (kind, value) for value in config.get(kind) or []
                         )
-                    ),
-                    key=lambda record: record.installed_version,
-                    default=None,
-                )
-            if original is not None:
-                origins.setdefault(
-                    f"{original.package_id}:{original.version}", []
-                ).append(current_origin)
-        dependencies = {}
-        for slot, declared in declarations.items():
-            uses = declared.get("uses")
-            retained = {}
-            if uses is not None:
-                for origin, aliases in uses.items():
-                    if origin == "role":
-                        retained[origin] = aliases[:]
-                    elif slot not in selections.get(origin, set()):
-                        for current_origin in origins.get(origin, []):
-                            retained[current_origin] = aliases[:]
-            if uses is None or retained:
-                dependencies[slot] = copy.deepcopy(declared)
-                if uses is not None:
-                    dependencies[slot]["uses"] = retained
-        for origin, configuration in [("role", role["definition"]), *contexts]:
-            for kind in ("tools", "skills", "knowledge_bases"):
-                references = configuration.get(kind)
-                if references is None and origin != "role":
-                    references = role["definition"].get(kind)
-                for reference in references or []:
-                    declared = declarations.get(reference)
-                    if declared is None or declared["kind"] != kind:
-                        matches = [
-                            item
-                            for item in declarations.values()
-                            if item["kind"] == kind
-                            and reference in item["logical_slots"]
-                        ]
-                        if len(matches) > 1:
-                            raise RoleAssetError(
-                                "Dependency choices have ambiguous source provenance"
-                            )
-                        declared = matches[0] if matches else None
-                    if declared is None or declared.get("uses") is None:
-                        continue
-                    slot = declared["slot"]
-                    if slot not in dependencies:
-                        dependencies[slot] = {**copy.deepcopy(declared), "uses": {}}
-                    aliases = (
-                        declared["uses"].get("role", declared["logical_slots"])
-                        if origin == "role"
-                        else declared["logical_slots"]
+                if member.get("installation"):
+                    resources.add(("profiles", member["installation"]["profile_id"]))
+            refs = [
+                *definition.get("allowed_workflows", []),
+                *[
+                    m.get("team") or m.get("workflow")
+                    for m in members
+                    if m.get("team") or m.get("workflow")
+                ],
+            ]
+            for ref in refs:
+                child_key = (ref["asset_id"], ref["version"])
+                if child_key not in assets:
+                    raise RoleAssetError("Package is missing a pinned asset")
+                pending.append((child_key, (*ancestors, key)))
+            for member in members:
+                ref = member.get("team") or member.get("workflow")
+                if ref:
+                    child = assets[(ref["asset_id"], ref["version"])]
+                    autonomous = child.get("kind") == "autonomous"
+                    if autonomous != bool(member.get("team")):
+                        raise RoleAssetError(
+                            "Child call has an incompatible asset kind"
+                        )
+                    result = (
+                        None
+                        if autonomous
+                        else next(
+                            (
+                                task
+                                for task in child["tasks"]
+                                if task["id"] == child.get("result_task_id")
+                                and not task.get("control")
+                            ),
+                            None,
+                        )
                     )
-                    retained = dependencies[slot]["uses"].setdefault(origin, [])
-                    retained.extend(alias for alias in aliases if alias not in retained)
-        for dependency in dependencies.values():
-            if dependency.get("uses") is not None:
-                dependency["logical_slots"] = sorted(
-                    {
-                        alias
-                        for aliases in dependency["uses"].values()
-                        for alias in aliases
-                    }
-                )
-        return declarations, dependencies
+                    if not autonomous and result is None:
+                        raise RoleAssetError("Child workflow has no public result")
+                    contract = (
+                        child.get("output_contract")
+                        if autonomous
+                        else result.get("output_contract")
+                    )
+                    if (
+                        set(member.get("inputs", {}))
+                        != set(child.get("required_inputs", []))
+                        or member.get("output_contract") != contract
+                    ):
+                        raise RoleAssetError(
+                            "Child call does not match its pinned contract"
+                        )
+            for ref in definition.get("allowed_workflows", []):
+                child = assets[(ref["asset_id"], ref["version"])]
+                if child.get("kind") == "autonomous" or not any(
+                    task["id"] == child.get("result_task_id")
+                    and not task.get("control")
+                    for task in child["tasks"]
+                ):
+                    raise RoleAssetError("Allowed workflow must have a public result")
+        for key in used_roles:
+            role = roles[key]
+            resources.add(("profiles", role["installation"]["profile_id"]))
+            config = role["definition"]
+            for field, kind in (("provider_id", "models"), ("persona_id", "personas")):
+                if config.get(field):
+                    resources.add((kind, config[field]))
+            for kind in ("tools", "skills", "knowledge_bases"):
+                resources.update((kind, value) for value in config.get(kind) or [])
+        return {
+            "assets": assets,
+            "roles": roles,
+            "included": included,
+            "used_roles": used_roles,
+            "resources": resources,
+        }
+
+    @staticmethod
+    def _package_capabilities(contents: dict) -> dict:
+        """Collect capabilities required by the selected fixed closure.
+
+        Args:
+            contents: Reachable fixed definitions and resource identities.
+
+        Returns:
+            Required model and profile capabilities keyed by source identity.
+        """
+        capabilities = {}
+        for role_key in contents["used_roles"]:
+            role = contents["roles"][role_key]
+            definition = role["definition"]
+            profile_id = role["installation"]["profile_id"]
+            capabilities.setdefault(("profiles", profile_id), set()).update(
+                ["task_result", *definition.get("runner_capabilities", [])]
+            )
+            if definition.get("provider_id"):
+                capabilities.setdefault(
+                    ("models", definition["provider_id"]), set()
+                ).update(definition.get("model_capabilities", []))
+        for asset_key in contents["included"]:
+            definition = contents["assets"][asset_key]
+            members = (
+                [definition["coordinator"], *definition["allowed_roles"]]
+                if definition.get("kind") == "autonomous"
+                else definition["tasks"]
+            )
+            for member in members:
+                if member.get("role_id"):
+                    role = contents["roles"][
+                        (member["role_id"], member["role_version"])
+                    ]
+                    config, installation = role["definition"], role["installation"]
+                elif member.get("role"):
+                    config, installation = member["role"], member["installation"]
+                else:
+                    continue
+                runner_requirements = [
+                    "task_result",
+                    *config.get("runner_capabilities", []),
+                ]
+                if definition.get("kind") == "autonomous" and member is members[0]:
+                    runner_requirements.append("task_tools")
+                capabilities.setdefault(
+                    ("profiles", installation["profile_id"]), set()
+                ).update(runner_requirements)
+                provider = (member.get("overrides") or {}).get(
+                    "provider_id", config.get("provider_id")
+                ) or definition.get("default_provider_id")
+                if provider:
+                    capabilities.setdefault(("models", provider), set()).update(
+                        config.get("model_capabilities", [])
+                    )
+        return capabilities
 
     async def export_asset(
         self, username: str, asset_id: str, version: int | None = None
     ) -> dict:
-        """Export the pinned reference closure with portable resource slots.
+        """Export the exact accessible closure and source resource requirements.
 
         Args:
             username: Authenticated owner.
-            asset_id: Saved workflow identity.
-            version: Exact version, or the latest version.
+            asset_id: Saved entry identity.
+            version: Exact version, or latest when omitted.
 
         Returns:
-            A versioned JSON definition package without local installations.
+            Version 3 package containing only fixed definitions and safe metadata.
 
         Raises:
-            RoleAssetError: Invalid references or unresolved inherited configuration.
+            RoleAssetError: An included version is missing or inaccessible.
         """
         asset = await self.get_asset(username, asset_id, version)
-        async with self.db.get_db() as session:
-            installed_packages = (
-                (
-                    await session.execute(
-                        select(AgentWorkflowPackage).where(
-                            AgentWorkflowPackage.owner_username == username,
-                        )
-                    )
-                )
-                .scalars()
-                .all()
-            )
-            original = next(
-                (
-                    record
-                    for record in installed_packages
-                    if (record.asset_id, record.installed_version)
-                    == (asset_id, asset["version"])
-                ),
-                None,
-            )
-            if original is not None:
-                return copy.deepcopy(original.package)
         included = await self._asset_closure(username, asset, asset_limit=100)
-        definition = included[(asset_id, asset["version"])]["definition"]
-        tasks = []
-        task_origins = {}
+        references = set()
         for current in included.values():
-            content = current["definition"]
+            definition = current["definition"]
             members = (
-                [content["coordinator"], *content["allowed_roles"]]
-                if content.get("kind") == "autonomous"
-                else content.get("tasks", [content])
+                [definition["coordinator"], *definition["allowed_roles"]]
+                if definition.get("kind") == "autonomous"
+                else definition["tasks"]
             )
-            tasks.extend(members)
-            task_origins.update(
-                (id(task), f"{current['asset_id']}:{current['version']}")
-                for task in members
+            references.update(
+                (m["role_id"], m["role_version"]) for m in members if m.get("role_id")
             )
-        catalog = await self.roles.get_resources()
-        portable_roles = []
-        references = sorted(
-            {
-                (task["role_id"], task["role_version"])
-                for task in tasks
-                if task.get("role_id")
-            }
-        )
-        for role_id, role_version in references:
-            role = await self.roles.resolve_role(username, role_id, role_version)
-            portable = copy.deepcopy(role["definition"])
-            portable.pop("migration", None)
-            portable["persona_slot"] = None
-            portable["model_slot"] = "model"
-            declarations, dependencies = self._resolve_role_contract(
-                role, included, installed_packages
-            )
-            reserved_slots = set(declarations)
-            resource_slots: dict[tuple[str, str], str] = {}
-            base_configuration = copy.deepcopy(role["definition"])
-            contexts = []
-            for task in tasks:
-                if (task.get("role_id"), task.get("role_version")) == (
-                    role_id,
-                    role_version,
-                ):
-                    preview = await self.roles.preview_role(role, task.get("overrides"))
-                    if not preview["ready"]:
-                        raise RoleAssetError(
-                            "Resolve task resources before export", preview["issues"]
-                        )
-                    original_overrides = task.get("overrides", {})
-                    task["overrides"] = {}
-                    contexts.append(
-                        (
-                            task["overrides"],
-                            preview,
-                            original_overrides,
-                            task_origins[id(task)],
-                        )
-                    )
-            # Tasks can supply a missing inherited prompt or narrow unavailable
-            # resources. Do not turn the first task's overrides into role defaults.
-            if not role["ready"]:
-                defaults = {}
-                if not role["effective"]["prompt"]:
-                    defaults["prompt"] = contexts[0][1]["effective"]["prompt"]
-                baseline = await self.roles.preview_role(role, defaults)
-                if not baseline["ready"]:
-                    defaults.update({"tools": [], "skills": [], "knowledge_bases": []})
-                    baseline = await self.roles.preview_role(role, defaults)
-                if not baseline["ready"]:
-                    raise RoleAssetError(
-                        "Resolve inherited role defaults before export",
-                        baseline["issues"],
-                    )
-                role = baseline
-                base_configuration.update(defaults)
-            contexts.insert(0, (portable, role, base_configuration, "role"))
-            profile = next(
-                p
-                for p in catalog["profiles"]
-                if p["id"] == role["installation"]["profile_id"]
-            )
-            runner_type = profile.get("runner_type", "local")
-            if not any(dep["kind"] == "profiles" for dep in dependencies.values()):
-                dependencies["profile"] = {
-                    "slot": "profile",
-                    "kind": "profiles",
-                    "runner_type": runner_type,
-                    "fingerprint": "astrbot.local.v1"
-                    if runner_type == "local"
-                    else None,
-                    "capabilities": portable["runner_capabilities"],
-                    "uses": {"role": []},
-                }
-                reserved_slots.add("profile")
-            for target, preview, original_config, origin in contexts:
-                effective = preview["effective"]
-                for field in (
-                    "prompt",
-                    "max_steps",
-                    "tool_call_timeout",
-                    "context_length",
-                    "max_instances",
-                    "max_parallel",
-                    "max_iterations",
-                    "max_depth",
-                ):
-                    target[field] = effective[field]
-                for field, values in (
-                    (
-                        "models",
-                        [effective["provider_id"]] if effective["provider_id"] else [],
-                    ),
-                    ("tools", effective["tools"]),
-                    ("skills", effective["skills"]),
-                    ("knowledge_bases", effective["knowledge_bases"]),
-                ):
-                    if field == "models":
-                        logical_references = (
-                            [base_configuration["model_slot"]] if values else []
-                        )
-                    else:
-                        logical_references = original_config.get(field)
-                        if logical_references is None:
-                            logical_references = base_configuration.get(field)
-                    selections = zip(
-                        logical_references
-                        if logical_references is not None
-                        else [None] * len(values),
-                        values,
-                        strict=True,
-                    )
-                    slots = []
-                    for reference, resource_id in selections:
-                        declared = declarations.get(reference)
-                        if declared is not None and declared["kind"] != field:
-                            declared = None
-                        if declared is None and reference is not None:
-                            matches = [
-                                item
-                                for item in declarations.values()
-                                if item["kind"] == field
-                                and (
-                                    field == "models"
-                                    or reference in item["logical_slots"]
-                                )
-                            ]
-                            if len(matches) > 1:
-                                raise RoleAssetError(
-                                    "Dependency choices have ambiguous source provenance"
-                                )
-                            declared = matches[0] if matches else None
-                        if declared is not None:
-                            slot = declared["slot"]
-                        else:
-                            key = (
-                                field,
-                                f"logical:{reference}"
-                                if reference is not None
-                                else f"resource:{resource_id}",
-                            )
-                            slot = resource_slots.get(key)
-                            if slot is None:
-                                index = 0
-                                slot = "model" if field == "models" else f"{field}_1"
-                                while slot in reserved_slots:
-                                    index += 1
-                                    slot = f"{field}_{index}"
-                                reserved_slots.add(slot)
-                                resource_slots[key] = slot
-                        if slot not in dependencies:
-                            resource = next(
-                                r for r in catalog[field] if r["id"] == resource_id
-                            )
-                            dependencies[slot] = {
-                                "slot": slot,
-                                "kind": field,
-                                "fingerprint": resource.get("fingerprint"),
-                                "capabilities": portable["model_capabilities"]
-                                if field == "models"
-                                else [],
-                                "runner_type": None,
-                                "logical_slots": [],
-                                "uses": {},
-                                "description": resource.get("description") or "",
-                                "display_name": resource.get("name", "")
-                                if field == "knowledge_bases"
-                                and resource.get("name") != resource_id
-                                else "",
-                                "input_schema": resource.get("input_schema")
-                                if field == "tools"
-                                else None,
-                            }
-                        dependency = dependencies[slot]
-                        if declared is None and dependency.get("uses") is not None:
-                            aliases = [reference] if reference is not None else []
-                            current_aliases = dependency["uses"].setdefault(origin, [])
-                            for alias in aliases:
-                                if alias not in current_aliases:
-                                    current_aliases.append(alias)
-                                if alias not in dependency["logical_slots"]:
-                                    dependency["logical_slots"].append(alias)
-                        slots.append(slot)
-                    if field == "models" and slots:
-                        portable["model_slot"] = slots[0]
-                    if field != "models":
-                        target[field] = slots
-            portable_roles.append(
+        roles = []
+        for role_id, role_version in sorted(references):
+            role = await self.roles.get_role(username, role_id, role_version)
+            roles.append(
                 {
-                    "role_id": role_id,
-                    "version": role_version,
-                    "definition": portable,
-                    "prompt_source": role["sources"]["prompt"].split(":", 1)[0],
-                    "dependencies": list(dependencies.values()),
+                    key: role[key]
+                    for key in ("role_id", "version", "definition", "installation")
                 }
             )
-        package = WorkflowPackage.model_validate(
-            {
-                "format": "astrbot.workflow",
-                "format_version": 2
-                if len(included) > 1 or definition.get("kind") == "autonomous"
-                else 1,
-                "asset_id": asset_id,
-                "version": asset["version"],
-                "definition": definition,
-                "roles": portable_roles,
-                "assets": [
-                    included[key]
-                    for key in sorted(included)
-                    if key != (asset_id, asset["version"])
-                ],
-            }
-        )
-        return package.asset_packages()[0]
+        raw = {
+            "format": "astrbot.workflow",
+            "format_version": 3,
+            **included[(asset_id, asset["version"])],
+            "assets": [
+                included[key]
+                for key in sorted(included)
+                if key != (asset_id, asset["version"])
+            ],
+            "roles": roles,
+            "requirements": [],
+        }
+        try:
+            package = WorkflowPackage.model_validate(raw)
+        except ValidationError as exc:
+            raise RoleAssetError("Asset is not in the supported format") from exc
+        contents = self._package_contents(package)
+        catalog = await self.roles.get_resources()
+        capabilities = self._package_capabilities(contents)
+        for kind, source_id in sorted(contents["resources"]):
+            resource = next((r for r in catalog[kind] if r["id"] == source_id), {})
+            raw["requirements"].append(
+                {
+                    "kind": kind,
+                    "source_id": source_id,
+                    "display_name": resource.get("name") or source_id,
+                    "description": resource.get("description") or "",
+                    "fingerprint": resource.get("fingerprint"),
+                    "capabilities": sorted(capabilities.get((kind, source_id), set())),
+                    "runner_type": resource.get("runner_type", "local")
+                    if kind == "profiles" and resource
+                    else None,
+                    "input_schema": resource.get("input_schema")
+                    if kind == "tools"
+                    else None,
+                }
+            )
+        return WorkflowPackage.model_validate(raw).model_dump()
 
     async def _validate_package(
         self, username: str, payload: dict
     ) -> WorkflowImportRequest:
-        """Validate the complete portable graph before reading machine resources.
+        """Validate source closure and all declarations before matching resources.
 
         Args:
-            username: Authenticated installing owner.
-            payload: Untrusted definition package and optional local choices.
+            username: Authenticated importing owner.
+            payload: Untrusted package and explicit selections.
 
         Returns:
-            Typed request with self-contained role, contract and graph references.
+            Validated request.
 
         Raises:
-            RoleAssetError: Unsupported format or invalid definitions and references.
+            RoleAssetError: Invalid schema, closure or declarations.
         """
-        raw_package = payload.get("package")
-        if (
-            isinstance(raw_package, dict)
-            and type(raw_package.get("format_version")) is not int
-        ):
-            raise RoleAssetError(
-                "Package format_version must be an integer",
-                [
-                    {
-                        "path": "package.format_version",
-                        "code": "INVALID",
-                        "message": "Use an integer format version",
-                    }
-                ],
-            )
         try:
             request = WorkflowImportRequest.model_validate(payload)
         except ValidationError as exc:
@@ -1944,508 +1461,443 @@ class WorkflowService:
                 ],
             ) from exc
         package = request.package
-        if package.format_version == 1 and (
-            package.assets
-            or isinstance(package.definition, AutonomousDefinition)
-            or any(
-                dependency.uses is not None
-                for role in package.roles
-                for dependency in role.dependencies
-            )
+        try:
+            WorkflowPackage.content_digest(package.model_dump())
+        except (ValueError, TypeError) as exc:
+            raise RoleAssetError("Package must contain finite JSON values") from exc
+        for asset_index, definition in enumerate(
+            [
+                package.definition.model_dump(),
+                *[asset.definition.model_dump() for asset in package.assets],
+            ]
         ):
-            raise RoleAssetError("Nested definitions require package format version 2")
-        package.asset_packages()
-        references = {(role.role_id, role.version) for role in package.roles}
-        if len(references) != len(package.roles):
-            raise RoleAssetError("Duplicate package role versions")
-        definitions = [
-            package.definition,
-            *[asset.definition for asset in package.assets],
-        ]
-        assets = {
-            (package.asset_id, package.version): package.definition,
-            **{
-                (asset.asset_id, asset.version): asset.definition
-                for asset in package.assets
-            },
-        }
-        tasks = []
-        used = set()
-        for asset_index, definition in enumerate(definitions):
-            prefix = (
-                "definition"
-                if asset_index == 0
-                else f"package.assets.{asset_index - 1}.definition"
+            members = (
+                [definition["coordinator"], *definition["allowed_roles"]]
+                if definition.get("kind") == "autonomous"
+                else definition["tasks"]
             )
-            contexts = (
-                [definition.coordinator, *definition.allowed_roles]
-                if isinstance(definition, AutonomousDefinition)
-                else definition.tasks
-                if isinstance(definition, GraphDefinition)
-                else [definition]
-            )
-            tasks.extend(contexts)
-            if isinstance(definition, AutonomousDefinition):
-                if "goal" not in definition.required_inputs:
-                    raise RoleAssetError("Autonomous teams require a goal input")
-                if len({role.id for role in definition.allowed_roles}) != len(
-                    definition.allowed_roles
+            for member_index, member in enumerate(members):
+                if (
+                    member.get("human")
+                    or member.get("control")
+                    or member.get("team")
+                    or member.get("workflow")
                 ):
-                    raise RoleAssetError("Allowed role identities must be unique")
-                if len(
-                    {
-                        (ref.asset_id, ref.version)
-                        for ref in definition.allowed_workflows
-                    }
-                ) != len(definition.allowed_workflows):
-                    raise RoleAssetError("Allowed workflow versions must be unique")
-                for ref in definition.allowed_workflows:
-                    child = assets[(ref.asset_id, ref.version)]
-                    if isinstance(child, AutonomousDefinition):
-                        raise RoleAssetError(
-                            "Choose a saved workflow, not an autonomous team"
-                        )
-                    nodes = (
-                        [task.id for task in child.tasks]
-                        if isinstance(child, GraphDefinition)
-                        else ["result"]
-                    )
-                    if ref.result_task_id not in nodes:
-                        raise RoleAssetError(
-                            "Choose an existing pinned workflow return task"
-                        )
-            for index, task in enumerate(contexts):
-                if getattr(task, "workflow", None):
-                    raise RoleAssetError(
-                        "Workflow calls are created by the coordinator"
-                    )
-                if getattr(task, "human", None):
                     continue
-                if isinstance(task, GraphTask) and task.team is not None:
-                    child = assets[(task.team.asset_id, task.team.version)]
-                    if not isinstance(child, AutonomousDefinition):
-                        raise RoleAssetError("Choose a pinned autonomous team")
-                    if (
-                        set(task.inputs) != set(child.required_inputs)
-                        or task.output_contract != child.output_contract
-                    ):
-                        raise RoleAssetError(
-                            "Invalid team call contracts",
-                            [
-                                {
-                                    "path": f"{prefix}.tasks.{index}",
-                                    "code": "CONTRACT",
-                                    "message": "Use the pinned team's exact inputs and output contract",
-                                }
-                            ],
-                        )
-                    continue
-                assert task.role_id is not None and task.role_version is not None
-                used.add((task.role_id, task.role_version))
+                task = (
+                    GraphTask.model_validate(
+                        {
+                            "id": "preset",
+                            "name": definition["name"],
+                            "member": "preset",
+                            "task": "{goal}",
+                            "inputs": {"goal": {"input": "goal"}},
+                            **{k: v for k, v in member.items() if k != "id"},
+                        }
+                    )
+                    if definition.get("kind") == "autonomous"
+                    else GraphTask.model_validate(member)
+                )
                 try:
                     await self._validate_task_definition(
                         username,
-                        WorkflowDefinition(
-                            name=getattr(task, "name", definition.name),
-                            task=getattr(task, "task", "{goal}"),
-                            role_id=task.role_id,
-                            role_version=task.role_version,
-                            overrides=task.overrides,
-                            required_inputs=list(
-                                dict.fromkeys(
-                                    [
-                                        *definition.required_inputs,
-                                        *getattr(task, "inputs", {}),
-                                    ]
-                                )
-                            ),
-                            output_contract=getattr(
-                                task,
-                                "output_contract",
-                                getattr(definition, "output_contract", None),
-                            ),
-                        ),
-                        references,
+                        task,
+                        {(role.role_id, role.version) for role in package.roles},
+                        required_inputs=list(task.inputs),
                     )
                 except RoleAssetError as exc:
+                    prefix = (
+                        "definition"
+                        if asset_index == 0
+                        else f"package.assets.{asset_index - 1}.definition"
+                    )
+                    if definition.get("kind") == "autonomous":
+                        prefix += (
+                            ".coordinator"
+                            if member_index == 0
+                            else f".allowed_roles.{member_index - 1}"
+                        )
+                    else:
+                        prefix += f".tasks.{member_index}"
                     raise RoleAssetError(
                         str(exc),
                         [
                             {
                                 **issue,
-                                "path": (
-                                    f"{prefix}.tasks.{index}."
-                                    if isinstance(definition, GraphDefinition)
-                                    else prefix + "."
-                                )
+                                "path": prefix
+                                + "."
                                 + issue["path"].removeprefix("definition."),
                             }
                             for issue in exc.fields
                         ],
                         status=exc.status,
                     ) from exc
-            if isinstance(definition, GraphDefinition):
-                # Graph field resolution assumes well-formed task contracts.
-                validate_graph(definition)
-                for index, loop in enumerate(definition.loops):
-                    for task in definition.tasks:
-                        if task.id not in loop.body or not task.role_id:
-                            continue
-                        role = next(
-                            role
-                            for role in package.roles
-                            if (role.role_id, role.version)
-                            == (task.role_id, task.role_version)
-                        )
-                        limit = (
-                            task.overrides.max_iterations
-                            or role.definition.max_iterations
-                        )
-                        if limit is not None and loop.max_iterations > limit:
-                            raise RoleAssetError(
-                                "Loop exceeds the effective member iteration limit",
-                                [
-                                    {
-                                        "path": f"{prefix}.loops.{index}.max_iterations",
-                                        "code": "LIMIT",
-                                        "message": f"Member {task.member} permits at most {limit} iterations",
-                                    }
-                                ],
-                            )
-        if used != references:
+        contents = self._package_contents(package)
+        if len(contents["assets"]) > 100:
+            raise RoleAssetError("Package exceeds the supported asset limit")
+        if contents["included"] != set(contents["assets"]) or contents[
+            "used_roles"
+        ] != set(contents["roles"]):
+            raise RoleAssetError("Package contains unreachable definitions")
+        requirements = [(r.kind, r.source_id) for r in package.requirements]
+        if (
+            len(requirements) != len(set(requirements))
+            or set(requirements) != contents["resources"]
+        ):
             raise RoleAssetError(
-                "Package must contain exactly the referenced role versions"
+                "Resource requirements do not match the included definitions"
             )
-        keys = {f"{role.role_id}:{role.version}" for role in package.roles}
-        if set(request.installations) - keys:
-            raise RoleAssetError("Installation references an unknown package role")
-        # Validate the complete logical dependency surface before any matching.
-        for role in package.roles:
-            slots = {dependency.slot: dependency for dependency in role.dependencies}
-            profile = [d for d in role.dependencies if d.kind == "profiles"]
-            if len(slots) != len(role.dependencies) or len(profile) != 1:
+        capabilities = self._package_capabilities(contents)
+        for requirement in package.requirements:
+            if requirement.kind in {"profiles", "models"} and set(
+                requirement.capabilities
+            ) != capabilities.get((requirement.kind, requirement.source_id), set()):
                 raise RoleAssetError(
-                    "Package dependencies require unique slots and one profile"
+                    "Resource capabilities do not match the included definitions"
                 )
-            if (
-                role.definition.persona_slot
-                or not role.definition.prompt
-                or any(
-                    getattr(role.definition, field) is None
-                    for field in ("tools", "skills", "knowledge_bases")
-                )
-            ):
-                raise RoleAssetError(
-                    "Package roles require included prompts and explicit resource lists"
-                )
-            required = {profile[0].slot: "profiles"}
-            if profile[0].runner_type == "local":
-                required[role.definition.model_slot] = "models"
-            for context in [
-                role.definition,
-                *[
-                    task.overrides
-                    for task in tasks
-                    if (
-                        getattr(task, "role_id", None),
-                        getattr(task, "role_version", None),
-                    )
-                    == (role.role_id, role.version)
-                ],
-            ]:
-                for kind in ("tools", "skills", "knowledge_bases"):
-                    for slot in getattr(context, kind) or []:
-                        if slot in required and required[slot] != kind:
-                            raise RoleAssetError(
-                                "Logical dependency slot has conflicting resource kinds"
-                            )
-                        required[slot] = kind
-            declared = {slot: dependency.kind for slot, dependency in slots.items()}
-            if any(
-                declared.get(slot) != kind for slot, kind in required.items()
-            ) or any(
-                kind not in {"tools", "skills", "knowledge_bases"}
-                for slot, kind in declared.items()
-                if slot not in required
-            ):
-                raise RoleAssetError(
-                    "Package dependency declarations do not match role and task slots"
-                )
+        choices = [(s.kind, s.source_id) for s in request.selections]
+        if len(choices) != len(set(choices)) or not set(choices).issubset(
+            set(requirements)
+        ):
+            raise RoleAssetError(
+                "Resource selections must uniquely identify declared requirements"
+            )
         return request
 
-    async def _preview_package_role(
-        self,
-        package: WorkflowPackage,
-        role: PackageRole,
-        explicit: RoleInstallation | None,
-        catalog: dict,
-        *,
-        validate_tasks: bool = True,
-    ) -> tuple[dict, list[dict]]:
-        """Apply the same declared resource constraints at preview and launch.
+    @staticmethod
+    def _rewrite_package_config(config: dict, selections: dict) -> None:
+        """Rewrite explicit resource references without changing omitted or null values.
 
         Args:
-            package: Immutable package with the original task overrides.
-            role: Included role whose full dependency surface must be ready.
-            explicit: Saved or deliberately proposed local installation.
-            catalog: Current local resources, without performing installation.
-            validate_tasks: Check portable task overrides and graph limits during
-                import. Launch validates its selected local definition separately.
+            config: Role, overrides, installation or asset definition to update.
+            selections: Mapping from resource type and source identity to local ID.
+        """
+        for field, kind in (
+            ("provider_id", "models"),
+            ("default_provider_id", "models"),
+            ("persona_id", "personas"),
+            ("profile_id", "profiles"),
+        ):
+            if config.get(field) is not None:
+                config[field] = selections[(kind, config[field])]
+        for kind in ("tools", "skills", "knowledge_bases"):
+            if config.get(kind) is not None:
+                config[kind] = [selections[(kind, value)] for value in config[kind]]
+
+    @staticmethod
+    def _package_manifests(
+        package: WorkflowPackage, contents: dict, choices: dict
+    ) -> dict:
+        """Build each exact source closure and its selected local resource identities.
+
+        Args:
+            package: Validated source closure.
+            contents: Reachability and source definitions.
+            choices: Explicit mapping from source identities to local IDs.
 
         Returns:
-            Grouped role preview and all dependency or permission issues.
+            Canonical manifests keyed by fixed source asset identity.
+        """
+        manifests = {}
+        for key in contents["included"]:
+            closure = WorkflowService._package_contents(package, key)
+            manifests[key] = {
+                "assets": [
+                    {
+                        "asset_id": item[0],
+                        "version": item[1],
+                        "definition": contents["assets"][item],
+                    }
+                    for item in sorted(closure["included"])
+                ],
+                "roles": [
+                    contents["roles"][item] for item in sorted(closure["used_roles"])
+                ],
+                "requirements": [
+                    r.model_dump()
+                    for r in package.requirements
+                    if (r.kind, r.source_id) in closure["resources"]
+                ],
+                "selections": [
+                    {"kind": item[0], "source_id": item[1], "target_id": choices[item]}
+                    for item in sorted(closure["resources"])
+                ],
+            }
+            capabilities = WorkflowService._package_capabilities(closure)
+            for requirement in manifests[key]["requirements"]:
+                if requirement["kind"] in {"profiles", "models"}:
+                    requirement["capabilities"] = sorted(
+                        capabilities.get(
+                            (requirement["kind"], requirement["source_id"]), set()
+                        )
+                    )
+            manifests[key]["requirements"].sort(
+                key=lambda r: (r["kind"], r["source_id"])
+            )
+        return manifests
+
+    async def preview_import(self, username: str, payload: dict) -> dict:
+        """Match explicit source requirements against the current local catalog.
+
+        Args:
+            username: Authenticated owner.
+            payload: Source package and current explicit selections.
+
+        Returns:
+            Candidate resources, readiness diagnostics and effective configurations.
 
         Raises:
-            RoleAssetError: Bindings contain undeclared package slots.
+            RoleAssetError: Package structure or fixed identity conflicts.
         """
-        tasks = []
-        if validate_tasks:
-            for index, definition in enumerate(
-                [package.definition, *[asset.definition for asset in package.assets]]
-            ):
-                prefix = (
-                    "definition" if index == 0 else f"assets.{index - 1}.definition"
-                )
-                tasks.extend(
-                    (task, definition, prefix)
-                    for task in (
-                        [definition.coordinator, *definition.allowed_roles]
-                        if isinstance(definition, AutonomousDefinition)
-                        else definition.tasks
-                        if isinstance(definition, GraphDefinition)
-                        else [definition]
-                    )
-                )
-        issues: list[dict] = []
-        key = f"{role.role_id}:{role.version}"
-        installation = {"profile_id": "__unconfigured__", "bindings": {}}
-        dependencies = []
-        allowed_slots = {d.slot for d in role.dependencies if d.kind != "profiles"}
-        if explicit and set(explicit.bindings) - allowed_slots:
-            raise RoleAssetError("Bindings contain undeclared package slots")
-        # Launch checks task requirements on the current asset, not its import source.
-        requirements = (
-            {
-                dependency["slot"]: dependency["capabilities"]
-                for dependency in package.role_content(role)["dependencies"]
-            }
-            if validate_tasks
-            else {
-                dependency.slot: dependency.resource_content()["capabilities"]
-                for dependency in role.dependencies
-            }
-        )
-        for dep in role.dependencies:
+        request = await self._validate_package(username, payload)
+        package = request.package
+        contents = self._package_contents(package)
+        choices = {(s.kind, s.source_id): s.target_id for s in request.selections}
+        catalog = await self.roles.get_resources()
+        issues, requirements = [], []
+        for dep in package.requirements:
+            key = (dep.kind, dep.source_id)
             candidates = []
-            required_capabilities = requirements[dep.slot]
             for resource in catalog[dep.kind]:
-                fingerprint = resource.get("fingerprint")
-                if dep.kind == "profiles":
-                    runner_type = resource.get("runner_type", "local")
-                    if runner_type != dep.runner_type:
-                        continue
-                    if runner_type == "local":
-                        pool = resource.get("provider_pool", ["*"])
-                        model_requirement = next(
-                            d for d in role.dependencies if d.kind == "models"
-                        )
-                        if not any(
-                            ("*" in pool or model["id"] in pool)
-                            and model.get("enabled", True)
-                            and (
-                                not model_requirement.fingerprint
-                                or model.get("fingerprint")
-                                == model_requirement.fingerprint
-                            )
-                            and set(role.definition.model_capabilities).issubset(
-                                model.get("capabilities", [])
-                            )
-                            for model in catalog["models"]
-                        ):
-                            continue
-                    fingerprint = "astrbot.local.v1" if runner_type == "local" else None
-                if not resource.get("enabled", True) or not set(
-                    required_capabilities
-                ).issubset(
-                    resource.get("capabilities", [])
-                    if dep.kind != "profiles"
-                    else get_agent_runner_capabilities(
+                reasons = []
+                warnings = []
+                if not resource.get("enabled", True):
+                    reasons.append("Resource is disabled")
+                if (
+                    dep.runner_type
+                    and resource.get("runner_type", "local") != dep.runner_type
+                ):
+                    reasons.append("Executor type differs")
+                if dep.fingerprint and resource.get("fingerprint") != dep.fingerprint:
+                    warnings.append("Source fingerprint differs")
+                if (
+                    dep.input_schema is not None
+                    and resource.get("input_schema") != dep.input_schema
+                ):
+                    reasons.append("Tool input contract differs")
+                available_capabilities = (
+                    get_agent_runner_capabilities(
                         {
                             "runner_type": resource.get("runner_type", "local"),
                             "config": resource.get("runner_config", {}),
                         }
                     )["capabilities"]
+                    if dep.kind == "profiles"
+                    else resource.get("capabilities", [])
+                )
+                if dep.capabilities and not set(dep.capabilities).issubset(
+                    available_capabilities
                 ):
-                    continue
-                if dep.fingerprint and fingerprint != dep.fingerprint:
-                    continue
-                if (
-                    dep.input_schema is not None
-                    and resource.get("input_schema") != dep.input_schema
-                ):
-                    continue
+                    reasons.append("Required capabilities are missing")
                 candidates.append(
                     {
                         "id": resource["id"],
-                        "name": resource.get("name", resource["id"]),
-                        "description": resource.get("description") or "",
-                        "input_schema": resource.get("input_schema"),
+                        "name": resource.get("name") or resource["id"],
+                        "disabled": bool(reasons),
+                        "reasons": reasons,
+                        "warnings": warnings,
                     }
                 )
-            chosen = (
-                (
-                    explicit.profile_id
-                    if dep.kind == "profiles"
-                    else explicit.bindings.get(dep.slot)
-                )
-                if explicit
-                else None
-            )
-            automatic = bool(dep.fingerprint) and len(candidates) == 1 and not explicit
-            if automatic:
-                chosen = candidates[0]["id"]
-            compatible = (
-                chosen is not None and sum(c["id"] == chosen for c in candidates) == 1
-            )
-            status = (
-                "matched"
-                if compatible
-                else "ambiguous"
-                if len(candidates) > 1
-                else "missing"
-                if not candidates
-                else "confirmation_required"
-            )
-            path = f"roles.{key}." + (
-                "profile_id" if dep.kind == "profiles" else f"bindings.{dep.slot}"
-            )
-            if not compatible:
+            selected = choices.get(key)
+            matches = [
+                r for r in candidates if r["id"] == selected and not r["disabled"]
+            ]
+            if len(matches) != 1:
                 issues.append(
                     {
-                        "path": path,
-                        "code": status.upper(),
-                        "message": f"Choose a compatible {dep.kind} resource for {dep.slot}",
+                        "path": f"requirements.{dep.kind}.{dep.source_id}",
+                        "code": "MISSING" if not selected else "INCOMPATIBLE",
+                        "message": "Choose an available compatible local resource",
                     }
                 )
-            elif dep.kind == "profiles":
-                installation["profile_id"] = chosen
-            else:
-                installation["bindings"][dep.slot] = chosen
-            dependencies.append(
-                {
-                    **dep.model_dump(),
-                    "capabilities": required_capabilities,
-                    "candidates": candidates,
-                    "selected": chosen if compatible else None,
-                    "automatic": automatic,
-                    "status": status,
-                }
+            requirements.append(
+                {**dep.model_dump(), "selected": selected, "candidates": candidates}
             )
-        base = {
-            "definition": role.definition.model_dump(),
-            "installation": installation,
-        }
-        # A shared role keeps its complete declared resource contract when a
-        # child uses fewer slots. Validate all permissions without widening the
-        # executable definition or its task overrides.
-        requirements = copy.deepcopy(base)
-        for kind in ("tools", "skills", "knowledge_bases"):
-            requirements["definition"][kind] = [
-                dep.slot for dep in role.dependencies if dep.kind == kind
-            ]
-        resolved = await self.roles.preview_role(requirements)
-        role_issues = list(resolved["issues"])
-        for task, definition, prefix in tasks:
-            if (
-                getattr(task, "role_id", None),
-                getattr(task, "role_version", None),
-            ) == (role.role_id, role.version):
-                result = await self.roles.preview_role(
-                    base, task.overrides.model_dump(exclude_unset=True)
+        effective = []
+        checked_assets = {}
+        if not issues:
+            for asset_key, definition in contents["assets"].items():
+                checked_members = {}
+                checked_assets[asset_key] = checked_members
+                local_asset = copy.deepcopy(definition)
+                self._rewrite_package_config(local_asset, choices)
+                members = (
+                    [local_asset["coordinator"], *local_asset["allowed_roles"]]
+                    if local_asset.get("kind") == "autonomous"
+                    else local_asset["tasks"]
                 )
-                role_issues.extend(result["issues"])
-                if isinstance(definition, GraphDefinition):
-                    member_count = len(
+                for member in members:
+                    if member.get("role_id"):
+                        role = copy.deepcopy(
+                            contents["roles"][
+                                (member["role_id"], member["role_version"])
+                            ]
+                        )
+                    elif member.get("role"):
+                        role = {
+                            "definition": member["role"],
+                            "installation": member["installation"],
+                        }
+                    else:
+                        continue
+                    self._rewrite_package_config(role["definition"], choices)
+                    self._rewrite_package_config(role["installation"], choices)
+                    overrides = copy.deepcopy(member.get("overrides") or {})
+                    self._rewrite_package_config(overrides, choices)
+                    try:
+                        checked = await self.roles.preview_role(role, overrides)
+                        if (
+                            local_asset.get("default_provider_id")
+                            and checked["effective"]["runner"]["type"] == "local"
+                            and not overrides.get(
+                                "provider_id", role["definition"].get("provider_id")
+                            )
+                        ):
+                            overrides["provider_id"] = local_asset[
+                                "default_provider_id"
+                            ]
+                            checked = await self.roles.preview_role(role, overrides)
+                            checked["sources"]["provider_id"] = (
+                                "workflow:default_provider_id"
+                            )
+                    except RoleAssetError as exc:
+                        issues.extend(
+                            exc.fields
+                            or [
+                                {
+                                    "path": "definition",
+                                    "code": "INVALID",
+                                    "message": str(exc),
+                                }
+                            ]
+                        )
+                        continue
+                    if local_asset.get("kind") == "autonomous" and member.get(
+                        "role_id"
+                    ):
+                        base = await self.roles.preview_role(role)
+                        for field in ("max_instances", "max_parallel"):
+                            base_limit = base["effective"].get(field)
+                            current_limit = checked["effective"].get(field)
+                            if base_limit is not None and (
+                                current_limit is None or current_limit > base_limit
+                            ):
+                                checked["effective"][field] = base_limit
+                                checked["sources"][field] = base["sources"][field]
+                    effective.append(
                         {
-                            member.member
-                            for member in definition.tasks
-                            if (member.role_id, member.role_version)
-                            == (role.role_id, role.version)
+                            "asset_id": asset_key[0],
+                            "version": asset_key[1],
+                            "asset_name": definition["name"],
+                            "member": member.get("id"),
+                            "effective": checked["effective"],
+                            "sources": checked["sources"],
                         }
                     )
-                    limit = result["effective"].get("max_instances")
-                    if limit is not None and member_count > limit:
-                        issues.append(
-                            {
-                                "path": f"{prefix}.tasks",
-                                "code": "LIMIT",
-                                "message": f"Role {role.role_id} permits {limit} member instances",
-                            }
+                    issues.extend(checked["issues"])
+                    checked_members[member["id"]] = checked["effective"]
+                    needed = {"definition": "task_result"}
+                    if local_asset.get("kind") == "autonomous" and member is members[0]:
+                        needed["definition.coordinator"] = "task_tools"
+                    issues.extend(
+                        get_agent_runner_capability_issues(
+                            checked["effective"]["runner"], needed
                         )
-                    # Null portable limits inherit the selected local profile.
-                    # Compare the same effective value that launch will enforce.
-                    limit = result["effective"].get("max_iterations")
-                    for index, loop in enumerate(definition.loops):
-                        if (
-                            getattr(task, "id", None) in loop.body
-                            and limit is not None
-                            and loop.max_iterations > limit
-                        ):
-                            issues.append(
-                                {
-                                    "path": f"{prefix}.loops.{index}.max_iterations",
-                                    "code": "LIMIT",
-                                    "message": f"Member {getattr(task, 'member', role.definition.name)} permits at most {limit} iterations",
-                                }
+                    )
+                if not local_asset.get("kind"):
+                    role_members = {}
+                    for member in members:
+                        if member.get("role_id"):
+                            key = (member["role_id"], member["role_version"])
+                            role_members.setdefault(key, set()).add(member["member"])
+                    for member in members:
+                        if member.get("role_id"):
+                            limit = checked_members.get(member["id"], {}).get(
+                                "max_instances"
                             )
-        issues.extend(
-            {**issue, "path": f"roles.{key}." + issue["path"]} for issue in role_issues
-        )
-        issues = list(
-            {
-                (issue["path"], issue["code"], issue["message"]): issue
-                for issue in issues
-            }.values()
-        )
-        return {
-            "key": key,
-            "name": role.definition.name,
-            "prompt": role.definition.prompt,
-            "prompt_source": role.prompt_source,
-            "dependencies": dependencies,
-            "installation": installation,
-        }, issues
-
-    async def preview_import(self, username: str, payload: dict) -> dict:
-        """Validate the whole closure and present one set of local choices.
-
-        Args:
-            username: Authenticated installing owner.
-            payload: Package and optional explicit local installation choices.
-
-        Returns:
-            Definitions, grouped dependencies, version actions and blocking issues.
-
-        Raises:
-            RoleAssetError: Invalid content or conflicting immutable identities.
-        """
-        request = await self._validate_package(username, payload)
-        source_package = request.package
-        contents = source_package.asset_packages()
-        normalized = contents[0]
-        package = WorkflowPackage.model_validate(normalized)
-        for role in package.roles:
-            key = f"{role.role_id}:{role.version}"
-            if key in request.installations:
-                source = next(
-                    item
-                    for item in source_package.roles
-                    if (item.role_id, item.version) == (role.role_id, role.version)
+                            if (
+                                limit is not None
+                                and len(
+                                    role_members[
+                                        (member["role_id"], member["role_version"])
+                                    ]
+                                )
+                                > limit
+                            ):
+                                issues.append(
+                                    {
+                                        "path": "definition.tasks",
+                                        "code": "LIMIT",
+                                        "message": "Role member instance limit exceeded",
+                                    }
+                                )
+                    for loop in local_asset.get("loops", []):
+                        for member in members:
+                            limit = checked_members.get(member["id"], {}).get(
+                                "max_iterations"
+                            )
+                            if (
+                                member["id"] in loop["body"]
+                                and limit is not None
+                                and loop["max_iterations"] > limit
+                            ):
+                                issues.append(
+                                    {
+                                        "path": "definition.loops",
+                                        "code": "LIMIT",
+                                        "message": "Loop exceeds the member iteration limit",
+                                    }
+                                )
+            pending = (
+                [((package.asset_id, package.version), 0, 20)] if not issues else []
+            )
+            visited = set()
+            while pending:
+                asset_key, depth, limit = pending.pop()
+                state = (asset_key, depth, limit)
+                if state in visited:
+                    continue
+                visited.add(state)
+                definition = contents["assets"][asset_key]
+                members = (
+                    [definition["coordinator"], *definition["allowed_roles"]]
+                    if definition.get("kind") == "autonomous"
+                    else definition["tasks"]
                 )
-                request.installations[key] = role.remap_installation(
-                    source, request.installations[key]
-                )
-        saved_installations, known_roles = {}, {}
+                if depth > limit or any(
+                    depth > (value.get("max_depth") or 20)
+                    for value in checked_assets[asset_key].values()
+                ):
+                    issues.append(
+                        {
+                            "path": "definition.max_depth",
+                            "code": "LIMIT",
+                            "message": "Nested asset exceeds an effective depth limit",
+                        }
+                    )
+                    continue
+                next_limit = min(limit, definition.get("max_depth", 3))
+                for member in members:
+                    ref = member.get("team") or member.get("workflow")
+                    if ref:
+                        pending.append(
+                            ((ref["asset_id"], ref["version"]), depth + 1, next_limit)
+                        )
+                if definition.get("kind") == "autonomous":
+                    coordinator_limit = (
+                        checked_assets[asset_key][definition["coordinator"]["id"]].get(
+                            "max_depth"
+                        )
+                        or 20
+                    )
+                    for ref in definition.get("allowed_workflows", []):
+                        pending.append(
+                            (
+                                (ref["asset_id"], ref["version"]),
+                                depth + 1,
+                                min(next_limit, coordinator_limit),
+                            )
+                        )
         async with self.db.get_db() as session:
             rows = (
                 (
@@ -2458,282 +1910,119 @@ class WorkflowService:
                 .scalars()
                 .all()
             )
-            records = {(row.package_id, row.version): row for row in rows}
-            for row in rows:
-                original_package = WorkflowPackage.model_validate(row.package)
-                for role in original_package.roles:
-                    key = f"{role.role_id}:{role.version}"
-                    if (
-                        key in known_roles
-                        and known_roles[key][0][0].immutable_content()
-                        != role.immutable_content()
-                    ):
-                        raise RoleAssetError(
-                            "Installed package role identity has conflicting content",
-                            status=409,
-                        )
-                    known_roles.setdefault(key, []).append(
-                        (role, row.role_ids[key], original_package.role_content(role))
-                    )
-            assets = []
-            for content in contents:
-                digest = WorkflowPackage.content_digest(content)
-                row = records.get((content["asset_id"], content["version"]))
-                if (
-                    row is not None
-                    and WorkflowPackage.content_digest(
-                        WorkflowPackage.model_validate(row.package).asset_packages()[0]
-                    )
-                    != digest
-                ):
-                    raise RoleAssetError(
-                        "Same package identity and version have different content",
-                        [
-                            {
-                                "path": f"package.assets.{content['asset_id']}:{content['version']}",
-                                "code": "CONFLICT",
-                                "message": "The installed exact version has different content",
-                            }
-                        ],
-                        status=409,
-                    )
-                previous = [r for r in rows if r.package_id == content["asset_id"]]
-                assets.append(
+        records = {(row.package_id, row.version): row for row in rows}
+        manifests = (
+            self._package_manifests(package, contents, choices) if not issues else {}
+        )
+        actions = {}
+        for key in contents["included"]:
+            row = records.get(key)
+            actions[key] = (
+                ("reuse" if key in manifests else "review")
+                if row
+                else "new_version"
+                if any(r.package_id == key[0] for r in rows)
+                else "install"
+            )
+            if (
+                row
+                and key in manifests
+                and (
+                    not isinstance(row.package, dict)
+                    or row.package.get("format_version") != 3
+                    or row.digest != WorkflowPackage.content_digest(manifests[key])
+                )
+            ):
+                actions[key] = "conflict"
+                issues.append(
                     {
-                        "asset_id": content["asset_id"],
-                        "version": content["version"],
-                        "name": content["definition"]["name"],
-                        "kind": content["definition"].get("kind", "workflow"),
-                        "action": "reuse"
-                        if row
-                        else "new_version"
-                        if previous
-                        else "install",
-                        "local_asset_id": row.asset_id
-                        if row
-                        else previous[0].asset_id
-                        if previous
-                        else None,
-                        "local_version": row.installed_version if row else None,
-                        "digest": digest,
+                        "path": f"assets.{key[0]}:{key[1]}",
+                        "code": "CONFLICT",
+                        "message": "Same package identity and version have different content or resource selections",
                     }
                 )
-            for role in package.roles:
-                key = f"{role.role_id}:{role.version}"
-                if key not in known_roles:
-                    continue
+        if not issues:
+            for row in rows:
                 if (
-                    known_roles[key][0][0].immutable_content()
-                    != role.immutable_content()
+                    not isinstance(row.package, dict)
+                    or row.package.get("format_version") != 3
                 ):
-                    raise RoleAssetError(
-                        "Same role identity and version have different content",
-                        [
-                            {
-                                "path": f"package.roles.{key}",
-                                "code": "CONFLICT",
-                                "message": "Create a new role version for changed content",
-                            }
-                        ],
-                        status=409,
-                    )
-                saved_installations[key] = []
-                for content in contents:
-                    variant = WorkflowPackage.model_validate(content)
-                    member = next(
-                        (
-                            item
-                            for item in variant.roles
-                            if (item.role_id, item.version)
-                            == (role.role_id, role.version)
-                        ),
-                        None,
-                    )
-                    if member is None:
+                    continue
+                for entry in row.package.get("role_records", []):
+                    source = entry["source"]
+                    key = (source["role_id"], source["version"])
+                    if key not in contents["used_roles"]:
                         continue
-                    record = records.get((variant.asset_id, variant.version))
-                    matching = next(
-                        (
-                            (original, identity)
-                            for original, identity, manifest in known_roles[key]
-                            if (record is not None and identity == record.role_ids[key])
-                            or (
-                                record is None
-                                and manifest == variant.role_content(member)
-                            )
-                        ),
-                        None,
-                    )
-                    if matching is None:
-                        continue
-                    original, identity = matching
-                    local = await session.get(AgentRoleInstallation, (identity, 1))
-                    if local is None:
-                        raise RoleAssetError(
-                            "Existing package installation is incomplete", status=409
-                        )
-                    installation = member.remap_installation(
-                        original, RoleInstallation.model_validate(local.installation)
-                    )
-                    # Transport slot names as values to recover the canonical
-                    # correspondence using the same provenance rules as import.
-                    slots = member.remap_installation(
-                        role,
-                        RoleInstallation(
-                            bindings={
-                                dependency.slot: dependency.slot
-                                for dependency in role.dependencies
-                                if dependency.kind != "profiles"
-                            },
-                        ),
-                    ).bindings
-                    saved_installations[key].append(
-                        (variant, member, installation, slots)
-                    )
-        catalog = await self.roles.get_resources()
-        previews, issues = [], []
-        for role_index, role in enumerate(package.roles):
-            key = f"{role.role_id}:{role.version}"
-            proposed, role_issues = await self._preview_package_role(
-                package,
-                role,
-                request.installations.get(key),
-                catalog,
-            )
-            explicit = key in request.installations
-            variants = saved_installations.get(key, [])
-            if variants and not explicit:
-                automatic = {
-                    dependency["slot"]
-                    for dependency in proposed["dependencies"]
-                    if dependency["automatic"]
-                }
-                for dependency in proposed["dependencies"]:
-                    choices = set()
-                    for _, _, installation, slots in variants:
-                        if dependency["kind"] == "profiles":
-                            choices.add(installation.profile_id)
-                        else:
-                            choices.update(
-                                installation.bindings.get(slot)
-                                for slot, canonical in slots.items()
-                                if canonical == dependency["slot"]
-                            )
-                    choices &= {
-                        candidate["id"] for candidate in dependency["candidates"]
-                    }
-                    if len(choices) == 1:
-                        chosen = choices.pop()
-                        if dependency["kind"] == "profiles":
-                            proposed["installation"]["profile_id"] = chosen
-                        else:
-                            proposed["installation"]["bindings"][dependency["slot"]] = (
-                                chosen
-                            )
-                        automatic.discard(dependency["slot"])
-                    elif len(choices) > 1:
+                    local = copy.deepcopy(contents["roles"][key])
+                    self._rewrite_package_config(local["definition"], choices)
+                    self._rewrite_package_config(local["installation"], choices)
+                    if (
+                        source != contents["roles"][key]
+                        or entry["local_definition"] != local["definition"]
+                        or entry["local_installation"] != local["installation"]
+                    ):
                         issues.append(
                             {
-                                "path": f"roles.{key}.{dependency['slot']}",
-                                "code": "CONFIRMATION_REQUIRED",
-                                "message": "Reused installations have different compatible choices; confirm a shared binding",
+                                "path": f"roles.{key[0]}:{key[1]}",
+                                "code": "CONFLICT",
+                                "message": "Same role identity and version have different content or resource selections",
                             }
                         )
-                proposed, role_issues = await self._preview_package_role(
-                    package,
-                    role,
-                    RoleInstallation.model_validate(proposed["installation"]),
-                    catalog,
-                )
-                for dependency in proposed["dependencies"]:
-                    dependency["automatic"] = dependency["slot"] in automatic
-            # The entry review validates every context with the shared proposal.
-            # Preserve compatible local choices until a deliberate rebind.
-            for variant, member, saved, _ in variants:
-                installation = member.remap_installation(
-                    role, RoleInstallation.model_validate(proposed["installation"])
-                )
-                if not explicit:
-                    retained, _ = await self._preview_package_role(
-                        variant, member, saved, catalog
-                    )
-                    for dependency in retained["dependencies"]:
-                        selected = (
-                            installation.profile_id
-                            if dependency["kind"] == "profiles"
-                            else installation.bindings.get(dependency["slot"])
-                        )
-                        if (
-                            dependency["status"] == "matched"
-                            and dependency["selected"] != selected
-                        ):
-                            issues.append(
-                                {
-                                    "path": f"assets.{variant.asset_id}:{variant.version}.roles.{key}.{dependency['slot']}",
-                                    "code": "CONFIRMATION_REQUIRED",
-                                    "message": "Confirm changing the compatible binding retained by this reused installation",
-                                }
-                            )
-            previews.append(proposed)
-            issues.extend(role_issues)
-            if role.definition.max_depth is None:
-                resolved = await self.roles.preview_role(
-                    {
-                        "definition": role.definition.model_dump(),
-                        "installation": proposed["installation"],
-                    }
-                )
-                # Resolve inherited depth without changing the reviewed package.
-                checked = package.model_copy(deep=True)
-                checked.roles[role_index].definition.max_depth = resolved[
-                    "effective"
-                ].get("max_depth")
-                try:
-                    checked.asset_packages()
-                except RoleAssetError as exc:
-                    issues.append(
-                        {
-                            "path": f"roles.{key}.definition.max_depth",
-                            "code": "LIMIT",
-                            "message": str(exc),
-                        }
-                    )
         return {
-            "package": normalized,
-            "digest": assets[0]["digest"],
-            "existing_asset_id": assets[0]["local_asset_id"]
-            if assets[0]["action"] == "reuse"
-            else None,
-            "assets": assets,
-            "roles": previews,
+            "package": package.model_dump(),
+            "requirements": requirements,
+            "effective": effective,
             "issues": issues,
             "ready": not issues,
+            "assets": [
+                {
+                    "asset_id": k[0],
+                    "version": k[1],
+                    "name": contents["assets"][k]["name"],
+                    "action": actions[k],
+                }
+                for k in sorted(contents["included"])
+            ],
         }
 
     async def import_asset(self, username: str, payload: dict) -> dict:
-        """Atomically install or upgrade the complete validated reference closure.
+        """Atomically install the selected closure with local resource identities.
 
         Args:
-            username: Authenticated owner; package content cannot grant access.
-            payload: Package, deliberate local bindings and pending-save choice.
+            username: Authenticated owner.
+            payload: Source package and explicit local resource selections.
 
         Returns:
-            The exact installed entry version and whether its content was reused.
+            Installed fixed entry and whether it was already imported.
 
         Raises:
-            RoleAssetError: Invalid package, unresolved dependencies or conflict.
+            RoleAssetError: Unresolved resources, changed fixed content or conflict.
         """
         preview = await self.preview_import(username, payload)
-        if not preview["ready"] and not payload.get("save_pending", False):
-            raise RoleAssetError(
-                "Configure package dependencies before installation", preview["issues"]
+        if not preview["ready"]:
+            conflict = next(
+                (issue for issue in preview["issues"] if issue["code"] == "CONFLICT"),
+                None,
             )
-        package = WorkflowPackage.model_validate(preview["package"])
-        contents = package.asset_packages()
-        asset_map, asset_roles, known_roles = {}, {}, {}
-        previous_registry: set[tuple[str, int, str, int, str]] | None = None
-        try:
-            async with self.db.get_db() as session:
+            if conflict:
+                raise RoleAssetError(conflict["message"], preview["issues"], status=409)
+            raise RoleAssetError(
+                "Configure package resources before installation", preview["issues"]
+            )
+        request = await self._validate_package(username, payload)
+        package = request.package
+        contents = self._package_contents(package)
+        choices = {(s.kind, s.source_id): s.target_id for s in request.selections}
+        normalized_roles = {}
+        for key in contents["used_roles"]:
+            role = copy.deepcopy(contents["roles"][key])
+            self._rewrite_package_config(role["definition"], choices)
+            self._rewrite_package_config(role["installation"], choices)
+            normalized_roles[key] = role
+        manifests = self._package_manifests(package, contents, choices)
+        root = (package.asset_id, package.version)
+        async with self.db.get_db() as session:
+            try:
                 rows = (
                     (
                         await session.execute(
@@ -2745,218 +2034,195 @@ class WorkflowService:
                     .scalars()
                     .all()
                 )
-                records = {(row.package_id, row.version): row for row in rows}
-                previous_registry = {
-                    (
-                        row.package_id,
-                        row.version,
-                        row.asset_id,
-                        row.installed_version,
-                        row.digest,
-                    )
-                    for row in rows
-                }
-                existing = (package.asset_id, package.version) in records
+                records = {(r.package_id, r.version): r for r in rows}
+                asset_map, role_map, known_roles = {}, {}, {}
                 for row in rows:
-                    original_package = WorkflowPackage.model_validate(row.package)
-                    for role in original_package.roles:
-                        key = f"{role.role_id}:{role.version}"
-                        known_roles.setdefault(key, []).append(
-                            (
-                                role,
-                                row.role_ids[key],
-                                original_package.role_content(role),
+                    if (
+                        not isinstance(row.package, dict)
+                        or row.package.get("format_version") != 3
+                    ):
+                        continue
+                    for entry in row.package.get("role_records", []):
+                        key = (entry["source"]["role_id"], entry["source"]["version"])
+                        current = known_roles.get(key)
+                        if current and current != entry:
+                            raise RoleAssetError(
+                                "Stored package role identity has conflicting content",
+                                status=409,
                             )
-                        )
-                new_assets = []
-                # Recheck the complete registry in the same transaction as all writes.
-                # Concurrent confirmations retry against the winning immutable rows.
-                # Allocate pinned versions before the selected entry so that the
-                # entry stays the default even when its closure shares its identity.
-                for content, proposed in sorted(
-                    zip(contents, preview["assets"], strict=True),
-                    key=lambda item: (
-                        (item[0]["asset_id"], item[0]["version"])
-                        == (package.asset_id, package.version),
-                        item[0]["asset_id"],
-                        item[0]["version"],
-                    ),
+                        known_roles[key] = entry
+                for key in sorted(
+                    contents["included"], key=lambda item: (item == root, item)
                 ):
-                    key = (content["asset_id"], content["version"])
                     row = records.get(key)
+                    digest = WorkflowPackage.content_digest(manifests[key])
                     if row:
                         if (
-                            WorkflowPackage.content_digest(
-                                WorkflowPackage.model_validate(
-                                    row.package
-                                ).asset_packages()[0]
-                            )
-                            != proposed["digest"]
+                            row.package.get("format_version") != 3
+                            or row.digest != digest
                         ):
                             raise RoleAssetError(
-                                "Same package identity and version have different content",
+                                "Same package identity and version have different content or resource selections",
                                 status=409,
                             )
                         asset_map[key] = (row.asset_id, row.installed_version)
-                        asset_roles[key] = dict(row.role_ids)
-                        continue
-                    previous = [r for r in rows if r.package_id == key[0]]
-                    identity = (
-                        previous[0].asset_id
-                        if previous
-                        else next(
-                            (
-                                value[0]
-                                for source, value in asset_map.items()
-                                if source[0] == key[0]
-                            ),
-                            None,
+                    else:
+                        previous = [
+                            r
+                            for r in rows
+                            if r.package_id == key[0]
+                            and r.package.get("format_version") == 3
+                        ]
+                        allocated = [
+                            value
+                            for source, value in asset_map.items()
+                            if source[0] == key[0]
+                        ]
+                        identity = (
+                            previous[0].asset_id
+                            if previous
+                            else allocated[0][0]
+                            if allocated
+                            else uuid.uuid4().hex
                         )
-                        or uuid.uuid4().hex
-                    )
-                    versions = (
-                        (
-                            await session.execute(
-                                select(AgentWorkflowVersion).where(
-                                    AgentWorkflowVersion.owner_username == username,
-                                    AgentWorkflowVersion.asset_id == identity,
+                        versions = (
+                            (
+                                await session.execute(
+                                    select(AgentWorkflowVersion.version).where(
+                                        AgentWorkflowVersion.owner_username == username,
+                                        AgentWorkflowVersion.asset_id == identity,
+                                    )
                                 )
                             )
+                            .scalars()
+                            .all()
                         )
-                        .scalars()
-                        .all()
-                    )
-                    version = (
-                        max(
-                            [r.version for r in versions]
-                            + [
-                                value[1]
-                                for value in asset_map.values()
-                                if value[0] == identity
-                            ]
-                            + [0]
-                        )
-                        + 1
-                    )
-                    asset_map[key] = (identity, version)
-                    new_assets.append((content, proposed, identity, version))
-                for content in contents:
-                    asset_key = (content["asset_id"], content["version"])
-                    role_ids = asset_roles.setdefault(asset_key, {})
-                    current_package = WorkflowPackage.model_validate(content)
-                    for role in current_package.roles:
-                        key = f"{role.role_id}:{role.version}"
-                        variants = known_roles.get(key, [])
-                        if any(
-                            original.immutable_content() != role.immutable_content()
-                            for original, _, _ in variants
+                        version = max([*versions, *[v for a, v in allocated], 0]) + 1
+                        asset_map[key] = (identity, version)
+                for key in sorted(contents["used_roles"]):
+                    source, local = contents["roles"][key], normalized_roles[key]
+                    existing = known_roles.get(key)
+                    if existing:
+                        if (
+                            existing["source"] != source
+                            or existing["local_definition"] != local["definition"]
+                            or existing["local_installation"] != local["installation"]
                         ):
                             raise RoleAssetError(
-                                "Same role identity and version have different content",
+                                "Same role identity and version have different content or resource selections",
                                 status=409,
                             )
-                        identity = role_ids.get(key) or next(
-                            (
-                                identity
-                                for original, identity, manifest in variants
-                                if manifest == current_package.role_content(role)
-                            ),
-                            None,
+                        identity, role_version = (
+                            existing["local_id"],
+                            existing["local_version"],
                         )
-                        source = next(
-                            item
-                            for item in package.roles
-                            if (item.role_id, item.version)
-                            == (role.role_id, role.version)
+                        saved = await session.get(
+                            AgentRoleVersion, (identity, role_version)
                         )
-                        proposed = next(
-                            item for item in preview["roles"] if item["key"] == key
+                        installation = await session.get(
+                            AgentRoleInstallation, (identity, role_version)
                         )
-                        installation = role.remap_installation(
-                            source,
-                            RoleInstallation.model_validate(proposed["installation"]),
-                        )
-                        if identity is None:
-                            identity = uuid.uuid4().hex
-                            session.add(
-                                AgentRoleVersion(
-                                    role_id=identity,
-                                    version=1,
-                                    owner_username=username,
-                                    definition=role.definition.model_dump(),
-                                )
-                            )
-                            session.add(
-                                AgentRoleInstallation(
-                                    role_id=identity,
-                                    version=1,
-                                    installation=installation.model_dump(),
-                                )
-                            )
-                            known_roles.setdefault(key, []).append(
-                                (role, identity, current_package.role_content(role))
-                            )
-                        elif preview["ready"] or key in payload.get(
-                            "installations", {}
+                        if (
+                            not saved
+                            or saved.owner_username != username
+                            or saved.definition != local["definition"]
+                            or not installation
+                            or installation.installation != local["installation"]
                         ):
-                            local = await session.get(
-                                AgentRoleInstallation, (identity, 1)
+                            raise RoleAssetError(
+                                "Installed role no longer matches its fixed receipt",
+                                status=409,
                             )
-                            if local is None:
-                                # An identical manifest may have been staged earlier
-                                # in this atomic import and not flushed yet.
-                                await session.flush()
-                                local = await session.get(
-                                    AgentRoleInstallation, (identity, 1)
+                    else:
+                        previous_roles = [
+                            entry
+                            for source_key, entry in known_roles.items()
+                            if source_key[0] == key[0]
+                        ]
+                        identity = (
+                            previous_roles[0]["local_id"]
+                            if previous_roles
+                            else uuid.uuid4().hex
+                        )
+                        versions = (
+                            (
+                                await session.execute(
+                                    select(AgentRoleVersion.version).where(
+                                        AgentRoleVersion.owner_username == username,
+                                        AgentRoleVersion.role_id == identity,
+                                    )
                                 )
-                            if local is None:
-                                raise RoleAssetError(
-                                    "Existing package installation is incomplete",
-                                    status=409,
-                                )
-                            if not preview["ready"]:
-                                # The dialog copies unresolved proposals too.
-                                # Omitted choices must not erase saved bindings.
-                                saved = RoleInstallation.model_validate(
-                                    local.installation
-                                )
-                                installation = RoleInstallation(
-                                    profile_id=saved.profile_id
-                                    if installation.profile_id == "__unconfigured__"
-                                    else installation.profile_id,
-                                    bindings={
-                                        **saved.bindings,
-                                        **installation.bindings,
-                                    },
-                                )
-                            local.installation = installation.model_dump()
-                        role_ids[key] = identity
-                for content, proposed, identity, version in new_assets:
-                    role_ids = asset_roles[(content["asset_id"], content["version"])]
-                    definition = copy.deepcopy(content["definition"])
-                    contexts = (
+                            )
+                            .scalars()
+                            .all()
+                        )
+                        role_version = (
+                            max(
+                                [
+                                    *versions,
+                                    *[
+                                        entry["local_version"]
+                                        for entry in previous_roles
+                                    ],
+                                    0,
+                                ]
+                            )
+                            + 1
+                        )
+                        session.add(
+                            AgentRoleVersion(
+                                role_id=identity,
+                                version=role_version,
+                                owner_username=username,
+                                definition=local["definition"],
+                            )
+                        )
+                        session.add(
+                            AgentRoleInstallation(
+                                role_id=identity,
+                                version=role_version,
+                                installation=local["installation"],
+                            )
+                        )
+                        known_roles[key] = {
+                            "source": source,
+                            "local_id": identity,
+                            "local_version": role_version,
+                            "local_definition": local["definition"],
+                            "local_installation": local["installation"],
+                        }
+                    role_map[key] = (identity, role_version)
+                for key in sorted(contents["included"]):
+                    if key in records:
+                        continue
+                    definition = copy.deepcopy(contents["assets"][key])
+                    self._rewrite_package_config(definition, choices)
+                    members = (
                         [definition["coordinator"], *definition["allowed_roles"]]
                         if definition.get("kind") == "autonomous"
-                        else definition.get("tasks", [definition])
+                        else definition["tasks"]
                     )
-                    for context in contexts:
-                        if context.get("role_id"):
-                            context["role_id"] = role_ids[
-                                f"{context['role_id']}:{context['role_version']}"
+                    for member in members:
+                        if member.get("role_id"):
+                            member["role_id"], member["role_version"] = role_map[
+                                (member["role_id"], member["role_version"])
                             ]
-                            context["role_version"] = 1
-                    references = [
+                        for field in ("role", "installation", "overrides"):
+                            if member.get(field) is not None:
+                                self._rewrite_package_config(member[field], choices)
+                    refs = [
                         *definition.get("allowed_workflows", []),
                         *[
-                            task["team"]
-                            for task in definition.get("tasks", [])
-                            if task.get("team")
+                            m.get("team") or m.get("workflow")
+                            for m in members
+                            if m.get("team") or m.get("workflow")
                         ],
                     ]
-                    for ref in references:
+                    for ref in refs:
                         ref["asset_id"], ref["version"] = asset_map[
                             (ref["asset_id"], ref["version"])
                         ]
+                    identity, version = asset_map[key]
                     session.add(
                         AgentWorkflowVersion(
                             asset_id=identity,
@@ -2965,64 +2231,43 @@ class WorkflowService:
                             definition=definition,
                         )
                     )
+                    closure = self._package_contents(package, key)
+                    role_records = [
+                        known_roles[item] for item in sorted(closure["used_roles"])
+                    ]
                     session.add(
                         AgentWorkflowPackage(
                             owner_username=username,
-                            package_id=content["asset_id"],
-                            version=content["version"],
+                            package_id=key[0],
+                            version=key[1],
                             asset_id=identity,
                             installed_version=version,
-                            digest=proposed["digest"],
-                            package=content,
+                            digest=WorkflowPackage.content_digest(manifests[key]),
+                            package={
+                                "format_version": 3,
+                                "manifest": manifests[key],
+                                "role_records": role_records,
+                            },
                             role_ids={
-                                f"{role['role_id']}:{role['version']}": role_ids[
-                                    f"{role['role_id']}:{role['version']}"
-                                ]
-                                for role in content["roles"]
+                                json.dumps([item[0], item[1]]): role_map[item]
+                                for item in closure["used_roles"]
                             },
                         )
                     )
-                try:
-                    await session.commit()
-                except BaseException:
-                    await session.rollback()
-                    raise
-        except IntegrityError as exc:
-            if previous_registry is None:
+                await session.commit()
+            except IntegrityError as exc:
+                await session.rollback()
+                raise RoleAssetError(
+                    "Concurrent installation conflicted; preview again", status=409
+                ) from exc
+            except BaseException:
+                await session.rollback()
                 raise
-            # A competing atomic import can allocate the same next local version.
-            # A genuine storage failure must not masquerade as that confirmation.
-            async with self.db.get_db() as session:
-                current = (
-                    (
-                        await session.execute(
-                            select(AgentWorkflowPackage).where(
-                                AgentWorkflowPackage.owner_username == username
-                            )
-                        )
-                    )
-                    .scalars()
-                    .all()
-                )
-                if {
-                    (
-                        row.package_id,
-                        row.version,
-                        row.asset_id,
-                        row.installed_version,
-                        row.digest,
-                    )
-                    for row in current
-                } == previous_registry:
-                    raise RoleAssetError(
-                        "Installation conflicted; preview again", status=409
-                    ) from exc
-            return await self.import_asset(username, payload)
-        identity, version = asset_map[(package.asset_id, package.version)]
+        identity, version = asset_map[root]
         return {
             "asset": await self.get_asset(username, identity, version),
-            "existing": existing,
-            "ready": preview["ready"],
+            "existing": root in records,
+            "ready": True,
         }
 
     async def start_run(
@@ -3206,66 +2451,6 @@ class WorkflowService:
                 )
         effective = copy.deepcopy(role["effective"])
         catalog = await self.roles.get_resources()
-        if role.get("role_id"):
-            async with self.db.get_db() as session:
-                packages = (
-                    (
-                        await session.execute(
-                            select(AgentWorkflowPackage).where(
-                                AgentWorkflowPackage.owner_username == username
-                            )
-                        )
-                    )
-                    .scalars()
-                    .all()
-                )
-            closure = (
-                await self._asset_closure(username, asset)
-                if any(
-                    role["role_id"] in record.role_ids.values() for record in packages
-                )
-                else {}
-            )
-            _, dependencies = self._resolve_role_contract(role, closure, packages)
-            role["package_dependencies"] = copy.deepcopy(list(dependencies.values()))
-            for record in packages:
-                source_key = next(
-                    (
-                        key
-                        for key, identity in record.role_ids.items()
-                        if identity == role["role_id"]
-                    ),
-                    None,
-                )
-                if source_key is None:
-                    continue
-                package = WorkflowPackage.model_validate(record.package)
-                source_role = next(
-                    item
-                    for item in package.roles
-                    if f"{item.role_id}:{item.version}" == source_key
-                )
-                source_role.dependencies = [
-                    PackageDependency.model_validate(dependency)
-                    for dependency in dependencies.values()
-                ]
-                installation = RoleInstallation.model_validate(role["installation"])
-                installation.bindings = {
-                    slot: value
-                    for slot, value in installation.bindings.items()
-                    if slot in dependencies
-                }
-                # Apply the resolved resource contract before snapshot creation.
-                # Launch validates usage limits on the selected local definition.
-                _, issues = await self._preview_package_role(
-                    package,
-                    source_role,
-                    installation,
-                    catalog,
-                    validate_tasks=False,
-                )
-                if issues:
-                    raise RoleAssetError("Package dependencies are not ready", issues)
         persona = next(
             (p for p in catalog["personas"] if p["id"] == effective.get("persona_id")),
             None,
@@ -3719,9 +2904,12 @@ class WorkflowService:
                         "revision": control.revision if control else 0,
                         "root_run_id": root_id,
                     },
-                    "result_ref": {"artifact_id": current.run_id, "version": 1}
-                    if current_artifacts
-                    else None,
+                    "result_ref": current.state.get("child_result_ref")
+                    or (
+                        {"artifact_id": current.run_id, "version": 1}
+                        if current_artifacts
+                        else None
+                    ),
                     "artifacts": [
                         {
                             "artifact_id": a.artifact_id,
@@ -3739,6 +2927,7 @@ class WorkflowService:
                         }
                         for todo in todos
                         if todo.task_run_id == current.run_id
+                        and username in todo.data.get("answerable_by", [])
                     ]
                     if include_details
                     else [],
@@ -4886,12 +4075,30 @@ class WorkflowService:
                     for loop in loops.values():
                         if loop["status"] not in {"passed", "exhausted", "skipped"}:
                             loop["status"] = "cancelled"
-                            if loop["iterations"][-1]["status"] == "running":
+                            if loop["iterations"][-1]["status"] in {
+                                "running",
+                                "blocked",
+                            }:
                                 loop["iterations"][-1]["status"] = "cancelled"
                     if loops:
                         row.state = {**row.state, "loops": loops}
                         session.add(row)
                     identities = [item.run_id for item in family]
+                    pending_todos = (
+                        (
+                            await session.execute(
+                                select(AgentWorkflowTodo).where(
+                                    col(AgentWorkflowTodo.task_run_id).in_(identities)
+                                )
+                            )
+                        )
+                        .scalars()
+                        .all()
+                    )
+                    for todo in pending_todos:
+                        if todo.data["status"] in {"pending", "answered"}:
+                            todo.data = {**todo.data, "status": "cancelled"}
+                            session.add(todo)
                     for identity in identities:
                         child = await session.get(AgentWorkflowRun, identity)
                         assert child is not None
@@ -4947,6 +4154,7 @@ class WorkflowService:
                     pass
             if row.snapshot.get("engine") == "graph_v2":
                 await self.advance_run(username, run_id)
+            await self._resume_human_choices(username, run_id)
         return await self.get_run(username, run_id)
 
     async def retry_task(self, username: str, run_id: str, payload: dict) -> dict:
@@ -5150,6 +4358,7 @@ class WorkflowService:
                 "model_response",
                 "model_delta",
                 "model_delivery",
+                "model_context",
                 "tool_start",
                 "tool_progress",
                 "tool_status",
@@ -5340,6 +4549,48 @@ class WorkflowService:
             "snapshot": snapshot,
         }
 
+    async def list_human_requests(self, username: str) -> dict:
+        """List pending requests owned by the authenticated dashboard user.
+
+        Args:
+            username: Authenticated dashboard user.
+
+        Returns:
+            Persisted requests and their run control state.
+        """
+        async with self.db.get_db() as session:
+            rows = (
+                await session.execute(
+                    select(AgentWorkflowTodo, AgentWorkflowRun)
+                    .join(
+                        AgentWorkflowRun,
+                        AgentWorkflowTodo.root_run_id == AgentWorkflowRun.run_id,
+                    )
+                    .where(
+                        AgentWorkflowRun.owner_username == username,
+                        AgentWorkflowTodo.data["status"].as_string() == "pending",
+                    )
+                    .order_by(col(AgentWorkflowTodo.created_at).desc())
+                )
+            ).all()
+            requests = []
+            for todo, root in rows:
+                if username not in todo.data.get("answerable_by", []):
+                    continue
+                control = await session.get(AgentWorkflowControl, root.run_id)
+                if control and control.status == "cancelled":
+                    continue
+                requests.append(
+                    {
+                        "todo_id": todo.todo_id,
+                        "root_run_id": todo.root_run_id,
+                        "task_run_id": todo.task_run_id,
+                        **todo.data,
+                        "control_status": control.status if control else "active",
+                    }
+                )
+            return {"requests": requests}
+
     async def list_runs(self, username: str, limit: int = 50) -> dict:
         """List persisted runs, including inactive and interrupted executions.
 
@@ -5430,8 +4681,7 @@ class WorkflowService:
             asset: Exact saved asset version.
             request: Declared inputs and source for this scope.
             nesting_depth: Reference traversal bounded by the supported nesting ceiling.
-            depth_limit: Imported-entry ancestor and caller ceiling. Ordinary local
-                entries retain their existing checks at the runtime call boundary.
+            depth_limit: Ancestor and caller ceiling for nested assets.
 
         Returns:
             Frozen scope template; member identities are assigned at scope creation.
@@ -5446,21 +4696,6 @@ class WorkflowService:
                 "Configure the migrated definition before launch",
                 asset["definition"]["migration"]["issues"],
             )
-        if nesting_depth == 0:
-            async with self.db.get_db() as session:
-                imported = (
-                    await session.execute(
-                        select(AgentWorkflowPackage.asset_id)
-                        .where(
-                            AgentWorkflowPackage.owner_username == username,
-                            AgentWorkflowPackage.asset_id == asset["asset_id"],
-                        )
-                        .limit(1)
-                    )
-                ).scalar_one_or_none()
-            if imported is not None:
-                # Local edits keep the imported entry's closure readiness contract.
-                depth_limit = 20
         if depth_limit is not None and nesting_depth > depth_limit:
             raise RoleAssetError("Nested references exceed the declared depth limit")
         team = (
@@ -5552,6 +4787,7 @@ class WorkflowService:
             if (
                 task.human is not None
                 or task.team is not None
+                or task.workflow is not None
                 or task.control is not None
             ):
                 continue
@@ -5654,6 +4890,7 @@ class WorkflowService:
                     task.id not in loop.body
                     or task.human is not None
                     or task.team is not None
+                    or task.workflow is not None
                     or task.control is not None
                 ):
                     continue
@@ -5670,24 +4907,83 @@ class WorkflowService:
                         ],
                     )
         child_assets = {}
-        for task in definition.tasks:
-            if task.team is None:
+        for task_index, task in enumerate(definition.tasks):
+            call = task.team or task.workflow
+            if call is None:
                 continue
-            child = await self.get_asset(
-                username, task.team.asset_id, task.team.version
-            )
-            if child["definition"].get("kind") != "autonomous":
-                raise RoleAssetError("Choose a pinned autonomous team")
-            if set(task.inputs) != set(
-                child["definition"]["required_inputs"]
-            ) or task.output_contract != child["definition"].get("output_contract"):
+            path = f"definition.tasks.{task_index}"
+            kind = "team" if task.team else "workflow"
+            try:
+                child = await self.get_asset(username, call.asset_id, call.version)
+            except RoleAssetError as exc:
                 raise RoleAssetError(
-                    "Team call contracts no longer match the pinned asset"
+                    "Pinned child version is not accessible",
+                    [
+                        {
+                            "path": f"{path}.{kind}",
+                            "code": "REFERENCE",
+                            "message": "Choose an accessible exact asset version",
+                        }
+                    ],
+                    status=exc.status,
+                ) from exc
+            child_definition = child["definition"]
+            autonomous = child_definition.get("kind") == "autonomous"
+            if autonomous != (task.team is not None):
+                raise RoleAssetError("Pinned child asset kind does not match the call")
+            result_task = (
+                None
+                if autonomous
+                else next(
+                    (
+                        node
+                        for node in child_definition.get("tasks", [])
+                        if node["id"] == child_definition.get("result_task_id")
+                        and not node.get("control")
+                    ),
+                    None,
+                )
+            )
+            contract = (
+                child_definition.get("output_contract")
+                if autonomous
+                else result_task.get("output_contract")
+                if result_task
+                else None
+            )
+            fields = []
+            if not autonomous and result_task is None:
+                fields.append(
+                    {
+                        "path": f"{path}.{kind}",
+                        "code": "REFERENCE",
+                        "message": "The pinned workflow has no valid public result",
+                    }
+                )
+            if set(task.inputs) != set(child_definition.get("required_inputs", [])):
+                fields.append(
+                    {
+                        "path": f"{path}.inputs",
+                        "code": "CONTRACT",
+                        "message": "Declare exactly the pinned asset's required inputs",
+                    }
+                )
+            if task.output_contract != contract:
+                fields.append(
+                    {
+                        "path": f"{path}.output_contract",
+                        "code": "CONTRACT",
+                        "message": "Use the pinned asset's public output contract",
+                    }
+                )
+            if fields:
+                raise RoleAssetError(
+                    "Child call contracts no longer match the pinned asset", fields
                 )
             child_assets[task.id] = await self._freeze_graph(
                 username,
                 child,
-                WorkflowStartRequest(version=task.team.version, source=request.source),
+                WorkflowStartRequest(version=call.version, source=request.source),
                 nesting_depth + 1,
                 min(depth_limit, definition.max_depth)
                 if depth_limit is not None
@@ -5711,14 +5007,9 @@ class WorkflowService:
                 if depth_limit is not None
                 else None,
             )
-            if not any(
-                task["id"] == ref["result_task_id"]
-                for task in frozen["definition"]["tasks"]
-            ):
-                raise RoleAssetError("Pinned workflow return task is not available")
             allowed_workflows[f"{ref['asset_id']}:{ref['version']}"] = {
                 **frozen,
-                "result_task_id": ref["result_task_id"],
+                "result_task_id": frozen["definition"]["result_task_id"],
             }
         if definition.limits:
             remote_members = [*members.values(), *allowed_roles.values()]
@@ -6058,16 +5349,19 @@ class WorkflowService:
                 row.status in {"pending", "running", "waiting_human", "waiting_child"}
                 for row in body
             ):
-                loop["status"] = "running"
+                loop["status"] = iteration["status"] = "running"
+                loop.pop("reason", None)
                 continue
             if (
                 any(row.status not in {"completed", "skipped"} for row in body)
                 or rows[definition["exit_task_id"]].status != "completed"
             ):
-                loop["status"] = "blocked"
+                loop["status"] = iteration["status"] = "blocked"
+                loop["reason"] = "Loop tasks or exit did not complete"
                 continue
             if iteration.get("exit_reference") and loop["status"] == "blocked":
                 continue
+            loop.pop("reason", None)
             rule = definition["exit_condition"]
             source = rows[definition["exit_task_id"]]
             value = source.result
@@ -6076,7 +5370,10 @@ class WorkflowService:
             passed = matches_condition(
                 cast(str | bool | int | float | None, value), rule
             )
-            iteration["exit_reference"] = {"artifact_id": source.run_id, "version": 1}
+            iteration["exit_reference"] = source.state.get("child_result_ref") or {
+                "artifact_id": source.run_id,
+                "version": 1,
+            }
             iteration["exit_value"] = value
             iteration["status"] = "passed" if passed else "rejected"
             exhausted = iteration["iteration"] >= definition["max_iterations"]
@@ -6105,6 +5402,10 @@ class WorkflowService:
             loop["status"] = (
                 "passed" if passed else "exhausted" if exhausted else "running"
             )
+            if exhausted and not passed and not loop.get("reason"):
+                loop["reason"] = (
+                    "Loop maximum iterations reached without satisfying the exit condition"
+                )
             session.add(
                 AgentWorkflowEvent(
                     run_id=root.run_id,
@@ -6127,7 +5428,7 @@ class WorkflowService:
                 if rows[feedback["source"]].status != "completed"
             ]
             if missing_feedback:
-                loop["status"] = "blocked"
+                loop["status"] = iteration["status"] = "blocked"
                 loop["reason"] = (
                     "Next-round feedback has no validated result: "
                     + ", ".join(missing_feedback)
@@ -6145,7 +5446,8 @@ class WorkflowService:
                     "value": value
                     if isinstance(value, str)
                     else json.dumps(value, ensure_ascii=False),
-                    "reference": {"artifact_id": previous.run_id, "version": 1},
+                    "reference": previous.state.get("child_result_ref")
+                    or {"artifact_id": previous.run_id, "version": 1},
                     "field": feedback["field"],
                 }
             next_runs = {}
@@ -6815,7 +6117,6 @@ class WorkflowService:
                         "workflow": {
                             "asset_id": request.asset_id,
                             "version": request.version,
-                            "result_task_id": child["result_task_id"],
                         },
                         "inputs": {},
                         "output_contract": contract,
@@ -7119,9 +6420,9 @@ class WorkflowService:
                         returned_task = await session.get(
                             AgentWorkflowRun,
                             _current_task_runs(child)[
-                                row.snapshot.get("workflow", {}).get(
-                                    "result_task_id", "coordinator"
-                                )
+                                "coordinator"
+                                if child.snapshot.get("team_definition")
+                                else child.snapshot["definition"]["result_task_id"]
                             ],
                         )
                         assert returned_task is not None
@@ -7154,23 +6455,14 @@ class WorkflowService:
                             row.state = {
                                 **row.state,
                                 "reason": None,
-                                "child_result_ref": {
+                                "child_result_ref": returned_task.state.get(
+                                    "child_result_ref"
+                                )
+                                or {
                                     "artifact_id": returned_task.run_id,
                                     "version": 1,
                                 },
                             }
-                            session.add(
-                                AgentWorkflowArtifact(
-                                    artifact_id=row.run_id,
-                                    version=1,
-                                    run_id=row.run_id,
-                                    submission_id=row.state["attempt_id"],
-                                    contract=row.snapshot["definition"].get(
-                                        "output_contract"
-                                    ),
-                                    content=row.result,
-                                )
-                            )
                         session.add(row)
                         session.add(
                             AgentWorkflowEvent(
@@ -7199,7 +6491,11 @@ class WorkflowService:
                     if row is None or row.status != "waiting_human":
                         continue
                     todo = await session.get(AgentWorkflowTodo, row.run_id)
-                    if todo is None or todo.data["status"] != "answered":
+                    if (
+                        todo is None
+                        or todo.data.get("source_kind") != "static_node"
+                        or todo.data["status"] != "answered"
+                    ):
                         continue
                     response = todo.data["response"]
                     rejected = response["action"] == "reject"
@@ -7211,7 +6507,11 @@ class WorkflowService:
                     if todo.data["kind"] == "approval":
                         result["approved"] = not rejected
                     row.result = result
-                    row.status = "rejected" if rejected else "completed"
+                    row.status = (
+                        "rejected"
+                        if rejected and todo.data["kind"] != "approval"
+                        else "completed"
+                    )
                     row.state = {
                         **row.state,
                         "reason": response.get("feedback") if rejected else None,
@@ -7444,19 +6744,112 @@ class WorkflowService:
                                 if human["kind"] == "approval":
                                     source = rows[human["artifact_task_id"]]
                                     assert source is not None
-                                    ref = {
+                                    ref = source.state.get("child_result_ref") or {
                                         "artifact_id": source.run_id,
                                         "version": human["artifact_version"],
                                     }
                                     # A requested revision may arrive later through
                                     # an explicit edit. Keep its exact waiting
                                     # reference; never substitute the latest one.
+                                recommendation = None
+                                recommendation_error = None
+                                recommendation_ref = None
+                                source_id = human.get("recommendation_task_id")
+                                if source_id:
+                                    source = rows[source_id]
+                                    assert source is not None
+                                    recommendation_ref = {
+                                        "artifact_id": source.run_id,
+                                        "version": 1,
+                                    }
+                                    artifact = await session.get(
+                                        AgentWorkflowArtifact, (source.run_id, 1)
+                                    )
+                                    values = []
+                                    for field in (
+                                        human["recommendation_value_field"],
+                                        human["recommendation_reason_field"],
+                                    ):
+                                        value = artifact.content if artifact else None
+                                        for part in field.split("."):
+                                            value = (
+                                                value.get(part)
+                                                if isinstance(value, dict)
+                                                else None
+                                            )
+                                        values.append(value)
+                                    choice, reason = values
+                                    if (
+                                        isinstance(choice, str)
+                                        and choice.strip()
+                                        and isinstance(reason, str)
+                                        and reason.strip()
+                                        and len(choice) <= human["max_length"]
+                                        and (
+                                            (
+                                                human["kind"] == "approval"
+                                                and choice in {"approve", "reject"}
+                                            )
+                                            or (
+                                                human["kind"] == "question"
+                                                and (
+                                                    not human["choices"]
+                                                    or choice in human["choices"]
+                                                )
+                                            )
+                                        )
+                                    ):
+                                        recommendation = {
+                                            "value": choice,
+                                            "reason": reason,
+                                        }
+                                    else:
+                                        recommendation_error = "The selected upstream fields do not contain a valid recommendation and reason."
                                 todo = AgentWorkflowTodo(
                                     todo_id=row.run_id,
                                     root_run_id=_root_run_id(root),
                                     task_run_id=row.run_id,
                                     data={
                                         "kind": human["kind"],
+                                        "source_kind": "static_node",
+                                        "invocation_id": None,
+                                        "tool_record_id": None,
+                                        "recommendation": recommendation,
+                                        "recommendation_error": recommendation_error,
+                                        "recommendation_ref": recommendation_ref,
+                                        "recommendation_fields": {
+                                            "value": human.get(
+                                                "recommendation_value_field"
+                                            ),
+                                            "reason": human.get(
+                                                "recommendation_reason_field"
+                                            ),
+                                        }
+                                        if source_id
+                                        else None,
+                                        "scope_run_id": root.run_id,
+                                        "run_name": whole_root.snapshot["definition"][
+                                            "name"
+                                        ],
+                                        "task_name": task["name"],
+                                        "recommendation_source_name": next(
+                                            (
+                                                item["name"]
+                                                for item in definition["tasks"]
+                                                if item["id"] == source_id
+                                            ),
+                                            None,
+                                        ),
+                                        "node_id": task["id"],
+                                        "answerable_by": [username],
+                                        "human_wait": human["human_wait"],
+                                        "deadline": time.time()
+                                        + human["human_wait"]["timeout_seconds"]
+                                        if human["human_wait"]["timeout_seconds"]
+                                        is not None
+                                        else None,
+                                        "timeout_checked_at": None,
+                                        "timeout_reason": None,
                                         "question": human["question"],
                                         "constraints": {
                                             "choices": human["choices"],
@@ -7524,12 +6917,20 @@ class WorkflowService:
                             retrying = row.state.get("retry_pending")
                             inputs = dict(
                                 row.snapshot["inputs"]
-                                if retrying or task.get("workflow")
+                                if retrying
+                                or (
+                                    task.get("workflow")
+                                    and not row.snapshot.get("graph_task")
+                                )
                                 else {}
                             )
                             refs = list(
                                 row.snapshot.get("input_artifacts", [])
-                                if retrying or task.get("workflow")
+                                if retrying
+                                or (
+                                    task.get("workflow")
+                                    and not row.snapshot.get("graph_task")
+                                )
                                 else []
                                 if child_call
                                 else root.snapshot.get("input_artifacts", [])
@@ -7539,12 +6940,13 @@ class WorkflowService:
                                 and not retrying
                                 and not task.get("workflow")
                             ):
-                                refs.extend(
-                                    {"artifact_id": source.run_id, "version": 1}
-                                    for source in matched
-                                    if {"artifact_id": source.run_id, "version": 1}
-                                    not in refs
-                                )
+                                for source in matched:
+                                    ref = source.state.get("child_result_ref") or {
+                                        "artifact_id": source.run_id,
+                                        "version": 1,
+                                    }
+                                    if ref not in refs:
+                                        refs.append(ref)
                             selected_fields = (
                                 dict(row.snapshot.get("selected_fields", {}))
                                 if retrying
@@ -7583,7 +6985,7 @@ class WorkflowService:
                                         if isinstance(value, str)
                                         else json.dumps(value, ensure_ascii=False)
                                     )
-                                    pinned = {
+                                    pinned = source.state.get("child_result_ref") or {
                                         "artifact_id": source.run_id,
                                         "version": 1,
                                     }
@@ -7605,11 +7007,13 @@ class WorkflowService:
                                         f"{child_call['asset_id']}:{child_call['version']}"
                                     ]
                                     if task.get("workflow")
+                                    and not row.snapshot.get("graph_task")
                                     else root.snapshot["child_assets"][task["id"]]
                                 )
                                 frozen["inputs"] = (
                                     inputs
                                     if task.get("workflow")
+                                    and not row.snapshot.get("graph_task")
                                     else {key: inputs[key] for key in task["inputs"]}
                                 )
                                 # A graph field reference grants only its value, not
@@ -7752,7 +7156,39 @@ class WorkflowService:
                             and selected is not None
                             and selected.status == "completed"
                             and selected.result is not None
+                            and not (
+                                (
+                                    selected.snapshot["definition"].get("human") or {}
+                                ).get("kind")
+                                == "approval"
+                                and selected.result.get("approved") is False
+                            )
                         )
+                    approval_missing = False
+                    if success and not root.snapshot.get("team_definition"):
+                        result_ref = selected.state.get("child_result_ref") or {
+                            "artifact_id": selected.run_id,
+                            "version": 1,
+                        }
+                        for definition_task in root.snapshot["definition"]["tasks"]:
+                            human = definition_task.get("human") or {}
+                            if (
+                                human.get("kind") != "approval"
+                                or human.get("artifact_task_id") != result_id
+                            ):
+                                continue
+                            approval_row = rows[definition_task["id"]]
+                            approval = await session.get(
+                                AgentWorkflowTodo, approval_row.run_id
+                            )
+                            if (
+                                approval is None
+                                or approval.data.get("status") != "approved"
+                                or approval.data.get("artifact_ref") != result_ref
+                            ):
+                                approval_missing = True
+                                success = False
+                                break
                     root.status = "completed" if success else "blocked"
                     root.state = {
                         **root.state,
@@ -7766,6 +7202,17 @@ class WorkflowService:
                             or selected.result is None
                             and selected.status == "completed"
                         )
+                        else "The selected result version has not been approved."
+                        if approval_missing
+                        else "The selected approval was rejected; connect an approved delivery or a bounded rework path."
+                        if not root.snapshot.get("team_definition")
+                        and selected is not None
+                        and (selected.snapshot["definition"].get("human") or {}).get(
+                            "kind"
+                        )
+                        == "approval"
+                        and selected.result is not None
+                        and selected.result.get("approved") is False
                         else "One or more branches require attention; independent branches were allowed to finish.",
                     }
                     if success:
@@ -7801,6 +7248,7 @@ class WorkflowService:
                 )
                 assert caller is not None
             await self.advance_run(username, caller.snapshot["parent_run_id"])
+        await self._resume_human_choices(username, _root_run_id(root))
         current = await self.get_run(username, run_id)
         if current["control"]["status"] == "active":
             for child in current.get("tasks", []):
@@ -7821,8 +7269,185 @@ class WorkflowService:
             current = await self.get_run(username, run_id)
         return current
 
+    async def request_human_choice(
+        self,
+        username: str,
+        run_id: str,
+        attempt_id: str,
+        execution_id: str,
+        record_id: str,
+        spec: dict,
+    ) -> dict:
+        """Save a question at its original tool boundary or read its saved answer.
+
+        Args:
+            username: Owner captured by the execution callback.
+            run_id: Actual executing task, never supplied by the model.
+            attempt_id: Original attempt being continued.
+            execution_id: Current executor fence.
+            record_id: Runner-owned tool invocation identity.
+            spec: Validated question and option metadata from the built-in tool.
+
+        Returns:
+            Saved choice in the ordinary tool's response protocol.
+
+        Raises:
+            RoleAssetError: The execution identity or saved request conflicts.
+            HumanInputRequired: The saved question still needs an answer.
+        """
+        async with self.db.get_db() as session:
+            row = await session.get(AgentWorkflowRun, run_id)
+            if row is None or row.owner_username != username:
+                raise RoleAssetError("Run not found", status=404)
+            control = await self._lock_control(session, row)
+            await session.refresh(row)
+            await self._require_execution_owner(session, run_id, execution_id)
+            checkpoint = await session.get(AgentWorkflowCheckpoint, run_id)
+            call = await session.get(AgentWorkflowToolCall, record_id)
+            if (
+                control.status == "cancelled"
+                or row.state["attempt_id"] != attempt_id
+                or checkpoint is None
+                or checkpoint.attempt_id != attempt_id
+                or call is None
+                or call.run_id != run_id
+                or call.attempt_id != attempt_id
+                or call.invocation_id != checkpoint.invocation_id
+                or call.name != "ask_user_choice"
+                or call.status not in {"started", "unknown"}
+            ):
+                raise RoleAssetError(
+                    "Human choice has no active original tool call", status=409
+                )
+            todo_id = "choice:" + record_id
+            todo = await session.get(AgentWorkflowTodo, todo_id)
+            if todo is None:
+                root = await session.get(AgentWorkflowRun, _root_run_id(row))
+                assert root is not None
+                human_wait = (
+                    row.snapshot["effective"].get("human_wait")
+                    or HumanWaitPolicy().model_dump()
+                )
+                todo = AgentWorkflowTodo(
+                    todo_id=todo_id,
+                    root_run_id=root.run_id,
+                    task_run_id=run_id,
+                    data={
+                        "kind": "question",
+                        "source_kind": "tool_call",
+                        "scope_run_id": row.snapshot.get("parent_run_id", row.run_id),
+                        "node_id": row.snapshot.get("node_id"),
+                        "attempt_id": attempt_id,
+                        "invocation_id": call.invocation_id,
+                        "tool_record_id": record_id,
+                        "tool_call_id": call.call_id,
+                        "run_name": root.snapshot["definition"]["name"],
+                        "task_name": row.snapshot["definition"]["name"],
+                        "question": spec["prompt"],
+                        "choice_spec": copy.deepcopy(spec),
+                        "constraints": {
+                            "choices": [item["id"] for item in spec["options"]],
+                            "max_length": 10_000,
+                        },
+                        "recommendation": spec.get("recommendation"),
+                        "recommendation_ref": None,
+                        "recommendation_error": None,
+                        "artifact_ref": None,
+                        "answerable_by": [username],
+                        "human_wait": human_wait,
+                        "deadline": time.time() + human_wait["timeout_seconds"]
+                        if human_wait["timeout_seconds"] is not None
+                        else None,
+                        "timeout_checked_at": None,
+                        "timeout_reason": None,
+                        "status": "pending",
+                        "response": None,
+                        "consumed_at": None,
+                    },
+                )
+                session.add(todo)
+                session.add(
+                    AgentWorkflowEvent(
+                        run_id=run_id,
+                        kind="human.requested",
+                        data={
+                            "todo_id": todo_id,
+                            "source_kind": "tool_call",
+                            "tool_record_id": record_id,
+                        },
+                    )
+                )
+            elif (
+                todo.task_run_id != run_id
+                or todo.data.get("attempt_id") != attempt_id
+                or todo.data.get("choice_spec") != spec
+            ):
+                raise RoleAssetError("Original human question changed", status=409)
+            if (
+                todo.data["status"] in {"answered", "consumed"}
+                and control.status == "active"
+            ):
+                return {
+                    key: todo.data["response"].get(key)
+                    for key in ("choice_id", "free_text")
+                }
+            if todo.data["status"] not in {"pending", "answered"}:
+                raise RoleAssetError("Human choice is no longer active", status=409)
+            row.status = "waiting_human"
+            row.state = {
+                **row.state,
+                "human_request_id": todo_id,
+                "reason": "Waiting for a human choice.",
+            }
+            session.add(row)
+            await session.commit()
+        raise HumanInputRequired(todo_id)
+
+    async def _resume_human_choices(self, username: str, root_run_id: str) -> None:
+        """Resume answered tool waits after their suspended executor has exited.
+
+        Args:
+            username: Authorized root owner.
+            root_run_id: Root containing all nested request scopes.
+        """
+        async with self.db.get_db() as session:
+            root = await session.get(AgentWorkflowRun, root_run_id)
+            if root is None or root.owner_username != username:
+                return
+            control = await session.get(AgentWorkflowControl, root_run_id)
+            if control is None or control.status != "active":
+                return
+            identities = (
+                (
+                    await session.execute(
+                        select(AgentWorkflowTodo.task_run_id).where(
+                            AgentWorkflowTodo.root_run_id == root_run_id,
+                            AgentWorkflowTodo.data["source_kind"].as_string()
+                            == "tool_call",
+                            AgentWorkflowTodo.data["status"].as_string() == "answered",
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        for identity in dict.fromkeys(identities):
+            if identity in self._executions:
+                continue
+            try:
+                await self.recover_run(username, identity)
+            except RoleAssetError:
+                # Capacity, pause and uncertain external effects remain durable waits.
+                pass
+
     async def answer_todo(
-        self, username: str, run_id: str, todo_id: str, payload: dict
+        self,
+        username: str,
+        run_id: str,
+        todo_id: str,
+        payload: dict,
+        *,
+        timed_out: bool = False,
     ) -> dict:
         """Save a human response before attempting any dependency release.
 
@@ -7831,6 +7456,8 @@ class WorkflowService:
             run_id: Root run containing the request.
             todo_id: Frozen request identity shown with its preview.
             payload: Unique response identity, answer or explicit decision.
+            timed_out: Trusted service scheduler requesting the saved deadline action;
+                never accepted from the external answer payload.
 
         Returns:
             Current persisted run, including a response awaiting resume if paused.
@@ -7838,10 +7465,12 @@ class WorkflowService:
         Raises:
             RoleAssetError: Inaccessible request, invalid answer or conflicting response.
         """
-        try:
-            request = HumanAnswerRequest.model_validate(payload)
-        except ValidationError as exc:
-            raise RoleAssetError("Invalid human response") from exc
+        request = None
+        if not timed_out:
+            try:
+                request = HumanAnswerRequest.model_validate(payload)
+            except ValidationError as exc:
+                raise RoleAssetError("Invalid human response") from exc
         async with self.db.get_db() as session:
             root = await session.get(AgentWorkflowRun, run_id)
             if root is None or root.owner_username != username:
@@ -7850,15 +7479,171 @@ class WorkflowService:
             todo = await session.get(AgentWorkflowTodo, todo_id)
             if todo is None or todo.root_run_id != run_id:
                 raise RoleAssetError("Human request not found", status=404)
+            if username not in todo.data.get("answerable_by", []):
+                raise RoleAssetError("Human request not found", status=404)
+            if timed_out:
+                now = time.time()
+                if (
+                    control.status == "cancelled"
+                    or todo.data["status"] != "pending"
+                    or todo.data.get("timeout_checked_at") is not None
+                    or todo.data.get("deadline") is None
+                    or todo.data["deadline"] > now
+                ):
+                    await session.commit()
+                    return await self.get_run(username, run_id)
+                policy = todo.data["human_wait"]
+                recommendation = todo.data.get("recommendation")
+                reason = None
+                value = recommendation.get("value") if recommendation else None
+                rationale = recommendation.get("reason") if recommendation else None
+                if policy["timeout_action"] != "use_recommendation":
+                    reason = "wait_policy"
+                elif not recommendation:
+                    reason = "missing_recommendation"
+                elif (
+                    not isinstance(value, str)
+                    or not isinstance(rationale, str)
+                    or not rationale.strip()
+                ):
+                    reason = "invalid_recommendation"
+                elif todo.data.get("source_kind") == "tool_call":
+                    call = await session.get(
+                        AgentWorkflowToolCall, todo.data["tool_record_id"]
+                    )
+                    if (
+                        call is None
+                        or call.run_id != todo.task_run_id
+                        or call.attempt_id != todo.data["attempt_id"]
+                        or todo.data["choice_spec"].get("recommendation")
+                        != recommendation
+                    ):
+                        reason = "evidence_unavailable"
+                    elif value not in todo.data["constraints"]["choices"]:
+                        reason = "invalid_recommendation"
+                else:
+                    ref = todo.data.get("recommendation_ref")
+                    artifact = (
+                        await session.get(
+                            AgentWorkflowArtifact, (ref["artifact_id"], ref["version"])
+                        )
+                        if ref
+                        else None
+                    )
+                    fields = todo.data.get("recommendation_fields") or {}
+                    values = []
+                    for key in ("value", "reason"):
+                        content = artifact.content if artifact else None
+                        for part in (fields.get(key) or "").split("."):
+                            content = (
+                                content.get(part) if isinstance(content, dict) else None
+                            )
+                        values.append(content)
+                    if values != [value, rationale]:
+                        reason = "evidence_unavailable"
+                    elif todo.data["kind"] == "approval":
+                        ref = todo.data["artifact_ref"]
+                        artifact = await session.get(
+                            AgentWorkflowArtifact, (ref["artifact_id"], ref["version"])
+                        )
+                        if artifact is None:
+                            reason = "evidence_unavailable"
+                        elif value not in {"approve", "reject"}:
+                            reason = "invalid_recommendation"
+                    elif (
+                        not value.strip()
+                        or len(value) > todo.data["constraints"]["max_length"]
+                        or todo.data["constraints"]["choices"]
+                        and value not in todo.data["constraints"]["choices"]
+                    ):
+                        reason = "invalid_recommendation"
+                if reason is None:
+                    automatic = {
+                        "request_id": "deadline:" + todo.todo_id,
+                        "action": "answer",
+                    }
+                    if todo.data.get("source_kind") == "tool_call":
+                        automatic["choice_id"] = value
+                    elif todo.data["kind"] == "approval":
+                        automatic.update(
+                            action=value, artifact_ref=todo.data["artifact_ref"]
+                        )
+                        if value == "reject":
+                            automatic["feedback"] = rationale
+                    else:
+                        automatic["answer"] = value
+                    try:
+                        request = HumanAnswerRequest.model_validate(automatic)
+                    except ValidationError:
+                        reason = "invalid_recommendation"
+                todo.data = {
+                    **todo.data,
+                    "timeout_checked_at": now,
+                    "timeout_reason": reason,
+                }
+                session.add(todo)
+                if reason is not None:
+                    session.add(
+                        AgentWorkflowEvent(
+                            run_id=todo.task_run_id,
+                            kind="human.deadline_waiting",
+                            data={"todo_id": todo.todo_id, "reason": reason},
+                        )
+                    )
+                    await session.commit()
+                    return await self.get_run(username, run_id)
+            assert request is not None
             decision = request.model_dump()
+            if todo.data["kind"] == "approval":
+                if decision["artifact_ref"] != todo.data["artifact_ref"]:
+                    raise RoleAssetError(
+                        "Artifact version does not match the human request", status=409
+                    )
+            elif request.artifact_ref is not None:
+                raise RoleAssetError("Questions cannot approve an artifact")
             previous = todo.data["response"]
             if previous is not None:
-                if previous != decision:
+                if any(
+                    previous.get(key) != decision[key]
+                    for key in (
+                        "action",
+                        "answer",
+                        "feedback",
+                        "choice_id",
+                        "free_text",
+                        "artifact_ref",
+                    )
+                ):
                     raise RoleAssetError("Human request already answered", status=409)
             else:
                 if control.status == "cancelled":
                     raise RoleAssetError("Run was cancelled", status=409)
-                if request.action == "reject":
+                if todo.data["kind"] == "approval":
+                    ref = todo.data["artifact_ref"]
+                    artifact = await session.get(
+                        AgentWorkflowArtifact, (ref["artifact_id"], ref["version"])
+                    )
+                    if artifact is None:
+                        raise RoleAssetError(
+                            "The requested artifact version is not available; create the revision before deciding",
+                            status=409,
+                        )
+                if todo.data.get("source_kind") == "tool_call":
+                    options = todo.data["constraints"]["choices"]
+                    if (
+                        request.action != "answer"
+                        or request.answer is not None
+                        or request.feedback is not None
+                        or request.choice_id not in [*options, "__free_text__"]
+                        or request.choice_id == "__free_text__"
+                        and not request.free_text
+                    ):
+                        raise RoleAssetError(
+                            "Choose an offered option or provide free text"
+                        )
+                elif request.choice_id is not None or request.free_text is not None:
+                    raise RoleAssetError("Tool choice fields require a dynamic request")
+                elif request.action == "reject":
                     if not request.feedback or request.answer is not None:
                         raise RoleAssetError(
                             "Rejection requires feedback and no answer"
@@ -7867,15 +7652,6 @@ class WorkflowService:
                     if request.action != "approve" or request.answer is not None:
                         raise RoleAssetError(
                             "Choose approve or reject for this exact version"
-                        )
-                    ref = todo.data["artifact_ref"]
-                    artifact = await session.get(
-                        AgentWorkflowArtifact, (ref["artifact_id"], ref["version"])
-                    )
-                    if artifact is None:
-                        raise RoleAssetError(
-                            "The requested artifact version is not available; create the revision before approving",
-                            status=409,
                         )
                 elif request.action != "answer" or not request.answer:
                     raise RoleAssetError("Provide an answer to this question")
@@ -7889,7 +7665,19 @@ class WorkflowService:
                         raise RoleAssetError(
                             "Answer does not satisfy the saved constraints"
                         )
-                todo.data = {**todo.data, "status": "answered", "response": decision}
+                todo.data = {
+                    **todo.data,
+                    "status": "answered",
+                    "response": decision,
+                    "decision_source": {
+                        "type": "recommendation",
+                        "recommendation": todo.data["recommendation"],
+                        "recommendation_ref": todo.data.get("recommendation_ref"),
+                        "artifact_ref": todo.data.get("artifact_ref"),
+                    }
+                    if timed_out
+                    else {"type": "human", "username": username},
+                }
                 session.add(todo)
                 session.add(
                     AgentWorkflowEvent(
@@ -7899,6 +7687,7 @@ class WorkflowService:
                             "todo_id": todo_id,
                             "request_id": request.request_id,
                             "action": request.action,
+                            "decision_source": todo.data["decision_source"]["type"],
                         },
                     )
                 )
@@ -7910,7 +7699,65 @@ class WorkflowService:
                 # Submission already succeeded. Recovery/continue retries the
                 # durable scheduling fact without changing the saved answer.
                 logger.exception("Saved human response awaits scheduling: %s", todo_id)
+            await self._resume_human_choices(username, run_id)
         return await self.get_run(username, run_id)
+
+    async def sweep_human_deadlines(self) -> int:
+        """Consider a bounded batch of expired requests without model calls.
+
+        Returns:
+            Number of expired requests considered; each decision is fenced again.
+        """
+        if self._closing:
+            return 0
+        async with self.db.get_db() as session:
+            rows = (
+                await session.execute(
+                    select(
+                        AgentWorkflowTodo.todo_id,
+                        AgentWorkflowTodo.root_run_id,
+                        AgentWorkflowRun.owner_username,
+                    )
+                    .join(
+                        AgentWorkflowRun,
+                        AgentWorkflowRun.run_id == AgentWorkflowTodo.root_run_id,
+                    )
+                    .where(
+                        AgentWorkflowTodo.data["status"].as_string() == "pending",
+                        AgentWorkflowTodo.data["deadline"].as_float() <= time.time(),
+                        AgentWorkflowTodo.data["timeout_checked_at"]
+                        .as_float()
+                        .is_(None),
+                    )
+                    .order_by(
+                        AgentWorkflowTodo.data["deadline"].as_float(),
+                        AgentWorkflowTodo.todo_id,
+                    )
+                    .limit(100)
+                )
+            ).all()
+        for todo_id, run_id, owner in rows:
+            await self.answer_todo(owner, run_id, todo_id, {}, timed_out=True)
+        return len(rows)
+
+    async def run_human_deadlines(self) -> None:
+        """Check persisted deadlines during the core lifetime, even without viewers.
+
+        Returns:
+            None when the workflow service is closing.
+        """
+        task = asyncio.current_task()
+        assert task is not None
+        self._tasks.add(task)
+        try:
+            while not self._closing:
+                try:
+                    await self.sweep_human_deadlines()
+                except Exception:
+                    logger.exception("Failed to process persisted human deadlines")
+                await asyncio.sleep(1)
+        finally:
+            self._tasks.discard(task)
 
     async def _execute_graph_task(
         self,
@@ -8198,6 +8045,20 @@ class WorkflowService:
                     == consumer.snapshot.get("parent_run_id")
                     and origin.state.get("scope_id") == consumer.state.get("scope_id")
                 )
+                if consumer.snapshot.get("coordinator") and not team_output:
+                    scope = await session.get(
+                        AgentWorkflowRun, consumer.snapshot.get("parent_run_id")
+                    )
+                    if scope is not None:
+                        for task_run_id in _current_task_runs(scope).values():
+                            task_run = await session.get(AgentWorkflowRun, task_run_id)
+                            if (
+                                task_run
+                                and task_run.status == "completed"
+                                and task_run.state.get("child_result_ref") == ref
+                            ):
+                                team_output = True
+                                break
                 own_output = (
                     origin.snapshot.get("parent_run_id")
                     == consumer.snapshot.get("parent_run_id")
@@ -8636,10 +8497,30 @@ class WorkflowService:
                         "Continue the whole run before recovering a task", status=409
                     )
             checkpoint = await session.get(AgentWorkflowCheckpoint, run_id)
-            if row is None or row.status not in {"interrupted", "failed", "blocked"}:
+            if row is None or row.status not in {
+                "interrupted",
+                "failed",
+                "blocked",
+                "waiting_human",
+            }:
                 raise RoleAssetError(
                     "Only interrupted execution can be recovered", status=409
                 )
+            if row.status == "waiting_human":
+                todo = await session.get(
+                    AgentWorkflowTodo, row.state.get("human_request_id")
+                )
+                if (
+                    todo is None
+                    or todo.data.get("source_kind") != "tool_call"
+                    or todo.data.get("attempt_id") != row.state["attempt_id"]
+                    or todo.data["status"] != "answered"
+                    or run_id in self._executions
+                ):
+                    raise RoleAssetError(
+                        "The original tool is still waiting for a human answer",
+                        status=409,
+                    )
             parent = None
             parent_id = row.snapshot.get("parent_run_id")
             if parent_id:
@@ -9299,6 +9180,35 @@ class WorkflowService:
             RoleAssetError: Ownership changed or the attempt is no longer running.
         """
         async with self.db.get_db() as session:
+            applied_choices = [
+                call
+                for call in data.get("tool_calls", [])
+                if call["name"] == "ask_user_choice" and call["status"] == "applied"
+            ]
+            if applied_choices:
+                row = await session.get(AgentWorkflowRun, run_id)
+                if row is None or row.owner_username != username:
+                    raise RoleAssetError("Run not found", status=404)
+                control = await self._lock_control(session, row)
+                if control.status == "cancelled":
+                    raise RoleAssetError("Run was cancelled", status=409)
+                if control.status == "paused":
+                    for call in applied_choices:
+                        todo = await session.get(
+                            AgentWorkflowTodo, "choice:" + call["record_id"]
+                        )
+                        if todo and todo.data["status"] == "answered":
+                            raise RoleAssetError(
+                                "Continue the run before consuming a human answer",
+                                [
+                                    {
+                                        "path": "control",
+                                        "code": "PAUSED",
+                                        "message": "The human answer remains saved.",
+                                    }
+                                ],
+                                status=409,
+                            )
             changed = await session.execute(
                 update(AgentWorkflowRun)
                 .where(
@@ -9415,6 +9325,44 @@ class WorkflowService:
                 previous.raw_results = call["raw_results"]
                 previous.context_position = call["context_position"]
                 session.add(previous)
+                if call["name"] == "ask_user_choice" and call["status"] == "applied":
+                    todo = await session.get(
+                        AgentWorkflowTodo, "choice:" + call["record_id"]
+                    )
+                    if todo is not None:
+                        if (
+                            todo.task_run_id != run_id
+                            or todo.data.get("attempt_id") != attempt_id
+                            or todo.data["status"] not in {"answered", "consumed"}
+                            or call["context_position"] is None
+                        ):
+                            raise RoleAssetError(
+                                "Human answer cannot be applied to this context",
+                                status=409,
+                            )
+                        if todo.data["status"] == "answered":
+                            todo.data = {
+                                **todo.data,
+                                "status": "consumed",
+                                "consumed_at": time.time(),
+                                "consumption": {
+                                    "tool_record_id": call["record_id"],
+                                    "attempt_id": attempt_id,
+                                    "invocation_id": data["invocation_id"],
+                                    "context_position": call["context_position"],
+                                },
+                            }
+                            session.add(todo)
+                            session.add(
+                                AgentWorkflowEvent(
+                                    run_id=run_id,
+                                    kind="human.consumed",
+                                    data={
+                                        "todo_id": todo.todo_id,
+                                        "tool_record_id": call["record_id"],
+                                    },
+                                )
+                            )
                 if "recovery" in call:
                     recovery = await session.get(
                         AgentWorkflowToolRecovery, call["record_id"]
@@ -9620,6 +9568,27 @@ class WorkflowService:
             )
         for root in roots:
             await self.advance_run(root.owner_username, root.run_id)
+        async with self.db.get_db() as session:
+            waiting_roots = (
+                await session.execute(
+                    select(
+                        AgentWorkflowRun.owner_username, AgentWorkflowTodo.root_run_id
+                    )
+                    .join(
+                        AgentWorkflowTodo,
+                        AgentWorkflowRun.run_id == AgentWorkflowTodo.root_run_id,
+                    )
+                    .where(
+                        AgentWorkflowTodo.data["source_kind"].as_string()
+                        == "tool_call",
+                        AgentWorkflowTodo.data["status"].as_string() == "answered",
+                    )
+                    .distinct()
+                )
+            ).all()
+        for owner, root_id in waiting_roots:
+            await self._resume_human_choices(owner, root_id)
+        await self.sweep_human_deadlines()
 
     async def shutdown(self) -> None:
         """Stop core-owned tasks before providers and database are terminated.
@@ -9705,6 +9674,32 @@ class WorkflowService:
                     execution_id=execution_id,
                 )
 
+            async def request_human(record_id: str, spec: dict) -> dict:
+                """Bind a built-in choice to this task's durable executor.
+
+                Args:
+                    record_id: Original runner-owned tool record.
+                    spec: Validated question with no client-provided identities.
+
+                Returns:
+                    Previously saved choice for the same tool call.
+                """
+                nonlocal checkpoint_error
+                try:
+                    return await self.request_human_choice(
+                        username,
+                        run_id,
+                        state["attempt_id"],
+                        execution_id,
+                        record_id,
+                        spec,
+                    )
+                except HumanInputRequired:
+                    raise
+                except Exception as exc:
+                    checkpoint_error = "Failed to persist the original human choice"
+                    raise ProcessPersistenceError(checkpoint_error) from exc
+
             tools = [
                 SubmitTaskResultTool(
                     accept, snapshot["definition"].get("output_contract")
@@ -9745,7 +9740,6 @@ class WorkflowService:
                                 "required_inputs": child["definition"][
                                     "required_inputs"
                                 ],
-                                "result_task_id": child["result_task_id"],
                                 "output_contract": next(
                                     task.get("output_contract")
                                     for task in child["definition"]["tasks"]
@@ -9915,15 +9909,22 @@ class WorkflowService:
                 nonlocal checkpoint_error
                 if data["phase"] in {"request", "tools_started"}:
                     await admit_work()
-                try:
-                    await self.save_checkpoint(
-                        username, run_id, state["attempt_id"], execution_id, data
-                    )
-                except Exception as exc:
-                    checkpoint_error = "Failed to save execution checkpoint"
-                    raise ProcessPersistenceError(
-                        "Failed to save execution checkpoint"
-                    ) from exc
+                while True:
+                    try:
+                        await self.save_checkpoint(
+                            username, run_id, state["attempt_id"], execution_id, data
+                        )
+                        break
+                    except Exception as exc:
+                        if isinstance(exc, RoleAssetError) and any(
+                            field.get("code") == "PAUSED" for field in exc.fields
+                        ):
+                            await admit_work()
+                            continue
+                        checkpoint_error = "Failed to save execution checkpoint"
+                        raise ProcessPersistenceError(
+                            "Failed to save execution checkpoint"
+                        ) from exc
                 if data["phase"] in {"response", "tool_result", "tools_applied"}:
                     await admit_work()
 
@@ -10011,6 +10012,7 @@ class WorkflowService:
                     checkpoint=checkpoint,
                     begin_usage=begin_usage,
                     report_usage=report_usage,
+                    request_human=request_human,
                     pending_messages=(
                         lambda: self.pending_member_messages(
                             username, run_id, state["attempt_id"], execution_id
@@ -10182,6 +10184,9 @@ class WorkflowService:
             outcome["reason"] = (
                 "The Agent ended without submitting a valid task result."
             )
+        except HumanInputRequired:
+            status = "waiting_human"
+            outcome["reason"] = "Waiting for a human choice."
         except asyncio.CancelledError:
             status = "interrupted"
             outcome["reason"] = "Core execution stopped; this task was not replayed."

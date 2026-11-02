@@ -66,6 +66,8 @@
       :definition="draft"
       :readonly="readonly"
       :collapsed="collapsedLoops"
+      :fields-for-task="fieldsForTask"
+      :issues="issues"
       @update:loops="
         draft.loops = $event;
         checkpoint();
@@ -111,6 +113,48 @@
           {{ tm("autonomous.allowedRoles") }}: {{ role.role_id }} · v{{
             role.role_version
           }}
+        </p>
+      </template>
+      <p v-else class="text-body-2 mt-3">{{ tm("child.unavailable") }}</p>
+    </details>
+    <details
+      v-for="task in draft.tasks.filter((item) => item.workflow)"
+      :key="task.id"
+      class="graph-child-preview ma-3 pa-3"
+      data-testid="workflow-call-preview"
+    >
+      <summary class="text-wrap">
+        {{ task.name }} →
+        {{
+          pinnedTeams[`${task.workflow!.asset_id}:${task.workflow!.version}`]
+            ?.definition.name ?? task.workflow!.asset_id
+        }}
+        · v{{ task.workflow!.version }} · {{ tm("child.independent") }}
+      </summary>
+      <template
+        v-if="
+          pinnedTeams[`${task.workflow!.asset_id}:${task.workflow!.version}`]
+        "
+      >
+        <p class="text-body-2 mt-3">{{ tm("child.contractHint") }}</p>
+        <p
+          v-for="childTask in pinnedTeams[
+            `${task.workflow!.asset_id}:${task.workflow!.version}`
+          ].definition.tasks"
+          :key="childTask.id"
+          class="text-body-2 mt-2"
+        >
+          {{ childTask.name
+          }}<span
+            v-if="
+              childTask.id ===
+              pinnedTeams[
+                `${task.workflow!.asset_id}:${task.workflow!.version}`
+              ].definition.result_task_id
+            "
+          >
+            · {{ tm("graph.outputs") }}</span
+          >
         </p>
       </template>
       <p v-else class="text-body-2 mt-3">{{ tm("child.unavailable") }}</p>
@@ -192,6 +236,19 @@
             team.version
           }}</v-btn
         >
+        <v-btn
+          v-for="workflow in workflows"
+          :key="workflow.asset_id"
+          variant="tonal"
+          size="small"
+          class="graph-team-button mb-3"
+          data-testid="add-workflow-call"
+          @click="addTask(`workflow:${workflow.asset_id}`)"
+        >
+          {{ tm("workflowCall.call") }}: {{ workflow.definition.name }} · v{{
+            workflow.version
+          }}
+        </v-btn>
         <button
           v-for="role in roles"
           :key="role.role_id"
@@ -269,6 +326,7 @@
               !selectedTask.control &&
               !selectedTask.human &&
               !selectedTask.team &&
+              !selectedTask.workflow &&
               !selectedTask.role
             "
             v-model="selectedTask.role_id"
@@ -284,6 +342,7 @@
               !selectedTask.control &&
               !selectedTask.human &&
               !selectedTask.team &&
+              !selectedTask.workflow &&
               !selectedTask.role
             "
             v-model="selectedTask.role_version"
@@ -314,7 +373,10 @@
           </v-alert>
           <v-text-field
             v-if="
-              !selectedTask.control && !selectedTask.human && !selectedTask.team
+              !selectedTask.control &&
+              !selectedTask.human &&
+              !selectedTask.team &&
+              !selectedTask.workflow
             "
             v-model="selectedTask.member"
             :label="tm('graph.memberKey')"
@@ -325,7 +387,10 @@
           />
           <v-textarea
             v-if="
-              !selectedTask.control && !selectedTask.human && !selectedTask.team
+              !selectedTask.control &&
+              !selectedTask.human &&
+              !selectedTask.team &&
+              !selectedTask.workflow
             "
             v-model="selectedTask.task"
             :label="tm('v2.task')"
@@ -459,6 +524,7 @@
               ><RoleResourcesEditor
                 :key="selectedTask.id + ':overrides'"
                 :definition="selectedTask.overrides"
+                override
                 :modes="resourceModes"
                 :catalog="catalog"
                 @change="checkpoint"
@@ -486,6 +552,7 @@
                     'tools',
                     'skills',
                     'knowledge_bases',
+                    'human_wait',
                   ] as const"
                   :key="field"
                   :data-testid="`role-preview-${field}`"
@@ -563,6 +630,31 @@
             />
             <p class="text-caption my-3">{{ tm("child.contractHint") }}</p>
           </template>
+          <template v-if="selectedTask.workflow">
+            <v-select
+              :model-value="selectedTask.workflow.asset_id"
+              :items="workflows"
+              item-title="definition.name"
+              item-value="asset_id"
+              :label="tm('workflowCall.asset')"
+              data-testid="workflow-call-asset"
+              @update:model-value="changeTeam($event)"
+            />
+            <v-select
+              :model-value="selectedTask.workflow.version"
+              :items="
+                workflows.find(
+                  (item) => item.asset_id === selectedTask?.workflow?.asset_id,
+                )?.versions ?? [selectedTask.workflow.version]
+              "
+              :label="tm('workflowCall.version')"
+              data-testid="workflow-call-version"
+              @update:model-value="
+                changeTeam(selectedTask!.workflow!.asset_id, $event)
+              "
+            />
+            <p class="text-caption my-3">{{ tm("child.contractHint") }}</p>
+          </template>
           <template v-if="selectedTask.human">
             <v-textarea
               v-model="selectedTask.human.question"
@@ -570,13 +662,26 @@
               data-testid="human-question"
               @update:model-value="checkpoint"
             />
+            <HumanWaitPolicyEditor
+              :model-value="selectedTask.human.human_wait"
+              @update:model-value="
+                selectedTask.human.human_wait = $event ?? {
+                  timeout_seconds: null,
+                  timeout_action: 'wait',
+                };
+                checkpoint();
+              "
+            />
             <template v-if="selectedTask.human.kind === 'approval'">
               <v-select
                 v-model="selectedTask.human.artifact_task_id"
                 :items="
                   draft.tasks
                     .filter(
-                      (task) => task.id !== selectedTask?.id && !task.human && !task.control,
+                      (task) =>
+                        task.id !== selectedTask?.id &&
+                        !task.human &&
+                        !task.control,
                     )
                     .map((task) => ({ title: task.name, value: task.id }))
                 "
@@ -605,6 +710,43 @@
                   checkpoint();
                 "
               />
+            </template>
+            <v-select
+              v-model="selectedTask.human.recommendation_task_id"
+              clearable
+              :items="
+                draft.tasks
+                  .filter(
+                    (task) =>
+                      task.id !== selectedTask?.id &&
+                      !task.human &&
+                      !task.control &&
+                      !task.team &&
+                      !task.workflow,
+                  )
+                  .map((task) => ({ title: task.name, value: task.id }))
+              "
+              :label="tm('human.recommendationTask')"
+              @update:model-value="
+                !$event &&
+                  ((selectedTask.human.recommendation_value_field = null),
+                  (selectedTask.human.recommendation_reason_field = null));
+                checkpoint();
+              "
+            />
+            <template v-if="selectedTask.human.recommendation_task_id">
+              <v-text-field
+                v-model="selectedTask.human.recommendation_value_field"
+                :label="tm('human.recommendationValueField')"
+                @update:model-value="checkpoint"
+              />
+              <v-text-field
+                v-model="selectedTask.human.recommendation_reason_field"
+                :label="tm('human.recommendationReasonField')"
+                @update:model-value="checkpoint"
+              />
+            </template>
+            <template v-if="selectedTask.human.kind === 'question'">
               <v-text-field
                 v-model.number="selectedTask.human.max_length"
                 type="number"
@@ -627,6 +769,7 @@
                   aliasTexts[`${selectedTask.id}:${alias}`] ?? alias
                 "
                 :label="tm('graph.inputAlias')"
+                :readonly="!!selectedTask.team || !!selectedTask.workflow"
                 density="compact"
                 @update:model-value="
                   aliasTexts[`${selectedTask.id}:${alias}`] = $event
@@ -683,7 +826,11 @@
                 @update:model-value="resetControlValue"
               />
               <v-btn
-                v-if="!selectedTask.control"
+                v-if="
+                  !selectedTask.control &&
+                  !selectedTask.team &&
+                  !selectedTask.workflow
+                "
                 variant="text"
                 size="small"
                 color="error"
@@ -695,7 +842,11 @@
               >
             </div>
             <v-btn
-              v-if="!selectedTask.control"
+              v-if="
+                !selectedTask.control &&
+                !selectedTask.team &&
+                !selectedTask.workflow
+              "
               variant="tonal"
               size="small"
               @click="addInput"
@@ -746,17 +897,34 @@
               <h3 class="text-subtitle-2 mt-4 mb-2">
                 {{ tm("graph.outputs") }}
               </h3>
+              <pre
+                v-if="selectedTask.team || selectedTask.workflow"
+                class="text-caption child-output-contract"
+                data-testid="child-output-contract"
+                >{{
+                  JSON.stringify(
+                    selectedTask.output_contract ?? {
+                      type: "object",
+                      properties: { text: { type: "string" } },
+                      required: ["text"],
+                    },
+                    null,
+                    2,
+                  )
+                }}</pre
+              >
               <v-switch
                 :model-value="!!selectedTask.output_contract"
                 :label="tm('graph.structured')"
                 data-testid="structured-output"
-                :disabled="!!selectedTask.team"
+                :disabled="!!selectedTask.team || !!selectedTask.workflow"
                 @update:model-value="setStructured"
               />
               <p
                 v-if="
                   selectedTask.output_contract &&
                   !selectedTask.team &&
+                  !selectedTask.workflow &&
                   !editableContract
                 "
                 class="text-caption"
@@ -767,6 +935,7 @@
                 v-if="
                   selectedTask.output_contract &&
                   !selectedTask.team &&
+                  !selectedTask.workflow &&
                   editableContract
                 "
               >
@@ -853,11 +1022,23 @@
             }}
           </p>
           <v-select
-            v-if="edgeSourceControl"
+            v-if="edgeSourceControl || edgeSourceApproval"
             :model-value="selectedEdge.condition?.value"
             :items="[
-              { title: tm('graph.trueExit'), value: true },
-              { title: tm('graph.falseExit'), value: false },
+              {
+                title: tm(
+                  edgeSourceApproval ? 'human.approve' : 'graph.trueExit',
+                ),
+                value: true,
+              },
+              {
+                title: tm(
+                  edgeSourceApproval
+                    ? 'human.returnForRevision'
+                    : 'graph.falseExit',
+                ),
+                value: false,
+              },
             ]"
             :label="tm('graph.exit')"
             data-testid="edge-exit"
@@ -871,7 +1052,13 @@
             density="compact"
             @update:model-value="toggleCondition"
           />
-          <template v-if="selectedEdge.condition && !edgeSourceControl">
+          <template
+            v-if="
+              selectedEdge.condition &&
+              !edgeSourceControl &&
+              !edgeSourceApproval
+            "
+          >
             <v-text-field
               v-model="selectedEdge.condition.field"
               :label="tm('graph.field')"
@@ -920,6 +1107,7 @@ import { computed, onBeforeUnmount, ref, watch } from "vue";
 import TeamsFlowCanvas from "./TeamsFlowCanvas.vue";
 import WorkflowLoopPanel from "./WorkflowLoopPanel.vue";
 import RoleResourcesEditor from "./RoleResourcesEditor.vue";
+import HumanWaitPolicyEditor from "./HumanWaitPolicyEditor.vue";
 import type { FlowNode } from "./TeamsFlowCanvas.vue";
 import type { GraphDefinition } from "@/api/generated/openapi-v1";
 import { useModuleI18n } from "@/i18n/composables";
@@ -935,6 +1123,7 @@ const props = withDefaults(
     catalog?: Record<string, any[]>;
     issues?: { path: string; message: string }[];
     teams?: any[];
+    workflows?: any[];
     childAssets?: Record<string, any>;
     readonly?: boolean;
     tasks?: any[];
@@ -952,6 +1141,7 @@ const props = withDefaults(
     }),
     issues: () => [],
     teams: () => [],
+    workflows: () => [],
     childAssets: () => ({}),
     readonly: false,
     tasks: () => [],
@@ -1044,6 +1234,15 @@ const rolePreviewDisplay = computed<Record<string, string>>(() => {
       ? tm("graph.noPersona")
       : tm("graph.noModel");
   }
+  const policy = effective.human_wait;
+  display.human_wait =
+    policy?.timeout_seconds == null
+      ? tm("humanWait.unlimited")
+      : `${policy.timeout_seconds} ${tm("humanWait.seconds")} · ${tm(
+          policy.timeout_action === "wait"
+            ? "humanWait.wait"
+            : "humanWait.recommendation",
+        )}`;
   return display;
 });
 const rolePreviewError = ref("");
@@ -1275,6 +1474,11 @@ const edgeSourceControl = computed(
     draft.value.tasks.find((task) => task.id === selectedEdge.value?.source)
       ?.control?.kind === "condition",
 );
+const edgeSourceApproval = computed(
+  () =>
+    draft.value.tasks.find((task) => task.id === selectedEdge.value?.source)
+      ?.human?.kind === "approval",
+);
 const controlValueType = computed(() => {
   const ref = selectedTask.value?.inputs?.value;
   if (!ref || ref.input != null) return "string";
@@ -1316,7 +1520,11 @@ function setControlValue(value: any) {
 }
 function setEdgeExit(value: string | number | boolean) {
   if (!selectedEdge.value || typeof value !== "boolean") return;
-  selectedEdge.value.condition = { field: "matched", operator: "eq", value };
+  selectedEdge.value.condition = {
+    field: edgeSourceApproval.value ? "approved" : "matched",
+    operator: "eq",
+    value,
+  };
   checkpoint();
 }
 const taskNodes = computed<FlowNode[]>(() =>
@@ -1333,8 +1541,15 @@ const taskNodes = computed<FlowNode[]>(() =>
       data: {
         label: task.name,
         controlKind: task.control?.kind,
-        trueLabel: tm("graph.trueExit"),
-        falseLabel: tm("graph.falseExit"),
+        approval: task.human?.kind === "approval",
+        trueLabel: tm(
+          task.human?.kind === "approval" ? "human.approve" : "graph.trueExit",
+        ),
+        falseLabel: tm(
+          task.human?.kind === "approval"
+            ? "human.returnForRevision"
+            : "graph.falseExit",
+        ),
         memberName: task.control
           ? tm(
               task.control.kind === "condition"
@@ -1342,7 +1557,7 @@ const taskNodes = computed<FlowNode[]>(() =>
                 : "graph.joinNode",
             )
           : task.workflow
-          ? tm("workflowCall.open")
+          ? tm("workflowCall.call")
           : task.team
           ? tm("child.independent")
           : task.human
@@ -1356,12 +1571,12 @@ const taskNodes = computed<FlowNode[]>(() =>
         memberColor: collabMemberColor(task.member ?? task.id),
         taskPreview: task.control
           ? task.control.kind === "condition"
-            ? `${tm(`graph.operators.${task.control.operator ?? "eq"}`)} ${JSON.stringify(
-                task.control.value,
-              )}`
+            ? `${tm(
+                `graph.operators.${task.control.operator ?? "eq"}`,
+              )} ${JSON.stringify(task.control.value)}`
             : tm("graph.joinHint")
           : task.workflow
-          ? `${task.workflow.asset_id} → ${task.workflow.result_task_id}`
+          ? `${task.workflow.asset_id} → ${tm("graph.outputs")}`
           : task.team
           ? pinnedTeams.value[`${task.team.asset_id}:${task.team.version}`]
               ?.definition.name ?? task.team.asset_id
@@ -1387,6 +1602,10 @@ const taskNodes = computed<FlowNode[]>(() =>
           ? task.control.kind === "condition"
             ? `${tm("graph.trueExit")} / ${tm("graph.falseExit")}`
             : "ALL"
+          : task.workflow || task.team
+          ? fieldsForTask(task.id)
+              .map((field) => field.title)
+              .join(", ")
           : task.output_contract
           ? tm("graph.structured")
           : tm("graph.text"),
@@ -1436,7 +1655,12 @@ const nodes = computed<FlowNode[]>(() => [
     ? [
         {
           id: "__input",
-          position: { x: 0, y: 100 },
+          position: {
+            x:
+              Math.min(0, ...taskNodes.value.map((node) => node.position.x)) -
+              300,
+            y: 0,
+          },
           data: {
             label: tm("graph.workflowInput"),
             memberName: (draft.value.required_inputs ?? []).join(", "),
@@ -1445,7 +1669,12 @@ const nodes = computed<FlowNode[]>(() => [
         },
         {
           id: "__output",
-          position: { x: 620, y: 100 },
+          position: {
+            x:
+              Math.max(0, ...taskNodes.value.map((node) => node.position.x)) +
+              300,
+            y: 0,
+          },
           data: {
             label: tm("graph.outputs"),
             memberName: draft.value.tasks.find(
@@ -1514,14 +1743,29 @@ const edges = computed(() =>
         source: sourceGroup ? `loop:${sourceGroup.id}` : edge.source,
         target: targetGroup ? `loop:${targetGroup.id}` : edge.target,
         sourceHandle:
-          draft.value.tasks.find((task) => task.id === edge.source)?.control
-            ?.kind === "condition" && edge.condition
+          (draft.value.tasks.find((task) => task.id === edge.source)?.control
+            ?.kind === "condition" ||
+            draft.value.tasks.find((task) => task.id === edge.source)?.human
+              ?.kind === "approval") &&
+          edge.condition
             ? `matched-${edge.condition.value}`
             : undefined,
         label:
-          draft.value.tasks.find((task) => task.id === edge.source)?.control
-            ?.kind === "condition" && edge.condition
-            ? tm(edge.condition.value ? "graph.trueExit" : "graph.falseExit")
+          (draft.value.tasks.find((task) => task.id === edge.source)?.control
+            ?.kind === "condition" ||
+            draft.value.tasks.find((task) => task.id === edge.source)?.human
+              ?.kind === "approval") &&
+          edge.condition
+            ? tm(
+                draft.value.tasks.find((task) => task.id === edge.source)?.human
+                  ?.kind === "approval"
+                  ? edge.condition.value
+                    ? "human.approve"
+                    : "human.returnForRevision"
+                  : edge.condition.value
+                  ? "graph.trueExit"
+                  : "graph.falseExit",
+              )
             : edge.condition
             ? `${edge.condition.field} ${
                 edge.condition.operator
@@ -1542,8 +1786,9 @@ const edges = computed(() =>
 
 watch(
   () => [
-    draft.value.tasks.map((task) => task.team),
+    draft.value.tasks.map((task) => task.team ?? task.workflow),
     props.teams,
+    props.workflows,
     props.childAssets,
   ],
   async () => {
@@ -1559,17 +1804,22 @@ watch(
     teamReadError.value = false;
     emit("validation", true);
     for (const task of definition.tasks) {
-      if (!task.team) continue;
-      const { asset_id, version } = task.team;
+      const call = task.team ?? task.workflow;
+      if (!call) continue;
+      const { asset_id, version } = call;
       const key = `${asset_id}:${version}`;
       if (pinnedTeams.value[key]) continue;
       const frozen = props.childAssets[task.id];
-      const listed = props.teams.find(
+      const listed = [...props.teams, ...props.workflows].find(
         (team) => team.asset_id === asset_id && team.version === version,
       );
       try {
         const team = frozen
-          ? { asset_id, version, definition: frozen.team_definition }
+          ? {
+              asset_id,
+              version,
+              definition: frozen.team_definition ?? frozen.definition,
+            }
           : listed ?? (await workflowAssetsApi.get(asset_id, version));
         if (!isCurrent()) return;
         pinnedTeams.value[key] = team;
@@ -1660,6 +1910,9 @@ function addTask(roleId: string, position?: { x: number; y: number }) {
   const team = roleId.startsWith("team:")
     ? props.teams.find((item) => item.asset_id === roleId.slice(5))
     : null;
+  const workflow = roleId.startsWith("workflow:")
+    ? props.workflows.find((item) => item.asset_id === roleId.slice(9))
+    : null;
   const humanKind =
     roleId === "human:question"
       ? "question"
@@ -1672,7 +1925,7 @@ function addTask(roleId: string, position?: { x: number; y: number }) {
       : roleId === "control:join"
       ? "join"
       : null;
-  if (!role && !humanKind && !team && !controlKind) return;
+  if (!role && !humanKind && !team && !workflow && !controlKind) return;
   const seed =
     typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
       ? crypto.randomUUID().replace(/-/g, "").slice(0, 8)
@@ -1693,6 +1946,8 @@ function addTask(roleId: string, position?: { x: number; y: number }) {
         )
       : team
       ? team.definition.name
+      : workflow
+      ? workflow.definition.name
       : humanKind
       ? tm(`human.${humanKind}Node`)
       : role!.definition.name,
@@ -1711,6 +1966,14 @@ function addTask(roleId: string, position?: { x: number; y: number }) {
       ? {
           team: { asset_id: team.asset_id, version: team.version },
           output_contract: team.definition.output_contract,
+        }
+      : workflow
+      ? {
+          workflow: { asset_id: workflow.asset_id, version: workflow.version },
+          output_contract:
+            workflow.definition.tasks.find(
+              (item: any) => item.id === workflow.definition.result_task_id,
+            )?.output_contract ?? null,
         }
       : humanKind
       ? {
@@ -1732,9 +1995,9 @@ function addTask(roleId: string, position?: { x: number; y: number }) {
               field: "text",
             },
           }
-        : team
+        : team || workflow
         ? Object.fromEntries(
-            team.definition.required_inputs.map((key: string) => [
+            (team ?? workflow).definition.required_inputs.map((key: string) => [
               key,
               draft.value.required_inputs?.includes(key) ? { input: key } : {},
             ]),
@@ -1758,8 +2021,11 @@ function addTask(roleId: string, position?: { x: number; y: number }) {
  */
 async function changeTeam(assetId: string, version?: number) {
   const task = selectedTask.value;
-  if (!task?.team || props.readonly) return;
-  const listed = props.teams.find((item) => item.asset_id === assetId);
+  if ((!task?.team && !task?.workflow) || props.readonly) return;
+  const isTeam = !!task.team;
+  const listed = (isTeam ? props.teams : props.workflows).find(
+    (item) => item.asset_id === assetId,
+  );
   const pinnedVersion = version ?? listed?.version;
   if (!pinnedVersion) return;
   const request = ++teamSelectionRequest;
@@ -1782,10 +2048,11 @@ async function changeTeam(assetId: string, version?: number) {
         ? listed
         : await workflowAssetsApi.get(assetId, pinnedVersion));
     if (!isCurrent()) return;
-    if (team.definition.kind !== "autonomous")
+    if ((team.definition.kind === "autonomous") !== isTeam)
       throw new Error("Invalid team asset");
     pinnedTeams.value[`${assetId}:${pinnedVersion}`] = team;
-    task.team = { asset_id: assetId, version: pinnedVersion };
+    if (isTeam) task.team = { asset_id: assetId, version: pinnedVersion };
+    else task.workflow = { asset_id: assetId, version: pinnedVersion };
     task.inputs = Object.fromEntries(
       team.definition.required_inputs.map((key: string) => [
         key,
@@ -1793,7 +2060,11 @@ async function changeTeam(assetId: string, version?: number) {
           (draft.value.required_inputs?.includes(key) ? { input: key } : {}),
       ]),
     );
-    task.output_contract = team.definition.output_contract;
+    task.output_contract = isTeam
+      ? team.definition.output_contract
+      : team.definition.tasks.find(
+          (item: any) => item.id === team.definition.result_task_id,
+        )?.output_contract ?? null;
     delete contractTexts.value[task.id];
     teamReadError.value = false;
     localError.value = "";
@@ -1908,9 +2179,15 @@ function connect({
   ) {
     const condition =
       draft.value.tasks.find((task) => task.id === from)?.control?.kind ===
-      "condition"
+        "condition" ||
+      draft.value.tasks.find((task) => task.id === from)?.human?.kind ===
+        "approval"
         ? {
-            field: "matched",
+            field:
+              draft.value.tasks.find((task) => task.id === from)?.human
+                ?.kind === "approval"
+                ? "approved"
+                : "matched",
             operator: "eq" as const,
             value: sourceHandle !== "matched-false",
           }
@@ -1944,6 +2221,19 @@ function removeEdge(key: string) {
   checkpoint();
 }
 function removeTask() {
+  const removed = selectedNode.value;
+  draft.value.loops = (draft.value.loops ?? [])
+    .filter(
+      (loop) =>
+        loop.exit_task_id !== removed && loop.body.some((id) => id !== removed),
+    )
+    .map((loop) => ({
+      ...loop,
+      body: loop.body.filter((id) => id !== removed),
+      feedback: (loop.feedback ?? []).filter(
+        (item) => item.source !== removed && item.target !== removed,
+      ),
+    }));
   draft.value.tasks = draft.value.tasks.filter(
     (task) => task.id !== selectedNode.value,
   );
@@ -2048,6 +2338,12 @@ function layout() {
 </script>
 
 <style scoped>
+.child-output-contract {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 180px;
+  overflow: auto;
+}
 .graph-child-preview {
   border: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
   border-radius: 10px;

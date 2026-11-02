@@ -147,6 +147,37 @@
           {{ tm("progress.modelResponse") }} · {{ tm(`progress.deliveryStates.${item.status}`) }}
         </p>
         <p v-if="item.streaming === false" class="text-caption">{{ tm("progress.finalOnly") }}</p>
+        <details class="mt-2 context-details" data-testid="model-context">
+          <summary>{{ tm("progress.actualContext") }}</summary>
+          <div class="context-body">
+            <p v-if="!item.context" class="text-caption">{{ tm("progress.contextUnavailable") }}</p>
+            <template v-else>
+              <p class="text-caption">{{ item.context.model }} · {{ tm(`progress.contextStages.${item.context.stage}`) }}</p>
+              <details class="context-diagnostics"><summary>{{ tm("progress.contextDiagnostics") }}</summary><p class="text-caption">{{ item.context.invocation_id }} · {{ item.context.receipt_id }}</p></details>
+              <p v-if="item.context.observation.truncated" class="text-warning">{{ tm("progress.contextTruncated", { limit: item.context.observation.limit, length: item.context.observation.original_length }) }}</p>
+              <details v-for="(message, index) in item.context.observation.value.messages ?? []" :key="index" class="mt-2">
+                <summary>{{ tm(`progress.messageRoles.${message.role}`) }} · {{ index + 1 }}</summary>
+                <MarkdownMessagePart v-if="typeof message.content === 'string'" :content="message.content" :refs="null" :is-dark="isDark" :custom-html-tags="CHAT_MARKDOWN_CUSTOM_TAGS" :is-streaming="false" />
+                <template v-else-if="Array.isArray(message.content)">
+                  <template v-for="(part, partIndex) in message.content" :key="partIndex">
+                    <MarkdownMessagePart v-if="part.type === 'text'" :content="part.text" :refs="null" :is-dark="isDark" :custom-html-tags="CHAT_MARKDOWN_CUSTOM_TAGS" :is-streaming="false" />
+                    <p v-else class="process-text">{{ part.type }} · {{ part.omitted ? tm(`progress.mediaOmissions.${part.omitted}`) : part.url ?? tm("progress.contextUnavailable") }} <span v-if="part.reference_redacted">· {{ tm("progress.referenceRedacted") }}</span> <span v-if="part.original_length">· {{ tm("progress.mediaLength", { length: part.original_length }) }}</span></p>
+                  </template>
+                </template>
+                <pre v-if="message.tool_calls?.length" class="process-text">{{ JSON.stringify(message.tool_calls, null, 2) }}</pre>
+              </details>
+              <details class="mt-2"><summary>{{ tm("progress.contextTools") }}</summary><pre class="process-text">{{ JSON.stringify(item.context.observation.value.tools ?? [], null, 2) }}</pre></details>
+              <p class="text-caption mt-3">{{ tm("progress.sourceNote") }}</p>
+              <p v-if="item.context.assembly.truncated" class="text-warning">{{ tm("progress.contextTruncated", { limit: item.context.assembly.limit, length: item.context.assembly.original_length }) }}</p>
+              <details v-for="(source, index) in item.context.assembly.value.sources ?? []" :key="index" class="mt-2">
+                <summary>{{ tm(`progress.sourceKinds.${source.kind}`) }} <span v-if="source.id">· {{ source.id }}</span><span v-if="source.ids?.length">· {{ source.ids.join(", ") }}</span></summary>
+                <MarkdownMessagePart v-if="source.content" :content="source.content" :refs="null" :is-dark="isDark" :custom-html-tags="CHAT_MARKDOWN_CUSTOM_TAGS" :is-streaming="false" />
+                <p v-else class="text-caption">{{ tm("progress.sourceAbsent") }}</p>
+              </details>
+              <LlmRequestInjectionsPanel v-if="item.context.assembly.value.injections?.length" :items="item.context.assembly.value.injections" class="mt-3" />
+            </template>
+          </div>
+        </details>
         <ReasoningBlock v-if="item.reasoning" :reasoning="item.reasoning" :is-dark="isDark" />
         <MarkdownMessagePart v-if="item.text" :content="item.text" :refs="null" :is-dark="isDark" :custom-html-tags="CHAT_MARKDOWN_CUSTOM_TAGS" :is-streaming="item.status === 'started'" />
       </article>
@@ -240,6 +271,7 @@
 <script setup lang="ts">
 import { computed, reactive } from "vue";
 import MarkdownMessagePart from "@/components/chat/message_list_comps/MarkdownMessagePart.vue";
+import LlmRequestInjectionsPanel from "@/components/chat/LlmRequestInjectionsPanel.vue";
 import ReasoningBlock from "@/components/chat/message_list_comps/ReasoningBlock.vue";
 import ToolCallCard from "@/components/chat/message_list_comps/ToolCallCard.vue";
 import { CHAT_MARKDOWN_CUSTOM_TAGS } from "@/components/chat/chatMarkdownComponents";
@@ -272,6 +304,15 @@ const deliveries = computed(() => {
     if (record.kind === "model_delta") group.chunks.push(data);
     else if (data.status !== "started") group.end = data;
     else group.streaming = data.streaming;
+  }
+  for (const [order, record] of (props.run.process ?? []).entries()) {
+    if (record.kind !== "model_context" || !record.data.receipt_id) continue;
+    const key = `${record.run_id}:${record.attempt_id}:${record.data.receipt_id}`;
+    if (!groups.has(key)) groups.set(key, {
+      key, order, kind: "delivery", invocation: record.data.invocation_id,
+      streaming: false, chunks: [], end: null,
+    });
+    groups.get(key).context = record.data;
   }
   for (const [order, record] of (props.run.process ?? []).entries()) {
     if (record.kind !== "model_response" || !record.data.receipt_id) continue;
@@ -350,7 +391,7 @@ const readingItems = computed(() => [...deliveries.value, ...observedTools.value
 const otherRecords = computed(() =>
   (props.run.process ?? []).filter((record: any) => {
     if (
-      ["model_delivery", "model_delta", "tool_start", "tool_progress", "tool_status"].includes(
+      ["model_delivery", "model_delta", "model_context", "tool_start", "tool_progress", "tool_status"].includes(
         record.kind,
       )
     )
@@ -415,6 +456,24 @@ summary {
   cursor: pointer;
   padding: 14px;
   overflow-wrap: anywhere;
+}
+.context-details summary {
+  padding: 6px 0;
+}
+.context-body {
+  padding: 0 8px 8px;
+}
+.context-body :deep(.markdown-content),
+.context-body :deep(.markdown-renderer) {
+  margin: 0;
+  padding: 0;
+  min-height: 0;
+}
+.context-body :deep(p.paragraph-node) {
+  margin: 0 0 4px;
+}
+.context-diagnostics {
+  margin-bottom: 4px;
 }
 .process-id {
   display: block;

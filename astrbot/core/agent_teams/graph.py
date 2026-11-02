@@ -9,6 +9,7 @@ from referencing import Registry, Resource
 from referencing.jsonschema import DRAFT202012
 
 from astrbot.core.agent_teams.assets import (
+    HumanWaitPolicy,
     RoleAssetError,
     RoleDefinition,
     RoleInstallation,
@@ -45,6 +46,10 @@ class HumanTask(BaseModel):
     max_length: int = Field(default=10_000, ge=1, le=100_000)
     artifact_task_id: str | None = None
     artifact_version: int = Field(default=1, ge=1)
+    recommendation_task_id: str | None = None
+    recommendation_value_field: str | None = None
+    recommendation_reason_field: str | None = None
+    human_wait: HumanWaitPolicy = Field(default_factory=HumanWaitPolicy)
 
 
 class TeamCall(BaseModel):
@@ -56,9 +61,7 @@ class TeamCall(BaseModel):
 
 
 class WorkflowCall(TeamCall):
-    """An allowed workflow version and the task whose exact result is returned."""
-
-    result_task_id: str = Field(min_length=1, max_length=128)
+    """An exact workflow version invoked in an independent scope."""
 
 
 class ConditionTask(BaseModel):
@@ -439,6 +442,24 @@ def validate_graph(definition: GraphDefinition) -> None:
         if not exit_rule:
             seen.add((edge.source, edge.target))
             predecessors[edge.target].add(edge.source)
+        source_human = tasks[edge.source].human
+        if (
+            source_human
+            and source_human.kind == "approval"
+            and (
+                edge.condition is None
+                or edge.condition.field != "approved"
+                or edge.condition.operator != "eq"
+                or type(edge.condition.value) is not bool
+            )
+        ):
+            fields.append(
+                {
+                    "path": path + ".condition",
+                    "code": "CONDITION",
+                    "message": "Approval exits must select approve or reject",
+                }
+            )
         source_control = tasks[edge.source].control
         if source_control and (
             exit_rule or (source_control.kind == "condition" and not edge.condition)
@@ -580,6 +601,43 @@ def validate_graph(definition: GraphDefinition) -> None:
     for index, task in enumerate(definition.tasks):
         path = f"definition.tasks.{index}"
         if task.human is not None:
+            human = task.human
+            recommendation = (
+                human.recommendation_task_id,
+                human.recommendation_value_field,
+                human.recommendation_reason_field,
+            )
+            if any(recommendation):
+                try:
+                    if not all(recommendation):
+                        raise ValueError(
+                            "Select an upstream task and both recommendation fields"
+                        )
+                    source = tasks.get(human.recommendation_task_id)
+                    if (
+                        source is None
+                        or source.id not in ancestors.get(task.id, set())
+                        or source.human
+                        or source.control
+                        or source.team
+                        or source.workflow
+                    ):
+                        raise ValueError(
+                            "Recommendation must come from an upstream agent result"
+                        )
+                    for field in recommendation[1:]:
+                        if set(field_schema(source.output_contract, field)["type"]) != {
+                            "string"
+                        }:
+                            raise ValueError("Recommendation fields must be strings")
+                except (ValueError, KeyError) as exc:
+                    fields.append(
+                        {
+                            "path": path + ".human.recommendation_task_id",
+                            "code": "REFERENCE",
+                            "message": str(exc),
+                        }
+                    )
             if task.human.kind == "approval" and (
                 task.human.artifact_task_id not in ancestors.get(task.id, set())
                 or tasks[task.human.artifact_task_id].human is not None
@@ -601,7 +659,8 @@ def validate_graph(definition: GraphDefinition) -> None:
             {
                 key: value
                 for key, value in task.overrides.model_dump(exclude_unset=True).items()
-                if value is not None or key in ("persona_id", "provider_id")
+                if value is not None
+                or key in ("persona_id", "provider_id", "human_wait")
             },
         )
         if (

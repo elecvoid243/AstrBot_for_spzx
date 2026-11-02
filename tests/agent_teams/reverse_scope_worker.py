@@ -343,7 +343,11 @@ async def run_reverse_scenario(
                 run_id,
                 {"action": "pause", "request_id": "reverse-pause-human"},
             )
-            decision = {"action": "approve", "request_id": "reverse-answer"}
+            decision = {
+                "action": "approve",
+                "request_id": "reverse-answer",
+                "artifact_ref": waiting["todos"][0]["artifact_ref"],
+            }
             first = await service.answer_todo(
                 "alice", run_id, waiting["todos"][0]["todo_id"], decision
             )

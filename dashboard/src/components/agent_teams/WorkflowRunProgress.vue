@@ -216,7 +216,7 @@
       <summary class="run-text">
         {{ tm("child.scope") }}:
         {{
-          run.tasks.find(
+          [...run.tasks, ...(run.scopes ?? []).flatMap((item: any) => item.tasks)].find(
             (task: any) => task.run_id === scope.snapshot.parent_run_id,
           )?.snapshot.definition.name
         }}
@@ -235,6 +235,7 @@
       <WorkflowGraphCanvas
         :definition="scope.runtime_definition ?? scope.snapshot.definition"
         :tasks="scope.tasks"
+        :child-assets="scope.snapshot.child_assets ?? {}"
         :dispatch-tasks="
           scope.tasks
             .filter((task: any) => task.snapshot.created_by_task_id)

@@ -118,7 +118,13 @@ async def loop_script(workflow_env):
     """
     env = workflow_env
     script = SimpleNamespace(
-        env=env, observations=[], approved_round=2, holds={}, failures=set(), started={}
+        env=env,
+        observations=[],
+        approved_round=2,
+        holds={},
+        failures=set(),
+        started={},
+        recommendation=False,
     )
     bindings = {}
 
@@ -177,6 +183,11 @@ async def loop_script(workflow_env):
                 else {"text": saved["snapshot"]["inputs"]["draft"]}
             )
         )
+        if node == "review" and script.recommendation:
+            result = {
+                "action": "reject" if iteration == 1 else "approve",
+                "reason": f"Review {iteration}",
+            }
         tool = AgentTeamToolRegistry.get_tools(f"webchat:FriendMessage:{session_id}")[0]
         arguments = {"result_json": json.dumps(result)} if node == "review" else result
         assert await tool.call(None, **arguments) == "Result accepted."
@@ -396,6 +407,7 @@ async def test_executed_loop_with_skipped_exit_cannot_release_final_consumer(
     ]
     loop = finished["loops"][0]
     assert loop["status"] == "blocked"
+    assert loop["iterations"][0]["status"] == "blocked"
     assert len(loop["iterations"]) == 1
     assert "exit_reference" not in loop["iterations"][0]
     assert len(loop_script.observations) == 1
@@ -419,6 +431,7 @@ async def test_exhausted_loop_keeps_history_and_never_releases_final_consumer(
     finished = await wait_graph(env.service, run["run_id"])
     assert finished["status"] == "blocked"
     assert finished["loops"][0]["status"] == "exhausted"
+    assert "maximum iterations" in finished["loops"][0]["reason"]
     assert len(finished["loops"][0]["iterations"]) == limit
     assert finished["tasks"][-1]["status"] == "dependency_failed"
     with pytest.raises(RoleAssetError, match="no completed result"):
@@ -683,7 +696,11 @@ async def test_approval_after_loop_pins_the_passed_revision(loop_script):
         "alice",
         run["run_id"],
         current["todos"][0]["todo_id"],
-        {"request_id": "confirm-reviewed", "action": "approve"},
+        {
+            "request_id": "confirm-reviewed",
+            "action": "approve",
+            "artifact_ref": approved,
+        },
     )
     assert (await wait_graph(env.service, run["run_id"]))["status"] == "completed"
     exported = await env.service.export_artifact("alice", **approved)
@@ -856,3 +873,327 @@ async def test_control_nodes_in_loop_recreate_without_conversations_and_apply_fe
             assert "member" not in tasks[node]["snapshot"]
             assert tasks[node]["result_ref"] is None
         assert tasks["condition"]["result"] == {"matched": True}
+
+
+@pytest.mark.asyncio
+async def test_human_rejection_drives_bounded_rework_and_exact_approval(loop_script):
+    """A rejected version follows feedback into a distinct round and request."""
+    env = loop_script.env
+    definition = revision_definition(env.role["role_id"])
+    definition["tasks"][1] = {
+        "id": "review",
+        "name": "Human approval",
+        "human": {
+            "kind": "approval",
+            "question": "Approve?",
+            "artifact_task_id": "write",
+        },
+    }
+    definition["edges"][-1]["condition"] = {"field": "approved", "value": True}
+    asset = await env.service.save_asset("alice", {"definition": definition})
+    run = await env.service.start_run(
+        "alice",
+        asset["asset_id"],
+        {"version": 1, "inputs": {"draft": "Original", "feedback": "Check"}},
+    )
+    refs = []
+    requests = []
+    for iteration in (1, 2):
+        for _ in range(300):
+            current = await env.service.get_run("alice", run["run_id"])
+            pending = [todo for todo in current["todos"] if todo["status"] == "pending"]
+            if pending:
+                break
+            await asyncio.sleep(0.01)
+        todo = pending[0]
+        ref = todo["artifact_ref"]
+        refs.append(ref)
+        requests.append(todo["todo_id"])
+        assert (await env.service.read_artifact("alice", **ref))["content"][
+            "text"
+        ] == f"Report revision {iteration}"
+        with pytest.raises(RoleAssetError):
+            await env.service.export_artifact("alice", **ref)
+        with pytest.raises(RoleAssetError) as mismatch:
+            await env.service.answer_todo(
+                "alice",
+                run["run_id"],
+                todo["todo_id"],
+                {
+                    "request_id": f"wrong-{iteration}",
+                    "action": "approve",
+                    "artifact_ref": {**ref, "version": ref["version"] + 1},
+                },
+            )
+        assert mismatch.value.status == 409
+        response = {
+            "request_id": f"decision-{iteration}",
+            "action": "reject" if iteration == 1 else "approve",
+            "artifact_ref": ref,
+        }
+        if iteration == 1:
+            response["feedback"] = "Add evidence"
+        with pytest.raises(RoleAssetError):
+            await env.service.answer_todo(
+                "bob", run["run_id"], todo["todo_id"], response
+            )
+        await env.service.control_run(
+            "alice",
+            run["run_id"],
+            {"request_id": f"pause-{iteration}", "action": "pause"},
+        )
+        saved = await env.service.answer_todo(
+            "alice", run["run_id"], todo["todo_id"], response
+        )
+        assert (
+            next(item for item in saved["todos"] if item["todo_id"] == todo["todo_id"])[
+                "status"
+            ]
+            == "answered"
+        )
+        with pytest.raises(RoleAssetError):
+            await env.service.answer_todo(
+                "alice",
+                run["run_id"],
+                todo["todo_id"],
+                {
+                    **response,
+                    "artifact_ref": {**ref, "version": ref["version"] + 1},
+                },
+            )
+        await env.service.answer_todo("alice", run["run_id"], todo["todo_id"], response)
+        await env.service.control_run(
+            "alice",
+            run["run_id"],
+            {"request_id": f"continue-{iteration}", "action": "continue"},
+        )
+    finished = await wait_graph(env.service, run["run_id"])
+    assert finished["status"] == "completed"
+    assert requests[0] != requests[1] and refs[0] != refs[1]
+    assert (await env.service.export_artifact("alice", **refs[1]))["content"][
+        "text"
+    ] == "Report revision 2"
+    with pytest.raises(RoleAssetError):
+        await env.service.export_artifact("alice", **refs[0])
+    assert finished["loops"][0]["iterations"][0]["status"] == "rejected"
+
+
+@pytest.mark.asyncio
+async def test_rejected_approval_exhausts_loop_without_delivery(loop_script):
+    """An exhausted human rework loop remains blocked and preserves its reason."""
+    env = loop_script.env
+    definition = revision_definition(env.role["role_id"], max_iterations=1)
+    definition["tasks"][1] = {
+        "id": "review",
+        "name": "Human approval",
+        "human": {
+            "kind": "approval",
+            "question": "Approve?",
+            "artifact_task_id": "write",
+        },
+    }
+    definition["edges"][-1]["condition"] = {"field": "approved", "value": True}
+    asset = await env.service.save_asset("alice", {"definition": definition})
+    run = await env.service.start_run(
+        "alice",
+        asset["asset_id"],
+        {
+            "version": 1,
+            "inputs": {"draft": "Original", "feedback": "Check"},
+        },
+    )
+    for _ in range(300):
+        current = await env.service.get_run("alice", run["run_id"])
+        if current["todos"]:
+            break
+        await asyncio.sleep(0.01)
+    todo = current["todos"][0]
+    await env.service.answer_todo(
+        "alice",
+        run["run_id"],
+        todo["todo_id"],
+        {
+            "request_id": "reject",
+            "action": "reject",
+            "feedback": "Add evidence",
+            "artifact_ref": todo["artifact_ref"],
+        },
+    )
+    finished = await wait_graph(env.service, run["run_id"])
+    assert finished["status"] == "blocked"
+    assert finished["loops"][0]["status"] == "exhausted"
+    assert "maximum iterations" in finished["loops"][0]["reason"]
+    assert not any(
+        item["snapshot"]["node_id"] == "publish" for item in loop_script.observations
+    )
+    with pytest.raises(RoleAssetError):
+        await env.service.export_artifact("alice", **todo["artifact_ref"])
+
+
+@pytest.mark.asyncio
+async def test_explicit_review_recommendation_reaches_each_approval(loop_script):
+    """Read recommendations from the explicit upstream agent in each round."""
+    env = loop_script.env
+    loop_script.recommendation = True
+    definition = revision_definition(env.role["role_id"])
+    definition["tasks"][1]["output_contract"] = {
+        "type": "object",
+        "properties": {"action": {"type": "string"}, "reason": {"type": "string"}},
+        "required": ["action", "reason"],
+    }
+    definition["tasks"].insert(
+        2,
+        {
+            "id": "approve",
+            "name": "Approval",
+            "human": {
+                "kind": "approval",
+                "question": "Approve?",
+                "artifact_task_id": "write",
+                "recommendation_task_id": "review",
+                "recommendation_value_field": "action",
+                "recommendation_reason_field": "reason",
+            },
+        },
+    )
+    definition["edges"][-1] = {
+        "source": "approve",
+        "target": "publish",
+        "condition": {"field": "approved", "value": True},
+    }
+    definition["edges"].append({"source": "review", "target": "approve"})
+    loop = definition["loops"][0]
+    loop["body"].append("approve")
+    loop["exit_task_id"] = "approve"
+    loop["feedback"][1]["source"] = "approve"
+    asset = await env.service.save_asset("alice", {"definition": definition})
+    run = await env.service.start_run(
+        "alice",
+        asset["asset_id"],
+        {
+            "version": 1,
+            "inputs": {"draft": "Original", "feedback": "Check"},
+        },
+    )
+    for iteration in (1, 2):
+        for _ in range(300):
+            current = await env.service.get_run("alice", run["run_id"])
+            pending = [item for item in current["todos"] if item["status"] == "pending"]
+            if pending:
+                break
+            await asyncio.sleep(0.01)
+        todo = pending[0]
+        action = "reject" if iteration == 1 else "approve"
+        assert todo["recommendation"] == {
+            "value": action,
+            "reason": f"Review {iteration}",
+        }
+        answer = {
+            "request_id": f"review-{iteration}",
+            "action": action,
+            "artifact_ref": todo["artifact_ref"],
+        }
+        if action == "reject":
+            answer["feedback"] = "Add evidence"
+        await env.service.answer_todo("alice", run["run_id"], todo["todo_id"], answer)
+    assert (await wait_graph(env.service, run["run_id"]))["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_rejected_selected_artifact_is_not_published(loop_script):
+    """Selecting the writer result cannot bypass a rejected approval."""
+    env = loop_script.env
+    definition = revision_definition(env.role["role_id"])
+    definition["result_task_id"] = "write"
+    definition["tasks"] = [
+        definition["tasks"][0],
+        {
+            "id": "approve",
+            "name": "Approval",
+            "human": {
+                "kind": "approval",
+                "question": "Approve?",
+                "artifact_task_id": "write",
+            },
+        },
+    ]
+    definition["edges"] = [{"source": "write", "target": "approve"}]
+    definition["loops"] = []
+    asset = await env.service.save_asset("alice", {"definition": definition})
+    run = await env.service.start_run(
+        "alice",
+        asset["asset_id"],
+        {
+            "version": 1,
+            "inputs": {"draft": "Original", "feedback": "Check"},
+        },
+    )
+    for _ in range(300):
+        current = await env.service.get_run("alice", run["run_id"])
+        if current["todos"]:
+            break
+        await asyncio.sleep(0.01)
+    todo = current["todos"][0]
+    await env.service.answer_todo(
+        "alice",
+        run["run_id"],
+        todo["todo_id"],
+        {
+            "request_id": "reject",
+            "action": "reject",
+            "feedback": "Revise",
+            "artifact_ref": todo["artifact_ref"],
+        },
+    )
+    current = await wait_graph(env.service, run["run_id"])
+    assert current["status"] == "blocked"
+    assert current["result"] is None
+    assert "not been approved" in current["state"]["reason"]
+
+
+@pytest.mark.asyncio
+async def test_cancelled_approval_cannot_release_result(loop_script):
+    """Cancellation preserves the waiting request without consuming a decision."""
+    env = loop_script.env
+    definition = revision_definition(env.role["role_id"])
+    definition["tasks"][1] = {
+        "id": "review",
+        "name": "Approval",
+        "human": {
+            "kind": "approval",
+            "question": "Approve?",
+            "artifact_task_id": "write",
+        },
+    }
+    definition["edges"][-1]["condition"] = {"field": "approved", "value": True}
+    asset = await env.service.save_asset("alice", {"definition": definition})
+    run = await env.service.start_run(
+        "alice",
+        asset["asset_id"],
+        {"version": 1, "inputs": {"draft": "Original", "feedback": "Check"}},
+    )
+    for _ in range(300):
+        current = await env.service.get_run("alice", run["run_id"])
+        if current["todos"]:
+            break
+        await asyncio.sleep(0.01)
+    todo = current["todos"][0]
+    await env.service.control_run(
+        "alice", run["run_id"], {"request_id": "cancel", "action": "cancel"}
+    )
+    with pytest.raises(RoleAssetError):
+        await env.service.answer_todo(
+            "alice",
+            run["run_id"],
+            todo["todo_id"],
+            {
+                "request_id": "approve",
+                "action": "approve",
+                "artifact_ref": todo["artifact_ref"],
+            },
+        )
+    current = await env.service.get_run("alice", run["run_id"])
+    assert current["todos"][0]["status"] == "cancelled"
+    assert current["result"] is None
+    with pytest.raises(RoleAssetError):
+        await env.service.export_artifact("alice", **todo["artifact_ref"])

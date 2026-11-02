@@ -1,6 +1,8 @@
 import { flushPromises, mount } from "@vue/test-utils";
 import { createMemoryHistory, createRouter } from "vue-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { draftApi } from "@/composables/useAssetDraft";
+import { mockDrafts } from "./draftTestMocks";
 import WorkflowWorkspacePanel from "./WorkflowWorkspacePanel.vue";
 
 const api = vi.hoisted(() => ({
@@ -9,6 +11,7 @@ const api = vi.hoisted(() => ({
   start: vi.fn(),
   readiness: vi.fn(),
   runs: vi.fn(),
+  humanRequests: vi.fn(),
   history: vi.fn(),
   run: vi.fn(),
   artifact: vi.fn(),
@@ -120,6 +123,28 @@ Object.assign(stubs, {
 });
 
 describe("single-task workflow workspace", () => {
+  it("answers a persisted request from the global inbox", async () => {
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: "/", component: { template: "<div />" } }] });
+    await router.push("/");
+    const todo = { run_name: "Market research", task_name: "Select market", recommendation_source_name: "Forecast", todo_id: "todo-1", root_run_id: "run-1", task_run_id: "task-1", kind: "question", question: "Which region?", status: "pending", control_status: "active", constraints: { choices: [], max_length: 100 }, recommendation: {value: "Asia", reason: "Demand"}, recommendation_ref: { artifact_id: "source-1", version: 1 }, recommendation_fields: { value: "choice", reason: "reason" } };
+    api.humanRequests.mockResolvedValueOnce({ requests: [todo] }).mockResolvedValue({ requests: [] });
+    api.answer.mockResolvedValue(run);
+    const wrapper = mount(WorkflowWorkspacePanel, { props: { mode: "runs" }, global: { plugins: [router], stubs } });
+    await flushPromises();
+    expect(wrapper.get('[data-testid="runs-pending"]').text()).toContain("1");
+    await wrapper.get('[data-testid="runs-pending"]').trigger("click");
+    expect(wrapper.get('[data-testid="human-inbox"]').text()).toContain("Demand");
+    expect(wrapper.get('[data-testid="human-origin"]').text()).toContain("Market research");
+    expect(wrapper.get('[data-testid="human-origin"]').text()).toContain("Select market");
+    expect(wrapper.get('[data-testid="human-inbox"]').text()).toContain("Forecast");
+    await wrapper.get('[data-testid="human-answer"]').setValue("Europe");
+    await wrapper.get('[data-testid="human-submit"]').trigger("click");
+    await flushPromises();
+    expect(api.answer).toHaveBeenCalledWith("run-1", "todo-1", expect.objectContaining({ action: "answer", answer: "Europe" }));
+    expect(wrapper.get('[data-testid="human-inbox"]').text()).not.toContain("Which region?");
+    wrapper.unmount();
+  });
+
   it("finds active, waiting and historical runs without editing their definitions", async () => {
     const router = createRouter({
       history: createMemoryHistory(),
@@ -194,6 +219,24 @@ describe("single-task workflow workspace", () => {
     ).toBe(false);
     wrapper.unmount();
   });
+  it("labels unpublished drafts and published assets with edits", async () => {
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: "/", component: slotStub }] });
+    await router.push("/");
+    vi.mocked(draftApi.list).mockResolvedValueOnce([
+      { asset_id: "asset-1", revision: 2, base_version: 1, body: { definition: { name: "Edited" } } },
+      { asset_id: "new-flow", revision: 1, base_version: null, body: { definition: { name: "Unpublished" } } },
+    ]).mockResolvedValueOnce([
+      { asset_id: "new-team", revision: 1, base_version: null, body: { definition: { kind: "autonomous", name: "Team draft" } } },
+    ]);
+    const wrapper = mount(WorkflowWorkspacePanel, { props: { mode: "assets" }, global: { plugins: [router], stubs } });
+    await flushPromises();
+    expect(wrapper.text()).toContain("Unpublished · draft.unpublished");
+    expect(wrapper.text()).toContain("Team draft · draft.unpublished");
+    expect(wrapper.get('[data-testid="editing-draft"]').text()).toBe("draft.editing");
+    expect(wrapper.text()).toContain("Report · v1");
+    wrapper.unmount();
+  });
+
   it("keeps teams and workflows in their own asset directories", async () => {
     const router = createRouter({
       history: createMemoryHistory(),
@@ -248,7 +291,7 @@ describe("single-task workflow workspace", () => {
       snapshot: {
         ...run.snapshot,
         engine: "workflow_call_v2",
-        workflow: { asset_id: "report", version: 1, result_task_id: "result" },
+        workflow: { asset_id: "report", version: 1 },
         created_by_task_id: "coordinator-task",
         definition: { name: "Pinned report call" },
       },
@@ -297,6 +340,54 @@ describe("single-task workflow workspace", () => {
       await flushPromises();
       expect(wrapper.get('[data-testid="run-detail"]').text()).toContain(
         "Independent report writer",
+      );
+    } finally {
+      wrapper.unmount();
+    }
+  });
+  it("opens the selected static team call in its own scope", async () => {
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: "/", component: slotStub }],
+    });
+    await router.push("/?workflow_run=run-1");
+    const call = {
+      ...run,
+      run_id: "team-call",
+      snapshot: {
+        ...run.snapshot,
+        engine: "team_call_v2",
+        definition: { name: "Fixed team" },
+      },
+      state: { ...run.state, child_scope_run_id: "team-scope" },
+    };
+    const coordinator = {
+      ...run,
+      run_id: "team-coordinator",
+      snapshot: { ...run.snapshot, definition: { name: "Team coordinator" } },
+    };
+    api.run.mockResolvedValue({
+      ...run,
+      tasks: [call],
+      scopes: [{ run_id: "team-scope", tasks: [coordinator] }],
+    });
+    const wrapper = mount(WorkflowWorkspacePanel, {
+      props: { mode: "runs" },
+      global: {
+        plugins: [router],
+        stubs: { ...stubs, WorkflowRunProgress: true },
+      },
+    });
+    try {
+      await flushPromises();
+      wrapper
+        .findComponent({ name: "WorkflowRunProgress" })
+        .vm.$emit("select", call.run_id);
+      await flushPromises();
+      await wrapper.get('[data-testid="open-child-workflow"]').trigger("click");
+      await flushPromises();
+      expect(wrapper.get('[data-testid="run-detail"]').text()).toContain(
+        "Team coordinator",
       );
     } finally {
       wrapper.unmount();
@@ -620,6 +711,8 @@ describe("single-task workflow workspace", () => {
           await wrapper.get('[data-testid="human-preview"]').trigger("click");
           await flushPromises();
         } else {
+          await wrapper.get('[data-testid="human-preview"]').trigger("click");
+          await flushPromises();
           await wrapper
             .get('[data-testid="human-feedback"]')
             .setValue("Second report needs verified evidence.");
@@ -666,10 +759,13 @@ describe("single-task workflow workspace", () => {
         else if (action === "approve") {
           await wrapper.get('[data-testid="human-preview"]').trigger("click");
           await flushPromises();
-        } else
+        } else {
+          await wrapper.get('[data-testid="human-preview"]').trigger("click");
+          await flushPromises();
           await wrapper
             .get('[data-testid="human-feedback"]')
             .setValue("Second report needs verified evidence.");
+        }
         if (outcome === "failure") {
           failCurrent(new Error("Current response failed"));
           await flushPromises();
@@ -1755,7 +1851,10 @@ describe("single-task workflow workspace", () => {
     blocked.unmount();
   });
   beforeEach(() => {
+    vi.restoreAllMocks();
     vi.resetAllMocks();
+    api.humanRequests.mockResolvedValue({ requests: [] });
+    mockDrafts((id, body) => api.save(id, body));
     api.readiness.mockResolvedValue({ ready: true, issues: [], roles: [] });
     api.list.mockResolvedValue({ assets: [asset] });
     roles.list.mockResolvedValue({
@@ -2052,6 +2151,7 @@ describe("single-task workflow workspace", () => {
       .findAll("button")
       .find((button) => button.text() === "graph.create")!
       .trigger("click");
+    await flushPromises();
     expect(wrapper.find('[data-testid="graph-editor"]').exists()).toBe(true);
     await wrapper.find(".dialog input").setValue("My workflow");
     await wrapper
@@ -2089,7 +2189,7 @@ describe("single-task workflow workspace", () => {
     });
     await wrapper
       .findAll(".dialog button")
-      .find((button) => button.text() === "v2.save")!
+      .find((button) => button.text() === "draft.publish")!
       .trigger("click");
     await flushPromises();
     expect(api.save.mock.calls[0][1].definition.name).toBe("My workflow");

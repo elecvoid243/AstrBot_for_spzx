@@ -18,6 +18,7 @@ const versions = [1, 2, 3].map((version) => ({
   definition: {
     name: `Research v${version}`,
     required_inputs: [`topic${version}`],
+    result_task_id: `result${version}`,
     tasks: [
       {
         id: `result${version}`,
@@ -28,11 +29,7 @@ const versions = [1, 2, 3].map((version) => ({
   },
 }));
 
-function openPanel(
-  initialRefs = [
-    { asset_id: "research", version: 3, result_task_id: "result3" },
-  ],
-) {
+function openPanel(initialRefs = [{ asset_id: "research", version: 3 }]) {
   vi.mocked(workflowAssetsApi.list).mockResolvedValue({
     assets: [
       versions[2],
@@ -79,8 +76,8 @@ describe("allowed fixed workflow versions", () => {
             ),
       );
     const wrapper = openPanel([
-      { asset_id: "research", version: 3, result_task_id: "result3" },
-      { asset_id: "other", version: 3, result_task_id: "result3" },
+      { asset_id: "research", version: 3 },
+      { asset_id: "other", version: 3 },
     ]);
     try {
       await flushPromises();
@@ -97,8 +94,8 @@ describe("allowed fixed workflow versions", () => {
       finishFirst(versions[0]);
       await flushPromises();
       expect(panel.props("modelValue")).toEqual([
-        { asset_id: "research", version: 1, result_task_id: "result1" },
-        { asset_id: "other", version: 2, result_task_id: "result2" },
+        { asset_id: "research", version: 1 },
+        { asset_id: "other", version: 2 },
       ]);
       expect(panel.emitted("validation")?.at(-1)).toEqual([false]);
     } finally {
@@ -123,7 +120,7 @@ describe("allowed fixed workflow versions", () => {
       .vm.$emit("update:modelValue", 2);
     await flushPromises();
     expect(panel.props("modelValue")).toEqual([
-      { asset_id: "research", version: 2, result_task_id: "result2" },
+      { asset_id: "research", version: 2 },
     ]);
     expect(panel.text()).toContain("topic2");
     expect(panel.text()).toContain("proof2");
@@ -160,7 +157,7 @@ describe("allowed fixed workflow versions", () => {
       else rejectOld(new Error("Late inaccessible v1"));
       await flushPromises();
       expect(panel.props("modelValue")).toEqual([
-        { asset_id: "research", version: 2, result_task_id: "result2" },
+        { asset_id: "research", version: 2 },
       ]);
       expect(panel.text()).toContain("topic2");
       expect(panel.text()).not.toContain("Late inaccessible");
@@ -195,8 +192,8 @@ describe("allowed fixed workflow versions", () => {
       if (change === "close") (wrapper.vm as any).active = false;
       if (change === "replace")
         (wrapper.vm as any).refs = [
-          { asset_id: "research", version: 3, result_task_id: "result3" },
-          { asset_id: "other", version: 1, result_task_id: "result" },
+          { asset_id: "research", version: 3 },
+          { asset_id: "other", version: 1 },
         ];
       if (change === "unmount") wrapper.unmount();
       await flushPromises();

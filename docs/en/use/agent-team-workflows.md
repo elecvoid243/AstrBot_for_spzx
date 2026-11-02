@@ -2,6 +2,10 @@
 
 Open **More Features → Agent Teams → Assets**. **Teams** contains versioned autonomous teams, **Workflows** contains graph workflows, and **Role templates** configures reusable responsibilities and local resources. A workflow can configure its Agent directly without a role template. Import, export, chat access, editing and launch actions remain on the asset cards. After installation, the workspace opens the Teams or Workflows directory for the imported entry.
 
+Workflow and autonomous team edits, including canvas layout, save automatically as drafts. Newly created drafts appear in the asset list even before a version exists. Check the save status; retry a failed save, or keep local content and deliberately load the server copy after a conflict. **Save version** validates the current draft and creates a fixed version. Formal runs and chat access use saved versions, not drafts.
+
+When a newer fixed version causes a conflict, review the old and current base versions. You can keep the entire draft on the reviewed latest base, or load that version to edit it; no fields are merged. If the draft or latest version changes during review, review the conflict again.
+
 ![The workflow asset workspace](/images/agent-teams-current-en.jpg)
 
 The workspace and canvas screenshots use the actual components with isolated sample assets and a simulated resource catalog. They do not depict a real model run.
@@ -22,10 +26,22 @@ Connect parallel paths to an **ALL join**. It waits for all entered paths to suc
 
 The screenshot shows the actual canvas with isolated example data, not an actual model run.
 
+## Answer human questions
+
+On the workflow canvas, add a **Human question**, enter the question and either list allowed answers or leave the list empty for free text. Optionally select an upstream Agent task and its required string fields for the recommended answer and reason. Connect that task as a dependency. The request records the exact source artifact version and selected fields; invalid or missing recommendations do not prevent a manual answer. No model is called to create a recommendation, and there is no default deadline.
+
+Open **Runs → Needs attention → Needs my attention** to see pending requests you can answer, including requests beyond the recent-run list. The same card appears in **View Run**. Use **Open process** to inspect the associated task and its saved process, then enter an answer. Pausing a run permits saving an answer, but execution consumes it only after continuing. Cancelling closes pending requests and prevents later progress. Independent branches continue while a question waits.
+
+
+![Human request inbox with an explicit recommendation](/images/agent-teams-human-inbox-en.jpg)
+
+The screenshot uses the production components with isolated sample data; it does not show a real backend run.
+
 ## Navigation and previous entry points
 
 | Previous entry | Current entry |
 | --- | --- |
+| Human questions only in a run detail | Runs → Needs attention → Needs my attention, or the same card in View Run |
 | Autonomous teams within Workflow Assets | Assets → Teams |
 | New Workflow / New Canvas Workflow | Assets → Workflows → New Workflow (one canvas entry) |
 | Role templates | Assets → Role templates |
@@ -63,7 +79,7 @@ Choose **View Run** on a v2 record to see the goal, task progress and waiting re
 
 ![Progress, human waits and a fixed snapshot in the real WebUI](/images/agent-workbench-run-en.jpg)
 
-On narrow screens, expand the collapsed toolbox or properties heading when needed; selecting a node exposes its properties. Toolbars wrap and dialog actions stay in their action area. Tasks, requests and artifacts stack vertically, and long names wrap. Status uses text and icons as well as AstrBot theme colors. The workspace and its dialogs disable transitions and animations when the system requests reduced motion. Import bindings and nested panels follow the same spacing, rounding and narrow-screen rules.
+On narrow screens, expand the collapsed toolbox or properties heading when needed; selecting a node exposes its properties. Toolbars wrap and dialog actions stay in their action area. Tasks, requests and artifacts stack vertically, and long names wrap. Status uses text and icons as well as AstrBot theme colors. The workspace and its dialogs disable transitions and animations when the system requests reduced motion. Import resource selections and nested panels follow the same spacing, rounding and narrow-screen rules.
 
 ![The actual canvas in the dark theme](/images/agent-workbench-dark-en.jpg)
 
@@ -71,33 +87,13 @@ On narrow screens, expand the collapsed toolbox or properties heading when neede
 
 ## Move a complete nested asset to another instance
 
-Package import and export for directly configured Agents is being updated; the instructions below describe the existing pinned-role package flow.
+On instance A, choose **Assets → Teams / Workflows → Export asset JSON** and download the package. Version 3 includes the entry's exact nested team and workflow versions, pinned roles, inline configurations and their explicit resource requirements. It preserves inherited, null and empty selections. Credentials, resource content, authorization, conversations and run history are not exported. Older slot-based packages are rejected; rebuild them in the current format.
 
-![Actual nested-package and local-dependency preview](/images/agent-workbench-import-en.jpg)
+On instance B, open **Import asset package**, paste or select the JSON, and choose **Validate and preview**. For every source profile, model, persona, tool, skill and knowledge base, select a compatible local resource explicitly, even when its ID matches the source. Review disabled candidates and their reasons, effective configuration and source fields. A different source fingerprint is a prompt to review, and a compatible local model may still be selected. Profile permissions and resource availability are checked again at confirmation. Configure missing resources on the target instance before retrying.
 
-In instance A, choose **Assets → Teams / Workflows → Export asset JSON** on a single-task workflow, canvas workflow or autonomous team. Review the actual included prompts and complete JSON, then choose **Download JSON**. Resolve missing source resources before exporting. The versioned `astrbot.workflow` package includes its identity, fixed role versions, contracts, conditions, bounded loops, layout and logical dependencies. Format 2 includes the complete closure of exact team and workflow versions; a child never relies on an asset that exists only on the source machine. Existing format 1 single-layer packages remain supported. Effective inherited prompts and resource allowlists are made explicit; `prompt_source` identifies whether the included prompt came from a role, persona, profile or task override. Knowledge-base content, credentials, local binding IDs, conversations and run history are excluded.
+![Resource choices and effective configuration in an isolated component example](/images/agent-teams-package-resources-en.jpg)
 
-In instance B, choose **Assets → Teams / Workflows → Import asset package**. Select the JSON file or paste its complete contents, then choose **Validate and preview**. Format, contracts, all pinned references, return tasks, depth, cycles and loop limits are validated before any installation. Unknown format versions and script fields are rejected. **Included exact asset versions** lists each definition and whether confirmation will install it, reuse identical content or add a new version.
-
-Review the included prompts and expand **Review complete definition, contracts, layout and dependencies**. Each role groups its local profile and resource slots, retaining original logical purposes and resource descriptions. Review the required tool input schema and the selected candidate's description and schema; a declared tool input schema must match. Model automatic matching requires the same declared adapter, model and source fingerprint, required capabilities and a unique candidate; profiles must permit a compatible model and satisfy the runner requirements. Matching display names never establishes equivalence. Resources without source evidence, including tools, skills and knowledge bases, require deliberate local review and selection. Local profile and persona restrictions still apply; the package grants no access. **Configure local resources** opens the existing configuration area when a candidate is missing; install required plugins or configure services yourself.
-
-Readiness and every new launch recheck all declared package dependencies, including base resources that a task override does not use. Rebuilding the services retains these requirements. Running tasks also recheck the original package requirements and their frozen bindings before further external work, including after a human wait, pause or checkpoint recovery. If a bound resource keeps its ID but changes to an incompatible model source or tool input schema, execution is blocked. Restore the original compatible resource before continuing or retrying the affected task. Editing the asset or rebinding its current installation only affects new runs; it does not replace an existing run's frozen bindings or rewrite its snapshot.
-
-An independently exported child keeps its role defaults and explicit tool, skill and knowledge-base requirements. Task-only requirements belong to the exact asset that uses them. Adding a tool override to a new parent version therefore reuses unchanged children and retains their compatible saved bindings. Different effective requirements use separate local installations, including coordinator capabilities. Explicit unused requirements and legacy declarations still require compatible, authorized bindings; they do not expand executable allowlists. If tasks supply a missing role prompt, each included task retains its own complete instructions.
-
-Dependency review also checks reused installations. An unavailable resource can be replaced automatically when its verified source has one compatible match. Compatible saved choices are retained; if reused installations have different compatible choices, select and confirm the shared binding before installation. Missing or ambiguous choices remain unready. Saving pending configuration keeps existing bindings for unresolved fields, including when the dialog sends its preview proposals. New bindings affect future runs; existing runs keep their frozen choices. A child reached through several paths must satisfy the depth limits of every path.
-
-If a package pins another version of its own entry asset, installation keeps that child reference exact and makes the selected entry the default local version for editing and new runs.
-
-Dependency selections stay with the reviewed package until you edit or replace its JSON. Preview checks loop iterations and distinct member counts against the effective role settings, including inherited values from the selected local profile. Choose a compatible profile or correct the source asset when a limit blocks installation.
-
-Every included member's own depth limit is checked at its reference depth, including terminal members and shared children reached by different paths. Nullable depth limits inherit the selected local profile. The coordinator's limit also bounds its declared child calls; other members retain their own placement limits. Readiness and new launches of imported entries validate the current definition's full closure, including later local versions. Ordinary local entries retain their runtime call-boundary checks. A parent saved pending configuration remains blocked until its closure is ready; an independently valid child can still run from its own entry. A pending upgrade or independent package sharing a role keeps its graph limits separate from an unchanged valid version. Each launch checks its selected pinned closure and the original portable resource requirements.
-
-An incompatibility found after a model response or at a tool/usage boundary remains a resource block with details of the affected binding. A genuine checkpoint or accounting storage failure still stops dependent work. After restoring the original resource, **Continue same attempt** reuses a complete saved response, including a streamed OpenAI response. **Retry failed task** creates a new Attempt and retains the blocked history.
-
-With all dependencies ready, choose **Confirm installation** once. Every included definition and reviewed local binding is saved in one transaction; validation or storage failure leaves no executable partial installation. Then use the asset's normal **Start Run** action and provide its declared inputs. If dependencies are missing or ambiguous, **Save pending configuration** retains the whole closure, and affected entries cannot start. Import the same JSON again to fill its local bindings; identical versions are reused. An upgrade appends a selectable local version under the same asset identity and remaps each child to its exact installed version. Conflicting content under the same asset or role identity and version is rejected. Existing runs, children, artifacts and approvals keep their original snapshots, including after restart. Editing a local role version does not remove the original imported compatibility requirements or current permission checks.
-
-The existing **Assets → Teams / Workflows → Edit Asset / Start Run** entries remain. **Export workflow JSON / Import workflow package → Export asset JSON / Import asset package** now covers nested teams and workflows from the same workspace. These controls use the shared asset, readiness and run services. Importing does not execute package scripts, install plugins or deploy models and services. Historical HTML demo exports are design examples, with no production format compatibility promise.
+Choose **Confirm installation** when all requirements are ready. The complete closure and import receipts are committed together; failure leaves no partial installation. Identical reimports reuse their fixed identities; a different definition or local selection for an already imported source version is rejected. The resulting local definitions contain actual local IDs and use the normal **Start Run** action. Re-export reads those local definitions. Imports do not install plugins or services, grant chat access or run package scripts.
 
 ## Explicit invocation from ordinary chat
 
@@ -149,13 +145,19 @@ Waiting releases active execution capacity, including at a concurrency limit of 
 
 For the versioned autonomous path, **team sidebar / Run Monitor → Assets → Teams → New Autonomous Team / Runs → View Run**. Member communication and workflow calls to autonomous teams use the versioned paths described below.
 
+## Fixed child calls on the canvas
+
+Add a saved workflow or autonomous team from the canvas toolbox, then select its fixed version in the node properties. Map every declared input to a workflow input or an upstream field. The node exposes the pinned asset’s public output contract; the child workflow chooses its own result at its output node. Each call runs in a separate scope and receives only the mapped values. In the run workspace, select the call and open its child scope to inspect its tasks and results.
+
+![Fixed child asset calls on the workflow canvas](/images/agent-teams-nested-assets-en.jpg)
+
 ## Coordinator calls to saved workflows
 
-In **Assets → Teams → New Autonomous Team / Edit Asset → Allowed workflows**, choose **Allow a saved workflow**. Select its **Pinned workflow version** and **Return task**. The panel shows that version's required text inputs and the return task's output contract. Single-task workflows return their **result** task; canvas workflows return the task you select. Save the team as a new version. Workflows omitted from this list remain unavailable to its coordinator.
+In **Assets → Teams → New Autonomous Team / Edit Asset → Allowed workflows**, choose **Allow a saved workflow**. Select its **Pinned workflow version**. The panel shows that version's required text inputs and public output contract. A workflow returns the task selected by its own output node. Save the team as a new version. Workflows omitted from this list remain unavailable to its coordinator.
 
 Set **Root nesting depth limit** and **Maximum concurrent tasks**, then choose **Start Run** and enter the goal. The coordinator may call an allowed workflow with every declared input and optional visible, exact artifact references. Each call creates independent members; parent conversations and unrelated artifacts are not inherited. The coordinator waits for the call's task, then reads its complete result and immutable artifact. The chosen return task must have a validated result; a skipped return requires attention even if the workflow's other paths completed.
 
-In **Runs → View Run**, select the coordinator and choose **View child workflow** beside its call. This route also works for coordinators inside a nested team. The call shows the returned result, its own artifact and the exact child return reference. Choose **View child workflow** again to inspect the child tasks, or expand **Child scope** to see the saved workflow graph. **Human requests**, progress and **Saved member process** show the actual tasks and their waits, attempts and tool results.
+In **Runs → View Run**, select the coordinator and choose **View child workflow** beside its call. This route also works for coordinators inside a nested team. The call shows the returned result and the exact original child artifact reference. Choose **View child workflow** again to inspect the child tasks, or expand **Child scope** to see the saved workflow graph. **Human requests**, progress and **Saved member process** show the actual tasks and their waits, attempts and tool results.
 
 Waiting releases the shared root capacity, so calls can finish with concurrency one. Team and workflow nesting share one bounded depth; role limits still apply. Whole-run pause, continue and cancellation reach the child workflow. A local human or failed branch leaves independent branches free to proceed. Continue keeps local waits; use the selected task's normal same-Attempt recovery or unknown-tool decision when required. Saved tool results are reused after a restart, and unknown external effects remain stopped for confirmation.
 
@@ -260,14 +262,26 @@ You can save a verified result, verified failure, explicit tool retry or reconci
 
 ## Human requests and version approval
 
+A running Agent may ask a dynamic choice in the same inbox. Read its context and recommendation, select an option and optionally add a note, or choose your own answer and enter text. Each question is answered separately. The selected label and note remain visible after the original tool consumes the answer.
+
+![Dynamic choice component with sample data](/images/agent-teams-dynamic-choice-en.jpg)
+
+This component preview uses sample data; it does not demonstrate a backend integration test.
+
 1. Open **Assets → Workflows → New Workflow / Edit Asset**. Add **Human question** or **Version approval** from **Role toolbox**. Human nodes require no model or role. Enter the question, allowed answers (one per line, or empty for free text) and maximum answer length.
 2. For approval, select the upstream **Artifact task** and exact **Artifact version**, and connect the artifact task as a dependency. Save a new asset version and start it; existing runs retain their definition.
-3. Open **Runs → View Run → Human requests**. Questions, constraints, task, Attempt and approval references persist. Waiting releases capacity and blocks only dependent paths. Independent branches continue; select their progress entries to read results.
-4. Choose or enter an answer and select **Submit answer**. For approval, first **Preview approval version** to read the complete pinned content, then **Approve this version**. Files can be previewed. **Reject with feedback** requires feedback, preserves rejection evidence and blocks the affected path. This does not create a revision loop.
+3. Open **Runs → View Run → Human requests**. Questions, constraints, task, Attempt and approval references persist. An optional recommendation and reason come from explicitly selected upstream Agent fields. Waiting releases capacity and blocks only dependent paths. Independent branches continue; select their progress entries to read results.
+4. Choose or enter an answer and select **Submit answer**. For approval, first **Preview approval version** to read the complete pinned content, then **Approve this version**. Files can be previewed. **Return for revision** requires a preview and feedback. Connect the approval node’s named Approve and Reject outlets to explicit paths; rejection does not rerun the author. Place the author and approval in a bounded loop and map the rejection feedback to the next round for rework.
 5. **Export approved version** downloads JSON containing complete content and exact file references; after previewing, download files of that version. File downloads for an artifact governed by an approval node reject unapproved versions. Creating v2 never inherits v1 approval, changes its preview or automatically reruns downstream tasks.
 6. Refresh or reopen after restart to continue handling requests. Repeated identical answers are consumed once; another answer cannot replace one already saved. You may answer while globally paused: **Response saved. It will be consumed after the whole run continues.** Continuing preserves unanswered requests; cancellation retains requests and response history while preventing further consumption. Ordinary task retry cannot replace human answers.
 
 If the requested revision does not exist yet, the request retains that exact version; preview and approval explain that it is unavailable. Explicitly create the required revision on the artifact task, then preview and approve the original request. The service does not substitute v1 or the latest version, and no new Attempt is needed.
+
+![Named approval and return outlets in the canvas](/images/agent-teams-approval-canvas-en.jpg)
+
+![Approval request and its pinned version in an isolated component example](/images/agent-teams-approval-en.jpg)
+
+This screenshot uses sample data in the actual component; it is not a full backend integration run.
 
 ## Single-task assets
 
@@ -288,6 +302,12 @@ Switching or closing the page does not stop core execution. Refreshing a URL wit
 
 ## Configure a bounded review and revision loop
 
+![Bounded loop configuration with sample data](/images/agent-teams-bounded-loops-en.jpg)
+
+The screenshot shows the actual editor component with sample data.
+
+Choose the exit and feedback fields from the required scalar outputs of each task. The summary shows each previous-round result and its next-round input; expanding an iteration shows its actual feedback inputs and pinned result.
+
 Open **Agent Teams → Assets → Workflows → New Workflow / Edit Asset**. Configure the writer and independent review tasks, an acyclic dependency from writer to reviewer, and the review output contract with a required Boolean `approved` field. Use **Add bounded loop** to choose the explicit body, exit result task, field comparison (`approved eq true`) and maximum iterations (1–100, within the effective member limit). Arbitrary expressions, graph back edges, overlapping bodies and a body that leaves and reenters its group are rejected before execution.
 
 For the writer, declare first-round draft and feedback inputs. Under the loop, **Add feedback input** explicitly maps the previous writer's text to the next writer's draft and the previous review's text to its feedback. Ordinary dependency inputs within each round read that round's output. Collapse or expand the body to inspect the group on the actual canvas. Saving appends an asset version; existing runs retain their definition and configuration.
@@ -301,6 +321,14 @@ If conditions skip the entire first-round body, the loop and round show **Skippe
 Optional conditional body paths may be skipped when the exit still produces a passing validated result. If a rejected exit needs feedback from a skipped task, the loop requires attention because that round has no result to pin.
 
 A loop runs independently without a human node. To confirm a report, add a **Version approval** task after its review dependency and select the writer artifact task. The todo pins the passing iteration's concrete artifact. Export uses that approved reference. New manual revisions never automatically reschedule consumers or inherit old approvals.
+
+## Inspect actual model context
+
+Open **Runs → View Run**, select a task, and expand **Actual model context** on a model delivery. The message roles and text, model and tool schemas reflect the final request observed immediately before the built-in provider call. Parameter and repair calls have their own receipt and context. Expand the assembly sources and plugin injection trail to see the persona, role, task, explicit input framing, skills and retrieved knowledge that were actually assembled. These sources precede plugin changes and do not guarantee that every fragment survived replacement or trimming.
+
+Records have an 8192-character content budget; the panel identifies truncation and the original record length. Binary media is omitted, remote media URLs are stripped of credentials and query/fragment, and local paths without an authorized file reference are omitted. An absent persona is shown as absent; older runs and remote executors may not provide context. Context follows the run owner's existing permissions: permission to answer a human request does not grant access to the owner's process. Reading the process does not inject it into downstream agents.
+
+![Actual model context with assembly sources](/images/agent-teams-actual-context-en.jpg)
 
 ## Executor readiness and remote recovery
 
@@ -339,12 +367,10 @@ An exhausted limit stops new calls and exposes the limit, value and affected tas
 1. In **Assets → Workflows**, prepare a report workflow with a research child call, a bounded writer/reviewer loop and a final **Version approval** task. The research team can call a saved graph with two independent researchers followed by an evidence editor. Configure the allowed workflows on its coordinator. Pin every role and child asset version, declare `topic` and `feedback` inputs, and explicitly map the previous draft and review into the next loop round.
 2. Start the report from its asset card. In **Runs → View Run**, inspect the research child scopes and the writer/reviewer rounds. A failed first review must lead to a revised draft and another review; an exhausted loop needs attention rather than reporting success. The final human request identifies the actual artifact ID and version. A second loop round can create a different artifact at version 1: the round number is not the artifact version.
 3. Choose **Preview approval version** and inspect its complete text and file. Approve that specific version, then use **Export approved version** and **Download file · filename** in the same human request. The file preview dialog is for reading; close it to return to the download button. The exported artifact and Markdown must refer to the approved object; approving an earlier draft does not approve another revision.
-4. Export the root asset with **Export asset JSON**. On an isolated instance B with different local resource IDs, use **Import asset package → Validate and preview**. Resolve any ambiguous profile or missing resource in the grouped dependency form. Compatible unambiguous dependencies need no manual replacement. **Confirm installation** installs the pinned nested closure in one transaction; it does not start the report. Start the imported root with the same inputs and handle its own human approval. Closing its browser page leaves the server run and its pending request intact; reopen the run link to continue.
+4. Export the root asset with **Export asset JSON**. On an isolated instance B with different local resource IDs, use **Import asset package → Validate and preview**. Choose a local resource for every source requirement in the dependency form, including matching IDs. **Confirm installation** installs the pinned nested closure in one transaction; it does not start the report. Start the imported root with the same inputs and handle its own human approval. Closing its browser page leaves the server run and its pending request intact; reopen the run link to continue.
 5. To use the same asset from ordinary chat, open **Chat access** on the configured root and grant the intended platform sender/source. In that source, `/asset whoami` shows the identity to grant. Use the invocation syntax shown by the card, supply required inputs after any clarification, and follow the accepted run link. Confirm the browser challenge from that same source using `/asset connect <challenge>`. The source identity can read and answer its own human requests and receive its final result without gaining the owner's process or configuration access.
 
 ![Actual report approval bound to its exact artifact and version](/images/agent-teams-report-t25-en.jpg)
-
-![Actual import dependency choices on instance B](/images/agent-teams-import-t25-en.jpg)
 
 The report must use real provider/tool resources in your installation. The documented QA screenshots use isolated instances and controlled external model responses; their sample report is test content. Recovery and unknown-effect handling retain the executor limits described above.
 
@@ -371,3 +397,13 @@ The report must use real provider/tool resources in your installation. The docum
 | New workflows had no persistent human entry | Assets → Workflows → Edit Asset → Human question / Version approval; Runs → View Run → Human requests. |
 
 Single-task assets remain compatible. Dependency assets provide acyclic scheduling, field conditions and persistent human requests through the same task result protocol. Bounded revision loops and autonomous teams share the same scheduler. Unknown tool decisions are available inside the selected task's process details.
+
+## Human wait deadlines
+
+Human questions and approvals wait indefinitely by default. Set a deadline on the human node and choose whether to keep waiting or automatically use the valid recommendation shown when the request was created. For dynamic choices, configure the asking role or Agent’s human wait policy. Template-based Agents can inherit the fixed template policy or override it, including resetting it to indefinite waiting. This setting is independent of ordinary chat timeouts.
+
+The todo displays the persisted deadline and decision source. Missing or invalid recommendations, or unavailable evidence, leave the request waiting for a person. No new model decision is requested at the deadline.
+
+The saved deadline survives restarts. While a run is paused, a valid decision may be recorded but is consumed only after continuing. Cancelling closes the request. Deadline processing runs even when no Dashboard page is open.
+
+![Human wait policy and persisted decision status](/images/agent-teams-human-deadlines-en.jpg)

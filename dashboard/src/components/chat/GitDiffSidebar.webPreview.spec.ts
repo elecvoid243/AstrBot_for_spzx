@@ -127,6 +127,38 @@ beforeEach(() => {
 });
 
 describe("GitDiffSidebar web preview tab", () => {
+  it("hides branch and worktree controls in both browser modes and restores them in Files", async () => {
+    const getDefault = getMock.getMockImplementation()!;
+    getMock.mockImplementation(async (path: string, ...args: unknown[]) => {
+      if (path === "spcode/git-worktrees") {
+        return okEnvelope({
+          loaded: true,
+          directory: "F:/github/testproj",
+          worktrees: [{ path: "F:/github/testproj", branch: "all", is_main: true }],
+        });
+      }
+      return getDefault(path, ...args);
+    });
+    const wrapper = mount(GitDiffSidebar, {
+      props: { modelValue: true, chatId: "chat-menu" },
+      global: { stubs: { ...STUBS, "v-menu": MenuStub } },
+    });
+    try {
+      await flushPromises();
+      expect(wrapper.find(".git-diff-sidebar-bw").exists()).toBe(true);
+      for (const mode of ["preview", "agent"]) {
+        await wrapper.get(`.browser-mode-${mode}`).trigger("click");
+        await flushPromises();
+        expect(wrapper.find(".git-diff-sidebar-bw").exists()).toBe(false);
+      }
+      await tabButtons(wrapper)[0].trigger("click");
+      await flushPromises();
+      expect(wrapper.find(".git-diff-sidebar-bw").exists()).toBe(true);
+    } finally {
+      wrapper.unmount();
+    }
+  });
+
   it("switches browser modes from the Web Preview tab's attached menu", async () => {
     const wrapper = mount(GitDiffSidebar, {
       props: { modelValue: true, chatId: "chat-menu" },

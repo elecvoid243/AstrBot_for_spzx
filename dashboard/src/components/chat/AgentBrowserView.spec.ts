@@ -406,6 +406,37 @@ describe("Agent browser snapshots", () => {
       expect(socket.sent.filter((x) => x.operation === "wheel")).toHaveLength(
         1,
       );
+      // Keep the image visible during a metadata gap, without accepting its coordinates.
+      const moved = {
+        ...frame,
+        sequence: 7,
+        scroll_y: 100,
+        position_revision: 1,
+        applied_input_id: 3,
+        width: 1280,
+        height: 720,
+      };
+      stream.enqueue(
+        new TextEncoder().encode(
+          `data: ${JSON.stringify({ ...moved, type: "state", image: undefined })}\n\n`,
+        ),
+      );
+      await flushPromises();
+      expect(view.get("img").element).toBe(image.element);
+      expect(view.get("img").attributes("src")).toContain("new-pixels");
+      await image.trigger("load");
+      await image.trigger("click", { clientX: 330, clientY: 200, detail: 1 });
+      expect(view.attributes("data-frame-input")).toBeUndefined();
+      expect(socket.sent.filter((x) => x.operation === "click")).toHaveLength(1);
+      stream.enqueue(
+        new TextEncoder().encode(
+          `data: ${JSON.stringify({
+            ...moved, type: "frame", image: "new-pixels", sequence: 8,
+          })}\n\n`,
+        ),
+      );
+      await flushPromises();
+      expect(view.attributes("data-frame-input")).toBe("3");
       await image.trigger("wheel", {
         clientX: 330,
         clientY: 200,
@@ -765,6 +796,37 @@ describe("Agent browser snapshots", () => {
     expect(view.find("img").exists()).toBe(true);
     view.unmount();
   });
+  it("keeps a healthy stream and its image without periodically fetching snapshots", async () => {
+    vi.useFakeTimers();
+    get.mockResolvedValueOnce(ok(current)).mockResolvedValueOnce(
+      ok({ ...current, sequence: 1, image: "pixels", mime_type: "image/jpeg" }),
+    );
+    const view = mount(AgentBrowserView, {
+      props: { chatId: "chat-1", visible: true },
+    });
+    try {
+      await flushPromises();
+      const image = view.get("img").element;
+      stream.enqueue(
+        new TextEncoder().encode(
+          `data: ${JSON.stringify({ ...current, type: "state", sequence: 2 })}\n\n`,
+        ),
+      );
+      await flushPromises();
+      for (let index = 0; index < 6; index += 1) {
+        await vi.advanceTimersByTimeAsync(5000);
+        stream.enqueue(new TextEncoder().encode(": heartbeat\n\n"));
+        await flushPromises();
+        expect(view.attributes("data-connection")).toBe("live");
+        expect(view.get("img").element).toBe(image);
+      }
+      expect(get).toHaveBeenCalledTimes(2);
+      expect(fetchStream).toHaveBeenCalledTimes(1);
+    } finally {
+      view.unmount();
+    }
+  });
+
   it("recovers a half-open stream after missing heartbeats", async () => {
     vi.useFakeTimers();
     get
@@ -967,6 +1029,7 @@ describe("Agent browser snapshots", () => {
         props: { chatId: "chat-1", visible: true },
       });
       await flushPromises();
+      const retainedImage = view.get("img").element;
       const emit = async (event: unknown) => {
         stream.enqueue(
           new TextEncoder().encode(`data: ${JSON.stringify(event)}\n\n`),
@@ -995,7 +1058,10 @@ describe("Agent browser snapshots", () => {
         recent_actions: [action],
         highlight,
       });
-      expect(view.find("img").exists()).toBe(false);
+      expect(view.get("img").element).toBe(retainedImage);
+      expect(view.get("img").attributes("src")).toContain("OLD_SCROLL_PIXELS");
+      expect(view.find(".agent-browser-empty").exists()).toBe(false);
+      expect(view.attributes("data-frame-input")).toBeUndefined();
       expect(view.find(".agent-browser-target").exists()).toBe(false);
       // A late old-space frame must not acquire the new-space marker.
       await emit({

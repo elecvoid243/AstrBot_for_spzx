@@ -84,6 +84,9 @@
       "cancelled": "已取消"
     },
     "keyboardInput": "远程浏览器键盘输入",
+    "clickToType": "人工控制 · 点击画面输入",
+    "viewInfo": "浏览器状态与操作说明",
+    "syncingFrame": "正在同步画面…",
     "keyboardHint": "单击画面后输入；仅显式粘贴纯文本（最多 4096 UTF-8 字节）。交还后 Agent 仍可读取页面可见内容。",
     "leaveKeyboard": "退出键盘控制",
     "textTooLarge": "文本超过 2048 字符或 4096 UTF-8 字节上限。",

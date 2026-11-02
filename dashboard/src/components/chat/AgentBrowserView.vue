@@ -35,6 +35,7 @@ import {
   ChevronDown,
   Maximize2,
   Minimize2,
+  KeyboardOff,
 } from "@lucide/vue";
 import { useI18n } from "@/i18n/composables";
 import { browserControlApi, pluginExtensionApi } from "@/api/v1";
@@ -151,6 +152,25 @@ const browserImage = ref<HTMLImageElement | null>(null);
 // retain its pixels but cannot advance their input, epoch or capture sequence.
 const imageFrame = ref<BrowserState | null>(null);
 const displayedFrame = ref<BrowserState | null>(null);
+// Keep same-document pixels on screen while new coordinates await a capture.
+// They never become the input target: displayedFrame still clears on movement.
+const visibleFrame = computed(() => {
+  if (state.value?.image) return state.value;
+  if (
+    state.value?.available &&
+    !["closed", "disabled", "stopped"].includes(
+      state.value.execution_state || "",
+    ) &&
+    imageFrame.value?.image &&
+    ["generation", "browser_session_id", "tab_id", "document_id", "url"].every(
+      (field) =>
+        state.value?.[field as keyof BrowserState] ===
+        imageFrame.value?.[field as keyof BrowserState],
+    )
+  )
+    return imageFrame.value;
+  return null;
+});
 const inputCount = ref(0);
 const awaitingFrame = ref(false);
 const frameLatency = ref<number | null>(null);
@@ -782,6 +802,48 @@ const stateIcons: Record<string, Component> = {
   stopped: Square,
   closed: Monitor,
 };
+const controlNotice = computed(() => {
+  if (controlError.value) return t(`${key}.controlFailed`);
+  if (manualPending.value) return t(`${key}.changingControl`);
+  if (connection.value === "stopped") return t(`${key}.stoppedHint`);
+  const message = manualMessage.value;
+  if (
+    message &&
+    ![t(`${key}.humanActive`), t(`${key}.manualDisconnected`)].includes(message)
+  )
+    return message;
+  if (!humanControl.value && state.value?.control_mode === "human")
+    return t(`${key}.controlOccupied`);
+  if (
+    !humanControl.value &&
+    state.value?.control_mode === "paused" &&
+    state.value?.execution_state === "active"
+  )
+    return t(`${key}.controlPaused`);
+  if (message === t(`${key}.manualDisconnected`)) return message;
+  if (resynchronized.value) return t(`${key}.resynchronized`);
+  return "";
+});
+const captionMessage = computed(() => {
+  if (controlNotice.value) return controlNotice.value;
+  if (!humanControl.value)
+    return t(
+      `${key}.${
+        visibleFrame.value && !state.value?.image ? "syncingFrame" : "readOnly"
+      }`,
+    );
+  return t(
+    `${key}.${
+      inputCount.value
+        ? "inputPending"
+        : awaitingFrame.value || !state.value?.image || !displayedFrame.value
+        ? "waitingFrame"
+        : keyboardFocused.value
+        ? "frameReady"
+        : "clickToType"
+    }`,
+  );
+});
 
 /**
  * Follow one authorized lifetime after applying its consistent snapshot.
@@ -1185,81 +1247,19 @@ onBeforeUnmount(() => {
     :data-frame-latency="frameLatency"
   >
     <header class="agent-browser-toolbar">
-      <div class="agent-browser-heading">
-        <Globe :size="15" class="agent-browser-brand" aria-hidden="true" />
+      <div class="agent-browser-address" :title="state?.title">
+        <span
+          class="agent-browser-status-dot"
+          :title="t(`${key}.connectionStates.${connection}`)"
+          :aria-label="t(`${key}.statusLabels.${connection}`)"
+          role="status"
+        />
         <strong class="agent-browser-page" :title="state?.title">{{
           state?.title || t(`${key}.title`)
         }}</strong>
-        <span
-          class="agent-browser-status"
-          :title="t(`${key}.connectionStates.${connection}`)"
-          aria-live="polite"
-        >
-          <span class="agent-browser-status-dot" aria-hidden="true" />
-          {{ t(`${key}.statusLabels.${connection}`) }}
-        </span>
-        <div class="agent-browser-controls">
-          <button
-            type="button"
-            class="agent-browser-takeover agent-browser-button"
-            :disabled="
-              !state?.available ||
-              state?.manual_control_version !== 1 ||
-              state?.execution_state === 'stopped' ||
-              (!humanControl &&
-                ['human', 'acquiring'].includes(state?.control_mode || '')) ||
-              manualPending ||
-              controlling
-            "
-            :title="
-              state?.manual_control_version === 1
-                ? undefined
-                : t(`${key}.upgradeControl`)
-            "
-            @click="humanControl ? releaseControl() : acquireControl()"
-          >
-            {{ t(`${key}.${humanControl ? "handBack" : "takeOver"}`) }}
-          </button>
-          <button
-            type="button"
-            class="agent-browser-stop agent-browser-button"
-            :title="t(`${key}.stop`)"
-            :aria-label="t(`${key}.stop`)"
-            :disabled="
-              !state?.available ||
-              state?.execution_state === 'stopped' ||
-              controlling
-            "
-            @click="control('stop')"
-          >
-            <Square :size="13" aria-hidden="true" />
-          </button>
-          <button
-            type="button"
-            class="agent-browser-close agent-browser-button"
-            :title="t(`${key}.close`)"
-            :aria-label="t(`${key}.close`)"
-            :disabled="!state?.available || controlling"
-            @click="control('close')"
-          >
-            <X :size="15" aria-hidden="true" />
-          </button>
-        </div>
-      </div>
-      <div class="agent-browser-address">
-        <Globe :size="14" aria-hidden="true" />
         <span class="agent-browser-url" :title="state?.url">{{
           state?.url || t(`${key}.waitingUrl`)
         }}</span>
-        <span
-          v-if="state?.tab_id"
-          class="agent-browser-meta"
-          :title="`${t(`${key}.tab`)} ${state.tab_id}`"
-        >
-          <PanelsTopLeft :size="12" aria-hidden="true" />{{
-            state.tab_id.slice(-4)
-          }}
-        </span>
         <button
           class="agent-browser-refresh"
           type="button"
@@ -1276,56 +1276,54 @@ onBeforeUnmount(() => {
           />
         </button>
       </div>
+      <div class="agent-browser-controls">
+        <button
+          type="button"
+          class="agent-browser-takeover agent-browser-button"
+          :disabled="
+            !state?.available ||
+            state?.manual_control_version !== 1 ||
+            state?.execution_state === 'stopped' ||
+            (!humanControl &&
+              ['human', 'acquiring'].includes(state?.control_mode || '')) ||
+            manualPending ||
+            controlling
+          "
+          :title="
+            state?.manual_control_version === 1
+              ? undefined
+              : t(`${key}.upgradeControl`)
+          "
+          @click="humanControl ? releaseControl() : acquireControl()"
+        >
+          {{ t(`${key}.${humanControl ? "handBack" : "takeOver"}`) }}
+        </button>
+        <button
+          type="button"
+          class="agent-browser-stop agent-browser-button"
+          :title="t(`${key}.stop`)"
+          :aria-label="t(`${key}.stop`)"
+          :disabled="
+            !state?.available ||
+            state?.execution_state === 'stopped' ||
+            controlling
+          "
+          @click="control('stop')"
+        >
+          <Square :size="13" aria-hidden="true" />
+        </button>
+        <button
+          type="button"
+          class="agent-browser-close agent-browser-button"
+          :title="t(`${key}.close`)"
+          :aria-label="t(`${key}.close`)"
+          :disabled="!state?.available || controlling"
+          @click="control('close')"
+        >
+          <X :size="15" aria-hidden="true" />
+        </button>
+      </div>
     </header>
-
-    <div v-if="manualPending" role="status" class="agent-browser-notice">
-      {{ t(`${key}.changingControl`) }}
-    </div>
-    <div v-else-if="manualMessage" role="status" class="agent-browser-notice">
-      {{ manualMessage }}
-    </div>
-    <div
-      v-if="!humanControl && state?.control_mode === 'human'"
-      role="status"
-      class="agent-browser-notice agent-browser-occupied"
-    >
-      {{ t(`${key}.controlOccupied`) }}
-    </div>
-    <div
-      v-else-if="
-        !humanControl &&
-        state?.control_mode === 'paused' &&
-        state?.execution_state === 'active'
-      "
-      role="status"
-      class="agent-browser-notice agent-browser-paused"
-    >
-      {{ t(`${key}.controlPaused`) }}
-    </div>
-
-    <div
-      v-if="controlError"
-      role="alert"
-      class="agent-browser-notice agent-browser-notice--error"
-    >
-      <CircleAlert :size="15" aria-hidden="true" /><span>{{
-        t(`${key}.controlFailed`)
-      }}</span>
-    </div>
-    <div
-      v-if="connection === 'stopped'"
-      role="status"
-      class="agent-browser-notice agent-browser-notice--warning"
-    >
-      <Info :size="15" aria-hidden="true" /><span>{{
-        t(`${key}.stoppedHint`)
-      }}</span>
-    </div>
-    <div v-if="resynchronized" role="status" class="agent-browser-notice">
-      <RefreshCw :size="14" aria-hidden="true" /><span>{{
-        t(`${key}.resynchronized`)
-      }}</span>
-    </div>
 
     <Teleport to="body" :disabled="!fullscreen">
       <div
@@ -1337,13 +1335,10 @@ onBeforeUnmount(() => {
         :aria-label="fullscreen ? t(`${key}.title`) : undefined"
       >
         <div
-          v-if="fullscreen && manualMessage"
+          v-if="!visibleFrame?.image"
           role="status"
-          class="agent-browser-notice"
+          class="agent-browser-empty"
         >
-          {{ manualMessage }}
-        </div>
-        <div v-if="!state?.image" role="status" class="agent-browser-empty">
           <span class="agent-browser-empty-icon">
             <component
               :is="stateIcons[connection] || Globe"
@@ -1366,10 +1361,10 @@ onBeforeUnmount(() => {
           <div
             class="agent-browser-viewport"
             :style="
-              fullscreen && state?.width && state?.height
+              fullscreen && visibleFrame?.width && visibleFrame?.height
                 ? {
                     width: `min(100%, calc(100cqh * ${
-                      state.width / state.height
+                      visibleFrame.width / visibleFrame.height
                     }))`,
                   }
                 : undefined
@@ -1377,13 +1372,16 @@ onBeforeUnmount(() => {
           >
             <img
               ref="browserImage"
-              :src="`data:${state.mime_type};base64,${state.image}`"
-              :width="state.width"
-              :height="state.height"
-              :alt="state.title || t(`${key}.title`)"
+              :src="`data:${visibleFrame.mime_type};base64,${visibleFrame.image}`"
+              :width="visibleFrame.width"
+              :height="visibleFrame.height"
+              :alt="state?.title || t(`${key}.title`)"
               :style="
                 humanControl
-                  ? { cursor: manualPending ? 'wait' : 'crosshair' }
+                  ? {
+                      cursor:
+                        manualPending || !state?.image ? 'wait' : 'crosshair',
+                    }
                   : undefined
               "
               draggable="false"
@@ -1418,44 +1416,48 @@ onBeforeUnmount(() => {
             />
           </div>
         </div>
-        <p v-if="humanControl" class="agent-browser-input-hint">
-          {{
-            t(
-              `${key}.${
-                state?.keyboard_input_version === 1
-                  ? "keyboardHint"
-                  : "upgradeKeyboard"
-              }`,
-            )
-          }}
-        </p>
-        <button
-          v-if="humanControl"
-          type="button"
-          class="agent-browser-leave agent-browser-button"
-          @click="windowBlurred"
-        >
-          {{ t(`${key}.leaveKeyboard`) }}
-        </button>
-        <p v-if="humanControl" role="status" class="agent-browser-input-hint">
-          {{
-            t(
-              `${key}.${
-                inputCount
-                  ? "inputPending"
-                  : state?.pointer_input_version !== 1
-                  ? "humanActive"
-                  : awaitingFrame || !state?.image || !displayedFrame
-                  ? "waitingFrame"
-                  : "frameReady"
-              }`,
-            )
-          }}
-          <span v-if="state?.pointer_input_version !== 1">
-            · {{ t(`${key}.upgradePointer`) }}</span
-          >
-        </p>
         <footer class="agent-browser-caption">
+          <span
+            class="agent-browser-notice"
+            :class="{
+              'agent-browser-notice--error': controlError,
+              'agent-browser-occupied':
+                !humanControl && state?.control_mode === 'human',
+              'agent-browser-paused':
+                !humanControl && state?.control_mode === 'paused',
+            }"
+            :role="controlError ? 'alert' : 'status'"
+            :title="captionMessage"
+          >
+            <component
+              :is="
+                controlError
+                  ? CircleAlert
+                  : manualPending || inputCount
+                  ? LoaderCircle
+                  : humanControl
+                  ? MousePointer2
+                  : state?.control_mode === 'paused'
+                  ? Unplug
+                  : Eye
+              "
+              :size="12"
+              :class="{ 'is-spinning': manualPending || inputCount > 0 }"
+              aria-hidden="true"
+            />
+            <span class="agent-browser-caption-text">{{ captionMessage }}</span>
+          </span>
+          <button
+            v-if="humanControl && state?.keyboard_input_version === 1"
+            type="button"
+            class="agent-browser-leave agent-browser-button"
+            :title="t(`${key}.leaveKeyboard`)"
+            :aria-label="t(`${key}.leaveKeyboard`)"
+            :disabled="!keyboardFocused"
+            @click="windowBlurred"
+          >
+            <KeyboardOff :size="14" aria-hidden="true" />
+          </button>
           <button
             v-if="humanControl && fullscreen"
             type="button"
@@ -1465,20 +1467,49 @@ onBeforeUnmount(() => {
           >
             {{ t(`${key}.handBack`) }}
           </button>
-          <span
-            ><Eye :size="12" aria-hidden="true" />{{
-              t(`${key}.${humanControl ? "humanActive" : "readOnly"}`)
-            }}</span
-          >
-          <span v-if="state?.width" class="agent-browser-capture-meta">
-            <span
-              ><Scan :size="12" aria-hidden="true" />{{ state.width }} ×
-              {{ state.height }}</span
+          <details class="agent-browser-info">
+            <summary
+              class="agent-browser-button"
+              :title="t(`${key}.viewInfo`)"
+              :aria-label="t(`${key}.viewInfo`)"
             >
-            <span
-              ><Hash :size="11" aria-hidden="true" />{{ state.sequence }}</span
-            >
-          </span>
+              <Info :size="14" aria-hidden="true" />
+            </summary>
+            <div class="agent-browser-info-panel">
+              <p v-if="controlNotice">{{ controlNotice }}</p>
+              <p v-if="humanControl">
+                {{
+                  t(
+                    `${key}.${
+                      state?.keyboard_input_version === 1
+                        ? "keyboardHint"
+                        : "upgradeKeyboard"
+                    }`,
+                  )
+                }}
+              </p>
+              <p v-if="humanControl && state?.pointer_input_version !== 1">
+                {{ t(`${key}.upgradePointer`) }}
+              </p>
+              <p>{{ t(`${key}.connectionStates.${connection}`) }}</p>
+              <div v-if="state?.width" class="agent-browser-capture-meta">
+                <span
+                  ><Scan :size="12" aria-hidden="true" />{{ state.width }} ×
+                  {{ state.height }}</span
+                >
+                <span
+                  ><Hash :size="11" aria-hidden="true" />{{
+                    state.sequence
+                  }}</span
+                >
+                <span v-if="state?.tab_id"
+                  ><PanelsTopLeft :size="12" aria-hidden="true" />{{
+                    state.tab_id.slice(-4)
+                  }}</span
+                >
+              </div>
+            </div>
+          </details>
           <button
             ref="fullscreenButton"
             type="button"
@@ -1562,10 +1593,11 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   flex: 1 1 auto;
-  gap: 8px;
+  gap: 6px;
   min-height: 0;
   min-width: 0;
-  padding: 8px;
+  padding: 6px;
+  container-type: inline-size;
   overflow: auto;
   background: rgba(var(--browser-ink), 0.025);
   color: rgb(var(--browser-ink));
@@ -1606,13 +1638,11 @@ onBeforeUnmount(() => {
 .agent-browser-toolbar {
   flex: 0 0 auto;
   display: flex;
-  flex-direction: column;
-  gap: 3px;
-  padding: 5px 8px;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
 }
-.agent-browser-heading,
 .agent-browser-controls,
-.agent-browser-meta,
 .agent-browser-caption,
 .agent-browser-caption span,
 .agent-browser-actions-heading,
@@ -1620,37 +1650,18 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
 }
-.agent-browser-heading {
-  gap: 8px;
-  min-width: 0;
-}
-.agent-browser-brand {
-  flex: 0 0 auto;
-  color: rgb(var(--browser-accent));
-}
 .agent-browser-page {
-  flex: 1;
+  flex: 0 1 auto;
+  max-width: 32%;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 13px;
+  font-size: 11.5px;
   font-weight: 600;
 }
-.agent-browser-status {
-  display: flex;
-  align-items: center;
-  flex: 0 0 auto;
-  gap: 6px;
-  padding: 2px 7px;
-  border: 1px solid rgba(var(--browser-status), 0.12);
-  border-radius: 20px;
-  background: rgba(var(--browser-status), 0.07);
-  color: rgba(var(--browser-ink), 0.82);
-  font-size: 10.5px;
-  font-weight: 500;
-}
 .agent-browser-status-dot {
+  flex: 0 0 auto;
   width: 6px;
   height: 6px;
   border-radius: 50%;
@@ -1658,6 +1669,7 @@ onBeforeUnmount(() => {
 }
 .agent-browser-address {
   display: flex;
+  flex: 1;
   align-items: center;
   gap: 8px;
   min-width: 0;
@@ -1731,45 +1743,29 @@ onBeforeUnmount(() => {
   outline-offset: 2px;
 }
 .agent-browser-controls {
-  gap: 3px;
-}
-.agent-browser-meta {
   flex: 0 0 auto;
-  gap: 5px;
-  color: rgba(var(--browser-ink), 0.46);
-  font-size: 10.5px;
+  gap: 3px;
 }
 .agent-browser-notice {
   display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  flex: 0 0 auto;
-  padding: 10px 12px;
-  border: 1px solid rgba(var(--browser-accent), 0.13);
-  border-radius: 9px;
-  background: rgba(var(--browser-accent), 0.06);
-  color: rgba(var(--browser-ink), 0.76);
-  font-size: 11.5px;
-  line-height: 1.6;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+  gap: 6px;
+  color: rgba(var(--browser-ink), 0.62);
+  line-height: 20px;
 }
 .agent-browser-notice > svg {
   flex: 0 0 auto;
-  margin-top: 2px;
-  color: rgb(var(--browser-accent));
 }
 .agent-browser-notice--error {
-  border-color: rgba(var(--v-theme-error), 0.2);
-  background: rgba(var(--v-theme-error), 0.05);
-}
-.agent-browser-notice--error > svg {
   color: rgb(var(--v-theme-error));
 }
-.agent-browser-notice--warning {
-  border-color: rgba(var(--v-theme-warning), 0.25);
-  background: rgba(var(--v-theme-warning), 0.06);
-}
-.agent-browser-notice--warning > svg {
-  color: rgb(var(--v-theme-warning));
+.agent-browser-caption .agent-browser-caption-text {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .agent-browser-stage {
   display: flex;
@@ -1792,7 +1788,7 @@ onBeforeUnmount(() => {
   flex: 1;
   min-height: 0;
   overflow: auto;
-  padding: 8px;
+  padding: 3px;
   background: rgba(var(--browser-ink), 0.035);
   overscroll-behavior: contain;
 }
@@ -1810,8 +1806,7 @@ onBeforeUnmount(() => {
 }
 .agent-browser-takeover {
   width: auto;
-  min-width: 90px;
-  padding-inline: 8px;
+  padding-inline: 7px;
   white-space: nowrap;
   font-size: 11px;
 }
@@ -1843,14 +1838,16 @@ onBeforeUnmount(() => {
   overflow: hidden;
 }
 .agent-browser-caption {
+  position: relative;
   flex: 0 0 auto;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 6px;
-  padding: 3px 8px;
+  flex-wrap: nowrap;
+  min-width: 0;
+  min-height: 30px;
+  gap: 4px;
+  padding: 2px 6px;
   border-top: 1px solid rgba(var(--browser-ink), 0.06);
   color: rgba(var(--browser-ink), 0.46);
-  font-size: 10px;
+  font-size: 10.5px;
 }
 .agent-browser-handback {
   width: auto;
@@ -1861,9 +1858,43 @@ onBeforeUnmount(() => {
   gap: 5px;
 }
 .agent-browser-capture-meta {
-  margin-left: auto;
-  gap: 12px !important;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
   font-variant-numeric: tabular-nums;
+}
+.agent-browser-info {
+  flex: 0 0 auto;
+}
+.agent-browser-info summary {
+  list-style: none;
+}
+.agent-browser-info summary::-webkit-details-marker {
+  display: none;
+}
+.agent-browser-info[open] summary {
+  background: rgba(var(--browser-accent), 0.1);
+  color: rgb(var(--browser-accent));
+}
+.agent-browser-info-panel {
+  position: absolute;
+  z-index: 2;
+  right: 6px;
+  bottom: calc(100% + 6px);
+  width: min(360px, calc(100% - 12px));
+  max-height: min(220px, 45vh);
+  overflow: auto;
+  padding: 12px;
+  border: 1px solid rgba(var(--browser-ink), 0.12);
+  border-radius: 9px;
+  background: rgb(var(--browser-surface));
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.12);
+  color: rgba(var(--browser-ink), 0.72);
+  font-size: 11px;
+  line-height: 1.6;
+}
+.agent-browser-info-panel p {
+  margin: 0 0 8px;
 }
 .agent-browser-empty {
   display: flex;
@@ -1899,7 +1930,7 @@ onBeforeUnmount(() => {
 .agent-browser-actions-heading {
   flex: 0 0 auto;
   gap: 7px;
-  padding: 7px 10px;
+  padding: 5px 8px;
   cursor: pointer;
   list-style: none;
   color: rgba(var(--browser-ink), 0.62);
@@ -2047,14 +2078,19 @@ onBeforeUnmount(() => {
 }
 @media (max-width: 600px) {
   .agent-browser-view {
-    padding: 8px;
-    gap: 8px;
+    padding: 4px;
+    gap: 4px;
   }
   .agent-browser-toolbar {
     padding: 5px 7px;
   }
   .agent-browser-image {
-    padding: 8px;
+    padding: 2px;
+  }
+}
+@container (max-width: 520px) {
+  .agent-browser-page {
+    display: none;
   }
 }
 @media (prefers-reduced-motion: reduce) {
@@ -2090,16 +2126,5 @@ onBeforeUnmount(() => {
 .agent-browser-viewport:focus-within {
   outline: 2px solid rgb(var(--v-theme-primary));
   outline-offset: -2px;
-}
-.agent-browser-input-hint {
-  font-size: 12px;
-  padding: 4px 12px;
-  margin: 0;
-}
-.agent-browser-leave {
-  width: auto;
-  padding: 4px 10px;
-  align-self: flex-start;
-  margin: 4px 12px;
 }
 </style>

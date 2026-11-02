@@ -5281,7 +5281,11 @@ watch(
 
         <!-- Branch and worktree controls share the project context. -->
         <div
-          v-if="hasMultipleWorktrees && (isGitRepo || showNotGitRepoChip)"
+          v-if="
+            viewMode !== 'browser' &&
+            hasMultipleWorktrees &&
+            (isGitRepo || showNotGitRepoChip)
+          "
           class="git-diff-sidebar-bw"
         >
           <!-- The compact worktree selector joins the branch row. Each menu

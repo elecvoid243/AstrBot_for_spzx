@@ -502,6 +502,11 @@ def test_autonomous_team_uses_main_pipeline_and_recovers_without_duplicate_decis
             assert effects == []
             return
         assert current["status"] == "completed", current
+        if scenario == "team_pipeline":
+            observed = [record["data"] for task in current["tasks"] for record in task.get("process", []) if record["kind"] == "model_context"]
+            upstream = [source for context in observed for source in context["assembly"]["value"].get("sources", []) if source["kind"] == "upstream"]
+            assert upstream and any("COMPLETE_END" in source["content"] for source in upstream)
+            assert any("COMPLETE_END" in str(request["contexts"]) for request in requests)
         if scenario.startswith("team_message_"):
             assert len(current["messages"]) == (4 if scenario == "team_message_live" else 3)
             assert all(message["consumption"] is not None for message in current["messages"])

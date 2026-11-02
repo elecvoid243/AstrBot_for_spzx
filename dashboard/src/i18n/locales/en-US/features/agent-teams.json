@@ -388,8 +388,18 @@
     "emptyProcess": "No completed member response or tool result yet.",
     "observation": "Process records belong to a task, attempt and member. The observation cursor reconnects this page; it does not restore invocation checkpoints.",
     "modelResponse": "Model response",
+    "missingChunks": "Some stream pieces are missing from the displayed history. Load older records or reconnect to inspect the gap.",
+    "historyHint": "The latest observations are shown first. Load older process to read earlier records.",
+    "loadAttempts": "Load older attempts",
+    "loadMessages": "Load older messages",
+    "loadEvents": "Load older events",
+    "loadOlder": "Load older process",
+    "reloadLatest": "Return to latest",
+    "newActivity": "New activity has arrived while you are reading.",
+    "olderHistoryHidden": "Older records have moved out of the live window; load earlier history to read them.",
+    "historyWindow": "Only a bounded history window is shown. Return to latest to see newer records.",
     "readerTitle": "Agent process",
-    "capabilityNote": "Only reasoning and execution details actually provided by the model are shown.",
+    "capabilityNote": "Only observed reasoning and execution details are shown. Missing information is unavailable; remote executors may expose only part of a run.",
     "finalOnly": "This provider returned a final response without streaming.",
     "deliveryStates": {
       "started": "Receiving",
@@ -731,6 +741,8 @@
     "remove": "Remove allowed workflow"
   },
   "usage": {
+    "loadOlder": "Load older usage",
+    "historicalTruncated": "Only recent historical references are displayed.",
     "title": "Usage and limits",
     "limits": "Scope limits",
     "limitHint": "Blank fields add no ceiling. The root allowance includes the coordinator, members, retries and nested calls. Steps count each admitted model, tool or status-query delivery; the iteration ceiling applies to every loop.",

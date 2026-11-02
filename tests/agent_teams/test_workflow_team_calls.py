@@ -811,6 +811,33 @@ async def test_loop_creates_new_child_scope_and_task_without_sharing_context(
         if scope["snapshot"]["parent_run_id"] == second["run_id"]
     )
     assert second_scope["tasks"][0]["snapshot"]["input_artifacts"] == []
+    children = [scope["tasks"][0] for scope in current["scopes"]]
+    saved = await asyncio.gather(
+        *[
+            env.service.record_process(
+                "alice",
+                child["run_id"],
+                child["state"]["attempt_id"],
+                "same-observation",
+                "model_delta",
+                {"receipt_id": "same-receipt", "sequence": 0, "text": child["run_id"]},
+            )
+            for child in children
+        ]
+    )
+    updates = await env.service.get_events("alice", run["run_id"], current["cursor"])
+    assert {record["record_id"] for record in updates["records"]} == {
+        record["record_id"] for record in saved
+    }
+    reopened = await env.service.get_run("alice", run["run_id"])
+    for scope in reopened["scopes"]:
+        child = scope["tasks"][0]
+        observations = [
+            record for record in child["process"] if record["kind"] == "model_delta"
+        ]
+        assert len(observations) == 1
+        assert observations[0]["data"]["text"] == child["run_id"]
+        assert observations[0]["scope_id"] == scope["state"]["scope_id"]
 
 
 @pytest.mark.asyncio

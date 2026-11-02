@@ -70,14 +70,12 @@
             class="run-task"
             :class="{
               'run-task-selected':
-                task.node_id === selectedTask || task.run_id === selectedTask,
+                task.run_id === selectedTask,
             }"
             @click="
               $emit(
                 'select',
-                task.snapshot.parent_run_id !== run.run_id
-                  ? task.run_id
-                  : task.node_id ?? null,
+                task.run_id,
               )
             "
           >
@@ -95,6 +93,10 @@
             />
             <div class="run-name flex-grow-1 text-left">
               <strong>{{ task.snapshot.definition.name }}</strong>
+              <p v-if="scopeNames[task.run_id] || task.snapshot.iteration != null" class="text-caption text-medium-emphasis mt-1">
+                <span v-if="scopeNames[task.run_id]">{{ tm("child.scope") }}: {{ scopeNames[task.run_id] }}</span>
+                <span v-if="task.snapshot.iteration != null"> · {{ tm("loops.iteration") }} {{ task.snapshot.iteration }}</span>
+              </p>
               <p class="text-caption text-medium-emphasis mt-1">
                 {{ task.snapshot.member?.name }} · {{ tm("v2.attempt") }}
                 {{ task.state.attempt_id }}
@@ -167,9 +169,7 @@
               @click="
                 $emit(
                   'select',
-                  task.snapshot.parent_run_id !== run.run_id
-                    ? task.run_id
-                    : task.node_id ?? null,
+                  task.run_id,
                 )
               "
             >
@@ -232,6 +232,7 @@
       <p v-if="scope.state.reason" class="run-text mb-3">
         {{ scope.state.reason }}
       </p>
+      <WorkflowLoopHistory :run="scope" @select="$emit('select', $event)" />
       <WorkflowGraphCanvas
         :definition="scope.runtime_definition ?? scope.snapshot.definition"
         :tasks="scope.tasks"
@@ -285,6 +286,12 @@ const tasks = computed<any[]>(() => [
   ...(props.run.tasks ?? [props.run]),
   ...(props.run.scopes ?? []).flatMap((scope: any) => scope.tasks),
 ]);
+const scopeNames = computed<Record<string, string>>(() => Object.fromEntries(
+  (props.run.scopes ?? []).flatMap((scope: any) => [
+    ...(scope.tasks ?? []),
+    ...(scope.loops ?? []).flatMap((loop: any) => loop.iterations.flatMap((iteration: any) => iteration.tasks)),
+  ].map((task: any) => [task.run_id, scope.snapshot?.definition?.name ?? scope.run_id])),
+));
 const waiting = computed(() =>
   tasks.value.filter(
     (task) =>

@@ -144,9 +144,10 @@
     <template v-for="item in readingItems" :key="item.kind + ':' + item.key">
       <article v-if="item.kind === 'delivery'" class="process-record pa-4" data-testid="model-delivery">
         <p class="text-caption text-medium-emphasis">
-          {{ tm("progress.modelResponse") }} · {{ tm(`progress.deliveryStates.${item.status}`) }}
+          {{ tm("progress.modelResponse") }} · {{ tm(`progress.deliveryStates.${item.status}`) }} · {{ tm("v2.attempt") }} {{ item.attempt }}
         </p>
         <p v-if="item.streaming === false" class="text-caption">{{ tm("progress.finalOnly") }}</p>
+        <p v-if="item.missingChunks" class="text-warning" data-testid="missing-stream-chunks">{{ tm("progress.missingChunks") }}</p>
         <details class="mt-2 context-details" data-testid="model-context">
           <summary>{{ tm("progress.actualContext") }}</summary>
           <div class="context-body">
@@ -182,7 +183,8 @@
         <MarkdownMessagePart v-if="item.text" :content="item.text" :refs="null" :is-dark="isDark" :custom-html-tags="CHAT_MARKDOWN_CUSTOM_TAGS" :is-streaming="item.status === 'started'" />
       </article>
       <div v-else class="process-record pa-2" data-testid="observed-tool">
-        <p class="text-caption text-medium-emphasis">{{ tm(`progress.toolStates.${item.status}`) }}</p>
+        <p class="text-caption text-medium-emphasis">{{ tm(`progress.toolStates.${item.status}`) }} · {{ tm("v2.attempt") }} {{ item.attempt }}</p>
+        <p v-if="item.missingParts" class="text-warning" data-testid="missing-tool-parts">{{ tm("progress.missingChunks") }}</p>
         <ToolCallCard :tool-call="item" :is-dark="isDark" />
       </div>
     </template>
@@ -296,6 +298,7 @@ const deliveries = computed(() => {
         order,
         kind: "delivery",
         invocation: data.invocation_id,
+        attempt: record.attempt_id,
         status: "started",
         chunks: [],
         end: null,
@@ -309,7 +312,7 @@ const deliveries = computed(() => {
     if (record.kind !== "model_context" || !record.data.receipt_id) continue;
     const key = `${record.run_id}:${record.attempt_id}:${record.data.receipt_id}`;
     if (!groups.has(key)) groups.set(key, {
-      key, order, kind: "delivery", invocation: record.data.invocation_id,
+      key, order, kind: "delivery", invocation: record.data.invocation_id, attempt: record.attempt_id,
       streaming: false, chunks: [], end: null,
     });
     groups.get(key).context = record.data;
@@ -318,7 +321,7 @@ const deliveries = computed(() => {
     if (record.kind !== "model_response" || !record.data.receipt_id) continue;
     const key = `${record.run_id}:${record.attempt_id}:${record.data.receipt_id}`;
     if (!groups.has(key)) groups.set(key, {
-      key, order, kind: "delivery", invocation: record.data.invocation_id,
+      key, order, kind: "delivery", invocation: record.data.invocation_id, attempt: record.attempt_id,
       streaming: false, chunks: [], end: null,
     });
     const group = groups.get(key);
@@ -331,6 +334,7 @@ const deliveries = computed(() => {
     group.chunks.sort((a: any, b: any) => a.sequence - b.sequence);
     return {
       ...group,
+      missingChunks: group.chunks.some((chunk: any, index: number) => chunk.sequence !== index),
       status: group.end?.status ?? (group.response ? (group.response.role === "err" ? "error" : "completed") : (props.run.status === "running" ? "started" : "incomplete")),
       text:
         group.response?.text ??
@@ -354,6 +358,7 @@ const observedTools = computed(() => {
         key,
         order,
         kind: "tool",
+        attempt: record.attempt_id,
         id: data.id,
         name: data.name,
         args: data.args ?? {},
@@ -381,7 +386,7 @@ const observedTools = computed(() => {
         .filter((part: any) => part.type === "text")
         .map((part: any) => part.text))
       .join("\n");
-    return { ...group, status: group.status === "running" && props.run.status !== "running" ? "incomplete" : group.status,
+    return { ...group, missingParts: group.parts.some((part: any, index: number) => Number.isInteger(part.index) && part.index !== index), status: group.status === "running" && props.run.status !== "running" ? "incomplete" : group.status,
       result: group.finalResult && !progress.includes(group.finalResult)
       ? [progress, group.finalResult].filter(Boolean).join("\n") : progress };
   });

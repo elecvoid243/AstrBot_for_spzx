@@ -10,6 +10,7 @@ import time
 import uuid
 from collections.abc import Callable
 from contextlib import nullcontext
+from datetime import datetime, timezone
 from string import Formatter
 from typing import Literal, cast
 
@@ -2517,7 +2518,12 @@ class WorkflowService:
         }
 
     async def get_run(
-        self, username: str, run_id: str, *, include_details: bool = True
+        self,
+        username: str,
+        run_id: str,
+        *,
+        include_details: bool = True,
+        history_limit: int | None = None,
     ) -> dict:
         """Query persisted progress independently of any active runner or browser.
 
@@ -2525,6 +2531,7 @@ class WorkflowService:
             username: Authenticated owner.
             run_id: Independent execution identity.
             include_details: Include complete frozen inputs, results and history.
+            history_limit: Maximum recent process records in the snapshot, if set.
 
         Returns:
             Progress, attempts and artifact entries, with complete detail on request.
@@ -2580,6 +2587,33 @@ class WorkflowService:
                             select(AgentWorkflowEvent)
                             .where(
                                 col(AgentWorkflowEvent.run_id).in_(identities),
+                                or_(
+                                    col(AgentWorkflowEvent.id).in_(
+                                        select(AgentWorkflowEvent.id)
+                                        .where(
+                                            col(AgentWorkflowEvent.run_id).in_(
+                                                identities
+                                            )
+                                        )
+                                        .order_by(col(AgentWorkflowEvent.id).desc())
+                                        .limit(history_limit)
+                                    ),
+                                    col(AgentWorkflowEvent.id).in_(
+                                        select(AgentWorkflowEvent.id)
+                                        .where(
+                                            col(AgentWorkflowEvent.run_id).in_(
+                                                identities
+                                            ),
+                                            col(AgentWorkflowEvent.kind).like(
+                                                "process.%"
+                                            ),
+                                        )
+                                        .order_by(col(AgentWorkflowEvent.id).desc())
+                                        .limit(history_limit)
+                                    ),
+                                )
+                                if history_limit is not None
+                                else true(),
                             )
                             .order_by(col(AgentWorkflowEvent.id))
                         )
@@ -2590,11 +2624,115 @@ class WorkflowService:
                 if include_details
                 else []
             )
+            recent_event_floor = (
+                (
+                    await session.execute(
+                        select(AgentWorkflowEvent.id)
+                        .where(col(AgentWorkflowEvent.run_id).in_(identities))
+                        .order_by(col(AgentWorkflowEvent.id).desc())
+                        .limit(1)
+                        .offset(history_limit - 1)
+                    )
+                ).scalar_one_or_none()
+                if include_details and history_limit is not None
+                else None
+            )
+            latest_result_ids = (
+                (
+                    await session.execute(
+                        select(func.max(AgentWorkflowEvent.id))
+                        .where(
+                            col(AgentWorkflowEvent.run_id).in_(identities),
+                            col(AgentWorkflowEvent.kind).in_(
+                                ["result.accepted", "result.rejected"]
+                            ),
+                        )
+                        .group_by(AgentWorkflowEvent.run_id)
+                    )
+                )
+                .scalars()
+                .all()
+                if history_limit is not None
+                else []
+            )
+            latest_results = (
+                (
+                    await session.execute(
+                        select(AgentWorkflowEvent).where(
+                            col(AgentWorkflowEvent.id).in_(latest_result_ids)
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+                if latest_result_ids
+                else []
+            )
+            message_events = []
+            if include_details and history_limit is not None:
+                family_root = (
+                    row
+                    if root_id == run_id
+                    else await session.get(AgentWorkflowRun, root_id)
+                )
+                if family_root is None or family_root.owner_username != username:
+                    raise RoleAssetError("Root run not found", status=404)
+                family = (
+                    tree
+                    if root_id == run_id
+                    else await _descendant_runs(session, family_root)
+                )
+                family_ids = [item.run_id for item in family]
+                message_filter = (
+                    col(AgentWorkflowEvent.run_id).in_(identities)
+                    if row.snapshot.get("engine") == "graph_v2"
+                    else or_(
+                        AgentWorkflowEvent.run_id == run_id,
+                        (col(AgentWorkflowEvent.run_id).in_(family_ids))
+                        & (
+                            AgentWorkflowEvent.data["scope_id"].as_string()
+                            == row.state.get("scope_id")
+                        )
+                        & (
+                            AgentWorkflowEvent.data["recipient_member_id"].as_string()
+                            == row.snapshot.get("member", {}).get("member_id")
+                        ),
+                    )
+                )
+                message_events = (
+                    (
+                        await session.execute(
+                            select(AgentWorkflowEvent)
+                            .where(
+                                AgentWorkflowEvent.kind == "member.message_sent",
+                                message_filter,
+                            )
+                            .order_by(col(AgentWorkflowEvent.id).desc())
+                            .limit(history_limit)
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+            if any(not event.data.get("message_id") for event in message_events):
+                raise RoleAssetError(
+                    "Message history is missing a record identity", status=409
+                )
+            message_positions = {
+                event.data["message_id"]: event.id
+                for event in message_events
+                if "message_id" in event.data
+            }
             messages = (
                 (
                     await session.execute(
                         select(AgentWorkflowMessage)
-                        .where(AgentWorkflowMessage.root_run_id == root_id)
+                        .where(
+                            AgentWorkflowMessage.root_run_id == root_id,
+                            col(AgentWorkflowMessage.message_id).in_(message_positions)
+                            if history_limit is not None
+                            else true(),
+                        )
                         .order_by(
                             col(AgentWorkflowMessage.created_at),
                             col(AgentWorkflowMessage.message_id),
@@ -2606,6 +2744,12 @@ class WorkflowService:
                 if include_details
                 else []
             )
+            if history_limit is not None and set(message_positions) != {
+                message.message_id for message in messages
+            }:
+                raise RoleAssetError(
+                    "Message history is missing a persisted record", status=409
+                )
             artifacts = (
                 (
                     await session.execute(
@@ -2619,12 +2763,29 @@ class WorkflowService:
                 .scalars()
                 .all()
             )
+            if history_limit is not None and any(
+                event.kind.startswith("process.") and not event.data.get("record_id")
+                for event in events
+            ):
+                raise RoleAssetError(
+                    "Process history is missing a record identity", status=409
+                )
+            process_ids = [
+                event.data["record_id"]
+                for event in events
+                if event.kind.startswith("process.") and "record_id" in event.data
+            ]
             process = (
                 (
                     (
                         await session.execute(
                             select(AgentWorkflowProcess)
-                            .where(col(AgentWorkflowProcess.run_id).in_(identities))
+                            .where(
+                                col(AgentWorkflowProcess.run_id).in_(identities),
+                                col(AgentWorkflowProcess.record_id).in_(process_ids)
+                                if history_limit is not None
+                                else true(),
+                            )
                             .order_by(
                                 col(AgentWorkflowProcess.created_at),
                                 col(AgentWorkflowProcess.record_id),
@@ -2637,6 +2798,12 @@ class WorkflowService:
                 if include_details
                 else []
             )
+            if history_limit is not None and set(process_ids) != {
+                record.record_id for record in process
+            }:
+                raise RoleAssetError(
+                    "Process history is missing a persisted record", status=409
+                )
             event_positions = {
                 event.data["record_id"]: event.id
                 for event in events
@@ -2772,6 +2939,39 @@ class WorkflowService:
                 if include_details
                 else []
             )
+            attempt_events = (
+                (
+                    await session.execute(
+                        select(AgentWorkflowEvent)
+                        .where(
+                            col(AgentWorkflowEvent.run_id).in_(identities),
+                            AgentWorkflowEvent.kind == "attempt.retried",
+                        )
+                        .order_by(col(AgentWorkflowEvent.id).desc())
+                        .limit(history_limit)
+                    )
+                )
+                .scalars()
+                .all()
+                if include_details and history_limit is not None
+                else []
+            )
+            attempt_positions = {
+                event.data["previous_attempt_id"]: event.id
+                for event in attempt_events
+                if "previous_attempt_id" in event.data
+            }
+            if history_limit is not None and (
+                len(attempt_positions) != len(attempt_events)
+                or len(attempt_events) < history_limit
+                and len(attempts) > len(attempt_positions)
+                or not set(attempt_positions).issubset(
+                    {attempt.attempt_id for attempt in attempts}
+                )
+            ):
+                raise RoleAssetError(
+                    "Attempt history is missing a persisted record", status=409
+                )
             usage_receipts = [
                 {**receipt.model_dump(mode="json", exclude={"data"}), **receipt.data}
                 for receipt in (
@@ -2825,7 +3025,16 @@ class WorkflowService:
                     if artifact.run_id == current.run_id
                 ]
                 errors = []
-                for event in current_events:
+                result_events = (
+                    [
+                        event
+                        for event in latest_results
+                        if event.run_id == current.run_id
+                    ]
+                    if history_limit is not None
+                    else current_events
+                )
+                for event in result_events:
                     if event.kind == "result.rejected":
                         errors = event.data["fields"]
                     elif event.kind == "result.accepted":
@@ -2891,12 +3100,26 @@ class WorkflowService:
                                     **message.model_dump(
                                         mode="json", exclude={"payload"}
                                     ),
+                                    **(
+                                        {
+                                            "cursor": message_positions.get(
+                                                message.message_id
+                                            )
+                                        }
+                                        if history_limit is not None
+                                        else {}
+                                    ),
                                     **message.payload,
                                 }
                                 for message in messages
                                 if message.sender_task_run_id == current.run_id
-                                or message.recipient_member_id
-                                == current.snapshot.get("member", {}).get("member_id")
+                                or (
+                                    message.scope_id == current.state.get("scope_id")
+                                    and message.recipient_member_id
+                                    == current.snapshot.get("member", {}).get(
+                                        "member_id"
+                                    )
+                                )
                             ],
                             "recovery": {
                                 "capability": boundary.remote_runner["recovery"]
@@ -2973,15 +3196,66 @@ class WorkflowService:
                             },
                             "snapshot": current.snapshot,
                             "attempts": [
-                                a.data for a in attempts if a.run_id == current.run_id
+                                a.data
+                                if history_limit is None
+                                else {
+                                    "attempt_id": a.attempt_id,
+                                    "status": a.data["status"],
+                                    "cursor": attempt_positions[a.attempt_id],
+                                    "state": {
+                                        "reason": a.data.get("state", {}).get("reason")
+                                    },
+                                    "snapshot": {
+                                        "inputs": a.data.get("snapshot", {}).get(
+                                            "inputs"
+                                        ),
+                                        "input_artifacts": a.data.get(
+                                            "snapshot", {}
+                                        ).get("input_artifacts", []),
+                                    },
+                                    "checkpoint": {
+                                        "stats": {
+                                            "token_usage": (
+                                                (a.data.get("checkpoint") or {}).get(
+                                                    "stats"
+                                                )
+                                                or {}
+                                            ).get("token_usage")
+                                        }
+                                    },
+                                }
+                                for a in attempts
+                                if a.run_id == current.run_id
+                                and (
+                                    history_limit is None
+                                    or a.attempt_id in attempt_positions
+                                )
                             ],
                             "state": current.state,
                             "result": current.result,
                             "pending_result": current.pending_result,
                             "cursor": current_events[-1].id if current_events else 0,
+                            **(
+                                {
+                                    "event_history_before": recent_event_floor or 1,
+                                    "message_history_before": min(
+                                        message_positions.values()
+                                    )
+                                    if len(message_events) == history_limit
+                                    else 1,
+                                    "attempt_history_before": min(
+                                        attempt_positions.values()
+                                    )
+                                    if len(attempt_events) == history_limit
+                                    else 1,
+                                }
+                                if history_limit is not None
+                                else {}
+                            ),
                             "process": [
                                 {
                                     **record.model_dump(mode="json"),
+                                    "cursor": event_positions.get(record.record_id),
                                     "root_run_id": root_id,
                                     "scope_id": current.state.get("scope_id"),
                                     "task_run_id": current.run_id,
@@ -3020,6 +3294,10 @@ class WorkflowService:
                                     else [],
                                 }
                                 for call in current_calls
+                                if history_limit is None
+                                or boundary is not None
+                                and call.attempt_id == current.state.get("attempt_id")
+                                and call.invocation_id == boundary.invocation_id
                             ],
                             "validation_errors": errors,
                             "events": [
@@ -3189,6 +3467,25 @@ class WorkflowService:
                         {**results[identity], "node_id": node_id}
                         for node_id, identity in _current_task_runs(scope).items()
                     ],
+                    "loops": [
+                        {
+                            "loop_id": loop_id,
+                            **loop,
+                            "iterations": [
+                                {
+                                    **iteration,
+                                    "tasks": [
+                                        {**results[identity], "node_id": node_id}
+                                        for node_id, identity in iteration[
+                                            "task_runs"
+                                        ].items()
+                                    ],
+                                }
+                                for iteration in loop["iterations"]
+                            ],
+                        }
+                        for loop_id, loop in scope.state.get("loops", {}).items()
+                    ],
                 }
                 for scope in tree
                 if scope.run_id != run_id and scope.snapshot.get("engine") == "graph_v2"
@@ -3261,14 +3558,22 @@ class WorkflowService:
             result["messages"] = [
                 {
                     **message.model_dump(mode="json", exclude={"payload"}),
+                    **(
+                        {"cursor": message_positions.get(message.message_id)}
+                        if history_limit is not None
+                        else {}
+                    ),
                     **message.payload,
                 }
                 for message in messages
                 if row.snapshot.get("engine") == "graph_v2"
                 and message.scope_id in {item.state["scope_id"] for item in tree}
                 or message.sender_task_run_id == run_id
-                or message.recipient_member_id
-                == row.snapshot.get("member", {}).get("member_id")
+                or (
+                    message.scope_id == row.state.get("scope_id")
+                    and message.recipient_member_id
+                    == row.snapshot.get("member", {}).get("member_id")
+                )
             ]
             result["cursor"] = max(
                 (event["cursor"] for event in result["events"]), default=0
@@ -3283,7 +3588,8 @@ class WorkflowService:
             *result.get("scopes", []),
             *[
                 task
-                for loop in result.get("loops", [])
+                for owner in [result, *result.get("scopes", [])]
+                for loop in owner.get("loops", [])
                 for iteration in loop["iterations"]
                 for task in iteration["tasks"]
             ],
@@ -3326,6 +3632,18 @@ class WorkflowService:
                         },
                         "ledger": [],
                     }
+                )
+            if include_details and history_limit is not None:
+                ordered = sorted(
+                    selected,
+                    key=lambda receipt: (receipt["created_at"], receipt["receipt_id"]),
+                )
+                recent = ordered[-history_limit:]
+                view["usage"]["ledger"] = recent
+                view["usage"]["ledger_before"] = (
+                    f"{recent[0]['created_at']}|{recent[0]['receipt_id']}"
+                    if len(ordered) > history_limit
+                    else None
                 )
             view["usage"]["constraints"] = record.snapshot.get("scope_limits", [])
             if (
@@ -4343,6 +4661,349 @@ class WorkflowService:
                 return previous.model_dump(mode="json")
         return record.model_dump(mode="json")
 
+    async def get_run_history_page(
+        self,
+        username: str,
+        run_id: str,
+        task_run_id: str,
+        kind: Literal["events", "messages", "usage", "attempts"],
+        before: str | None,
+        limit: int = 128,
+    ) -> dict:
+        """Page authorized event, message, attempt or usage history without changing execution.
+
+        Args:
+            username: Authenticated run owner.
+            run_id: Observed root or scope.
+            task_run_id: Selected execution or subtree within that scope.
+            kind: History category.
+            before: Exclusive event ID or usage timestamp and receipt identity.
+            limit: Maximum number of entries.
+
+        Returns:
+            Ordered entries and the next exclusive boundary, if any.
+
+        Raises:
+            RoleAssetError: Invalid boundary or inaccessible execution.
+        """
+        if (
+            kind not in {"events", "messages", "usage", "attempts"}
+            or not 1 <= limit <= 128
+        ):
+            raise RoleAssetError("Invalid history page")
+        async with self.db.get_db() as session:
+            if self.db.engine.dialect.name == "sqlite":
+                await session.execute(text("BEGIN"))
+            root = await session.get(AgentWorkflowRun, run_id)
+            if root is None or root.owner_username != username:
+                raise RoleAssetError("Run not found", status=404)
+            tree = await _descendant_runs(session, root)
+            task = next((item for item in tree if item.run_id == task_run_id), None)
+            if task is None:
+                raise RoleAssetError("Task run not found", status=404)
+            selected = {task_run_id}
+            while True:
+                expanded = selected | {
+                    item.run_id
+                    for item in tree
+                    if item.snapshot.get("parent_run_id") in selected
+                }
+                if expanded == selected:
+                    break
+                selected = expanded
+            if kind == "usage":
+                query = select(AgentWorkflowUsage).where(
+                    col(AgentWorkflowUsage.run_id).in_(selected)
+                )
+                if before is not None:
+                    try:
+                        stamp, identity = before.rsplit("|", 1)
+                        stamp = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+                        if stamp.tzinfo is not None:
+                            stamp = stamp.astimezone(timezone.utc).replace(tzinfo=None)
+                        if not identity:
+                            raise ValueError
+                    except ValueError:
+                        raise RoleAssetError("Invalid usage cursor") from None
+                    query = query.where(
+                        or_(
+                            col(AgentWorkflowUsage.created_at) < stamp,
+                            (col(AgentWorkflowUsage.created_at) == stamp)
+                            & (col(AgentWorkflowUsage.receipt_id) < identity),
+                        )
+                    )
+                rows = (
+                    (
+                        await session.execute(
+                            query.order_by(
+                                col(AgentWorkflowUsage.created_at).desc(),
+                                col(AgentWorkflowUsage.receipt_id).desc(),
+                            ).limit(limit + 1)
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                more = len(rows) > limit
+                rows = list(reversed(rows[:limit]))
+                entries = [
+                    {**row.model_dump(mode="json", exclude={"data"}), **row.data}
+                    for row in rows
+                ]
+                return {
+                    "items": entries,
+                    "next_before": f"{entries[0]['created_at']}|{entries[0]['receipt_id']}"
+                    if more
+                    else None,
+                }
+            try:
+                position = int(before) if before is not None else None
+                if position is not None and position < 1:
+                    raise ValueError
+            except ValueError:
+                raise RoleAssetError("Invalid event cursor") from None
+            query = select(AgentWorkflowEvent)
+            if kind == "events":
+                query = query.where(col(AgentWorkflowEvent.run_id).in_(selected))
+            elif kind == "attempts":
+                query = query.where(
+                    AgentWorkflowEvent.run_id == task_run_id,
+                    AgentWorkflowEvent.kind == "attempt.retried",
+                )
+            else:
+                member_id = task.snapshot.get("member", {}).get("member_id")
+                family_root = await session.get(AgentWorkflowRun, _root_run_id(task))
+                if family_root is None or family_root.owner_username != username:
+                    raise RoleAssetError("Root run not found", status=404)
+                family = await _descendant_runs(session, family_root)
+                message_filter = (
+                    col(AgentWorkflowEvent.run_id).in_(selected)
+                    if task.snapshot.get("engine") == "graph_v2"
+                    else or_(
+                        AgentWorkflowEvent.run_id == task_run_id,
+                        col(AgentWorkflowEvent.run_id).in_(
+                            [item.run_id for item in family]
+                        )
+                        & (
+                            AgentWorkflowEvent.data["scope_id"].as_string()
+                            == task.state.get("scope_id")
+                        )
+                        & (
+                            AgentWorkflowEvent.data["recipient_member_id"].as_string()
+                            == member_id
+                        ),
+                    )
+                )
+                query = query.where(
+                    AgentWorkflowEvent.kind == "member.message_sent", message_filter
+                )
+            if position is not None:
+                query = query.where(col(AgentWorkflowEvent.id) < position)
+            rows = (
+                (
+                    await session.execute(
+                        query.order_by(col(AgentWorkflowEvent.id).desc()).limit(
+                            limit + 1
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            more = len(rows) > limit
+            rows = list(reversed(rows[:limit]))
+            if kind == "events":
+                entries = [
+                    {
+                        "cursor": event.id,
+                        "run_id": event.run_id,
+                        "kind": event.kind,
+                        "data": event.data,
+                    }
+                    for event in rows
+                ]
+            elif kind == "attempts":
+                if any(not event.data.get("previous_attempt_id") for event in rows):
+                    raise RoleAssetError(
+                        "Attempt history is missing a record identity", status=409
+                    )
+                ids = [event.data["previous_attempt_id"] for event in rows]
+                attempts = (
+                    (
+                        await session.execute(
+                            select(AgentWorkflowAttempt).where(
+                                col(AgentWorkflowAttempt.attempt_id).in_(ids),
+                                AgentWorkflowAttempt.run_id == task_run_id,
+                            )
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                by_id = {attempt.attempt_id: attempt for attempt in attempts}
+                if any(identity not in by_id for identity in ids):
+                    raise RoleAssetError(
+                        "Attempt history is missing a persisted record", status=409
+                    )
+                entries = [
+                    {
+                        "attempt_id": event.data["previous_attempt_id"],
+                        "cursor": event.id,
+                        "status": by_id[event.data["previous_attempt_id"]].data[
+                            "status"
+                        ],
+                        "state": {
+                            "reason": by_id[event.data["previous_attempt_id"]]
+                            .data.get("state", {})
+                            .get("reason")
+                        },
+                        "snapshot": {
+                            "inputs": by_id[event.data["previous_attempt_id"]]
+                            .data.get("snapshot", {})
+                            .get("inputs"),
+                            "input_artifacts": by_id[event.data["previous_attempt_id"]]
+                            .data.get("snapshot", {})
+                            .get("input_artifacts", []),
+                        },
+                        "checkpoint": {
+                            "stats": {
+                                "token_usage": (
+                                    (
+                                        by_id[
+                                            event.data["previous_attempt_id"]
+                                        ].data.get("checkpoint")
+                                        or {}
+                                    ).get("stats")
+                                    or {}
+                                ).get("token_usage")
+                            }
+                        },
+                    }
+                    for event in rows
+                ]
+            else:
+                if any(not event.data.get("message_id") for event in rows):
+                    raise RoleAssetError(
+                        "Message history is missing a record identity", status=409
+                    )
+                ids = [event.data["message_id"] for event in rows]
+                messages = (
+                    (
+                        await session.execute(
+                            select(AgentWorkflowMessage).where(
+                                col(AgentWorkflowMessage.message_id).in_(ids)
+                            )
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                by_id = {message.message_id: message for message in messages}
+                if any(identity not in by_id for identity in ids):
+                    raise RoleAssetError(
+                        "Message history is missing a persisted record", status=409
+                    )
+                entries = [
+                    {
+                        **by_id[event.data["message_id"]].model_dump(
+                            mode="json", exclude={"payload"}
+                        ),
+                        "cursor": event.id,
+                        **by_id[event.data["message_id"]].payload,
+                    }
+                    for event in rows
+                ]
+            return {"items": entries, "next_before": str(rows[0].id) if more else None}
+
+    async def get_process_page(
+        self,
+        username: str,
+        run_id: str,
+        task_run_id: str,
+        before: int,
+        limit: int = 128,
+    ) -> dict:
+        """Read a bounded older page of one authorized task's persisted observations.
+
+        Args:
+            username: Authenticated run owner.
+            run_id: Observed root or scope.
+            task_run_id: Exact task execution within the observed subtree.
+            before: Exclusive durable event cursor.
+            limit: Maximum records to return.
+
+        Returns:
+            Ordered records and the exclusive cursor for the next older page.
+
+        Raises:
+            RoleAssetError: Invalid page boundary or inaccessible task.
+        """
+        if before < 1 or not 1 <= limit <= 128:
+            raise RoleAssetError("Invalid process page")
+        async with self.db.get_db() as session:
+            if self.db.engine.dialect.name == "sqlite":
+                await session.execute(text("BEGIN"))
+            root = await session.get(AgentWorkflowRun, run_id)
+            if root is None or root.owner_username != username:
+                raise RoleAssetError("Run not found", status=404)
+            tree = await _descendant_runs(session, root)
+            task = next((item for item in tree if item.run_id == task_run_id), None)
+            if task is None:
+                raise RoleAssetError("Task run not found", status=404)
+            events = (
+                (
+                    await session.execute(
+                        select(AgentWorkflowEvent)
+                        .where(
+                            AgentWorkflowEvent.run_id == task_run_id,
+                            col(AgentWorkflowEvent.kind).like("process.%"),
+                            col(AgentWorkflowEvent.id) < before,
+                        )
+                        .order_by(col(AgentWorkflowEvent.id).desc())
+                        .limit(limit + 1)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            has_more = len(events) > limit
+            events = list(reversed(events[:limit]))
+            if any(not event.data.get("record_id") for event in events):
+                raise RoleAssetError(
+                    "Process history is missing a record identity", status=409
+                )
+            ids = [event.data["record_id"] for event in events]
+            records = (
+                (
+                    await session.execute(
+                        select(AgentWorkflowProcess).where(
+                            col(AgentWorkflowProcess.record_id).in_(ids)
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            by_id = {record.record_id: record for record in records}
+            if any(identity not in by_id for identity in ids):
+                raise RoleAssetError(
+                    "Process history is missing a persisted record", status=409
+                )
+            return {
+                "records": [
+                    {
+                        **by_id[event.data["record_id"]].model_dump(mode="json"),
+                        "cursor": event.id,
+                        "root_run_id": _root_run_id(task),
+                        "scope_id": task.state.get("scope_id"),
+                        "task_run_id": task.run_id,
+                        "node_id": task.snapshot.get("node_id"),
+                    }
+                    for event in events
+                ],
+                "next_before": events[0].id if has_more else None,
+            }
+
     async def get_events(self, username: str, run_id: str, after: int = 0) -> dict:
         """Read a bounded batch of committed observations after a cursor.
 
@@ -4360,12 +5021,13 @@ class WorkflowService:
         if after < 0:
             raise RoleAssetError("Cursor must not be negative")
         if after == 0:
-            snapshot = await self.get_run(username, run_id)
+            snapshot = await self.get_run(username, run_id, history_limit=128)
             return {
                 "cursor": snapshot["cursor"],
                 "reset": True,
                 "events": [],
                 "records": [],
+                "messages": [],
                 "snapshot": snapshot,
             }
         async with self.db.get_db() as session:
@@ -4399,6 +5061,14 @@ class WorkflowService:
                     .scalars()
                     .all()
                 )
+                if any(
+                    event.kind.startswith("process.")
+                    and not event.data.get("record_id")
+                    for event in events
+                ):
+                    raise RoleAssetError(
+                        "Process history is missing a record identity", status=409
+                    )
                 record_ids = [
                     event.data["record_id"]
                     for event in events
@@ -4418,9 +5088,18 @@ class WorkflowService:
                         .all()
                     )
                     by_record = {row.record_id: row for row in rows}
+                    if any(identity not in by_record for identity in record_ids):
+                        raise RoleAssetError(
+                            "Process history is missing a persisted record", status=409
+                        )
                     records = [
                         {
                             **by_record[identity].model_dump(mode="json"),
+                            "cursor": next(
+                                event.id
+                                for event in events
+                                if event.data.get("record_id") == identity
+                            ),
                             "root_run_id": _root_run_id(
                                 by_id[by_record[identity].run_id]
                             ),
@@ -4435,35 +5114,65 @@ class WorkflowService:
                         for identity in record_ids
                         if identity in by_record
                     ]
-                # Non-process events can alter arbitrary graph state. A single
-                # consistent snapshot resynchronizes those facts, not each token.
-                if all(
-                    event.kind.startswith(("process.", "checkpoint."))
-                    or event.kind
-                    in {"usage.started", "usage.reported", "usage.resumed"}
-                    for event in events
-                ):
-                    return {
-                        "cursor": events[-1].id if events else after,
-                        "reset": False,
-                        "events": [
-                            {
-                                "cursor": event.id,
-                                "run_id": event.run_id,
-                                "kind": event.kind,
-                                "data": event.data,
-                            }
-                            for event in events
-                        ],
-                        "records": records,
-                        "snapshot": None,
+                message_events = [
+                    event for event in events if event.kind == "member.message_sent"
+                ]
+                if any(not event.data.get("message_id") for event in message_events):
+                    raise RoleAssetError(
+                        "Message history is missing a record identity", status=409
+                    )
+                message_ids = [event.data["message_id"] for event in message_events]
+                messages = (
+                    (
+                        await session.execute(
+                            select(AgentWorkflowMessage).where(
+                                col(AgentWorkflowMessage.message_id).in_(message_ids)
+                            )
+                        )
+                    )
+                    .scalars()
+                    .all()
+                    if message_ids
+                    else []
+                )
+                by_message = {message.message_id: message for message in messages}
+                if any(identity not in by_message for identity in message_ids):
+                    raise RoleAssetError(
+                        "Message history is missing a persisted record", status=409
+                    )
+                message_records = [
+                    {
+                        **by_message[event.data["message_id"]].model_dump(
+                            mode="json", exclude={"payload"}
+                        ),
+                        "cursor": event.id,
+                        **by_message[event.data["message_id"]].payload,
                     }
-        snapshot = await self.get_run(username, run_id)
+                    for event in message_events
+                ]
+                return {
+                    "cursor": events[-1].id if events else after,
+                    "reset": False,
+                    "events": [
+                        {
+                            "cursor": event.id,
+                            "run_id": event.run_id,
+                            "kind": event.kind,
+                            "data": event.data,
+                        }
+                        for event in events
+                    ],
+                    "records": records,
+                    "messages": message_records,
+                    "snapshot": None,
+                }
+        snapshot = await self.get_run(username, run_id, history_limit=128)
         return {
             "cursor": snapshot["cursor"],
             "reset": True,
             "events": [],
             "records": [],
+            "messages": [],
             "snapshot": snapshot,
         }
 
@@ -5625,6 +6334,7 @@ class WorkflowService:
                 await session.execute(
                     select(AgentWorkflowMessage).where(
                         AgentWorkflowMessage.root_run_id == _root_run_id(caller),
+                        AgentWorkflowMessage.scope_id == caller.state["scope_id"],
                         AgentWorkflowMessage.sender_member_id == sender_id,
                         AgentWorkflowMessage.request_id == request.request_id,
                     )
@@ -5664,7 +6374,33 @@ class WorkflowService:
                     },
                 )
             )
-            await session.commit()
+            message_root_id = _root_run_id(caller)
+            message_scope_id = caller.state["scope_id"]
+            try:
+                await session.commit()
+            except IntegrityError:
+                await session.rollback()
+                previous = (
+                    await session.execute(
+                        select(AgentWorkflowMessage).where(
+                            AgentWorkflowMessage.root_run_id == message_root_id,
+                            AgentWorkflowMessage.scope_id == message_scope_id,
+                            AgentWorkflowMessage.sender_member_id == sender_id,
+                            AgentWorkflowMessage.request_id == request.request_id,
+                        )
+                    )
+                ).scalar_one_or_none()
+                if previous is None:
+                    raise
+                if (
+                    previous.recipient_member_id != request.recipient_member_id
+                    or previous.payload != content
+                ):
+                    raise RoleAssetError(
+                        "Message identity already belongs to another delivery",
+                        status=409,
+                    ) from None
+                return {"message_id": previous.message_id}
             return {"message_id": message.message_id}
 
     async def pending_member_messages(
@@ -7390,6 +8126,7 @@ class WorkflowService:
         payload: dict,
         *,
         timed_out: bool = False,
+        caller: dict | None = None,
     ) -> dict:
         """Save a human response before attempting any dependency release.
 
@@ -7400,6 +8137,7 @@ class WorkflowService:
             payload: Unique response identity, answer or explicit decision.
             timed_out: Trusted service scheduler requesting the saved deadline action;
                 never accepted from the external answer payload.
+            caller: Verified platform event identity, if submitted from chat.
 
         Returns:
             Current persisted run, including a response awaiting resume if paused.
@@ -7618,7 +8356,11 @@ class WorkflowService:
                         "artifact_ref": todo.data.get("artifact_ref"),
                     }
                     if timed_out
-                    else {"type": "human", "username": username},
+                    else {
+                        "type": "human",
+                        "username": username,
+                        **({"caller": caller} if caller is not None else {}),
+                    },
                 }
                 session.add(todo)
                 session.add(

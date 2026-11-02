@@ -425,7 +425,7 @@ class AgentWorkflowMessage(TimestampMixin, SQLModel, table=True):
 
     __tablename__: str = "agent_workflow_messages"  # pyright: ignore[reportIncompatibleVariableOverride]
     __table_args__ = (
-        UniqueConstraint("root_run_id", "sender_member_id", "request_id"),
+        UniqueConstraint("root_run_id", "scope_id", "sender_member_id", "request_id"),
     )
     message_id: str = Field(primary_key=True)
     root_run_id: str = Field(index=True)

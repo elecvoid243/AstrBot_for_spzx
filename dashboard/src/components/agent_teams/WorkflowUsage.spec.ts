@@ -1,7 +1,10 @@
-import { mount } from "@vue/test-utils";
+import { flushPromises, mount } from "@vue/test-utils";
 import { expect, it, vi } from "vitest";
 import RunLimitsForm from "./RunLimitsForm.vue";
 import RunUsagePanel from "./RunUsagePanel.vue";
+
+const historyApi = vi.hoisted(() => vi.fn());
+vi.mock("@/api/workflowAssets", () => ({ workflowAssetsApi: { runHistoryPage: historyApi } }));
 
 vi.mock("@/i18n/composables", () => ({
   useModuleI18n: () => ({ tm: (key: string) => key }),
@@ -74,3 +77,14 @@ it("shows unknown consumption, a limit stop and original call identities", () =>
   expect(wrapper.text()).toContain("usage.boundary");
 });
 
+it("pages prior usage without changing the accurate summary", async () => {
+  historyApi.mockResolvedValue({items:[{receipt_id:"old", created_at:"2026-01-01", kind:"model", quality:"reported", reported_tokens:3}], next_before:null});
+  const wrapper = mount(RunUsagePanel, {props:{run:{run_id:"task", control:{root_run_id:"root"}, usage:{tokens:{reported:100}, ledger_before:"boundary", ledger:[{receipt_id:"new",created_at:"2026-01-02",kind:"model",quality:"reported",reported_tokens:5}]}}},global:{stubs:{"v-btn":{template:"<button><slot /></button>"}}}});
+  await wrapper.find("button").trigger("click");
+  await flushPromises();
+  expect(historyApi).toHaveBeenCalledWith("root", "task", "usage", "boundary");
+  expect(wrapper.find('[data-testid="reported-tokens"]').text()).toContain("100");
+  expect(wrapper.text()).toContain("old");
+  expect(wrapper.text()).toContain("new");
+  expect(wrapper.find("button").exists()).toBe(false);
+});

@@ -184,7 +184,22 @@ async def run_choice_scenario(
         )
         readiness = await service.check_readiness("alice", asset["asset_id"], 1)
         assert readiness["ready"], readiness
-        run = await service.start_run("alice", asset["asset_id"], {"version": 1})
+        if scenario == "choice_chat":
+            from astrbot.core.agent_teams.chat import ChatCaller
+
+            roles.core_lifecycle.platform_manager = SimpleNamespace(platform_insts=[])
+            caller = ChatCaller(
+                platform_id="qq-main",
+                sender_id="12345",
+                source="qq-main:FriendMessage:12345",
+                profile_id="default",
+            )
+            await service.chat.save_access(
+                "alice", asset["asset_id"], {**caller.model_dump(), "version": 1}
+            )
+            run = await service.chat.invoke(caller, asset["asset_id"], {})
+        else:
+            run = await service.start_run("alice", asset["asset_id"], {"version": 1})
         (folder / "run.json").write_text(
             json.dumps({"run_id": run["run_id"]}), encoding="utf-8"
         )
@@ -296,8 +311,59 @@ async def run_choice_scenario(
                         ).status_code == 409
                         current = changed.json()["data"]
                         break
-                saved = await client.post(url, json=response)
-                assert saved.status_code == 200, saved.text
+                if scenario == "choice_chat":
+                    from tests.agent_teams.test_chat_browser_access import (
+                        send_chat_command,
+                    )
+
+                    notices = []
+
+                    async def send(actual, text):
+                        notices.append(text)
+                        return True
+
+                    await service.chat.deliver_pending(send, run["run_id"])
+                    assert (
+                        any(
+                            todo["todo_id"] in text and "Which report?" in text
+                            for text in notices
+                        )
+                        or todo["tool_call_id"] == "choice-two"
+                    )
+                    if todo["tool_call_id"] == "choice-one":
+                        text = "\n".join(notices)
+                        assert "- A: Brief" in text
+                        assert "- B: Detailed — Include evidence" in text
+                        assert "Recommended: Detailed" in text
+                        assert "Reason: The evidence is available." in text
+                        assert "Use the verified source." in text
+                        assert '"choice_id": "__free_text__"' in text
+                        assert '"free_text": "YOUR_TEXT"' in text
+                        assert '"choice_spec"' not in text
+                    payload = {
+                        key: value
+                        for key, value in response.items()
+                        if key != "request_id"
+                    }
+                    await send_chat_command(
+                        service,
+                        f"/asset answer {run['run_id']} {todo['todo_id']} "
+                        + json.dumps(payload),
+                    )
+                    saved_todo = next(
+                        item
+                        for item in (await service.get_run("alice", run["run_id"]))[
+                            "todos"
+                        ]
+                        if item["todo_id"] == todo["todo_id"]
+                    )
+                    assert saved_todo["response"]["choice_id"] == response["choice_id"]
+                    assert (
+                        saved_todo["decision_source"]["caller"] == caller.model_dump()
+                    )
+                else:
+                    saved = await client.post(url, json=response)
+                    assert saved.status_code == 200, saved.text
             await asyncio.sleep(0.03)
         expected = (
             "cancelled"

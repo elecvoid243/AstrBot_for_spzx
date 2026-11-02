@@ -28,6 +28,7 @@ import pytest
         "request_failure",
         "independent",
         "deadline_post",
+        "chat",
     ],
 )
 def test_dynamic_choice_original_call_survives_process_loss(tmp_path, boundary):

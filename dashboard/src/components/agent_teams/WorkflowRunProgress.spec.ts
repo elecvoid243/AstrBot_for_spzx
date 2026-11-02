@@ -16,6 +16,7 @@ describe("nested run progress", () => {
         parent_run_id: "child-scope",
         engine: "single_task_v2",
         definition: { name: "Child coordinator" },
+        iteration: 2,
         member: { member_id: "child-member", name: "Child member" },
       },
       state: { attempt_id: "child-attempt" },
@@ -76,6 +77,8 @@ describe("nested run progress", () => {
     try {
       expect(wrapper.findAll(".run-task")).toHaveLength(2);
       expect(wrapper.findAll(".run-waiting")).toHaveLength(0);
+      expect(wrapper.findAll(".run-task")[1].text()).toContain("child.scope: Pinned child");
+      expect(wrapper.findAll(".run-task")[1].text()).toContain("loops.iteration 2");
       await wrapper.findAll(".run-task")[1].trigger("click");
       expect(wrapper.emitted("select")?.at(-1)).toEqual(["child-task"]);
       expect(

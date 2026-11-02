@@ -87,10 +87,7 @@ async function loadPage(offset: number) {
   try {
     const page = await workflowAssetsApi.history(offset);
     if (disposed) return;
-    const runs = page.records.filter(
-      (record: any) => record.source.kind === "v2_run",
-    );
-    records.value = offset ? [...records.value, ...runs] : runs;
+    records.value = offset ? [...records.value, ...page.records] : page.records;
     nextOffset.value = page.next_offset;
   } catch (cause) {
     if (!disposed)

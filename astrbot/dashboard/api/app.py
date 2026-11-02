@@ -13,7 +13,6 @@ from astrbot import logger
 from astrbot.core import DEMO_MODE, LogBroker
 from astrbot.core.agent_teams.assets import RoleAssetService
 from astrbot.core.agent_teams.history import RunHistoryService
-from astrbot.core.agent_teams.migration import LegacyMigrationService
 from astrbot.core.agent_teams.workflows import WorkflowService
 from astrbot.core.core_lifecycle import AstrBotCoreLifecycle
 from astrbot.core.db import BaseDatabase
@@ -29,8 +28,6 @@ from astrbot.dashboard.plugin_page_auth import PluginPageAuth
 from astrbot.dashboard.responses import ApiError, error
 from astrbot.dashboard.services.account_cleanup import AccountRequestMiddleware
 from astrbot.dashboard.services.agent_collab_service import AgentCollabService
-from astrbot.dashboard.services.agent_team_run_service import AgentTeamRunService
-from astrbot.dashboard.services.agent_team_service import AgentTeamService
 from astrbot.dashboard.services.api_key_service import ApiKeyService
 from astrbot.dashboard.services.auth_service import AuthService
 from astrbot.dashboard.services.backup_service import BackupService
@@ -73,7 +70,6 @@ from astrbot.dashboard.services.update_service import (
 from astrbot.dashboard.static_encoding import DashboardGZipMiddleware
 
 from .agent_collab import legacy_router as legacy_agent_collab_router
-from .agent_teams import legacy_router as legacy_agent_teams_router
 from .api_keys import legacy_router as legacy_api_keys_router
 from .auth import _extract_dashboard_jwt, _extract_raw_api_key
 from .auth import legacy_router as legacy_auth_router
@@ -112,17 +108,6 @@ from .updates import (
 )
 
 CLEAR_SITE_DATA_HEADERS = {"Clear-Site-Data": '"cache"'}
-
-
-def _stop_member_turn(member: dict) -> None:
-    """Agent Teams run-stop hook: request the in-flight agent turn of a team
-    member's webchat session to stop (best-effort; the member row carries
-    its umo)."""
-    from astrbot.core.utils.active_event_registry import active_event_registry
-
-    umo = member.get("umo") or ""
-    if umo:
-        active_event_registry.request_agent_stop_all(umo)
 
 
 async def _shell_sessions_changed(owner_id: str) -> None:
@@ -269,29 +254,11 @@ def create_dashboard_asgi_app(
         # standard persistence + run stream) instead of a lossy proactive send.
         cron_manager.set_webchat_turn_injector(chat.inject_cron_turn)
 
-    services.agent_teams = AgentTeamService(
-        db=db,
-        core_lifecycle=core_lifecycle,
-        chat_service=chat,
-        busy_checker=lambda session_id: bool(chat.chat_runs_by_session.get(session_id)),
-    )
     services.role_assets = RoleAssetService(db, core_lifecycle)
     services.workflow_assets = getattr(core_lifecycle, "workflow_service", None)
     if services.workflow_assets is None:
         services.workflow_assets = WorkflowService(db, services.role_assets)
-    services.legacy_migration = LegacyMigrationService(
-        db, services.role_assets, services.workflow_assets
-    )
-    services.agent_team_runs = AgentTeamRunService(
-        db=db,
-        chat_service=chat,
-        busy_checker=services.agent_teams.busy_checker,
-        on_member_stop=_stop_member_turn,
-        config_checker=lambda cid: cid in core_lifecycle.astrbot_config_mgr.confs,
-    )
-    services.run_history = RunHistoryService(
-        db, services.workflow_assets, services.agent_team_runs
-    )
+    services.run_history = RunHistoryService(db, services.workflow_assets)
 
     # Kernel goal loop: injected goal turns on webchat sessions register as
     # first-class chat runs so they render and recover through the exact
@@ -488,7 +455,6 @@ def create_dashboard_asgi_app(
     # Legacy dashboard routes keep old /api/* callers working without entering OpenAPI.
     app.include_router(legacy_api_keys_router)
     app.include_router(legacy_agent_collab_router)
-    app.include_router(legacy_agent_teams_router)
     app.include_router(legacy_auth_router)
     app.include_router(legacy_backups_router)
     app.include_router(legacy_config_profiles_router)

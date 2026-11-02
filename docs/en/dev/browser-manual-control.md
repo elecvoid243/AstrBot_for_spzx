@@ -1,4 +1,4 @@
-# Browser manual control protocol (H01/H02)
+# Browser manual control protocol (H01/H02/H03)
 
 The existing `browser-use/status`, `snapshot`, `stream`, `stop`, and `close`
 extensions retain their methods and ownership rules. `manual_control_version: 1`
@@ -63,6 +63,43 @@ Its random loopback bearer credential is never delivered to the frontend. The
 legacy extension URL `/plugins/extensions/browser-use/manual` cannot accept public
 control bodies; only host-created request context can enter the audited handler.
 
-H03 keyboard/composition/paste; H04 scrolling,
+H04 scrolling,
 double-click and feedback; H05 full lifecycle and multiwindow recovery. They must
 retain these identity, acknowledgement and explicit-handback contracts.
+
+
+## Keyboard, composition and paste (H03)
+
+The same ordered socket also accepts `key` (`phase: down|up`, `code`, `key`,
+`modifiers` bitmask Alt=1/Ctrl=2/Meta=4/Shift=8, `repeat`), `text` (`text`,
+`source: typing|composition|paste`) and `reset_keys`. Key and text commands carry
+`input_id`, `control_epoch` and the displayed `target`, just like clicks.
+`reset_keys` uses the ordered ID and epoch but releases the original CDP sessions,
+so it works after a target change. The host schema and private runtime restrict
+these messages; they are not a CDP proxy. Text is limited to 2048 characters and
+4096 UTF-8 bytes, without NUL or invalid Unicode. Oversized text is rejected as a
+whole. The client keeps at most 128 pending commands, waits for each acknowledgement
+and discards queued content on blur, target change or handback. An uncertain result
+closes client input; content is never automatically replayed in another view.
+
+Clicking the image focuses a local composition textarea. Ordinary text uses
+`beforeinput`/`insertText`; function keys and edit shortcuts use key down/up with
+no second character event (Enter has its explicit newline semantics). Native IME
+preedit and candidates stay local; `compositionend` commits once and cancellation
+commits nothing. A visible preedit field appears while composing. Paste consumes
+only a user-generated `paste` event's plain text; no clipboard polling or automatic
+synchronization occurs. Remote Tab and Escape apply only while this textarea owns
+focus, including fullscreen. The visible **Leave keyboard control** button returns
+focus to local controls. **Hand back control** remains the explicit Agent handback.
+Blur, invalid targets, disconnect, release, expiry and stop release held keys on
+their original sessions. Input timelines contain categories only. Passwords, typed
+text and paste payloads are not action summaries; the Agent can still read visible
+page content after handback.
+
+Run `scripts/browser_manual_control_acceptance.py --text-input` with its normal
+plugin/runtime/dashboard/evidence arguments for authenticated production-host
+acceptance. Its native Chromium CDP composition exercises real browser composition
+events, but does not emulate a physical Windows IME candidate window or OS hotkeys.
+Those platform interactions still require a human Windows IME check.
+
+`keyboard_input_version: 1` announces keyboard/paste support separately from click control. Older plugins retain clicks and display a keyboard upgrade hint; older read-only clients ignore the new field.

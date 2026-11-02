@@ -107,7 +107,7 @@ paths:
         Requires a Dashboard login and an owned main ChatUI session. Tickets expire
         after 15 seconds and are submitted as {ticket} in the first message to
         /api/v1/plugins/browser-control/ws, never in a URL. The authenticated socket
-        acquires idle browser control before enabling input. See the manual control
+        acquires browser control before enabling typed BrowserControlCommand input. See the manual control
         protocol in docs/en/dev/browser-manual-control.md for input acknowledgements.
       security: [{ BearerAuth: [] }]
       requestBody:
@@ -8396,6 +8396,145 @@ components:
       schema: { type: string }
 
   schemas:
+    BrowserControlTarget:
+      additionalProperties: false
+      properties:
+        tab_id:
+          maxLength: 128
+          minLength: 1
+          title: Tab Id
+          type: string
+        document_id:
+          maxLength: 128
+          minLength: 1
+          title: Document Id
+          type: string
+        viewport_width:
+          exclusiveMinimum: 0
+          maximum: 32768
+          title: Viewport Width
+          type: number
+        viewport_height:
+          exclusiveMinimum: 0
+          maximum: 32768
+          title: Viewport Height
+          type: number
+        scroll_x:
+          title: Scroll X
+          type: number
+        scroll_y:
+          title: Scroll Y
+          type: number
+      required:
+      - tab_id
+      - document_id
+      - viewport_width
+      - viewport_height
+      - scroll_x
+      - scroll_y
+      title: BrowserControlTarget
+      type: object
+    BrowserControlCommand:
+      additionalProperties: false
+      description: Closed input vocabulary; browser targets can only be validated, not
+        chosen.
+      properties:
+        operation:
+          enum:
+          - click
+          - key
+          - text
+          - reset_keys
+          - heartbeat
+          - release
+          title: Operation
+          type: string
+        control_epoch:
+          minimum: 1
+          title: Control Epoch
+          type: integer
+        input_id:
+          anyOf:
+          - minimum: 1
+            type: integer
+          - type: 'null'
+          default: null
+          title: Input Id
+        x:
+          anyOf:
+          - minimum: 0
+            type: number
+          - type: 'null'
+          default: null
+          title: X
+        y:
+          anyOf:
+          - minimum: 0
+            type: number
+          - type: 'null'
+          default: null
+          title: Y
+        target:
+          anyOf:
+          - $ref: '#/components/schemas/BrowserControlTarget'
+          - type: 'null'
+          default: null
+        code:
+          anyOf:
+          - maxLength: 32
+            type: string
+          - type: 'null'
+          default: null
+          title: Code
+        key:
+          anyOf:
+          - maxLength: 32
+            type: string
+          - type: 'null'
+          default: null
+          title: Key
+        phase:
+          anyOf:
+          - enum:
+            - down
+            - up
+            type: string
+          - type: 'null'
+          default: null
+          title: Phase
+        modifiers:
+          default: 0
+          maximum: 15
+          minimum: 0
+          title: Modifiers
+          type: integer
+        repeat:
+          default: false
+          title: Repeat
+          type: boolean
+        text:
+          anyOf:
+          - maxLength: 2048
+            minLength: 1
+            type: string
+          - type: 'null'
+          default: null
+          title: Text
+        source:
+          anyOf:
+          - enum:
+            - typing
+            - composition
+            - paste
+            type: string
+          - type: 'null'
+          default: null
+          title: Source
+      required:
+      - operation
+      - control_epoch
+      title: BrowserControlCommand
+      type: object
     BrowserControlSessionRequest:
       type: object
       additionalProperties: false

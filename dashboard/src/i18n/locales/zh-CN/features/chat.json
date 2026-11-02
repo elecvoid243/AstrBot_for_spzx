@@ -3,7 +3,7 @@
     "changingControl": "正在切换控制权，等待浏览器动作静止。",
     "takeOver": "接管浏览器",
     "handBack": "交还控制权",
-    "humanActive": "Agent 已暂停，人工控制：可单击页面",
+    "humanActive": "Agent 已暂停，人工控制：单击画面后可输入",
     "manualDisconnected": "控制已断开，浏览器已暂停。请重新接管并明确交还。",
     "manualFailed": "接管暂不可用。如已开始接管，Agent 会保持暂停；请重新连接并明确交还。",
     "handedBack": "已交还控制权，浏览器及登录态保留。",
@@ -73,7 +73,12 @@
       "failed": "失败",
       "timed_out": "超时",
       "cancelled": "已取消"
-    }
+    },
+    "keyboardInput": "远程浏览器键盘输入",
+    "keyboardHint": "单击画面后输入；仅显式粘贴纯文本（最多 4096 UTF-8 字节）。交还后 Agent 仍可读取页面可见内容。",
+    "leaveKeyboard": "退出键盘控制",
+    "textTooLarge": "文本超过 2048 字符或 4096 UTF-8 字节上限。",
+    "upgradeKeyboard": "升级 Browser Use 后可使用键盘输入；当前仅支持点击。"
   },
   "title": "聊天吧!",
   "subtitle": "与AI助手进行对话",

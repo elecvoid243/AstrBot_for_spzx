@@ -40,6 +40,109 @@ afterEach(() => {
 });
 
 describe("Agent browser snapshots", () => {
+  it("orders text, commits composition once and drops queued content on blur", async () => {
+    class ControlSocket {
+      static OPEN = 1;
+      static instance: ControlSocket;
+      readyState = 1;
+      sent: Record<string, unknown>[] = [];
+      onopen?: () => void;
+      onmessage?: (event: { data: string }) => void;
+      onclose?: () => void;
+      constructor() {
+        ControlSocket.instance = this;
+      }
+      send(raw: string) {
+        this.sent.push(JSON.parse(raw));
+      }
+      close() {
+        this.readyState = 3;
+      }
+      ack(operation: string, mode = "human") {
+        this.onmessage?.({
+          data: JSON.stringify({
+            operation,
+            status: "applied",
+            control_epoch: 2,
+            state: { control_mode: mode },
+          }),
+        });
+      }
+    }
+    vi.stubGlobal("WebSocket", ControlSocket);
+    const frame = {
+      ...current,
+      manual_control_version: 1,
+      keyboard_input_version: 1,
+      image: "frame",
+      sequence: 1,
+    };
+    get.mockResolvedValueOnce(ok(frame)).mockResolvedValueOnce(ok(frame));
+    createSession.mockResolvedValue({
+      data: {
+        ticket: "private-ticket",
+        websocket_path: "/api/v1/plugins/browser-control/ws",
+      },
+    });
+    const view = mount(AgentBrowserView, {
+      props: { chatId: "chat-1", visible: true },
+      attachTo: document.body,
+    });
+    try {
+      await flushPromises();
+      await view.get(".agent-browser-takeover").trigger("click");
+      await flushPromises();
+      const socket = ControlSocket.instance;
+      socket.onopen?.();
+      socket.ack("acquire");
+      await flushPromises();
+      const sink = view.get("textarea");
+      (sink.element as HTMLTextAreaElement).focus();
+      await sink.trigger("beforeinput", { inputType: "insertText", data: "A" });
+      await sink.trigger("compositionstart");
+      await sink.trigger("beforeinput", {
+        inputType: "insertCompositionText",
+        data: "中",
+        isComposing: true,
+      });
+      await sink.trigger("compositionend", { data: "中文" });
+      await sink.trigger("beforeinput", {
+        inputType: "insertText",
+        data: "中文",
+      });
+      expect(socket.sent.filter((x) => x.operation === "text")).toHaveLength(1);
+      socket.ack("text");
+      socket.ack("reset_keys");
+      expect(
+        socket.sent.filter((x) => x.operation === "text").map((x) => x.text),
+      ).toEqual(["A", "中文"]);
+      await sink.trigger("beforeinput", {
+        inputType: "insertText",
+        data: "drop this",
+      });
+      await sink.trigger("blur");
+      socket.ack("text");
+      expect(socket.sent.at(-1)?.operation).toBe("reset_keys");
+      expect(socket.sent.some((x) => x.text === "drop this")).toBe(false);
+      socket.ack("reset_keys");
+      await sink.trigger("beforeinput", {
+        inputType: "insertText",
+        data: "local",
+      });
+      expect(socket.sent.some((x) => x.text === "local")).toBe(false);
+      await view.get(".agent-browser-takeover").trigger("click");
+      socket.ack("reset_keys");
+      expect(socket.sent.at(-1)?.operation).toBe("release");
+      socket.ack("release", "agent");
+      await flushPromises();
+      expect(view.text()).toContain("已交还控制权");
+      expect(view.text()).not.toContain("控制连接已断开");
+    } finally {
+      view.unmount();
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("allows takeover during navigation before the next image arrives", async () => {
     const navigating = { ...current, manual_control_version: 1 };
     get

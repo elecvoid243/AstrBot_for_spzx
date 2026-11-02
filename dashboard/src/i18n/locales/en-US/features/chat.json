@@ -3,7 +3,7 @@
     "changingControl": "Changing control. Waiting for browser actions to settle.",
     "takeOver": "Take control",
     "handBack": "Hand back",
-    "humanActive": "Agent paused. Human control: click the page",
+    "humanActive": "Agent paused. Human control: click the page to type",
     "manualDisconnected": "Control disconnected. The browser is paused; reconnect and hand back explicitly.",
     "manualFailed": "Control unavailable. The Agent remains paused if takeover started; reconnect and explicitly hand back control.",
     "handedBack": "Control handed back. Browser and login state retained.",
@@ -73,7 +73,12 @@
       "failed": "Failed",
       "timed_out": "Timed out",
       "cancelled": "Cancelled"
-    }
+    },
+    "keyboardInput": "Remote browser keyboard input",
+    "keyboardHint": "Click the page to type. Paste plain text explicitly (up to 4096 UTF-8 bytes). After handback, the Agent can read visible page content.",
+    "leaveKeyboard": "Leave keyboard control",
+    "textTooLarge": "Text exceeds the limit of 2048 characters or 4096 UTF-8 bytes.",
+    "upgradeKeyboard": "Upgrade Browser Use for keyboard input. This version supports clicks only."
   },
   "title": "Let's Chat!",
   "subtitle": "Chat with AI Assistant",

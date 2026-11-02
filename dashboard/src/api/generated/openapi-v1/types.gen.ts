@@ -204,6 +204,27 @@ export type BotRegistrationRequest = {
 
 export type action = 'start' | 'poll';
 
+/**
+ * Closed input vocabulary; browser targets can only be validated, not chosen.
+ */
+export type BrowserControlCommand = {
+    operation: 'click' | 'key' | 'text' | 'reset_keys' | 'heartbeat' | 'release';
+    control_epoch: number;
+    input_id?: (number | null);
+    x?: (number | null);
+    y?: (number | null);
+    target?: (BrowserControlTarget | null);
+    code?: (string | null);
+    key?: (string | null);
+    phase?: ('down' | 'up' | null);
+    modifiers?: number;
+    repeat?: boolean;
+    text?: (string | null);
+    source?: ('typing' | 'composition' | 'paste' | null);
+};
+
+export type operation = 'click' | 'key' | 'text' | 'reset_keys' | 'heartbeat' | 'release';
+
 export type BrowserControlSessionRequest = {
     chat_id: string;
     generation: string;
@@ -214,6 +235,15 @@ export type BrowserControlSessionResponse = {
     ticket: string;
     expires_in: number;
     websocket_path: string;
+};
+
+export type BrowserControlTarget = {
+    tab_id: string;
+    document_id: string;
+    viewport_width: number;
+    viewport_height: number;
+    scroll_x: number;
+    scroll_y: number;
 };
 
 /**

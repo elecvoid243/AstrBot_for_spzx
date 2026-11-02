@@ -38,12 +38,19 @@ class BrowserControlCommand(BaseModel):
     """Closed input vocabulary; browser targets can only be validated, not chosen."""
 
     model_config = ConfigDict(extra="forbid", strict=True)
-    operation: Literal["click", "heartbeat", "release"]
+    operation: Literal["click", "key", "text", "reset_keys", "heartbeat", "release"]
     control_epoch: int = Field(ge=1)
     input_id: int | None = Field(default=None, ge=1)
     x: float | None = Field(default=None, ge=0, allow_inf_nan=False)
     y: float | None = Field(default=None, ge=0, allow_inf_nan=False)
     target: BrowserControlTarget | None = None
+    code: str | None = Field(default=None, max_length=32)
+    key: str | None = Field(default=None, max_length=32)
+    phase: Literal["down", "up"] | None = None
+    modifiers: int = Field(default=0, ge=0, le=15)
+    repeat: bool = False
+    text: str | None = Field(default=None, min_length=1, max_length=2048)
+    source: Literal["typing", "composition", "paste"] | None = None
 
 
 class ConfigProfileCreateRequest(BaseModel):

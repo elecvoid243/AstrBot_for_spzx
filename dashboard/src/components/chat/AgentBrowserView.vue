@@ -72,7 +72,7 @@ watch(fullscreen, async () => {
   fullscreenButton.value?.focus({ preventScroll: true });
 });
 const onFullscreenKeyDown = (event: KeyboardEvent) => {
-  if (!fullscreen.value) return;
+  if (!fullscreen.value || event.target === keyboardSink.value) return;
   if (event.key === "Tab") {
     event.preventDefault();
     fullscreenButton.value?.focus({ preventScroll: true });
@@ -89,6 +89,7 @@ interface BrowserState {
   available: boolean;
   execution_state?: "active" | "stopped" | "closed" | "disabled";
   manual_control_version?: number;
+  keyboard_input_version?: number;
   control_mode?: "agent" | "acquiring" | "human" | "paused";
   control_epoch?: number;
   generation?: string;
@@ -134,6 +135,15 @@ const controlError = ref(false);
 const humanControl = ref(false);
 const manualPending = ref(false);
 const manualMessage = ref("");
+const keyboardSink = ref<HTMLTextAreaElement | null>(null);
+const keyboardFocused = ref(false);
+const composing = ref(false);
+let committedComposition: string | null = null;
+let compositionTimer: ReturnType<typeof setTimeout> | undefined;
+let inputQueue: Record<string, unknown>[] = [];
+let inputInFlight = false;
+let releasing = false;
+const localKeys = new Set<string>();
 let controlSocket: WebSocket | null = null;
 let manualEpoch = 0;
 let inputNumber = 0;
@@ -144,6 +154,16 @@ let acknowledgementTimer: ReturnType<typeof setTimeout> | undefined;
 function disconnectControl() {
   if (humanControl.value || (manualPending.value && controlSocket))
     manualMessage.value = t(`${key}.manualDisconnected`);
+  inputQueue = [];
+  inputInFlight = false;
+  releasing = false;
+  keyboardFocused.value = false;
+  composing.value = false;
+  committedComposition = null;
+  clearTimeout(compositionTimer);
+  localKeys.clear();
+  if (keyboardSink.value) keyboardSink.value.value = "";
+  keyboardSink.value?.blur();
   controlAttempt += 1;
   humanControl.value = false;
   manualPending.value = false;
@@ -194,7 +214,8 @@ async function acquireControl() {
       const ack = JSON.parse(message.data);
       if (ack.operation === "heartbeat" && ack.status === "applied") return;
       clearTimeout(acknowledgementTimer);
-      manualPending.value = false;
+      manualPending.value = releasing;
+      inputInFlight = false;
       if (ack.status !== "applied") {
         manualMessage.value = ack.message || t(`${key}.manualFailed`);
         disconnectControl();
@@ -202,6 +223,8 @@ async function acquireControl() {
       }
       manualEpoch = ack.control_epoch;
       if (ack.state?.control_mode === "agent") {
+        humanControl.value = false;
+        manualPending.value = false;
         manualMessage.value = t(`${key}.handedBack`);
         disconnectControl();
         return;
@@ -220,6 +243,7 @@ async function acquireControl() {
         }, 5000);
       }
       manualMessage.value = t(`${key}.humanActive`);
+      sendNextInput();
     };
     socket.onclose = () => {
       if (controlSocket !== socket) return;
@@ -237,28 +261,44 @@ async function acquireControl() {
 
 function releaseControl() {
   if (!humanControl.value || manualPending.value) return;
+  inputQueue = [];
+  resetKeyboard();
+  releasing = true;
   manualPending.value = true;
-  humanControl.value = false;
   clearInterval(heartbeatTimer);
-  controlSocket?.send(
-    JSON.stringify({ operation: "release", control_epoch: manualEpoch }),
-  );
-  acknowledgementTimer = setTimeout(() => disconnectControl(), 12000);
+  inputQueue.push({ operation: "release" });
+  sendNextInput();
 }
 
-function clickPage(event: MouseEvent) {
-  const current = state.value;
+/** Send queued input only after the previous acknowledgement. */
+function sendNextInput() {
   if (
+    inputInFlight ||
     !humanControl.value ||
-    manualPending.value ||
-    !current?.image ||
     controlSocket?.readyState !== WebSocket.OPEN
   )
     return;
-  const bounds = (
-    event.currentTarget as HTMLImageElement
-  ).getBoundingClientRect();
-  if (!bounds.width || !bounds.height) return;
+  const command = inputQueue.shift();
+  if (!command) return;
+  inputInFlight = true;
+  controlSocket.send(
+    JSON.stringify({
+      ...command,
+      control_epoch: manualEpoch,
+      input_id: ++inputNumber,
+    }),
+  );
+  acknowledgementTimer = setTimeout(() => disconnectControl(), 25000);
+}
+
+/** Capture the displayed target when the user acts, never at delayed dispatch. */
+function enqueueInput(command: Record<string, unknown>) {
+  const current = state.value;
+  if (!humanControl.value || manualPending.value || !current?.image) return;
+  if (inputQueue.length >= 128) {
+    disconnectControl();
+    return;
+  }
   const target = Object.fromEntries(
     [
       "tab_id",
@@ -269,26 +309,154 @@ function clickPage(event: MouseEvent) {
       "scroll_y",
     ].map((name) => [name, current[name as keyof BrowserState]]),
   );
-  manualPending.value = true;
-  controlSocket.send(
-    JSON.stringify({
-      operation: "click",
-      control_epoch: manualEpoch,
-      input_id: ++inputNumber,
-      x:
-        ((event.clientX - bounds.left) / bounds.width) *
-        current.viewport_width!,
-      y:
-        ((event.clientY - bounds.top) / bounds.height) *
-        current.viewport_height!,
-      target,
-    }),
-  );
-  acknowledgementTimer = setTimeout(() => {
-    manualMessage.value = t(`${key}.manualDisconnected`);
-    disconnectControl();
-  }, 25000);
+  inputQueue.push({
+    ...command,
+    ...(command.operation === "reset_keys" ? {} : { target }),
+  });
+  sendNextInput();
 }
+
+function resetKeyboard() {
+  keyboardFocused.value = false;
+  composing.value = false;
+  committedComposition = null;
+  clearTimeout(compositionTimer);
+  localKeys.clear();
+  if (keyboardSink.value) keyboardSink.value.value = "";
+  inputQueue = [];
+  if (humanControl.value) enqueueInput({ operation: "reset_keys" });
+}
+
+function clickPage(event: MouseEvent) {
+  const current = state.value;
+  if (!humanControl.value || manualPending.value || !current?.image) return;
+  const bounds = (
+    event.currentTarget as HTMLImageElement
+  ).getBoundingClientRect();
+  if (!bounds.width || !bounds.height) return;
+  keyboardSink.value?.focus({ preventScroll: true });
+  enqueueInput({
+    operation: "click",
+    x: ((event.clientX - bounds.left) / bounds.width) * current.viewport_width!,
+    y:
+      ((event.clientY - bounds.top) / bounds.height) * current.viewport_height!,
+  });
+}
+
+/** Keep composition local; only committed text crosses the authenticated channel. */
+function commitText(text: string, source: "typing" | "composition" | "paste") {
+  if (!keyboardFocused.value || !humanControl.value || !text) return;
+  if (
+    text.length > 2048 ||
+    new TextEncoder().encode(text).length > 4096 ||
+    text.includes("\0")
+  ) {
+    manualMessage.value = t(`${key}.textTooLarge`);
+    return;
+  }
+  enqueueInput({ operation: "text", text, source });
+}
+
+function beforeText(raw: Event) {
+  const event = raw as InputEvent;
+  if (composing.value || event.isComposing) return;
+  event.preventDefault();
+  if (
+    event.inputType === "insertFromComposition" ||
+    (committedComposition !== null && event.data === committedComposition)
+  ) {
+    committedComposition = null;
+    return;
+  }
+  committedComposition = null;
+  if (event.inputType === "insertText") commitText(event.data || "", "typing");
+}
+
+function startComposition() {
+  composing.value = true;
+  committedComposition = null;
+  clearTimeout(compositionTimer);
+  localKeys.clear();
+  enqueueInput({ operation: "reset_keys" });
+}
+
+function endComposition(event: CompositionEvent) {
+  if (!composing.value) return;
+  composing.value = false;
+  committedComposition = event.data;
+  clearTimeout(compositionTimer);
+  compositionTimer = setTimeout(() => {
+    committedComposition = null;
+  }, 0);
+  commitText(event.data, "composition");
+  if (keyboardSink.value) keyboardSink.value.value = "";
+}
+
+function pasteText(event: ClipboardEvent) {
+  event.preventDefault();
+  committedComposition = null;
+  if (!composing.value)
+    commitText(event.clipboardData?.getData("text/plain") || "", "paste");
+}
+
+function keyboardEvent(event: KeyboardEvent, phase: "down" | "up") {
+  if (!humanControl.value || !keyboardFocused.value) return;
+  event.stopPropagation();
+  if (composing.value || event.isComposing || event.keyCode === 229) return;
+  if (phase === "down") committedComposition = null;
+  // Let the browser deliver an explicit paste event; never read its clipboard API.
+  if ((event.ctrlKey || event.metaKey) && event.code === "KeyV") return;
+  const functional =
+    /^(Backspace|Tab|Enter|Escape|Delete|Home|End|PageUp|PageDown|Arrow(Left|Right|Up|Down)|(Shift|Control|Alt|Meta)(Left|Right))$/.test(
+      event.code,
+    );
+  const shortcut =
+    !event.getModifierState("AltGraph") &&
+    (event.ctrlKey || event.metaKey) &&
+    /^Key[A-Z]$/.test(event.code);
+  if (!functional && !shortcut && !localKeys.has(event.code)) return;
+  event.preventDefault();
+  if (phase === "up" && !localKeys.has(event.code)) return;
+  if (phase === "down") localKeys.add(event.code);
+  else localKeys.delete(event.code);
+  enqueueInput({
+    operation: "key",
+    phase,
+    key: event.key,
+    code: event.code,
+    modifiers:
+      (event.altKey ? 1 : 0) |
+      (event.ctrlKey ? 2 : 0) |
+      (event.metaKey ? 4 : 0) |
+      (event.shiftKey ? 8 : 0),
+    repeat: event.repeat,
+  });
+}
+
+watch(
+  () =>
+    JSON.stringify([
+      state.value?.generation,
+      state.value?.browser_session_id,
+      state.value?.tab_id,
+      state.value?.document_id,
+      state.value?.viewport_width,
+      state.value?.viewport_height,
+      state.value?.scroll_x,
+      state.value?.scroll_y,
+    ]),
+  (identity, previous) => {
+    if (identity !== previous && keyboardFocused.value) {
+      resetKeyboard();
+      keyboardSink.value?.blur();
+    }
+  },
+);
+const windowBlurred = () => {
+  resetKeyboard();
+  keyboardSink.value?.blur();
+};
+window.addEventListener("blur", windowBlurred);
 const connection = ref("loading");
 const resynchronized = ref(false);
 const pageVisible = ref(document.visibilityState !== "hidden");
@@ -745,6 +913,7 @@ window.addEventListener("online", networkChanged);
 window.addEventListener("offline", networkChanged);
 onBeforeUnmount(() => {
   disconnectControl();
+  window.removeEventListener("blur", windowBlurred);
   document.removeEventListener("keydown", onFullscreenKeyDown, true);
   clearTimeout(retryTimer);
   clearTimeout(markerTimer);
@@ -943,6 +1112,25 @@ onBeforeUnmount(() => {
               draggable="false"
               @click="clickPage"
             />
+            <textarea
+              v-if="humanControl && state?.keyboard_input_version === 1"
+              ref="keyboardSink"
+              class="agent-browser-keyboard"
+              :class="{ 'is-composing': composing }"
+              :aria-label="t(`${key}.keyboardInput`)"
+              autocomplete="off"
+              autocapitalize="off"
+              spellcheck="false"
+              @focus="keyboardFocused = true"
+              @blur="resetKeyboard"
+              @keydown="keyboardEvent($event, 'down')"
+              @keyup="keyboardEvent($event, 'up')"
+              @beforeinput="beforeText"
+              @input="if (!composing && keyboardSink) keyboardSink.value = '';"
+              @compositionstart="startComposition"
+              @compositionend="endComposition"
+              @paste="pasteText"
+            />
             <span
               v-if="marker"
               class="agent-browser-target"
@@ -951,6 +1139,25 @@ onBeforeUnmount(() => {
             />
           </div>
         </div>
+        <p v-if="humanControl" class="agent-browser-input-hint">
+          {{
+            t(
+              `${key}.${
+                state?.keyboard_input_version === 1
+                  ? "keyboardHint"
+                  : "upgradeKeyboard"
+              }`,
+            )
+          }}
+        </p>
+        <button
+          v-if="humanControl"
+          type="button"
+          class="agent-browser-leave agent-browser-button"
+          @click="windowBlurred"
+        >
+          {{ t(`${key}.leaveKeyboard`) }}
+        </button>
         <footer class="agent-browser-caption">
           <span
             ><Eye :size="12" aria-hidden="true" />{{
@@ -1544,5 +1751,41 @@ onBeforeUnmount(() => {
   .agent-browser-refresh {
     transition: none;
   }
+}
+</style>
+
+<style scoped>
+.agent-browser-keyboard {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  width: 2px;
+  height: 2px;
+  padding: 0;
+  border: 0;
+  opacity: 0.02;
+  resize: none;
+}
+.agent-browser-keyboard.is-composing {
+  width: min(80%, 360px);
+  height: 40px;
+  opacity: 1;
+  background: rgb(var(--v-theme-surface));
+  color: rgb(var(--v-theme-on-surface));
+}
+.agent-browser-viewport:focus-within {
+  outline: 2px solid rgb(var(--v-theme-primary));
+  outline-offset: -2px;
+}
+.agent-browser-input-hint {
+  font-size: 12px;
+  padding: 4px 12px;
+  margin: 0;
+}
+.agent-browser-leave {
+  width: auto;
+  padding: 4px 10px;
+  align-self: flex-start;
+  margin: 4px 12px;
 }
 </style>

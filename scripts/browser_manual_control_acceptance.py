@@ -49,6 +49,11 @@ async def main() -> None:
         action="store_true",
         help="Use a one-round budget and hold the real pre-reset request hook.",
     )
+    parser.add_argument(
+        "--text-input",
+        action="store_true",
+        help="Exercise H03 native Chromium text, IME, paste and focus through production ChatUI.",
+    )
     args = parser.parse_args()
     evidence = args.evidence_dir.resolve()
     evidence.mkdir(parents=True, exist_ok=False)
@@ -83,6 +88,8 @@ async def main() -> None:
     pre_reset_entered = asyncio.Event()
     pre_reset_release = asyncio.Event()
     post_effects = 0
+    form_state = {}
+    private_text = "H03-" + secrets.token_urlsafe(12)
 
     async def website(request):
         """Serve a deterministic authenticated counter page for actual CDP clicks.
@@ -93,7 +100,11 @@ async def main() -> None:
         Returns:
             Counter fixture or its acknowledged click number.
         """
-        nonlocal counter, post_effects
+        nonlocal counter, post_effects, form_state
+        if request.path == "/form-report":
+            assert request.cookies.get("fixture_login") == login_cookie
+            form_state = await request.json()
+            return web.Response(text="ok")
         if request.path == "/pre-reset":
             prepared = await request.json()
             assert prepared["prompt"] == "H02_PRE_RESET" and prepared["tools_prepared"]
@@ -118,6 +129,19 @@ async def main() -> None:
 <style>body{margin:0;font:24px Arial;background:#eff6ff}button{position:absolute;left:60px;top:60px;width:200px;height:80px;font-size:24px}p{position:absolute;left:60px;top:180px}</style>
 <button id="increment" onclick="fetch('/increment').then(r=>r.text()).then(n=>{document.getElementById('count').textContent=n;this.style.backgroundColor='#b9f6ca';this.textContent='Human updated '+n})">Click counter</button>
 <button style="top:300px;width:260px" onclick="fetch('/continue').then(r=>r.text()).then(n=>this.textContent=n)">Continue on fresh page</button>
+<form style="position:absolute;left:380px;top:60px;width:450px" onsubmit="event.preventDefault()">
+<input id="text" aria-label="English and Chinese" style="width:400px;height:50px;font-size:24px" autocomplete="off">
+<textarea id="multiline" aria-label="Multiline" style="display:block;margin-top:20px;width:400px;height:80px;font-size:24px"></textarea>
+<input id="password" aria-label="Test password" type="password" autocomplete="off" style="display:block;margin-top:20px;width:400px;height:50px">
+</form>
+<script>
+const held = new Set();
+const report = () => fetch('/form-report', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:document.getElementById('text').value,multiline:document.getElementById('multiline').value,password:document.getElementById('password').value,held:[...held],active:document.activeElement.id})});
+addEventListener('keydown',e=>{held.add(e.code);report()});
+addEventListener('keyup',e=>{held.delete(e.code);report()});
+addEventListener('input',report);
+addEventListener('focusin',report);
+</script>
 <p>Signed in: H01 fixture · Count: <b id="count">0</b></p>""",
             content_type="text/html",
         )
@@ -323,6 +347,7 @@ async def main() -> None:
     fixture = web.Application()
     fixture.router.add_post("/v1/chat/completions", completion)
     fixture.router.add_post("/pre-reset", website)
+    fixture.router.add_post("/form-report", website)
     fixture.router.add_get(
         "/v1/models",
         lambda _: web.json_response(
@@ -648,6 +673,145 @@ async def main() -> None:
                     "live displayed JPEG confirms actual click feedback"
                 )
                 await page.screenshot(path=str(evidence / "manual-click-zh.png"))
+                if args.text_input:
+
+                    async def form_matches(**expected):
+                        """Wait for the actual private page's event report.
+
+                        Args:
+                            **expected: Required field values, held keys or focus.
+                        """
+                        for _ in range(300):
+                            if all(form_state.get(k) == v for k, v in expected.items()):
+                                return
+                            await asyncio.sleep(0.1)
+                        raise AssertionError(
+                            "Private form did not reach the expected input/focus state"
+                        )
+
+                    async def click_form(x, y):
+                        """Focus a private form field via the displayed production image.
+
+                        Args:
+                            x: Remote CSS horizontal coordinate.
+                            y: Remote CSS vertical coordinate.
+                        """
+                        box = await image.bounding_box()
+                        await image.click(
+                            position={
+                                "x": box["width"] * x / 1280,
+                                "y": box["height"] * y / 720,
+                            }
+                        )
+
+                    await click_form(500, 85)
+                    await form_matches(active="text")
+                    await page.keyboard.type("English!")
+                    await page.keyboard.insert_text(" 中文，🙂")
+                    await form_matches(text="English! 中文，🙂")
+                    metrics["checks"].append(
+                        "H03: queued English, Chinese punctuation and emoji arrive once in real private form"
+                    )
+                    await page.keyboard.press("Control+a")
+                    await page.keyboard.insert_text("replacement")
+                    await form_matches(text="replacement")
+                    await page.keyboard.press("Backspace")
+                    await form_matches(text="replacemen")
+                    await page.keyboard.press("Shift+Home")
+                    await page.keyboard.insert_text("selected")
+                    await form_matches(text="selected")
+                    metrics["checks"].append(
+                        "H03: Ctrl+A, replacement, Backspace and Shift+Home edit actual selection"
+                    )
+                    # Native Chromium composition events, rather than synthetic DOM events.
+                    ime = await context.new_cdp_session(page)
+                    await ime.send(
+                        "Input.imeSetComposition",
+                        {"text": "中文候选", "selectionStart": 4, "selectionEnd": 4},
+                    )
+                    await asyncio.sleep(0.3)
+                    assert form_state["text"] == "selected"
+                    await ime.send("Input.insertText", {"text": "中文"})
+                    await form_matches(text="selected中文")
+                    await ime.send(
+                        "Input.imeSetComposition",
+                        {"text": "取消", "selectionStart": 2, "selectionEnd": 2},
+                    )
+                    await ime.send(
+                        "Input.imeSetComposition",
+                        {"text": "", "selectionStart": 0, "selectionEnd": 0},
+                    )
+                    await page.keyboard.insert_text("!")
+                    await form_matches(text="selected中文!")
+                    metrics["checks"].append(
+                        "H03: native Chromium IME preedit stays local, commit once, cancellation inserts nothing (not physical Windows IME)"
+                    )
+                    await context.grant_permissions(
+                        ["clipboard-read", "clipboard-write"]
+                    )
+                    await page.evaluate(
+                        "navigator.clipboard.writeText('explicit paste 粘贴🙂')"
+                    )
+                    await page.keyboard.press("Control+v")
+                    await form_matches(text="selected中文!explicit paste 粘贴🙂")
+                    metrics["checks"].append(
+                        "H03: user-triggered trusted paste transfers plain text through production host"
+                    )
+                    unchanged = form_state["text"]
+                    chat_input = page.locator(".chat-text-input, .chat-textarea")
+                    await chat_input.fill("local chat")
+                    await page.keyboard.type(" stays local")
+                    await form_matches(held=[])
+                    assert await chat_input.input_value() == "local chat stays local"
+                    assert form_state["text"] == unchanged
+                    await chat_input.fill("")
+                    await page.locator(".agent-browser-fullscreen").click()
+                    await click_form(500, 85)
+                    await page.keyboard.press("Tab")
+                    await form_matches(active="multiline")
+                    await page.keyboard.type("line1")
+                    await page.keyboard.press("Enter")
+                    await page.keyboard.type("line2")
+                    await form_matches(multiline="line1\nline2")
+                    await page.keyboard.down("Backspace")
+                    await page.keyboard.down("Backspace")
+                    await page.keyboard.up("Backspace")
+                    await form_matches(multiline="line1\nlin")
+                    await page.keyboard.insert_text("e2")
+                    metrics["checks"].append(
+                        "H03: repeated keydown applies repeat deletion without duplicated text"
+                    )
+                    await page.keyboard.press("Escape")
+                    await form_matches(multiline="line1\nline2", held=[])
+                    assert (
+                        await page.locator(".agent-browser-stage.is-fullscreen").count()
+                        == 1
+                    )
+                    await page.keyboard.down("Shift")
+                    await form_matches(held=["ShiftLeft"])
+                    await page.locator(".agent-browser-leave").click()
+                    await form_matches(held=[])
+                    await page.keyboard.up("Shift")
+                    await page.keyboard.press("Escape")
+                    assert (
+                        await page.locator(".agent-browser-stage.is-fullscreen").count()
+                        == 0
+                    )
+                    metrics["checks"].append(
+                        "H03: fullscreen Tab/Enter/Escape reach remote focus; visible leave button releases held Shift; chat typing stays local"
+                    )
+                    await click_form(500, 285)
+                    await form_matches(active="password")
+                    await page.keyboard.insert_text(private_text)
+                    await form_matches(password=private_text)
+                    await page.keyboard.down("Control")
+                    await form_matches(held=["ControlLeft"])
+                    await page.screenshot(path=str(evidence / "keyboard-zh.png"))
+                    await page.keyboard.up("Control")
+                    await form_matches(held=[])
+                    metrics["checks"].append(
+                        "H03: isolated password arrives without action-summary content"
+                    )
                 await page.locator(".agent-browser-takeover").click()
                 await page.locator(
                     '.agent-browser-view[data-human-control="false"]'
@@ -658,6 +822,23 @@ async def main() -> None:
                         break
                     await asyncio.sleep(0.1)
                 assert restored["control_mode"] == "agent"
+                if args.text_input:
+                    await page.get_by_text(
+                        "已交还控制权，浏览器及登录态保留。", exact=True
+                    ).wait_for()
+                    metrics["checks"].append(
+                        "H03: successful handback keeps the truthful UI confirmation"
+                    )
+                if args.text_input:
+                    await form_matches(
+                        text=unchanged,
+                        multiline="line1\nline2",
+                        password=private_text,
+                        held=[],
+                    )
+                    metrics["checks"].append(
+                        "H03: handback retains real form values, password and keyboard release"
+                    )
                 assert all(restored[key] == value for key, value in identity.items())
                 assert all(
                     restored[key] == state[key] for key in ("tab_id", "document_id")
@@ -710,9 +891,14 @@ async def main() -> None:
                         assert (await control_ws.receive_json())["status"] == "applied"
                     await asyncio.sleep(0.3)
                     assert counter == 2, counter
-                    await control_ws.send_json(
-                        {**command, "input_id": 2, "control_epoch": epoch - 1}
-                    )
+                    expired = {**command, "input_id": 2, "control_epoch": epoch - 1}
+                    if args.text_input:
+                        expired.update(
+                            operation="text", text="must not arrive", source="typing"
+                        )
+                        expired.pop("x")
+                        expired.pop("y")
+                    await control_ws.send_json(expired)
                     assert (await control_ws.receive_json())["status"] == "rejected"
                 for _ in range(30):
                     if (await status())["control_mode"] == "paused":
@@ -728,6 +914,47 @@ async def main() -> None:
                         "authenticated website cookie preserved",
                     ]
                 )
+                if args.text_input:
+                    async with client.post(
+                        ticket_url, headers=auth_headers, json=ticket_body
+                    ) as response:
+                        issued = await response.json()
+                    async with client.ws_connect(
+                        origin + issued["websocket_path"]
+                    ) as control_ws:
+                        await control_ws.send_json({"ticket": issued["ticket"]})
+                        ack = await control_ws.receive_json()
+                        assert ack["status"] == "applied"
+                        target = {k: ack["state"][k] for k in target}
+                        await control_ws.send_json(
+                            {
+                                "operation": "key",
+                                "control_epoch": ack["control_epoch"],
+                                "input_id": 1,
+                                "phase": "down",
+                                "key": "Shift",
+                                "code": "ShiftLeft",
+                                "modifiers": 8,
+                                "target": target,
+                            }
+                        )
+                        assert (await control_ws.receive_json())["status"] == "applied"
+                        await form_matches(held=["ShiftLeft"])
+                        await control_ws.send_json(
+                            {
+                                "operation": "text",
+                                "source": "paste",
+                                "text": "must not arrive",
+                                "control_epoch": ack["control_epoch"],
+                                "input_id": 2,
+                                "target": {**target, "document_id": "expired-document"},
+                            }
+                        )
+                        assert (await control_ws.receive_json())["status"] == "rejected"
+                    await form_matches(held=[], text=unchanged, password=private_text)
+                    metrics["checks"].append(
+                        "H03: actual host rejects stale text target and releases held key without inserting into the private form"
+                    )
                 await page.evaluate("localStorage.setItem('astrbot-locale', 'en-US')")
                 await page.reload()
                 await page.locator(".chat-text-input, .chat-textarea").wait_for(
@@ -1030,6 +1257,19 @@ async def main() -> None:
                 ) as response:
                     assert response.status in {403, 409, 503}, response.status
                 metrics["checks"].append("disabled plugin refuses control")
+                if args.text_input:
+                    logs = (evidence / "host.log").read_text(
+                        encoding="utf-8", errors="replace"
+                    )
+                    assert (
+                        private_text not in logs and "explicit paste 粘贴🙂" not in logs
+                    )
+                    assert private_text not in json.dumps(
+                        model_requests, ensure_ascii=False
+                    )
+                    metrics["checks"].append(
+                        "H03: password and pasted content absent from host logs and model tool summaries"
+                    )
                 assert len(cookies) == (5 if args.handoff_boundaries else 4) and all(
                     cookie == login_cookie for cookie in cookies
                 )

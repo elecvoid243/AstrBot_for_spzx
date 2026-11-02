@@ -7,7 +7,7 @@ export const client = createClient(createConfig());
 
 /**
  * Issue a single-use browser control ticket
- * Requires a Dashboard login and an owned main ChatUI session. Tickets expire after 15 seconds and are submitted as {ticket} in the first message to /api/v1/plugins/browser-control/ws, never in a URL. The authenticated socket acquires idle browser control before enabling input. See the manual control protocol in docs/en/dev/browser-manual-control.md for input acknowledgements.
+ * Requires a Dashboard login and an owned main ChatUI session. Tickets expire after 15 seconds and are submitted as {ticket} in the first message to /api/v1/plugins/browser-control/ws, never in a URL. The authenticated socket acquires browser control before enabling typed BrowserControlCommand input. See the manual control protocol in docs/en/dev/browser-manual-control.md for input acknowledgements.
  *
  */
 export const createBrowserControlSession = <ThrowOnError extends boolean = false>(options: OptionsLegacyParser<CreateBrowserControlSessionData, ThrowOnError>) => {

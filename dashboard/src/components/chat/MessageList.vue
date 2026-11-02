@@ -969,18 +969,16 @@ function formatDuration(seconds: number) {
   outline-offset: 1px;
 }
 
-/* Section break under the completed-work capsule: a hairline that fades
-   out at both ends, separating the collapsed work summary from the final
-   answer (same pattern as collapsed agent work in coding agents). */
+/* A short accent distinguishes the work summary from Markdown rules. */
 .agent-work-divider {
-  height: 1px;
+  width: 80px;
+  height: 3px;
   margin: 0 0 10px;
+  border-radius: 999px;
   background: linear-gradient(
     to right,
-    rgba(var(--v-theme-on-surface), 0),
-    rgba(var(--v-theme-on-surface), 0.13) 12%,
-    rgba(var(--v-theme-on-surface), 0.13) 88%,
-    rgba(var(--v-theme-on-surface), 0)
+    rgba(var(--v-theme-primary), 0.65),
+    rgba(var(--v-theme-primary), 0.12)
   );
 }
 

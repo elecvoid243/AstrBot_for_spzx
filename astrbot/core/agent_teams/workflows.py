@@ -3319,66 +3319,6 @@ class WorkflowService:
                 )
         effective = copy.deepcopy(role["effective"])
         catalog = await self.roles.get_resources()
-        if role.get("role_id"):
-            async with self.db.get_db() as session:
-                packages = (
-                    (
-                        await session.execute(
-                            select(AgentWorkflowPackage).where(
-                                AgentWorkflowPackage.owner_username == username
-                            )
-                        )
-                    )
-                    .scalars()
-                    .all()
-                )
-            closure = (
-                await self._asset_closure(username, asset)
-                if any(
-                    role["role_id"] in record.role_ids.values() for record in packages
-                )
-                else {}
-            )
-            _, dependencies = self._resolve_role_contract(role, closure, packages)
-            role["package_dependencies"] = copy.deepcopy(list(dependencies.values()))
-            for record in packages:
-                source_key = next(
-                    (
-                        key
-                        for key, identity in record.role_ids.items()
-                        if identity == role["role_id"]
-                    ),
-                    None,
-                )
-                if source_key is None:
-                    continue
-                package = WorkflowPackage.model_validate(record.package)
-                source_role = next(
-                    item
-                    for item in package.roles
-                    if f"{item.role_id}:{item.version}" == source_key
-                )
-                source_role.dependencies = [
-                    PackageDependency.model_validate(dependency)
-                    for dependency in dependencies.values()
-                ]
-                installation = RoleInstallation.model_validate(role["installation"])
-                installation.bindings = {
-                    slot: value
-                    for slot, value in installation.bindings.items()
-                    if slot in dependencies
-                }
-                # Apply the resolved resource contract before snapshot creation.
-                # Launch validates usage limits on the selected local definition.
-                _, issues = await self._preview_package_role(
-                    package,
-                    source_role,
-                    installation,
-                    catalog,
-                    validate_tasks=False,
-                )
-                if issues:
-                    raise RoleAssetError("Package dependencies are not ready", issues)
         persona = next(
             (p for p in catalog["personas"] if p["id"] == effective.get("persona_id")),
             None,

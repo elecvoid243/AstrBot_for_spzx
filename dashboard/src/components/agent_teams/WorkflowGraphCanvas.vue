@@ -223,6 +223,20 @@
           />
           <v-select
             v-if="
+              !selectedTask.human &&
+              !selectedTask.team &&
+              !selectedTask.workflow
+            "
+            :model-value="selectedTask.role ? 'inline' : 'template'"
+            :items="[
+              { title: tm('graph.directSource'), value: 'inline' },
+              { title: tm('graph.templateSource'), value: 'template' },
+            ]"
+            :label="tm('graph.roleSource')"
+            @update:model-value="changeSource"
+          />
+          <v-select
+            v-if="
               !selectedTask.human && !selectedTask.team && !selectedTask.role
             "
             v-model="selectedTask.role_id"
@@ -243,6 +257,26 @@
             density="compact"
             @update:model-value="checkpoint"
           />
+          <v-alert
+            v-if="
+              selectedTask.role_id &&
+              selectedRole &&
+              (selectedTask.role_version ?? 0) < selectedRole.version
+            "
+            type="info"
+            variant="tonal"
+            class="mb-3"
+          >
+            {{ tm("graph.newRoleVersion") }} v{{ selectedRole.version }}
+            <v-btn
+              variant="text"
+              @click="
+                selectedTask.role_version = selectedRole.version;
+                checkpoint();
+              "
+              >{{ tm("graph.upgradeRole") }}</v-btn
+            >
+          </v-alert>
           <v-text-field
             v-if="!selectedTask.human && !selectedTask.team"
             v-model="selectedTask.member"
@@ -309,6 +343,161 @@
                 @change="checkpoint"
               />
             </v-expansion-panels>
+            <v-btn
+              variant="tonal"
+              class="mt-3"
+              :loading="savingRole"
+              @click="saveInlineRole"
+              >{{ tm("graph.saveRole") }}</v-btn
+            >
+            <v-alert v-if="roleMessage" variant="tonal" class="mt-3">{{
+              roleMessage
+            }}</v-alert>
+          </template>
+          <template v-else-if="selectedTask.role_id && selectedTask.overrides">
+            <template
+              v-for="field in ['prompt', 'provider_id', 'persona_id'] as const"
+              :key="field"
+            >
+              <v-switch
+                :data-testid="`override-${field}`"
+                :model-value="
+                  Object.prototype.hasOwnProperty.call(
+                    selectedTask.overrides,
+                    field,
+                  )
+                "
+                :label="`${tm('roles.override')}: ${tm(
+                  field === 'prompt'
+                    ? 'roles.prompt'
+                    : field === 'provider_id'
+                    ? 'graph.modelOverride'
+                    : 'roles.localPersona',
+                )}`"
+                @update:model-value="setOverride(field, $event)"
+              />
+              <v-textarea
+                v-if="
+                  field === 'prompt' &&
+                  Object.prototype.hasOwnProperty.call(
+                    selectedTask.overrides,
+                    field,
+                  )
+                "
+                v-model="selectedTask.overrides.prompt"
+                data-testid="override-prompt-value"
+                :label="tm('roles.prompt')"
+                @update:model-value="checkpoint"
+              />
+              <v-select
+                v-else-if="
+                  field !== 'prompt' &&
+                  Object.prototype.hasOwnProperty.call(
+                    selectedTask.overrides,
+                    field,
+                  )
+                "
+                v-model="selectedTask.overrides[field]"
+                :data-testid="`override-${field}-value`"
+                :items="
+                  field === 'provider_id' ? catalog.models : catalog.personas
+                "
+                item-title="name"
+                item-value="id"
+                :label="
+                  tm(
+                    field === 'provider_id'
+                      ? 'graph.modelOverride'
+                      : 'roles.localPersona',
+                  )
+                "
+                clearable
+                @update:model-value="checkpoint"
+              />
+            </template>
+            <p class="text-caption">{{ tm("graph.overrideHint") }}</p>
+            <v-expansion-panels multiple
+              ><RoleResourcesEditor
+                :key="selectedTask.id + ':overrides'"
+                :definition="selectedTask.overrides"
+                :modes="resourceModes"
+                :catalog="catalog"
+                @change="checkpoint"
+            /></v-expansion-panels>
+            <div class="mt-4" data-testid="role-preview" aria-live="polite">
+              <strong>{{ tm("graph.effectiveRole") }}</strong>
+              <p class="text-caption">{{ tm("graph.previewUnsaved") }}</p>
+              <p v-if="rolePreviewLoading">{{ tm("graph.previewLoading") }}</p>
+              <v-alert
+                v-else-if="rolePreviewError"
+                type="error"
+                variant="tonal"
+                data-testid="role-preview-error"
+                :data-issue-path="`definition.tasks.${draft.tasks.indexOf(
+                  selectedTask,
+                )}.role_id`"
+                >{{ rolePreviewError }}</v-alert
+              >
+              <template v-else-if="rolePreview">
+                <p
+                  v-for="field in [
+                    'prompt',
+                    'persona_id',
+                    'provider_id',
+                    'tools',
+                    'skills',
+                    'knowledge_bases',
+                  ] as const"
+                  :key="field"
+                  :data-testid="`role-preview-${field}`"
+                  class="text-body-2 my-2"
+                >
+                  <strong
+                    >{{
+                      tm(
+                        field === "prompt"
+                          ? "roles.prompt"
+                          : field === "persona_id"
+                          ? "roles.localPersona"
+                          : field === "provider_id"
+                          ? "graph.modelOverride"
+                          : `roles.${field}`,
+                      )
+                    }}:</strong
+                  >
+                  {{ rolePreviewDisplay[field] }}
+                  <span class="text-caption"
+                    >({{
+                      rolePreview.sources[field] === "task"
+                        ? tm("graph.localOverride")
+                        : rolePreview.sources[field] === "role"
+                        ? `${tm("graph.templateSource")} v${
+                            selectedTask.role_version
+                          }`
+                        : rolePreview.sources[field] ===
+                          "workflow:default_provider_id"
+                        ? tm("graph.workflowDefault")
+                        : rolePreview.sources[field]
+                    }})</span
+                  >
+                </p>
+                <v-alert
+                  v-for="(issue, index) in rolePreview.issues"
+                  :key="index"
+                  type="warning"
+                  variant="tonal"
+                  class="mb-2"
+                  :data-issue-path="
+                    issue.path === 'definition.default_provider_id'
+                      ? issue.path
+                      : `definition.tasks.${draft.tasks.indexOf(
+                          selectedTask,
+                        )}.${issue.path}`
+                  "
+                  >{{ issue.path }}: {{ issue.message }}</v-alert
+                >
+              </template>
+            </div>
           </template>
           <template v-if="selectedTask.team">
             <v-select
@@ -549,6 +738,8 @@ import type { GraphDefinition } from "@/api/generated/openapi-v1";
 import { useModuleI18n } from "@/i18n/composables";
 import { collabMemberColor } from "@/utils/memberColors";
 import { workflowAssetsApi } from "@/api/workflowAssets";
+import { roleAssetsApi } from "@/api/roleAssets";
+import { extractApiError } from "@/utils/extractApiError";
 
 const props = withDefaults(
   defineProps<{
@@ -584,6 +775,7 @@ const emit = defineEmits<{
   (event: "update:definition", definition: GraphDefinition): void;
   (event: "selectTask", nodeId: string | null): void;
   (event: "validation", invalid: boolean): void;
+  (event: "roleSaved"): void;
 }>();
 const { tm } = useModuleI18n("features/agent-teams");
 const draft = ref<GraphDefinition>(
@@ -631,12 +823,108 @@ const selectedTask = computed(() =>
   draft.value.tasks.find((task) => task.id === selectedNode.value),
 );
 const resourceModes = ref<Record<string, string>>({});
+const savingRole = ref(false);
+const roleMessage = ref("");
+const rolePreview = ref<any>(null);
+const rolePreviewDisplay = computed<Record<string, string>>(() => {
+  if (!rolePreview.value) return {};
+  const effective = rolePreview.value.effective;
+  const display: Record<string, string> = {
+    prompt: effective.prompt || tm("graph.emptyResponsibility"),
+  };
+  for (const [field, category] of [
+    ["persona_id", "personas"],
+    ["provider_id", "models"],
+    ["tools", "tools"],
+    ["skills", "skills"],
+    ["knowledge_bases", "knowledge_bases"],
+  ]) {
+    const value = effective[field];
+    const ids = Array.isArray(value) ? value : value ? [value] : [];
+    display[field] = ids.length
+      ? ids
+          .map((id: string) => {
+            const name = props.catalog[category]?.find((item) => item.id === id)
+              ?.name;
+            return name && name !== id ? `${name} (${id})` : id;
+          })
+          .join(", ")
+      : Array.isArray(value)
+      ? tm("graph.resourcesDisabled")
+      : field === "persona_id"
+      ? tm("graph.noPersona")
+      : tm("graph.noModel");
+  }
+  return display;
+});
+const rolePreviewError = ref("");
+const rolePreviewLoading = ref(false);
+let rolePreviewRequest = 0;
+watch(
+  () =>
+    JSON.stringify({
+      id: selectedTask.value?.id,
+      role: selectedTask.value?.role_id,
+      version: selectedTask.value?.role_version,
+      overrides: selectedTask.value?.overrides,
+      defaultProvider: draft.value.default_provider_id,
+    }),
+  async () => {
+    const request = ++rolePreviewRequest;
+    rolePreview.value = null;
+    rolePreviewError.value = "";
+    const task = selectedTask.value;
+    if (!task?.role_id || !task.role_version || props.readonly) {
+      rolePreviewLoading.value = false;
+      return;
+    }
+    rolePreviewLoading.value = true;
+    const roleId = task.role_id;
+    const version = task.role_version;
+    const overrides = JSON.parse(JSON.stringify(task.overrides ?? {}));
+    const defaultProvider = draft.value.default_provider_id;
+    try {
+      let preview = await roleAssetsApi.resolve(roleId, version, overrides);
+      if (request !== rolePreviewRequest) return;
+      if (
+        defaultProvider &&
+        preview.effective.runner.type === "local" &&
+        !preview.effective.provider_id
+      ) {
+        preview = await roleAssetsApi.resolve(roleId, version, {
+          ...overrides,
+          provider_id: defaultProvider,
+        });
+        if (request !== rolePreviewRequest) return;
+        preview.sources.provider_id = "workflow:default_provider_id";
+        for (const issue of preview.issues)
+          if (issue.path === "overrides.provider_id")
+            issue.path = "definition.default_provider_id";
+      }
+      rolePreview.value = preview;
+    } catch (error: any) {
+      if (request !== rolePreviewRequest) return;
+      const failure = extractApiError(error, tm("errors.operationFailed"));
+      rolePreviewError.value = [
+        failure.message,
+        ...failure.fields.map((field) => `${field.path}: ${field.message}`),
+      ].join(" ");
+    } finally {
+      if (request === rolePreviewRequest) rolePreviewLoading.value = false;
+    }
+  },
+  { immediate: true, flush: "sync" },
+);
 watch(
   selectedTask,
   (task) => {
+    roleMessage.value = "";
+    if (task?.role_id && !task.overrides) task.overrides = {};
     for (const field of ["tools", "skills", "knowledge_bases"])
       resourceModes.value[field] =
-        (task?.role as any)?.[field] == null ? "inherit" : "custom";
+        ((task?.role ?? task?.overrides) as any)?.[field] == null
+          ? "inherit"
+          : "custom";
   },
   { immediate: true },
 );
@@ -659,6 +947,7 @@ onBeforeUnmount(() => {
   widthQuery?.removeEventListener?.("change", updateWidth);
   teamSelectionRequest++;
   teamReadRequest++;
+  rolePreviewRequest++;
 });
 const selectedEdge = computed(
   () =>
@@ -1099,6 +1388,58 @@ function changeRole(id: string) {
     selectedTask.value.role_version =
       props.roles.find((role) => role.role_id === id)?.version ?? 1;
   checkpoint();
+}
+function changeSource(source: string) {
+  const task = selectedTask.value;
+  if (!task) return;
+  if (source === "template") {
+    delete task.role;
+    delete task.installation;
+    task.role_id = props.roles[0]?.role_id ?? null;
+    task.role_version = props.roles[0]?.version ?? null;
+    task.overrides = {};
+  } else {
+    delete task.role_id;
+    delete task.role_version;
+    task.overrides = {};
+    task.role = { name: task.name };
+    task.installation = { profile_id: "default" };
+  }
+  for (const field of ["tools", "skills", "knowledge_bases"])
+    resourceModes.value[field] = "inherit";
+  checkpoint();
+}
+function setOverride(field: string, enabled: boolean | null) {
+  const overrides = selectedTask.value?.overrides as
+    | Record<string, any>
+    | undefined;
+  if (!overrides) return;
+  if (enabled) overrides[field] = field === "prompt" ? "" : null;
+  else delete overrides[field];
+  checkpoint();
+}
+async function saveInlineRole() {
+  const task = selectedTask.value;
+  if (!task?.role || !task.installation) return;
+  savingRole.value = true;
+  roleMessage.value = "";
+  try {
+    await roleAssetsApi.save(null, {
+      definition: task.role,
+      installation: task.installation,
+    });
+    if (selectedTask.value?.id === task.id)
+      roleMessage.value = tm("graph.roleSaved");
+    emit("roleSaved");
+  } catch (error: any) {
+    if (selectedTask.value?.id === task.id)
+      roleMessage.value = extractApiError(
+        error,
+        tm("errors.operationFailed"),
+      ).message;
+  } finally {
+    savingRole.value = false;
+  }
 }
 function connect({ from, to }: { from: string; to: string }) {
   if (from.startsWith("__") || to.startsWith("__")) return;

@@ -576,6 +576,18 @@
               assets.filter((asset) => asset.definition.kind === 'autonomous')
             "
             @validation="graphInvalid = $event"
+            @role-saved="
+              roleAssetsApi
+                .list()
+                .then((data) => (roles = data.roles))
+                .catch(
+                  (error) =>
+                    (formError = extractApiError(
+                      error,
+                      tm('errors.operationFailed'),
+                    ).message),
+                )
+            "
           />
           <v-alert
             v-if="formError"

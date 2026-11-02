@@ -6,6 +6,12 @@ Open **More Features → Agent Teams → Assets**. **Teams** contains versioned 
 
 The workspace and canvas screenshots use the actual components with isolated sample assets and a simulated resource catalog. They do not depict a real model run.
 
+In the Agent inspector, choose **Direct configuration** or **Role template**. A template reference fixes both the role and its version. A newer version is offered for an explicit upgrade; existing workflows and runs do not change automatically. Turn on an override to replace the template value, or turn it off to inherit it. An empty responsibility clears it; clearing the persona selects no persona, and clearing the model uses the workflow default. Tools, Skills, and knowledge bases can each inherit or use a complete custom selection; an empty custom selection disables that category. A directly configured Agent can be saved as a role template without its task or the workflow default model; select the saved template explicitly to use it.
+
+![A pinned role version and its upgrade action](/images/agent-teams-role-version-en.jpg)
+
+![Role overrides and effective configuration preview](/images/agent-teams-role-overrides-en.jpg)
+
 ## Navigation and previous entry points
 
 | Previous entry | Current entry |

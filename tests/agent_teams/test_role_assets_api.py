@@ -97,3 +97,67 @@ def test_direct_role_preview_and_legacy_field_diagnostics(tmp_path):
             "data"
         ]
         assert preview["issues"][0]["path"] == "definition.knowledge_bases.0"
+
+
+def test_resolve_pinned_role_http_keeps_overrides_and_checks_owner(tmp_path):
+    db = SQLiteDatabase(str(tmp_path / "resolve.db"))
+
+    async def catalog():
+        return {
+            "profiles": [{"id": "default"}],
+            "models": [{"id": "m"}],
+            "personas": [{"id": "p", "prompt": "Persona"}],
+            "tools": [{"id": "search", "name": "Search"}],
+            "skills": [],
+            "knowledge_bases": [],
+        }
+
+    app = FastAPI()
+    app.state.services = SimpleNamespace(
+        role_assets=RoleAssetService(db, catalog_loader=catalog)
+    )
+    app.include_router(router, prefix="/api/v1")
+    app.dependency_overrides[require_dashboard_user] = lambda: "alice"
+    with TestClient(app) as client:
+        definition = {
+            "name": "Writer",
+            "prompt": "First",
+            "provider_id": "m",
+            "persona_id": "p",
+            "tools": ["search"],
+        }
+        role_id = client.post(
+            "/api/v1/agent_roles", json={"definition": definition}
+        ).json()["data"]["role_id"]
+        definition["prompt"] = "Second"
+        assert (
+            client.put(
+                f"/api/v1/agent_roles/{role_id}",
+                json={"definition": definition, "expected_version": 1},
+            ).status_code
+            == 200
+        )
+        response = client.post(
+            f"/api/v1/agent_roles/{role_id}/resolve?version=1",
+            json={"persona_id": None, "tools": []},
+        )
+        assert response.status_code == 200
+        preview = response.json()["data"]
+        assert preview["effective"]["prompt"] == "First"
+        assert preview["effective"]["persona_id"] is None
+        assert preview["effective"]["tools"] == []
+        assert preview["sources"]["persona_id"] == "task"
+        assert preview["sources"]["prompt"] == "role"
+        assert (
+            client.post(
+                f"/api/v1/agent_roles/{role_id}/resolve?version=999", json={}
+            ).status_code
+            == 404
+        )
+        app.dependency_overrides[require_dashboard_user] = lambda: "bob"
+        assert (
+            client.post(
+                f"/api/v1/agent_roles/{role_id}/resolve?version=1", json={}
+            ).status_code
+            == 404
+        )

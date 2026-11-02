@@ -10,6 +10,80 @@ vi.mock("@/i18n/composables", () => ({
 }));
 
 describe("canvas asset editing", () => {
+  it("upgrades a pinned template without discarding explicit overrides", async () => {
+    const wrapper = mount(WorkflowGraphCanvas, {
+      props: {
+        definition: {
+          name: "Report",
+          tasks: [
+            {
+              id: "writer",
+              name: "Writer",
+              member: "writer",
+              role_id: "role",
+              role_version: 1,
+              task: "Write",
+              overrides: { persona_id: null, tools: [] },
+            },
+          ],
+          edges: [],
+        },
+        roles: [
+          {
+            role_id: "role",
+            version: 2,
+            versions: [1, 2],
+            definition: { name: "Writer" },
+          },
+        ],
+      },
+      global: {
+        stubs: {
+          TeamsFlowCanvas: {
+            name: "TeamsFlowCanvas",
+            emits: ["select-node"],
+            template: "<div />",
+          },
+          WorkflowLoopPanel: true,
+          "v-icon": true,
+          "v-chip": true,
+          "v-btn": { template: "<button><slot /></button>" },
+          "v-alert": { template: "<div><slot /></div>" },
+          "v-select": true,
+          "v-text-field": true,
+          "v-textarea": true,
+          "v-switch": true,
+          "v-spacer": true,
+          "v-expansion-panels": true,
+        },
+      },
+    });
+    try {
+      wrapper
+        .getComponent({ name: "TeamsFlowCanvas" })
+        .vm.$emit("select-node", "writer");
+      await flushPromises();
+      await wrapper
+        .findAll("button")
+        .find((button) => button.text() === "graph.upgradeRole")!
+        .trigger("click");
+      const saved: any = wrapper.emitted("update:definition")!.at(-1)![0];
+      expect(saved.tasks[0].role_version).toBe(2);
+      expect(saved.tasks[0].overrides).toEqual({ persona_id: null, tools: [] });
+      await wrapper
+        .findAll("button")
+        .find((button) => button.text() === "graph.undo")!
+        .trigger("click");
+      const undone: any = wrapper.emitted("update:definition")!.at(-1)![0];
+      expect(undone.tasks[0].role_version).toBe(1);
+      expect(undone.tasks[0].overrides).toEqual({
+        persona_id: null,
+        tools: [],
+      });
+    } finally {
+      wrapper.unmount();
+    }
+  });
   it("edits inline responsibility and resources, undoes, redoes and reopens after refresh", async () => {
     const definition = {
       name: "Report",

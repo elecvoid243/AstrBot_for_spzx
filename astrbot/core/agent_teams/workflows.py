@@ -1034,7 +1034,7 @@ class WorkflowService:
                     )
         elif isinstance(definition, GraphDefinition):
             validate_graph(definition)
-            for task in definition.tasks:
+            for task_index, task in enumerate(definition.tasks):
                 if task.workflow is not None:
                     raise RoleAssetError(
                         "Workflow calls are created by the coordinator"
@@ -1088,11 +1088,26 @@ class WorkflowService:
                     if fields:
                         raise RoleAssetError("Invalid team call", fields)
                     continue
-                await self._validate_task_definition(
-                    username,
-                    task,
-                    required_inputs=list(task.inputs),
-                )
+                try:
+                    await self._validate_task_definition(
+                        username,
+                        task,
+                        required_inputs=list(task.inputs),
+                    )
+                except RoleAssetError as exc:
+                    if exc.status != 404 or task.role_id is None:
+                        raise
+                    raise RoleAssetError(
+                        str(exc),
+                        [
+                            {
+                                "path": f"definition.tasks.{task_index}.role_id",
+                                "code": "REFERENCE",
+                                "message": "Choose an accessible exact role version",
+                            }
+                        ],
+                        status=exc.status,
+                    ) from exc
             validate_graph(definition)
         version = 1
         if asset_id is not None:
@@ -2280,7 +2295,7 @@ class WorkflowService:
                 getattr(task, "role_version", None),
             ) == (role.role_id, role.version):
                 result = await self.roles.preview_role(
-                    base, task.overrides.model_dump(exclude_none=True)
+                    base, task.overrides.model_dump(exclude_unset=True)
                 )
                 role_issues.extend(result["issues"])
                 if isinstance(definition, GraphDefinition):
@@ -5374,6 +5389,14 @@ class WorkflowService:
                         elif path.startswith(("installation.", "overrides.")):
                             path = f"definition.tasks.{index}." + path
                         fields.append({**issue, "path": path})
+                    if not fields and exc.status == 404 and task.role_id:
+                        fields.append(
+                            {
+                                "path": f"definition.tasks.{index}.role_id",
+                                "code": "REFERENCE",
+                                "message": "Choose an accessible exact role version",
+                            }
+                        )
                     raise RoleAssetError(str(exc), fields, exc.status) from exc
                 if (
                     team
@@ -5673,7 +5696,7 @@ class WorkflowService:
                 "role_id": task.role_id,
                 "role_version": task.role_version,
                 "task": task.task,
-                "overrides": task.overrides.model_dump(exclude_none=True),
+                "overrides": task.overrides.model_dump(exclude_unset=True),
                 "required_inputs": definition.required_inputs,
             }
             if task.output_contract is not None:

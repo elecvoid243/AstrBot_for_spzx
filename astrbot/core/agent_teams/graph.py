@@ -4,7 +4,7 @@ from operator import ge, gt, le, lt
 from string import Formatter
 from typing import Literal, cast
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_serializer, model_validator
 from referencing import Registry, Resource
 from referencing.jsonschema import DRAFT202012
 
@@ -81,6 +81,18 @@ class GraphTask(BaseModel):
     output_contract: dict | None = None
     position: dict[Literal["x", "y"], float] = Field(default_factory=dict)
 
+    @field_serializer("overrides")
+    def serialize_overrides(self, overrides: RoleOverrides) -> dict:
+        """Preserve the difference between omitted fields and explicit nulls.
+
+        Args:
+            overrides: Explicit node-local role settings.
+
+        Returns:
+            Only the settings supplied by the user, including explicit nulls.
+        """
+        return overrides.model_dump(exclude_unset=True)
+
     @model_validator(mode="after")
     def validate_execution(self):
         """Require either agent execution fields or an unambiguous human node.
@@ -102,7 +114,7 @@ class GraphTask(BaseModel):
                 or self.role is not None
                 or self.installation is not None
                 or self.task
-                or self.overrides.model_dump(exclude_none=True)
+                or self.overrides.model_dump(exclude_unset=True)
             ):
                 raise ValueError(
                     "Child calls cannot also configure agent or human execution"
@@ -120,7 +132,7 @@ class GraphTask(BaseModel):
                 raise ValueError(
                     "Agent tasks require a member, task and exactly one complete role source"
                 )
-            if inline and self.overrides.model_dump(exclude_none=True):
+            if inline and self.overrides.model_dump(exclude_unset=True):
                 raise ValueError("Inline agents do not use role overrides")
             if inline and "profile_id" not in self.installation.model_fields_set:
                 raise ValueError("Inline agents require an explicit profile_id")
@@ -138,7 +150,7 @@ class GraphTask(BaseModel):
                     None,
                     HUMAN_APPROVAL_CONTRACT if self.human.kind == "approval" else None,
                 )
-                or self.overrides.model_dump(exclude_none=True)
+                or self.overrides.model_dump(exclude_unset=True)
             ):
                 raise ValueError("Human tasks cannot also configure agent execution")
             if self.human.kind == "approval":
@@ -501,7 +513,11 @@ def validate_graph(definition: GraphDefinition) -> None:
             task.role_version,
             task.role,
             task.installation,
-            task.overrides.model_dump(),
+            {
+                key: value
+                for key, value in task.overrides.model_dump(exclude_unset=True).items()
+                if value is not None or key in ("persona_id", "provider_id")
+            },
         )
         if not task.team and task.member in members and members[task.member] != config:
             fields.append(

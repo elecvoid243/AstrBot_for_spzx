@@ -101,9 +101,9 @@ a.file-reference-link {
   max-inline-size: min(calc(100% - 0.25em), 36rem);
   margin-inline: 0.125em;
   padding: 0.12em 0.5em;
-  border: 1px solid rgba(var(--v-theme-on-surface, 35, 40, 50), 0.12);
+  border: 1px solid rgba(var(--v-theme-primary, 60, 150, 202), 0.32);
   border-radius: 6px;
-  background: rgba(var(--v-theme-on-surface, 35, 40, 50), 0.035);
+  background: rgba(var(--v-theme-primary, 60, 150, 202), 0.14);
   color: rgba(var(--v-theme-on-surface, 35, 40, 50), 0.88);
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   font-size: 0.85em;
@@ -119,10 +119,14 @@ a.file-reference-link {
 
 a.file-reference-link:hover,
 a.file-reference-link:focus-visible {
-  border-color: rgba(var(--v-theme-primary, 60, 150, 202), 0.45);
-  background: rgba(var(--v-theme-primary, 60, 150, 202), 0.08);
+  border-color: rgba(var(--v-theme-primary, 60, 150, 202), 0.65);
+  background: rgba(var(--v-theme-primary, 60, 150, 202), 0.22);
   color: rgb(var(--v-theme-on-surface, 35, 40, 50));
   text-decoration: none;
+}
+
+a.file-reference-link:active {
+  background: rgba(var(--v-theme-primary, 60, 150, 202), 0.3);
 }
 
 a.file-reference-link:focus-visible {

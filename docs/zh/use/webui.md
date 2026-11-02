@@ -624,7 +624,7 @@ Browser Use 0.3.0 需配套宿主和 Dashboard 提交，不能仅核对 AstrBot 
 
 升级先停宿主，备份配套三组件与 data，将旧插件移出 `data/plugins` 后使用原安装器；不可同时加载两份插件，保留独立 `plugin_data`。回退也需停宿主并整体恢复配套组件。重启宿主会结束当前浏览器会话；运行中接管同一任务则保留原会话。
 
-登录任务中等待“人工接管”确认，聚焦远端输入框，输入账号和密码并提交网页表单；登录成功后明确点击“交还 Agent”。隐藏、失联或刷新只会暂停，需明确恢复。摘要隐藏输入，但交还后的可见网页内容仍可被 Agent 观察。
+登录任务中等待“接管浏览器”确认，聚焦远端输入框，输入账号和密码并提交网页表单；登录成功后明确点击“交还控制权”。隐藏、失联或刷新只会暂停，需明确恢复。摘要隐藏输入，但交还后的可见网页内容仍可被 Agent 观察。
 
 执行 `python scripts/browser_manual_control_acceptance.py --plugin-zip <完整插件.zip> --dashboard-dir <dist> --evidence-dir <新目录> --login-handoff --pointer-input --text-input --lost-key-target --recovery`，单轮预算回归另用新目录加 `--handoff-boundaries`，不带 `--login-handoff`。脚本从最终 ZIP 经原 PowerShell 安装器安装，将完整 data 树搬迁到中文/空格路径，保留空白执行文件配置，使用真实生产 ChatUI、已安装插件、私有 Chromium 和确定性本地 OpenAI 兼容模型；输出截图、源码/提交核对、延迟/资源/清理测量及网络审计。
 

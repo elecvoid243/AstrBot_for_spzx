@@ -130,6 +130,29 @@ describe("Agent browser snapshots", () => {
         data: "local",
       });
       expect(socket.sent.some((x) => x.text === "local")).toBe(false);
+      await sink.trigger("focus");
+      await sink.trigger("keydown", {
+        code: "ShiftLeft",
+        key: "Shift",
+        shiftKey: true,
+        getModifierState: () => false,
+      });
+      socket.ack("key");
+      stream.enqueue(
+        new TextEncoder().encode(
+          `data: ${JSON.stringify({
+            ...frame,
+            type: "state",
+            image: undefined,
+            document_id: "next",
+            sequence: 2,
+          })}\n\n`,
+        ),
+      );
+      await flushPromises();
+      expect(socket.sent.at(-1)?.operation).toBe("reset_keys");
+      socket.ack("reset_keys");
+      socket.ack("reset_keys");
       await view.get(".agent-browser-takeover").trigger("click");
       socket.ack("reset_keys");
       expect(socket.sent.at(-1)?.operation).toBe("release");

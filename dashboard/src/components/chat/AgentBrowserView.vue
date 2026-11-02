@@ -294,7 +294,12 @@ function sendNextInput() {
 /** Capture the displayed target when the user acts, never at delayed dispatch. */
 function enqueueInput(command: Record<string, unknown>) {
   const current = state.value;
-  if (!humanControl.value || manualPending.value || !current?.image) return;
+  if (
+    !humanControl.value ||
+    manualPending.value ||
+    (command.operation !== "reset_keys" && !current?.image)
+  )
+    return;
   if (inputQueue.length >= 128) {
     disconnectControl();
     return;
@@ -307,7 +312,7 @@ function enqueueInput(command: Record<string, unknown>) {
       "viewport_height",
       "scroll_x",
       "scroll_y",
-    ].map((name) => [name, current[name as keyof BrowserState]]),
+    ].map((name) => [name, current?.[name as keyof BrowserState]]),
   );
   inputQueue.push({
     ...command,

@@ -131,21 +131,25 @@ async def test_retry_retains_failed_attempt_usage_and_fixed_inputs(workflow_env)
     env.service.ports_factory = lambda _: TeamPorts(
         deliver=deliver, collect=collect, is_busy=lambda _: False, emit=lambda _: None
     )
-    definition = {**env.asset["definition"], "required_inputs": ["topic"]}
-    definition["tasks"] = [
-        {
-            **definition["tasks"][0],
-            "task": "Write {topic}",
-            "inputs": {"topic": {"input": "topic"}},
-        }
-    ]
+    definition = {
+        "kind": "autonomous",
+        "name": "Pinned retry inputs",
+        "coordinator": {
+            "id": "coordinator",
+            "role_id": env.role["role_id"],
+            "role_version": 1,
+        },
+        "allowed_roles": [
+            {"id": "writer", "role_id": env.role["role_id"], "role_version": 1}
+        ],
+    }
     asset = await env.service.save_asset("alice", {"definition": definition})
     original = await env.service.start_run(
         "alice",
         asset["asset_id"],
         {
             "version": 1,
-            "inputs": {"topic": "Frozen subject"},
+            "inputs": {"goal": "Frozen subject"},
             "input_artifacts": [source["result_ref"]],
         },
     )
@@ -164,8 +168,8 @@ async def test_retry_retains_failed_attempt_usage_and_fixed_inputs(workflow_env)
     assert repeated["state"]["attempt_id"] == retried["state"]["attempt_id"]
     assert retried["state"]["attempt_id"] != failed["state"]["attempt_id"]
     assert retried["snapshot"] == failed["snapshot"]
-    assert retried["snapshot"]["inputs"] == {"topic": "Frozen subject"}
-    assert retried["snapshot"]["input_artifacts"] == []
+    assert retried["snapshot"]["inputs"] == {"goal": "Frozen subject"}
+    assert retried["snapshot"]["input_artifacts"] == [source["result_ref"]]
     assert retried["attempts"][0]["status"] == "failed"
     assert retried["attempts"][0]["state"]["reason"] == "Provider rejected the request"
     assert retried["process"] == failed["process"]

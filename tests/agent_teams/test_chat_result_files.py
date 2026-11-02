@@ -16,7 +16,7 @@ from tests.agent_teams.test_chat_invocations import chat_env as chat_env
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("kind", ["single", "workflow", "autonomous"])
+@pytest.mark.parametrize("kind", ["workflow", "autonomous"])
 async def test_only_published_final_files_are_delivered_to_confirmed_initiator(
     chat_env, browser_http, kind
 ):
@@ -25,7 +25,7 @@ async def test_only_published_final_files_are_delivered_to_confirmed_initiator(
     Args:
         chat_env: Actual shared service and durable SQLite storage.
         browser_http: Actual HTTP and JWT dependencies with no owner override.
-        kind: Shared single task, dependency workflow or autonomous team engine.
+        kind: Unified workflow graph or autonomous team engine.
     """
     service, role, _, _ = chat_env
     client, signing_key = browser_http
@@ -102,18 +102,24 @@ async def test_only_published_final_files_are_delivered_to_confirmed_initiator(
         "task": "Write the final report",
         "output_contract": contract,
     }
-    definition = {"name": "Published report", **task}
     if kind == "workflow":
         definition = {
             "name": "Published report",
+            "result_task_id": "report",
             "tasks": [{"id": "report", "name": "Report", "member": "writer", **task}],
         }
     elif kind == "autonomous":
         definition = {
             "name": "Published report",
             "kind": "autonomous",
-            "coordinator": {"role_id": role["role_id"], "role_version": 1},
-            "allowed_roles": [{"role_id": role["role_id"], "role_version": 1}],
+            "coordinator": {
+                "id": "coordinator",
+                "role_id": role["role_id"],
+                "role_version": 1,
+            },
+            "allowed_roles": [
+                {"id": "writer", "role_id": role["role_id"], "role_version": 1}
+            ],
             "output_contract": contract,
         }
     asset = await service.save_asset("operator", {"definition": definition})
@@ -202,6 +208,7 @@ async def test_only_published_final_files_are_delivered_to_confirmed_initiator(
         {
             "definition": {
                 "name": "Private other run",
+                "result_task_id": "gate",
                 "tasks": [
                     {
                         "id": "gate",

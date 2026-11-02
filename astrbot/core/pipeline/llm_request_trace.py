@@ -374,14 +374,10 @@ def bounded_context_value(value: object) -> dict:
                     "secret",
                     "token",
                     "encrypted",
-                    "data",
-                    "file_data",
-                    "base64",
-                    "b64_json",
-                    "bytes",
-                    "blob",
-                    "filename",
-                }:
+                } or (
+                    item.get("encoding") == "base64"
+                    and key.lower() in {"content", "data"}
+                ):
                     result[key] = {
                         "omitted": "sensitive or binary field",
                         "original_length": len(v)
@@ -401,24 +397,10 @@ def bounded_context_value(value: object) -> dict:
                 result.append(visit(v))
             return result
         if isinstance(item, str):
-            if item.startswith("{") and '"base64"' in item:
-                try:
-                    encoded = json.loads(item)
-                except ValueError:
-                    encoded = None
-                if (
-                    isinstance(encoded, dict)
-                    and encoded.get("encoding") == "base64"
-                    and "content" in encoded
-                ):
-                    binary = encoded.pop("content")
-                    encoded["content_omitted"] = "binary file content"
-                    encoded["encoded_length"] = (
-                        len(binary) if isinstance(binary, str) else None
-                    )
-                    item = json.dumps(encoded, ensure_ascii=False)
-            if item.startswith("{") and re.search(
-                r'"(?:provider_config|api_key|authorization|password|secret|token|file_data|base64|b64_json)"\s*:',
+            if item.lstrip().startswith(("{", "[")) and re.search(
+                r'"(?:provider_config|api_key|authorization|password|secret|token|encrypted)"\s*:'
+                r'|"encoding"\s*:\s*"base64"'
+                r'|"type"\s*:\s*"(?:image_url|audio_url|input_audio|input_image|image|audio|video|video_url|file|input_file)"',
                 item,
                 flags=re.IGNORECASE,
             ):
@@ -426,8 +408,11 @@ def bounded_context_value(value: object) -> dict:
                     structured = json.loads(item)
                 except ValueError:
                     structured = None
-                if isinstance(structured, dict):
+                if isinstance(structured, (dict, list)):
                     item = json.dumps(visit(structured), ensure_ascii=False)
+                    if budget <= 0:
+                        truncated = True
+                        return ""
             item = re.sub(
                 r"data:(?:image|audio|video|application)/[^\s,;]+(?:;[^\s,]*)?,[A-Za-z0-9+/=_-]+",
                 "[binary data URI omitted]",

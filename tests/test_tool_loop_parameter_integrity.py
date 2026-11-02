@@ -428,6 +428,9 @@ async def test_parameter_admission_persists_the_exact_final_view_and_invocation(
             [selected_tool()] + ([LLMResponse(role="assistant")] if repair else []) + [selected_tool()], max_context_tokens=20000
         )
         runner, executor = await parameter_runner(provider, streaming=streaming)
+        runner._tool_schema_param_set.tools[0].parameters["properties"]["data"] = {
+            "type": "string", "description": "Business data"
+        }
         runner.req.session_id = f"parameter-checkpoint-{streaming}"
         async for _ in runner.step():
             pass
@@ -445,6 +448,9 @@ async def test_parameter_admission_persists_the_exact_final_view_and_invocation(
     parameter_context = contexts[1]
     assert parameter_context["receipt_id"] == admissions[1]["receipt_id"]
     assert parameter_context["invocation_id"] == admissions[1]["invocation_id"]
+    recorded_tools = parameter_context["observation"]["value"]["tools"]
+    assert recorded_tools == sent["func_tool"].openai_schema()
+    assert recorded_tools[0]["function"]["parameters"]["properties"]["data"]["description"] == "Business data"
     recorded = parameter_context["observation"]["value"]["messages"]
     assert [item["content"] for item in recorded] == [message.model_dump(mode="json")["content"] for message in sent["contexts"]]
     assert "late instruction" in str(recorded) and "late extra" in str(recorded)

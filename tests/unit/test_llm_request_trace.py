@@ -275,7 +275,7 @@ def test_bounded_team_context_omits_binary_and_url_credentials():
     assert result["value"]["provider_config"]["omitted"] == "sensitive or binary field"
     file_result = bounded_context_value({"content": '{"encoding":"base64","content":"SECRET_BINARY"}'})
     assert "SECRET_BINARY" not in str(file_result)
-    assert "binary file content" in str(file_result)
+    assert "sensitive or binary field" in str(file_result)
     structured = bounded_context_value({"text": '{"api_key":"PRIVATE_CREDENTIAL","value":"allowed"}'})
     assert "PRIVATE_CREDENTIAL" not in str(structured)
     assert "sensitive or binary field" in str(structured)
@@ -285,3 +285,37 @@ def test_bounded_team_context_omits_binary_and_url_credentials():
     assert truncated["truncated"] and truncated["reason"] == "content limit"
     assert 0 < len(truncated["value"]["text"]) < 8192
     assert truncated["original_length"] > 8192
+
+
+def test_bounded_context_limits_nested_json_and_keeps_business_data():
+    import json
+
+    from astrbot.core.agent.tool import FunctionTool, ToolSet
+    from astrbot.core.pipeline.llm_request_trace import bounded_context_value
+
+    schema = ToolSet(tools=[FunctionTool(
+        name="submit", description="Submit business data",
+        parameters={"type": "object", "properties": {
+            "data": {"type": "string", "description": "Business data"},
+            "filename": {"type": "string", "description": "Report title"},
+        }},
+    )]).openai_schema()
+    inputs = {"data": "revenue", "filename": "report", "file_data": "ordinary value"}
+    visible = bounded_context_value({"tools": schema, "inputs": inputs})
+    assert visible["value"]["tools"] == schema
+    assert visible["value"]["inputs"] == inputs
+    assert not visible["truncated"]
+
+    huge = json.dumps({"api_key": "PRIVATE", "nested": {"data": "x" * 100000}})
+    result = bounded_context_value({"messages": [{"role": "assistant", "tool_calls": [{"function": {"arguments": huge}}]}]})
+    assert result["truncated"] and result["reason"] == "content limit"
+    assert "PRIVATE" not in str(result)
+    assert len(json.dumps(result["value"])) < 9000
+    argument = result["value"]["messages"][0]["tool_calls"][0]["function"]["arguments"]
+    assert argument == ""
+
+    media = json.dumps({"payload": [{"type": "input_audio", "input_audio": {"data": "SECRET_AUDIO"}}], "data": "business"})
+    sanitized = bounded_context_value({"arguments": media})
+    assert "SECRET_AUDIO" not in str(sanitized)
+    assert "binary media content" in str(sanitized)
+    assert "business" in str(sanitized)

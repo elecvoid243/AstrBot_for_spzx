@@ -2,6 +2,13 @@ import { httpClient } from "./http";
 import type { RoleSaveRequest } from "./generated/openapi-v1";
 
 export const roleAssetsApi = {
+  async delete(roleId: string) {
+    return (
+      await httpClient.delete(
+        `/api/v1/agent_roles/${encodeURIComponent(roleId)}`,
+      )
+    ).data.data;
+  },
   async list() {
     return (await httpClient.get("/api/v1/agent_roles")).data.data;
   },

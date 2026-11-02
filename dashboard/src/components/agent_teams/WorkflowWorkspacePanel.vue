@@ -96,7 +96,7 @@
                   })
             "
             >{{ tm("v2.edit") }}</v-btn
-          ></v-card-actions
+          ><v-btn data-testid="delete-asset" variant="text" color="error" @click="deleteTarget = { asset_id: item.asset_id, definition: item.body.definition }">{{ tm('deletion.delete') }}</v-btn></v-card-actions
         >
       </v-card>
       <v-card
@@ -153,11 +153,13 @@
           <v-btn variant="tonal" color="primary" @click="prepareRun(asset)">{{
             tm("v2.start")
           }}</v-btn>
+          <v-btn data-testid="delete-asset" variant="text" color="error" @click="deleteTarget = asset">{{ tm('deletion.delete') }}</v-btn>
         </v-card-actions>
       </v-card>
     </template>
 
-    <template v-else>
+    <DeleteAssetDialog :name="deleteTarget?.definition.name || (deleteTarget ? tm('draft.untitled') : null)" :busy="deleting" :error="deleteError" @cancel="deleteTarget = null; deleteError = ''" @confirm="deleteAsset" />
+    <template v-if="mode !== 'assets'">
       <nav
         class="d-flex flex-wrap ga-2 mb-4"
         :aria-label="tm('workbench.runs')"
@@ -871,6 +873,7 @@ import WorkflowRunProcess from "./WorkflowRunProcess.vue";
 import WorkflowRunControls from "./WorkflowRunControls.vue";
 import WorkflowHumanTodo from "./WorkflowHumanTodo.vue";
 import RunnerCapabilities from "./RunnerCapabilities.vue";
+import DeleteAssetDialog from "./DeleteAssetDialog.vue";
 import type {
   GraphDefinition,
   ToolResolutionRequest,
@@ -892,6 +895,23 @@ const { tm } = useModuleI18n("features/agent-teams");
 const route = useRoute();
 const router = useRouter();
 const assets = ref<any[]>([]);
+const deleteTarget = ref<any>(null);
+const deleting = ref(false);
+const deleteError = ref("");
+async function deleteAsset() {
+  if (!deleteTarget.value) return;
+  deleting.value = true;
+  deleteError.value = "";
+  try {
+    await workflowAssetsApi.delete(deleteTarget.value.asset_id);
+    deleteTarget.value = null;
+    await refresh();
+  } catch (cause) {
+    deleteError.value = extractApiError(cause, tm("errors.operationFailed")).message;
+  } finally {
+    deleting.value = false;
+  }
+}
 const drafts = ref<any[]>([]);
 const graphDraft = useAssetDraft("workflow");
 const visibleDrafts = computed(() =>

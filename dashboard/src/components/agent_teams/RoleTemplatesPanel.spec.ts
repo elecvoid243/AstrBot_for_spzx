@@ -10,6 +10,7 @@ const api = vi.hoisted(() => ({
   save: vi.fn(),
   preview: vi.fn(),
   get: vi.fn(),
+  delete: vi.fn(),
 }));
 vi.mock("@/api/roleAssets", () => ({ roleAssetsApi: api }));
 vi.mock("@/i18n/composables", () => ({
@@ -97,6 +98,33 @@ describe("reusable role configuration", () => {
       export_content: { prompt: null },
     });
     api.save.mockResolvedValue({ role_id: "r1", version: 1 });
+  });
+
+  it("confirms deletion and refreshes the role directory", async () => {
+    api.list
+      .mockResolvedValueOnce({
+        roles: [
+          {
+            role_id: "r1",
+            version: 1,
+            versions: [1],
+            definition: { name: "Researcher" },
+            installation: { profile_id: "default" },
+          },
+        ],
+      })
+      .mockResolvedValue({ roles: [] });
+    api.delete.mockResolvedValue({});
+    const panel = mount(RoleTemplatesPanel, { global: { stubs } });
+    await flushPromises();
+    await panel.get('[data-testid="delete-role"]').trigger("click");
+    expect(panel.text()).toContain("deletion.impact");
+    expect(api.delete).not.toHaveBeenCalled();
+    await panel.get('[data-testid="confirm-asset-deletion"]').trigger("click");
+    await flushPromises();
+    expect(api.delete).toHaveBeenCalledWith("r1");
+    expect(panel.text()).toContain("roles.empty");
+    panel.unmount();
   });
 
   it("distinguishes unpublished and published roles with drafts", async () => {

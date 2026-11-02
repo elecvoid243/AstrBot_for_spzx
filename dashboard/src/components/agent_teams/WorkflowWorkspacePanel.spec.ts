@@ -26,6 +26,7 @@ const api = vi.hoisted(() => ({
   control: vi.fn(),
   retry: vi.fn(),
   answer: vi.fn(),
+  delete: vi.fn(),
 }));
 const roles = vi.hoisted(() => ({ list: vi.fn(), resources: vi.fn() }));
 vi.mock("@/stores/customizer", () => ({
@@ -125,6 +126,23 @@ Object.assign(stubs, {
 });
 
 describe("single-task workflow workspace", () => {
+  it.each(["workflows", "teams"] as const)("confirms deletion in %s", async (kind) => {
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: "/", component: slotStub }] });
+    await router.push("/");
+    const item = { ...asset, definition: kind === "teams" ? { name: "Team", kind: "autonomous", allowed_roles: [] } : asset.definition };
+    api.list.mockResolvedValueOnce({ assets: [item] }).mockResolvedValue({ assets: [] });
+    api.delete.mockResolvedValue({});
+    const wrapper = mount(WorkflowWorkspacePanel, { props: { mode: "assets", assetKind: kind }, global: { plugins: [router], stubs } });
+    await flushPromises();
+    await wrapper.get('[data-testid="delete-asset"]').trigger("click");
+    expect(wrapper.text()).toContain("deletion.impact");
+    expect(api.delete).not.toHaveBeenCalled();
+    await wrapper.get('[data-testid="confirm-asset-deletion"]').trigger("click");
+    await flushPromises();
+    expect(api.delete).toHaveBeenCalledWith("asset-1");
+    expect(wrapper.text()).not.toContain("Report · v1");
+    wrapper.unmount();
+  });
   it("answers a persisted request from the global inbox", async () => {
     const router = createRouter({ history: createMemoryHistory(), routes: [{ path: "/", component: { template: "<div />" } }] });
     await router.push("/");

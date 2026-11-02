@@ -26,6 +26,13 @@
           .name ??
         ref.asset_id
       }}</strong>
+      <v-alert
+        v-if="definitions[`${ref.asset_id}:${ref.version}`]?.deleted"
+        type="warning"
+        variant="tonal"
+        class="mt-2"
+        >{{ tm("deletion.referenced") }}</v-alert
+      >
       <div class="workflow-selectors mt-2">
         <v-select
           :model-value="ref.version"

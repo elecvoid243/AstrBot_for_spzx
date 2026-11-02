@@ -7,8 +7,9 @@ from collections.abc import Awaitable, Callable
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
-from sqlalchemy import exists
+from sqlalchemy import exists, text
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col, select, update
 
 from astrbot.core.config.agent_runner import (
@@ -19,6 +20,7 @@ from astrbot.core.db import BaseDatabase
 from astrbot.core.db.po import (
     AgentAssetDraft,
     AgentAssetDraftPublication,
+    AgentAssetTombstone,
     AgentRoleInstallation,
     AgentRoleVersion,
     AgentWorkflowVersion,
@@ -896,6 +898,129 @@ class RoleAssetService:
             },
         }
 
+    @staticmethod
+    async def check_active_references(
+        session: AsyncSession, definition: dict, base: dict | None = None
+    ) -> None:
+        """Reject newly introduced references to deleted identities.
+
+        Args:
+            session: Transaction holding the SQLite write lock.
+            definition: Definition being saved, possibly incomplete.
+            base: Immutable base definition whose exact references may remain.
+
+        Raises:
+            RoleAssetError: A deleted identity is newly referenced.
+        """
+
+        def references(value: dict) -> set[tuple[str, str, int]]:
+            """Collect exact direct references from complete or partial definitions.
+
+            Args:
+                value: Current or base definition.
+
+            Returns:
+                Identity namespace, identity and fixed version for each reference.
+            """
+            members = value.get("tasks") if isinstance(value.get("tasks"), list) else []
+            if value.get("kind") == "autonomous" or "coordinator" in value:
+                members = [
+                    value.get("coordinator"),
+                    *(
+                        value.get("allowed_roles")
+                        if isinstance(value.get("allowed_roles"), list)
+                        else []
+                    ),
+                ]
+            refs = set()
+            for member in members:
+                if not isinstance(member, dict):
+                    continue
+                if isinstance(member.get("role_id"), str) and isinstance(
+                    member.get("role_version"), int
+                ):
+                    refs.add(("role", member["role_id"], member["role_version"]))
+                for name in ("team", "workflow"):
+                    ref = member.get(name)
+                    if (
+                        isinstance(ref, dict)
+                        and isinstance(ref.get("asset_id"), str)
+                        and isinstance(ref.get("version"), int)
+                    ):
+                        refs.add(("workflow", ref["asset_id"], ref["version"]))
+            workflows = value.get("allowed_workflows")
+            for ref in workflows if isinstance(workflows, list) else []:
+                if (
+                    isinstance(ref, dict)
+                    and isinstance(ref.get("asset_id"), str)
+                    and isinstance(ref.get("version"), int)
+                ):
+                    refs.add(("workflow", ref["asset_id"], ref["version"]))
+            return refs
+
+        for kind, asset_id, version in references(definition) - references(base or {}):
+            if await session.get(AgentAssetTombstone, (kind, asset_id)):
+                raise RoleAssetError(
+                    f"Deleted {kind} {asset_id} version {version} cannot be newly referenced",
+                    status=409,
+                )
+
+    async def delete_asset(self, username: str, kind: str, asset_id: str) -> None:
+        """Record deletion of an owned asset identity without removing its versions.
+
+        Args:
+            username: Authenticated asset owner.
+            kind: Identity namespace, either role or workflow.
+            asset_id: Stable asset identity.
+
+        Raises:
+            RoleAssetError: The kind is invalid or the asset is inaccessible.
+        """
+        if kind not in {"role", "workflow"}:
+            raise RoleAssetError("Invalid asset kind")
+        async with self.db.get_db() as session:
+            await session.execute(text("BEGIN IMMEDIATE"))
+            tombstone = await session.get(AgentAssetTombstone, (kind, asset_id))
+            if tombstone is not None:
+                if tombstone.owner_username != username:
+                    raise RoleAssetError("Asset not found", status=404)
+                return
+            model = AgentRoleVersion if kind == "role" else AgentWorkflowVersion
+            identity = model.role_id if kind == "role" else model.asset_id
+            row = (
+                (
+                    await session.execute(
+                        select(model).where(
+                            identity == asset_id, model.owner_username == username
+                        )
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            draft_kinds = ["role"] if kind == "role" else ["workflow", "autonomous"]
+            draft = (
+                (
+                    await session.execute(
+                        select(AgentAssetDraft).where(
+                            AgentAssetDraft.kind.in_(draft_kinds),
+                            AgentAssetDraft.asset_id == asset_id,
+                            AgentAssetDraft.owner_username == username,
+                        )
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            if row is None and draft is None:
+                raise RoleAssetError("Asset not found", status=404)
+            session.add(
+                AgentAssetTombstone(
+                    kind=kind, asset_id=asset_id, owner_username=username
+                )
+            )
+            await session.commit()
+
     async def list_roles(self, username: str) -> dict:
         """List the latest version of each role owned by a user.
 
@@ -912,6 +1037,11 @@ class RoleAssetService:
                         select(AgentRoleVersion.role_id)
                         .where(
                             AgentRoleVersion.owner_username == username,
+                            ~exists().where(
+                                AgentAssetTombstone.kind == "role",
+                                AgentAssetTombstone.asset_id
+                                == AgentRoleVersion.role_id,
+                            ),
                         )
                         .distinct()
                         .order_by(AgentRoleVersion.role_id)
@@ -920,11 +1050,8 @@ class RoleAssetService:
                 .scalars()
                 .all()
             )
-        return {
-            "roles": [
-                await self.get_role(username, identity) for identity in identities
-            ]
-        }
+        roles = [await self.get_role(username, identity) for identity in identities]
+        return {"roles": [role for role in roles if not role["deleted"]]}
 
     @staticmethod
     def _validate_draft_body(kind: str, body: dict) -> None:
@@ -1053,6 +1180,17 @@ class RoleAssetService:
         else:
             asset_id = uuid.uuid4().hex
         async with self.db.get_db() as session:
+            await session.execute(text("BEGIN IMMEDIATE"))
+            identity_kind = "role" if kind == "role" else "workflow"
+            if await session.get(AgentAssetTombstone, (identity_kind, asset_id)):
+                raise RoleAssetError("Asset has been deleted", status=409)
+            base = None
+            if kind != "role" and base_version is not None:
+                row = await session.get(AgentWorkflowVersion, (asset_id, base_version))
+                base = row.definition if row else None
+            await self.check_active_references(
+                session, body.get("definition", {}), base
+            )
             row = AgentAssetDraft(
                 kind=kind,
                 asset_id=asset_id,
@@ -1106,6 +1244,12 @@ class RoleAssetService:
                         select(AgentAssetDraft).where(
                             AgentAssetDraft.owner_username == username,
                             AgentAssetDraft.kind == kind,
+                            ~exists().where(
+                                AgentAssetTombstone.kind
+                                == ("role" if kind == "role" else "workflow"),
+                                AgentAssetTombstone.asset_id
+                                == AgentAssetDraft.asset_id,
+                            ),
                         )
                     )
                 )
@@ -1134,6 +1278,20 @@ class RoleAssetService:
         """
         self._validate_draft_body(kind, body)
         async with self.db.get_db() as session:
+            await session.execute(text("BEGIN IMMEDIATE"))
+            identity_kind = "role" if kind == "role" else "workflow"
+            if await session.get(AgentAssetTombstone, (identity_kind, asset_id)):
+                raise RoleAssetError("Asset has been deleted", status=409)
+            draft = await session.get(AgentAssetDraft, (kind, asset_id))
+            base = None
+            if kind != "role" and draft and draft.base_version is not None:
+                row = await session.get(
+                    AgentWorkflowVersion, (asset_id, draft.base_version)
+                )
+                base = row.definition if row else None
+            await self.check_active_references(
+                session, body.get("definition", {}), base
+            )
             result = await session.execute(
                 update(AgentAssetDraft)
                 .where(
@@ -1185,6 +1343,19 @@ class RoleAssetService:
             model.version > version,
         )
         async with self.db.get_db() as session:
+            await session.execute(text("BEGIN IMMEDIATE"))
+            if await session.get(
+                AgentAssetTombstone,
+                ("role" if kind == "role" else "workflow", asset_id),
+            ):
+                raise RoleAssetError("Asset has been deleted", status=409)
+            draft = await session.get(AgentAssetDraft, (kind, asset_id))
+            if kind != "role" and draft and draft.owner_username == username:
+                target = await session.get(AgentWorkflowVersion, (asset_id, version))
+                if target and target.owner_username == username:
+                    await self.check_active_references(
+                        session, draft.body.get("definition", {}), target.definition
+                    )
             result = await session.execute(
                 update(AgentAssetDraft)
                 .where(
@@ -1238,6 +1409,8 @@ class RoleAssetService:
                 raise
             self._validate_draft_body("role", draft["body"])
             async with self.db.get_db() as session:
+                if await session.get(AgentAssetTombstone, ("role", role_id)):
+                    raise RoleAssetError("Role has been deleted", status=409)
                 published = await session.get(
                     AgentAssetDraftPublication, ("role", role_id, draft_revision)
                 )
@@ -1262,6 +1435,9 @@ class RoleAssetService:
         elif role_id is None:
             role_id = uuid.uuid4().hex
         async with self.db.get_db() as session:
+            await session.execute(text("BEGIN IMMEDIATE"))
+            if await session.get(AgentAssetTombstone, ("role", role_id)):
+                raise RoleAssetError("Role has been deleted", status=409)
             if draft is not None:
                 result = await session.execute(
                     update(AgentAssetDraft)
@@ -1412,4 +1588,6 @@ class RoleAssetService:
                 "definition": row.definition,
                 "installation": installation.installation if installation else {},
                 "versions": [r.version for r in rows],
+                "deleted": await session.get(AgentAssetTombstone, ("role", role_id))
+                is not None,
             }

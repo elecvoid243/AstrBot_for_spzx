@@ -337,6 +337,14 @@
             density="compact"
             @update:model-value="changeRole"
           />
+          <v-alert
+            v-if="rolePreview?.deleted"
+            type="warning"
+            variant="tonal"
+            class="mb-2"
+            >{{ rolePreview.definition.name }} ·
+            {{ tm("deletion.referenced") }}</v-alert
+          >
           <v-select
             v-if="
               !selectedTask.control &&
@@ -606,6 +614,21 @@
             </div>
           </template>
           <template v-if="selectedTask.team">
+            <v-alert
+              v-if="
+                pinnedTeams[
+                  `${selectedTask.team.asset_id}:${selectedTask.team.version}`
+                ]?.deleted
+              "
+              type="warning"
+              variant="tonal"
+              >{{
+                pinnedTeams[
+                  `${selectedTask.team.asset_id}:${selectedTask.team.version}`
+                ].definition.name
+              }}
+              · {{ tm("deletion.referenced") }}</v-alert
+            >
             <v-select
               :model-value="selectedTask.team.asset_id"
               :items="teams"
@@ -631,6 +654,21 @@
             <p class="text-caption my-3">{{ tm("child.contractHint") }}</p>
           </template>
           <template v-if="selectedTask.workflow">
+            <v-alert
+              v-if="
+                pinnedTeams[
+                  `${selectedTask.workflow.asset_id}:${selectedTask.workflow.version}`
+                ]?.deleted
+              "
+              type="warning"
+              variant="tonal"
+              >{{
+                pinnedTeams[
+                  `${selectedTask.workflow.asset_id}:${selectedTask.workflow.version}`
+                ].definition.name
+              }}
+              · {{ tm("deletion.referenced") }}</v-alert
+            >
             <v-select
               :model-value="selectedTask.workflow.asset_id"
               :items="workflows"

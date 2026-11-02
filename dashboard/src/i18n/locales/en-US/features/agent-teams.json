@@ -1,4 +1,11 @@
 {
+  "deletion": {
+    "title": "Delete asset?",
+    "delete": "Delete",
+    "cancel": "Cancel",
+    "impact": "All versions will disappear from new selections and cannot be started directly, including from existing chat grants. Existing pinned references, active runs, history and artifacts remain available. This cannot be undone.",
+    "referenced": "This asset was deleted. The existing pinned version remains available here, but cannot be newly selected."
+  },
   "chatRun": {
     "binaryFile": "Use Download File to open this file with a local application.",
     "title": "Chat run",

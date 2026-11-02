@@ -28,16 +28,6 @@
         )
       }}: {{ run.usage.steps_used ?? tm("usage.unknown") }}
     </p>
-    <p
-      v-if="run.usage.historical?.unmetered"
-      class="text-body-2 mt-2"
-      data-testid="historical-usage"
-    >
-      {{ tm("usage.historicalUnknown") }}
-      {{ tm("usage.historicalResponses") }}:
-      {{ run.usage.historical.model_responses }}.
-    </p>
-    <p v-if="run.usage.historical?.truncated" class="text-warning">{{ tm("usage.historicalTruncated") }}</p>
     <p v-for="(value, key) in run.usage.limits" :key="key" class="text-caption">
       {{ tm(`usage.${key}`) }}: {{ value ?? tm("usage.unlimited") }}
     </p>

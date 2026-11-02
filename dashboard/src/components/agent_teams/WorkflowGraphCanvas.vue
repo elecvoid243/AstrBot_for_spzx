@@ -194,6 +194,15 @@
         <p class="text-caption my-3">{{ tm("graph.dragHint") }}</p>
         <v-btn
           variant="tonal"
+          color="primary"
+          size="small"
+          class="mb-3"
+          prepend-icon="mdi-robot-outline"
+          data-testid="add-inline-agent"
+          @click="addTask('agent:inline')"
+        >{{ tm("graph.addAgent") }}</v-btn>
+        <v-btn
+          variant="tonal"
           size="small"
           class="mb-3"
           data-testid="add-human-question"
@@ -1215,7 +1224,7 @@ watch(
   },
 );
 const selectedEdgeKey = ref<string | null>(null);
-const minimap = ref(props.definition.tasks.length !== 1);
+const minimap = ref(props.definition.tasks.length > 5);
 const collapsedLoops = ref<string[]>([]);
 const localError = ref("");
 const contractErrors = ref<Record<string, string>>({});
@@ -1695,9 +1704,9 @@ const nodes = computed<FlowNode[]>(() => [
           id: "__input",
           position: {
             x:
-              Math.min(0, ...taskNodes.value.map((node) => node.position.x)) -
+              (taskNodes.value.length ? Math.min(...taskNodes.value.map((node) => node.position.x)) : 0) -
               300,
-            y: 0,
+            y: taskNodes.value[0]?.position.y ?? 0,
           },
           data: {
             label: tm("graph.workflowInput"),
@@ -1709,9 +1718,9 @@ const nodes = computed<FlowNode[]>(() => [
           id: "__output",
           position: {
             x:
-              Math.max(0, ...taskNodes.value.map((node) => node.position.x)) +
+              (taskNodes.value.length ? Math.max(...taskNodes.value.map((node) => node.position.x)) : 0) +
               300,
-            y: 0,
+            y: taskNodes.value.find((node) => node.id === draft.value.result_task_id)?.position.y ?? 0,
           },
           data: {
             label: tm("graph.outputs"),
@@ -1944,6 +1953,7 @@ function restore(delta: number) {
  */
 function addTask(roleId: string, position?: { x: number; y: number }) {
   if (props.readonly) return;
+  const inline = roleId === "agent:inline";
   const role = props.roles.find((item) => item.role_id === roleId);
   const team = roleId.startsWith("team:")
     ? props.teams.find((item) => item.asset_id === roleId.slice(5))
@@ -1963,7 +1973,7 @@ function addTask(roleId: string, position?: { x: number; y: number }) {
       : roleId === "control:join"
       ? "join"
       : null;
-  if (!role && !humanKind && !team && !workflow && !controlKind) return;
+  if (!inline && !role && !humanKind && !team && !workflow && !controlKind) return;
   const seed =
     typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
       ? crypto.randomUUID().replace(/-/g, "").slice(0, 8)
@@ -1988,6 +1998,8 @@ function addTask(roleId: string, position?: { x: number; y: number }) {
       ? workflow.definition.name
       : humanKind
       ? tm(`human.${humanKind}Node`)
+      : inline
+      ? "Agent"
       : role!.definition.name,
     ...(controlKind
       ? {
@@ -2023,6 +2035,8 @@ function addTask(roleId: string, position?: { x: number; y: number }) {
             artifact_version: 1,
           },
         }
+      : inline
+      ? { member: id, role: { name: "Agent" }, installation: { profile_id: "default" } }
       : { member: id, role_id: roleId, role_version: role!.version }),
     task: "",
     inputs:
@@ -2417,14 +2431,27 @@ function layout() {
   max-width: 320px;
 }
 .graph-columns {
+  --toolbox-width: 180px;
+  --inspector-width: 300px;
   display: grid;
-  grid-template-columns: 180px minmax(0, 1fr) 300px;
+  grid-template-columns: var(--toolbox-width) minmax(0, 1fr) var(--inspector-width);
   height: var(--graph-height);
   min-height: 0;
 }
 .graph-columns.is-readonly {
   grid-template-columns: minmax(0, 1fr);
 }
+.graph-columns:has(> .graph-toolbox:not([open])) { --toolbox-width: 48px; }
+.graph-columns:has(> .graph-inspector:not([open])) { --inspector-width: 48px; }
+.graph-toolbox:not([open]), .graph-inspector:not([open]) {
+  padding: 16px 12px;
+  overflow: hidden;
+}
+.graph-toolbox:not([open]) > summary, .graph-inspector:not([open]) > summary {
+  writing-mode: vertical-rl;
+  letter-spacing: 2px;
+}
+summary:focus-visible { outline: 2px solid rgb(var(--v-theme-primary)); outline-offset: 4px; }
 .graph-toolbox,
 .graph-inspector {
   padding: 16px;
@@ -2563,7 +2590,8 @@ summary {
 }
 @media (max-width: 1200px) {
   .graph-columns {
-    grid-template-columns: 140px minmax(0, 1fr) 260px;
+    --toolbox-width: 160px;
+    --inspector-width: 280px;
   }
 }
 @media (max-width: 1000px) {
@@ -2573,6 +2601,10 @@ summary {
   }
   .graph-toolbox {
     border-right: 0;
+  }
+  .graph-toolbox:not([open]) > summary, .graph-inspector:not([open]) > summary {
+    writing-mode: horizontal-tb;
+    letter-spacing: normal;
   }
   .graph-inspector {
     border-left: 0;

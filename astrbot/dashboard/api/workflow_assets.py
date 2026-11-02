@@ -17,6 +17,7 @@ from astrbot.core.agent_teams.workflows import (
     ArtifactRevisionRequest,
     HumanAnswerRequest,
     ToolResolutionRequest,
+    TrialRunRequest,
     WorkflowControlRequest,
     WorkflowImportRequest,
     WorkflowRetryRequest,
@@ -57,7 +58,7 @@ def get_history_service(request: Request) -> RunHistoryService:
         request: Current authenticated HTTP request.
 
     Returns:
-        Source-aware history queries over the original stores.
+        Owner-scoped history queries over persisted root runs.
     """
     return request.app.state.services.run_history
 
@@ -69,7 +70,7 @@ async def list_history(
     username: str = Depends(require_dashboard_user),
     service: RunHistoryService = Depends(get_history_service),
 ):
-    """Page owned v2 runs, legacy runs and legacy member conversations.
+    """Page owned workflow and autonomous team root runs.
 
     Args:
         limit: Maximum records in one page.
@@ -81,68 +82,6 @@ async def list_history(
         Source-labelled overviews without full results or process content.
     """
     return ok(await service.list_records(username, limit, offset))
-
-
-@router.get("/agent_history/{kind}/{identity}")
-async def get_history_record(
-    kind: Literal["v2_run", "legacy_run", "legacy_conversation"],
-    identity: str,
-    offset: int = Query(default=0, ge=0),
-    limit: int = Query(default=50, ge=1, le=100),
-    username: str = Depends(require_dashboard_user),
-    service: RunHistoryService = Depends(get_history_service),
-):
-    """Read an original source without offering legacy execution controls.
-
-    Args:
-        kind: Source discriminator, never inferred from an overlapping ID.
-        identity: Original source identity.
-        offset: First long-term conversation message to read.
-        limit: Maximum long-term messages in one page.
-        username: Actual authenticated Dashboard user.
-        service: Shared history query boundary.
-
-    Returns:
-        Original content and source links, or an ownership error.
-    """
-    try:
-        return ok(await service.get_record(username, kind, identity, offset, limit))
-    except RoleAssetError as exc:
-        return JSONResponse(
-            error(str(exc), {"fields": exc.fields}), status_code=exc.status
-        )
-
-
-@router.get("/agent_history/legacy_run/{identity}/members/{member_id}")
-async def get_history_process(
-    identity: str,
-    member_id: str,
-    before_id: int | None = Query(default=None, ge=1),
-    limit: int = Query(default=50, ge=1, le=100),
-    username: str = Depends(require_dashboard_user),
-    service: RunHistoryService = Depends(get_history_service),
-):
-    """Read original legacy transcript rows, including their stored source IDs.
-
-    Args:
-        identity: Original legacy run identity.
-        member_id: Original member identity in that run.
-        before_id: Exclusive original transcript cursor.
-        limit: Maximum rows in one page.
-        username: Actual authenticated Dashboard user.
-        service: Shared history query boundary.
-
-    Returns:
-        Chronological original rows and an optional older-page cursor.
-    """
-    try:
-        return ok(
-            await service.get_process(username, identity, member_id, before_id, limit)
-        )
-    except RoleAssetError as exc:
-        return JSONResponse(
-            error(str(exc), {"fields": exc.fields}), status_code=exc.status
-        )
 
 
 @router.post("/workflow_chat_runs/{run_id}/connection")
@@ -608,6 +547,58 @@ async def start_run(
 ):
     try:
         return ok(await service.start_run(username, asset_id, payload.model_dump()))
+    except RoleAssetError as exc:
+        return JSONResponse(
+            error(str(exc), {"fields": exc.fields}), status_code=exc.status
+        )
+
+
+@router.post("/workflow_assets/{asset_id}/trials/preview")
+async def preview_trial(
+    asset_id: str,
+    payload: TrialRunRequest,
+    username: str = Depends(require_dashboard_user),
+    service: WorkflowService = Depends(get_workflow_service),
+):
+    """Preview a saved draft trial scope without dispatching tasks.
+
+    Args:
+        asset_id: Saved draft identity.
+        payload: Requested revision and scope.
+        username: Authenticated dashboard owner.
+        service: Shared workflow service.
+
+    Returns:
+        Selected nodes and the required input contracts.
+    """
+    try:
+        return ok(await service.preview_trial(username, asset_id, payload.model_dump()))
+    except RoleAssetError as exc:
+        return JSONResponse(
+            error(str(exc), {"fields": exc.fields}), status_code=exc.status
+        )
+
+
+@router.post("/workflow_assets/{asset_id}/trials")
+async def start_trial(
+    asset_id: str,
+    payload: TrialRunRequest,
+    username: str = Depends(require_dashboard_user),
+    service: WorkflowService = Depends(get_workflow_service),
+):
+    """Start a draft trial using the shared workflow scheduler.
+
+    Args:
+        asset_id: Saved draft identity.
+        payload: Requested scope and explicitly selected inputs.
+        username: Authenticated dashboard owner.
+        service: Shared workflow service.
+
+    Returns:
+        The independent trial run snapshot.
+    """
+    try:
+        return ok(await service.start_trial(username, asset_id, payload.model_dump()))
     except RoleAssetError as exc:
         return JSONResponse(
             error(str(exc), {"fields": exc.fields}), status_code=exc.status

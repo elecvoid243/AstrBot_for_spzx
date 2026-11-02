@@ -33,8 +33,6 @@ import pytest
         "usage_shared_wait",
         "usage_native_gemini_empty",
         "usage_native_gemini_components",
-        "usage_legacy_response",
-        "usage_legacy_applied",
     ],
 )
 def test_real_usage_boundaries_retain_consumption_and_stop_uncommitted_work(
@@ -199,7 +197,7 @@ def test_real_usage_boundaries_retain_consumption_and_stop_uncommitted_work(
                 return
             if self.path == "/tool":
                 effects.append(payload)
-                response = {"text": "Verified evidence."}
+                response = {"text": "Verified evidence. " * 1000 if scenario == "usage_compression" else "Verified evidence."}
             else:
                 nonlocal active_models, peak_models
                 with recorder_lock:
@@ -283,7 +281,7 @@ def test_real_usage_boundaries_retain_consumption_and_stop_uncommitted_work(
     server = ThreadingHTTPServer(("127.0.0.1", 0), Recorder)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     root = Path(__file__).resolve().parents[2]
-    environment = {**os.environ, "PYTHONUTF8": "1"}
+    environment = {**os.environ, "PYTHONUTF8": "1", "ASTRBOT_ROOT": str(tmp_path / "runtime")}
     limits = {
         "max_steps": 1
         if scenario
@@ -321,7 +319,7 @@ def test_real_usage_boundaries_retain_consumption_and_stop_uncommitted_work(
                     "start",
                     scenario,
                     json.dumps(
-                        None if scenario.startswith("usage_legacy_") else limits
+                        limits
                     ),
                 ],
                 cwd=root,
@@ -376,7 +374,7 @@ def test_real_usage_boundaries_retain_consumption_and_stop_uncommitted_work(
                     else [{"value": "once"}] * 2
                     if scenario in {"usage_parallel", "usage_compression"}
                     else [{"value": "once"}]
-                    if scenario in {"usage_completed_limit", "usage_legacy_applied"}
+                    if scenario == "usage_completed_limit"
                     else []
                 )
                 assert (
@@ -443,33 +441,6 @@ def test_real_usage_boundaries_retain_consumption_and_stop_uncommitted_work(
         }
         ledger = after["usage"]["ledger"]
         assert len({r["receipt_id"] for r in ledger}) == len(ledger)
-        if scenario.startswith("usage_legacy_"):
-            assert before["snapshot"].get("usage_protocol") is None
-            assert after["status"] == "completed"
-            assert len(requests) == 3 and effects == [{"value": "once"}]
-            assert after["usage"]["model_calls"] == len(requests) - 1
-            assert after["usage"]["tokens"]["reported"] == 24
-            assert after["usage"]["tokens"]["unknown_calls"] is None
-            history = after["usage"]["historical"]
-            assert history["unmetered"] is True
-            assert history["model_responses"] == 1
-            assert {
-                record["record_id"]
-                for record in before["process"]
-                if record["kind"] == "model_response"
-            } <= {record["record_id"] for record in history["records"]}
-            assert {record["record_id"] for record in before["process"]} <= {
-                record["record_id"] for record in after["process"]
-            }
-            assert all(
-                record["attempt_id"] == before["state"]["attempt_id"]
-                for record in history["records"]
-            )
-            assert len(history["records"]) == 1
-            overview = evidence["overview"]["usage"]
-            assert overview["historical"] == {**history, "records": []}
-            assert overview["tokens"] == after["usage"]["tokens"]
-            return
         if scenario.startswith("usage_native_"):
             assert len(requests) == len(ledger) == limits["max_steps"]
             assert all(
@@ -598,6 +569,10 @@ def test_real_usage_boundaries_retain_consumption_and_stop_uncommitted_work(
                     for request in requests
                 )
                 assert after["usage"]["tokens"]["estimated"] > 0
+                contexts = [json.dumps(request["contexts"]) for request in requests]
+                assert any("a: Read evidence" in context for context in contexts)
+                assert any("b: Read evidence" in context for context in contexts)
+                assert all(not ("a: Read evidence" in context and "b: Read evidence" in context) for context in contexts)
     finally:
         release_first_model.set()
         server.shutdown()

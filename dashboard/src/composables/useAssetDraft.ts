@@ -5,6 +5,7 @@ type Kind = "role" | "workflow" | "autonomous";
 export type Draft = {
   asset_id: string;
   revision: number;
+  published_revision?: number | null;
   body: any;
   base_version: number | null;
 };
@@ -105,7 +106,8 @@ export function useAssetDraft(kind: Kind) {
     if (!current) throw new Error("Draft is not open");
     if (current.running) {
       await current.running;
-      return;
+      if (session !== current) throw new Error("Draft session changed");
+      return current.draft;
     }
     current.running = (async () => {
       while (current.latest !== current.confirmed) {
@@ -134,6 +136,8 @@ export function useAssetDraft(kind: Kind) {
     } finally {
       current.running = undefined;
     }
+    if (session !== current) throw new Error("Draft session changed");
+    return current.draft;
   }
   async function retry() {
     if (status.value === "conflict") return;

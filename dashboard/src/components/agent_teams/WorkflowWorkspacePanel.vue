@@ -1,6 +1,6 @@
 <template>
   <section class="workflow-workspace">
-    <div class="d-flex flex-wrap align-center ga-2 mb-4">
+    <div v-if="mode === 'assets' || !selectedRun" class="d-flex flex-wrap align-center ga-2 mb-4">
       <h2 class="text-h5">
         {{
           tm(
@@ -52,7 +52,7 @@
       role="alert"
       >{{ error }}</v-alert
     >
-    <p class="text-body-2 text-medium-emphasis mb-4">
+    <p v-if="mode === 'assets' || !selectedRun" class="text-body-2 text-medium-emphasis mb-4">
       {{
         tm(
           mode === "runs"
@@ -109,30 +109,18 @@
           >{{ asset.definition.name }} · v{{ asset.version }}</v-card-title
         >
         <v-card-text class="text-wrap">
-          <p v-if="drafts.some((item) => item.asset_id === asset.asset_id)" data-testid="editing-draft">{{ tm("draft.editing") }}</p>
+          <p v-if="drafts.some((item) => item.asset_id === asset.asset_id && item.published_revision !== item.revision)" data-testid="editing-draft">{{ tm("draft.editing") }}</p>
           <p v-if="asset.definition.kind === 'autonomous'">
             {{ tm("autonomous.title") }} · {{ tm("autonomous.allowedRoles") }}:
             {{ asset.definition.allowed_roles.length }}
           </p>
-          <p v-else-if="asset.definition.tasks">
+          <p v-else>
             {{ tm("graph.count", { count: asset.definition.tasks.length }) }} ·
             {{ tm("graph.parallel") }}: {{ asset.definition.max_parallel }}
           </p>
-          <p v-else>
-            {{ tm("v2.role") }}:
-            {{
-              roles.find((role) => role.role_id === asset.definition.role_id)
-                ?.definition.name ?? asset.definition.role_id
-            }}
-            · v{{ asset.definition.role_version }}
-          </p>
-          <p class="workflow-text mt-2">{{ asset.definition.task }}</p>
         </v-card-text>
         <v-card-actions class="flex-wrap">
           <v-btn
-            v-if="
-              asset.definition.kind === 'autonomous' || asset.definition.tasks
-            "
             variant="text"
             data-testid="open-chat-access"
             @click="chatAccessAsset = asset"
@@ -161,7 +149,7 @@
     <DeleteAssetDialog :name="deleteTarget?.definition.name || (deleteTarget ? tm('draft.untitled') : null)" :busy="deleting" :error="deleteError" @cancel="deleteTarget = null; deleteError = ''" @confirm="deleteAsset" />
     <template v-if="mode !== 'assets'">
       <nav
-        class="d-flex flex-wrap ga-2 mb-4"
+        class="d-flex flex-wrap align-center ga-2 mb-4"
         :aria-label="tm('workbench.runs')"
       >
         <v-btn
@@ -176,14 +164,25 @@
             · {{ humanRequests.length }}</span
           ></v-btn
         >
+        <v-spacer />
+        <v-select
+          v-model="runType"
+          :label="tm('trial.filter')"
+          :items="runTypeOptions"
+          density="compact"
+          hide-details
+          style="max-width: 220px; min-width: 160px"
+        />
+        <v-btn v-if="selectedRun" variant="text" :disabled="!!currentOperation" @click="refresh">{{ tm('page.refresh') }}</v-btn>
       </nav>
       <section
         v-if="runView === 'pending'"
         :aria-label="tm('human.inbox')"
         data-testid="human-inbox"
       >
-        <h3 class="text-h6">{{ tm("human.inbox") }} · {{ humanRequests.length }}</h3>
-        <div v-for="todo in humanRequests" :key="todo.todo_id">
+        <h3 class="text-h6">{{ tm("human.inbox") }} · {{ visibleHumanRequests.length }}</h3>
+        <div v-for="todo in visibleHumanRequests" :key="todo.todo_id">
+          <v-chip size="small">{{ tm(todo.trial ? "trial.test" : "trial.production") }}</v-chip>
           <v-btn variant="text" @click="openRequest(todo)">{{ tm("human.openProcess") }}</v-btn>
           <WorkflowHumanTodo
             :todo="todo"
@@ -196,6 +195,7 @@
       </section>
       <UnifiedRunHistory
         v-if="runView === 'history'"
+        :run-type="runType"
         @open-run="
           runView = 'all';
           openRun($event);
@@ -232,6 +232,9 @@
           <v-card-text class="d-flex flex-wrap align-center ga-2">
             <div class="flex-grow-1 workflow-name">
               <strong>{{ run.snapshot.definition.name }}</strong>
+              <v-chip size="small" class="ml-2">{{
+                tm(run.snapshot.trial ? "trial.test" : "trial.production")
+              }}</v-chip>
               <p class="text-body-2">
                 {{ tm(`v2.states.${run.status}`) }} · {{ run.run_id }}
               </p>
@@ -265,17 +268,26 @@
         class="mt-4"
         data-testid="run-detail"
       >
-        <v-card-text>
-          <v-alert
-            type="info"
-            variant="tonal"
-            class="mb-4"
-            icon="mdi-lock-outline"
-            >{{ tm("workbench.snapshotHint") }}</v-alert
-          >
-          <div class="workbench-columns">
-            <div class="workbench-column">
+        <v-card-text class="workbench-body">
+          <div class="d-flex flex-wrap align-center ga-3 mb-4">
+            <h2 class="text-h5 font-weight-bold flex-grow-1">{{ selectedRun.snapshot.definition.name }}</h2>
+            <v-chip v-if="selectedRun.snapshot.trial" size="small" color="primary" variant="outlined">{{ tm('trial.test') }} · r{{ selectedRun.snapshot.trial.draft_revision }}</v-chip>
+            <v-chip variant="tonal" :color="selectedRun.status === 'completed' ? 'success' : 'primary'">{{ tm(`v2.states.${selectedRun.status}`) }}</v-chip>
+            <v-btn variant="text" :aria-pressed="runDisplay === 'workbench'" @click="runDisplay = 'workbench'">{{ tm('workbench.workspace') }}</v-btn>
+            <v-btn variant="text" :aria-pressed="runDisplay === 'graph'" @click="runDisplay = 'graph'">{{ tm('progress.graph') }}</v-btn>
+          </div>
+          <p class="workflow-text text-body-2 mb-3" data-testid="run-goal">{{ selectedRun.snapshot.task ?? Object.values(selectedRun.snapshot.inputs ?? {}).join(' · ') }}</p>
+          <p class="text-caption text-medium-emphasis mb-4">
+            <v-icon size="small" class="mr-1">mdi-lock-outline</v-icon>{{ tm("workbench.snapshotHint") }}
+          </p>
+          <nav v-show="runDisplay === 'workbench'" class="workbench-panel-nav mb-4" :aria-label="tm('workbench.panels')">
+            <v-btn v-for="panel in ['tasks', 'process', 'results'] as const" :key="panel" :variant="activeRunPanel === panel ? 'tonal' : 'text'" :aria-pressed="activeRunPanel === panel" @click="activeRunPanel = panel">{{ tm(`workbench.panel${panel}`) }}</v-btn>
+          </nav>
+          <WorkflowGraphCanvas v-if="runDisplay === 'graph'" :definition="selectedRun.runtime_definition ?? selectedRun.snapshot.definition" :tasks="selectedRun.tasks" :child-assets="selectedRun.snapshot.child_assets ?? {}" readonly @select-task="selectRunTask" />
+          <div v-show="runDisplay === 'workbench'" class="workbench-columns" :data-active-panel="activeRunPanel">
+            <div class="workbench-column workbench-tasks">
               <WorkflowRunProgress
+                compact
                 :run="selectedRun"
                 :selected-task="selectedTaskNode"
                 @select="selectRunTask"
@@ -294,7 +306,7 @@
               <p v-if="historyErrors[detailRun.run_id]" role="alert">{{ historyErrors[detailRun.run_id] }}</p>
               <WorkflowRunProcess :run="detailRun" :busy="!!currentOperation" @resolve="resolveTool" />
             </div>
-            <div class="workbench-column">
+            <div class="workbench-column workbench-results">
           <section
             v-if="selectedRun.todos?.length"
             :aria-label="tm('human.title')"
@@ -319,6 +331,12 @@
             :busy="!!currentOperation"
             @submit="applyRunControl"
           />
+          <details class="my-3 text-caption">
+            <summary>{{ tm('workbench.identifiers') }}</summary>
+            <p class="workflow-text mt-2">{{ tm('v2.attempt') }}: {{ detailRun.state.attempt_id }}</p>
+            <p class="workflow-text">{{ tm('v2.member') }}: {{ detailRun.snapshot.member?.member_id ?? '—' }}</p>
+            <p class="workflow-text">{{ tm('child.root') }}: {{ selectedRun.run_id }}</p>
+          </details>
           <h3 class="text-h6 mt-6 mb-3">{{ tm("progress.artifacts") }}</h3>
           <v-btn
             v-if="
@@ -451,14 +469,14 @@
               }}</v-btn
             >
           </v-alert>
+          <details v-if="!['interrupted', 'failed', 'blocked'].includes(detailRun.status)" class="my-3">
+            <summary>{{ tm('workbench.executionDetails') }}</summary>
           <RunnerCapabilities
-            v-if="
-              !['interrupted', 'failed', 'blocked'].includes(detailRun.status)
-            "
             :runner="detailRun.snapshot.effective?.runner"
             :identity="detailRun.recovery?.remote_identity"
             class="my-3"
           />
+          </details>
           <v-alert
             v-if="detailRun.state.reason"
             type="warning"
@@ -524,13 +542,13 @@
             @click="prepareRevision"
             >{{ tm("v2.revise") }}</v-btn
           >
-          <p
+          <details
             v-if="detailRun.snapshot.input_artifacts?.length"
             class="workflow-text mt-3"
           >
-            {{ tm("v2.pinnedInputs") }}:
-            {{ JSON.stringify(detailRun.snapshot.input_artifacts) }}
-          </p>
+            <summary>{{ tm("v2.pinnedInputs") }}</summary>
+            <p v-for="ref in detailRun.snapshot.input_artifacts" :key="`${ref.artifact_id}:${ref.version}`" class="text-caption mt-2">{{ ref.artifact_id }} · v{{ ref.version }}</p>
+          </details>
           <v-expansion-panels class="mt-4" variant="accordion">
             <v-expansion-panel :title="tm('v2.contract')">
               <v-expansion-panel-text>
@@ -581,6 +599,7 @@
       :roles="roles"
       :catalog="catalog"
       @saved="refresh"
+      @started="trialStarted"
     />
     <v-dialog
       class="workbench-dialog"
@@ -600,6 +619,8 @@
             <v-text-field
               v-model="graphForm.name"
               :label="tm('v2.name')"
+              density="compact"
+              hide-details
               style="min-width: 180px"
             />
             <v-select
@@ -608,9 +629,15 @@
               item-title="name"
               item-value="id"
               :label="tm('graph.defaultModel')"
+              density="compact"
+              hide-details
               clearable
               style="min-width: 220px"
             />
+          </div>
+          <details :open="graphUsageInvalid" class="mb-3">
+            <summary class="text-subtitle-1">{{ tm("graph.executionSettings") }}</summary>
+            <div class="d-flex flex-wrap ga-3 mt-3">
             <v-text-field
               v-model.number="graphForm.max_parallel"
               type="number"
@@ -627,9 +654,7 @@
               :label="tm('child.maxDepth')"
               style="max-width: 220px"
             />
-          </div>
-          <details :open="graphUsageInvalid" class="mb-3">
-            <summary class="text-subtitle-1">{{ tm("usage.limits") }}</summary>
+            </div>
             <RunLimitsForm
               v-model="graphForm.limits"
               @validation="graphUsageInvalid = $event"
@@ -647,6 +672,7 @@
             "
             :workflows="assets.filter((asset) => asset.definition.kind !== 'autonomous')"
             @validation="graphInvalid = $event"
+            @select-task="graphSelectedNode = $event"
             @role-saved="
               roleAssetsApi
                 .list()
@@ -671,7 +697,9 @@
           <p class="text-caption mt-3">{{ tm("graph.saveHint") }}</p>
         </v-card-text>
         <v-card-actions
-          ><v-spacer /><v-btn
+          ><v-btn variant="tonal" :disabled="saving || graphDraft.busy.value" @click="openGraphTrial">{{
+            tm("trial.title")
+          }}</v-btn><v-spacer /><v-btn
             variant="text"
             :disabled="saving || graphDraft.busy.value"
             @click="closeGraph"
@@ -687,6 +715,17 @@
         >
       </v-card>
     </v-dialog>
+
+    <TrialRunDialog
+      v-if="trialDraft"
+      v-model="trialOpen"
+      :asset-id="trialDraft.asset_id"
+      :revision="trialDraft.revision"
+      kind="workflow"
+      :nodes="graphForm.tasks"
+      :initial-node="graphSelectedNode"
+      @started="trialStarted"
+    />
 
     <v-dialog
       class="workbench-dialog"
@@ -713,12 +752,15 @@
               {{ issue.path }} · {{ issue.message }}
             </p>
           </v-alert>
+          <details v-if="readiness?.roles?.length" class="mb-4">
+            <summary>{{ tm('workbench.executionDetails') }}</summary>
           <RunnerCapabilities
             v-for="role in readiness?.roles ?? []"
             :key="role.role_id + ':' + role.version"
             :runner="role.runner"
             class="mb-3"
           />
+          </details>
           <p class="mb-4">
             {{ runAsset.definition.name }} · v{{ runAsset.version }}
           </p>
@@ -730,6 +772,7 @@
             :rules="[(value) => !!value?.trim() || tm('v2.required')]"
           />
           <v-select
+            v-if="runAsset.definition.kind === 'autonomous'"
             v-model="inputArtifacts"
             :items="availableInputs"
             item-title="label"
@@ -874,6 +917,7 @@ import WorkflowRunControls from "./WorkflowRunControls.vue";
 import WorkflowHumanTodo from "./WorkflowHumanTodo.vue";
 import RunnerCapabilities from "./RunnerCapabilities.vue";
 import DeleteAssetDialog from "./DeleteAssetDialog.vue";
+import TrialRunDialog from "./TrialRunDialog.vue";
 import type {
   GraphDefinition,
   ToolResolutionRequest,
@@ -914,6 +958,27 @@ async function deleteAsset() {
 }
 const drafts = ref<any[]>([]);
 const graphDraft = useAssetDraft("workflow");
+const trialOpen = ref(false);
+const trialDraft = ref<any>(null);
+const graphSelectedNode = ref<string | null>(null);
+async function openGraphTrial() {
+  try {
+    graphDraft.change({ definition: graphForm.value });
+    if (graphDraft.status.value === "failed" || graphDraft.status.value === "conflict")
+      throw new Error(tm(`draft.${graphDraft.status.value}`));
+    trialDraft.value = await graphDraft.flush();
+    trialOpen.value = true;
+  } catch (cause) {
+    formError.value = extractApiError(
+      cause, tm("errors.operationFailed"),
+    ).message;
+  }
+}
+async function trialStarted(runId: string) {
+  graphEditing.value = false;
+  await router.replace({ query: { ...route.query, workflow_run: runId } });
+  emit("started", runId);
+}
 const visibleDrafts = computed(() =>
   drafts.value.filter(
     (item) =>
@@ -962,7 +1027,14 @@ const humanRequests = ref<any[]>([]);
 const inboxBusy = ref(false);
 async function openRequest(todo: any) {
   await openRun(todo.root_run_id);
-  selectedTaskNode.value = todo.recommendation_ref?.artifact_id ?? todo.task_run_id;
+  if (selectedRun.value?.run_id !== todo.root_run_id) return;
+  runView.value = "all";
+  const source = allRunTasks.value.find((task) =>
+    todo.recommendation_ref &&
+    task.result_ref?.artifact_id === todo.recommendation_ref.artifact_id &&
+    task.result_ref?.version === todo.recommendation_ref.version,
+  );
+  selectRunTask(source?.run_id ?? todo.task_run_id);
 }
 async function answerInbox(
   rootId: string,
@@ -983,8 +1055,22 @@ async function answerInbox(
 }
 
 const runView = ref<"all" | "active" | "pending" | "history">("all");
+const runType = ref<"all" | "test" | "production">("all");
+const runTypeOptions = computed(() =>
+  (["all", "test", "production"] as const).map((value) => ({
+    title: tm(`trial.${value}`), value,
+  })),
+);
+const visibleHumanRequests = computed(() =>
+  humanRequests.value.filter((todo) => {
+    if (runType.value === "all") return true;
+    return (runType.value === "test") === !!todo.trial;
+  }),
+);
 const visibleRuns = computed(() =>
   runs.value.filter((run) => {
+    if (runType.value !== "all" && (runType.value === "test") !== !!run.snapshot.trial)
+      return false;
     const terminal = ["completed", "cancelled", "skipped"].includes(run.status);
     if (runView.value === "history")
       return terminal || ["failed", "interrupted"].includes(run.status);
@@ -1007,6 +1093,8 @@ const visibleRuns = computed(() =>
   }),
 );
 const selectedRun = ref<any>(null);
+const runDisplay = ref<'workbench' | 'graph'>('workbench');
+const activeRunPanel = ref<'tasks' | 'process' | 'results'>('process');
 const runOperations = ref(
   new Map<
     string,
@@ -1469,6 +1557,7 @@ async function refresh() {
 }
 
 async function editGraph(asset: any) {
+  graphSelectedNode.value = null;
   graphEditing.value = false;
   graphDraft.close();
   editingAsset.value = asset;
@@ -1580,6 +1669,8 @@ async function saveGraph() {
 }
 
 function selectRunTask(nodeId: string | null) {
+  runDisplay.value = 'workbench';
+  activeRunPanel.value = 'process';
   if (nodeId)
     selectedTaskNode.value =
       allRunTasks.value.find((task) => task.run_id === nodeId)?.run_id ??
@@ -1955,10 +2046,23 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
-.workbench-columns { display: grid; grid-template-columns: minmax(220px, 1fr) minmax(300px, 1.5fr) minmax(220px, 1fr); gap: 16px; align-items: start; }
+.workbench-columns { display: grid; grid-template-columns: minmax(210px, 0.8fr) minmax(320px, 1.65fr) minmax(250px, 1fr); gap: 20px; align-items: start; }
 .workbench-column { min-width: 0; }
 .workbench-process { max-height: 75vh; overflow-y: auto; }
-@media (max-width: 1200px) { .workbench-columns { grid-template-columns: 1fr; } .workbench-process { max-height: none; } }
+.workbench-panel-nav { display: none; }
+@media (max-width: 1100px) {
+  .workbench-columns { grid-template-columns: minmax(0, 1fr); }
+  .workbench-process { max-height: 70vh; }
+  .workbench-panel-nav { display: flex; flex-wrap: wrap; gap: 4px; }
+  .workbench-columns:not([data-active-panel='tasks']) > .workbench-tasks,
+  .workbench-columns:not([data-active-panel='process']) > .workbench-process,
+  .workbench-columns:not([data-active-panel='results']) > .workbench-results { display: none; }
+}
+@media (max-width: 600px) {
+  .workbench-body { padding: 16px; }
+  .workbench-panel-nav { display: grid; grid-template-columns: auto auto auto; }
+  .workbench-panel-nav :deep(.v-btn) { min-width: 0; padding-inline: 6px; font-size: 12px; }
+}
 
 :deep(.graph-dialog-overlay) {
   height: min(900px, calc(100vh - 48px));
@@ -1972,9 +2076,10 @@ onUnmounted(() => {
   flex-direction: column;
   min-height: 0;
   flex: 1 1 0;
+  overflow-y: auto;
 }
 :deep(.graph-dialog-overlay > .graph-dialog-card > .graph-dialog-content) {
-  overflow-y: hidden;
+  overflow-y: auto;
 }
 .graph-dialog-content > :not(.graph-dialog-canvas) {
   flex: 0 0 auto;
@@ -1983,7 +2088,7 @@ onUnmounted(() => {
   display: flex;
   flex: 1 1 auto;
   flex-direction: column;
-  min-height: 0;
+  min-height: min(480px, 65vh);
 }
 .graph-dialog-canvas :deep(.graph-columns) {
   flex: 1 1 0;

@@ -1,4 +1,7 @@
 {
+  "trial": {
+    "title": "试运行草稿", "start": "开始试运行", "realCalls": "所选步骤会真实调用模型和工具，可能产生费用或外部效果。", "scope": "试运行范围", "full": "完整流程", "single": "仅选中节点", "partial": "从选中节点开始", "startNode": "起始节点", "selected": "实际执行步骤", "dynamicTeam": "自主团队及动态成员", "source": "数据来源", "manual": "填写测试数据", "artifact": "精确历史产物", "history": "选择产物版本", "artifactId": "产物 ID", "artifactVersion": "产物版本", "advancedMode": "为高级契约填写对象", "advancedJson": "高级对象数据（JSON）", "required": "必填", "valueType": "值类型", "filter": "运行类型", "all": "全部运行", "test": "草稿试运行", "production": "正式运行", "revision": "草稿修订"
+  },
   "deletion": {
     "title": "删除资产？",
     "delete": "删除",
@@ -487,8 +490,14 @@
     "layout": "自动布局",
     "fit": "适配视图",
     "minimap": "小地图",
-    "toolbox": "角色工具箱",
-    "dragHint": "拖放角色到画布，或点击添加任务。",
+    "toolbox": "添加节点",
+    "addAgent": "Agent",
+    "executionSettings": "执行设置与预算",
+    "dragHint": "添加直接配置的 Agent、复用角色，或添加控制节点。",
+    "zoomIn": "放大",
+    "zoomOut": "缩小",
+    "lock": "锁定节点编辑",
+    "unlock": "解锁节点编辑",
     "noRoles": "暂无角色模板；当前 Agent 可直接配置。",
     "properties": "任务属性",
     "taskName": "任务名称",
@@ -515,7 +524,7 @@
     "workflowInput": "工作流输入",
     "structured": "结构化输出",
     "text": "文本输出",
-    "empty": "从角色工具箱添加第一个任务。",
+    "empty": "从节点目录添加第一个 Agent 或控制节点。",
     "invalidAlias": "请使用唯一的输入标识。",
     "invalidJson": "保存前请填写有效的 JSON 输出契约。",
     "parallel": "最大并发任务数",
@@ -874,6 +883,13 @@
     "differentSource": "来源指纹不同，请选择前核对。"
   },
   "workbench": {
+    "workspace": "运行工作台",
+    "identifiers": "执行标识",
+    "executionDetails": "执行能力与恢复说明",
+    "panels": "运行面板",
+    "paneltasks": "任务",
+    "panelprocess": "执行过程",
+    "panelresults": "待办与产物",
     "intro": "设计可复用资产，从每次运行的固定快照追踪到最终产物。",
     "navigation": "Agent 团队工作台",
     "assets": "资产",

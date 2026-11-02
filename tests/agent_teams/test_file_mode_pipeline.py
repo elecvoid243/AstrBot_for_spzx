@@ -84,14 +84,11 @@ def file_environment(tmp_path):
                 if "team_manage" in payload["tools"]:
                     name = "team_manage"
                     if "create" not in results:
-                        role = json.loads(
-                            (tmp_path / "role.json").read_text(encoding="utf-8")
-                        )
                         args, call_id = (
                             {
                                 "action": "create_member",
                                 "request_id": "create",
-                                "role_id": role["role_id"],
+                                "preset_id": "writer",
                                 "name": "Writer",
                             },
                             "create",
@@ -243,7 +240,7 @@ def test_mode_excluded_dependency_cannot_be_ready(
     issue = next(
         item
         for item in observed["preview"]["issues"]
-        if item["path"] == "installation.bindings." + dependency
+        if item["path"] == "definition.tools.0"
     )
     assert issue["code"] == "INCOMPATIBLE"
     assert "file_tool_mode=" + mode in issue["message"]

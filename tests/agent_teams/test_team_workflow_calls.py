@@ -9,7 +9,8 @@ from astrbot.core.agent_team_execution import AgentTeamExecutionRegistry
 from astrbot.core.agent_team_tools import AgentTeamToolRegistry
 from astrbot.core.agent_teams.assets import RoleAssetError
 from astrbot.dashboard.services.agent_team_ports import TeamPorts
-from tests.agent_teams.test_workflow_assets import completed_run, workflow_env
+from tests.agent_teams.test_workflow_assets import completed_run
+from tests.agent_teams.test_workflow_assets import workflow_env as workflow_env
 
 
 @pytest.mark.asyncio
@@ -25,9 +26,18 @@ async def test_coordinator_calls_pinned_workflow_at_one_capacity(workflow_env):
         {
             "definition": {
                 "name": "Saved research",
-                "role_id": env.role["role_id"],
-                "role_version": 1,
-                "task": "Research {topic}",
+                "result_task_id": "writer",
+                "tasks": [
+                    {
+                        "id": "writer",
+                        "name": "Writer",
+                        "member": "writer",
+                        "role_id": env.role["role_id"],
+                        "role_version": 1,
+                        "task": "Research {topic}",
+                        "inputs": {"topic": {"input": "topic"}},
+                    }
+                ],
                 "required_inputs": ["topic"],
             }
         },
@@ -38,13 +48,18 @@ async def test_coordinator_calls_pinned_workflow_at_one_capacity(workflow_env):
             "definition": {
                 "kind": "autonomous",
                 "name": "Coordinator",
-                "coordinator": {"role_id": env.role["role_id"], "role_version": 1},
-                "allowed_roles": [{"role_id": env.role["role_id"], "role_version": 1}],
+                "coordinator": {
+                    "id": "coordinator",
+                    "role_id": env.role["role_id"],
+                    "role_version": 1,
+                },
+                "allowed_roles": [
+                    {"id": "writer", "role_id": env.role["role_id"], "role_version": 1}
+                ],
                 "allowed_workflows": [
                     {
                         "asset_id": child["asset_id"],
                         "version": 1,
-                        "result_task_id": "result",
                     }
                 ],
                 "max_parallel": 1,
@@ -57,7 +72,9 @@ async def test_coordinator_calls_pinned_workflow_at_one_capacity(workflow_env):
             "expected_version": 1,
             "definition": {
                 **child["definition"],
-                "task": "CHANGED {topic}",
+                "tasks": [
+                    {**child["definition"]["tasks"][0], "task": "CHANGED {topic}"}
+                ],
             },
         },
         child["asset_id"],
@@ -174,7 +191,13 @@ async def test_invalid_workflow_decision_leaves_no_child(workflow_env, change):
             "definition": {
                 **env.asset["definition"],
                 "required_inputs": ["topic"],
-                "task": "Read {topic}",
+                "tasks": [
+                    {
+                        **env.asset["definition"]["tasks"][0],
+                        "task": "Read {topic}",
+                        "inputs": {"topic": {"input": "topic"}},
+                    }
+                ],
             }
         },
     )
@@ -189,13 +212,18 @@ async def test_invalid_workflow_decision_leaves_no_child(workflow_env, change):
             "definition": {
                 "kind": "autonomous",
                 "name": "Restricted coordinator",
-                "coordinator": {"role_id": env.role["role_id"], "role_version": 1},
-                "allowed_roles": [{"role_id": env.role["role_id"], "role_version": 1}],
+                "coordinator": {
+                    "id": "coordinator",
+                    "role_id": env.role["role_id"],
+                    "role_version": 1,
+                },
+                "allowed_roles": [
+                    {"id": "writer", "role_id": env.role["role_id"], "role_version": 1}
+                ],
                 "allowed_workflows": [
                     {
                         "asset_id": child["asset_id"],
                         "version": 1,
-                        "result_task_id": "result",
                     }
                 ],
             }
@@ -278,9 +306,10 @@ async def test_mixed_workflow_team_nesting_uses_root_capacity_and_depth(
             "definition": {
                 "name": "Bounded role",
                 "prompt": "Coordinate within one level",
+                "provider_id": "model-a",
                 "max_depth": 1,
             },
-            "installation": {"bindings": {"model": "model-a"}},
+            "installation": {"profile_id": "default"},
         },
     )
     restricted_role = {"role_id": restricted["role_id"], "role_version": 1}
@@ -290,8 +319,11 @@ async def test_mixed_workflow_team_nesting_uses_root_capacity_and_depth(
             "definition": {
                 "kind": "autonomous",
                 "name": "Nested team",
-                "coordinator": restricted_role if limit == "child_role" else role,
-                "allowed_roles": [role],
+                "coordinator": {
+                    "id": "coordinator",
+                    **(restricted_role if limit == "child_role" else role),
+                },
+                "allowed_roles": [{"id": "writer", **role}],
                 "max_parallel": 1,
             }
         },
@@ -301,6 +333,7 @@ async def test_mixed_workflow_team_nesting_uses_root_capacity_and_depth(
         {
             "definition": {
                 "name": "Mixed workflow",
+                "result_task_id": "team",
                 "required_inputs": ["topic"],
                 "max_parallel": 1,
                 "tasks": [
@@ -327,15 +360,17 @@ async def test_mixed_workflow_team_nesting_uses_root_capacity_and_depth(
             "definition": {
                 "kind": "autonomous",
                 "name": "Root team",
-                "coordinator": restricted_role if limit == "caller" else role,
-                "allowed_roles": [role],
+                "coordinator": {
+                    "id": "coordinator",
+                    **(restricted_role if limit == "caller" else role),
+                },
+                "allowed_roles": [{"id": "writer", **role}],
                 "max_parallel": 1,
                 "max_depth": 1 if limit == "root" else 3,
                 "allowed_workflows": [
                     {
                         "asset_id": child["asset_id"],
                         "version": 1,
-                        "result_task_id": "team",
                     }
                 ],
             }
@@ -424,6 +459,7 @@ async def test_skipped_workflow_return_task_is_explicitly_blocked(workflow_env):
         {
             "definition": {
                 "name": "Optional return",
+                "result_task_id": "optional",
                 "tasks": [
                     {
                         "id": "decision",
@@ -460,14 +496,13 @@ async def test_skipped_workflow_return_task_is_explicitly_blocked(workflow_env):
             "definition": {
                 "kind": "autonomous",
                 "name": "Parent",
-                "coordinator": role,
-                "allowed_roles": [role],
+                "coordinator": {"id": "coordinator", **role},
+                "allowed_roles": [{"id": "writer", **role}],
                 "max_parallel": 1,
                 "allowed_workflows": [
                     {
                         "asset_id": child["asset_id"],
                         "version": 1,
-                        "result_task_id": "optional",
                     }
                 ],
             }
@@ -510,25 +545,36 @@ async def test_skipped_workflow_return_task_is_explicitly_blocked(workflow_env):
     )
     for _ in range(200):
         current = await env.service.get_run("alice", run["run_id"])
-        if current.get("scopes") and current["scopes"][0]["status"] == "completed":
+        if current.get("scopes") and current["scopes"][0]["status"] == "blocked":
             break
         await asyncio.sleep(0.01)
     await env.service.advance_run("alice", run["run_id"])
     current = await env.service.get_run("alice", run["run_id"])
     assert current["tasks"][1]["status"] == "blocked"
-    assert current["tasks"][1]["state"]["issues"][0]["code"] == "NOT_READY"
+    assert (
+        "selected result task did not produce a validated result"
+        in current["tasks"][1]["state"]["reason"]
+    )
+    assert (
+        next(
+            task
+            for task in current["scopes"][0]["tasks"]
+            if task["snapshot"]["node_id"] == "optional"
+        )["status"]
+        == "skipped"
+    )
     assert current["tasks"][1]["result_ref"] is None
     await env.service.advance_run("alice", run["run_id"])
     await env.service.advance_run("alice", run["run_id"])
     assert [
         event["kind"]
         for event in (await env.service.get_run("alice", run["run_id"]))["events"]
-    ].count("child.returned") == 1
+    ].count("child.returned") == 0
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "change", ["duplicate", "missing_version", "missing_return", "wrong_kind"]
+    "change", ["duplicate", "missing_version", "caller_selected_return", "wrong_kind"]
 )
 async def test_allowed_workflow_definition_rejects_invalid_fixed_references(
     workflow_env, change
@@ -544,13 +590,12 @@ async def test_allowed_workflow_definition_rejects_invalid_fixed_references(
     definition = {
         "kind": "autonomous",
         "name": "Coordinator",
-        "coordinator": role,
-        "allowed_roles": [role],
+        "coordinator": {"id": "coordinator", **role},
+        "allowed_roles": [{"id": "writer", **role}],
         "allowed_workflows": [
             {
                 "asset_id": env.asset["asset_id"],
                 "version": 1,
-                "result_task_id": "result",
             }
         ],
     }
@@ -558,7 +603,7 @@ async def test_allowed_workflow_definition_rejects_invalid_fixed_references(
         definition["allowed_workflows"].append(dict(definition["allowed_workflows"][0]))
     elif change == "missing_version":
         definition["allowed_workflows"][0]["version"] = 2
-    elif change == "missing_return":
+    elif change == "caller_selected_return":
         definition["allowed_workflows"][0]["result_task_id"] = "other"
     else:
         team = await env.service.save_asset(
@@ -567,8 +612,8 @@ async def test_allowed_workflow_definition_rejects_invalid_fixed_references(
                 "definition": {
                     "kind": "autonomous",
                     "name": "Other team",
-                    "coordinator": role,
-                    "allowed_roles": [role],
+                    "coordinator": {"id": "coordinator", **role},
+                    "allowed_roles": [{"id": "writer", **role}],
                 }
             },
         )
@@ -576,6 +621,6 @@ async def test_allowed_workflow_definition_rejects_invalid_fixed_references(
     before = await env.service.list_assets("alice")
     with pytest.raises(RoleAssetError) as invalid:
         await env.service.save_asset("alice", {"definition": definition})
-    assert invalid.value.fields[0]["path"].startswith("definition.allowed_workflows")
+    assert any("allowed_workflows" in field["path"] for field in invalid.value.fields)
     assert await env.service.list_assets("alice") == before
     assert (await env.service.list_runs("alice"))["runs"] == []

@@ -1054,7 +1054,6 @@ async def test_parent_ancestry_does_not_grant_child_member_visibility(workflow_e
         {
             "version": 1,
             "inputs": {"goal": "Declared only"},
-            "input_artifacts": [common_ref],
         },
     )
     current = await completed_run(env.service, run["run_id"])

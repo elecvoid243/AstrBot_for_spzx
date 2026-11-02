@@ -6329,512 +6329,6 @@ paths:
           description: Webhook accepted
 
   # Agent Teams require dashboard authentication, not developer API key scopes.
-  /api/v1/agent_teams:
-    get:
-      tags: [AgentTeams]
-      summary: List agent teams owned by the current user
-      operationId: listAgentTeams
-      responses:
-        "200":
-          $ref: "#/components/responses/Ok"
-    post:
-      tags: [AgentTeams]
-      summary: Create a team and all member sessions
-      operationId: createAgentTeam
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/AgentTeamCreatePayload"
-      responses:
-        "200":
-          $ref: "#/components/responses/Ok"
-
-  /api/v1/agent_teams/{team_id}:
-    get:
-      tags: [AgentTeams]
-      summary: Get one team
-      operationId: getAgentTeam
-      parameters:
-        - $ref: "#/components/parameters/TeamIdPath"
-      responses:
-        "200":
-          $ref: "#/components/responses/Ok"
-    patch:
-      tags: [AgentTeams]
-      summary: Update team name/coordinator/config
-      operationId: updateAgentTeam
-      parameters:
-        - $ref: "#/components/parameters/TeamIdPath"
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/AgentTeamUpdatePayload"
-      responses:
-        "200":
-          $ref: "#/components/responses/Ok"
-    delete:
-      tags: [AgentTeams]
-      summary: Delete a team (member sessions are preserved)
-      operationId: deleteAgentTeam
-      parameters:
-        - $ref: "#/components/parameters/TeamIdPath"
-      responses:
-        "200":
-          $ref: "#/components/responses/Ok"
-
-  /api/v1/agent_teams/{team_id}/members:
-    post:
-      tags: [AgentTeams]
-      summary: Add a member (creates its WebChat session server-side)
-      operationId: addAgentTeamMember
-      parameters:
-        - $ref: "#/components/parameters/TeamIdPath"
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/AgentTeamMemberPayload"
-      responses:
-        "200":
-          $ref: "#/components/responses/Ok"
-
-  /api/v1/agent_teams/{team_id}/members/{member_id}:
-    delete:
-      tags: [AgentTeams]
-      summary: Remove a member
-      operationId: removeAgentTeamMember
-      parameters:
-        - $ref: "#/components/parameters/TeamIdPath"
-        - $ref: "#/components/parameters/MemberIdPath"
-      responses:
-        "200":
-          $ref: "#/components/responses/Ok"
-
-  /api/v1/agent_teams/{team_id}/workflows:
-    get:
-      tags: [AgentTeams]
-      summary: List the team's workflow templates
-      operationId: listAgentTeamWorkflows
-      parameters:
-        - $ref: "#/components/parameters/TeamIdPath"
-      responses:
-        "200":
-          $ref: "#/components/responses/Ok"
-    post:
-      tags: [AgentTeams]
-      summary: Create a workflow template
-      operationId: createAgentTeamWorkflow
-      parameters:
-        - $ref: "#/components/parameters/TeamIdPath"
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/AgentTeamWorkflowPayload"
-      responses:
-        "200":
-          $ref: "#/components/responses/Ok"
-
-  /api/v1/agent_teams/{team_id}/workflows/{workflow_id}:
-    put:
-      tags: [AgentTeams]
-      summary: Update a workflow template (graph + layout, server-validated)
-      operationId: updateAgentTeamWorkflow
-      parameters:
-        - $ref: "#/components/parameters/TeamIdPath"
-        - $ref: "#/components/parameters/WorkflowIdPath"
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/AgentTeamWorkflowPayload"
-      responses:
-        "200":
-          $ref: "#/components/responses/Ok"
-    delete:
-      tags: [AgentTeams]
-      summary: Delete a workflow template
-      operationId: deleteAgentTeamWorkflow
-      parameters:
-        - $ref: "#/components/parameters/TeamIdPath"
-        - $ref: "#/components/parameters/WorkflowIdPath"
-      responses:
-        "200":
-          $ref: "#/components/responses/Ok"
-
-  /api/v1/agent_teams/{team_id}/runs:
-    get:
-      tags: [AgentTeams]
-      summary: List the team's run history (full rows incl. graph/node_states)
-      operationId: listAgentTeamRuns
-      parameters:
-        - $ref: "#/components/parameters/TeamIdPath"
-      responses:
-        "200":
-          $ref: "#/components/responses/Ok"
-    post:
-      tags: [AgentTeams]
-      summary: Retired legacy launch; start a versioned asset run
-      deprecated: true
-      operationId: startAgentTeamRun
-      parameters:
-        - $ref: "#/components/parameters/TeamIdPath"
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/AgentTeamRunStartPayload"
-      responses:
-        "410":
-          $ref: "#/components/responses/Error"
-
-  /api/v1/agent_teams/runs/active:
-    get:
-      tags: [AgentTeams]
-      summary: List the user's active runs with snapshots
-      operationId: listActiveAgentTeamRuns
-      responses:
-        "200":
-          $ref: "#/components/responses/Ok"
-
-  /api/v1/agent_teams/runs/{run_id}/pause:
-    post:
-      tags: [AgentTeams]
-      summary: Pause a run
-      operationId: pauseAgentTeamRun
-      parameters:
-        - $ref: "#/components/parameters/RunIdPath"
-      responses:
-        "200":
-          $ref: "#/components/responses/Ok"
-
-  /api/v1/agent_teams/runs/{run_id}/resume:
-    post:
-      tags: [AgentTeams]
-      summary: Continue an owned paused legacy run; lost owners cannot resume
-      operationId: resumeAgentTeamRun
-      parameters:
-        - $ref: "#/components/parameters/RunIdPath"
-      responses:
-        "200":
-          $ref: "#/components/responses/Ok"
-        "410":
-          $ref: "#/components/responses/Error"
-
-  /api/v1/agent_teams/runs/{run_id}/stop:
-    post:
-      tags: [AgentTeams]
-      summary: Stop a run
-      operationId: stopAgentTeamRun
-      parameters:
-        - $ref: "#/components/parameters/RunIdPath"
-      responses:
-        "200":
-          $ref: "#/components/responses/Ok"
-
-  /api/v1/agent_teams/runs/{run_id}/nodes/{node_id}/retry:
-    post:
-      tags: [AgentTeams]
-      summary: Retry a failed node
-      operationId: retryAgentTeamNode
-      parameters:
-        - $ref: "#/components/parameters/RunIdPath"
-        - $ref: "#/components/parameters/NodeIdPath"
-      responses:
-        "200":
-          $ref: "#/components/responses/Ok"
-
-  /api/v1/agent_teams/runs/{run_id}/nodes/{node_id}/skip:
-    post:
-      tags: [AgentTeams]
-      summary: Skip a failed node and cascade-skip its successors
-      operationId: skipAgentTeamNode
-      parameters:
-        - $ref: "#/components/parameters/RunIdPath"
-        - $ref: "#/components/parameters/NodeIdPath"
-      responses:
-        "200":
-          $ref: "#/components/responses/Ok"
-
-  /api/v1/agent_teams/runs/{run_id}/members/{member_id}/interrupt:
-    post:
-      tags: [AgentTeams]
-      summary: Interrupt one member's in-flight turn
-      operationId: interruptAgentTeamMember
-      parameters:
-        - $ref: "#/components/parameters/RunIdPath"
-        - $ref: "#/components/parameters/MemberIdPath"
-      responses:
-        "200":
-          $ref: "#/components/responses/Ok"
-
-  /api/v1/agent_teams/runs/{run_id}/members/{member_id}/transcript:
-    get:
-      tags: [AgentTeams]
-      summary: Page one member's transcript rows chronologically
-      operationId: getAgentTeamMemberTranscript
-      parameters:
-        - $ref: "#/components/parameters/RunIdPath"
-        - $ref: "#/components/parameters/MemberIdPath"
-        - name: before_id
-          in: query
-          required: false
-          schema: { type: integer }
-          description: Exclusive cursor; only rows with a smaller id are returned.
-        - name: limit
-          in: query
-          required: false
-          schema: { type: integer, default: 50 }
-          description: Page size.
-      responses:
-        "200":
-          $ref: "#/components/responses/Ok"
-
-  /api/v1/agent_teams/runs/{run_id}/stream:
-    get:
-      tags: [AgentTeams]
-      summary: Server-sent events for one run (full history replay, then live, heartbeats)
-      operationId: streamAgentTeamRun
-      parameters:
-        - $ref: "#/components/parameters/RunIdPath"
-      responses:
-        "200":
-          description: Server-sent run event stream or an error envelope
-          content:
-            text/event-stream:
-              schema:
-                type: string
-
-  /api/v1/agent_drafts/{kind}:
-    get:
-      tags:
-      - Agent Teams roles
-      summary: List Drafts
-      operationId: list_drafts_api_v1_agent_drafts__kind__get
-      parameters:
-      - name: kind
-        in: path
-        required: true
-        schema:
-          enum:
-          - role
-          - workflow
-          - autonomous
-          type: string
-          title: Kind
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-    post:
-      tags:
-      - Agent Teams roles
-      summary: Create Draft
-      operationId: create_draft_api_v1_agent_drafts__kind__post
-      parameters:
-      - name: kind
-        in: path
-        required: true
-        schema:
-          enum:
-          - role
-          - workflow
-          - autonomous
-          type: string
-          title: Kind
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/DraftCreateRequest'
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /api/v1/agent_drafts/{kind}/{asset_id}:
-    get:
-      tags:
-      - Agent Teams roles
-      summary: Get Draft
-      operationId: get_draft_api_v1_agent_drafts__kind___asset_id__get
-      parameters:
-      - name: kind
-        in: path
-        required: true
-        schema:
-          enum:
-          - role
-          - workflow
-          - autonomous
-          type: string
-          title: Kind
-      - name: asset_id
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Asset Id
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-    put:
-      tags:
-      - Agent Teams roles
-      summary: Update Draft
-      operationId: update_draft_api_v1_agent_drafts__kind___asset_id__put
-      parameters:
-      - name: kind
-        in: path
-        required: true
-        schema:
-          enum:
-          - role
-          - workflow
-          - autonomous
-          type: string
-          title: Kind
-      - name: asset_id
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Asset Id
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/DraftUpdateRequest'
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /api/v1/agent_drafts/{kind}/{asset_id}/publish:
-    post:
-      tags:
-      - Agent Teams roles
-      summary: Publish Draft
-      operationId: publish_draft_api_v1_agent_drafts__kind___asset_id__publish_post
-      parameters:
-      - name: kind
-        in: path
-        required: true
-        schema:
-          enum:
-          - role
-          - workflow
-          - autonomous
-          type: string
-          title: Kind
-      - name: asset_id
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Asset Id
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/DraftPublishRequest'
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-
-  /api/v1/agent_drafts/{kind}/{asset_id}/rebase:
-    post:
-      tags:
-      - Agent Teams roles
-      summary: Rebase Draft
-      operationId: rebase_draft_api_v1_agent_drafts__kind___asset_id__rebase_post
-      parameters:
-      - name: kind
-        in: path
-        required: true
-        schema:
-          enum:
-          - role
-          - workflow
-          - autonomous
-          type: string
-          title: Kind
-      - name: asset_id
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Asset Id
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/DraftRebaseRequest'
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-
   /api/v1/agent_roles:
     get:
       tags:
@@ -7541,6 +7035,44 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/workflow_assets/{asset_id}/trials/preview:
+    post:
+      tags: [Agent Teams workflows]
+      summary: Preview draft trial scope
+      operationId: preview_trial_api_v1_workflow_assets__asset_id__trials_preview_post
+      parameters:
+      - name: asset_id
+        in: path
+        required: true
+        schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TrialRunRequest'
+      responses:
+        '200': {description: Successful Response}
+        '422': {description: Validation Error}
+  /api/v1/workflow_assets/{asset_id}/trials:
+    post:
+      tags: [Agent Teams workflows]
+      summary: Start draft trial
+      operationId: start_trial_api_v1_workflow_assets__asset_id__trials_post
+      parameters:
+      - name: asset_id
+        in: path
+        required: true
+        schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TrialRunRequest'
+      responses:
+        '200': {description: Successful Response}
+        '422': {description: Validation Error}
   /api/v1/workflow_human_requests:
     get:
       tags:
@@ -8325,79 +7857,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
-  /api/v1/agent_teams/{team_id}/migration/preview:
-    get:
-      tags:
-      - Agent Teams
-      summary: Preview Legacy Migration
-      description: "Preview definitions, effective roles, mappings and unresolved legacy\
-        \ items.\n\nArgs:\n    team_id: Legacy team owned by the current user.\n   \
-        \ request: Dashboard request carrying shared application services.\n    username:\
-        \ Authenticated owner; migration grants no additional access.\n\nReturns:\n\
-        \    A read-only proposal, active legacy run list and confirmation token."
-      operationId: preview_legacy_migration_api_v1_agent_teams__team_id__migration_preview_get
-      parameters:
-      - name: team_id
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Team Id
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /api/v1/agent_teams/{team_id}/migration:
-    post:
-      tags:
-      - Agent Teams
-      summary: Confirm Legacy Migration
-      description: "Atomically migrate the reviewed definitions without starting execution.\n\
-        \nArgs:\n    team_id: Legacy team owned by the current user.\n    payload: Reviewed\
-        \ token and explicit pending-save preference.\n    request: Dashboard request\
-        \ carrying shared application services.\n    username: Authenticated legacy\
-        \ and new asset owner.\n\nReturns:\n    Durable old-to-new identities, pending\
-        \ items and reuse status."
-      operationId: confirm_legacy_migration_api_v1_agent_teams__team_id__migration_post
-      parameters:
-      - name: team_id
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Team Id
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/LegacyMigrationRequest'
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/agent_history:
     get:
       tags:
       - Agent Teams workflows
       summary: List History
-      description: "Page owned v2 runs, legacy runs and legacy member conversations.\n\
+      description: "Page owned workflow and autonomous team root runs.\n\
         \nArgs:\n    limit: Maximum records in one page.\n    offset: Number of records\
         \ already read.\n    username: Actual authenticated Dashboard user.\n    service:\
         \ Shared history query boundary.\n\nReturns:\n    Source-labelled overviews\
@@ -8421,124 +7886,6 @@ paths:
           minimum: 0
           default: 0
           title: Offset
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-      security:
-      - BearerAuth: []
-  /api/v1/agent_history/{kind}/{identity}:
-    get:
-      tags:
-      - Agent Teams workflows
-      summary: Get History Record
-      description: "Read an original source without offering legacy execution controls.\n\
-        \nArgs:\n    kind: Source discriminator, never inferred from an overlapping\
-        \ ID.\n    identity: Original source identity.\n    offset: First long-term\
-        \ conversation message to read.\n    limit: Maximum long-term messages in one\
-        \ page.\n    username: Actual authenticated Dashboard user.\n    service: Shared\
-        \ history query boundary.\n\nReturns:\n    Original content and source links,\
-        \ or an ownership error."
-      operationId: get_history_record_api_v1_agent_history__kind___identity__get
-      parameters:
-      - name: kind
-        in: path
-        required: true
-        schema:
-          enum:
-          - v2_run
-          - legacy_run
-          - legacy_conversation
-          type: string
-          title: Kind
-      - name: identity
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Identity
-      - name: offset
-        in: query
-        required: false
-        schema:
-          type: integer
-          minimum: 0
-          default: 0
-          title: Offset
-      - name: limit
-        in: query
-        required: false
-        schema:
-          type: integer
-          maximum: 100
-          minimum: 1
-          default: 50
-          title: Limit
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-      security:
-      - BearerAuth: []
-  /api/v1/agent_history/legacy_run/{identity}/members/{member_id}:
-    get:
-      tags:
-      - Agent Teams workflows
-      summary: Get History Process
-      description: "Read original legacy transcript rows, including their stored source\
-        \ IDs.\n\nArgs:\n    identity: Original legacy run identity.\n    member_id:\
-        \ Original member identity in that run.\n    before_id: Exclusive original transcript\
-        \ cursor.\n    limit: Maximum rows in one page.\n    username: Actual authenticated\
-        \ Dashboard user.\n    service: Shared history query boundary.\n\nReturns:\n\
-        \    Chronological original rows and an optional older-page cursor."
-      operationId: get_history_process_api_v1_agent_history_legacy_run__identity__members__member_id__get
-      parameters:
-      - name: identity
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Identity
-      - name: member_id
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Member Id
-      - name: before_id
-        in: query
-        required: false
-        schema:
-          anyOf:
-          - type: integer
-            minimum: 1
-          - type: 'null'
-          title: Before Id
-      - name: limit
-        in: query
-        required: false
-        schema:
-          type: integer
-          maximum: 100
-          minimum: 1
-          default: 50
-          title: Limit
       responses:
         '200':
           description: Successful Response
@@ -9110,41 +8457,6 @@ components:
               type: string
               nullable: true
               description: Full restore receipt to reopen in Maintenance after administrator reauthentication.
-    MigrationState:
-      additionalProperties: false
-      description: Unresolved legacy semantics retained until a reviewed definition version.
-      properties:
-        issues:
-          items:
-            additionalProperties: true
-            type: object
-          title: Issues
-          type: array
-        source:
-          additionalProperties: true
-          title: Source
-          type: object
-      required:
-      - issues
-      - source
-      title: MigrationState
-      type: object
-    LegacyMigrationRequest:
-      properties:
-        preview_token:
-          type: string
-          pattern: ^[0-9a-f]{64}$
-          title: Preview Token
-        save_pending:
-          type: boolean
-          title: Save Pending
-          default: false
-      additionalProperties: false
-      type: object
-      required:
-      - preview_token
-      title: LegacyMigrationRequest
-      description: Confirm exactly the reviewed definition proposal, optionally pending.
     SkillGuideLoadRequest:
       type: object
       required: [umo, skill_name]
@@ -11112,54 +10424,6 @@ components:
       type: object
       title: RunLimits
       description: Optional whole-scope ceilings; nested scopes also obey their ancestors.
-    WorkflowDefinition:
-      properties:
-        name:
-          type: string
-          maxLength: 128
-          minLength: 1
-          title: Name
-        role_id:
-          type: string
-          maxLength: 128
-          minLength: 1
-          title: Role Id
-        role_version:
-          type: integer
-          minimum: 1.0
-          title: Role Version
-        task:
-          type: string
-          maxLength: 100000
-          minLength: 1
-          title: Task
-        required_inputs:
-          items:
-            type: string
-          type: array
-          maxItems: 30
-          title: Required Inputs
-        overrides:
-          $ref: '#/components/schemas/RoleOverrides'
-        output_contract:
-          anyOf:
-          - additionalProperties: true
-            type: object
-          - type: 'null'
-          title: Output Contract
-        limits:
-          anyOf:
-          - $ref: '#/components/schemas/RunLimits'
-          - type: 'null'
-      additionalProperties: false
-      type: object
-      required:
-      - name
-      - role_id
-      - role_version
-      - task
-      title: WorkflowDefinition
-      description: A single task with a pinned role and declared input/output contracts.
     FieldCondition:
       additionalProperties: false
       description: A typed comparison against the source task's validated output.
@@ -11583,6 +10847,38 @@ components:
       - source
       title: ChatAccessRequest
       description: A deliberate local grant; importing an asset never grants access.
+    TrialSource:
+      type: object
+      additionalProperties: false
+      properties:
+        content:
+          anyOf:
+          - type: object
+            additionalProperties: true
+          - type: 'null'
+        artifact:
+          anyOf:
+          - $ref: '#/components/schemas/ArtifactReference'
+          - type: 'null'
+    TrialRunRequest:
+      type: object
+      additionalProperties: false
+      required: [kind, revision, mode]
+      properties:
+        kind: {type: string, enum: [workflow, autonomous]}
+        revision: {type: integer, minimum: 1}
+        mode: {type: string, enum: [full, single, partial]}
+        node_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+        inputs:
+          type: object
+          additionalProperties: {type: string}
+        sources:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/TrialSource'
     WorkflowStartRequest:
       properties:
         version:
@@ -11606,6 +10902,7 @@ components:
           type: array
           maxItems: 30
           title: Input Artifacts
+          description: Fixed full-artifact inputs for autonomous teams. Workflow graphs use explicitly selected node inputs.
       additionalProperties: false
       type: object
       required:

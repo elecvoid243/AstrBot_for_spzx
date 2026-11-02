@@ -19,11 +19,12 @@
         {{ todo.task_name }}
       </p>
       <p class="text-caption mt-2">
-        {{ tm(`human.status.${todo.status}`)
-        }}<span v-if="!restricted">
-          · {{ todo.root_run_id }} / {{ todo.task_run_id }}</span
-        >
+        {{ tm(`human.status.${todo.status}`) }}
       </p>
+      <details v-if="!restricted" class="text-caption mt-2">
+        <summary>{{ tm('workbench.identifiers') }}</summary>
+        <p class="human-content">{{ todo.root_run_id }} / {{ todo.task_run_id }}</p>
+      </details>
       <div class="text-caption mt-2" data-testid="human-deadline">
         <p>
           {{ tm("humanWait.deadline") }}:
@@ -355,10 +356,10 @@ let disposed = false;
 let fileRead = 0;
 let previewRead = 0;
 watch(
-  () => [
-    props.todo.todo_id,
-    props.todo.artifact_ref?.artifact_id,
-    props.todo.artifact_ref?.version,
+  [
+    () => props.todo.todo_id,
+    () => props.todo.artifact_ref?.artifact_id,
+    () => props.todo.artifact_ref?.version,
   ],
   () => {
     previewRead++;

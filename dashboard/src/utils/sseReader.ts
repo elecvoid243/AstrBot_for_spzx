@@ -1,8 +1,8 @@
 // Author: elecvoid243
 // Date: 2026-09-05
 // Plan: docs/superpowers/plans/2026-09-05-agent-teams-refinements-3.md Task 6
-// Extracted from useAgentTeamsRun.ts so useMemberRunStream can reuse the same
-// framing rules. Dependency-free leaf: no vue / @/api imports.
+// Shared SSE framing for authenticated chat streams.
+// Dependency-free leaf: no vue / @/api imports.
 
 /**
  * Read one SSE body, invoking onEvent with every JSON-parsed `data:` payload.

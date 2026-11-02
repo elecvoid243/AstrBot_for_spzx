@@ -929,14 +929,6 @@ export type KnowledgeRetrieveRequest = {
     score_threshold?: number;
 };
 
-/**
- * Confirm exactly the reviewed definition proposal, optionally pending.
- */
-export type LegacyMigrationRequest = {
-    preview_token: string;
-    save_pending?: boolean;
-};
-
 export type LoginRequest = {
     username: string;
     password: string;
@@ -985,18 +977,6 @@ export type MessagePart = {
 };
 
 export type type = 'text' | 'plain' | 'image' | 'file' | 'audio' | 'record' | 'video' | 'reply';
-
-/**
- * Unresolved legacy semantics retained until a reviewed definition version.
- */
-export type MigrationState = {
-    issues: Array<{
-        [key: string]: unknown;
-    }>;
-    source: {
-        [key: string]: unknown;
-    };
-};
 
 export type ModelScopeSyncRequest = {
     access_token?: string;
@@ -1498,6 +1478,30 @@ export type TraceSettingsRequest = {
     [key: string]: unknown | boolean | string;
 };
 
+export type TrialRunRequest = {
+    kind: 'workflow' | 'autonomous';
+    revision: number;
+    mode: 'full' | 'single' | 'partial';
+    node_id?: (string | null);
+    inputs?: {
+        [key: string]: (string);
+    };
+    sources?: {
+        [key: string]: TrialSource;
+    };
+};
+
+export type kind3 = 'workflow' | 'autonomous';
+
+export type mode3 = 'full' | 'single' | 'partial';
+
+export type TrialSource = {
+    content?: ({
+    [key: string]: unknown;
+} | null);
+    artifact?: (ArtifactReference | null);
+};
+
 export type UmoListRequest = {
     umo?: string;
     umos?: Array<(string)>;
@@ -1569,22 +1573,6 @@ export type WorkflowControlRequest = {
 
 export type action4 = 'pause' | 'continue' | 'cancel';
 
-/**
- * A single task with a pinned role and declared input/output contracts.
- */
-export type WorkflowDefinition = {
-    name: string;
-    role_id: string;
-    role_version: number;
-    task: string;
-    required_inputs?: Array<(string)>;
-    overrides?: RoleOverrides;
-    output_contract?: ({
-    [key: string]: unknown;
-} | null);
-    limits?: (RunLimits | null);
-};
-
 export type WorkflowEdge = {
     from: string;
     to: string;
@@ -1650,6 +1638,9 @@ export type WorkflowStartRequest = {
         [key: string]: (string);
     };
     source?: string;
+    /**
+     * Fixed full-artifact inputs for autonomous teams. Workflow graphs use explicitly selected node inputs.
+     */
     input_artifacts?: Array<ArtifactReference>;
 };
 
@@ -5256,298 +5247,6 @@ export type ReceivePlatformWebhookResponse = (unknown);
 
 export type ReceivePlatformWebhookError = unknown;
 
-export type ListAgentTeamsResponse = (SuccessEnvelope);
-
-export type ListAgentTeamsError = unknown;
-
-export type CreateAgentTeamData = {
-    body: AgentTeamCreatePayload;
-};
-
-export type CreateAgentTeamResponse = (SuccessEnvelope);
-
-export type CreateAgentTeamError = unknown;
-
-export type GetAgentTeamData = {
-    path: {
-        team_id: string;
-    };
-};
-
-export type GetAgentTeamResponse = (SuccessEnvelope);
-
-export type GetAgentTeamError = unknown;
-
-export type UpdateAgentTeamData = {
-    body: AgentTeamUpdatePayload;
-    path: {
-        team_id: string;
-    };
-};
-
-export type UpdateAgentTeamResponse = (SuccessEnvelope);
-
-export type UpdateAgentTeamError = unknown;
-
-export type DeleteAgentTeamData = {
-    path: {
-        team_id: string;
-    };
-};
-
-export type DeleteAgentTeamResponse = (SuccessEnvelope);
-
-export type DeleteAgentTeamError = unknown;
-
-export type AddAgentTeamMemberData = {
-    body: AgentTeamMemberPayload;
-    path: {
-        team_id: string;
-    };
-};
-
-export type AddAgentTeamMemberResponse = (SuccessEnvelope);
-
-export type AddAgentTeamMemberError = unknown;
-
-export type RemoveAgentTeamMemberData = {
-    path: {
-        member_id: string;
-        team_id: string;
-    };
-};
-
-export type RemoveAgentTeamMemberResponse = (SuccessEnvelope);
-
-export type RemoveAgentTeamMemberError = unknown;
-
-export type ListAgentTeamWorkflowsData = {
-    path: {
-        team_id: string;
-    };
-};
-
-export type ListAgentTeamWorkflowsResponse = (SuccessEnvelope);
-
-export type ListAgentTeamWorkflowsError = unknown;
-
-export type CreateAgentTeamWorkflowData = {
-    body: AgentTeamWorkflowPayload;
-    path: {
-        team_id: string;
-    };
-};
-
-export type CreateAgentTeamWorkflowResponse = (SuccessEnvelope);
-
-export type CreateAgentTeamWorkflowError = unknown;
-
-export type UpdateAgentTeamWorkflowData = {
-    body: AgentTeamWorkflowPayload;
-    path: {
-        team_id: string;
-        workflow_id: string;
-    };
-};
-
-export type UpdateAgentTeamWorkflowResponse = (SuccessEnvelope);
-
-export type UpdateAgentTeamWorkflowError = unknown;
-
-export type DeleteAgentTeamWorkflowData = {
-    path: {
-        team_id: string;
-        workflow_id: string;
-    };
-};
-
-export type DeleteAgentTeamWorkflowResponse = (SuccessEnvelope);
-
-export type DeleteAgentTeamWorkflowError = unknown;
-
-export type ListAgentTeamRunsData = {
-    path: {
-        team_id: string;
-    };
-};
-
-export type ListAgentTeamRunsResponse = (SuccessEnvelope);
-
-export type ListAgentTeamRunsError = unknown;
-
-export type StartAgentTeamRunData = {
-    body: AgentTeamRunStartPayload;
-    path: {
-        team_id: string;
-    };
-};
-
-export type ListActiveAgentTeamRunsResponse = (SuccessEnvelope);
-
-export type ListActiveAgentTeamRunsError = unknown;
-
-export type PauseAgentTeamRunData = {
-    path: {
-        run_id: string;
-    };
-};
-
-export type PauseAgentTeamRunResponse = (SuccessEnvelope);
-
-export type PauseAgentTeamRunError = unknown;
-
-export type ResumeAgentTeamRunData = {
-    path: {
-        run_id: string;
-    };
-};
-
-export type ResumeAgentTeamRunResponse = (SuccessEnvelope);
-
-export type ResumeAgentTeamRunError = (ErrorEnvelope);
-
-export type StopAgentTeamRunData = {
-    path: {
-        run_id: string;
-    };
-};
-
-export type StopAgentTeamRunResponse = (SuccessEnvelope);
-
-export type StopAgentTeamRunError = unknown;
-
-export type RetryAgentTeamNodeData = {
-    path: {
-        node_id: string;
-        run_id: string;
-    };
-};
-
-export type RetryAgentTeamNodeResponse = (SuccessEnvelope);
-
-export type RetryAgentTeamNodeError = unknown;
-
-export type SkipAgentTeamNodeData = {
-    path: {
-        node_id: string;
-        run_id: string;
-    };
-};
-
-export type SkipAgentTeamNodeResponse = (SuccessEnvelope);
-
-export type SkipAgentTeamNodeError = unknown;
-
-export type InterruptAgentTeamMemberData = {
-    path: {
-        member_id: string;
-        run_id: string;
-    };
-};
-
-export type InterruptAgentTeamMemberResponse = (SuccessEnvelope);
-
-export type InterruptAgentTeamMemberError = unknown;
-
-export type GetAgentTeamMemberTranscriptData = {
-    path: {
-        member_id: string;
-        run_id: string;
-    };
-    query?: {
-        /**
-         * Exclusive cursor; only rows with a smaller id are returned.
-         */
-        before_id?: number;
-        /**
-         * Page size.
-         */
-        limit?: number;
-    };
-};
-
-export type GetAgentTeamMemberTranscriptResponse = (SuccessEnvelope);
-
-export type GetAgentTeamMemberTranscriptError = unknown;
-
-export type StreamAgentTeamRunData = {
-    path: {
-        run_id: string;
-    };
-};
-
-export type StreamAgentTeamRunResponse = (string);
-
-export type StreamAgentTeamRunError = unknown;
-
-export type ListDraftsApiV1AgentDraftsKindGetData = {
-    path: {
-        kind: 'role' | 'workflow' | 'autonomous';
-    };
-};
-
-export type ListDraftsApiV1AgentDraftsKindGetResponse = (unknown);
-
-export type ListDraftsApiV1AgentDraftsKindGetError = (HTTPValidationError);
-
-export type CreateDraftApiV1AgentDraftsKindPostData = {
-    body: DraftCreateRequest;
-    path: {
-        kind: 'role' | 'workflow' | 'autonomous';
-    };
-};
-
-export type CreateDraftApiV1AgentDraftsKindPostResponse = (unknown);
-
-export type CreateDraftApiV1AgentDraftsKindPostError = (HTTPValidationError);
-
-export type GetDraftApiV1AgentDraftsKindAssetIdGetData = {
-    path: {
-        asset_id: string;
-        kind: 'role' | 'workflow' | 'autonomous';
-    };
-};
-
-export type GetDraftApiV1AgentDraftsKindAssetIdGetResponse = (unknown);
-
-export type GetDraftApiV1AgentDraftsKindAssetIdGetError = (HTTPValidationError);
-
-export type UpdateDraftApiV1AgentDraftsKindAssetIdPutData = {
-    body: DraftUpdateRequest;
-    path: {
-        asset_id: string;
-        kind: 'role' | 'workflow' | 'autonomous';
-    };
-};
-
-export type UpdateDraftApiV1AgentDraftsKindAssetIdPutResponse = (unknown);
-
-export type UpdateDraftApiV1AgentDraftsKindAssetIdPutError = (HTTPValidationError);
-
-export type PublishDraftApiV1AgentDraftsKindAssetIdPublishPostData = {
-    body: DraftPublishRequest;
-    path: {
-        asset_id: string;
-        kind: 'role' | 'workflow' | 'autonomous';
-    };
-};
-
-export type PublishDraftApiV1AgentDraftsKindAssetIdPublishPostResponse = (unknown);
-
-export type PublishDraftApiV1AgentDraftsKindAssetIdPublishPostError = (HTTPValidationError);
-
-export type RebaseDraftApiV1AgentDraftsKindAssetIdRebasePostData = {
-    body: DraftRebaseRequest;
-    path: {
-        asset_id: string;
-        kind: 'role' | 'workflow' | 'autonomous';
-    };
-};
-
-export type RebaseDraftApiV1AgentDraftsKindAssetIdRebasePostResponse = (unknown);
-
-export type RebaseDraftApiV1AgentDraftsKindAssetIdRebasePostError = (HTTPValidationError);
-
 export type ListRoleAssetsResponse = (SuccessEnvelope);
 
 export type ListRoleAssetsError = (unknown);
@@ -5791,6 +5490,28 @@ export type StartRunApiV1WorkflowAssetsAssetIdRunsPostData = {
 export type StartRunApiV1WorkflowAssetsAssetIdRunsPostResponse = (unknown);
 
 export type StartRunApiV1WorkflowAssetsAssetIdRunsPostError = (HTTPValidationError);
+
+export type PreviewTrialApiV1WorkflowAssetsAssetIdTrialsPreviewPostData = {
+    body: TrialRunRequest;
+    path: {
+        asset_id: string;
+    };
+};
+
+export type PreviewTrialApiV1WorkflowAssetsAssetIdTrialsPreviewPostResponse = (unknown);
+
+export type PreviewTrialApiV1WorkflowAssetsAssetIdTrialsPreviewPostError = (unknown);
+
+export type StartTrialApiV1WorkflowAssetsAssetIdTrialsPostData = {
+    body: TrialRunRequest;
+    path: {
+        asset_id: string;
+    };
+};
+
+export type StartTrialApiV1WorkflowAssetsAssetIdTrialsPostResponse = (unknown);
+
+export type StartTrialApiV1WorkflowAssetsAssetIdTrialsPostError = (unknown);
 
 export type ListHumanRequestsApiV1WorkflowHumanRequestsGetResponse = (unknown);
 
@@ -6042,27 +5763,6 @@ export type ImportAssetApiV1WorkflowAssetsImportPostResponse = (unknown);
 
 export type ImportAssetApiV1WorkflowAssetsImportPostError = (HTTPValidationError);
 
-export type PreviewLegacyMigrationApiV1AgentTeamsTeamIdMigrationPreviewGetData = {
-    path: {
-        team_id: string;
-    };
-};
-
-export type PreviewLegacyMigrationApiV1AgentTeamsTeamIdMigrationPreviewGetResponse = (unknown);
-
-export type PreviewLegacyMigrationApiV1AgentTeamsTeamIdMigrationPreviewGetError = (HTTPValidationError);
-
-export type ConfirmLegacyMigrationApiV1AgentTeamsTeamIdMigrationPostData = {
-    body: LegacyMigrationRequest;
-    path: {
-        team_id: string;
-    };
-};
-
-export type ConfirmLegacyMigrationApiV1AgentTeamsTeamIdMigrationPostResponse = (unknown);
-
-export type ConfirmLegacyMigrationApiV1AgentTeamsTeamIdMigrationPostError = (HTTPValidationError);
-
 export type ListHistoryApiV1AgentHistoryGetData = {
     query?: {
         limit?: number;
@@ -6073,33 +5773,3 @@ export type ListHistoryApiV1AgentHistoryGetData = {
 export type ListHistoryApiV1AgentHistoryGetResponse = (unknown);
 
 export type ListHistoryApiV1AgentHistoryGetError = (HTTPValidationError);
-
-export type GetHistoryRecordApiV1AgentHistoryKindIdentityGetData = {
-    path: {
-        identity: string;
-        kind: 'v2_run' | 'legacy_run' | 'legacy_conversation';
-    };
-    query?: {
-        limit?: number;
-        offset?: number;
-    };
-};
-
-export type GetHistoryRecordApiV1AgentHistoryKindIdentityGetResponse = (unknown);
-
-export type GetHistoryRecordApiV1AgentHistoryKindIdentityGetError = (HTTPValidationError);
-
-export type GetHistoryProcessApiV1AgentHistoryLegacyRunIdentityMembersMemberIdGetData = {
-    path: {
-        identity: string;
-        member_id: string;
-    };
-    query?: {
-        before_id?: (number | null);
-        limit?: number;
-    };
-};
-
-export type GetHistoryProcessApiV1AgentHistoryLegacyRunIdentityMembersMemberIdGetResponse = (unknown);
-
-export type GetHistoryProcessApiV1AgentHistoryLegacyRunIdentityMembersMemberIdGetError = (HTTPValidationError);

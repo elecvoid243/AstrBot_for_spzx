@@ -84,6 +84,7 @@ async def test_expired_interaction_does_not_starve_available_source_delivery(
         {
             "definition": {
                 "name": "Interaction delivery",
+                "result_task_id": "question",
                 "tasks": [
                     {
                         "id": "question",

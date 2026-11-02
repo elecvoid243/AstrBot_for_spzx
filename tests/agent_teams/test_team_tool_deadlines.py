@@ -82,7 +82,7 @@ def test_team_tool_deadline_public_contracts(tmp_path, scenario):
                         assert coordinator_release.wait(45)
                     elif "create-one" not in results:
                         role_id = re.search(
-                            r'Allowed roles: \{"([^"]+)"',
+                            r'Allowed presets: \{"([^"]+)"',
                             payload["tool_descriptions"]["team_manage"],
                         )[1]
                         identity = "create"
@@ -92,7 +92,7 @@ def test_team_tool_deadline_public_contracts(tmp_path, scenario):
                                 {
                                     "action": "create_member",
                                     "request_id": "create-one",
-                                    "role_id": role_id,
+                                    "preset_id": role_id,
                                     "name": "Writer",
                                 },
                                 "create-one",

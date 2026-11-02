@@ -31,6 +31,25 @@ beforeEach(() => {
 });
 
 describe("asset run history", () => {
+  it("counts the filtered records and shows the empty state without hiding pagination", async () => {
+    api.history.mockResolvedValueOnce({ records: [record], next_offset: 20 });
+    const wrapper = mount(UnifiedRunHistory, {
+      props: { runType: "test" },
+      global: { stubs },
+    });
+    try {
+      await flushPromises();
+      expect(wrapper.get("summary").text()).toContain("· 0");
+      expect(wrapper.text()).toContain("runHistory.empty");
+      expect(wrapper.find('[data-testid="history-next"]').exists()).toBe(true);
+      await wrapper.setProps({ runType: "production" });
+      expect(wrapper.get("summary").text()).toContain("· 1");
+      expect(wrapper.text()).not.toContain("runHistory.empty");
+    } finally {
+      wrapper.unmount();
+    }
+  });
+
   it("opens an existing run through its normal detail view", async () => {
     const wrapper = mount(UnifiedRunHistory, { global: { stubs } });
     try {

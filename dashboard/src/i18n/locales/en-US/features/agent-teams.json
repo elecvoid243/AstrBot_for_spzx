@@ -1,4 +1,7 @@
 {
+  "trial": {
+    "title": "Test draft", "start": "Start test", "realCalls": "Selected steps make real model and tool calls and may cause external effects or costs.", "scope": "Test scope", "full": "Full workflow", "single": "Selected node only", "partial": "From selected node", "startNode": "Start node", "selected": "Steps to execute", "dynamicTeam": "Autonomous team and dynamic members", "source": "Data source", "manual": "Enter test data", "artifact": "Exact historical artifact", "history": "Choose an artifact version", "artifactId": "Artifact ID", "artifactVersion": "Artifact version", "advancedMode": "Enter an object for advanced contracts", "advancedJson": "Advanced object data (JSON)", "required": "Required", "valueType": "Value type", "filter": "Run type", "all": "All runs", "test": "Draft test", "production": "Published run", "revision": "Draft revision"
+  },
   "deletion": {
     "title": "Delete asset?",
     "delete": "Delete",
@@ -487,8 +490,14 @@
     "layout": "Auto layout",
     "fit": "Fit view",
     "minimap": "Minimap",
-    "toolbox": "Role toolbox",
-    "dragHint": "Drag a role onto the canvas or click to add a task.",
+    "toolbox": "Add nodes",
+    "addAgent": "Agent",
+    "executionSettings": "Execution settings and budgets",
+    "dragHint": "Add a directly configured Agent, reuse a role, or add a control node.",
+    "zoomIn": "Zoom in",
+    "zoomOut": "Zoom out",
+    "lock": "Lock node editing",
+    "unlock": "Unlock node editing",
     "noRoles": "No role templates yet; configure the current Agent directly.",
     "properties": "Task properties",
     "taskName": "Task name",
@@ -515,7 +524,7 @@
     "workflowInput": "Workflow input",
     "structured": "Structured output",
     "text": "Text output",
-    "empty": "Add your first task from the role toolbox.",
+    "empty": "Add your first Agent or control node from the node directory.",
     "invalidAlias": "Use a unique input identifier.",
     "invalidJson": "Enter a valid JSON output contract before saving.",
     "parallel": "Maximum concurrent tasks",
@@ -874,6 +883,13 @@
     "differentSource": "Source fingerprint differs; review before choosing."
   },
   "workbench": {
+    "workspace": "Run workspace",
+    "identifiers": "Execution identifiers",
+    "executionDetails": "Executor capabilities and recovery",
+    "panels": "Run panels",
+    "paneltasks": "Tasks",
+    "panelprocess": "Execution",
+    "panelresults": "Inbox & artifacts",
     "intro": "Design reusable assets. Follow each run from its fixed snapshot to the final result.",
     "navigation": "Agent Teams workspace",
     "assets": "Assets",

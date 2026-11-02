@@ -374,17 +374,31 @@ def field_schema(contract: dict | None, path: str) -> dict:
     return {"type": sorted(declared)}
 
 
-def validate_graph(definition: GraphDefinition) -> None:
+def validate_graph(
+    definition: GraphDefinition,
+    *,
+    external_sources: dict[str, GraphTask] | None = None,
+    feedback_inputs: dict[str, dict[str, TaskInput]] | None = None,
+) -> None:
     """Validate references, member identity, field rules and acyclic dependencies.
 
     Args:
         definition: Parsed graph whose contracts and roles are also validated.
+        external_sources: Trusted boundary contracts supplied by the trial compiler.
+        feedback_inputs: Trusted single-node trial feedback bindings.
 
     Raises:
         RoleAssetError: Field-specific graph diagnostics before saving or running.
     """
     fields = []
     tasks = {task.id: task for task in definition.tasks}
+    external_sources = external_sources or {}
+    feedback_inputs = feedback_inputs or {}
+    if set(tasks) & set(external_sources) or any(
+        key != task.id for key, task in external_sources.items()
+    ):
+        raise RoleAssetError("Invalid external source identities")
+    data_sources = {**external_sources, **tasks}
     names = definition.required_inputs
     if len(set(names)) != len(names) or any(not name.isidentifier() for name in names):
         fields.append(
@@ -613,10 +627,13 @@ def validate_graph(definition: GraphDefinition) -> None:
                         raise ValueError(
                             "Select an upstream task and both recommendation fields"
                         )
-                    source = tasks.get(human.recommendation_task_id)
+                    source = data_sources.get(human.recommendation_task_id)
                     if (
                         source is None
-                        or source.id not in ancestors.get(task.id, set())
+                        or (
+                            source.id not in ancestors.get(task.id, set())
+                            and source.id not in external_sources
+                        )
                         or source.human
                         or source.control
                         or source.team
@@ -639,9 +656,12 @@ def validate_graph(definition: GraphDefinition) -> None:
                         }
                     )
             if task.human.kind == "approval" and (
-                task.human.artifact_task_id not in ancestors.get(task.id, set())
-                or tasks[task.human.artifact_task_id].human is not None
-                or tasks[task.human.artifact_task_id].control is not None
+                (
+                    task.human.artifact_task_id not in ancestors.get(task.id, set())
+                    and task.human.artifact_task_id not in external_sources
+                )
+                or data_sources[task.human.artifact_task_id].human is not None
+                or data_sources[task.human.artifact_task_id].control is not None
             ):
                 fields.append(
                     {
@@ -680,6 +700,9 @@ def validate_graph(definition: GraphDefinition) -> None:
             members[task.member] = config
         for key, ref in task.inputs.items():
             try:
+                feedback_ref = feedback_inputs.get(task.id, {}).get(key)
+                if feedback_ref is not None:
+                    ref = feedback_ref
                 if not key.isidentifier():
                     raise ValueError("Input names must be identifiers")
                 if ref.input is not None:
@@ -687,14 +710,18 @@ def validate_graph(definition: GraphDefinition) -> None:
                         raise ValueError(
                             "Reference exactly one declared workflow input"
                         )
-                elif ref.task_id not in ancestors.get(task.id, set()):
+                elif (
+                    ref.task_id not in ancestors.get(task.id, set())
+                    and ref.task_id not in external_sources
+                    and not (feedback_ref is not None and ref.task_id in tasks)
+                ):
                     raise ValueError(
                         "Result input must refer to an upstream dependency"
                     )
                 else:
-                    if tasks[ref.task_id].control:
+                    if data_sources[ref.task_id].control:
                         raise ValueError("Control nodes cannot be referenced as data")
-                    field_schema(tasks[ref.task_id].output_contract, ref.field)
+                    field_schema(data_sources[ref.task_id].output_contract, ref.field)
             except ValueError as exc:
                 fields.append(
                     {
@@ -704,15 +731,15 @@ def validate_graph(definition: GraphDefinition) -> None:
                     }
                 )
         if task.control and task.control.kind == "condition" and "value" in task.inputs:
-            ref = task.inputs["value"]
+            ref = feedback_inputs.get(task.id, {}).get("value", task.inputs["value"])
             try:
                 kinds = (
                     {"string"}
                     if ref.input is not None
                     else set(
-                        field_schema(tasks[ref.task_id].output_contract, ref.field)[
-                            "type"
-                        ]
+                        field_schema(
+                            data_sources[ref.task_id].output_contract, ref.field
+                        )["type"]
                     )
                 )
                 value = task.control.value

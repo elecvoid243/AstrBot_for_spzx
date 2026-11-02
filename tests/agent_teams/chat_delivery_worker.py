@@ -54,6 +54,7 @@ async def main() -> None:
                 {
                     "definition": {
                         "name": "Human decision",
+                        "result_task_id": "question",
                         "tasks": [
                             {
                                 "id": "question",

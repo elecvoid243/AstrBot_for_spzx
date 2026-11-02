@@ -39,9 +39,17 @@ def test_http_owner_opens_and_revokes_fixed_version_without_granting_dashboard_i
             json={
                 "definition": {
                     "name": "Report",
-                    "role_id": role["role_id"],
-                    "role_version": 1,
-                    "task": "Write",
+                    "result_task_id": "writer",
+                    "tasks": [
+                        {
+                            "id": "writer",
+                            "name": "Writer",
+                            "member": "writer",
+                            "role_id": role["role_id"],
+                            "role_version": 1,
+                            "task": "Write",
+                        }
+                    ],
                 }
             },
         ).json()["data"]

@@ -18,17 +18,17 @@
       >{{ error }}</v-alert
     >
     <v-alert
-      v-if="!loading && !records.length && !error"
+      v-if="!loading && !visibleRecords.length && !error"
       type="info"
       variant="tonal"
       >{{ tm("runHistory.empty") }}</v-alert
     >
     <details class="history-list workflow-run-list" open>
       <summary class="text-subtitle-1 mb-3">
-        {{ tm("runHistory.recordList") }} · {{ records.length }}
+        {{ tm("runHistory.recordList") }} · {{ visibleRecords.length }}
       </summary>
       <v-card
-        v-for="record in records"
+        v-for="record in visibleRecords"
         :key="record.source.id"
         variant="outlined"
         class="mb-3"
@@ -36,6 +36,7 @@
         <v-card-text class="d-flex flex-wrap align-center ga-3">
           <div class="history-name flex-grow-1">
             <strong>{{ record.title }}</strong>
+            <v-chip size="small" class="ml-2">{{ tm(record.trial ? 'trial.test' : 'trial.production') }}</v-chip>
             <div class="d-flex flex-wrap ga-2 my-2">
               <span>{{ tm(`v2.states.${record.status}`) }}</span>
             </div>
@@ -65,7 +66,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref } from "vue";
 import { workflowAssetsApi } from "@/api/workflowAssets";
 import { useModuleI18n } from "@/i18n/composables";
 import { extractApiError } from "@/utils/extractApiError";
@@ -73,8 +74,10 @@ import { extractApiError } from "@/utils/extractApiError";
 const emit = defineEmits<{
   openRun: [id: string];
 }>();
+const props = withDefaults(defineProps<{runType?: 'all' | 'test' | 'production'}>(), {runType: 'all'});
 const { tm } = useModuleI18n("features/agent-teams");
 const records = ref<any[]>([]);
+const visibleRecords = computed(() => records.value.filter(record => props.runType === 'all' || (props.runType === 'test') === !!record.trial));
 const nextOffset = ref<number | null>(null);
 const loading = ref(false);
 const error = ref("");
@@ -87,10 +90,7 @@ async function loadPage(offset: number) {
   try {
     const page = await workflowAssetsApi.history(offset);
     if (disposed) return;
-    const runs = page.records.filter(
-      (record: any) => record.source.kind === "v2_run",
-    );
-    records.value = offset ? [...records.value, ...runs] : runs;
+    records.value = offset ? [...records.value, ...page.records] : page.records;
     nextOffset.value = page.next_offset;
   } catch (cause) {
     if (!disposed)

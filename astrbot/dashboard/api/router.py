@@ -4,7 +4,6 @@ from fastapi import APIRouter
 from fastapi.routing import APIRoute
 
 from .accounts import router as accounts_router
-from .agent_teams import router as agent_teams_router
 from .api_keys import router as api_keys_router
 from .auth import ScopeDependency
 from .auth import router as auth_router
@@ -43,7 +42,6 @@ API_V1_PREFIX = "/api/v1"
 def build_api_router() -> APIRouter:
     router = APIRouter(prefix=API_V1_PREFIX)
     child_routers = (
-        agent_teams_router,
         role_assets_router,
         workflow_assets_router,
         auth_router,

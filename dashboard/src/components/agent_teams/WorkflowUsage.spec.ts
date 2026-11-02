@@ -77,32 +77,6 @@ it("shows unknown consumption, a limit stop and original call identities", () =>
   expect(wrapper.text()).toContain("usage.boundary");
 });
 
-it("keeps historical uncertainty beside newly reported consumption", () => {
-  const wrapper = mount(RunUsagePanel, {
-    props: {
-      run: {
-        usage: {
-          steps_used: 1,
-          tokens: { reported: 12, unknown_calls: null },
-          historical: { unmetered: true, model_responses: 3 },
-        },
-      },
-    },
-  });
-  expect(wrapper.find('[data-testid="reported-tokens"]').text()).toContain(
-    "12",
-  );
-  expect(wrapper.find('[data-testid="historical-usage"]').text()).toContain(
-    "usage.historicalUnknown",
-  );
-  expect(wrapper.find('[data-testid="historical-usage"]').text()).toContain(
-    "3",
-  );
-  expect(wrapper.text()).toContain("usage.unknownCalls: usage.unknown");
-  expect(wrapper.text()).toContain("usage.calls: 1");
-});
-
-
 it("pages prior usage without changing the accurate summary", async () => {
   historyApi.mockResolvedValue({items:[{receipt_id:"old", created_at:"2026-01-01", kind:"model", quality:"reported", reported_tokens:3}], next_before:null});
   const wrapper = mount(RunUsagePanel, {props:{run:{run_id:"task", control:{root_run_id:"root"}, usage:{tokens:{reported:100}, ledger_before:"boundary", ledger:[{receipt_id:"new",created_at:"2026-01-02",kind:"model",quality:"reported",reported_tokens:5}]}}},global:{stubs:{"v-btn":{template:"<button><slot /></button>"}}}});

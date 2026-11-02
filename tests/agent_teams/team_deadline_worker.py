@@ -83,11 +83,16 @@ async def run_deadline_scenario(
                         "kind": "autonomous",
                         "name": "Native deadline contract",
                         "coordinator": {
+                            "id": "coordinator",
                             "role_id": coordinator["role_id"],
                             "role_version": 1,
                         },
                         "allowed_roles": [
-                            {"role_id": writer["role_id"], "role_version": 1}
+                            {
+                                "id": "writer",
+                                "role_id": writer["role_id"],
+                                "role_version": 1,
+                            }
                         ],
                         "max_parallel": 1,
                         "max_members": 2,
@@ -159,7 +164,7 @@ async def run_deadline_scenario(
                     {
                         "action": "create_member",
                         "request_id": "setup-member",
-                        "role_id": writer["role_id"],
+                        "preset_id": "writer",
                         "name": "Writer",
                     }
                 )

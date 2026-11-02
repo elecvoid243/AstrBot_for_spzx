@@ -31,7 +31,7 @@ from astrbot.core.tools.file_tool_mode import (
     resolve_file_tool_mode,
 )
 
-SlotName = Annotated[str, Field(min_length=1, max_length=128)]
+ResourceId = Annotated[str, Field(min_length=1, max_length=128)]
 
 
 class HumanWaitPolicy(BaseModel):
@@ -63,11 +63,11 @@ class RoleOverrides(BaseModel):
 
     model_config = ConfigDict(extra="forbid", strict=True, str_strip_whitespace=True)
     prompt: str | None = Field(default=None, max_length=100_000)
-    provider_id: SlotName | None = None
-    persona_id: SlotName | None = None
-    tools: list[SlotName] | None = None
-    skills: list[SlotName] | None = None
-    knowledge_bases: list[SlotName] | None = None
+    provider_id: ResourceId | None = None
+    persona_id: ResourceId | None = None
+    tools: list[ResourceId] | None = None
+    skills: list[ResourceId] | None = None
+    knowledge_bases: list[ResourceId] | None = None
     max_steps: int | None = Field(default=None, ge=1, le=200)
     tool_call_timeout: float | None = Field(default=None, gt=0, le=3600)
     context_length: int | None = Field(default=None, ge=1, le=1_000_000)
@@ -95,7 +95,7 @@ class RoleInstallation(BaseModel):
     """Machine-local configuration stored separately from the definition."""
 
     model_config = ConfigDict(extra="forbid", strict=True, str_strip_whitespace=True)
-    profile_id: SlotName = "default"
+    profile_id: ResourceId = "default"
 
 
 class RoleSaveRequest(BaseModel):
@@ -452,7 +452,7 @@ class RoleAssetService:
                 runner, {"definition.role_id": "task_result"}
             )
         )
-        if effective.get("runner", runner) != runner:
+        if effective.get("runner") != runner:
             issues.append(
                 {
                     "path": "installation.profile_id",
@@ -1076,7 +1076,6 @@ class RoleAssetService:
         from astrbot.core.agent_teams.workflows import (
             AutonomousDefinition,
             TeamRole,
-            WorkflowDefinition,
         )
 
         definition = body.get("definition", {})
@@ -1087,9 +1086,7 @@ class RoleAssetService:
         elif kind == "autonomous":
             allowed = set(AutonomousDefinition.model_fields)
         elif kind == "workflow":
-            allowed = set(GraphDefinition.model_fields) | set(
-                WorkflowDefinition.model_fields
-            )
+            allowed = set(GraphDefinition.model_fields)
         else:
             raise RoleAssetError("Invalid draft kind")
         if set(definition) - allowed:

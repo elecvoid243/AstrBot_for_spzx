@@ -87,6 +87,7 @@ describe("canvas asset editing", () => {
   it("edits inline responsibility and resources, undoes, redoes and reopens after refresh", async () => {
     const definition = {
       name: "Report",
+      result_task_id: "agent",
       default_provider_id: "model-a",
       required_inputs: ["topic"],
       edges: [],
@@ -224,6 +225,203 @@ describe("canvas asset editing", () => {
     await reopened.vm.$nextTick();
     expect(reopened.text()).toContain("graph.outputHint");
     reopened.unmount();
+  });
+  it("selects upstream fields and an explicit output, preserving edits and undo", async () => {
+    const definition = {
+      name: "Fields",
+      result_task_id: "first",
+      required_inputs: [],
+      tasks: [
+        {
+          id: "first",
+          name: "First",
+          member: "one",
+          task: "Produce",
+          role: { name: "One" },
+          installation: { profile_id: "default" },
+          output_contract: {
+            type: "object",
+            properties: {
+              answer: { type: "string" },
+              count: { type: "integer" },
+            },
+            required: ["answer", "count"],
+          },
+        },
+        {
+          id: "second",
+          name: "Second",
+          member: "two",
+          task: "Use {value}",
+          role: { name: "Two" },
+          installation: { profile_id: "default" },
+          inputs: { value: { task_id: "first", field: "answer" } },
+        },
+      ],
+      edges: [{ source: "first", target: "second" }],
+    };
+    const options = {
+      global: {
+        stubs: {
+          TeamsFlowCanvas: {
+            name: "TeamsFlowCanvas",
+            props: ["nodes", "edges"],
+            emits: ["select-node"],
+            template: "<div />",
+          },
+          WorkflowLoopPanel: true,
+          "v-icon": true,
+          "v-chip": true,
+          "v-btn": { template: "<button><slot /></button>" },
+          "v-text-field": true,
+          "v-textarea": true,
+          "v-spacer": true,
+          "v-alert": true,
+          "v-switch": true,
+          "v-select": {
+            name: "VSelect",
+            props: ["modelValue", "items"],
+            emits: ["update:modelValue"],
+            template: "<div />",
+          },
+          "v-expansion-panels": { template: "<div><slot /></div>" },
+          "v-expansion-panel": { template: "<div><slot /></div>" },
+          "v-expansion-panel-title": { template: "<div><slot /></div>" },
+          "v-expansion-panel-text": { template: "<div><slot /></div>" },
+        },
+      },
+    };
+    const wrapper = mount(WorkflowGraphCanvas, {
+      ...options,
+      props: { definition },
+    });
+    const canvas = wrapper.findComponent({ name: "TeamsFlowCanvas" });
+    canvas.vm.$emit("select-node", "second");
+    await wrapper.vm.$nextTick();
+    const field = wrapper.getComponent('[data-testid="input-field"]') as any;
+    expect(field.props("items")).toEqual([
+      { title: "answer · string", value: "answer" },
+      { title: "count · integer", value: "count" },
+    ]);
+    field.vm.$emit("update:modelValue", "count");
+    await wrapper.vm.$nextTick();
+    let saved: any = wrapper.emitted("update:definition")!.at(-1)![0];
+    expect(saved.tasks[1].inputs.value.field).toBe("count");
+    canvas.vm.$emit("select-node", "__output");
+    await wrapper.vm.$nextTick();
+    (wrapper.getComponent('[data-testid="result-task"]') as any).vm.$emit(
+      "update:modelValue",
+      "second",
+    );
+    await wrapper.vm.$nextTick();
+    saved = wrapper.emitted("update:definition")!.at(-1)![0];
+    expect(saved.result_task_id).toBe("second");
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text() === "graph.undo")!
+      .trigger("click");
+    expect(
+      (wrapper.emitted("update:definition")!.at(-1)![0] as any).result_task_id,
+    ).toBe("first");
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text() === "graph.redo")!
+      .trigger("click");
+    expect(
+      (wrapper.emitted("update:definition")!.at(-1)![0] as any).result_task_id,
+    ).toBe("second");
+    wrapper.unmount();
+    const reopened = mount(WorkflowGraphCanvas, {
+      ...options,
+      props: { definition: saved },
+    });
+    reopened
+      .findComponent({ name: "TeamsFlowCanvas" })
+      .vm.$emit("select-node", "second");
+    await reopened.vm.$nextTick();
+    expect(
+      (reopened.getComponent('[data-testid="input-field"]') as any).props(
+        "modelValue",
+      ),
+    ).toBe("count");
+    await reopened.setProps({
+      issues: [
+        { path: "definition.result_task_id", message: "Missing result" },
+      ],
+    });
+    expect(reopened.find('[data-testid="result-task"]').exists()).toBe(true);
+    reopened.unmount();
+  });
+  it("builds a structured output with required typed fields", async () => {
+    const definition = {
+      name: "Fields",
+      result_task_id: "one",
+      tasks: [
+        {
+          id: "one",
+          name: "One",
+          member: "one",
+          role: { name: "One" },
+          installation: { profile_id: "default" },
+          task: "Work",
+        },
+      ],
+      edges: [],
+    };
+    const wrapper = mount(WorkflowGraphCanvas, {
+      props: { definition },
+      global: {
+        stubs: {
+          TeamsFlowCanvas: true,
+          WorkflowLoopPanel: true,
+          "v-icon": true,
+          "v-chip": true,
+          "v-btn": { template: "<button><slot /></button>" },
+          "v-text-field": true,
+          "v-textarea": true,
+          "v-spacer": true,
+          "v-alert": true,
+          "v-switch": {
+            name: "VSwitch",
+            props: ["modelValue"],
+            emits: ["update:modelValue"],
+            template: "<div />",
+          },
+          "v-select": {
+            name: "VSelect",
+            props: ["modelValue", "items"],
+            emits: ["update:modelValue"],
+            template: "<div />",
+          },
+          "v-expansion-panels": { template: "<div><slot /></div>" },
+          "v-expansion-panel": { template: "<div><slot /></div>" },
+          "v-expansion-panel-title": { template: "<div><slot /></div>" },
+          "v-expansion-panel-text": { template: "<div><slot /></div>" },
+        },
+      },
+    });
+    (wrapper.getComponent('[data-testid="structured-output"]') as any).vm.$emit(
+      "update:modelValue",
+      true,
+    );
+    await wrapper.vm.$nextTick();
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text() === "graph.addField")!
+      .trigger("click");
+    (wrapper.getComponent('[data-testid="output-field-type"]') as any).vm.$emit(
+      "update:modelValue",
+      "boolean",
+    );
+    await wrapper.vm.$nextTick();
+    const saved: any = wrapper.emitted("update:definition")!.at(-1)![0];
+    expect(saved.tasks[0].output_contract).toEqual({
+      type: "object",
+      properties: { field1: { type: "boolean" } },
+      required: ["field1"],
+      additionalProperties: false,
+    });
+    wrapper.unmount();
   });
   it("adds a pinned team call with declared input and output contracts", async () => {
     const wrapper = mount(WorkflowGraphCanvas, {

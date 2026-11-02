@@ -219,6 +219,7 @@ class GraphDefinition(BaseModel):
     name: str = Field(min_length=1, max_length=128)
     default_provider_id: str | None = Field(default=None, min_length=1, max_length=128)
     required_inputs: list[str] = Field(default_factory=list, max_length=30)
+    result_task_id: str | None = Field(default=None, min_length=1, max_length=128)
     max_parallel: int = Field(default=4, ge=1, le=100)
     max_depth: int = Field(default=3, ge=1, le=20)
     limits: RunLimits | None = None

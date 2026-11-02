@@ -442,7 +442,7 @@ async def run_worker(
             await service.control_run("alice", run_id, {"request_id": "pause-restored-request", "action": "pause"})
         if not guarded_case and not scenario.startswith("inline_"):
             request.func_tool.add_tool(providers.llm_tools.func_list[0])
-        elif action != "start" and guarded_case.endswith("_denied"):
+        elif action != "start" and guarded_case and guarded_case.endswith("_denied"):
             # Revoke after resource preflight so the invocation must recheck.
             assert not event.is_admin()
             await preferences.global_put("tool_permissions", {"_default": {"external_evidence": "admin"}})
@@ -667,16 +667,40 @@ async def run_worker(
         if scenario in {"tool_save_failure", "tool_observation_failure"}:
             async with db.engine.begin() as connection:
                 await connection.execute(text("CREATE TRIGGER reject_response_checkpoint BEFORE UPDATE ON agent_workflow_checkpoints WHEN NEW.phase = 'tool_result' BEGIN SELECT RAISE(ABORT, 'tool result storage unavailable'); END" if scenario == "tool_save_failure" else "CREATE TRIGGER reject_response_checkpoint BEFORE INSERT ON agent_workflow_process WHEN NEW.kind = 'tool_result' BEGIN SELECT RAISE(ABORT, 'tool observation storage unavailable'); END"))
+    if action == "start" and scenario == "inline_recovery":
+        def mark_inline_checkpoint(session, flush_context):
+            for row in [*session.new, *session.dirty]:
+                if isinstance(row, AgentWorkflowCheckpoint) and row.phase == "response" and row.data["response"]["id"] == "plan-original":
+                    session.info["inline_recovery"] = row.run_id
+
+        def hold_inline_checkpoint(session):
+            run_id = session.info.pop("inline_recovery", None)
+            if run_id:
+                (folder / "kill-ready.json").write_text(json.dumps({"run_id": run_id}), encoding="utf-8")
+                while True:
+                    time.sleep(1)
+
+        sql_event.listen(Session, "after_flush", mark_inline_checkpoint)
+        sql_event.listen(Session, "after_commit", hold_inline_checkpoint)
     dispatch = asyncio.create_task(event_bus.dispatch())
     try:
-        if scenario.startswith("inline_"):
-            definition = {"name": "Inline pipeline", "default_provider_id": "model-original", "required_inputs": ["topic"], "tasks": [{
+        if scenario.startswith("inline_") and action == "start":
+            definition = {"name": "Inline pipeline", "result_task_id": "agent", "default_provider_id": "model-original", "required_inputs": ["topic"], "tasks": [{
                 "id": "agent", "name": "Writer", "member": "writer", "task": "Unique task {topic}",
                 "inputs": {"topic": {"input": "topic"}}, "installation": {"profile_id": "default"},
                 "role": {"name": "Writer", "prompt": "Unique responsibility.", "persona_id": "writer" if scenario == "inline_persona" else None,
                          "provider_id": "model-alternate" if scenario == "inline_override" else None,
                          "tools": ["external_evidence"], "skills": [], "knowledge_bases": ["selected-id"] if scenario.startswith("inline_kb") and scenario != "inline_kb_empty" else []},
             }]}
+            if scenario == "inline_isolation":
+                first = definition["tasks"][0]
+                first["task"] = "Upstream private chat history secret-history"
+                first["inputs"] = {}
+                first["output_contract"] = {"type": "object", "properties": {"public": {"type": "string"}, "secret": {"type": "string"}}, "required": ["public", "secret"], "additionalProperties": False}
+                second = {**first, "id": "second", "name": "Second", "task": "Consume {value}", "inputs": {"value": {"task_id": "agent", "field": "public"}}, "output_contract": None}
+                definition["tasks"].append(second)
+                definition["edges"] = [{"source": "agent", "target": "second"}]
+                definition["result_task_id"] = "second"
             asset = await service.save_asset("alice", {"definition": definition})
             reopened = await service.get_asset("alice", asset["asset_id"], 1)
             readiness = await service.check_readiness("alice", asset["asset_id"], 1)

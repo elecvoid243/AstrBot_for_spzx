@@ -10719,6 +10719,13 @@ components:
           type: array
           maxItems: 30
           title: Required Inputs
+        result_task_id:
+          anyOf:
+          - type: string
+            minLength: 1
+            maxLength: 128
+          - type: 'null'
+          default: null
         max_parallel:
           type: integer
           maximum: 100.0

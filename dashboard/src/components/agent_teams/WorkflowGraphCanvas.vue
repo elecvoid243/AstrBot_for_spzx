@@ -124,6 +124,18 @@
       >{{ localError || Object.values(contractErrors)[0] }}</v-alert
     >
     <v-alert
+      v-if="!readonly && !validResultTask"
+      type="warning"
+      variant="tonal"
+      class="ma-3"
+      data-testid="result-diagnostic"
+    >
+      {{ tm("graph.invalidResult") }}: {{ draft.result_task_id || "—" }}
+      <v-btn variant="text" size="small" @click="selectNode('__output')">{{
+        tm("graph.outputs")
+      }}</v-btn>
+    </v-alert>
+    <v-alert
       v-for="issue in issues"
       :key="`${issue.path}:${issue.message}`"
       type="error"
@@ -600,17 +612,45 @@
                     )
                 "
               />
+              <p
+                v-if="ref.task_id && !ancestors.has(ref.task_id)"
+                class="text-error text-caption"
+              >
+                {{ tm("graph.invalidSource") }}: {{ ref.task_id }}
+              </p>
+              <p
+                v-if="ref.input && !draft.required_inputs?.includes(ref.input)"
+                class="text-error text-caption"
+              >
+                {{ tm("graph.invalidSource") }}: {{ ref.input }}
+              </p>
               <v-select
                 :model-value="ref.input ? `input:${ref.input}` : ref.task_id"
                 :items="inputSources"
                 :label="tm('graph.source')"
+                data-testid="input-source"
                 density="compact"
                 @update:model-value="setInputSource(String(alias), $event)"
               />
-              <v-text-field
+              <p
+                v-if="
+                  ref.task_id &&
+                  !fieldsForTask(ref.task_id).some(
+                    (item) => item.value === ref.field,
+                  )
+                "
+                class="text-error text-caption"
+              >
+                {{ tm("graph.invalidField") }}: {{ ref.field }}
+              </p>
+              <v-select
                 v-if="ref.task_id"
                 v-model="ref.field"
+                :items="fieldsForTask(ref.task_id)"
                 :label="tm('graph.field')"
+                data-testid="input-field"
+                :hint="tm('graph.fieldHint')"
+                persistent-hint
                 density="compact"
                 @update:model-value="checkpoint"
               />
@@ -630,22 +670,68 @@
             }}</v-btn>
             <p class="text-caption my-2">{{ tm("graph.referenceHint") }}</p>
             <h3 class="text-subtitle-2 mt-4 mb-2">{{ tm("graph.outputs") }}</h3>
-            <v-textarea
-              :key="selectedTask.id"
-              :model-value="
-                contractTexts[selectedTask.id] ??
-                (selectedTask.output_contract
-                  ? JSON.stringify(selectedTask.output_contract, null, 2)
-                  : '')
-              "
-              :label="tm('v2.contract')"
-              :readonly="!!selectedTask.team"
-              :hint="tm('v2.contractHint')"
-              persistent-hint
-              rows="5"
-              density="compact"
-              @update:model-value="setContract"
+            <v-switch
+              :model-value="!!selectedTask.output_contract"
+              :label="tm('graph.structured')"
+              data-testid="structured-output"
+              :disabled="!!selectedTask.team"
+              @update:model-value="setStructured"
             />
+            <p
+              v-if="
+                selectedTask.output_contract &&
+                !selectedTask.team &&
+                !editableContract
+              "
+              class="text-caption"
+            >
+              {{ tm("graph.complexContract") }}
+            </p>
+            <template
+              v-if="
+                selectedTask.output_contract &&
+                !selectedTask.team &&
+                editableContract
+              "
+            >
+              <p class="text-caption">{{ tm("graph.structuredHint") }}</p>
+              <div
+                v-for="(schema, name) in selectedTask.output_contract
+                  .properties ?? {}"
+                :key="name"
+                class="graph-input"
+              >
+                <v-text-field
+                  :model-value="name"
+                  :label="tm('graph.field')"
+                  density="compact"
+                  @change="
+                    renameOutput(
+                      String(name),
+                      ($event.target as HTMLInputElement).value,
+                    )
+                  "
+                />
+                <v-select
+                  :model-value="(schema as any).type"
+                  :items="['string', 'integer', 'number', 'boolean']"
+                  :label="tm('graph.fieldType')"
+                  data-testid="output-field-type"
+                  density="compact"
+                  @update:model-value="setOutputType(String(name), $event)"
+                />
+                <v-btn
+                  variant="text"
+                  size="small"
+                  color="error"
+                  @click="removeOutput(String(name))"
+                  >{{ tm("graph.removeInput") }}</v-btn
+                >
+              </div>
+              <v-btn variant="tonal" size="small" @click="addOutput">{{
+                tm("graph.addField")
+              }}</v-btn>
+            </template>
           </template>
           <v-btn
             variant="text"
@@ -666,6 +752,15 @@
         </template>
         <template v-else-if="selectedNode === '__output'">
           <p class="text-body-2 my-4">{{ tm("graph.outputHint") }}</p>
+          <v-select
+            v-model="draft.result_task_id"
+            :items="
+              draft.tasks.map((task) => ({ title: task.name, value: task.id }))
+            "
+            :label="tm('graph.resultTask')"
+            data-testid="result-task"
+            @update:model-value="checkpoint"
+          />
         </template>
         <template v-else-if="selectedEdge">
           <p class="text-subtitle-2 my-3">
@@ -795,6 +890,8 @@ watch(
       .find(Boolean);
     if (match)
       selectedNode.value = draft.value.tasks[Number(match[1])]?.id ?? null;
+    else if (issues.some((issue) => issue.path === "definition.result_task_id"))
+      selectedNode.value = "__output";
   },
 );
 const selectedEdgeKey = ref<string | null>(null);
@@ -958,15 +1055,128 @@ const selectedEdge = computed(
 const selectedRole = computed(() =>
   props.roles.find((role) => role.role_id === selectedTask.value?.role_id),
 );
+const ancestors = computed(() => {
+  const found = new Set<string>();
+  const pending = [selectedNode.value];
+  while (pending.length) {
+    const current = pending.pop();
+    for (const edge of draft.value.edges ?? []) {
+      if (edge.target === current && !found.has(edge.source)) {
+        found.add(edge.source);
+        pending.push(edge.source);
+      }
+    }
+  }
+  return found;
+});
+const editableContract = computed(() => {
+  const schema = selectedTask.value?.output_contract as any;
+  if (
+    !schema ||
+    schema.type !== "object" ||
+    !schema.properties ||
+    !Array.isArray(schema.required)
+  )
+    return false;
+  if (
+    Object.keys(schema).some(
+      (key) =>
+        !["type", "properties", "required", "additionalProperties"].includes(
+          key,
+        ),
+    )
+  )
+    return false;
+  return Object.entries(schema.properties).every(
+    ([name, value]: [string, any]) =>
+      schema.required.includes(name) &&
+      Object.keys(value).length === 1 &&
+      ["string", "integer", "number", "boolean", "null"].includes(value.type),
+  );
+});
 const inputSources = computed(() => [
   ...(draft.value.required_inputs ?? []).map((name) => ({
     title: `${tm("graph.workflowInput")}: ${name}`,
     value: `input:${name}`,
   })),
   ...draft.value.tasks
-    .filter((task) => task.id !== selectedNode.value)
+    .filter((task) => ancestors.value.has(task.id))
     .map((task) => ({ title: task.name, value: task.id })),
 ]);
+function fieldsForTask(id: string) {
+  const task = draft.value.tasks.find((item) => item.id === id);
+  if (!task) return [];
+  if (!task.output_contract) return [{ title: "text · string", value: "text" }];
+  const fields: { title: string; value: string }[] = [];
+  const visit = (schema: any, prefix = "") => {
+    if (
+      schema?.type !== "object" ||
+      !schema.properties ||
+      !Array.isArray(schema.required)
+    )
+      return;
+    for (const name of schema.required) {
+      const field = schema.properties[name];
+      const path = prefix ? `${prefix}.${name}` : name;
+      if (
+        ["string", "integer", "number", "boolean", "null"].includes(field?.type)
+      )
+        fields.push({ title: `${path} · ${field.type}`, value: path });
+      else if (field?.type === "object") visit(field, path);
+    }
+  };
+  visit(task.output_contract);
+  return fields;
+}
+function setStructured(enabled: boolean | null) {
+  if (!selectedTask.value) return;
+  selectedTask.value.output_contract = enabled
+    ? {
+        type: "object",
+        properties: {},
+        required: [],
+        additionalProperties: false,
+      }
+    : null;
+  checkpoint();
+}
+function addOutput() {
+  const schema = selectedTask.value?.output_contract as any;
+  if (!schema) return;
+  let i = 1;
+  while (`field${i}` in schema.properties) i++;
+  const name = `field${i}`;
+  schema.properties[name] = { type: "string" };
+  schema.required.push(name);
+  checkpoint();
+}
+function renameOutput(oldName: string, name: string) {
+  const schema = selectedTask.value?.output_contract as any;
+  if (!schema || name === oldName) return;
+  if (!/^[a-zA-Z_]\w*$/.test(name) || name in schema.properties) {
+    localError.value = tm("graph.invalidAlias");
+    return;
+  }
+  schema.properties[name] = schema.properties[oldName];
+  delete schema.properties[oldName];
+  schema.required = schema.required.map((item: string) =>
+    item === oldName ? name : item,
+  );
+  checkpoint();
+}
+function setOutputType(name: string, type: string) {
+  const schema = selectedTask.value?.output_contract as any;
+  if (!schema) return;
+  schema.properties[name] = { type };
+  checkpoint();
+}
+function removeOutput(name: string) {
+  const schema = selectedTask.value?.output_contract as any;
+  if (!schema) return;
+  delete schema.properties[name];
+  schema.required = schema.required.filter((item: string) => item !== name);
+  checkpoint();
+}
 const operators = ["eq", "ne", "gt", "ge", "lt", "le"];
 const taskNodes = computed<FlowNode[]>(() =>
   draft.value.tasks.map((task, index) => {
@@ -1035,13 +1245,19 @@ const taskNodes = computed<FlowNode[]>(() =>
     };
   }),
 );
+const validResultTask = computed(() =>
+  draft.value.tasks.some((task) => task.id === draft.value.result_task_id),
+);
+const showInterfaceNodes = computed(
+  () => !props.readonly || validResultTask.value,
+);
 const collapsedGroups = computed(() =>
   (draft.value.loops ?? []).filter((loop) =>
     collapsedLoops.value.includes(loop.id),
   ),
 );
 const nodes = computed<FlowNode[]>(() => [
-  ...(draft.value.tasks.length === 1
+  ...(showInterfaceNodes.value
     ? [
         {
           id: "__input",
@@ -1057,8 +1273,17 @@ const nodes = computed<FlowNode[]>(() => [
           position: { x: 620, y: 100 },
           data: {
             label: tm("graph.outputs"),
-            memberName: tm("graph.text"),
-            inputLabel: draft.value.tasks[0].name,
+            memberName: draft.value.tasks.find(
+              (task) => task.id === draft.value.result_task_id,
+            )?.output_contract
+              ? tm("graph.structured")
+              : tm("graph.text"),
+            inputLabel:
+              draft.value.tasks.find(
+                (task) => task.id === draft.value.result_task_id,
+              )?.name ??
+              draft.value.result_task_id ??
+              "",
           },
         },
       ]
@@ -1084,15 +1309,24 @@ const nodes = computed<FlowNode[]>(() => [
   })),
 ]);
 const edges = computed(() =>
-  [
-    ...(draft.value.tasks.length === 1
-      ? [
-          { source: "__input", target: draft.value.tasks[0].id },
-          { source: draft.value.tasks[0].id, target: "__output" },
-        ]
-      : []),
-    ...(draft.value.edges ?? []),
-  ]
+  (
+    [
+      ...(showInterfaceNodes.value && draft.value.tasks.length === 1
+        ? [
+            { source: "__input", target: draft.value.tasks[0].id },
+            ...(validResultTask.value
+              ? [{ source: draft.value.result_task_id!, target: "__output" }]
+              : []),
+          ]
+        : []),
+      ...(showInterfaceNodes.value &&
+      draft.value.tasks.length !== 1 &&
+      validResultTask.value
+        ? [{ source: draft.value.result_task_id!, target: "__output" }]
+        : []),
+      ...(draft.value.edges ?? []),
+    ] as NonNullable<GraphDefinition["edges"]>
+  )
     .map((edge) => {
       const sourceGroup = collapsedGroups.value.find((loop) =>
         loop.body.includes(edge.source),
@@ -1518,23 +1752,8 @@ function setInputSource(alias: string, source: string) {
   if (!selectedTask.value?.inputs) return;
   selectedTask.value.inputs[alias] = source.startsWith("input:")
     ? { input: source.slice(6), field: "text" }
-    : { task_id: source, field: "text" };
+    : { task_id: source, field: fieldsForTask(source)[0]?.value ?? "text" };
   checkpoint();
-}
-function setContract(value: string) {
-  if (!selectedTask.value) return;
-  const id = selectedTask.value.id;
-  contractTexts.value[id] = value;
-  try {
-    selectedTask.value.output_contract = value.trim()
-      ? JSON.parse(value)
-      : null;
-    delete contractErrors.value[id];
-    checkpoint();
-  } catch {
-    contractErrors.value[id] = tm("graph.invalidJson");
-  }
-  emit("validation", Object.keys(contractErrors.value).length > 0);
 }
 function toggleCondition(enabled: boolean | null) {
   if (!selectedEdge.value) return;

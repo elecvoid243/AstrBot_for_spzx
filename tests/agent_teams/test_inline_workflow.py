@@ -2,6 +2,7 @@
 
 import asyncio
 import copy
+import json
 
 import pytest
 
@@ -48,6 +49,7 @@ async def test_inline_agent_version_and_run(tmp_path):
     )
     definition = {
         "name": "Inline",
+        "result_task_id": "agent",
         "default_provider_id": "model-a",
         "required_inputs": ["topic"],
         "tasks": [
@@ -216,6 +218,7 @@ async def test_inline_members_have_independent_capacity_and_validate_sources(tmp
     ]
     definition = {
         "name": "Independent",
+        "result_task_id": "b",
         "default_provider_id": "m",
         "max_parallel": 2,
         "tasks": tasks,
@@ -235,5 +238,179 @@ async def test_inline_members_have_independent_capacity_and_validate_sources(tmp
         assert started == {"a", "b"}
     finally:
         release.set()
+        await service.shutdown()
+        await db.engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("nested", [False, True])
+async def test_explicit_fields_project_artifacts_and_select_result(tmp_path, nested):
+    db = SQLiteDatabase(str(tmp_path / "fields.db"))
+
+    async def catalog():
+        return {
+            "profiles": [{"id": "default"}],
+            "models": [{"id": "m"}],
+            "personas": [],
+            "tools": [],
+            "skills": [],
+            "knowledge_bases": [],
+        }
+
+    observed = {}
+    bindings = {}
+    service = WorkflowService(db, RoleAssetService(db, catalog_loader=catalog))
+
+    async def deliver(
+        session_id, text, context=None, execution_token=None, message_id=None
+    ):
+        binding = AgentTeamExecutionRegistry.resolve(execution_token)
+        bindings[session_id] = binding
+        observed[binding.node_id] = {
+            "text": text,
+            "session": session_id,
+            "conversation": binding.conversation_id,
+        }
+        return message_id
+
+    async def collect(session_id, message_id, member_id):
+        binding = bindings[session_id]
+        tools = AgentTeamToolRegistry.get_tools(f"webchat:FriendMessage:{session_id}")
+        if binding.node_id == "first":
+            assert (
+                "accepted"
+                in (
+                    await tools[0].call(
+                        None,
+                        result_json=json.dumps(
+                            {
+                                "public": {
+                                    "value": "visible",
+                                    "private": "hidden-nested",
+                                }
+                                if nested
+                                else "visible",
+                                "secret": "hidden",
+                            }
+                        ),
+                    )
+                ).lower()
+            )
+        else:
+            run = await service.get_run("alice", binding.run_id)
+            ref = run["snapshot"]["input_artifacts"][0]
+            reader = next(tool for tool in tools if tool.name == "read_task_artifact")
+            observed["projection"] = await reader.call(None, **ref)
+            observed["file_attempt"] = await reader.call(None, **ref, file_id="secret")
+            await tools[0].call(None, text="Final")
+        return "Done", []
+
+    service.ports_factory = lambda _: TeamPorts(
+        deliver=deliver, collect=collect, is_busy=lambda _: False, emit=lambda _: None
+    )
+    role = {"name": "Agent", "prompt": "Work", "tools": []}
+    task = {"member": "same", "role": role, "installation": {"profile_id": "default"}}
+    definition = {
+        "name": "Fields",
+        "default_provider_id": "m",
+        "result_task_id": "second",
+        "tasks": [
+            {
+                **task,
+                "id": "first",
+                "name": "First",
+                "task": "first secret history",
+                "output_contract": {
+                    "type": "object",
+                    "properties": {
+                        "public": {
+                            "type": "object",
+                            "properties": {
+                                "value": {"type": "string"},
+                                "private": {"type": "string"},
+                            },
+                            "required": ["value", "private"],
+                        }
+                        if nested
+                        else {"type": "string"},
+                        "secret": {"type": "string"},
+                    },
+                    "required": ["public", "secret"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                **task,
+                "id": "second",
+                "name": "Second",
+                "task": "Use {value}",
+                "inputs": {
+                    "value": {
+                        "task_id": "first",
+                        "field": "public.value" if nested else "public",
+                    }
+                },
+            },
+        ],
+        "edges": [{"source": "first", "target": "second"}],
+    }
+    try:
+        asset = await service.save_asset("alice", {"definition": definition})
+        reopened = await service.get_asset("alice", asset["asset_id"], 1)
+        assert reopened["definition"]["result_task_id"] == "second"
+        run = await service.start_run("alice", asset["asset_id"], {"version": 1})
+        for _ in range(500):
+            current = await service.get_run("alice", run["run_id"])
+            if current["status"] != "running":
+                break
+            await asyncio.sleep(0.01)
+        assert current["status"] == "completed", current
+        assert observed["second"]["text"] == "Use visible"
+        assert observed["first"]["session"] != observed["second"]["session"]
+        assert observed["first"]["conversation"] != observed["second"]["conversation"]
+        assert (
+            "visible" in observed["projection"]
+            and "hidden" not in observed["projection"]
+        )
+        assert "hidden-nested" not in observed["projection"]
+        assert "Error" in observed["file_attempt"]
+        first, second = current["tasks"]
+        assert (
+            first["snapshot"]["member"]["member_id"]
+            == second["snapshot"]["member"]["member_id"]
+        )
+        assert current["result"] == {"text": "Final"}
+        assert current["result_ref"] == second["result_ref"]
+        assert (await service.read_artifact("alice", **first["result_ref"]))["content"][
+            "secret"
+        ] == "hidden"
+        assert "conversation_id" not in current["snapshot"]["members"]["same"]["member"]
+        invalid = copy.deepcopy(definition)
+        invalid["result_task_id"] = "deleted"
+        broken = await service.save_asset("alice", {"definition": invalid})
+        readiness = await service.check_readiness("alice", broken["asset_id"], 1)
+        assert (
+            not readiness["ready"]
+            and readiness["issues"][0]["path"] == "definition.result_task_id"
+        )
+        wrong_type = copy.deepcopy(definition)
+        wrong_type["tasks"][0]["output_contract"]["properties"]["public"] = {
+            "type": "array",
+            "items": {"type": "string"},
+        }
+        with pytest.raises(RoleAssetError) as wrong:
+            await service.save_asset("alice", {"definition": wrong_type})
+        assert any(
+            issue["path"] == "definition.tasks.1.inputs.value"
+            for issue in wrong.value.fields
+        )
+        invalid["tasks"][1]["inputs"]["value"]["field"] = "deleted"
+        with pytest.raises(RoleAssetError) as error:
+            await service.save_asset("alice", {"definition": invalid})
+        assert any(
+            issue["path"] == "definition.tasks.1.inputs.value"
+            for issue in error.value.fields
+        )
+    finally:
         await service.shutdown()
         await db.engine.dispose()

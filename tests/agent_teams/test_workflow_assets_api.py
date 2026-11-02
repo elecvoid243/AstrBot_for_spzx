@@ -26,6 +26,7 @@ async def test_inline_graph_http_start_and_read_original_result(workflow_env):
     app.dependency_overrides[require_dashboard_user] = lambda: "alice"
     definition = {
         "name": "Inline HTTP",
+        "result_task_id": "agent",
         "default_provider_id": "model-a",
         "required_inputs": ["topic"],
         "tasks": [

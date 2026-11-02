@@ -724,6 +724,7 @@ export type GraphDefinition = {
     name: string;
     default_provider_id?: (string | null);
     required_inputs?: Array<(string)>;
+    result_task_id?: (string | null);
     max_parallel?: number;
     max_depth?: number;
     limits?: (RunLimits | null);

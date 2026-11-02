@@ -29,6 +29,7 @@ def revision_definition(role_id, max_iterations=3):
     """
     return {
         "name": "Reviewed report",
+        "result_task_id": "publish",
         "required_inputs": ["draft", "feedback"],
         "max_parallel": 1,
         "tasks": [
@@ -216,6 +217,19 @@ async def test_failed_review_creates_new_tasks_and_pins_explicit_revision(loop_s
     assert {task["state"]["attempt_id"] for task in first}.isdisjoint(
         task["state"]["attempt_id"] for task in second
     )
+    for initial, following in zip(first, second):
+        assert (
+            initial["snapshot"]["member"]["member_id"]
+            == following["snapshot"]["member"]["member_id"]
+        )
+        assert (
+            initial["snapshot"]["member"]["conversation_id"]
+            != following["snapshot"]["member"]["conversation_id"]
+        )
+        assert (
+            initial["snapshot"]["member"]["session_id"]
+            != following["snapshot"]["member"]["session_id"]
+        )
     assert second[0]["snapshot"]["inputs"] == {
         "draft": "Report revision 1",
         "feedback": "Review 1: add evidence",
@@ -300,13 +314,7 @@ async def test_unselected_whole_loop_preserves_merge_and_reopened_history(
         ("review", "skipped"),
         ("publish", "completed"),
     ]
-    assert await env.service.get_result("alice", run["run_id"]) == {
-        "tasks": {
-            "gate": {"text": "Original"},
-            "selected": {"text": "Original"},
-            "publish": {"text": "Original"},
-        }
-    }
+    assert await env.service.get_result("alice", run["run_id"]) == {"text": "Original"}
     assert finished["tasks"][-1]["snapshot"]["input_artifacts"] == [
         finished["tasks"][1]["result_ref"]
     ]
@@ -342,14 +350,23 @@ async def test_unselected_whole_loop_preserves_merge_and_reopened_history(
             task["run_id"] for task in finished["tasks"]
         ]
         if loop_enabled:
-            assert len(
-                [event for event in restored["events"] if event["kind"] == "loop.skipped"]
-            ) == 1
+            assert (
+                len(
+                    [
+                        event
+                        for event in restored["events"]
+                        if event["kind"] == "loop.skipped"
+                    ]
+                )
+                == 1
+            )
             assert not any(
                 event["kind"] == "loop.evaluated" for event in restored["events"]
             )
         assert [item["snapshot"]["node_id"] for item in loop_script.observations] == [
-            "gate", "selected", "publish"
+            "gate",
+            "selected",
+            "publish",
         ]
     finally:
         await reopened.shutdown()
@@ -357,22 +374,25 @@ async def test_unselected_whole_loop_preserves_merge_and_reopened_history(
 
 
 @pytest.mark.asyncio
-async def test_executed_loop_with_skipped_exit_cannot_release_final_consumer(loop_script):
+async def test_executed_loop_with_skipped_exit_cannot_release_final_consumer(
+    loop_script,
+):
     env = loop_script.env
     definition = revision_definition(env.role["role_id"])
-    definition["edges"][0]["condition"] = {
-        "field": "text", "value": "unselected"
-    }
+    definition["edges"][0]["condition"] = {"field": "text", "value": "unselected"}
     asset = await env.service.save_asset("alice", {"definition": definition})
     run = await env.service.start_run(
-        "alice", asset["asset_id"],
+        "alice",
+        asset["asset_id"],
         {"version": 1, "inputs": {"draft": "Original", "feedback": "Check"}},
     )
     finished = await wait_graph(env.service, run["run_id"])
     assert finished["status"] == "blocked"
     assert finished["result"] is None
     assert [task["status"] for task in finished["tasks"]] == [
-        "completed", "skipped", "dependency_failed"
+        "completed",
+        "skipped",
+        "dependency_failed",
     ]
     loop = finished["loops"][0]
     assert loop["status"] == "blocked"
@@ -494,15 +514,30 @@ async def test_skipped_optional_body_path_does_not_block_validated_passing_exit(
 
 
 @pytest.mark.asyncio
-async def test_skipped_feedback_source_cannot_release_an_unvalidated_next_round(loop_script):
+async def test_skipped_feedback_source_cannot_release_an_unvalidated_next_round(
+    loop_script,
+):
     env = loop_script.env
     definition = revision_definition(env.role["role_id"])
-    definition["tasks"].insert(1, {**definition["tasks"][0], "id": "optional", "name": "Optional evidence"})
+    definition["tasks"].insert(
+        1, {**definition["tasks"][0], "id": "optional", "name": "Optional evidence"}
+    )
     definition["loops"][0]["body"].append("optional")
     definition["loops"][0]["feedback"][0]["source"] = "optional"
-    definition["edges"] += [{"source": "write", "target": "optional", "condition": {"field": "text", "value": "not selected"}}, {"source": "optional", "target": "review"}]
+    definition["edges"] += [
+        {
+            "source": "write",
+            "target": "optional",
+            "condition": {"field": "text", "value": "not selected"},
+        },
+        {"source": "optional", "target": "review"},
+    ]
     asset = await env.service.save_asset("alice", {"definition": definition})
-    run = await env.service.start_run("alice", asset["asset_id"], {"version": 1, "inputs": {"draft": "Original", "feedback": "Check"}})
+    run = await env.service.start_run(
+        "alice",
+        asset["asset_id"],
+        {"version": 1, "inputs": {"draft": "Original", "feedback": "Check"}},
+    )
     finished = await wait_graph(env.service, run["run_id"])
     assert finished["status"] == "blocked"
     assert finished["loops"][0]["status"] == "blocked"
@@ -510,7 +545,10 @@ async def test_skipped_feedback_source_cannot_release_an_unvalidated_next_round(
     assert len(finished["loops"][0]["iterations"]) == 1
     await env.service.advance_run("alice", run["run_id"])
     reread = await env.service.get_run("alice", run["run_id"])
-    assert len([event for event in reread["events"] if event["kind"] == "loop.evaluated"]) == 1
+    assert (
+        len([event for event in reread["events"] if event["kind"] == "loop.evaluated"])
+        == 1
+    )
     assert len(loop_script.observations) == 2
 
 
@@ -626,6 +664,7 @@ async def test_approval_after_loop_pins_the_passed_revision(loop_script):
         },
     }
     definition["edges"][-1]["target"] = "approve"
+    definition["result_task_id"] = "approve"
     asset = await env.service.save_asset("alice", {"definition": definition})
     run = await env.service.start_run(
         "alice",

@@ -62,6 +62,7 @@ async def test_pinned_versions_keep_explicit_overrides_and_frozen_run(tmp_path):
     definition = {
         "name": "Workflow",
         "default_provider_id": "model-a",
+        "result_task_id": "writer",
         "tasks": [
             {
                 "id": "writer",

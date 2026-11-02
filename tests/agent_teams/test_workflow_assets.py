@@ -131,6 +131,7 @@ async def test_run_persists_before_dispatch_and_finishes_only_by_explicit_submis
         {
             "definition": {
                 "name": "Report",
+                "result_task_id": "writer",
                 "required_inputs": ["topic"],
                 "tasks": [
                     {
@@ -250,6 +251,7 @@ async def workflow_env(tmp_path):
         {
             "definition": {
                 "name": "Report",
+                "result_task_id": "writer",
                 "tasks": [
                     {
                         "id": "writer",

@@ -3957,15 +3957,13 @@ class WorkflowService:
                 result["result_ref"] = results[_current_task_runs(row)["coordinator"]][
                     "result_ref"
                 ]
-            elif (
-                row.status == "completed"
-                and len(result["tasks"]) == 1
-                and not any(
-                    row.snapshot["definition"]["tasks"][0].get(kind)
-                    for kind in ("human", "team", "workflow")
-                )
+            elif row.status == "completed" and row.snapshot["definition"].get(
+                "result_task_id"
             ):
-                task_result = result["tasks"][0]
+                task_id = _current_task_runs(row)[
+                    row.snapshot["definition"]["result_task_id"]
+                ]
+                task_result = results[task_id]
                 result["result_ref"] = task_result["result_ref"]
                 if include_details:
                     result["result"] = task_result["result"]
@@ -5357,6 +5355,19 @@ class WorkflowService:
                 }
             )
         validate_graph(definition)
+        if not team and definition.result_task_id not in {
+            task.id for task in definition.tasks
+        }:
+            raise RoleAssetError(
+                "Choose a workflow result task",
+                [
+                    {
+                        "path": "definition.result_task_id",
+                        "code": "REFERENCE",
+                        "message": "Select an existing task as the workflow result",
+                    }
+                ],
+            )
         members = {}
         role_counts: dict[tuple, int] = {}
         for index, task in enumerate(definition.tasks):
@@ -5628,14 +5639,19 @@ class WorkflowService:
         members = snapshot["members"]
         for frozen_member in members.values():
             member = frozen_member["member"]
-            session_id = uuid.uuid4().hex
             frozen_member["member"] = {
-                **member,
-                "conversation_id": str(uuid.uuid4()),
-                "member_id": uuid.uuid4().hex,
-                "session_id": session_id,
-                "umo": f"webchat:FriendMessage:{session_id}",
+                key: value
+                for key, value in member.items()
+                if key not in {"conversation_id", "session_id", "umo"}
             }
+            frozen_member["member"]["member_id"] = uuid.uuid4().hex
+            if snapshot.get("team_definition"):
+                session_id = uuid.uuid4().hex
+                frozen_member["member"].update(
+                    conversation_id=str(uuid.uuid4()),
+                    session_id=session_id,
+                    umo=f"webchat:FriendMessage:{session_id}",
+                )
         new_scope = AgentWorkflowRun(
             run_id=run_id, owner_username=username, snapshot=snapshot
         )
@@ -5670,7 +5686,7 @@ class WorkflowService:
             )
         )
         session.add(AgentWorkflowSchedule(run_id=run_id))
-        for frozen in members.values():
+        for frozen in members.values() if snapshot.get("team_definition") else []:
             member = frozen["member"]
             session.add(
                 ConversationV2(
@@ -5691,6 +5707,37 @@ class WorkflowService:
                 )
             )
         for task in definition.tasks:
+            task_member = None
+            if not snapshot.get("team_definition") and not (
+                task.human or task.team or task.workflow
+            ):
+                task_member = copy.deepcopy(members[task.member])
+                session_id = uuid.uuid4().hex
+                task_member["member"] = {
+                    **task_member["member"],
+                    "conversation_id": str(uuid.uuid4()),
+                    "session_id": session_id,
+                    "umo": f"webchat:FriendMessage:{session_id}",
+                }
+                member = task_member["member"]
+                session.add(
+                    ConversationV2(
+                        conversation_id=member["conversation_id"],
+                        platform_id="webchat",
+                        user_id=member["umo"],
+                        content=[],
+                        title=task.name,
+                        persona_id=task_member["effective"].get("persona_id"),
+                    )
+                )
+                session.add(
+                    PlatformSession(
+                        session_id=session_id,
+                        creator=username,
+                        display_name=task.name,
+                        archived=1,
+                    )
+                )
             child_definition = {
                 "name": task.name,
                 "role_id": task.role_id,
@@ -5721,6 +5768,11 @@ class WorkflowService:
                         "scope_limits": snapshot["scope_limits"],
                         "node_id": task.id,
                         **(
+                            {"graph_task": True}
+                            if not snapshot.get("team_definition")
+                            else {}
+                        ),
+                        **(
                             {"coordinator": True}
                             if snapshot.get("team_definition")
                             and task.id == "coordinator"
@@ -5744,7 +5796,7 @@ class WorkflowService:
                             if task.team is not None
                             else {"workflow": task.workflow.model_dump()}
                             if task.workflow is not None
-                            else members[task.member]
+                            else task_member or members[task.member]
                         ),
                         "inputs": snapshot["inputs"],
                         "input_artifacts": snapshot["input_artifacts"],
@@ -5904,6 +5956,7 @@ class WorkflowService:
                     if isinstance(value, str)
                     else json.dumps(value, ensure_ascii=False),
                     "reference": {"artifact_id": previous.run_id, "version": 1},
+                    "field": feedback["field"],
                 }
             next_runs = {}
             for node_id in definition["body"]:
@@ -5922,6 +5975,32 @@ class WorkflowService:
                     "task": task["task"],
                     "iteration_inputs": feedback_inputs.get(node_id, {}),
                 }
+                if snapshot.get("graph_task") and snapshot.get("member"):
+                    session_id = uuid.uuid4().hex
+                    snapshot["member"].update(
+                        conversation_id=str(uuid.uuid4()),
+                        session_id=session_id,
+                        umo=f"webchat:FriendMessage:{session_id}",
+                    )
+                    member = snapshot["member"]
+                    session.add(
+                        ConversationV2(
+                            conversation_id=member["conversation_id"],
+                            platform_id="webchat",
+                            user_id=member["umo"],
+                            content=[],
+                            title=task["name"],
+                            persona_id=snapshot["effective"].get("persona_id"),
+                        )
+                    )
+                    session.add(
+                        PlatformSession(
+                            session_id=session_id,
+                            creator=root.owner_username,
+                            display_name=task["name"],
+                            archived=1,
+                        )
+                    )
                 child = AgentWorkflowRun(
                     run_id=identity,
                     owner_username=root.owner_username,
@@ -6013,7 +6092,11 @@ class WorkflowService:
                 )
             root_id = caller.snapshot.get("parent_run_id")
             root = await session.get(AgentWorkflowRun, root_id) if root_id else None
-            if root is None or caller.state["scope_id"] != root.state["scope_id"]:
+            if (
+                root is None
+                or not root.snapshot.get("team_definition")
+                or caller.state["scope_id"] != root.state["scope_id"]
+            ):
                 raise RoleAssetError(
                     "Communication requires a shared execution scope", status=403
                 )
@@ -7130,6 +7213,13 @@ class WorkflowService:
                                     if {"artifact_id": source.run_id, "version": 1}
                                     not in refs
                                 )
+                            selected_fields = (
+                                dict(row.snapshot.get("selected_fields", {}))
+                                if retrying
+                                else {}
+                            )
+                            if row.snapshot.get("graph_task") and not retrying:
+                                refs = []
                             missing = False
                             iteration_inputs = row.snapshot.get("iteration_inputs", {})
                             for key, ref in [] if retrying else task["inputs"].items():
@@ -7138,6 +7228,10 @@ class WorkflowService:
                                     inputs[key] = fixed["value"]
                                     if fixed["reference"] not in refs:
                                         refs.append(fixed["reference"])
+                                    if row.snapshot.get("graph_task"):
+                                        selected_fields.setdefault(
+                                            fixed["reference"]["artifact_id"], []
+                                        ).append(fixed["field"])
                                     continue
                                 if ref.get("input") is not None:
                                     # Earlier task aliases must not change the source.
@@ -7163,6 +7257,10 @@ class WorkflowService:
                                     }
                                     if pinned not in refs:
                                         refs.append(pinned)
+                                    if row.snapshot.get("graph_task"):
+                                        selected_fields.setdefault(
+                                            pinned["artifact_id"], []
+                                        ).append(ref["field"])
                             if missing:
                                 row.status = "skipped"
                                 row.state = {
@@ -7182,9 +7280,11 @@ class WorkflowService:
                                     if task.get("workflow")
                                     else {key: inputs[key] for key in task["inputs"]}
                                 )
-                                # Hand off declared values and only their exact input
-                                # references; ancestry grants no ambient context access.
-                                frozen["input_artifacts"] = refs
+                                # A graph field reference grants only its value, not
+                                # full artifact access to a nested coordinator.
+                                frozen["input_artifacts"] = (
+                                    [] if row.snapshot.get("graph_task") else refs
+                                )
                                 row.snapshot = {
                                     **row.snapshot,
                                     "inputs": frozen["inputs"],
@@ -7276,6 +7376,7 @@ class WorkflowService:
                                     else task["task"].format_map(inputs),
                                     "inputs": inputs,
                                     "input_artifacts": refs,
+                                    "selected_fields": selected_fields,
                                 }
                                 row.status = "running"
                                 occupied.add(member_id)
@@ -7310,26 +7411,36 @@ class WorkflowService:
                         row is not None and row.status in {"completed", "skipped"}
                         for row in rows.values()
                     )
+                    result_id = root.snapshot["definition"].get("result_task_id")
+                    if not root.snapshot.get("team_definition"):
+                        selected = rows.get(result_id)
+                        success = (
+                            success
+                            and selected is not None
+                            and selected.status == "completed"
+                            and selected.result is not None
+                        )
                     root.status = "completed" if success else "blocked"
                     root.state = {
                         **root.state,
                         "reason": None
                         if success
+                        else "The selected result task did not produce a validated result."
+                        if not root.snapshot.get("team_definition")
+                        and (
+                            selected is None
+                            or selected.status == "skipped"
+                            or selected.result is None
+                            and selected.status == "completed"
+                        )
                         else "One or more branches require attention; independent branches were allowed to finish.",
                     }
                     if success:
-                        root.result = (
-                            rows["coordinator"].result
+                        root.result = rows[
+                            "coordinator"
                             if root.snapshot.get("team_definition")
-                            and rows["coordinator"] is not None
-                            else {
-                                "tasks": {
-                                    name: row.result
-                                    for name, row in rows.items()
-                                    if row is not None and row.status == "completed"
-                                }
-                            }
-                        )
+                            else result_id
+                        ].result
                     session.add(root)
                     session.add(
                         AgentWorkflowEvent(
@@ -7736,6 +7847,18 @@ class WorkflowService:
                     await self._require_execution_owner(
                         session, consumer_run_id, execution_id
                     )
+                graph_task = consumer.snapshot.get("graph_task", False)
+                selected = consumer.snapshot.get("selected_fields", {}).get(
+                    artifact_id, []
+                )
+                if graph_task and (
+                    version != 1
+                    or not selected
+                    or ref not in consumer.snapshot.get("input_artifacts", [])
+                ):
+                    raise RoleAssetError(
+                        "Artifact version is not a selected graph input", status=403
+                    )
                 team_output = (
                     consumer.snapshot.get("coordinator")
                     and origin.snapshot.get("parent_run_id")
@@ -7769,7 +7892,8 @@ class WorkflowService:
                     ref in message.payload["artifact_refs"] for message in deliveries
                 )
                 if (
-                    ref not in consumer.snapshot.get("input_artifacts", [])
+                    not graph_task
+                    and ref not in consumer.snapshot.get("input_artifacts", [])
                     and not team_output
                     and not own_output
                     and not shared_output
@@ -7799,6 +7923,17 @@ class WorkflowService:
                     )
                     if _session is None:
                         await session.commit()
+            if consumer_run_id is not None and graph_task:
+                projection = {}
+                for path in selected:
+                    source = artifact.content
+                    target = projection
+                    parts = path.split(".")
+                    for part in parts[:-1]:
+                        source = source[part]
+                        target = target.setdefault(part, {})
+                    target[parts[-1]] = source[parts[-1]]
+                return {**ref, "content": projection, "files": []}
             files = []
             for file_ref in artifact.content.get("files", []):
                 metadata = (
@@ -9254,7 +9389,7 @@ class WorkflowService:
                         },
                     )
                 )
-            if snapshot.get("parent_run_id"):
+            if snapshot.get("parent_run_id") and not snapshot.get("graph_task"):
 
                 async def communicate(payload: dict) -> dict:
                     """Apply communication using the current attempt's authority.
@@ -9326,6 +9461,10 @@ class WorkflowService:
                     )
                     if file_id is None:
                         return artifact
+                    if snapshot.get("graph_task"):
+                        raise RoleAssetError(
+                            "Graph inputs do not grant file access", status=403
+                        )
                     file = await self.get_file(
                         username, artifact_id, version, file_id, download=False
                     )
@@ -9344,7 +9483,11 @@ class WorkflowService:
                         "encoding": encoding,
                     }
 
-                tools.append(ReadArtifactTool(read))
+                read_tool = ReadArtifactTool(read)
+                if snapshot.get("graph_task"):
+                    read_tool.description = "Read only the explicitly selected scalar fields of a pinned input artifact."
+                    read_tool.parameters["properties"].pop("file_id", None)
+                tools.append(read_tool)
             AgentTeamToolRegistry.register(member["umo"], tools)
 
             async def admit_work() -> None:
@@ -9504,11 +9647,19 @@ class WorkflowService:
                             username, run_id, state["attempt_id"], execution_id
                         )
                     )
-                    if snapshot.get("parent_run_id")
+                    if snapshot.get("parent_run_id") and not snapshot.get("graph_task")
                     else None,
                     admit_work=admit_work,
                     text=snapshot["task"],
-                    context="Submit the final result with submit_task_result according to its declared contract. Plain text does not complete this task. Read full input content with read_task_artifact. Pinned input references: "
+                    context="Submit the final result with submit_task_result according to its declared contract. Plain text does not complete this task. "
+                    + (
+                        "Read only selected fields with read_task_artifact. Pinned fields: "
+                        + json.dumps(snapshot.get("selected_fields", {}))
+                        + ". "
+                        if snapshot.get("graph_task")
+                        else "Read full input content with read_task_artifact. "
+                    )
+                    + "Pinned input references: "
                     + json.dumps(snapshot.get("input_artifacts", []))
                     + (
                         # Frozen inputs are data, never a second task template.

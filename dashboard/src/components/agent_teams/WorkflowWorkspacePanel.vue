@@ -1044,6 +1044,7 @@ function editGraph(asset: any) {
         name: "",
         default_provider_id: null,
         required_inputs: ["input"],
+        result_task_id: "agent",
         max_parallel: 4,
         max_depth: 3,
         tasks: [

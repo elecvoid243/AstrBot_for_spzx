@@ -594,6 +594,10 @@ Navigation, tab/viewport changes and document or nested-container scrolling inva
 
 ![Human scrolling and double-click feedback](images/agent-browser-pointer.png)
 
+Fullscreen keeps status notices and **Hand back** visible, and fits the image to the space left by the controls. Blank margins stay local.
+
+![Fullscreen](images/agent-browser-pointer-fullscreen.png)
+
 
 After confirmed takeover, click the image to focus remote keyboard input. Type English or Chinese, use Tab, Enter, arrows, Backspace and editing shortcuts, or explicitly paste plain text (up to 2048 characters / 4096 UTF-8 bytes). IME preedit stays local and commits once; cancelled composition inserts nothing. Tab/Escape reach the remote page while the image owns keyboard focus, including fullscreen. Use **Leave keyboard control** to return to local controls, or **Hand back control** to explicitly return the browser to the Agent. Clicking the chat composer or another local control releases held keys. Target changes discard queued input and require focusing the image again. Passwords and input payloads are absent from action summaries; after handback the Agent can still read visible page content.
 

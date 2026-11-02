@@ -201,9 +201,17 @@ describe("Agent browser snapshots", () => {
         2,
       );
       expect(socket.sent.at(-1)).not.toHaveProperty("queuedAt");
+      await view.get(".agent-browser-fullscreen").trigger("click");
+      await flushPromises();
+      const fullNotice = document.querySelector(
+        ".agent-browser-stage.is-fullscreen .agent-browser-notice",
+      );
+      const activeNotice = fullNotice?.textContent;
       socket.ack("wheel", Number(socket.sent.at(-1)?.input_id), "uncertain");
       await flushPromises();
       expect(view.attributes("data-human-control")).toBe("false");
+      expect(fullNotice?.textContent?.trim().length).toBeGreaterThan(10);
+      expect(fullNotice?.textContent).not.toBe(activeNotice);
     } finally {
       view.unmount();
       vi.unstubAllGlobals();

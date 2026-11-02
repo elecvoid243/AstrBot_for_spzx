@@ -1258,6 +1258,13 @@ onBeforeUnmount(() => {
         :aria-modal="fullscreen ? true : undefined"
         :aria-label="fullscreen ? t(`${key}.title`) : undefined"
       >
+        <div
+          v-if="fullscreen && manualMessage"
+          role="status"
+          class="agent-browser-notice"
+        >
+          {{ manualMessage }}
+        </div>
         <div v-if="!state?.image" role="status" class="agent-browser-empty">
           <span class="agent-browser-empty-icon">
             <component
@@ -1283,7 +1290,7 @@ onBeforeUnmount(() => {
             :style="
               fullscreen && state?.width && state?.height
                 ? {
-                    width: `min(100%, calc((100dvh - 60px) * ${
+                    width: `min(100%, calc(100cqh * ${
                       state.width / state.height
                     }))`,
                   }
@@ -1374,7 +1381,7 @@ onBeforeUnmount(() => {
           <button
             v-if="humanControl && fullscreen"
             type="button"
-            class="agent-browser-button"
+            class="agent-browser-handback agent-browser-button"
             :disabled="manualPending"
             @click="releaseControl"
           >
@@ -1711,7 +1718,9 @@ onBeforeUnmount(() => {
   background: rgba(var(--browser-ink), 0.035);
   overscroll-behavior: contain;
 }
+/* Fit the image to the remaining flex area, including all visible controls. */
 .agent-browser-stage.is-fullscreen .agent-browser-image {
+  container-type: size;
   align-items: center;
   justify-content: center;
 }
@@ -1764,6 +1773,11 @@ onBeforeUnmount(() => {
   border-top: 1px solid rgba(var(--browser-ink), 0.06);
   color: rgba(var(--browser-ink), 0.46);
   font-size: 10px;
+}
+.agent-browser-handback {
+  width: auto;
+  padding: 0 10px;
+  white-space: nowrap;
 }
 .agent-browser-caption span {
   gap: 5px;

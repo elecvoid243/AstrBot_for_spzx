@@ -1263,11 +1263,31 @@ addEventListener('focusin',report);
                     await pointer_at(700, 100, double=True)
                     assert pointer_state["doubles"] == 3
                     await page.locator(".agent-browser-fullscreen").click()
+                    await page.set_viewport_size({"width": 1440, "height": 700})
                     await asyncio.sleep(0.2)
+                    box = await image.bounding_box()
+                    area = await page.locator(".agent-browser-image").bounding_box()
+                    assert (
+                        box["y"] >= area["y"]
+                        and box["y"] + box["height"] <= area["y"] + area["height"]
+                    )
+                    assert box["x"] > area["x"] + 20
+                    before_blank = pointer_state["doubles"]
+                    await page.mouse.click(
+                        area["x"] + 2, area["y"] + area["height"] / 2
+                    )
+                    await asyncio.sleep(0.1)
+                    assert pointer_state["doubles"] == before_blank
                     await pointer_at(700, 100, double=True)
                     assert pointer_state["doubles"] == 4
+                    assert await page.locator(".agent-browser-handback").evaluate(
+                        "e => e.getBoundingClientRect().width >= e.scrollWidth && e.getBoundingClientRect().width > 50"
+                    )
                     await page.screenshot(
                         path=str(evidence / "pointer-fullscreen-en.png")
+                    )
+                    metrics["checks"].append(
+                        "H04: wide-short fullscreen fits image within available area; blank margin cannot click; handback label stays readable"
                     )
                     await (
                         page.locator(".agent-browser-stage.is-fullscreen button")
@@ -1331,6 +1351,12 @@ addEventListener('focusin',report);
                     ).wait_for()
                     await asyncio.sleep(0.4)
                     await page.screenshot(path=str(evidence / "pointer-zh-dark.png"))
+                    await page.locator(".agent-browser-fullscreen").click()
+                    await asyncio.sleep(0.2)
+                    await page.screenshot(
+                        path=str(evidence / "pointer-fullscreen-zh.png")
+                    )
+                    await page.keyboard.press("Escape")
                     metrics["checks"].append(
                         "H04: high-frequency wheel queue bounded with ordered acks; outside image wheel keeps browser default; real dark Chinese UI checked"
                     )

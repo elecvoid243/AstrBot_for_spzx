@@ -1,6 +1,6 @@
 """Verify H01/H02 through real AstrBot login, production ChatUI and private Chromium.
 
-Run with a development interpreter containing AstrBot dependencies, aiohttp and
+Run with a development interpreter containing AstrBot dependencies, aiohttp, psutil and
 playwright. Only the supplied, newly created evidence directory is
 written. The OpenAI-compatible model fixture and website bind to loopback.
 """
@@ -24,8 +24,10 @@ import time
 from pathlib import Path
 
 import aiohttp
+import psutil
 from aiohttp import web
 from PIL import Image
+from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import async_playwright
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -54,7 +56,14 @@ async def main() -> None:
         action="store_true",
         help="Exercise H03 native Chromium text, IME, paste and focus through production ChatUI.",
     )
+    parser.add_argument(
+        "--lost-key-target",
+        action="store_true",
+        help="Destroy the real held-key CDP target, then stop/close through production ChatUI.",
+    )
     args = parser.parse_args()
+    if args.lost_key_target and not args.text_input:
+        parser.error("--lost-key-target requires --text-input")
     evidence = args.evidence_dir.resolve()
     evidence.mkdir(parents=True, exist_ok=False)
     runtime_root = evidence / "isolated-host"
@@ -498,6 +507,7 @@ addEventListener('focusin',report);
     playwright = None
     page = None
     auth_headers = {}
+    private_debug_browser = None
     try:
         with (evidence / "host.log").open("w", encoding="utf-8") as log:
             process = await asyncio.to_thread(
@@ -1246,10 +1256,126 @@ addEventListener('focusin',report);
                         ticket_url, headers=owner_headers, json=body
                     ) as response:
                         assert response.status == 403, await response.text()
-                async with client.post(
-                    base + "/close", headers=auth_headers, params=ticket_body
-                ) as response:
-                    assert response.status == 200, await response.text()
+                if args.lost_key_target:
+                    # Inspect only this disposable host's process descendants.
+                    ports = set()
+                    private_debug_pids = set()
+                    for child in psutil.Process(process.pid).children(recursive=True):
+                        with contextlib.suppress(psutil.Error):
+                            for argument in child.cmdline():
+                                if (
+                                    child.name().lower() == "chrome.exe"
+                                    and argument.startswith("--remote-debugging-port=")
+                                ):
+                                    ports.add(int(argument.split("=", 1)[1]))
+                                    private_debug_pids.add(child.pid)
+                    assert len(ports) == 1, (
+                        "Expected one private Chromium debugging endpoint"
+                    )
+                    private_debug_browser = await playwright.chromium.connect_over_cdp(
+                        f"http://127.0.0.1:{ports.pop()}"
+                    )
+                    private_cdp = await private_debug_browser.new_browser_cdp_session()
+                    await private_cdp.send(
+                        "Target.createTarget", {"url": fixture_url + "/spare"}
+                    )
+                    await open_browser_panel(page)
+                    await page.locator(".agent-browser-takeover").click()
+                    await page.locator(
+                        '.agent-browser-view[data-human-control="true"]'
+                    ).wait_for(timeout=20000)
+                    await click_form(500, 85)
+                    await page.keyboard.down("Shift")
+                    await form_matches(held=["ShiftLeft"])
+                    held_state = await status()
+                    destroyed = held_state["tab_id"]
+                    requests_before_loss = len(model_requests)
+                    metrics["lost_key_target"] = {
+                        "held_epoch": held_state["control_epoch"],
+                        "target_id": destroyed,
+                    }
+                    assert (
+                        await private_cdp.send(
+                            "Target.closeTarget", {"targetId": destroyed}
+                        )
+                    )["success"]
+                    await asyncio.sleep(0.5)
+                    async with page.expect_response(
+                        lambda r: (
+                            "/browser-use/stop" in r.url and r.request.method == "POST"
+                        )
+                    ) as stopped:
+                        await page.locator(".agent-browser-stop").click(timeout=15000)
+                    stopped_response = await stopped.value
+                    metrics["lost_key_target"]["stop_status"] = stopped_response.status
+                    assert stopped_response.status == 200, (
+                        "Stopping was blocked by a keyUp to the destroyed target"
+                    )
+                    await page.locator(
+                        '.agent-browser-view[data-connection="stopped"]'
+                    ).wait_for(timeout=15000)
+                    stopped_state = await status()
+                    assert stopped_state["control_mode"] == "paused"
+                    assert stopped_state["control_epoch"] > held_state["control_epoch"]
+                    metrics["lost_key_target"]["stopped_epoch"] = stopped_state[
+                        "control_epoch"
+                    ]
+                    await page.screenshot(
+                        path=str(evidence / "destroyed-target-stopped.png")
+                    )
+                    async with page.expect_response(
+                        lambda r: (
+                            "/browser-use/close" in r.url and r.request.method == "POST"
+                        )
+                    ) as closed:
+                        await page.locator(".agent-browser-close").click(timeout=15000)
+                    close_response = await closed.value
+                    metrics["lost_key_target"]["close_status"] = close_response.status
+                    assert close_response.status == 200
+                    await page.locator(
+                        '.agent-browser-view[data-connection="closed"]'
+                    ).wait_for(timeout=15000)
+                    for _ in range(50):
+                        if not private_debug_browser.is_connected():
+                            if not any(
+                                psutil.pid_exists(pid) for pid in private_debug_pids
+                            ):
+                                break
+                        else:
+                            try:
+                                targets = (await private_cdp.send("Target.getTargets"))[
+                                    "targetInfos"
+                                ]
+                            except PlaywrightError:
+                                await asyncio.sleep(0.1)
+                                continue
+                            if not any(
+                                t.get("type") == "page"
+                                and t.get("url", "").startswith(fixture_url)
+                                for t in targets
+                            ):
+                                break
+                        await asyncio.sleep(0.1)
+                    else:
+                        raise AssertionError(
+                            "Host close left private fixture pages alive"
+                        )
+                    assert len(model_requests) == requests_before_loss
+                    metrics["lost_key_target"].update(
+                        page_targets_removed=True, no_model_resume=True
+                    )
+                    await page.keyboard.up("Shift")
+                    await page.screenshot(
+                        path=str(evidence / "destroyed-target-closed.png")
+                    )
+                    metrics["checks"].append(
+                        "H03-P2: destroyed real held-Shift target; production UI stop and close succeed and remove real private pages"
+                    )
+                else:
+                    async with client.post(
+                        base + "/close", headers=auth_headers, params=ticket_body
+                    ) as response:
+                        assert response.status == 200, await response.text()
                 async with client.post(
                     ticket_url, headers=auth_headers, json=ticket_body
                 ) as response:
@@ -1341,6 +1467,12 @@ addEventListener('focusin',report);
         (evidence / "model-requests.json").write_text(
             json.dumps(model_requests, ensure_ascii=False, indent=2), encoding="utf-8"
         )
+        if private_debug_browser is not None and private_debug_browser.is_connected():
+            with contextlib.suppress(Exception):
+                private_cleanup = await private_debug_browser.new_browser_cdp_session()
+                await private_cleanup.send("Browser.close")
+            with contextlib.suppress(Exception):
+                await private_debug_browser.close()
         if browser:
             await browser.close()
         if playwright:

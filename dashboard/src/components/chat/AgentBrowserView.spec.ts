@@ -430,6 +430,12 @@ describe("Agent browser snapshots", () => {
         expect(view.attributes("data-human-control")).toBe("false");
         expect(view.attributes("data-pending-input")).toBe("0");
         expect(view.text()).toContain("输入确认丢失");
+        if (exitEvent === "astrbot:account-changed") {
+          expect(view.find("img").exists()).toBe(false);
+          expect(view.attributes("data-connection")).toBe("denied");
+          expect(fetchStream.mock.calls[0][1].signal.aborted).toBe(true);
+          return;
+        }
         socket.onmessage?.({
           data: JSON.stringify({
             operation: "click",
@@ -1145,6 +1151,217 @@ describe("Agent browser snapshots", () => {
     }
   });
 
+  it("keeps the same image through a slow refresh while disabling stale controls", async () => {
+    const frame = {
+      ...current,
+      sequence: 1,
+      image: "previous",
+      mime_type: "image/jpeg",
+      width: 1280,
+      height: 720,
+      manual_control_version: 1,
+      current_action: {
+        action_id: "running",
+        kind: "navigate",
+        status: "running",
+      },
+    };
+    get.mockResolvedValueOnce(ok(current)).mockResolvedValueOnce(ok(frame));
+    const view = mount(AgentBrowserView, {
+      props: { chatId: "chat-1", visible: true },
+    });
+    try {
+      await flushPromises();
+      const image = view.get("img").element;
+      let resolveStatus!: (value: unknown) => void;
+      let resolveSnapshot!: (value: unknown) => void;
+      get
+        .mockImplementationOnce(
+          () =>
+            new Promise((resolve) => {
+              resolveStatus = resolve;
+            }),
+        )
+        .mockImplementationOnce(
+          () =>
+            new Promise((resolve) => {
+              resolveSnapshot = resolve;
+            }),
+        );
+      await view.get(".agent-browser-refresh").trigger("click");
+      expect(view.get("img").element).toBe(image);
+      expect(view.find(".agent-browser-empty").exists()).toBe(false);
+      expect(view.attributes("data-observation-stale")).toBe("true");
+      expect(view.text()).toContain("显示上一帧");
+      expect(view.find('[data-action-status="running"]').exists()).toBe(false);
+      expect(
+        view.get(".agent-browser-takeover").attributes("disabled"),
+      ).toBeDefined();
+      expect(
+        view.get(".agent-browser-close").attributes("disabled"),
+      ).toBeDefined();
+      resolveStatus(ok(current));
+      await flushPromises();
+      expect(view.get("img").attributes("src")).toContain("previous");
+      resolveSnapshot(
+        ok({ ...frame, image: "fresh", sequence: 2, current_action: null }),
+      );
+      await flushPromises();
+      expect(view.get("img").element).toBe(image);
+      expect(view.get("img").attributes("src")).toContain("fresh");
+      expect(view.attributes("data-observation-stale")).toBe("false");
+    } finally {
+      view.unmount();
+    }
+  });
+
+  it.each([
+    [403, null],
+    [404, null],
+    [409, "busy"],
+  ])(
+    "clears retained pixels after authoritative access or ownership failure %s/%s",
+    async (status, reason) => {
+      vi.useFakeTimers();
+      get
+        .mockResolvedValueOnce(ok(current))
+        .mockResolvedValueOnce(
+          ok({ ...current, sequence: 1, image: "private" }),
+        );
+      const view = mount(AgentBrowserView, {
+        props: { chatId: "chat-1", visible: true },
+      });
+      try {
+        await flushPromises();
+        stream.close();
+        await flushPromises();
+        expect(view.find("img").exists()).toBe(true);
+        get.mockRejectedValueOnce({
+          response: { status, data: { data: { reason } } },
+        });
+        await vi.advanceTimersByTimeAsync(10000);
+        expect(view.find("img").exists()).toBe(false);
+        expect(view.attributes("data-observation-stale")).toBe("false");
+      } finally {
+        view.unmount();
+      }
+    },
+  );
+
+  it("retains pixels during a transient unavailable stream event and resumes on a fresh frame", async () => {
+    const frame = {
+      ...current,
+      sequence: 1,
+      image: "previous",
+      mime_type: "image/jpeg",
+      width: 1280,
+      height: 720,
+    };
+    get.mockResolvedValueOnce(ok(current)).mockResolvedValueOnce(ok(frame));
+    const view = mount(AgentBrowserView, {
+      props: { chatId: "chat-1", visible: true },
+    });
+    try {
+      await flushPromises();
+      const image = view.get("img").element;
+      stream.enqueue(
+        new TextEncoder().encode(
+          `data: ${JSON.stringify({
+            ...current,
+            type: "state",
+            sequence: 2,
+            available: false,
+            tab_id: null,
+          })}\n\n`,
+        ),
+      );
+      await flushPromises();
+      expect(view.get("img").element).toBe(image);
+      expect(view.attributes("data-observation-stale")).toBe("true");
+      stream.enqueue(
+        new TextEncoder().encode(
+          `data: ${JSON.stringify({
+            ...frame,
+            type: "frame",
+            sequence: 3,
+            image: "fresh",
+          })}\n\n`,
+        ),
+      );
+      await flushPromises();
+      expect(view.get("img").element).toBe(image);
+      expect(view.attributes("data-observation-stale")).toBe("false");
+      expect(view.get("img").attributes("src")).toContain("fresh");
+    } finally {
+      view.unmount();
+    }
+  });
+
+  it("backs off failed status requests to ten, twenty and thirty seconds", async () => {
+    vi.useFakeTimers();
+    get.mockRejectedValue({ response: { status: 503 } });
+    const view = mount(AgentBrowserView, {
+      props: { chatId: "chat-1", visible: true },
+    });
+    try {
+      await flushPromises();
+      for (const [delay, calls] of [
+        [10000, 2],
+        [20000, 3],
+        [30000, 4],
+        [30000, 5],
+      ]) {
+        await vi.advanceTimersByTimeAsync(delay - 1);
+        expect(get).toHaveBeenCalledTimes(calls - 1);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(get).toHaveBeenCalledTimes(calls);
+        expect(view.attributes("data-connection")).toBe("unavailable");
+      }
+    } finally {
+      view.unmount();
+    }
+  });
+
+  it.each([
+    { generation: "next-run" },
+    { browser_session_id: "next-browser" },
+    { tab_id: "next-tab" },
+    { document_id: "next-document" },
+  ])(
+    "clears cached pixels before awaiting a snapshot of a different identity: %o",
+    async (change) => {
+      vi.useFakeTimers();
+      const frame = {
+        ...current,
+        document_id: "document",
+        url: "/page",
+        image: "private",
+        sequence: 1,
+      };
+      get.mockResolvedValueOnce(ok(frame)).mockResolvedValueOnce(ok(frame));
+      const view = mount(AgentBrowserView, {
+        props: { chatId: "chat-1", visible: true },
+      });
+      try {
+        await flushPromises();
+        stream.close();
+        await flushPromises();
+        expect(view.find("img").exists()).toBe(true);
+        get
+          .mockResolvedValueOnce(ok({ ...frame, ...change, image: undefined }))
+          .mockImplementationOnce(() => new Promise(() => {}));
+        await vi.advanceTimersByTimeAsync(10000);
+        expect(view.find("img").exists()).toBe(false);
+        expect(view.attributes("data-observation-stale")).toBe("false");
+        expect(
+          view.get(".agent-browser-takeover").attributes("disabled"),
+        ).toBeDefined();
+      } finally {
+        view.unmount();
+      }
+    },
+  );
+
   it("recovers a half-open stream after missing heartbeats", async () => {
     vi.useFakeTimers();
     get
@@ -1154,12 +1371,17 @@ describe("Agent browser snapshots", () => {
       props: { chatId: "chat-1", visible: true },
     });
     await flushPromises();
-    await vi.advanceTimersByTimeAsync(15000);
+    const image = view.get("img").element;
+    await vi.advanceTimersByTimeAsync(29999);
+    expect(view.attributes("data-connection")).toBe("snapshot");
+    await vi.advanceTimersByTimeAsync(1);
     expect(view.attributes("data-connection")).toBe("disconnected");
-    expect(view.find("img").exists()).toBe(false);
+    expect(view.get("img").element).toBe(image);
+    expect(view.attributes("data-observation-stale")).toBe("true");
     get.mockResolvedValueOnce(ok({ available: false }));
-    await vi.advanceTimersByTimeAsync(1000);
+    await vi.advanceTimersByTimeAsync(10000);
     expect(view.attributes("data-connection")).toBe("idle");
+    expect(view.find("img").exists()).toBe(false);
     view.unmount();
   });
 
@@ -1185,12 +1407,15 @@ describe("Agent browser snapshots", () => {
     stream.close();
     await flushPromises();
     expect(view.attributes("data-connection")).toBe("disconnected");
-    expect(view.find("img").exists()).toBe(false);
+    const retainedImage = view.get("img").element;
+    expect(view.attributes("data-observation-stale")).toBe("true");
     get
       .mockResolvedValueOnce(ok(current))
       .mockResolvedValueOnce(ok({ ...frame, sequence: 20, action_cursor: 18 }));
-    await vi.advanceTimersByTimeAsync(1000);
+    await vi.advanceTimersByTimeAsync(10000);
     await flushPromises();
+    expect(view.get("img").element).toBe(retainedImage);
+    expect(view.attributes("data-observation-stale")).toBe("false");
     expect(signal.aborted).toBe(true);
     expect(fetchStream.mock.calls[1][0]).toContain("action_cursor=18");
     for (const event of [
@@ -1253,7 +1478,7 @@ describe("Agent browser snapshots", () => {
       image: "new",
     };
     get.mockResolvedValueOnce(ok(next)).mockResolvedValueOnce(ok(next));
-    await vi.advanceTimersByTimeAsync(1000);
+    await vi.advanceTimersByTimeAsync(10000);
     await flushPromises();
     expect(view.attributes("data-generation")).toBe("run-2");
     expect(view.attributes("data-sequence")).toBe("1");
@@ -1308,8 +1533,23 @@ describe("Agent browser snapshots", () => {
     });
     await flushPromises();
     expect(view.attributes("data-connection")).toBe("idle");
-    await vi.advanceTimersByTimeAsync(3000);
+    await vi.advanceTimersByTimeAsync(9999);
+    expect(get).toHaveBeenCalledTimes(1);
+    let resolveStatus!: (value: unknown) => void;
+    get.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveStatus = resolve;
+        }),
+    );
+    await vi.advanceTimersByTimeAsync(1);
     expect(get).toHaveBeenCalledTimes(2);
+    expect(view.attributes("data-connection")).toBe("idle");
+    expect(view.get(".agent-browser-refresh").attributes("aria-busy")).toBe(
+      "false",
+    );
+    resolveStatus(ok({ available: false }));
+    await flushPromises();
     expect(
       get.mock.calls.every(([path]) => path === "browser-use/status"),
     ).toBe(true);

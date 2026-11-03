@@ -88,6 +88,7 @@
     "clickToType": "You have control · click the page to type",
     "viewInfo": "Browser status and input help",
     "syncingFrame": "Syncing page image…",
+    "retainedFrame": "Showing the last frame · resynchronizing in the background",
     "keyboardHint": "Click the page to type. Paste plain text explicitly (up to 4096 UTF-8 bytes). After handback, the Agent can read visible page content.",
     "leaveKeyboard": "Leave keyboard control",
     "textTooLarge": "Text exceeds the limit of 2048 characters or 4096 UTF-8 bytes.",

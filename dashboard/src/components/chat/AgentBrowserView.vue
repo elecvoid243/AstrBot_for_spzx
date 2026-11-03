@@ -136,6 +136,9 @@ interface BrowserAction {
 
 const state = ref<BrowserState | null>(null);
 const loading = ref(false);
+const observationStale = ref(false);
+const observationPollMs = 10000;
+const streamIdleTimeoutMs = 30000;
 const controlling = ref(false);
 const controlError = ref(false);
 const humanControl = ref(false);
@@ -281,6 +284,7 @@ const displayedFrame = ref<BrowserState | null>(null);
 // Keep same-document pixels on screen while new coordinates await a capture.
 // They never become the input target: displayedFrame still clears on movement.
 const visibleFrame = computed(() => {
+  if (observationStale.value) return imageFrame.value;
   if (state.value?.image) return state.value;
   if (
     state.value?.available &&
@@ -986,6 +990,9 @@ const controlNotice = computed(() => {
   return "";
 });
 const captionMessage = computed(() => {
+  if (manualMessage.value === t(`${key}.inputUnknown`))
+    return manualMessage.value;
+  if (observationStale.value) return t(`${key}.retainedFrame`);
   if (controlNotice.value) return controlNotice.value;
   if (!humanControl.value)
     return t(
@@ -1038,8 +1045,11 @@ async function follow(
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
-  // Heartbeats arrive every second. Recover a half-open connection as well as EOF.
-  let watchdog = setTimeout(() => void reader.cancel().catch(() => {}), 15000);
+  // Allow transient stalls while still recovering half-open connections.
+  let watchdog = setTimeout(
+    () => void reader.cancel().catch(() => {}),
+    streamIdleTimeoutMs,
+  );
   const cancel = () => void reader.cancel().catch(() => {});
   controller.signal.addEventListener("abort", cancel, { once: true });
   try {
@@ -1053,7 +1063,10 @@ async function follow(
         return;
       if (done) break;
       clearTimeout(watchdog);
-      watchdog = setTimeout(() => void reader.cancel().catch(() => {}), 15000);
+      watchdog = setTimeout(
+        () => void reader.cancel().catch(() => {}),
+        streamIdleTimeoutMs,
+      );
       buffer += decoder.decode(value, { stream: true });
       let end: number;
       while ((end = buffer.indexOf("\n\n")) >= 0) {
@@ -1144,14 +1157,30 @@ async function follow(
                   : {}),
               };
         if (event.type === "frame") imageFrame.value = { ...event };
+        observationStale.value =
+          !event.available && Boolean(imageFrame.value?.image);
+        if (observationStale.value) {
+          state.value = {
+            ...state.value,
+            image: undefined,
+            highlight: null,
+            current_action: null,
+          };
+        }
         if (event.action_reset) resynchronized.value = true;
         connection.value =
-          event.execution_state === "stopped" ? "stopped" : "live";
+          event.execution_state === "stopped"
+            ? "stopped"
+            : observationStale.value
+            ? "reconnecting"
+            : "live";
         if (
           event.execution_state === "closed" ||
           event.execution_state === "disabled"
         ) {
           state.value = { ...event, image: undefined, highlight: null };
+          imageFrame.value = null;
+          observationStale.value = false;
           connection.value = event.execution_state;
           return;
         }
@@ -1174,14 +1203,33 @@ async function follow(
  * Reauthorize and resynchronize observation without starting a browser.
  *
  * Args:
- *   resuming: Show automatic reconnection instead of initial loading.
+ *   resuming: Reauthorize in the background without replacing the current view.
  */
 async function refresh(resuming = false): Promise<void> {
   disconnectControl();
   clearTimeout(retryTimer);
   pending?.abort();
-  state.value = null;
-  imageFrame.value = null;
+  displayedFrame.value = null;
+  const retain = Boolean(
+    props.chatId &&
+      props.visible &&
+      pageVisible.value &&
+      imageFrame.value?.image,
+  );
+  observationStale.value = retain;
+  if (retain && state.value) {
+    // Cached pixels remain viewable, but cannot authorize input or show a running action.
+    state.value = {
+      ...state.value,
+      available: false,
+      image: undefined,
+      highlight: null,
+      current_action: null,
+    };
+  } else {
+    state.value = null;
+    imageFrame.value = null;
+  }
   loading.value = false;
   if (!props.chatId || !props.visible || !pageVisible.value) return;
   if (!online.value) {
@@ -1190,11 +1238,15 @@ async function refresh(resuming = false): Promise<void> {
   }
   const controller = new AbortController();
   pending = controller;
-  loading.value = true;
-  connection.value = resuming ? "reconnecting" : "loading";
+  loading.value = !resuming;
+  if (retain) connection.value = "reconnecting";
+  else if (!resuming) connection.value = "loading";
   const chatId = props.chatId;
   let retry = true;
-  let delay = Math.min(1000 * 2 ** Math.min(retryAttempts, 3), 5000);
+  let delay = Math.min(
+    observationPollMs * 2 ** Math.min(retryAttempts, 2),
+    30000,
+  );
   try {
     const initial = await pluginExtensionApi.get<BrowserState>(
       "browser-use/status",
@@ -1214,11 +1266,27 @@ async function refresh(resuming = false): Promise<void> {
     const current = initial.data.data;
     if (!current.available) {
       state.value = current;
+      imageFrame.value = null;
+      observationStale.value = false;
       connection.value =
         current.execution_state === "closed" ? "closed" : "idle";
       retryAttempts = 0;
-      delay = 3000;
+      delay = observationPollMs;
       return;
+    }
+    if (
+      imageFrame.value &&
+      ["generation", "browser_session_id", "tab_id", "document_id", "url"].some(
+        (field) =>
+          current[field as keyof BrowserState] !== undefined &&
+          current[field as keyof BrowserState] !==
+            imageFrame.value?.[field as keyof BrowserState],
+      )
+    ) {
+      // An authorized new lifetime or document must not inherit cached pixels.
+      imageFrame.value = null;
+      observationStale.value = false;
+      state.value = { ...current, available: false };
     }
     const snapshot = await pluginExtensionApi.get<BrowserState>(
       "browser-use/snapshot",
@@ -1247,6 +1315,7 @@ async function refresh(resuming = false): Promise<void> {
     }
     state.value = snapshot.data.data;
     imageFrame.value = { ...snapshot.data.data };
+    observationStale.value = false;
     const identity = JSON.stringify([
       state.value.generation,
       state.value.browser_session_id,
@@ -1261,8 +1330,7 @@ async function refresh(resuming = false): Promise<void> {
   } catch (err: any) {
     if (!controller.signal.aborted && pending === controller) {
       disconnectControl();
-      // Do not leave stale pixels or a running action visible while disconnected.
-      state.value = null;
+      displayedFrame.value = null;
       const status = err.response?.status;
       const reason = err.response?.data?.data?.reason;
       connection.value =
@@ -1276,6 +1344,23 @@ async function refresh(resuming = false): Promise<void> {
           ? "unavailable"
           : "disconnected";
       if (status === 409 && reason !== "busy") resynchronized.value = true;
+      if (
+        ["denied", "disabled", "busy"].includes(connection.value) ||
+        status === 409
+      ) {
+        state.value = null;
+        imageFrame.value = null;
+        observationStale.value = false;
+      } else if (state.value && imageFrame.value?.image) {
+        observationStale.value = true;
+        state.value = {
+          ...state.value,
+          available: false,
+          image: undefined,
+          highlight: null,
+          current_action: null,
+        };
+      }
       retry = connection.value !== "denied";
       retryAttempts += 1;
     }
@@ -1333,8 +1418,10 @@ async function control(operation: "stop" | "close"): Promise<void> {
         highlight: null,
       };
       connection.value = "closed";
+      imageFrame.value = null;
+      observationStale.value = false;
       loading.value = false;
-      retryTimer = setTimeout(() => void refresh(true), 3000);
+      retryTimer = setTimeout(() => void refresh(true), observationPollMs);
     } else {
       if ((response.data.data.sequence ?? 0) >= (state.value?.sequence ?? 0))
         state.value = {
@@ -1359,7 +1446,12 @@ async function control(operation: "stop" | "close"): Promise<void> {
 watch(
   () => [props.chatId, props.visible, pageVisible.value, online.value] as const,
   (next, previous) => {
-    if (next[0] !== previous?.[0]) lastIdentity = "";
+    if (next[0] !== previous?.[0]) {
+      lastIdentity = "";
+      state.value = null;
+      imageFrame.value = null;
+      observationStale.value = false;
+    }
     retryAttempts = 0;
     resynchronized.value = false;
     void refresh();
@@ -1376,7 +1468,19 @@ const networkChanged = () => {
 window.addEventListener("online", networkChanged);
 window.addEventListener("offline", networkChanged);
 window.addEventListener("pagehide", disconnectControl);
-window.addEventListener("astrbot:account-changed", disconnectControl);
+const accountChanged = () => {
+  disconnectControl();
+  pending?.abort();
+  clearTimeout(retryTimer);
+  state.value = null;
+  imageFrame.value = null;
+  displayedFrame.value = null;
+  observationStale.value = false;
+  loading.value = false;
+  lastIdentity = "";
+  connection.value = "denied";
+};
+window.addEventListener("astrbot:account-changed", accountChanged);
 onBeforeUnmount(() => {
   resizeObserver?.disconnect();
   clearTimeout(resizeTimer);
@@ -1390,7 +1494,7 @@ onBeforeUnmount(() => {
   window.removeEventListener("online", networkChanged);
   window.removeEventListener("offline", networkChanged);
   window.removeEventListener("pagehide", disconnectControl);
-  window.removeEventListener("astrbot:account-changed", disconnectControl);
+  window.removeEventListener("astrbot:account-changed", accountChanged);
 });
 </script>
 
@@ -1404,6 +1508,7 @@ onBeforeUnmount(() => {
     :data-tab-id="state?.tab_id"
     :data-sequence="state?.sequence"
     :data-connection="connection"
+    :data-observation-stale="observationStale"
     :data-human-control="humanControl"
     :data-pending-input="inputCount"
     :data-awaiting-frame="awaitingFrame"

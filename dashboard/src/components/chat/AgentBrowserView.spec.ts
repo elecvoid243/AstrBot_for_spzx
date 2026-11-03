@@ -40,6 +40,152 @@ afterEach(() => {
 });
 
 describe("Agent browser snapshots", () => {
+  it("debounces the available panel size into an owned viewport request", async () => {
+    vi.useFakeTimers();
+    let resized: () => void = () => {};
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        constructor(callback: () => void) {
+          resized = callback;
+        }
+        observe() {}
+        disconnect() {}
+      },
+    );
+    get.mockResolvedValue(
+      ok({
+        ...current,
+        viewport_resize_version: 1,
+        sequence: 1,
+        image: "pixels",
+        mime_type: "image/jpeg",
+        width: 1280,
+        height: 720,
+      }),
+    );
+    post.mockResolvedValue(ok({}));
+    const view = mount(AgentBrowserView, {
+      props: { chatId: "chat-1", visible: true },
+      attachTo: document.body,
+    });
+    try {
+      await flushPromises();
+      const display = view.get(".agent-browser-image").element;
+      (display as HTMLElement).style.padding = "3px";
+      Object.defineProperties(display, {
+        clientWidth: { value: 906, configurable: true },
+        clientHeight: { value: 606 },
+      });
+      resized();
+      resized();
+      await vi.advanceTimersByTimeAsync(350);
+      expect(post).toHaveBeenCalledTimes(1);
+      expect(post.mock.calls[0]).toMatchObject([
+        "browser-use/viewport",
+        undefined,
+        {
+          params: {
+            chat_id: "chat-1",
+            browser_session_id: "browser-1",
+            width: 900,
+            height: 600,
+            device_scale_factor: 2,
+          },
+        },
+      ]);
+      Object.defineProperty(display, "clientWidth", { value: 706 });
+      resized();
+      await view.setProps({ visible: false });
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(post).toHaveBeenCalledTimes(1);
+    } finally {
+      view.unmount();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("drops an unexecuted stale click and its queue without disconnecting control", async () => {
+    class Socket {
+      static OPEN = 1;
+      static instance: Socket;
+      readyState = 1;
+      sent: any[] = [];
+      onmessage?: (event: { data: string }) => void;
+      constructor() {
+        Socket.instance = this;
+      }
+      send(raw: string) {
+        this.sent.push(JSON.parse(raw));
+      }
+      close() {
+        this.readyState = 3;
+      }
+    }
+    vi.stubGlobal("WebSocket", Socket);
+    get.mockResolvedValue(
+      ok({
+        ...current,
+        manual_control_version: 1,
+        sequence: 1,
+        image: "pixels",
+        width: 1280,
+        height: 720,
+        viewport_width: 1280,
+        viewport_height: 720,
+      }),
+    );
+    createSession.mockResolvedValue({
+      data: { ticket: "ticket", websocket_path: "/control" },
+    });
+    const view = mount(AgentBrowserView, {
+      props: { chatId: "chat-1", visible: true },
+    });
+    try {
+      await flushPromises();
+      await view.get(".agent-browser-takeover").trigger("click");
+      await flushPromises();
+      const socket = Socket.instance;
+      socket.onmessage?.({
+        data: JSON.stringify({
+          operation: "acquire",
+          status: "applied",
+          control_epoch: 2,
+        }),
+      });
+      await flushPromises();
+      const img = view.get("img");
+      vi.spyOn(img.element, "getBoundingClientRect").mockReturnValue({
+        left: 0,
+        top: 0,
+        width: 1280,
+        height: 720,
+      } as DOMRect);
+      await img.trigger("click", { clientX: 100, clientY: 100, detail: 1 });
+      await img.trigger("click", { clientX: 120, clientY: 100, detail: 1 });
+      socket.onmessage?.({
+        data: JSON.stringify({
+          operation: "click",
+          status: "stale",
+          input_id: 1,
+          control_epoch: 2,
+          state: { sequence: 2 },
+        }),
+      });
+      await flushPromises();
+      expect(socket.readyState).toBe(1);
+      expect(view.attributes("data-human-control")).toBe("true");
+      expect(socket.sent.filter((x) => x.operation === "click")).toHaveLength(
+        1,
+      );
+      expect(get).toHaveBeenCalledTimes(2);
+      expect(view.text()).toContain("本次操作未执行");
+    } finally {
+      view.unmount();
+      vi.unstubAllGlobals();
+    }
+  });
+
   it.each(["pagehide", "astrbot:account-changed"])(
     "discards unconfirmed and queued clicks on %s and shows server-owned occupancy",
     async (exitEvent) => {
@@ -418,7 +564,11 @@ describe("Agent browser snapshots", () => {
       };
       stream.enqueue(
         new TextEncoder().encode(
-          `data: ${JSON.stringify({ ...moved, type: "state", image: undefined })}\n\n`,
+          `data: ${JSON.stringify({
+            ...moved,
+            type: "state",
+            image: undefined,
+          })}\n\n`,
         ),
       );
       await flushPromises();
@@ -427,11 +577,16 @@ describe("Agent browser snapshots", () => {
       await image.trigger("load");
       await image.trigger("click", { clientX: 330, clientY: 200, detail: 1 });
       expect(view.attributes("data-frame-input")).toBeUndefined();
-      expect(socket.sent.filter((x) => x.operation === "click")).toHaveLength(1);
+      expect(socket.sent.filter((x) => x.operation === "click")).toHaveLength(
+        1,
+      );
       stream.enqueue(
         new TextEncoder().encode(
           `data: ${JSON.stringify({
-            ...moved, type: "frame", image: "new-pixels", sequence: 8,
+            ...moved,
+            type: "frame",
+            image: "new-pixels",
+            sequence: 8,
           })}\n\n`,
         ),
       );
@@ -798,9 +953,16 @@ describe("Agent browser snapshots", () => {
   });
   it("keeps a healthy stream and its image without periodically fetching snapshots", async () => {
     vi.useFakeTimers();
-    get.mockResolvedValueOnce(ok(current)).mockResolvedValueOnce(
-      ok({ ...current, sequence: 1, image: "pixels", mime_type: "image/jpeg" }),
-    );
+    get
+      .mockResolvedValueOnce(ok(current))
+      .mockResolvedValueOnce(
+        ok({
+          ...current,
+          sequence: 1,
+          image: "pixels",
+          mime_type: "image/jpeg",
+        }),
+      );
     const view = mount(AgentBrowserView, {
       props: { chatId: "chat-1", visible: true },
     });
@@ -809,7 +971,11 @@ describe("Agent browser snapshots", () => {
       const image = view.get("img").element;
       stream.enqueue(
         new TextEncoder().encode(
-          `data: ${JSON.stringify({ ...current, type: "state", sequence: 2 })}\n\n`,
+          `data: ${JSON.stringify({
+            ...current,
+            type: "state",
+            sequence: 2,
+          })}\n\n`,
         ),
       );
       await flushPromises();

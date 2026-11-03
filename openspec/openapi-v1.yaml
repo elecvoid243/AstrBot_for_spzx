@@ -8270,12 +8270,37 @@ components:
           - reset_keys
           - heartbeat
           - release
+          - resize
           title: Operation
           type: string
         control_epoch:
           minimum: 1
           title: Control Epoch
           type: integer
+        width:
+          anyOf:
+          - maximum: 2560
+            minimum: 320
+            type: integer
+          - type: 'null'
+          default: null
+          title: Width
+        height:
+          anyOf:
+          - maximum: 1600
+            minimum: 240
+            type: integer
+          - type: 'null'
+          default: null
+          title: Height
+        device_scale_factor:
+          anyOf:
+          - maximum: 2
+            minimum: 1
+            type: number
+          - type: 'null'
+          default: null
+          title: Device Scale Factor
         input_id:
           anyOf:
           - minimum: 1
@@ -8381,6 +8406,7 @@ components:
       - control_epoch
       title: BrowserControlCommand
       type: object
+
     BrowserControlSessionRequest:
       type: object
       additionalProperties: false

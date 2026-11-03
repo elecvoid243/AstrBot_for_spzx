@@ -40,9 +40,14 @@ class BrowserControlCommand(BaseModel):
 
     model_config = ConfigDict(extra="forbid", strict=True)
     operation: Literal[
-        "click", "wheel", "key", "text", "reset_keys", "heartbeat", "release"
+        "click", "wheel", "key", "text", "reset_keys", "heartbeat", "release", "resize"
     ]
     control_epoch: int = Field(ge=1)
+    width: int | None = Field(default=None, ge=320, le=2560)
+    height: int | None = Field(default=None, ge=240, le=1600)
+    device_scale_factor: float | None = Field(
+        default=None, ge=1, le=2, allow_inf_nan=False
+    )
     input_id: int | None = Field(default=None, ge=1)
     x: float | None = Field(default=None, ge=0, allow_inf_nan=False)
     y: float | None = Field(default=None, ge=0, allow_inf_nan=False)

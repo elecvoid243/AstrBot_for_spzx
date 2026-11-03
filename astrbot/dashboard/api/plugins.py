@@ -550,7 +550,15 @@ async def _authorize_chat_extension(plugin_path, request, username, handler):
         return
     browser = plugin_path in {
         f"browser-use/{name}"
-        for name in ("status", "snapshot", "stream", "stop", "close", "manual")
+        for name in (
+            "status",
+            "snapshot",
+            "stream",
+            "stop",
+            "close",
+            "manual",
+            "viewport",
+        )
     }
     spcode = plugin_path.startswith("spcode/") and plugin_path[7:] in SPCODE_CHAT_PATHS
     if not browser and not spcode:
@@ -573,12 +581,19 @@ async def _authorize_chat_extension(plugin_path, request, username, handler):
     if browser:
         operation = plugin_path.rsplit("/", 1)[-1]
         if request.method != (
-            "POST" if operation in {"stop", "close", "manual"} else "GET"
+            "POST" if operation in {"stop", "close", "manual", "viewport"} else "GET"
         ):
             raise ApiError("Extension is unavailable", status_code=403)
         if (
             set(request.query_params)
-            - {"chat_id", "generation", "browser_session_id", "action_cursor"}
+            - (
+                {"chat_id", "generation", "browser_session_id", "action_cursor"}
+                | (
+                    {"tab_id", "width", "height", "device_scale_factor"}
+                    if operation == "viewport"
+                    else set()
+                )
+            )
             or await request.body()
         ):
             raise ApiError("Unsupported extension fields", status_code=400)

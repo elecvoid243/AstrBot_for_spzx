@@ -92,6 +92,7 @@ interface BrowserState {
   manual_control_version?: number;
   keyboard_input_version?: number;
   pointer_input_version?: number;
+  viewport_resize_version?: number;
   applied_input_id?: number;
   position_revision?: number;
   control_mode?: "agent" | "acquiring" | "human" | "paused";
@@ -148,6 +149,87 @@ let compositionTimer: ReturnType<typeof setTimeout> | undefined;
 let inputQueue: Record<string, unknown>[] = [];
 let inputInFlight = false;
 const browserImage = ref<HTMLImageElement | null>(null);
+const browserDisplay = ref<HTMLElement | null>(null);
+let resizeObserver: ResizeObserver | undefined;
+let resizeTimer: ReturnType<typeof setTimeout> | undefined;
+let lastViewportRequest = "";
+let resizingViewport = false;
+
+/** Resize the owned browser after the panel settles, outside in-flight input. */
+async function resizeViewport() {
+  const current = state.value;
+  const display = browserDisplay.value;
+  if (
+    !props.visible ||
+    !pageVisible.value ||
+    !display ||
+    !current?.available ||
+    current.viewport_resize_version !== 1 ||
+    resizingViewport ||
+    manualPending.value ||
+    inputCount.value ||
+    awaitingFrame.value ||
+    current.current_action ||
+    (!humanControl.value &&
+      ["human", "acquiring"].includes(current.control_mode || ""))
+  )
+    return;
+  const style = getComputedStyle(display);
+  const width =
+    display.clientWidth -
+    parseFloat(style.paddingLeft || "0") -
+    parseFloat(style.paddingRight || "0");
+  const height =
+    display.clientHeight -
+    parseFloat(style.paddingTop || "0") -
+    parseFloat(style.paddingBottom || "0");
+  if (width <= 0 || height <= 0) return;
+  const ratio = Math.min(1, 2560 / width, 1600 / height);
+  const dimensions = {
+    width: Math.max(320, Math.floor(width * ratio)),
+    height: Math.max(240, Math.floor(height * ratio)),
+    device_scale_factor: 2,
+  };
+  const identity = {
+    chat_id: props.chatId,
+    generation: current.generation,
+    browser_session_id: current.browser_session_id,
+    tab_id: current.tab_id,
+  };
+  const signature = JSON.stringify({ ...identity, ...dimensions });
+  if (signature === lastViewportRequest) return;
+  if (humanControl.value) {
+    if (!displayedFrame.value) return;
+    lastViewportRequest = signature;
+    enqueueInput({ operation: "resize", ...dimensions });
+    return;
+  }
+  resizingViewport = true;
+  try {
+    await pluginExtensionApi.post("browser-use/viewport", undefined, {
+      params: { ...identity, ...dimensions },
+    });
+    lastViewportRequest = signature;
+  } catch {
+    // Agent actions and another controller can defer a resize. Never replay input.
+  } finally {
+    resizingViewport = false;
+    // A second panel resize can occur while the first request is awaiting CDP.
+    if (lastViewportRequest === signature) {
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(resizeViewport, 350);
+    }
+  }
+}
+watch(browserDisplay, (display) => {
+  resizeObserver?.disconnect();
+  if (!display || typeof ResizeObserver === "undefined") return;
+  resizeObserver = new ResizeObserver(() => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(resizeViewport, 350);
+  });
+  resizeObserver.observe(display);
+});
 // Only a snapshot/frame owns these capture fields. Control-only events may
 // retain its pixels but cannot advance their input, epoch or capture sequence.
 const imageFrame = ref<BrowserState | null>(null);
@@ -276,13 +358,19 @@ async function acquireControl() {
         awaitedStarted = inputStarted;
         awaitingFrame.value = true;
       }
-      if (ack.status === "stale" && inFlightOperation === "wheel") {
+      if (ack.status === "stale") {
+        const staleOperation = inFlightOperation;
+        inputQueue = [];
+        inputCount.value = 0;
+        if (staleOperation === "resize") lastViewportRequest = "";
         displayedFrame.value = null;
         awaitedInput = ack.state?.applied_input_id ?? 0;
         awaitedSequence = ack.state?.sequence ?? -1;
         awaitedStarted = inputStarted;
         awaitingFrame.value = true;
-        manualMessage.value = t(`${key}.staleWheel`);
+        manualMessage.value = t(
+          `${key}.${staleOperation === "wheel" ? "staleWheel" : "staleInput"}`,
+        );
         resetKeyboard();
         keyboardSink.value?.blur();
         return;
@@ -703,6 +791,22 @@ const connection = ref("loading");
 const resynchronized = ref(false);
 const pageVisible = ref(document.visibilityState !== "hidden");
 const online = ref(navigator.onLine !== false);
+watch(
+  () => [
+    props.chatId,
+    state.value?.tab_id,
+    state.value?.viewport_resize_version,
+    state.value?.control_mode,
+    state.value?.current_action?.action_id,
+    humanControl.value,
+    inputCount.value,
+    awaitingFrame.value,
+  ],
+  () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(resizeViewport, 350);
+  },
+);
 let pending: AbortController | null = null;
 let retryTimer: ReturnType<typeof setTimeout> | undefined;
 let retryAttempts = 0;
@@ -896,7 +1000,7 @@ async function follow(
       buffer += decoder.decode(value, { stream: true });
       let end: number;
       while ((end = buffer.indexOf("\n\n")) >= 0) {
-        if (end > 768 * 1024) throw new Error(t(`${key}.unavailable`));
+        if (end > 3 * 1024 * 1024) throw new Error(t(`${key}.unavailable`));
         const block = buffer.slice(0, end);
         buffer = buffer.slice(end + 2);
         const data = block
@@ -933,13 +1037,13 @@ async function follow(
           event.type === "frame" &&
           (event.mime_type !== "image/jpeg" ||
             !event.image ||
-            event.image.length > 700000 ||
+            event.image.length > 2800000 ||
             !event.width ||
             !event.height ||
             event.width < 0 ||
             event.height < 0 ||
-            event.width > 1280 ||
-            event.height > 720)
+            event.width > 2560 ||
+            event.height > 1600)
         )
           continue;
         if (
@@ -996,7 +1100,8 @@ async function follow(
         }
         retryAttempts = 0;
       }
-      if (buffer.length > 768 * 1024) throw new Error(t(`${key}.unavailable`));
+      if (buffer.length > 3 * 1024 * 1024)
+        throw new Error(t(`${key}.unavailable`));
     }
     if (!controller.signal.aborted)
       throw new Error("Observation stream disconnected.");
@@ -1216,6 +1321,8 @@ window.addEventListener("offline", networkChanged);
 window.addEventListener("pagehide", disconnectControl);
 window.addEventListener("astrbot:account-changed", disconnectControl);
 onBeforeUnmount(() => {
+  resizeObserver?.disconnect();
+  clearTimeout(resizeTimer);
   disconnectControl();
   window.removeEventListener("blur", windowBlurred);
   document.removeEventListener("keydown", onFullscreenKeyDown, true);
@@ -1357,11 +1464,11 @@ onBeforeUnmount(() => {
             }}
           </p>
         </div>
-        <div v-else class="agent-browser-image">
+        <div v-else ref="browserDisplay" class="agent-browser-image">
           <div
             class="agent-browser-viewport"
             :style="
-              fullscreen && visibleFrame?.width && visibleFrame?.height
+              visibleFrame?.width && visibleFrame?.height
                 ? {
                     width: `min(100%, calc(100cqh * ${
                       visibleFrame.width / visibleFrame.height
@@ -1793,7 +1900,7 @@ onBeforeUnmount(() => {
   overscroll-behavior: contain;
 }
 /* Fit the image to the remaining flex area, including all visible controls. */
-.agent-browser-stage.is-fullscreen .agent-browser-image {
+.agent-browser-image {
   container-type: size;
   align-items: center;
   justify-content: center;

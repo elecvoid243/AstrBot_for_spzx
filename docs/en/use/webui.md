@@ -570,6 +570,13 @@ The screenshot below uses a local example page and deterministic observation eve
 
 ![Single-row address bar, compact status row and collapsed actions](./images/agent-browser-compact.png)
 
+
+The remote viewport follows the sidebar or fullscreen content area after a 350 ms resize debounce; images retain their aspect ratio. Resizing waits for an active Agent action and does not interfere with another window's human control. Update AstrBot backend, Dashboard and Browser Use together; older plugins continue displaying their existing viewport proportionally. Snapshots use up to 2x sampling and JPEG quality 90, bounded to 2560×1600. Complex images exceeding the 2 MiB image budget receive lower JPEG quality; stream messages remain bounded to 3 MiB. Actual sharpness and frame rate depend on the page, device and connection.
+
+A manual input made stale by scrolling, navigation or layout changes is reported as not executed. That input and the unsent queue are discarded while ownership remains active, waiting for fresh pixels. Retry explicitly; input is never replayed automatically. Lease heartbeats no longer depend on a page execution context surviving navigation. Actual network loss, logout, revoked access and uncertain execution still stop input and pause the browser.
+
+![Viewport following the sidebar dimensions using a local page and observation fixture](./images/agent-browser-adaptive.png)
+
 ### Take control of an Agent browser
 
 In the same Agent Browser panel, click **Take control** while the Agent is running

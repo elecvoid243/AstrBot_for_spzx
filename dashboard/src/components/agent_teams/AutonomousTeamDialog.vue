@@ -430,6 +430,7 @@ async function save() {
 }
 .team-limits {
   display: grid;
+  align-items: start;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px;
 }

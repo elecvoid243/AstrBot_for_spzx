@@ -1,85 +1,104 @@
 <template>
   <v-expansion-panels v-model="open" class="preset-card mb-4">
     <v-expansion-panel value="details">
-      <v-expansion-panel-title>
-        <span class="preset-icon" aria-hidden="true"
-          ><v-icon icon="mdi-account-outline" size="20"
-        /></span>
-        <div class="preset-summary">
-          <strong data-testid="preset-name"
-            >{{ title }} ·
-            {{
-              preset.role?.name ||
-              preview?.effective?.name ||
-              preview?.definition?.name ||
-              (previewError
-                ? tm("roles.previewFailed")
-                : previewLoading
-                ? tm("graph.previewLoading")
-                : tm("roles.none"))
-            }}</strong
-          >
-          <div class="text-caption">
-            {{
-              preset.role
-                ? tm("graph.directSource")
-                : `${tm("graph.templateSource")} v${preset.role_version}`
-            }}
-            ·
-            <span data-testid="preset-model"
-              >{{ tm("roles.model") }}:
+      <div class="preset-header">
+        <v-expansion-panel-title>
+          <span class="preset-icon" aria-hidden="true"
+            ><v-icon icon="mdi-account-outline" size="20"
+          /></span>
+          <div class="preset-summary">
+            <strong data-testid="preset-name"
+              >{{ title }} ·
               {{
-                preview
-                  ? preview.effective?.provider_id || tm("graph.noModel")
-                  : previewError
+                preset.role?.name ||
+                preview?.effective?.name ||
+                preview?.definition?.name ||
+                (previewError
                   ? tm("roles.previewFailed")
                   : previewLoading
                   ? tm("graph.previewLoading")
-                  : tm("graph.noModel")
-              }}</span
+                  : tm("roles.none"))
+              }}</strong
             >
-            · {{ tm("roles.tools") }}:
-            {{
-              (preset.role ?? preset.overrides)?.tools == null
-                ? tm("roles.inherit")
-                : (preset.role ?? preset.overrides).tools.length ||
-                  tm("graph.resourcesDisabled")
-            }}
+            <div class="text-caption">
+              {{
+                preset.role
+                  ? tm("graph.directSource")
+                  : `${tm("graph.templateSource")} v${preset.role_version}`
+              }}
+              ·
+              <span data-testid="preset-model"
+                >{{ tm("roles.model") }}:
+                {{
+                  preview
+                    ? preview.effective?.provider_id || tm("graph.noModel")
+                    : previewError
+                    ? tm("roles.previewFailed")
+                    : previewLoading
+                    ? tm("graph.previewLoading")
+                    : tm("graph.noModel")
+                }}</span
+              >
+              · {{ tm("roles.tools") }}:
+              {{
+                (preset.role ?? preset.overrides)?.tools == null
+                  ? tm("roles.inherit")
+                  : (preset.role ?? preset.overrides).tools.length ||
+                    tm("graph.resourcesDisabled")
+              }}
+            </div>
           </div>
-        </div>
-      </v-expansion-panel-title>
+        </v-expansion-panel-title>
+        <v-btn
+          v-if="removable"
+          class="preset-remove"
+          variant="text"
+          color="error"
+          size="small"
+          prepend-icon="mdi-delete-outline"
+          :aria-label="`${tm('autonomous.removePreset')}: ${title}`"
+          data-testid="remove-preset"
+          @click="$emit('remove')"
+          >{{ tm("autonomous.removePreset") }}</v-btn
+        >
+      </div>
       <v-expansion-panel-text>
-        <v-btn v-if="removable" variant="text" @click="$emit('remove')">{{
-          tm("autonomous.removePreset")
-        }}</v-btn>
         <v-select
           :model-value="preset.role ? 'inline' : 'template'"
           :items="[
             { title: tm('graph.directSource'), value: 'inline' },
             { title: tm('graph.templateSource'), value: 'template' },
           ]"
-          :label="tm('graph.roleSource')" :hint="tm('guide.roleSource')" persistent-hint
+          :label="tm('graph.roleSource')"
+          :hint="tm('guide.roleSource')"
+          persistent-hint
           @update:model-value="changeSource"
         />
         <template v-if="preset.role && preset.installation">
           <v-text-field v-model="preset.role.name" :label="tm('roles.name')" />
           <v-textarea
             v-model="preset.role.prompt"
-            :label="tm('roles.prompt')" :hint="tm('guide.prompt')" persistent-hint
+            :label="tm('roles.prompt')"
+            :hint="tm('guide.prompt')"
+            persistent-hint
           />
           <v-select
             v-model="preset.installation.profile_id"
             :items="catalog.profiles"
             item-title="name"
             item-value="id"
-            :label="tm('roles.profile')" :hint="tm('guide.profile')" persistent-hint
+            :label="tm('roles.profile')"
+            :hint="tm('guide.profile')"
+            persistent-hint
           />
           <v-select
             v-model="preset.role.provider_id"
             :items="catalog.models"
             item-title="name"
             item-value="id"
-            :label="tm('graph.modelOverride')" :hint="tm('guide.model')" persistent-hint
+            :label="tm('graph.modelOverride')"
+            :hint="tm('guide.model')"
+            persistent-hint
             clearable
           />
           <v-select
@@ -87,7 +106,9 @@
             :items="catalog.personas"
             item-title="name"
             item-value="id"
-            :label="tm('roles.localPersona')" :hint="tm('guide.persona')" persistent-hint
+            :label="tm('roles.localPersona')"
+            :hint="tm('guide.persona')"
+            persistent-hint
             clearable
           />
         </template>
@@ -111,7 +132,9 @@
           <v-select
             v-model="preset.role_version"
             :items="roleById(preset.role_id)?.versions ?? []"
-            :label="tm('v2.roleVersion')" :hint="tm('guide.roleVersion')" persistent-hint
+            :label="tm('v2.roleVersion')"
+            :hint="tm('guide.roleVersion')"
+            persistent-hint
           />
           <p class="at-field-guide">{{ tm("guide.override") }}</p>
           <template
@@ -134,7 +157,9 @@
             <v-textarea
               v-if="field === 'prompt' && field in preset.overrides"
               v-model="preset.overrides[field]"
-              :label="tm('roles.prompt')" :hint="tm('guide.prompt')" persistent-hint
+              :label="tm('roles.prompt')"
+              :hint="tm('guide.prompt')"
+              persistent-hint
             />
             <v-select
               v-else-if="field !== 'prompt' && field in preset.overrides"
@@ -383,6 +408,19 @@ function setOverride(field: string, enabled: boolean | null) {
 }
 .preset-card :deep(.v-expansion-panel-title) {
   gap: 12px;
+}
+.preset-header {
+  display: flex;
+  align-items: center;
+}
+.preset-header :deep(.v-expansion-panel-title) {
+  flex: 1;
+  min-width: 0;
+  width: auto;
+}
+.preset-remove {
+  flex-shrink: 0;
+  margin-right: 12px;
 }
 .preset-card :deep(.v-expansion-panel-title:focus-visible) {
   outline: 2px solid var(--at-accent, #287fad);

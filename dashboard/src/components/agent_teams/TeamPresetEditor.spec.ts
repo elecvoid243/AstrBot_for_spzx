@@ -1,5 +1,13 @@
 import { flushPromises, mount } from "@vue/test-utils";
 import { expect, it, vi } from "vitest";
+import { createVuetify } from "vuetify";
+import {
+  VBtn,
+  VExpansionPanels,
+  VExpansionPanel,
+  VExpansionPanelTitle,
+  VExpansionPanelText,
+} from "vuetify/components";
 import TeamPresetEditor from "./TeamPresetEditor.vue";
 const resolve = vi.hoisted(() => vi.fn());
 vi.mock("@/api/roleAssets", () => ({
@@ -8,6 +16,52 @@ vi.mock("@/api/roleAssets", () => ({
 vi.mock("@/i18n/composables", () => ({
   useModuleI18n: () => ({ tm: (key: string) => key }),
 }));
+it("can remove a collapsed member preset without exposing deletion on the coordinator", async () => {
+  const wrapper = mount(TeamPresetEditor, {
+    props: {
+      preset: { id: "member", role: { name: "Member" }, overrides: {} },
+      title: "Member preset 1",
+      removable: true,
+      roles: [],
+      catalog: {},
+    },
+    global: {
+      plugins: [
+        createVuetify({
+          components: {
+            VBtn,
+            VExpansionPanels,
+            VExpansionPanel,
+            VExpansionPanelTitle,
+            VExpansionPanelText,
+          },
+        }),
+      ],
+      stubs: {
+        RoleResourcesEditor: true,
+        "v-select": true,
+        "v-text-field": true,
+        "v-textarea": true,
+        "v-switch": true,
+        "v-alert": true,
+      },
+    },
+  });
+  try {
+    await flushPromises();
+    const toggle = wrapper.get(".v-expansion-panel-title");
+    expect(toggle.attributes("aria-expanded")).toBe("false");
+    expect(wrapper.get('[data-testid="remove-preset"]').isVisible()).toBe(true);
+    await wrapper.get('[data-testid="remove-preset"]').trigger("click");
+    expect(wrapper.emitted("remove")).toHaveLength(1);
+    expect(toggle.attributes("aria-expanded")).toBe("false");
+    await wrapper.setProps({ removable: false });
+    expect(wrapper.find('[data-testid="remove-preset"]').exists()).toBe(false);
+  } finally {
+    wrapper.unmount();
+  }
+});
+
 it("keeps template overrides local and passes explicit null to the resolver", async () => {
   resolve.mockResolvedValue({
     effective: {

@@ -150,13 +150,15 @@ let inputQueue: Record<string, unknown>[] = [];
 let inputInFlight = false;
 const browserImage = ref<HTMLImageElement | null>(null);
 const browserDisplay = ref<HTMLElement | null>(null);
+const displaySize = ref({ width: 0, height: 0 });
 let resizeObserver: ResizeObserver | undefined;
 let resizeTimer: ReturnType<typeof setTimeout> | undefined;
 let lastViewportRequest = "";
+let lastViewportSequence = 0;
 let resizingViewport = false;
 
 /** Resize the owned browser after the panel settles, outside in-flight input. */
-async function resizeViewport() {
+async function resizeViewport(attempt = 0) {
   const current = state.value;
   const display = browserDisplay.value;
   if (
@@ -174,15 +176,7 @@ async function resizeViewport() {
       ["human", "acquiring"].includes(current.control_mode || ""))
   )
     return;
-  const style = getComputedStyle(display);
-  const width =
-    display.clientWidth -
-    parseFloat(style.paddingLeft || "0") -
-    parseFloat(style.paddingRight || "0");
-  const height =
-    display.clientHeight -
-    parseFloat(style.paddingTop || "0") -
-    parseFloat(style.paddingBottom || "0");
+  const { width, height } = displaySize.value;
   if (width <= 0 || height <= 0) return;
   const ratio = Math.min(1, 2560 / width, 1600 / height);
   const dimensions = {
@@ -196,26 +190,54 @@ async function resizeViewport() {
     browser_session_id: current.browser_session_id,
     tab_id: current.tab_id,
   };
-  const signature = JSON.stringify({ ...identity, ...dimensions });
-  if (signature === lastViewportRequest) return;
+  const signature = JSON.stringify({
+    ...identity,
+    document_id: current.document_id,
+    ...dimensions,
+  });
+  if (
+    signature === lastViewportRequest &&
+    ((current.sequence ?? 0) <= lastViewportSequence ||
+      current.viewport_width === undefined ||
+      current.viewport_height === undefined ||
+      (current.viewport_width === dimensions.width &&
+        current.viewport_height === dimensions.height))
+  )
+    return;
   if (humanControl.value) {
     if (!displayedFrame.value) return;
     lastViewportRequest = signature;
+    lastViewportSequence = current.sequence ?? 0;
     enqueueInput({ operation: "resize", ...dimensions });
     return;
   }
   resizingViewport = true;
+  let deferred = false;
+  let applied = false;
   try {
-    await pluginExtensionApi.post("browser-use/viewport", undefined, {
-      params: { ...identity, ...dimensions },
-    });
+    const response = await pluginExtensionApi.post(
+      "browser-use/viewport",
+      undefined,
+      {
+        params: { ...identity, ...dimensions },
+      },
+    );
     lastViewportRequest = signature;
-  } catch {
-    // Agent actions and another controller can defer a resize. Never replay input.
+    lastViewportSequence =
+      response.data.data?.sequence ?? current.sequence ?? 0;
+    applied = true;
+  } catch (error) {
+    // Action admission can still be settling after its completion event arrives.
+    deferred =
+      (error as { response?: { status?: number } })?.response?.status === 409 &&
+      attempt < 3;
   } finally {
     resizingViewport = false;
     // A second panel resize can occur while the first request is awaiting CDP.
-    if (lastViewportRequest === signature) {
+    if (deferred) {
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => void resizeViewport(attempt + 1), 700);
+    } else if (applied && lastViewportRequest === signature) {
       clearTimeout(resizeTimer);
       resizeTimer = setTimeout(resizeViewport, 350);
     }
@@ -223,8 +245,25 @@ async function resizeViewport() {
 }
 watch(browserDisplay, (display) => {
   resizeObserver?.disconnect();
+  displaySize.value = { width: 0, height: 0 };
   if (!display || typeof ResizeObserver === "undefined") return;
   resizeObserver = new ResizeObserver(() => {
+    const style = getComputedStyle(display);
+    // Fit existing pixels immediately; remote layout changes remain debounced.
+    displaySize.value = {
+      width: Math.max(
+        0,
+        display.clientWidth -
+          parseFloat(style.paddingLeft || "0") -
+          parseFloat(style.paddingRight || "0"),
+      ),
+      height: Math.max(
+        0,
+        display.clientHeight -
+          parseFloat(style.paddingTop || "0") -
+          parseFloat(style.paddingBottom || "0"),
+      ),
+    };
     clearTimeout(resizeTimer);
     resizeTimer = setTimeout(resizeViewport, 350);
   });
@@ -252,6 +291,15 @@ const visibleFrame = computed(() => {
   )
     return imageFrame.value;
   return null;
+});
+const fittedFrameSize = computed(() => {
+  const width = visibleFrame.value?.width || 1;
+  const height = visibleFrame.value?.height || 1;
+  const scale = Math.min(
+    displaySize.value.width / width,
+    displaySize.value.height / height,
+  );
+  return { width: `${width * scale}px`, height: `${height * scale}px` };
 });
 const inputCount = ref(0);
 const awaitingFrame = ref(false);
@@ -794,7 +842,14 @@ const online = ref(navigator.onLine !== false);
 watch(
   () => [
     props.chatId,
+    props.visible,
+    pageVisible.value,
+    state.value?.generation,
+    state.value?.browser_session_id,
     state.value?.tab_id,
+    state.value?.document_id,
+    state.value?.viewport_width,
+    state.value?.viewport_height,
     state.value?.viewport_resize_version,
     state.value?.control_mode,
     state.value?.current_action?.action_id,
@@ -1465,18 +1520,7 @@ onBeforeUnmount(() => {
           </p>
         </div>
         <div v-else ref="browserDisplay" class="agent-browser-image">
-          <div
-            class="agent-browser-viewport"
-            :style="
-              visibleFrame?.width && visibleFrame?.height
-                ? {
-                    width: `min(100%, calc(100cqh * ${
-                      visibleFrame.width / visibleFrame.height
-                    }))`,
-                  }
-                : undefined
-            "
-          >
+          <div class="agent-browser-viewport" :style="fittedFrameSize">
             <img
               ref="browserImage"
               :src="`data:${visibleFrame.mime_type};base64,${visibleFrame.image}`"
@@ -1705,7 +1749,7 @@ onBeforeUnmount(() => {
   min-width: 0;
   padding: 6px;
   container-type: inline-size;
-  overflow: auto;
+  overflow: hidden;
   background: rgba(var(--browser-ink), 0.025);
   color: rgb(var(--browser-ink));
 }
@@ -1878,7 +1922,8 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   flex: 1 1 0;
-  min-height: 120px;
+  min-height: 0;
+  min-width: 0;
   overflow: hidden;
 }
 .agent-browser-stage.is-fullscreen {
@@ -1894,13 +1939,11 @@ onBeforeUnmount(() => {
   flex-direction: column;
   flex: 1;
   min-height: 0;
-  overflow: auto;
+  min-width: 0;
+  overflow: hidden;
   padding: 3px;
   background: rgba(var(--browser-ink), 0.035);
   overscroll-behavior: contain;
-}
-/* Fit the image to the remaining flex area, including all visible controls. */
-.agent-browser-image {
   container-type: size;
   align-items: center;
   justify-content: center;
@@ -1908,7 +1951,8 @@ onBeforeUnmount(() => {
 .agent-browser-image img {
   display: block;
   width: 100%;
-  height: auto;
+  height: 100%;
+  object-fit: contain;
   pointer-events: auto;
 }
 .agent-browser-takeover {
@@ -1921,6 +1965,8 @@ onBeforeUnmount(() => {
   position: relative;
   flex: 0 0 auto;
   width: 100%;
+  max-width: 100%;
+  max-height: 100%;
   margin-block: auto;
   overflow: hidden;
   border-radius: 6px;

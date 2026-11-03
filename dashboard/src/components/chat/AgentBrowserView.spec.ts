@@ -40,7 +40,7 @@ afterEach(() => {
 });
 
 describe("Agent browser snapshots", () => {
-  it("debounces the available panel size into an owned viewport request", async () => {
+  it("debounces viewport sizing and recovers when Chromium resets or defers it", async () => {
     vi.useFakeTimers();
     let resized: () => void = () => {};
     vi.stubGlobal(
@@ -94,11 +94,107 @@ describe("Agent browser snapshots", () => {
           },
         },
       ]);
+      for (const [sequence, width, height] of [
+        [2, 900, 600],
+        [3, 1280, 720],
+      ]) {
+        stream.enqueue(
+          new TextEncoder().encode(
+            `data: ${JSON.stringify({
+              ...current,
+              type: "state",
+              viewport_resize_version: 1,
+              viewport_width: width,
+              viewport_height: height,
+              sequence,
+            })}\n\n`,
+          ),
+        );
+        await flushPromises();
+        if (sequence === 2) {
+          await vi.advanceTimersByTimeAsync(350);
+          expect(post).toHaveBeenCalledTimes(1);
+        }
+      }
+      post.mockRejectedValueOnce({ response: { status: 409 } });
+      await vi.advanceTimersByTimeAsync(350);
+      expect(post).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(700);
+      expect(post).toHaveBeenCalledTimes(3);
+      expect(post.mock.calls[2][2].params).toMatchObject({
+        width: 900,
+        height: 600,
+      });
       Object.defineProperty(display, "clientWidth", { value: 706 });
       resized();
       await view.setProps({ visible: false });
       await vi.advanceTimersByTimeAsync(1000);
-      expect(post).toHaveBeenCalledTimes(1);
+      expect(post).toHaveBeenCalledTimes(3);
+    } finally {
+      view.unmount();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("fits high-resolution pixels immediately while an Agent action defers viewport resizing", async () => {
+    vi.useFakeTimers();
+    let resized: () => void = () => {};
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        constructor(callback: () => void) {
+          resized = callback;
+        }
+        observe() {}
+        disconnect() {}
+      },
+    );
+    get.mockResolvedValue(
+      ok({
+        ...current,
+        viewport_resize_version: 1,
+        current_action: {
+          action_id: "a1",
+          kind: "navigate",
+          status: "running",
+        },
+        sequence: 1,
+        image: "high-resolution-pixels",
+        mime_type: "image/jpeg",
+        width: 2560,
+        height: 1600,
+      }),
+    );
+    const view = mount(AgentBrowserView, {
+      props: { chatId: "chat-1", visible: true },
+      attachTo: document.body,
+    });
+    try {
+      await flushPromises();
+      const display = view.get(".agent-browser-image").element as HTMLElement;
+      const viewport = view.get(".agent-browser-viewport")
+        .element as HTMLElement;
+      const image = view.get("img").element;
+      display.style.padding = "3px";
+      Object.defineProperties(display, {
+        clientWidth: { value: 402, configurable: true },
+        clientHeight: { value: 206, configurable: true },
+      });
+      resized();
+      await view.vm.$nextTick();
+      expect(viewport.style.width).toBe("320px");
+      expect(viewport.style.height).toBe("200px");
+      Object.defineProperties(display, {
+        clientWidth: { value: 256 },
+        clientHeight: { value: 486 },
+      });
+      resized();
+      await view.vm.$nextTick();
+      expect(viewport.style.width).toBe("250px");
+      expect(viewport.style.height).toBe("156.25px");
+      expect(view.get("img").element).toBe(image);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(post).not.toHaveBeenCalled();
     } finally {
       view.unmount();
       vi.unstubAllGlobals();
@@ -953,16 +1049,14 @@ describe("Agent browser snapshots", () => {
   });
   it("keeps a healthy stream and its image without periodically fetching snapshots", async () => {
     vi.useFakeTimers();
-    get
-      .mockResolvedValueOnce(ok(current))
-      .mockResolvedValueOnce(
-        ok({
-          ...current,
-          sequence: 1,
-          image: "pixels",
-          mime_type: "image/jpeg",
-        }),
-      );
+    get.mockResolvedValueOnce(ok(current)).mockResolvedValueOnce(
+      ok({
+        ...current,
+        sequence: 1,
+        image: "pixels",
+        mime_type: "image/jpeg",
+      }),
+    );
     const view = mount(AgentBrowserView, {
       props: { chatId: "chat-1", visible: true },
     });

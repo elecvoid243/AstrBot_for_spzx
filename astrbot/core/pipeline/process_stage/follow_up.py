@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from astrbot import logger
 from astrbot.core.agent.runners.tool_loop_agent_runner import FollowUpTicket
 from astrbot.core.astr_agent_run_util import AgentRunner
+from astrbot.core.message.components import Image, Reply
 from astrbot.core.platform.astr_message_event import AstrMessageEvent
 from astrbot.core.utils.active_event_registry import active_event_registry
 
@@ -210,7 +211,19 @@ def try_capture_follow_up(event: AstrMessageEvent) -> FollowUpCapture | None:
     if runner_event.get_extra("agent_stop_requested"):
         return None
 
-    ticket = runner.follow_up(message_text=_event_follow_up_text(event))
+    components = list(event.message_obj.message)
+    for component in event.message_obj.message:
+        if isinstance(component, Reply) and component.chain:
+            components.extend(component.chain)
+    image_urls = [
+        component.url or component.file
+        for component in components
+        if isinstance(component, Image) and (component.url or component.file)
+    ]
+    ticket = runner.follow_up(
+        message_text=_event_follow_up_text(event),
+        **({"image_urls": image_urls} if image_urls else {}),
+    )
     if not ticket:
         return None
     # Allocate strict order at capture time (arrival order), not at wake time.

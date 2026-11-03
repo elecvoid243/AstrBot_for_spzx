@@ -87,6 +87,8 @@ from astrbot.core.provider.modalities import (
 from astrbot.core.provider.provider import Provider
 from astrbot.core.utils.active_event_registry import active_event_registry
 from astrbot.core.utils.async_generator import iterate_in_task
+from astrbot.core.utils.image_input import prepare_request_images
+from astrbot.core.utils.media_utils import normalize_model_image_max_size
 from astrbot.core.utils.prefix_diagnostics import record_session_request
 
 from ..context.compressor import ContextCompressor
@@ -144,6 +146,7 @@ class FollowUpTicket:
     text: str
     consumed: bool = False
     resolved: asyncio.Event = field(default_factory=asyncio.Event)
+    image_urls: tuple[str, ...] = ()
 
 
 class _ToolExecutionInterrupted(Exception):
@@ -1963,15 +1966,26 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
     def follow_up(
         self,
         *,
-        message_text: str,
+        message_text: str = "",
+        image_urls: list[str] | None = None,
     ) -> FollowUpTicket | None:
-        """Queue a follow-up message for the next tool result."""
+        """Queue text and optional images without waiting for media preparation.
+
+        Args:
+            message_text: User text accompanying this follow-up.
+            image_urls: Image references retained until consumed or returned to
+                the original event for a normal turn.
+
+        Returns:
+            A delivery ticket, or None for empty input or a stopped runner.
+        """
         if self.done() or self._is_stop_requested():
             return None
         text = (message_text or "").strip()
-        if not text:
+        images = tuple(ref for ref in (image_urls or []) if ref)
+        if not text and not images:
             return None
-        ticket = FollowUpTicket(seq=self._follow_up_seq, text=text)
+        ticket = FollowUpTicket(seq=self._follow_up_seq, text=text, image_urls=images)
         self._follow_up_seq += 1
         self._pending_follow_ups.append(ticket)
         self._all_follow_ups.append((ticket.seq, text))
@@ -2042,6 +2056,9 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
     def _consume_follow_up_notice(self) -> str:
         if not self._pending_follow_ups:
             return ""
+        # Keep the whole batch ordered until images can follow all tool results.
+        if any(ticket.image_urls for ticket in self._pending_follow_ups):
+            return ""
         follow_ups = self._pending_follow_ups
         self._pending_follow_ups = []
         for ticket in follow_ups:
@@ -2063,6 +2080,83 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         if not notice:
             return content
         return f"{content}{notice}"
+
+    async def _prepare_image_follow_ups(
+        self,
+    ) -> tuple[list[FollowUpTicket], list[Message]]:
+        """Prepare a fixed batch without acknowledging or mutating the queue.
+
+        Returns:
+            Tickets and portable user messages in arrival order. Messages that
+            arrive during preparation remain pending for the next tool round.
+        """
+        if not any(ticket.image_urls for ticket in self._pending_follow_ups):
+            return [], []
+        tickets = list(self._pending_follow_ups)
+        event = self.run_context.context.event
+        plugin_context = getattr(self.run_context.context, "context", None)
+        settings = (
+            plugin_context.get_config(umo=event.unified_msg_origin).get(
+                "provider_settings", {}
+            )
+            if plugin_context is not None
+            else {}
+        )
+        options = settings.get("image_compress_options", {})
+        max_size = normalize_model_image_max_size(
+            options.get("max_size") if isinstance(options, dict) else None
+        )
+        modalities = self.provider.provider_config.get("modalities", [])
+        supports_image = not modalities or "image" in modalities
+        messages = []
+        for ticket in tickets:
+            req = ProviderRequest(
+                prompt=f"[User follow-up #{ticket.seq + 1}]\n{ticket.text}",
+                image_urls=list(ticket.image_urls),
+            )
+            prepared: dict[str, dict] = {}
+            if ticket.image_urls:
+                await prepare_request_images(
+                    req, event, max_size=max_size, prepared=prepared, finalize=False
+                )
+                captioned_refs = set()
+                caption_provider = settings.get("default_image_caption_provider_id")
+                if not supports_image and caption_provider and req.image_urls:
+                    # Reuse the normal caption policy without importing the
+                    # main-agent builder during runner module initialization.
+                    from astrbot.core.astr_main_agent import _ensure_img_caption
+
+                    captioned_refs = await _ensure_img_caption(
+                        event,
+                        req,
+                        settings,
+                        plugin_context,
+                        caption_provider,
+                        montage_refs={
+                            ref for ref, value in prepared.items() if value["montage"]
+                        },
+                    )
+                await prepare_request_images(
+                    req,
+                    event,
+                    max_size=max_size,
+                    prepared=prepared,
+                    captioned_refs=captioned_refs,
+                    supports_image=supports_image,
+                )
+                if not supports_image:
+                    req.image_urls = []
+                    if not captioned_refs:
+                        req.extra_user_content_parts.append(
+                            TextPart(
+                                text="[Image unavailable to this model. Tell the user "
+                                "that their image could not be read.]"
+                            )
+                        )
+            # Encoding captures bytes before the original event can finish and
+            # makes conversation history/checkpoints independent of temp paths.
+            messages.append(Message.model_validate(await req.assemble_context()))
+        return tickets, messages
 
     def _track_tool_call_streak(
         self,
@@ -2726,20 +2820,68 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                             f"Appended {len(cached_images)} cached image(s) to context for LLM review"
                         )
 
-            self.req.append_tool_calls_result(tool_calls_result)
-            if self._checkpoint_enabled and self._call_checkpoint:
-                position = self._call_checkpoint["context_position"] + 1
-                for call in self._call_checkpoint["tool_calls"]:
-                    call["status"] = "applied"
-                    call["context_position"] = position
-                    position += sum(
-                        block.tool_call_id == call["call_id"]
-                        for block in tool_call_result_blocks
+            try:
+                tickets, follow_up_messages = await self._prepare_image_follow_ups()
+            except BaseException:
+                self._resolve_unconsumed_follow_ups()
+                raise
+            if self._is_stop_requested():
+                tickets, follow_up_messages = [], []
+            context_length = len(self.run_context.messages)
+            last_result = (
+                tool_call_result_blocks[-1] if tool_call_result_blocks else None
+            )
+            original_content = last_result.content if last_result else None
+            if tickets and last_result is not None:
+                notice = self.FOLLOW_UP_NOTICE_TEMPLATE.format(
+                    follow_up_lines="\n".join(
+                        f"{index}. Follow-up #{ticket.seq + 1}: see the following "
+                        "user message for its text and images."
+                        for index, ticket in enumerate(tickets, 1)
                     )
-                self._call_checkpoint["messages"] = dump_call_messages(
-                    self.run_context.messages
                 )
-                await self._save_call_checkpoint("tools_applied")
+                last_result.content = (
+                    original_content + notice
+                    if isinstance(original_content, str)
+                    else [*(original_content or []), TextPart(text=notice)]
+                )
+                self.run_context.messages.extend(follow_up_messages)
+            else:
+                tickets = []
+            self.req.append_tool_calls_result(tool_calls_result)
+            checkpoint_before_follow_up = (
+                copy.deepcopy(self._call_checkpoint)
+                if tickets and self._checkpoint_enabled
+                else None
+            )
+            try:
+                if self._checkpoint_enabled and self._call_checkpoint:
+                    position = self._call_checkpoint["context_position"] + 1
+                    for call in self._call_checkpoint["tool_calls"]:
+                        call["status"] = "applied"
+                        call["context_position"] = position
+                        position += sum(
+                            block.tool_call_id == call["call_id"]
+                            for block in tool_call_result_blocks
+                        )
+                    self._call_checkpoint["messages"] = dump_call_messages(
+                        self.run_context.messages
+                    )
+                    await self._save_call_checkpoint("tools_applied")
+            except BaseException:
+                # A failed checkpoint must not acknowledge images that recovery
+                # cannot reconstruct. The original event still owns the input.
+                del self.run_context.messages[context_length:]
+                if tickets and last_result is not None:
+                    last_result.content = original_content
+                if checkpoint_before_follow_up is not None:
+                    self._call_checkpoint = checkpoint_before_follow_up
+                self._resolve_unconsumed_follow_ups()
+                raise
+            for ticket in tickets:
+                self._pending_follow_ups.remove(ticket)
+                ticket.consumed = True
+                ticket.resolved.set()
 
     async def step_until_done(
         self, max_step: int

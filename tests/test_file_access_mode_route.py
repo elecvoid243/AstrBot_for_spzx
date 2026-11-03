@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import FastAPI
@@ -105,6 +106,92 @@ def test_get_returns_fixed_and_custom_roots(client):
     assert [r["kind"] for r in data["fixed_roots"]] == ["workspace", "temp", "temp"]
     assert all(r["path"] for r in data["fixed_roots"])
     assert data["custom_roots"] == []
+
+
+def test_prepare_workspace_creates_the_owned_session_root(client, tmp_path, monkeypatch):
+    from astrbot.core import workspace
+
+    root = tmp_path / "workspaces" / "owned-session"
+    monkeypatch.setattr(chat_api, "get_astrbot_workspaces_path", lambda: str(root.parent))
+    resolver = AsyncMock(return_value=root)
+    monkeypatch.setattr(workspace, "resolve_workspace_root_for_umo", resolver)
+    service = SimpleNamespace(
+        db=object(), shell_resource_origin=AsyncMock(return_value="owned-umo")
+    )
+    client.app.dependency_overrides[chat_api.get_service] = lambda: service
+
+    response = client.post("/chat/sessions/owned-session/workspace")
+
+    assert response.json()["data"]["path"] == str(root)
+    assert root.is_dir()
+    service.shell_resource_origin.assert_awaited_once_with("tester", "owned-session")
+    resolver.assert_awaited_once_with("owned-umo", service.db)
+
+
+def test_prepare_workspace_resolves_the_session_specific_default(client, tmp_path, monkeypatch):
+    from astrbot.core import workspace
+
+    base = tmp_path / "workspaces"
+    monkeypatch.setattr(chat_api, "get_astrbot_workspaces_path", lambda: str(base))
+    monkeypatch.setattr(workspace, "get_astrbot_workspaces_path", lambda: str(base))
+    service = SimpleNamespace(
+        db=SimpleNamespace(
+            get_project_by_session=AsyncMock(return_value=None),
+            get_webchat_thread_by_id=AsyncMock(return_value=None),
+        ),
+        shell_resource_origin=AsyncMock(
+            return_value="webchat:FriendMessage:webchat!tester!owned-session"
+        ),
+    )
+    client.app.dependency_overrides[chat_api.get_service] = lambda: service
+
+    response = client.post("/chat/sessions/owned-session/workspace")
+
+    root = base / "webchat_FriendMessage_webchat_tester_owned-session"
+    assert response.json()["data"]["path"] == str(root.resolve())
+    assert root.is_dir()
+
+
+def test_prepare_workspace_rejects_unowned_session(client, tmp_path, monkeypatch):
+    from astrbot.core import workspace
+    from astrbot.dashboard.services.chat_service import ChatServiceError
+
+    resolver = AsyncMock(return_value=tmp_path / "unowned")
+    monkeypatch.setattr(workspace, "resolve_workspace_root_for_umo", resolver)
+    service = SimpleNamespace(
+        db=object(),
+        shell_resource_origin=AsyncMock(side_effect=ChatServiceError("denied")),
+    )
+    client.app.dependency_overrides[chat_api.get_service] = lambda: service
+
+    response = client.post("/chat/sessions/unowned/workspace")
+
+    assert response.json()["status"] == "error"
+    resolver.assert_not_awaited()
+    assert not (tmp_path / "unowned").exists()
+
+
+def test_prepare_workspace_does_not_create_missing_external_directories(
+    client, tmp_path, monkeypatch
+):
+    from astrbot.core import workspace
+
+    root = tmp_path / "external" / "missing"
+    monkeypatch.setattr(
+        chat_api, "get_astrbot_workspaces_path", lambda: str(tmp_path / "workspaces")
+    )
+    monkeypatch.setattr(
+        workspace, "resolve_workspace_root_for_umo", AsyncMock(return_value=root)
+    )
+    service = SimpleNamespace(
+        db=object(), shell_resource_origin=AsyncMock(return_value="owned-umo")
+    )
+    client.app.dependency_overrides[chat_api.get_service] = lambda: service
+
+    response = client.post("/chat/sessions/owned-session/workspace")
+
+    assert response.json()["status"] == "error"
+    assert not root.exists()
 
 
 def test_post_roots_sets_normalizes_and_reads_back(client, tmp_path):

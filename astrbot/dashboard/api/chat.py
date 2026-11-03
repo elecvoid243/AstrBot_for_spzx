@@ -26,6 +26,7 @@ from astrbot.core.tools.interactive_choice_registry import (
 from astrbot.core.utils.astrbot_path import (
     get_astrbot_system_tmp_path,
     get_astrbot_temp_path,
+    get_astrbot_workspaces_path,
 )
 from astrbot.dashboard.async_utils import run_maybe_async
 from astrbot.dashboard.responses import ApiError, error, ok
@@ -233,6 +234,29 @@ async def set_file_access_mode_roots(
     """Replace the session's custom workspace-whitelist roots."""
     roots = await fs_access.set_custom_roots(payload.umo, payload.roots)
     return ok({"umo": payload.umo, "custom_roots": [str(r) for r in roots]})
+
+
+@router.post("/chat/sessions/{session_id}/workspace")
+async def prepare_chat_session_workspace(
+    session_id: str,
+    auth: AuthContext = Depends(require_chat_scope),
+    service: ChatService = Depends(get_service),
+):
+    """Prepare the owned session's working directory for the file browser."""
+    from astrbot.core.workspace import resolve_workspace_root_for_umo
+
+    try:
+        umo = await service.shell_resource_origin(auth.username, session_id)
+        root = await resolve_workspace_root_for_umo(umo, service.db)
+        if not root.is_dir():
+            workspaces_root = Path(get_astrbot_workspaces_path()).resolve()
+            if root == workspaces_root or not root.is_relative_to(workspaces_root):
+                raise ValueError("Workspace directory is unavailable")
+            await asyncio.to_thread(root.mkdir, parents=True, exist_ok=True)
+        return ok({"path": str(root)})
+    except (ChatServiceError, ValueError, OSError) as exc:
+        logger.warning("Failed to prepare session workspace: %s", exc)
+        return error("Failed to prepare session workspace")
 
 
 @router.get("/chat/sessions/new")

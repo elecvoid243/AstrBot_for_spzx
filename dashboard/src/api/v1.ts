@@ -859,6 +859,11 @@ export interface FileChangeSource {
 }
 
 export const chatApi = {
+  prepareWorkspace(sessionId: string) {
+    return typed<{ path: string }>(
+      openApiV1.prepareChatSessionWorkspace({ path: { session_id: sessionId } }),
+    );
+  },
   listModels() {
     return typed<any>(openApiV1.listChatModels());
   },

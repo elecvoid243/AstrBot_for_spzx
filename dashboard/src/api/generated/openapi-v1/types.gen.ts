@@ -2600,6 +2600,16 @@ export type ApplyChatSessionGoalActionResponse = (SuccessEnvelope);
 
 export type ApplyChatSessionGoalActionError = unknown;
 
+export type PrepareChatSessionWorkspaceData = {
+    path: {
+        session_id: string;
+    };
+};
+
+export type PrepareChatSessionWorkspaceResponse = (SuccessEnvelope);
+
+export type PrepareChatSessionWorkspaceError = unknown;
+
 export type GetChatSessionShellSessionsData = {
     path: {
         session_id: string;

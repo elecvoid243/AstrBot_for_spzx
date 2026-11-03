@@ -160,6 +160,7 @@ function setup() {
     captureReadingAnchor: vi.fn(),
     gitDiffSidebarRef: ref({
       prepareAgentBrowser: vi.fn().mockResolvedValue(true),
+      prepareSessionFiles: vi.fn().mockResolvedValue(undefined),
     }),
     pluginExtensionApi: {
       get: vi.fn().mockResolvedValue({
@@ -177,6 +178,7 @@ function setup() {
   });
   // The real unmount callback also disposes unrelated viewport/media resources.
   const environment = {
+    nextTick,
     chatAccountRevision: accountSessionRevision.value,
     assertCurrentAccount,
     ...state,

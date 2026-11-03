@@ -2541,9 +2541,9 @@ function formatDuration(seconds: number) {
   outline-offset: 1px;
 }
 
-/* A short accent distinguishes the work summary from Markdown rules. */
+/* Separate the work summary from the full message body. */
 .agent-work-divider {
-  width: 80px;
+  width: 100%;
   height: 3px;
   margin: 0 0 10px;
   border-radius: 999px;

@@ -1809,6 +1809,18 @@ paths:
         "200":
           $ref: "#/components/responses/Ok"
 
+  /api/v1/chat/sessions/{session_id}/workspace:
+    post:
+      tags: [Chat]
+      summary: Prepare the session working directory
+      operationId: prepareChatSessionWorkspace
+      x-astrbot-scope: chat
+      parameters:
+        - $ref: "#/components/parameters/SessionId"
+      responses:
+        "200":
+          $ref: "#/components/responses/Ok"
+
   /api/v1/chat/sessions/{session_id}/shell-sessions:
     get:
       tags: [Chat]

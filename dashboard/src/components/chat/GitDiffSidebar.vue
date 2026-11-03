@@ -113,7 +113,7 @@ import type {
 } from "@/components/chat/message_list_comps/GitLogView.vue";
 import GitConflictPanel from "@/components/chat/GitConflictPanel.vue";
 import { classifyConflictReason } from "@/composables/parseSpcodeGitConflict";
-import { pluginExtensionApi } from "@/api/v1";
+import { chatApi, pluginExtensionApi } from "@/api/v1";
 import { useModuleI18n } from "@/i18n/composables";
 import GitDiffBodyContent from "@/components/chat/message_list_comps/GitDiffBodyContent.vue";
 import FileBrowserView from "@/components/chat/message_list_comps/FileBrowserView.vue";
@@ -759,22 +759,6 @@ const spcodeStatus = useSpcodeProjectStatus();
 // Session identity for every spcode call below: the sidebar acts on the
 // conversation it belongs to, not on whatever the shared singleton holds.
 const session = useSpcodeSession();
-
-watch(
-  () => props.modelValue,
-  (open) => {
-    if (
-      open &&
-      !session.directory.value &&
-      !hostFileTarget.value &&
-      !props.fileReference
-    ) {
-      viewMode.value = "browser";
-      browserMode.value = "agent";
-    }
-  },
-  { immediate: true },
-);
 
 // When the worktree list first loads, validate the persisted worktree
 // AND cross-validate the persisted currentPath against the new root.
@@ -2109,7 +2093,43 @@ async function prepareAgentBrowser(): Promise<boolean> {
   activeViewMode.value = "browser";
   return true;
 }
-defineExpose({ confirmLeaveEditing, prepareAgentBrowser });
+
+async function prepareSessionFiles(): Promise<void> {
+  if (session.directory.value) return;
+  const chatId = props.chatId;
+  const umo = session.umo.value;
+  const requestId = ++hostNavigationId;
+  hostFileTarget.value = null;
+  activeViewMode.value = "files";
+  if (!chatId) return;
+  try {
+    const response = await chatApi.prepareWorkspace(chatId);
+    const path = response.data?.data?.path;
+    if (
+      props.chatId !== chatId ||
+      (umo && session.umo.value !== umo) ||
+      session.directory.value ||
+      hostNavigationId !== requestId ||
+      activeViewMode.value !== "files" ||
+      !props.modelValue
+    ) {
+      return;
+    }
+    if (!path) throw new Error("Session workspace is unavailable");
+    hostFileTarget.value = { path, startLine: null, endLine: null, requestId };
+  } catch {
+    if (
+      props.chatId === chatId &&
+      props.modelValue &&
+      activeViewMode.value === "files" &&
+      (!umo || session.umo.value === umo) &&
+      hostNavigationId === requestId
+    ) {
+      showSnackbar(tm("workspaceFiles.loadFailed"), "error");
+    }
+  }
+}
+defineExpose({ confirmLeaveEditing, prepareAgentBrowser, prepareSessionFiles });
 
 function onHostSaved(saved?: SavedFileSnapshot): void {
   const state = hostFile.state.value;
@@ -2152,7 +2172,10 @@ async function showProjectFiles(): Promise<boolean> {
       fileBrowserPreviewPath.value = null;
       fileBrowserCurrentPath.value = currentRoot.value;
     }
-  } else if (!hostFileTarget.value) hostDirectoryPickerOpen.value = true;
+  } else if (!hostFileTarget.value) {
+    await prepareSessionFiles();
+    return viewMode.value === "files";
+  }
   viewMode.value = "files";
   return true;
 }

@@ -118,14 +118,16 @@ const errorText = computed<string>(() => {
 <template>
   <v-dialog
     :model-value="modelValue"
-    max-width="640"
+    width="900"
+    max-width="calc(100vw - 32px)"
+    height="80vh"
     @update:model-value="emit('update:modelValue', $event)"
   >
-    <v-card>
+    <v-card class="directory-browser-card">
       <v-card-title class="text-h3 pa-4 pb-0 pl-6">
         {{ tm("spcodeProjectLoad.directoryBrowser.title") }}
       </v-card-title>
-      <v-card-text>
+      <v-card-text class="directory-browser-body">
         <!-- Toolbar: home + up + breadcrumb -->
         <div class="d-flex align-center ga-2 mb-2">
           <v-btn
@@ -252,7 +254,6 @@ const errorText = computed<string>(() => {
           "
           density="compact"
           class="dir-list pa-0"
-          max-height="320"
         >
           <v-list-item
             v-for="d in browser.drives.value"
@@ -289,7 +290,6 @@ const errorText = computed<string>(() => {
           v-else-if="!browser.error.value"
           density="compact"
           class="dir-list pa-0"
-          max-height="320"
         >
           <v-list-item
             v-for="entry in browser.entries.value"
@@ -339,6 +339,20 @@ const errorText = computed<string>(() => {
 </template>
 
 <style scoped>
+.directory-browser-card {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.directory-browser-body {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  overflow-y: auto;
+}
+
 .breadcrumb {
   flex: 1 1 auto;
   min-width: 0;
@@ -363,6 +377,8 @@ const errorText = computed<string>(() => {
 }
 
 .dir-list {
+  flex: 1 1 0;
+  min-height: 96px;
   border: 1px solid var(--sp-chip-border);
   border-radius: 8px;
   overflow-y: auto;

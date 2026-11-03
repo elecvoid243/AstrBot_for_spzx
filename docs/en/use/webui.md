@@ -293,7 +293,7 @@ Windows requires Windows 8 or later and the plugin's `pywin32` dependency for sa
 
 ### Browse host folders and drives
 
-Without a project, open **Files & Browser** above the composer, then choose **Files**. The existing folder picker and home/drive shortcuts open the conversation's resolved workspace. Selecting a location changes the file pane without loading a project.
+Without a project, open **Files & Browser** above the composer to see **Files** in the current conversation's workspace. Use the folder picker and home/drive shortcuts to browse other locations; selecting a location changes the file pane without loading a project.
 
 Click the last breadcrumb to type an absolute file or directory path, or a path relative to the currently listed directory, and press **Enter**. Files open in the existing preview. Paths and parent navigation must stay inside the owned workspace; outside paths are rejected. The path bar shows the actual resolved location. Missing or unreadable paths display an error; large directory listings show the existing 1000-entry limit.
 

@@ -1942,6 +1942,7 @@ function formatTodoUpdatedAt(value: string | undefined): string {
 const gitDiffSidebarRef = ref<{
   confirmLeaveEditing: () => Promise<boolean>;
   prepareAgentBrowser: () => Promise<boolean>;
+  prepareSessionFiles: () => Promise<void>;
 } | null>(null);
 async function confirmFileNavigation(): Promise<boolean> {
   return (await gitDiffSidebarRef.value?.confirmLeaveEditing?.()) ?? true;
@@ -5750,7 +5751,11 @@ async function toggleGitDiffSidebar(): Promise<void> {
   selectedRefs.value = null;
   closeTodoMenu();
   chatHeader.SET_GOAL_SIDEBAR_OPEN(false);
+  const sessionId = currSessionId.value;
   gitDiffSidebarOpen.value = true;
+  await nextTick();
+  if (!gitDiffSidebarOpen.value || currSessionId.value !== sessionId) return;
+  void gitDiffSidebarRef.value?.prepareSessionFiles();
 }
 
 // 之前基于 reactive 追踪的 parseTodoToolResult / extractLatestTodoSnapshot

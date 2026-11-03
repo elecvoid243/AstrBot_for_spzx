@@ -8,13 +8,15 @@ import { defineComponent, h } from "vue";
 import { createPinia, setActivePinia } from "pinia";
 import { flushPromises, mount } from "@vue/test-utils";
 
-const { getMock, postMock } = vi.hoisted(() => ({
+const { getMock, postMock, prepareWorkspace } = vi.hoisted(() => ({
   getMock: vi.fn(),
   postMock: vi.fn(),
+  prepareWorkspace: vi.fn(),
 }));
 
 vi.mock("@/api/v1", () => ({
   pluginExtensionApi: { get: getMock, post: postMock },
+  chatApi: { prepareWorkspace },
 }));
 
 vi.mock("vuetify", async (importOriginal) => {
@@ -98,6 +100,7 @@ beforeEach(() => {
   localStorage.removeItem("astrbot.agentBrowser.mode");
   getMock.mockReset();
   postMock.mockReset();
+  prepareWorkspace.mockReset().mockResolvedValue(okEnvelope({ path: "F:/workspaces/chat-1" }));
   getMock.mockImplementation(async (path: string) => {
     if (path === "spcode/git-repo-check") {
       return okEnvelope({
@@ -238,7 +241,7 @@ describe("GitDiffSidebar web preview tab", () => {
     wrapper.unmount();
   });
 
-  it("opens the Agent browser without a project and keeps it open on project unload", async () => {
+  it("opens the current session workspace without a project", async () => {
     const status = useSpcodeProjectStatus();
     status.status.value = {
       ...status.status.value,
@@ -247,26 +250,73 @@ describe("GitDiffSidebar web preview tab", () => {
     };
     const wrapper = await mountSidebar();
     await wrapper.setProps({ chatId: "chat-1" });
+    await wrapper.vm.prepareSessionFiles();
+    await flushPromises();
     expect(tabButtons(wrapper)).toHaveLength(2);
-    expect(wrapper.findComponent({ name: "AgentBrowserView" }).exists()).toBe(
-      true,
-    );
-    status.status.value = {
-      ...status.status.value,
-      loaded: true,
-      directory: "F:/repo",
-    };
+    expect(prepareWorkspace).toHaveBeenCalledWith("chat-1");
+    expect(wrapper.findComponent({ name: "FileBrowserView" }).props("hostReference"))
+      .toMatchObject({ path: "F:/workspaces/chat-1" });
+    expect(wrapper.findComponent({ name: "AgentBrowserView" }).exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it("does not navigate to a stale workspace after switching sessions", async () => {
+    const status = useSpcodeProjectStatus();
+    status.status.value = { ...status.status.value, loaded: false, directory: null };
+    let finish!: (value: unknown) => void;
+    prepareWorkspace.mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+    const wrapper = mount(GitDiffSidebar, {
+      props: { modelValue: true, chatId: "first" },
+      global: { stubs: STUBS },
+    });
     await flushPromises();
-    status.status.value = {
-      ...status.status.value,
-      loaded: false,
-      directory: null,
-    };
+    const pending = wrapper.vm.prepareSessionFiles();
+    await wrapper.setProps({ chatId: "second" });
+    finish(okEnvelope({ path: "F:/workspaces/first" }));
+    await pending;
+    expect(wrapper.findComponent({ name: "FileBrowserView" }).props("hostReference")).toBeNull();
+    wrapper.unmount();
+  });
+
+  it("opens a new session workspace before its origin is available", async () => {
+    const status = useSpcodeProjectStatus();
+    status.status.value = { ...status.status.value, loaded: false, directory: null, umo: null };
+    const wrapper = mount(GitDiffSidebar, {
+      props: { modelValue: true, chatId: "new-session" },
+      global: { stubs: STUBS },
+    });
     await flushPromises();
-    expect(wrapper.emitted("update:modelValue")).toBeUndefined();
-    expect(
-      wrapper.findComponent({ name: "AgentBrowserView" }).props("chatId"),
-    ).toBe("chat-1");
+    await wrapper.vm.prepareSessionFiles();
+    expect(prepareWorkspace).toHaveBeenCalledWith("new-session");
+    expect(wrapper.findComponent({ name: "FileBrowserView" }).props("hostReference"))
+      .toMatchObject({ path: "F:/workspaces/chat-1" });
+    wrapper.unmount();
+  });
+
+  it("keeps the browser selected when a workspace request finishes late", async () => {
+    useSpcodeProjectStatus().setUnloaded();
+    let finish!: (value: unknown) => void;
+    prepareWorkspace.mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+    const wrapper = mount(GitDiffSidebar, {
+      props: { modelValue: true, chatId: "chat-1" },
+      global: { stubs: STUBS },
+    });
+    await flushPromises();
+    await tabButtons(wrapper)[0].trigger("click");
+    await tabButtons(wrapper)[1].trigger("click");
+    finish(okEnvelope({ path: "F:/workspaces/chat-1" }));
+    await flushPromises();
+    expect(tabButtons(wrapper)[1].attributes("aria-selected")).toBe("true");
+    wrapper.unmount();
+  });
+
+  it("preserves the loaded project view when the workspace entry opens", async () => {
+    const wrapper = await mountSidebar();
+    await wrapper.setProps({ chatId: "project-chat" });
+    await wrapper.vm.prepareSessionFiles();
+    expect(prepareWorkspace).not.toHaveBeenCalled();
+    expect(wrapper.findComponent({ name: "FileBrowserView" }).props("rootPath"))
+      .toBe("F:/github/testproj");
     wrapper.unmount();
   });
 
@@ -362,19 +412,17 @@ describe("GitDiffSidebar web preview tab", () => {
     wrapper.unmount();
   });
 
-  it("provides the existing host folder picker from Files without loading a project", async () => {
+  it("opens the session workspace when Files is selected without a project", async () => {
     useSpcodeProjectStatus().setUnloaded();
+    useSpcodeProjectStatus().status.value.umo = "session:test";
     const wrapper = await mountSidebar();
     await wrapper.setProps({ chatId: "host-chat" });
     await tabButtons(wrapper)[0].trigger("click");
-    const picker = wrapper.findComponent({ name: "ProjectDirectoryBrowser" });
-    expect(picker.props("modelValue")).toBe(true);
-    picker.vm.$emit("select", "C:/temporary");
     await flushPromises();
     expect(
       wrapper.findComponent({ name: "FileBrowserView" }).props("hostReference")
         .path,
-    ).toBe("C:/temporary");
+    ).toBe("F:/workspaces/chat-1");
     expect(postMock).not.toHaveBeenCalled();
     wrapper.unmount();
   });

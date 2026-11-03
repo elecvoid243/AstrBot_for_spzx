@@ -30,18 +30,20 @@ const isPluginViewRoute = computed(() =>
 );
 const isProviderPageRoute = computed(() => route.path === "/providers");
 const isPlatformPageRoute = computed(() => route.path === "/platforms");
+const isWorkflowEditorRoute = computed(() => route.name === 'AgentWorkflowEditor');
 const isViewportLockedRoute = computed(
   () =>
     isCurrentChatRoute.value ||
     isProviderPageRoute.value ||
-    isPlatformPageRoute.value,
+    isPlatformPageRoute.value ||
+    isWorkflowEditorRoute.value,
 );
 const isFullScreenRoute = computed(
-  () => isCurrentChatRoute.value || isPluginViewRoute.value,
+  () => isCurrentChatRoute.value || isPluginViewRoute.value || isWorkflowEditorRoute.value,
 );
 const shouldMountChat = ref(isCurrentChatRoute.value);
 
-const showSidebar = computed(() => auth.role === "admin" && !isCurrentChatRoute.value);
+const showSidebar = computed(() => auth.role === "admin" && !isCurrentChatRoute.value && !isWorkflowEditorRoute.value);
 
 // Expanded announcement bar: the v-system-bar layout item is rendered by
 // AnnouncementBar on every page. On chat pages v-main normally forces
@@ -153,7 +155,7 @@ onMounted(() => {
           :class="{
             'chat-mode-container': isCurrentChatRoute,
             'viewport-locked-container':
-              isProviderPageRoute || isPlatformPageRoute,
+              isProviderPageRoute || isPlatformPageRoute || isWorkflowEditorRoute,
           }"
           :style="{
             height:

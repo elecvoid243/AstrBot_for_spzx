@@ -4,13 +4,14 @@
       tm(`roles.${field}`)
     }}</v-expansion-panel-title>
     <v-expansion-panel-text>
+      <p class="at-field-guide">{{ tm(`guide.resources.${field}`) }}</p>
       <v-select
         :model-value="modes[field]"
         :data-issue-path="
           modes[field] === 'custom' ? undefined : `definition.${field}`
         "
         :items="modeItems"
-        :label="tm('roles.mode')"
+        :label="tm('roles.mode')" :hint="tm('guide.resourceMode')" persistent-hint
         :aria-label="`${tm(`roles.${field}`)}: ${tm('roles.mode')}`"
         @update:model-value="setMode(field, $event)"
       />

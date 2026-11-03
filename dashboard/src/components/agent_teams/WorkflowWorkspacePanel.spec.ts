@@ -2785,49 +2785,9 @@ describe("workflow workspace", () => {
     wrapper.unmount();
   });
 
-  it("saves the inline graph, corrects an input error and starts its fixed version", async () => {
-    const router = createRouter({
-      history: createMemoryHistory(),
-      routes: [{ path: "/", component: slotStub }],
-    });
-    await router.push("/");
-    roles.resources.mockResolvedValue({
-      profiles: [{ id: "default" }],
-      models: [{ id: "m", name: "Model" }],
-      personas: [],
-      tools: [],
-      skills: [],
-      knowledge_bases: [],
-    });
-    const wrapper = mount(WorkflowWorkspacePanel, {
-      props: { mode: "assets" },
-      global: {
-        plugins: [router],
-        stubs: {
-          ...stubs,
-          WorkflowGraphCanvas: {
-            props: ["definition"],
-            template: '<div data-testid="graph-editor" />',
-          },
-        },
-      },
-    });
-    await flushPromises();
-    await wrapper
-      .findAll("button")
-      .find((button) => button.text() === "graph.create")!
-      .trigger("click");
-    await flushPromises();
-    expect(wrapper.find('[data-testid="graph-editor"]').exists()).toBe(true);
-    await wrapper.find(".dialog input").setValue("My workflow");
-    await wrapper
-      .findAll("button")
-      .find((button) => button.text() === "page.refresh")!
-      .trigger("click");
-    await flushPromises();
-    expect(
-      (wrapper.find(".dialog input").element as HTMLInputElement).value,
-    ).toBe("My workflow");
+  it("corrects an input error and starts the saved inline workflow version", async () => {
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/', component: slotStub }] });
+    await router.push('/');
     const saved = {
       asset_id: "inline-1",
       version: 3,
@@ -2849,25 +2809,9 @@ describe("workflow workspace", () => {
         edges: [],
       },
     };
-    api.save.mockImplementation(async () => {
-      api.list.mockResolvedValue({ assets: [saved] });
-      return saved;
-    });
-    await wrapper
-      .findAll(".dialog button")
-      .find((button) => button.text() === "draft.publish")!
-      .trigger("click");
+    api.list.mockResolvedValue({ assets: [saved] });
+    const wrapper = mount(WorkflowWorkspacePanel, { props: { mode: 'assets' }, global: { plugins: [router], stubs } });
     await flushPromises();
-    expect(api.save.mock.calls[0][1].definition.name).toBe("My workflow");
-    expect(api.save.mock.calls[0][1].definition.tasks[0]).toMatchObject({
-      role: { name: "Agent" },
-      installation: { profile_id: "default" },
-      inputs: { input: { input: "input" } },
-      task: "{input}",
-    });
-    expect(
-      api.save.mock.calls[0][1].definition.tasks[0].role_id,
-    ).toBeUndefined();
     await wrapper
       .findAll("button")
       .find((button) => button.text() === "v2.start")!

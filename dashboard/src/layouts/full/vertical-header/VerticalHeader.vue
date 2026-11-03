@@ -1102,7 +1102,7 @@ onMounted(async () => {
   >
     <!-- 桌面端 menu 按钮 - 仅在 bot 模式下显示 -->
     <v-btn
-      v-if="!isChatPath"
+      v-if="!isChatPath && route.name !== 'AgentWorkflowEditor'"
       style="margin-left: 16px"
       class="hidden-md-and-down"
       icon
@@ -1115,7 +1115,7 @@ onMounted(async () => {
 
     <!-- 移动端 menu 按钮 -->
     <v-btn
-      v-if="!isChatPath"
+      v-if="!isChatPath && route.name !== 'AgentWorkflowEditor'"
       class="hidden-lg-and-up ms-3"
       icon
       rounded="sm"

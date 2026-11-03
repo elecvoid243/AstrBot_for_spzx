@@ -42,7 +42,7 @@
             v-model="assetTab"
             :mandatory="false"
             color="primary"
-            density="comfortable"
+            height="32"
             show-arrows
           >
             <v-tab value="teams">{{ tm("workbench.teams") }}</v-tab>

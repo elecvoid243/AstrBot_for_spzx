@@ -247,6 +247,11 @@ const MainRoutes = {
       component: () => import('@/views/AgentTeamsPage.vue')
     },
     {
+      name: 'AgentWorkflowEditor',
+      path: '/agent-teams/workflows/:assetId',
+      component: () => import('@/views/WorkflowEditorPage.vue')
+    },
+    {
       name: 'CronJobs',
       path: '/cron',
       component: () => import('@/views/CronJobPage.vue')

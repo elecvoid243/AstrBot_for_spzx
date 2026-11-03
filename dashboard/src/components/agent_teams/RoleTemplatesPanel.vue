@@ -128,7 +128,7 @@
     >
       <v-card>
         <v-card-title class="text-h3 pa-4 pb-0 pl-6">{{
-          currentId ? tm("roles.edit") : tm("roles.create")
+          draft.baseVersion.value ? tm("roles.edit") : tm("roles.create")
         }}</v-card-title>
         <v-card-text :inert="saving || draft.busy.value ? '' : undefined">
           <DraftStatus
@@ -144,7 +144,7 @@
             class="mb-4"
             >{{ errorMessage }}</v-alert
           >
-          <v-alert v-if="currentId" type="info" variant="tonal" class="mb-4">{{
+          <v-alert v-if="draft.baseVersion.value" type="info" variant="tonal" class="mb-4">{{
             tm("roles.versionNotice")
           }}</v-alert>
           <v-select
@@ -155,6 +155,7 @@
             :aria-label="tm('roles.history')"
             @update:model-value="openVersion"
           />
+          <div class="at-guide-note"><p>{{ tm("guide.roleIntro") }}</p></div>
           <div ref="editor" class="role-editor">
             <div>
               <v-text-field
@@ -180,7 +181,7 @@
                       data-testid="role-prompt"
                       data-issue-path="definition.prompt"
                       v-model="definition.prompt"
-                      :label="tm('roles.prompt')"
+                      :label="tm('roles.prompt')" :hint="tm('guide.prompt')" persistent-hint
                       rows="4"
                       :error-messages="fieldErrors('definition.prompt')"
                     />
@@ -190,7 +191,7 @@
                       :items="catalog.personas"
                       item-title="name"
                       item-value="id"
-                      :label="tm('roles.localPersona')"
+                      :label="tm('roles.localPersona')" :hint="tm('guide.persona')" persistent-hint
                       :aria-label="tm('roles.localPersona')"
                       clearable
                       :error-messages="fieldErrors('definition.persona_id')"
@@ -209,7 +210,7 @@
                       :items="catalog.profiles"
                       item-title="name"
                       item-value="id"
-                      :label="tm('roles.profile')"
+                      :label="tm('roles.profile')" :hint="tm('guide.profile')" persistent-hint
                       :aria-label="tm('roles.profile')"
                       :error-messages="fieldErrors('installation.profile_id')"
                     />
@@ -223,7 +224,7 @@
                       :items="catalog.models"
                       item-title="name"
                       item-value="id"
-                      :label="tm('roles.localModel')"
+                      :label="tm('roles.localModel')" :hint="tm('guide.model')" persistent-hint
                       :aria-label="tm('roles.localModel')"
                       clearable
                       :error-messages="fieldErrors('definition.provider_id')"
@@ -234,7 +235,7 @@
                       :items="['tool_use', 'image', 'audio']"
                       multiple
                       chips
-                      :label="tm('roles.modelCapabilities')"
+                      :label="tm('roles.modelCapabilities')" :hint="tm('guide.modelCapabilities')" persistent-hint
                       :aria-label="tm('roles.modelCapabilities')"
                     />
                     <v-select
@@ -254,12 +255,16 @@
                       "
                       multiple
                       chips
-                      :label="tm('runner.requirements')"
+                      :label="tm('runner.requirements')" :hint="tm('guide.runner')" persistent-hint
                       :aria-label="tm('runner.requirements')"
                       :error-messages="
                         fieldErrors('definition.runner_capabilities')
                       "
                     />
+                    <details class="at-field-guide">
+                      <summary>{{ tm('guide.runnerDetails') }}</summary>
+                      <p v-for="capability in ['internal_checkpoint', 'remote_query', 'task_tools', 'task_result']" :key="capability" class="mt-2"><strong>{{ tm('runner.capabilities.' + capability) }}</strong> — {{ tm('guide.capabilities.' + capability) }}</p>
+                    </details>
                   </v-expansion-panel-text>
                 </v-expansion-panel>
                 <RoleResourcesEditor

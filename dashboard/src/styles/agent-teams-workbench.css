@@ -1,6 +1,6 @@
 .agent-teams-page, .workbench-dialog {
   --at-ink: #243342; --at-muted: #6d7d8d; --at-line: #e4eaf0;
-  --at-paper: #f6f8fb; --at-surface: #fff; --at-accent: #287fad;
+  --at-paper: #fff; --at-canvas: #f7f9fc; --at-surface: #fff; --at-accent: #287fad;
   --at-accent-soft: #eaf4fa; --at-shadow: 0 8px 28px #24334208;
   --at-radius: 12px; --v-theme-primary: 40, 127, 173;
   color: var(--at-ink); font-family: Inter, 'Segoe UI', 'Microsoft YaHei', sans-serif; font-size: 14px;
@@ -9,7 +9,7 @@
 .v-theme--PurpleThemeDark .workbench-dialog,
 .workbench-dialog.v-theme--PurpleThemeDark {
   --at-ink: #e0e8f1; --at-muted: #a1afc1; --at-line: #334152;
-  --at-paper: #19212c; --at-surface: #202b38; --at-accent: #6cb8df;
+  --at-paper: #19212c; --at-canvas: #19212c; --at-surface: #202b38; --at-accent: #6cb8df;
   --at-accent-soft: #263e50; --at-shadow: 0 8px 28px #00000018;
   --v-theme-primary: 108, 184, 223;
 }
@@ -26,7 +26,8 @@
 .workbench-content, .workbench-panel { min-width: 0; }
 .workbench-asset-navigation { margin-bottom: 24px; }
 .workbench-asset-navigation .v-tabs { display: inline-flex; max-width: 100%; height: 40px; padding: 3px; background: color-mix(in srgb, var(--at-line) 50%, var(--at-paper)); border: 1px solid var(--at-line); border-radius: 9px; }
-.workbench-asset-navigation .v-tab { min-width: 88px; height: 32px; padding-inline: 18px; color: var(--at-muted); border-radius: 6px !important; font-size: 12px; }
+.workbench-asset-navigation .v-slide-group__content { align-items: center; }
+.workbench-asset-navigation .v-tab { min-width: 88px; height: 32px !important; line-height: 1; padding-inline: 18px; color: var(--at-muted); border-radius: 6px !important; font-size: 12px; }
 .workbench-asset-navigation .v-tab--selected { color: var(--at-ink) !important; background: var(--at-surface); box-shadow: 0 1px 4px #2433420c; }
 .workbench-asset-navigation .v-tab__slider { display: none; }
 .agent-teams-page .v-card, .workbench-dialog .v-card { border-radius: var(--at-radius); color: var(--at-ink); background: var(--at-surface); border-color: var(--at-line); }
@@ -38,7 +39,7 @@
 .agent-teams-page .at-primary-action .v-btn__underlay, .workbench-dialog .at-primary-action .v-btn__underlay { display: none; }
 .agent-teams-page .v-chip, .workbench-dialog .v-chip { border-radius: 6px; font-size: 11px; font-weight: 500; }
 .agent-teams-page .v-card-actions, .workbench-dialog .v-card-actions { flex-wrap: wrap; gap: 6px; padding: 14px 18px; }
-.agent-teams-page .v-field, .workbench-dialog .v-field { border-radius: 8px; font-size: 13px; }
+.agent-teams-page .v-field, .workbench-dialog .v-field { border-radius: 8px !important; font-size: 13px; }
 .agent-teams-page .v-field--variant-filled, .workbench-dialog .v-field--variant-filled { background: var(--at-surface); border: 1px solid var(--at-line); }
 .agent-teams-page .v-field--variant-filled .v-field__overlay, .workbench-dialog .v-field--variant-filled .v-field__overlay, .agent-teams-page .v-field--variant-filled .v-field__outline, .workbench-dialog .v-field--variant-filled .v-field__outline { display: none; }
 .agent-teams-page .v-field--focused, .workbench-dialog .v-field--focused { border-color: var(--at-accent); }
@@ -51,6 +52,12 @@
 .workbench-dialog.v-dialog > .v-overlay__content > .v-card { background: var(--at-surface) !important; }
 .workbench-dialog .v-card-actions { flex-shrink: 0; border-top: 1px solid var(--at-line); }
 .workbench-dialog .v-card-title { color: var(--at-ink); font-weight: 650; }
+.at-field-guide { color: var(--at-muted); font-size: 12px; line-height: 1.75; margin: 0 0 16px; }
+.at-guide-note { padding: 14px 16px; margin: 0 0 20px; border: 1px solid var(--at-line); border-left: 3px solid var(--at-accent); border-radius: 8px; background: var(--at-accent-soft); font-size: 12px; line-height: 1.75; }
+.at-guide-note p { margin: 4px 0 0; color: var(--at-muted); }
+.agent-teams-page .v-messages, .workbench-dialog .v-messages { font-size: 11px; line-height: 1.65; }
+.agent-teams-page .v-messages__message, .workbench-dialog .v-messages__message { line-height: 1.65; }
+.agent-teams-page .v-input__details, .workbench-dialog .v-input__details { padding-top: 6px; padding-bottom: 10px; }
 .at-asset-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 10px; }
 .at-asset-toolbar h2 { font-size: 17px !important; font-weight: 650; letter-spacing: -.25px; }
 .at-asset-intro { margin-bottom: 22px; color: var(--at-muted); font-size: 13px; line-height: 1.7; }
@@ -95,3 +102,6 @@
     animation: none !important; transition: none !important; scroll-behavior: auto !important;
   }
 }
+
+.at-advanced-settings { border-top: 1px solid var(--at-line); padding-top: 16px; }
+.at-advanced-settings > summary { cursor: pointer; font-weight: 600; font-size: 13px; padding-bottom: 12px; }

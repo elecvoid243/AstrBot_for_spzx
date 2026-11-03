@@ -31,11 +31,12 @@
             :items="catalog.models"
             item-title="name"
             item-value="id"
-            :label="tm('graph.defaultModel')"
+            :label="tm('graph.defaultModel')" :hint="tm('guide.defaultModel')" persistent-hint
             clearable
           />
         </div>
         <div class="team-members">
+          <p class="at-field-guide">{{ tm("guide.coordinator") }}</p>
           <TeamPresetEditor
             :preset="form.coordinator"
             :initially-open="!asset"
@@ -44,6 +45,7 @@
             :catalog="catalog"
             :default-provider="form.default_provider_id"
           />
+          <p class="at-field-guide">{{ tm("guide.members") }}</p>
           <TeamPresetEditor
             v-for="(preset, index) in form.allowed_roles"
             :key="preset.id"
@@ -59,7 +61,9 @@
             tm("autonomous.addPreset")
           }}</v-btn>
         </div>
-        <div class="team-settings">
+        <details class="team-settings at-advanced-settings" :open="usageInvalid || workflowInvalid || undefined">
+          <summary>{{ tm("guide.advancedTeam") }}</summary>
+          <p class="at-field-guide">{{ tm("guide.advancedTeamHint") }}</p>
           <div class="team-limits">
             <v-text-field
               v-model.number="form.max_members"
@@ -75,21 +79,21 @@
               type="number"
               min="1"
               max="100"
-              :label="tm('graph.parallel')"
+              :label="tm('graph.parallel')" :hint="tm('guide.parallel')" persistent-hint
             />
             <v-text-field
               v-model.number="form.max_tasks"
               type="number"
               min="1"
               max="100"
-              :label="tm('autonomous.maxTasks')"
+              :label="tm('autonomous.maxTasks')" :hint="tm('guide.maxTasks')" persistent-hint
             />
             <v-text-field
               v-model.number="form.max_depth"
               type="number"
               min="1"
               max="20"
-              :label="tm('child.maxDepth')"
+              :label="tm('child.maxDepth')" :hint="tm('guide.depth')" persistent-hint
             />
           </div>
           <RunLimitsForm
@@ -104,11 +108,12 @@
           />
           <v-textarea
             v-model="approval"
-            :label="tm('autonomous.approval')"
+            :label="tm('autonomous.approval')" :hint="tm('guide.approval')" persistent-hint
             rows="2"
           />
-          <v-textarea v-model="contract" :label="tm('v2.contract')" rows="3" />
-        </div>
+          <v-textarea v-model="contract" :label="tm('v2.contract')" :hint="tm('guide.contract')" persistent-hint rows="3" />
+        </details>
+        <p class="at-field-guide mt-4">{{ tm("guide.publishTrial") }}</p>
       </v-card-text>
       <v-card-actions class="team-actions flex-wrap pa-4">
         <v-btn

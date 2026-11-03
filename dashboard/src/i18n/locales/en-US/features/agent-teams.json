@@ -115,6 +115,17 @@
     "loadFailed": "Failed to load configuration"
   },
   "editor": {
+    "loading": "Loading workflow…",
+    "library": "Reusable assets",
+    "back": "Back to workflows",
+    "settings": "Workflow settings",
+    "canvasHint": "Add nodes → Connect steps → Configure tasks and output → Test",
+    "loadFailed": "The workflow could not be loaded. Please retry.",
+    "notFound": "This workflow or draft was not found. Return to the workflow list.",
+    "saveBeforeLeave": "Your draft is not saved. Retry saving or resolve the version conflict before leaving.",
+    "structure": "Loops & subflows",
+    "structureHint": "Configure repeated review and revision, or inspect nested calls here.",
+    "closePanel": "Collapse panel",
     "newWorkflow": "New Workflow",
     "workflowName": "Workflow Name",
     "save": "Save Workflow",
@@ -953,5 +964,50 @@
     "missing_recommendation": "No recommendation is available; still waiting for a person.",
     "invalid_recommendation": "The recommendation is invalid; still waiting for a person.",
     "evidence_unavailable": "Recommendation evidence is unavailable; still waiting for a person."
+  },
+  "guide": {
+    "workflowSettings": "These settings apply to the whole workflow. Configure each Agent’s responsibilities, persona and tools in its node properties.",
+    "defaultModel": "Used by Agents without their own model. A model set by a role template or individual configuration takes priority.",
+    "parallel": "Maximum tasks running at once. Independent branches can run in parallel; dependent tasks still wait for their inputs.",
+    "depth": "Limits how deeply teams and workflows can call nested assets.",
+    "publishTrial": "Edits are saved automatically as a draft. Test the draft before saving a version for new runs. Existing runs keep their original configuration.",
+    "roleIntro": "Save responsibilities and resources as a reusable role for teams and workflows. Start with its instructions, then choose a model and tools.",
+    "prompt": "Describe the job, completion criteria and response requirements. For example: verify sources, list evidence, then draw a conclusion.",
+    "persona": "Reuse an existing persona’s instructions and default resources. Explicit role settings override the corresponding defaults.",
+    "model": "Choose the model for this role. Leave empty to inherit defaults from its team, workflow or other parent configuration.",
+    "profile": "Chooses the executor. Use the default local executor for most tasks; external executors may support different capabilities.",
+    "modelCapabilities": "Declare required capabilities for the preflight check. This does not add capabilities to a model; select only what is needed.",
+    "runner": "Require only capabilities the role needs. Incompatible executors are blocked before running. Local tasks can usually keep the defaults.",
+    "runnerDetails": "What do these executor capabilities mean?",
+    "capabilities": {
+      "internal_checkpoint": "Save internal execution checkpoints and resume after interruption.",
+      "remote_query": "Query remote task status to track or recover external execution.",
+      "task_tools": "Use AstrBot’s local task and team collaboration tools.",
+      "task_result": "Submit task results that satisfy the output contract."
+    },
+    "roleSource": "Direct configuration belongs to this member. A role template can be reused across teams and workflows.",
+    "roleVersion": "Pins this exact role version. Later template updates do not automatically change this team or workflow.",
+    "override": "Changes only this member, without editing the role template. Turn off the override to use the pinned version again.",
+    "resources": {
+      "tools": "Tools perform actions such as search or file operations. Enable only those this task needs.",
+      "skills": "Skills provide instructions and procedures for specific jobs. Choose those relevant to this role.",
+      "knowledge_bases": "Knowledge bases supply searchable reference material, such as product documentation or internal knowledge."
+    },
+    "resourceMode": "Inherit uses parent defaults. Override uses only the selected resources; an empty selection disables this resource type.",
+    "coordinator": "The coordinator interprets the goal, breaks it into tasks and assigns work. Explain how it should delegate and review results.",
+    "members": "These are the roles the coordinator can use, not a fixed execution sequence. Give members distinct responsibilities.",
+    "maxTasks": "Limits the total number of tasks created during a team run.",
+    "approval": "When filled, the final artifact requires a human decision. Describe what to review, or leave empty to skip final approval.",
+    "contract": "Defines required result fields and types. Leave empty for a text result; use JSON Schema when downstream steps need structured data.",
+    "advancedTeam": "Execution limits, subflows & final approval",
+    "advancedTeamHint": "Expand when you need to limit execution, call reusable workflows or review the final artifact.",
+    "task": "Describe this node’s task. Reference declared inputs with braces, for example {'{'}input{'}'}.",
+    "agentNode": "Complete a task with a model",
+    "humanNode": "Pause and ask a person",
+    "approvalNode": "Review an artifact version",
+    "conditionNode": "Choose a branch by condition",
+    "joinNode": "Wait for all upstream tasks",
+    "workflowInputs": "Data supplied when a workflow starts. Connect the input node, then select the fields to pass in task properties.",
+    "workflowOutputs": "Choose the task whose result becomes the final workflow output."
   }
 }

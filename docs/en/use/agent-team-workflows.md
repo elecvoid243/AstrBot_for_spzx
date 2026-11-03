@@ -12,15 +12,17 @@ Asset cards show the fixed version, a task or member summary, and draft status, 
 
 ## Create and configure
 
-Choose **Assets → Workflows → New Workflow**. Enter a name and optionally select a default model. Add Agents directly on the canvas without first creating a role template. Select an Agent to configure its task, responsibilities, profile, persona, model and resources. An unselected persona means no persona; an Agent without its own model uses the workflow default. Before launch, every local Agent must resolve to an allowed model.
+Choose **Assets → Workflows → New Workflow** to open a dedicated workflow editor. Enter a name at the top and select a default model in **Workflow settings**. Add Agents directly on the canvas without first creating a role template. Select an Agent to configure its task, responsibilities, profile, persona, model and resources; nearby hints explain their purpose and inheritance rules. An unselected persona means no persona; an Agent without its own model uses the workflow default. Before launch, every local Agent must resolve to an allowed model.
 
 Alternatively, select a role template and its **fixed version** in the Agent properties. Enable an override to replace a template value; disable it to inherit. An empty responsibility clears it, clearing the persona means no persona, and clearing the model returns to the workflow default. Tools, Skills and knowledge bases independently inherit or use a complete custom selection; an empty custom selection disables that category. Upgrade the reference explicitly when a new template version is available; existing runs do not change automatically. You can save a directly configured Agent as a template, then explicitly select it if you want to use it.
 
-Choose **Assets → Teams → New Autonomous Team**, enter a name and default model, and configure the coordinator and member presets. Each can be configured directly or use a fixed role version with overrides; the same template can be used more than once with different overrides. The coordinator can create only allowed presets. Set member limits (including the coordinator), concurrency and member task limits; enter the goal at launch. Final version approval and an output contract are optional.
+Choose **Assets → Teams → New Autonomous Team**, enter a name and default model, and configure the coordinator and member presets. Each can be configured directly or use a fixed role version with overrides; the same template can be used more than once with different overrides. The coordinator can create only allowed presets. Expand **Execution limits, subflows & final approval** to set member limits (including the coordinator), concurrency, member task limits, optional final approval and an output contract. Enter the goal at launch.
 
-![Live workflow canvas](/images/agent-teams-live-canvas-en.png)
+![Live workflow canvas](/images/agent-teams-editor-page-en.jpg)
 
-Add nodes on the left, connect them on the canvas, and edit the selected node in the right inspector. Expand **Execution settings and budgets** above the canvas to adjust limits; draft save status is shown above. Collapse either side panel to make more room for the canvas.
+Add nodes on the left, connect them on the canvas, and edit the selected node in the right inspector. **Reusable assets** contains saved teams, workflows and roles. **Workflow settings** opens the default model and execution budgets; **Loops & subflows** opens bounded-loop settings and nested-call previews. Both panels collapse without consuming canvas height. On narrow screens, expand the toolbox and inspector when needed.
+
+Navigation mapping: **New Workflow / Edit Asset → canvas dialog** is now a **dedicated workflow editor** (`#/agent-teams/workflows/<asset ID>`). The dialog's **Close** action is replaced by **Back to workflows** at the top left; test and version actions remain at the top. Each draft has its own URL and can be reopened after a refresh. Returning to the list or using browser Back waits for draft saving. Save failures or conflicts keep the editor open so you can retry or explicitly discard unsaved changes.
 
 ## Drafts, fixed versions and tests
 

@@ -58,28 +58,28 @@
             { title: tm('graph.directSource'), value: 'inline' },
             { title: tm('graph.templateSource'), value: 'template' },
           ]"
-          :label="tm('graph.roleSource')"
+          :label="tm('graph.roleSource')" :hint="tm('guide.roleSource')" persistent-hint
           @update:model-value="changeSource"
         />
         <template v-if="preset.role && preset.installation">
           <v-text-field v-model="preset.role.name" :label="tm('roles.name')" />
           <v-textarea
             v-model="preset.role.prompt"
-            :label="tm('roles.prompt')"
+            :label="tm('roles.prompt')" :hint="tm('guide.prompt')" persistent-hint
           />
           <v-select
             v-model="preset.installation.profile_id"
             :items="catalog.profiles"
             item-title="name"
             item-value="id"
-            :label="tm('roles.profile')"
+            :label="tm('roles.profile')" :hint="tm('guide.profile')" persistent-hint
           />
           <v-select
             v-model="preset.role.provider_id"
             :items="catalog.models"
             item-title="name"
             item-value="id"
-            :label="tm('graph.modelOverride')"
+            :label="tm('graph.modelOverride')" :hint="tm('guide.model')" persistent-hint
             clearable
           />
           <v-select
@@ -87,7 +87,7 @@
             :items="catalog.personas"
             item-title="name"
             item-value="id"
-            :label="tm('roles.localPersona')"
+            :label="tm('roles.localPersona')" :hint="tm('guide.persona')" persistent-hint
             clearable
           />
         </template>
@@ -111,8 +111,9 @@
           <v-select
             v-model="preset.role_version"
             :items="roleById(preset.role_id)?.versions ?? []"
-            :label="tm('v2.roleVersion')"
+            :label="tm('v2.roleVersion')" :hint="tm('guide.roleVersion')" persistent-hint
           />
+          <p class="at-field-guide">{{ tm("guide.override") }}</p>
           <template
             v-for="field in ['prompt', 'provider_id', 'persona_id']"
             :key="field"
@@ -133,7 +134,7 @@
             <v-textarea
               v-if="field === 'prompt' && field in preset.overrides"
               v-model="preset.overrides[field]"
-              :label="tm('roles.prompt')"
+              :label="tm('roles.prompt')" :hint="tm('guide.prompt')" persistent-hint
             />
             <v-select
               v-else-if="field !== 'prompt' && field in preset.overrides"

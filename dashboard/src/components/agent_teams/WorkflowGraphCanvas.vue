@@ -61,7 +61,42 @@
         @click="minimap = !minimap"
         >{{ tm("graph.minimap") }}</v-btn
       >
+      <v-btn variant="text" size="small" :aria-expanded="structureOpen" aria-controls="graph-structure-panel" @click="structureOpen = !structureOpen">{{ tm('editor.structure') }}<span v-if="draft.loops?.length"> · {{ draft.loops.length }}</span></v-btn>
     </div>
+    <v-alert
+      v-if="localError || Object.keys(contractErrors).length"
+      type="error"
+      variant="tonal"
+      class="ma-3"
+      role="alert"
+      >{{ localError || Object.values(contractErrors)[0] }}</v-alert
+    >
+    <v-alert
+      v-if="!readonly && !validResultTask"
+      type="warning"
+      variant="tonal"
+      class="ma-3"
+      data-testid="result-diagnostic"
+    >
+      {{ tm("graph.invalidResult") }}: {{ draft.result_task_id || "—" }}
+      <v-btn variant="text" size="small" @click="selectNode('__output')">{{
+        tm("graph.outputs")
+      }}</v-btn>
+    </v-alert>
+    <v-alert
+      v-for="issue in issues"
+      :key="`${issue.path}:${issue.message}`"
+      type="error"
+      variant="tonal"
+      class="ma-3"
+    >
+      {{ issue.path }}: {{ issue.message }}
+    </v-alert>
+
+    <div class="graph-columns" :class="{ 'is-readonly': readonly }">
+    <aside v-show="structureOpen" id="graph-structure-panel" class="graph-structure-panel" :aria-label="tm('editor.structure')" @keydown.esc="structureOpen = false">
+      <div class="structure-heading"><strong>{{ tm('editor.structure') }}</strong><v-btn variant="text" icon="mdi-close" size="small" :aria-label="tm('editor.closePanel')" @click="structureOpen = false" /></div>
+      <p class="at-field-guide">{{ tm('editor.structureHint') }}</p>
     <WorkflowLoopPanel
       :definition="draft"
       :readonly="readonly"
@@ -159,36 +194,7 @@
       </template>
       <p v-else class="text-body-2 mt-3">{{ tm("child.unavailable") }}</p>
     </details>
-    <v-alert
-      v-if="localError || Object.keys(contractErrors).length"
-      type="error"
-      variant="tonal"
-      class="ma-3"
-      role="alert"
-      >{{ localError || Object.values(contractErrors)[0] }}</v-alert
-    >
-    <v-alert
-      v-if="!readonly && !validResultTask"
-      type="warning"
-      variant="tonal"
-      class="ma-3"
-      data-testid="result-diagnostic"
-    >
-      {{ tm("graph.invalidResult") }}: {{ draft.result_task_id || "—" }}
-      <v-btn variant="text" size="small" @click="selectNode('__output')">{{
-        tm("graph.outputs")
-      }}</v-btn>
-    </v-alert>
-    <v-alert
-      v-for="issue in issues"
-      :key="`${issue.path}:${issue.message}`"
-      type="error"
-      variant="tonal"
-      class="ma-3"
-    >
-      {{ issue.path }}: {{ issue.message }}
-    </v-alert>
-    <div class="graph-columns" :class="{ 'is-readonly': readonly }">
+    </aside>
       <details v-if="!readonly" class="graph-toolbox" :open="!narrow">
         <summary>{{ tm("graph.toolbox") }}</summary>
         <p class="text-caption my-3">{{ tm("graph.dragHint") }}</p>
@@ -200,7 +206,7 @@
           prepend-icon="mdi-robot-outline"
           data-testid="add-inline-agent"
           @click="addTask('agent:inline')"
-        >{{ tm("graph.addAgent") }}</v-btn>
+        ><span class="graph-node-option"><strong>{{ tm("graph.addAgent") }}</strong><small>{{ tm("guide.agentNode") }}</small></span></v-btn>
         <v-btn
           variant="tonal"
           size="small"
@@ -208,8 +214,7 @@
           prepend-icon="mdi-account-question-outline"
           data-testid="add-human-question"
           @click="addTask('human:question')"
-          >{{ tm("human.questionNode") }}</v-btn
-        >
+          ><span class="graph-node-option"><strong>{{ tm("human.questionNode") }}</strong><small>{{ tm("guide.humanNode") }}</small></span></v-btn>
         <v-btn
           variant="tonal"
           size="small"
@@ -217,8 +222,7 @@
           prepend-icon="mdi-account-check-outline"
           data-testid="add-human-approval"
           @click="addTask('human:approval')"
-          >{{ tm("human.approvalNode") }}</v-btn
-        >
+          ><span class="graph-node-option"><strong>{{ tm("human.approvalNode") }}</strong><small>{{ tm("guide.approvalNode") }}</small></span></v-btn>
         <v-btn
           variant="tonal"
           size="small"
@@ -226,8 +230,7 @@
           prepend-icon="mdi-source-branch"
           data-testid="add-condition"
           @click="addTask('control:condition')"
-          >{{ tm("graph.conditionNode") }}</v-btn
-        >
+          ><span class="graph-node-option"><strong>{{ tm("graph.conditionNode") }}</strong><small>{{ tm("guide.conditionNode") }}</small></span></v-btn>
         <v-btn
           variant="tonal"
           size="small"
@@ -235,8 +238,10 @@
           prepend-icon="mdi-source-merge"
           data-testid="add-join"
           @click="addTask('control:join')"
-          >{{ tm("graph.joinNode") }}</v-btn
-        >
+          ><span class="graph-node-option"><strong>{{ tm("graph.joinNode") }}</strong><small>{{ tm("guide.joinNode") }}</small></span></v-btn>
+        <details class="graph-library">
+          <summary>{{ tm('editor.library') }} <span>{{ teams.length + workflows.length + roles.length }}</span></summary>
+          <p class="at-field-guide">{{ tm('guide.roleVersion') }}</p>
         <v-btn
           v-for="team in teams"
           :key="team.asset_id"
@@ -282,6 +287,7 @@
         <p v-if="!roles.length" class="text-caption">
           {{ tm("graph.noRoles") }}
         </p>
+        </details>
       </details>
       <div class="graph-stage">
         <TeamsFlowCanvas
@@ -306,7 +312,8 @@
       <details
         v-if="!readonly"
         class="graph-inspector"
-        :open="!narrow || !!selectedNode || !!selectedEdge"
+        :open="inspectorOpen"
+        @toggle="inspectorOpen = ($event.target as HTMLDetailsElement).open"
       >
         <summary>{{ tm("graph.properties") }}</summary>
         <template v-if="selectedTask">
@@ -333,7 +340,7 @@
               { title: tm('graph.directSource'), value: 'inline' },
               { title: tm('graph.templateSource'), value: 'template' },
             ]"
-            :label="tm('graph.roleSource')"
+            :label="tm('graph.roleSource')" :hint="tm('guide.roleSource')" persistent-hint
             @update:model-value="changeSource"
           />
           <v-select
@@ -370,7 +377,7 @@
             "
             v-model="selectedTask.role_version"
             :items="selectedRole?.versions ?? [selectedTask.role_version]"
-            :label="tm('v2.roleVersion')"
+            :label="tm('v2.roleVersion')" :hint="tm('guide.roleVersion')" persistent-hint
             density="compact"
             @update:model-value="checkpoint"
           />
@@ -428,7 +435,7 @@
             <v-textarea
               data-testid="inline-responsibility"
               v-model="selectedTask.role.prompt"
-              :label="tm('roles.prompt')"
+              :label="tm('roles.prompt')" :hint="tm('guide.prompt')" persistent-hint
               rows="3"
               @update:model-value="checkpoint"
             />
@@ -437,7 +444,7 @@
               :items="catalog.profiles"
               item-title="name"
               item-value="id"
-              :label="tm('roles.profile')"
+              :label="tm('roles.profile')" :hint="tm('guide.profile')" persistent-hint
               @update:model-value="checkpoint"
             />
             <v-select
@@ -445,7 +452,7 @@
               :items="catalog.models"
               item-title="name"
               item-value="id"
-              :label="tm('graph.modelOverride')"
+              :label="tm('graph.modelOverride')" :hint="tm('guide.model')" persistent-hint
               clearable
               @update:model-value="checkpoint"
             />
@@ -457,7 +464,7 @@
               :items="catalog.personas"
               item-title="name"
               item-value="id"
-              :label="tm('roles.localPersona')"
+              :label="tm('roles.localPersona')" :hint="tm('guide.persona')" persistent-hint
               clearable
               @update:model-value="checkpoint"
             />
@@ -513,7 +520,7 @@
                 "
                 v-model="selectedTask.overrides.prompt"
                 data-testid="override-prompt-value"
-                :label="tm('roles.prompt')"
+                :label="tm('roles.prompt')" :hint="tm('guide.prompt')" persistent-hint
                 @update:model-value="checkpoint"
               />
               <v-select
@@ -1211,6 +1218,7 @@ const { tm } = useModuleI18n("features/agent-teams");
 const draft = ref<GraphDefinition>(
   JSON.parse(JSON.stringify(props.definition)),
 );
+const structureOpen = ref(false);
 const canvas = ref<InstanceType<typeof TeamsFlowCanvas>>();
 const selectedNode = ref<string | null>(
   props.definition.tasks.length === 1 && props.definition.tasks[0].role
@@ -1220,6 +1228,7 @@ const selectedNode = ref<string | null>(
 watch(
   () => props.issues,
   (issues) => {
+    if (issues.some((issue) => issue.path.startsWith("definition.loops"))) structureOpen.value = true;
     const match = issues
       .map((issue) => /^definition\.tasks\.(\d+)/.exec(issue.path))
       .find(Boolean);
@@ -1245,8 +1254,13 @@ let teamSelectionRequest = 0;
 let teamReadRequest = 0;
 const widthQuery = window.matchMedia?.("(max-width: 1000px)");
 const narrow = ref(widthQuery?.matches ?? false);
+const inspectorOpen = ref(!narrow.value);
+watch([selectedNode, selectedEdgeKey], ([node, edge]) => {
+  if (node || edge) inspectorOpen.value = true;
+});
 const updateWidth = (event: MediaQueryListEvent) => {
   narrow.value = event.matches;
+  inspectorOpen.value = !event.matches;
 };
 widthQuery?.addEventListener?.("change", updateWidth);
 const history = ref<string[]>([JSON.stringify(draft.value)]);
@@ -2150,6 +2164,7 @@ function dragRole(event: DragEvent, roleId: string) {
   event.dataTransfer?.setData("application/x-member-id", roleId);
 }
 function selectNode(id: string | null) {
+  if (id) inspectorOpen.value = true;
   if (id?.startsWith("loop:")) {
     toggleLoop(id.slice(5));
     return;
@@ -2159,6 +2174,7 @@ function selectNode(id: string | null) {
   emit("selectTask", id);
 }
 function selectEdge(id: string | null) {
+  if (id) inspectorOpen.value = true;
   selectedEdgeKey.value = id;
   if (id) selectedNode.value = null;
 }
@@ -2419,6 +2435,7 @@ function layout() {
   overflow-wrap: anywhere;
 }
 .graph-workbench {
+  position: relative;
   --graph-height: clamp(460px, calc(100vh - 250px), 640px);
   border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
   border-radius: 16px;
@@ -2438,6 +2455,7 @@ function layout() {
   max-width: 320px;
 }
 .graph-columns {
+  position: relative;
   --toolbox-width: 180px;
   --inspector-width: 300px;
   display: grid;
@@ -2644,8 +2662,8 @@ summary {
 .graph-role:hover { background: var(--at-accent-soft, #eaf4fa); }
 .graph-role small { color: var(--at-muted, #788b9b); opacity: 1; margin-top: 2px; }
 .graph-role:focus-visible, .graph-workbench summary:focus-visible { outline: 2px solid var(--at-accent, #287fad); outline-offset: 2px; }
-.graph-stage { background: var(--at-paper, #f6f8fb); }
-.graph-stage :deep(.teams-flow-canvas) { border: 0; border-radius: 0; }
+.graph-stage { background: var(--at-canvas, #f7f9fc); }
+.graph-stage :deep(.teams-flow-canvas) { border: 0; border-radius: 0; background: var(--at-canvas, #f7f9fc); }
 .graph-stage :deep(.member-flow-node) { width: 220px; padding: 12px; border: 1px solid var(--at-line, #d8e2eb); border-radius: 10px; background: var(--at-surface, #fff); box-shadow: var(--at-shadow, 0 3px 10px #26405710); }
 .graph-stage :deep(.member-flow-node.selected) { border-color: var(--at-accent, #287fad); }
 .graph-stage :deep(.at-node-title) { font-size: 13px; }
@@ -2661,4 +2679,12 @@ summary {
   .graph-toolbox :deep(.v-btn), .graph-role { max-width: none; }
   .graph-stage { height: clamp(300px, 45vh, 460px); }
 }
+.graph-structure-panel { position: absolute; z-index: 7; inset: 0 0 0 auto; width: min(400px, 100%); overflow-y: auto; padding: 16px; background: var(--at-surface, rgb(var(--v-theme-surface))); border-left: 1px solid var(--at-line, #dce5ed); box-shadow: -8px 0 28px #24334210; }
+.structure-heading { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+.graph-node-option { display: flex; flex-direction: column; gap: 3px; }
+.graph-node-option strong { font-size: 12px; font-weight: 600; }
+.graph-node-option small { font-size: 10px; line-height: 1.5; color: var(--at-muted, #788b9b); font-weight: 400; }
+.graph-library { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--at-line, #dce5ed); }
+.graph-library > summary { font-size: 12px; line-height: 1.6; margin-bottom: 12px; }
+.graph-library > summary span { color: var(--at-muted); font-weight: 400; margin-left: 4px; }
 </style>

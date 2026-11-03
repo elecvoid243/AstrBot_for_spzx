@@ -575,133 +575,6 @@
     <v-dialog
       class="workbench-dialog"
       scrollable
-      v-model="graphEditing"
-      max-width="1800"
-      persistent
-      content-class="graph-dialog-overlay"
-    >
-      <v-card class="graph-dialog-card">
-        <v-card-title class="text-h3 pa-4 pb-0 pl-6 at-canvas-title"><span class="at-asset-icon" aria-hidden="true"><v-icon icon="mdi-sitemap-outline" size="20" /></span>{{ tm("graph.canvas") }}</v-card-title>
-        <v-card-text class="graph-dialog-content" :inert="saving || graphDraft.busy.value ? '' : undefined">
-
-          <div class="at-canvas-settings">
-            <v-text-field
-              v-model="graphForm.name"
-              :label="tm('v2.name')"
-              density="compact"
-              hide-details
-              style="min-width: 180px"
-            />
-            <v-select
-              v-model="graphForm.default_provider_id"
-              :items="catalog.models"
-              item-title="name"
-              item-value="id"
-              :label="tm('graph.defaultModel')"
-              density="compact"
-              hide-details
-              clearable
-              style="min-width: 220px"
-            />
-          </div>
-          <div class="at-canvas-meta">
-          <DraftStatus :draft="graphDraft" @reload="reloadGraphDraft" @discard="graphEditing = false" @use-latest="useLatestDraft" />
-          <details :open="graphUsageInvalid" class="at-execution-settings">
-            <summary class="text-subtitle-1">{{ tm("graph.executionSettings") }}</summary>
-            <div class="d-flex flex-wrap ga-3 mt-3">
-            <v-text-field
-              v-model.number="graphForm.max_parallel"
-              type="number"
-              min="1"
-              max="100"
-              :label="tm('graph.parallel')"
-              style="max-width: 220px"
-            />
-            <v-text-field
-              v-model.number="graphForm.max_depth"
-              type="number"
-              min="1"
-              max="20"
-              :label="tm('child.maxDepth')"
-              style="max-width: 220px"
-            />
-            </div>
-            <RunLimitsForm
-              v-model="graphForm.limits"
-              @validation="graphUsageInvalid = $event"
-            />
-          </details>
-          </div>
-          <WorkflowGraphCanvas
-            class="graph-dialog-canvas"
-            :key="graphEditorKey"
-            v-model:definition="graphForm"
-            :roles="roles"
-            :catalog="catalog"
-            :issues="graphIssues"
-            :teams="
-              assets.filter((asset) => asset.definition.kind === 'autonomous')
-            "
-            :workflows="assets.filter((asset) => asset.definition.kind !== 'autonomous')"
-            @validation="graphInvalid = $event"
-            @select-task="graphSelectedNode = $event"
-            @role-saved="
-              roleAssetsApi
-                .list()
-                .then((data) => (roles = data.roles))
-                .catch(
-                  (error) =>
-                    (formError = extractApiError(
-                      error,
-                      tm('errors.operationFailed'),
-                    ).message),
-                )
-            "
-          />
-          <v-alert
-            v-if="formError"
-            type="error"
-            variant="tonal"
-            class="mt-3"
-            role="alert"
-            >{{ formError }}</v-alert
-          >
-          <p class="text-caption mt-3">{{ tm("graph.saveHint") }}</p>
-        </v-card-text>
-        <v-card-actions
-          ><v-btn variant="tonal" prepend-icon="mdi-play-outline" class="at-primary-action" :disabled="saving || graphDraft.busy.value" @click="openGraphTrial">{{
-            tm("trial.title")
-          }}</v-btn><v-spacer /><v-btn
-            variant="text"
-            :disabled="saving || graphDraft.busy.value"
-            @click="closeGraph"
-            >{{ tm("v2.close") }}</v-btn
-          ><v-btn
-            variant="tonal"
-            color="primary"
-            :loading="saving"
-            :disabled="graphInvalid || graphUsageInvalid || graphDraft.busy.value"
-            @click="saveGraph"
-            >{{ tm("draft.publish") }}</v-btn
-          ></v-card-actions
-        >
-      </v-card>
-    </v-dialog>
-
-    <TrialRunDialog
-      v-if="trialDraft"
-      v-model="trialOpen"
-      :asset-id="trialDraft.asset_id"
-      :revision="trialDraft.revision"
-      kind="workflow"
-      :nodes="graphForm.tasks"
-      :initial-node="graphSelectedNode"
-      @started="trialStarted"
-    />
-
-    <v-dialog
-      class="workbench-dialog"
-      scrollable
       v-model="starting"
       max-width="600"
       :persistent="saving"
@@ -872,8 +745,7 @@ import PdfPreview from "@/components/chat/message_list_comps/binary_preview/PdfP
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { roleAssetsApi } from "@/api/roleAssets";
-import DraftStatus from "./DraftStatus.vue";
-import { draftApi, useAssetDraft } from "@/composables/useAssetDraft";
+import { draftApi } from "@/composables/useAssetDraft";
 import { workflowAssetsApi } from "@/api/workflowAssets";
 import { useModuleI18n } from "@/i18n/composables";
 import { extractApiError } from "@/utils/extractApiError";
@@ -889,9 +761,7 @@ import WorkflowRunControls from "./WorkflowRunControls.vue";
 import WorkflowHumanTodo from "./WorkflowHumanTodo.vue";
 import RunnerCapabilities from "./RunnerCapabilities.vue";
 import DeleteAssetDialog from "./DeleteAssetDialog.vue";
-import TrialRunDialog from "./TrialRunDialog.vue";
 import type {
-  GraphDefinition,
   ToolResolutionRequest,
   WorkflowControlRequest,
   WorkflowRetryRequest,
@@ -929,25 +799,7 @@ async function deleteAsset() {
   }
 }
 const drafts = ref<any[]>([]);
-const graphDraft = useAssetDraft("workflow");
-const trialOpen = ref(false);
-const trialDraft = ref<any>(null);
-const graphSelectedNode = ref<string | null>(null);
-async function openGraphTrial() {
-  try {
-    graphDraft.change({ definition: graphForm.value });
-    if (graphDraft.status.value === "failed" || graphDraft.status.value === "conflict")
-      throw new Error(tm(`draft.${graphDraft.status.value}`));
-    trialDraft.value = await graphDraft.flush();
-    trialOpen.value = true;
-  } catch (cause) {
-    formError.value = extractApiError(
-      cause, tm("errors.operationFailed"),
-    ).message;
-  }
-}
 async function trialStarted(runId: string) {
-  graphEditing.value = false;
   await router.replace({ query: { ...route.query, workflow_run: runId } });
   emit("started", runId);
 }
@@ -1349,20 +1201,7 @@ async function reloadLatestProcess() {
     delete historyReturning.value[taskId];
   }
 }
-const graphEditing = ref(false);
-const graphEditorKey = ref(0);
 const teamEditing = ref(false);
-const graphInvalid = ref(false);
-const graphIssues = ref<{ path: string; message: string }[]>([]);
-const graphUsageInvalid = ref(false);
-const graphForm = ref<GraphDefinition>({
-  name: "",
-  required_inputs: [],
-  max_parallel: 4,
-  max_depth: 3,
-  tasks: [],
-  edges: [],
-});
 const selectedArtifact = ref<any>(null);
 const artifactVersions = computed(() =>
   (detailRun.value?.artifacts ?? []).map(
@@ -1561,116 +1400,15 @@ async function refresh(background = false) {
   }
 }
 
-async function editGraph(asset: any) {
-  graphSelectedNode.value = null;
-  graphEditing.value = false;
-  graphDraft.close();
-  editingAsset.value = asset;
-  graphEditorKey.value++;
-  graphForm.value = asset
-    ? JSON.parse(JSON.stringify(asset.definition))
-    : {
-        name: "",
-        default_provider_id: null,
-        required_inputs: ["input"],
-        result_task_id: "agent",
-        max_parallel: 4,
-        max_depth: 3,
-        tasks: [
-          {
-            id: "agent",
-            name: "Agent",
-            member: "agent",
-            role: { name: "Agent" },
-            installation: { profile_id: "default" },
-            task: "{input}",
-            inputs: { input: { input: "input", field: "text" } },
-            position: { x: 300, y: 100 },
-          },
-        ],
-        edges: [],
-      };
-  formError.value = "";
-  graphInvalid.value = false;
-  graphIssues.value = [];
-  try {
-    const item = await graphDraft.open(asset?.asset_id ?? null, {
-      definition: graphForm.value,
-    });
-    graphForm.value = item.body.definition;
-    await nextTick();
-    graphEditing.value = true;
-  } catch (err) {
-    error.value = extractApiError(err, tm("errors.operationFailed")).message;
-  }
+function editGraph(asset: any) {
+  void router.push({ name: 'AgentWorkflowEditor', params: { assetId: asset?.asset_id ?? 'new' } });
 }
 
-async function reloadGraphDraft() {
-  const item = await graphDraft.reload();
-  graphEditing.value = false;
-  graphForm.value = item.body.definition;
-  graphEditorKey.value++;
-  await nextTick();
-  graphEditing.value = true;
-}
-
-async function useLatestDraft(latest: any) {
-  graphForm.value = JSON.parse(JSON.stringify(latest.definition));
-  graphEditorKey.value++;
-  graphDraft.change({ definition: graphForm.value });
-  try { await graphDraft.rebase(); } catch (err) { formError.value = extractApiError(err, tm("errors.operationFailed")).message; }
-}
-
-watch(
-  [graphEditing, teamEditing],
-  ([graph, team], [previousGraph, previousTeam]) => {
-    if ((!graph && previousGraph) || (!team && previousTeam)) void refresh();
-  },
-);
-
-watch(
-  graphForm,
-  () => {
-    if (graphEditing.value) graphDraft.change({ definition: graphForm.value });
-  },
-  { deep: true },
-);
-
-async function closeGraph() {
-  if (graphDraft.status.value === "failed" || graphDraft.status.value === "conflict") return;
-  try { await graphDraft.flush(); graphEditing.value = false; } catch { /* The draft status retains the failure. */ }
-}
+watch(teamEditing, (open, previous) => { if (!open && previous) void refresh(); });
 
 function editTeam(asset: any) {
   editingAsset.value = asset;
   teamEditing.value = true;
-}
-
-async function saveGraph() {
-  if (saving.value || graphInvalid.value || graphUsageInvalid.value) return;
-  saving.value = true;
-  formError.value = "";
-  try {
-    graphDraft.change({ definition: graphForm.value });
-    await graphDraft.publish();
-    graphEditing.value = false;
-    await refresh();
-  } catch (err) {
-    const failure = extractApiError(err, tm("errors.operationFailed"));
-    graphIssues.value = failure.fields
-      .filter((field) => !field.path.includes(".AutonomousDefinition."))
-      .map((field) => ({
-        ...field,
-        path: field.path
-          .replace(/^body\./, "")
-          .replace("definition.GraphDefinition.", "definition."),
-      }));
-    formError.value = `${failure.message} ${graphIssues.value
-      .map((field) => `${field.path}: ${field.message}`)
-      .join("; ")}`;
-  } finally {
-    saving.value = false;
-  }
 }
 
 function selectRunTask(nodeId: string | null) {
@@ -2112,24 +1850,6 @@ onUnmounted(() => {
 .workflow-text { white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; max-width: 100%; font: inherit; }
 .workflow-name { min-width: 0; overflow-wrap: anywhere; }
 .workflow-result { max-height: 28rem; overflow: auto; padding: 14px; background: var(--at-paper); border: 1px solid var(--at-line); border-radius: 9px; line-height: 1.8; font-size: 12px; }
-:deep(.graph-dialog-overlay) { height: calc(100dvh - 32px); max-height: calc(100dvh - 32px); }
-.graph-dialog-card { height: 100%; min-height: 0; }
-.at-canvas-title { display: flex; align-items: center; gap: 12px; font-size: 18px !important; padding-block: 10px !important; border-bottom: 1px solid var(--at-line); }
-.at-canvas-title .at-asset-icon { width: 32px; height: 32px; border-radius: 8px; }
-.graph-dialog-content { display: flex; flex-direction: column; min-height: 0; flex: 1 1 0; overflow-y: auto; padding: 14px 20px 0 !important; }
-:deep(.graph-dialog-overlay > .graph-dialog-card > .graph-dialog-content) { overflow-y: auto; }
-.graph-dialog-content > :not(.graph-dialog-canvas) { flex: 0 0 auto; }
-.at-canvas-settings { display: grid; grid-template-columns: minmax(180px, 1.6fr) minmax(220px, 1fr); gap: 12px; margin-bottom: 10px; }
-.at-canvas-meta { display: flex; align-items: start; flex-wrap: wrap; gap: 8px 20px; justify-content: space-between; margin-bottom: 10px; color: var(--at-muted); font-size: 11px; }
-.at-canvas-meta > :deep(.mb-3) { margin-bottom: 0 !important; }
-.at-execution-settings { color: var(--at-muted); }
-.at-execution-settings[open] { flex-basis: 100%; }
-.at-execution-settings > summary { font-size: 12px !important; cursor: pointer; }
-.graph-dialog-canvas { display: flex; flex: 1 1 0; flex-direction: column; min-height: 400px; }
-.graph-dialog-canvas :deep(.graph-columns) { flex: 1 1 0; height: auto; min-height: 0; grid-template-rows: minmax(0, 1fr); }
-.graph-dialog-canvas :deep(.graph-footer) { padding: 6px 12px; font-size: 11px !important; }
-.graph-dialog-canvas :deep(.loop-panel) { padding: 5px 12px; }
-.graph-dialog-canvas :deep(.graph-toolbar) { padding: 6px 12px; }
 @container (max-width: 1000px) {
   .workbench-columns { grid-template-columns: minmax(0, 1fr); }
   .workbench-column { max-height: 70vh; }
@@ -2141,8 +1861,6 @@ onUnmounted(() => {
   .workbench-tasks, .workbench-results { border: 0; }
 }
 @media (max-width: 1000px) {
-  .graph-dialog-canvas { flex: 0 0 auto; }
-  .graph-dialog-canvas :deep(.graph-columns) { flex: 0 0 auto; grid-template-rows: none; }
 }
 @media (max-width: 600px) {
   .at-card-icon-action { width: 34px; height: 38px; }
@@ -2152,8 +1870,5 @@ onUnmounted(() => {
   .workbench-process, .workbench-results { padding: 16px; }
   .workbench-panel-nav { display: grid; grid-template-columns: 1fr 1fr 1fr; padding: 8px; }
   .workbench-panel-nav :deep(.v-btn) { min-width: 0; padding-inline: 6px; font-size: 12px; }
-  .at-canvas-settings { grid-template-columns: minmax(0, 1fr); gap: 8px; }
-  .at-canvas-settings :deep(.v-input) { min-width: 0 !important; }
-  .graph-dialog-content { padding: 12px !important; }
 }
 </style>

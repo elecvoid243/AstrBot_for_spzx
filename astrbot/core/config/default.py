@@ -462,7 +462,7 @@ DEFAULT_CONFIG = {
                         "max": 100,
                         "step": 1,
                         "snaps": [
-                            {"name": "低", "value": 20},
+                            {"name": "低", "value": 25},
                             {"name": "高", "value": 50},
                             {"name": "极高", "value": 75},
                             {"name": "最大", "value": 100},

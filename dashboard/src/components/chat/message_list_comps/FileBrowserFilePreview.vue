@@ -1589,7 +1589,7 @@ onBeforeUnmount(() => {
                  alike — the on-disk working copy is opened either
                  way. Same affordance as DocumentManager's toolbar. -->
             <v-btn
-              v-if="!editMode && !hostReference"
+              v-if="!editMode"
               size="x-small"
               variant="text"
               color="primary"
@@ -2110,6 +2110,7 @@ onBeforeUnmount(() => {
 }
 .preview-file-meta {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 12px;
   padding: 6px 14px;

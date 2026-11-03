@@ -339,8 +339,7 @@ defineExpose({ refresh, confirmLeaveEditing });
 // resize pattern used by GitDiffSidebar.vue. Bounds [15, 70] keep
 // both panes readable; 6px hover/active band gives a generous target.
 //
-// 2026-07-09: DEFAULT_PERCENT lowered from 40 to 30 (3:7
-// left:right) so the right-hand file preview gets more room
+// The default 1:3 split gives the right-hand file preview more room
 // by default — the file content (syntax-highlighted code) is
 // the primary payload here, the file list is the navigation
 // rail. Users can still drag the divider to override this on
@@ -349,7 +348,7 @@ defineExpose({ refresh, confirmLeaveEditing });
 // state (no persistence).
 const MIN_PERCENT = 15;
 const MAX_PERCENT = 70;
-const DEFAULT_PERCENT = 30;
+const DEFAULT_PERCENT = 25;
 
 const bodyRef = ref<HTMLElement | null>(null);
 const leftPanePercent = ref<number>(DEFAULT_PERCENT);

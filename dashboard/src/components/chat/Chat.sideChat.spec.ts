@@ -157,6 +157,7 @@ function setup() {
     selectedRefs: ref(null),
     gitDiffSidebarOpen: ref(false),
     confirmFileNavigation: vi.fn().mockResolvedValue(true),
+    captureReadingAnchor: vi.fn(),
     gitDiffSidebarRef: ref({
       prepareAgentBrowser: vi.fn().mockResolvedValue(true),
     }),

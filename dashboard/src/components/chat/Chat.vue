@@ -1963,6 +1963,9 @@ async function openFileReference(target: FileReferenceTarget): Promise<void> {
     generation !== sideChatGeneration
   )
     return;
+  // Content pointerdown clears the anchor. Capture it again before the sidebar
+  // changes the conversation width and reflows the text the reader is viewing.
+  captureReadingAnchor();
   chatHeader.SET_WORKSPACE_FILES_OPEN(false);
   closeThreadPanel();
   reasoningPanelOpen.value = false;

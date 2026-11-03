@@ -17,6 +17,7 @@ const ast = ts.createSourceFile(
   true,
 );
 const functions = new Set([
+  "openFileReference",
   "handleMessagesScrollIntent",
   "onBranchToggle",
   "endMessagesScrollGesture",
@@ -45,6 +46,7 @@ const functions = new Set([
   "jumpToViewport",
 ]);
 const variables = new Set([
+  "fileReferenceRequestId",
   "messagesContainer",
   "branchHistoryCollapsed",
   "messagesListShell",
@@ -171,6 +173,20 @@ function scrollHarness() {
     nextTick,
     props: reactive({ active: true }),
     currSessionId: ref("A"),
+    sideChatGeneration: 0,
+    confirmFileNavigation: vi.fn().mockResolvedValue(true),
+    chatHeader: {
+      SET_WORKSPACE_FILES_OPEN: vi.fn(),
+      SET_GOAL_SIDEBAR_OPEN: vi.fn(),
+    },
+    closeThreadPanel: vi.fn(),
+    closeTodoMenu: vi.fn(),
+    reasoningPanelOpen: ref(false),
+    activeReasoningTarget: ref(null),
+    refsSidebarOpen: ref(false),
+    selectedRefs: ref(null),
+    fileReferenceNavigation: ref(null),
+    gitDiffSidebarOpen: ref(false),
     historyPagingBySession: {} as Record<
       string,
       { hasMore: boolean; loadingOlder?: boolean; autoLoadArmed?: boolean }
@@ -204,6 +220,7 @@ function scrollHarness() {
       ...Object.keys(environment),
       `${code}
     return {
+      openFileReference,
       messagesContainer, messagesListShell, viewportAnchorBySession,
       scrollToBottom, handleMessagesScrollIntent, endMessagesScrollGesture,
       onBranchToggle,
@@ -605,6 +622,50 @@ describe("Chat viewport ownership", () => {
         Object.defineProperty(document, "caretRangeFromPoint", original);
       else Reflect.deleteProperty(document, "caretRangeFromPoint");
     }
+  });
+
+  it("keeps the reading point when a citation click opens and then resizes the file sidebar", async () => {
+    const h = scrollHarness();
+    await nextTick();
+    h.setLayout({ top: 400, rowTop: 500 });
+    h.controller.setStickToBottom("A", false);
+    const citation = document.createElement("a");
+    citation.className = "file-reference-link";
+    h.row.appendChild(citation);
+    h.controller.handleMessagesScrollIntent({
+      type: "pointerdown",
+      target: citation,
+    });
+    await h.controller.openFileReference({
+      path: "G:/source.py",
+      startLine: 2,
+      endLine: 2,
+    });
+    expect(h.gitDiffSidebarOpen.value).toBe(true);
+    // Opening the sidebar narrows the conversation and wraps earlier text.
+    h.setLayout({ height: 2000, rowTop: 800 });
+    h.observers.at(-1)!.callback([], {} as ResizeObserver);
+    expect(h.panel.scrollTop).toBe(700);
+    expect(h.row.getBoundingClientRect().top).toBe(100);
+    h.controller.handleMessagesScroll();
+    h.setLayout({ height: 1900, rowTop: 700 });
+    h.observers.at(-1)!.callback([], {} as ResizeObserver);
+    expect(h.row.getBoundingClientRect().top).toBe(100);
+  });
+
+  it("continues following the tail when a citation opens from the bottom", async () => {
+    const h = scrollHarness();
+    await nextTick();
+    await h.controller.openFileReference({
+      path: "G:/source.py",
+      startLine: null,
+      endLine: null,
+    });
+    h.setLayout({ height: 2000 });
+    h.observers.at(-1)!.callback([], {} as ResizeObserver);
+    h.frame();
+    expect(h.controller.shouldStickToBottom("A")).toBe(true);
+    expect(h.panel.scrollTop).toBe(1600);
   });
 
   it("yields reading corrections to an explicit history jump and resumes when it finishes", async () => {

@@ -40,7 +40,7 @@ afterEach(() => {
 });
 
 describe("Agent browser snapshots", () => {
-  it("debounces viewport sizing and recovers when Chromium resets or defers it", async () => {
+  it("keeps desktop layout width after the resize debounce and recovers when Chromium resets or defers it", async () => {
     vi.useFakeTimers();
     let resized: () => void = () => {};
     vi.stubGlobal(
@@ -88,14 +88,14 @@ describe("Agent browser snapshots", () => {
           params: {
             chat_id: "chat-1",
             browser_session_id: "browser-1",
-            width: 900,
-            height: 600,
+            width: 1280,
+            height: 853,
             device_scale_factor: 2,
           },
         },
       ]);
       for (const [sequence, width, height] of [
-        [2, 900, 600],
+        [2, 1280, 853],
         [3, 1280, 720],
       ]) {
         stream.enqueue(
@@ -122,8 +122,8 @@ describe("Agent browser snapshots", () => {
       await vi.advanceTimersByTimeAsync(700);
       expect(post).toHaveBeenCalledTimes(3);
       expect(post.mock.calls[2][2].params).toMatchObject({
-        width: 900,
-        height: 600,
+        width: 1280,
+        height: 853,
       });
       Object.defineProperty(display, "clientWidth", { value: 706 });
       resized();
@@ -136,7 +136,65 @@ describe("Agent browser snapshots", () => {
     }
   });
 
-  it("fits high-resolution pixels immediately while an Agent action defers viewport resizing", async () => {
+  it.each([
+    [320, 1200, 1280, 1600],
+    [900, 50, 1280, 240],
+    [1900, 900, 1900, 900],
+    [3200, 1800, 2560, 1440],
+  ])(
+    "bounds the layout for a %i by %i panel without letting height reduce its width",
+    async (width, height, expectedWidth, expectedHeight) => {
+      vi.useFakeTimers();
+      let resized = () => {};
+      vi.stubGlobal(
+        "ResizeObserver",
+        class {
+          constructor(callback: () => void) {
+            resized = callback;
+          }
+          observe() {}
+          disconnect() {}
+        },
+      );
+      get.mockResolvedValue(
+        ok({
+          ...current,
+          viewport_resize_version: 1,
+          sequence: 1,
+          image: "pixels",
+          mime_type: "image/jpeg",
+          width: 1280,
+          height: 720,
+        }),
+      );
+      post.mockResolvedValue(ok({}));
+      const view = mount(AgentBrowserView, {
+        props: { chatId: "chat-1", visible: true },
+        attachTo: document.body,
+      });
+      try {
+        await flushPromises();
+        const display = view.get(".agent-browser-image").element as HTMLElement;
+        display.style.padding = "0";
+        Object.defineProperties(display, {
+          clientWidth: { value: width },
+          clientHeight: { value: height },
+        });
+        resized();
+        await vi.advanceTimersByTimeAsync(350);
+        expect(post).toHaveBeenCalledTimes(1);
+        expect(post.mock.calls[0][2].params).toMatchObject({
+          width: expectedWidth,
+          height: expectedHeight,
+        });
+      } finally {
+        view.unmount();
+        vi.unstubAllGlobals();
+      }
+    },
+  );
+
+  it("fits pixels to width without shrinking them to the available height during an Agent action", async () => {
     vi.useFakeTimers();
     let resized: () => void = () => {};
     vi.stubGlobal(
@@ -182,8 +240,8 @@ describe("Agent browser snapshots", () => {
       });
       resized();
       await view.vm.$nextTick();
-      expect(viewport.style.width).toBe("320px");
-      expect(viewport.style.height).toBe("200px");
+      expect(viewport.style.width).toBe("396px");
+      expect(viewport.style.height).toBe("247.5px");
       Object.defineProperties(display, {
         clientWidth: { value: 256 },
         clientHeight: { value: 486 },

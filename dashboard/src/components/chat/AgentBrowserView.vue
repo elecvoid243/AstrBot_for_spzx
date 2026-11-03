@@ -178,10 +178,15 @@ async function resizeViewport(attempt = 0) {
     return;
   const { width, height } = displaySize.value;
   if (width <= 0 || height <= 0) return;
-  const ratio = Math.min(1, 2560 / width, 1600 / height);
+  // Keep a desktop layout in narrow panels; shrinking the CSS viewport makes
+  // minimum-width sites overflow instead of scaling their existing content.
+  const layoutWidth = Math.max(1280, Math.min(2560, Math.floor(width)));
   const dimensions = {
-    width: Math.max(320, Math.floor(width * ratio)),
-    height: Math.max(240, Math.floor(height * ratio)),
+    width: layoutWidth,
+    height: Math.max(
+      240,
+      Math.min(1600, Math.floor((height * layoutWidth) / width)),
+    ),
     device_scale_factor: 2,
   };
   const identity = {
@@ -295,10 +300,7 @@ const visibleFrame = computed(() => {
 const fittedFrameSize = computed(() => {
   const width = visibleFrame.value?.width || 1;
   const height = visibleFrame.value?.height || 1;
-  const scale = Math.min(
-    displaySize.value.width / width,
-    displaySize.value.height / height,
-  );
+  const scale = displaySize.value.width / width;
   return { width: `${width * scale}px`, height: `${height * scale}px` };
 });
 const inputCount = ref(0);
@@ -1940,13 +1942,14 @@ onBeforeUnmount(() => {
   flex: 1;
   min-height: 0;
   min-width: 0;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
   padding: 3px;
   background: rgba(var(--browser-ink), 0.035);
   overscroll-behavior: contain;
   container-type: size;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-start;
 }
 .agent-browser-image img {
   display: block;
@@ -1966,8 +1969,6 @@ onBeforeUnmount(() => {
   flex: 0 0 auto;
   width: 100%;
   max-width: 100%;
-  max-height: 100%;
-  margin-block: auto;
   overflow: hidden;
   border-radius: 6px;
   background: white;

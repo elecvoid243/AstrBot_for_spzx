@@ -40,7 +40,15 @@ class BrowserControlCommand(BaseModel):
 
     model_config = ConfigDict(extra="forbid", strict=True)
     operation: Literal[
-        "click", "wheel", "key", "text", "reset_keys", "heartbeat", "release", "resize"
+        "click",
+        "pointer",
+        "wheel",
+        "key",
+        "text",
+        "reset_keys",
+        "heartbeat",
+        "release",
+        "resize",
     ]
     control_epoch: int = Field(ge=1)
     width: int | None = Field(default=None, ge=320, le=2560)
@@ -57,7 +65,7 @@ class BrowserControlCommand(BaseModel):
     target: BrowserControlTarget | None = None
     code: str | None = Field(default=None, max_length=32)
     key: str | None = Field(default=None, max_length=32)
-    phase: Literal["down", "up"] | None = None
+    phase: Literal["down", "move", "up", "cancel"] | None = None
     modifiers: int = Field(default=0, ge=0, le=15)
     repeat: bool = False
     text: str | None = Field(default=None, min_length=1, max_length=2048)

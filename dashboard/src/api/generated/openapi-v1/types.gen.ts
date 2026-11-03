@@ -209,7 +209,7 @@ export type action = 'start' | 'poll';
  * Closed input vocabulary; browser targets can only be validated, not chosen.
  */
 export type BrowserControlCommand = {
-    operation: 'click' | 'wheel' | 'key' | 'text' | 'reset_keys' | 'heartbeat' | 'release' | 'resize';
+    operation: 'click' | 'pointer' | 'wheel' | 'key' | 'text' | 'reset_keys' | 'heartbeat' | 'release' | 'resize';
     control_epoch: number;
     width?: (number | null);
     height?: (number | null);
@@ -223,14 +223,14 @@ export type BrowserControlCommand = {
     target?: (BrowserControlTarget | null);
     code?: (string | null);
     key?: (string | null);
-    phase?: ('down' | 'up' | null);
+    phase?: ('down' | 'move' | 'up' | 'cancel' | null);
     modifiers?: number;
     repeat?: boolean;
     text?: (string | null);
     source?: ('typing' | 'composition' | 'paste' | null);
 };
 
-export type operation = 'click' | 'wheel' | 'key' | 'text' | 'reset_keys' | 'heartbeat' | 'release' | 'resize';
+export type operation = 'click' | 'pointer' | 'wheel' | 'key' | 'text' | 'reset_keys' | 'heartbeat' | 'release' | 'resize';
 
 export type click_count = 1 | 2;
 

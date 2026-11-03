@@ -500,6 +500,10 @@ describe("Agent browser snapshots", () => {
         revoked.onclose?.();
         await flushPromises();
         expect(view.attributes("data-human-control")).toBe("false");
+        expect(view.attributes("data-connection")).toBe("disconnected");
+        expect(view.find("img").exists()).toBe(false);
+        await view.get(".agent-browser-refresh").trigger("click");
+        await flushPromises();
         expect(view.attributes("data-connection")).toBe("denied");
         expect(view.find("img").exists()).toBe(false);
       } finally {
@@ -508,6 +512,185 @@ describe("Agent browser snapshots", () => {
       }
     },
   );
+  it.each(["up", "cancel", "blur", "navigation"])(
+    "captures a scaled drag, coalesces moves and safely ends on %s",
+    async (ending) => {
+      class Socket {
+        static OPEN = 1;
+        static instance: Socket;
+        readyState = 1;
+        sent: Record<string, any>[] = [];
+        onmessage?: (event: { data: string }) => void;
+        constructor() {
+          Socket.instance = this;
+        }
+        send(raw: string) {
+          this.sent.push(JSON.parse(raw));
+        }
+        close() {
+          this.readyState = 3;
+        }
+        ack() {
+          const input = this.sent.at(-1);
+          this.onmessage?.({
+            data: JSON.stringify({
+              operation: input?.operation ?? "acquire",
+              input_id: input?.input_id,
+              status: "applied",
+              control_epoch: 2,
+            }),
+          });
+        }
+      }
+      vi.stubGlobal("WebSocket", Socket);
+      const frame = {
+        ...current,
+        manual_control_version: 1,
+        keyboard_input_version: 1,
+        pointer_input_version: 1,
+        drag_input_version: 1,
+        document_id: "doc",
+        viewport_width: 1280,
+        viewport_height: 720,
+        scroll_x: 0,
+        scroll_y: 0,
+        position_revision: 0,
+        control_epoch: 2,
+        image: "pixels",
+        mime_type: "image/jpeg",
+        sequence: 1,
+      };
+      get.mockResolvedValue(ok(frame));
+      createSession.mockResolvedValue({
+        data: { ticket: "ticket", websocket_path: "/control" },
+      });
+      const view = mount(AgentBrowserView, {
+        props: { chatId: "chat-1", visible: true },
+        attachTo: document.body,
+      });
+      try {
+        await flushPromises();
+        const image = view.get("img");
+        Object.defineProperties(image.element, {
+          currentSrc: { get: () => image.attributes("src") },
+          setPointerCapture: { value: vi.fn() },
+          hasPointerCapture: { value: () => true },
+          releasePointerCapture: { value: vi.fn() },
+        });
+        vi.spyOn(image.element, "getBoundingClientRect").mockReturnValue({
+          left: 10,
+          top: 20,
+          right: 650,
+          bottom: 380,
+          width: 640,
+          height: 360,
+        } as DOMRect);
+        await image.trigger("load");
+        await view.get(".agent-browser-takeover").trigger("click");
+        await flushPromises();
+        const socket = Socket.instance;
+        socket.ack();
+        await flushPromises();
+        await image.trigger("pointerdown", {
+          pointerId: 7,
+          button: 0,
+          clientX: 110,
+          clientY: 70,
+        });
+        await image.trigger("pointermove", {
+          pointerId: 7,
+          clientX: 111,
+          clientY: 70,
+        });
+        expect(socket.sent).toHaveLength(0);
+        await image.trigger("pointermove", {
+          pointerId: 7,
+          clientX: 210,
+          clientY: 100,
+        });
+        expect(socket.sent.at(-1)).toMatchObject({
+          operation: "pointer",
+          phase: "down",
+          x: 200,
+          y: 100,
+          target: { document_id: "doc" },
+        });
+        await image.trigger("pointermove", {
+          pointerId: 7,
+          clientX: 310,
+          clientY: 120,
+        });
+        await image.trigger("pointermove", {
+          pointerId: 7,
+          clientX: 410,
+          clientY: 150,
+        });
+        socket.ack();
+        expect(socket.sent.at(-1)).toMatchObject({
+          operation: "pointer",
+          phase: "move",
+          x: 800,
+          y: 260,
+        });
+        expect(socket.sent).toHaveLength(2);
+        if (ending === "up") {
+          // Autoscroll during a held gesture must not erase its release or require a new image.
+          stream.enqueue(
+            new TextEncoder().encode(
+              `data: ${JSON.stringify({
+                ...frame,
+                type: "state",
+                sequence: 2,
+                scroll_y: 100,
+                position_revision: 1,
+              })}\n\n`,
+            ),
+          );
+          await flushPromises();
+          await image.trigger("pointerup", {
+            pointerId: 7,
+            clientX: 1000,
+            clientY: -20,
+          });
+          socket.ack();
+          expect(socket.sent.at(-1)).toMatchObject({
+            operation: "pointer",
+            phase: "up",
+            x: 1279.99,
+            y: 0,
+            target: { scroll_y: 0 },
+          });
+          await image.trigger("click", { clientX: 410, clientY: 150 });
+          expect(socket.sent.some((x) => x.operation === "click")).toBe(false);
+        } else {
+          if (ending === "blur") window.dispatchEvent(new Event("blur"));
+          else if (ending === "cancel")
+            await image.trigger("pointercancel", { pointerId: 7 });
+          else {
+            stream.enqueue(
+              new TextEncoder().encode(
+                `data: ${JSON.stringify({
+                  ...frame,
+                  type: "state",
+                  sequence: 2,
+                  document_id: "new-doc",
+                })}\n\n`,
+              ),
+            );
+            await flushPromises();
+          }
+          socket.ack();
+          expect(socket.sent.at(-1)?.operation).toBe("reset_keys");
+        }
+        socket.ack();
+        expect(image.element.releasePointerCapture).toHaveBeenCalledWith(7);
+      } finally {
+        view.unmount();
+        vi.unstubAllGlobals();
+      }
+    },
+  );
+
   it("maps displayed CSS bounds and merges only adjacent wheel input until a loaded frame", async () => {
     class Socket {
       static OPEN = 1;
@@ -1239,7 +1422,8 @@ describe("Agent browser snapshots", () => {
         get.mockRejectedValueOnce({
           response: { status, data: { data: { reason } } },
         });
-        await vi.advanceTimersByTimeAsync(10000);
+        await view.get(".agent-browser-refresh").trigger("click");
+        await flushPromises();
         expect(view.find("img").exists()).toBe(false);
         expect(view.attributes("data-observation-stale")).toBe("false");
       } finally {
@@ -1297,7 +1481,7 @@ describe("Agent browser snapshots", () => {
     }
   });
 
-  it("backs off failed status requests to ten, twenty and thirty seconds", async () => {
+  it("never retries failed status requests without an explicit click", async () => {
     vi.useFakeTimers();
     get.mockRejectedValue({ response: { status: 503 } });
     const view = mount(AgentBrowserView, {
@@ -1305,18 +1489,16 @@ describe("Agent browser snapshots", () => {
     });
     try {
       await flushPromises();
-      for (const [delay, calls] of [
-        [10000, 2],
-        [20000, 3],
-        [30000, 4],
-        [30000, 5],
-      ]) {
-        await vi.advanceTimersByTimeAsync(delay - 1);
-        expect(get).toHaveBeenCalledTimes(calls - 1);
-        await vi.advanceTimersByTimeAsync(1);
-        expect(get).toHaveBeenCalledTimes(calls);
-        expect(view.attributes("data-connection")).toBe("unavailable");
-      }
+      await vi.advanceTimersByTimeAsync(120000);
+      window.dispatchEvent(new Event("online"));
+      document.dispatchEvent(new Event("visibilitychange"));
+      await flushPromises();
+      expect(get).toHaveBeenCalledTimes(1);
+      expect(fetchStream).not.toHaveBeenCalled();
+      await view.get(".agent-browser-refresh").trigger("click");
+      await flushPromises();
+      expect(get).toHaveBeenCalledTimes(2);
+      expect(view.attributes("data-connection")).toBe("unavailable");
     } finally {
       view.unmount();
     }
@@ -1350,7 +1532,8 @@ describe("Agent browser snapshots", () => {
         get
           .mockResolvedValueOnce(ok({ ...frame, ...change, image: undefined }))
           .mockImplementationOnce(() => new Promise(() => {}));
-        await vi.advanceTimersByTimeAsync(10000);
+        await view.get(".agent-browser-refresh").trigger("click");
+        await flushPromises();
         expect(view.find("img").exists()).toBe(false);
         expect(view.attributes("data-observation-stale")).toBe("false");
         expect(
@@ -1362,7 +1545,7 @@ describe("Agent browser snapshots", () => {
     },
   );
 
-  it("recovers a half-open stream after missing heartbeats", async () => {
+  it("retains a half-open stream frame until the user reconnects", async () => {
     vi.useFakeTimers();
     get
       .mockResolvedValueOnce(ok(current))
@@ -1378,8 +1561,13 @@ describe("Agent browser snapshots", () => {
     expect(view.attributes("data-connection")).toBe("disconnected");
     expect(view.get("img").element).toBe(image);
     expect(view.attributes("data-observation-stale")).toBe("true");
+    await vi.advanceTimersByTimeAsync(120000);
+    expect(get).toHaveBeenCalledTimes(2);
+    expect(fetchStream).toHaveBeenCalledTimes(1);
+    expect(view.get("img").element).toBe(image);
     get.mockResolvedValueOnce(ok({ available: false }));
-    await vi.advanceTimersByTimeAsync(10000);
+    await view.get(".agent-browser-refresh").trigger("click");
+    await flushPromises();
     expect(view.attributes("data-connection")).toBe("idle");
     expect(view.find("img").exists()).toBe(false);
     view.unmount();
@@ -1412,7 +1600,8 @@ describe("Agent browser snapshots", () => {
     get
       .mockResolvedValueOnce(ok(current))
       .mockResolvedValueOnce(ok({ ...frame, sequence: 20, action_cursor: 18 }));
-    await vi.advanceTimersByTimeAsync(10000);
+    await view.get(".agent-browser-refresh").trigger("click");
+    await flushPromises();
     await flushPromises();
     expect(view.get("img").element).toBe(retainedImage);
     expect(view.attributes("data-observation-stale")).toBe("false");
@@ -1478,7 +1667,8 @@ describe("Agent browser snapshots", () => {
       image: "new",
     };
     get.mockResolvedValueOnce(ok(next)).mockResolvedValueOnce(ok(next));
-    await vi.advanceTimersByTimeAsync(10000);
+    await view.get(".agent-browser-refresh").trigger("click");
+    await flushPromises();
     await flushPromises();
     expect(view.attributes("data-generation")).toBe("run-2");
     expect(view.attributes("data-sequence")).toBe("1");
@@ -1525,7 +1715,7 @@ describe("Agent browser snapshots", () => {
     view.unmount();
   });
 
-  it("polls an idle browser without starting it and cancels polling while hidden", async () => {
+  it("checks an idle browser only on opening or explicit refresh", async () => {
     vi.useFakeTimers();
     get.mockResolvedValue(ok({ available: false }));
     const view = mount(AgentBrowserView, {
@@ -1533,29 +1723,17 @@ describe("Agent browser snapshots", () => {
     });
     await flushPromises();
     expect(view.attributes("data-connection")).toBe("idle");
-    await vi.advanceTimersByTimeAsync(9999);
+    await vi.advanceTimersByTimeAsync(120000);
     expect(get).toHaveBeenCalledTimes(1);
-    let resolveStatus!: (value: unknown) => void;
-    get.mockImplementationOnce(
-      () =>
-        new Promise((resolve) => {
-          resolveStatus = resolve;
-        }),
-    );
-    await vi.advanceTimersByTimeAsync(1);
-    expect(get).toHaveBeenCalledTimes(2);
-    expect(view.attributes("data-connection")).toBe("idle");
-    expect(view.get(".agent-browser-refresh").attributes("aria-busy")).toBe(
-      "false",
-    );
-    resolveStatus(ok({ available: false }));
+    await view.get(".agent-browser-refresh").trigger("click");
     await flushPromises();
+    expect(get).toHaveBeenCalledTimes(2);
     expect(
       get.mock.calls.every(([path]) => path === "browser-use/status"),
     ).toBe(true);
     expect(fetchStream).not.toHaveBeenCalled();
     await view.setProps({ visible: false });
-    await vi.advanceTimersByTimeAsync(20000);
+    await vi.advanceTimersByTimeAsync(120000);
     expect(get).toHaveBeenCalledTimes(2);
     view.unmount();
   });

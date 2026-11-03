@@ -11,7 +11,7 @@
     "switchMode": "ブラウザーモードを切り替える",
     "waitingUrl": "Agent がページを開くのを待っています",
     "readOnly": "読み取り専用の観測",
-    "retainedFrame": "前のフレームを表示中 · バックグラウンドで再同期しています",
+    "retainedFrame": "前のフレームを表示中 · 更新をクリックして再接続",
     "emptyActions": "タスクが始まるとブラウザー操作がここに表示されます",
     "statusLabels": {
       "live": "ライブ観測",

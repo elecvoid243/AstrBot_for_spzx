@@ -6017,6 +6017,7 @@ watch(
             v-if="browserMounted"
             v-show="viewMode === 'browser' && browserMode === 'preview'"
             :project-root="projectRoot"
+            :visible="modelValue && viewMode === 'browser' && browserMode === 'preview'"
           />
           <AgentBrowserView
             v-if="browserMounted && browserMode === 'agent'"

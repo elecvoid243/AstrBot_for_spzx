@@ -2,13 +2,14 @@
 // Behavioural coverage for the Web preview tab: address submission,
 // bookmarks and project-scoped restore.
 
-import { beforeEach, describe, expect, it } from "vitest";
-import { flushPromises, mount } from "@vue/test-utils";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { enableAutoUnmount, flushPromises, mount } from "@vue/test-utils";
 import WebBrowserView from "./WebBrowserView.vue";
 import { loadBrowserState } from "./webBrowser";
 
 const ROOT = "F:/github/webproj";
 const OTHER_ROOT = "F:/github/otherproj";
+enableAutoUnmount(afterEach);
 
 function mountView(projectRoot: string | null = ROOT) {
   return mount(WebBrowserView, { props: { projectRoot } });
@@ -36,6 +37,138 @@ beforeEach(() => {
 });
 
 describe("WebBrowserView", () => {
+  it("fits desktop pages to the available width without reloading tabs on resize", async () => {
+    let measure!: ResizeObserverCallback;
+    const disconnect = vi.fn();
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        constructor(callback: ResizeObserverCallback) {
+          measure = callback;
+        }
+        observe() {}
+        disconnect = disconnect;
+      },
+    );
+    const wrapper = mountView();
+    try {
+      await submitAddress(wrapper, "localhost:3000");
+      const frame = wrapper.get("iframe").element;
+      for (const [width, height] of [
+        [640, 480],
+        [960, 540],
+        [1600, 800],
+      ]) {
+        measure(
+          [{ contentRect: { width, height } } as ResizeObserverEntry],
+          {} as ResizeObserver,
+        );
+        await flushPromises();
+        expect(wrapper.get("iframe").element).toBe(frame);
+        expect(frame.style.width).toBe(`${Math.max(1280, width)}px`);
+        const scale = width / Math.max(1280, width);
+        expect(frame.style.transform).toBe(`scale(${scale})`);
+        expect(Number.parseFloat(frame.style.height) * scale).toBeCloseTo(
+          height,
+        );
+      }
+      measure(
+        [{ contentRect: { width: 0, height: 0 } } as ResizeObserverEntry],
+        {} as ResizeObserver,
+      );
+      await flushPromises();
+      expect(frame.style.width).toBe("1600px");
+      await wrapper.get(".web-browser-add-tab").trigger("click");
+      await submitAddress(wrapper, "localhost:5173");
+      await wrapper.findAll(".web-browser-tab-select")[0].trigger("click");
+      expect(wrapper.findAll("iframe")[0].element).toBe(frame);
+      wrapper.unmount();
+      expect(disconnect).toHaveBeenCalledOnce();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("keeps the iframe in place through native fullscreen, Escape and hiding the panel", async () => {
+    let owner: Element | null = null;
+    const elementDescriptor = Object.getOwnPropertyDescriptor(
+      document,
+      "fullscreenElement",
+    );
+    const exitDescriptor = Object.getOwnPropertyDescriptor(
+      document,
+      "exitFullscreen",
+    );
+    Object.defineProperty(document, "fullscreenElement", {
+      configurable: true,
+      get: () => owner,
+    });
+    const exit = vi.fn(async () => {
+      owner = null;
+      document.dispatchEvent(new Event("fullscreenchange"));
+    });
+    Object.defineProperty(document, "exitFullscreen", {
+      configurable: true,
+      value: exit,
+    });
+    const wrapper = mountView();
+    try {
+      const request = vi.fn(async () => {
+        owner = wrapper.element;
+        document.dispatchEvent(new Event("fullscreenchange"));
+      });
+      Object.defineProperty(wrapper.element, "requestFullscreen", {
+        value: request,
+      });
+      await submitAddress(wrapper, "localhost:3000");
+      const frame = wrapper.get("iframe").element;
+      const button = wrapper.get(".web-browser-fullscreen");
+      await button.trigger("click");
+      await flushPromises();
+      expect(request).toHaveBeenCalledOnce();
+      expect(button.attributes("aria-pressed")).toBe("true");
+      expect(button.attributes("aria-label")).toContain("退出全屏");
+      expect(wrapper.get("iframe").element).toBe(frame);
+      // Native Escape exits via fullscreenchange, even with focus in a cross-origin frame.
+      await exit();
+      await flushPromises();
+      expect(button.attributes("aria-pressed")).toBe("false");
+      await button.trigger("click");
+      await button.trigger("click");
+      await flushPromises();
+      expect(owner).toBeNull();
+      await button.trigger("click");
+      await wrapper.setProps({ visible: false });
+      await flushPromises();
+      expect(owner).toBeNull();
+      expect(wrapper.get("iframe").element).toBe(frame);
+    } finally {
+      wrapper.unmount();
+      if (elementDescriptor)
+        Object.defineProperty(document, "fullscreenElement", elementDescriptor);
+      else delete (document as any).fullscreenElement;
+      if (exitDescriptor)
+        Object.defineProperty(document, "exitFullscreen", exitDescriptor);
+      else delete (document as any).exitFullscreen;
+    }
+  });
+
+  it("reports denied fullscreen without replacing the current page", async () => {
+    const wrapper = mountView();
+    await submitAddress(wrapper, "localhost:3000");
+    const frame = wrapper.get("iframe").element;
+    Object.defineProperty(wrapper.element, "requestFullscreen", {
+      value: vi.fn().mockRejectedValue(new Error("Denied")),
+    });
+    await wrapper.get(".web-browser-fullscreen").trigger("click");
+    await flushPromises();
+    expect(wrapper.get('[role="alert"]').text()).toContain("全屏权限");
+    expect(wrapper.get("iframe").element).toBe(frame);
+    expect(
+      wrapper.get(".web-browser-fullscreen").attributes("aria-pressed"),
+    ).toBe("false");
+  });
+
   it("starts on the empty state without an iframe", () => {
     const wrapper = mountView();
     expect(wrapper.find("iframe.web-browser-frame").exists()).toBe(false);

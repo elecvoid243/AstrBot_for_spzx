@@ -8276,6 +8276,7 @@ components:
         operation:
           enum:
           - click
+          - pointer
           - wheel
           - key
           - text
@@ -8380,7 +8381,9 @@ components:
           anyOf:
           - enum:
             - down
+            - move
             - up
+            - cancel
             type: string
           - type: 'null'
           default: null

@@ -92,6 +92,7 @@ interface BrowserState {
   manual_control_version?: number;
   keyboard_input_version?: number;
   pointer_input_version?: number;
+  drag_input_version?: number;
   viewport_resize_version?: number;
   applied_input_id?: number;
   position_revision?: number;
@@ -137,7 +138,6 @@ interface BrowserAction {
 const state = ref<BrowserState | null>(null);
 const loading = ref(false);
 const observationStale = ref(false);
-const observationPollMs = 10000;
 const streamIdleTimeoutMs = 30000;
 const controlling = ref(false);
 const controlError = ref(false);
@@ -151,6 +151,14 @@ let committedComposition: string | null = null;
 let compositionTimer: ReturnType<typeof setTimeout> | undefined;
 let inputQueue: Record<string, unknown>[] = [];
 let inputInFlight = false;
+const dragging = ref(false);
+let pointerGesture: {
+  id: number;
+  x: number;
+  y: number;
+  target: BrowserState;
+} | null = null;
+let suppressClick = false;
 const browserImage = ref<HTMLImageElement | null>(null);
 const browserDisplay = ref<HTMLElement | null>(null);
 const displaySize = ref({ width: 0, height: 0 });
@@ -172,6 +180,7 @@ async function resizeViewport(attempt = 0) {
     current.viewport_resize_version !== 1 ||
     resizingViewport ||
     manualPending.value ||
+    dragging.value ||
     inputCount.value ||
     awaitingFrame.value ||
     current.current_action ||
@@ -316,6 +325,7 @@ let inputStarted = 0;
 let awaitedStarted = 0;
 let wheelTimer: ReturnType<typeof setTimeout> | undefined;
 let inFlightOperation = "";
+let inFlightPhase = "";
 let releasing = false;
 const localKeys = new Set<string>();
 let controlSocket: WebSocket | null = null;
@@ -326,6 +336,11 @@ let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
 let acknowledgementTimer: ReturnType<typeof setTimeout> | undefined;
 
 function disconnectControl() {
+  const pointer = pointerGesture?.id;
+  pointerGesture = null;
+  dragging.value = false;
+  if (pointer !== undefined && browserImage.value?.hasPointerCapture(pointer))
+    browserImage.value.releasePointerCapture(pointer);
   if (humanControl.value || (manualPending.value && controlSocket))
     manualMessage.value = t(
       `${key}.${
@@ -403,10 +418,19 @@ async function acquireControl() {
       inputInFlight = false;
       inputCount.value = inputQueue.length;
       if (
+        ack.operation === "pointer" &&
+        ["up", "cancel"].includes(inFlightPhase)
+      )
+        dragging.value = false;
+      if (
         state.value?.pointer_input_version === 1 &&
         ack.input_id &&
         ack.status === "applied" &&
-        inFlightOperation !== "reset_keys"
+        inFlightOperation !== "reset_keys" &&
+        !(
+          inFlightOperation === "pointer" &&
+          ["down", "move"].includes(inFlightPhase)
+        )
       ) {
         awaitedInput = ack.input_id;
         awaitedStarted = inputStarted;
@@ -437,7 +461,6 @@ async function acquireControl() {
             : ack.message || t(`${key}.manualFailed`);
         disconnectControl();
         manualMessage.value = message;
-        void refresh(true);
         return;
       }
       manualEpoch = ack.control_epoch;
@@ -468,8 +491,13 @@ async function acquireControl() {
     socket.onclose = () => {
       if (controlSocket !== socket) return;
       disconnectControl();
-      // Reauthorize observation too: a socket can fail because access was revoked.
-      void refresh(true);
+      // Revoked access must not retain authorized pixels. Refresh is explicit.
+      pending?.abort();
+      state.value = null;
+      imageFrame.value = null;
+      displayedFrame.value = null;
+      observationStale.value = false;
+      connection.value = "disconnected";
     };
     socket.onerror = () => socket.close();
   } catch (error: any) {
@@ -504,6 +532,7 @@ function sendNextInput() {
   inputCount.value = inputQueue.length + (command ? 1 : 0);
   if (!command) return;
   inFlightOperation = String(command.operation);
+  inFlightPhase = String(command.phase ?? "");
   const { queuedAt, ...payload } = command;
   inputStarted = Number(queuedAt) || performance.now();
   inputInFlight = true;
@@ -526,21 +555,32 @@ function enqueueInput(command: Record<string, unknown>) {
   if (
     !humanControl.value ||
     manualPending.value ||
-    (command.operation !== "reset_keys" && !current?.image)
+    (command.operation !== "reset_keys" && !command.target && !current?.image)
   )
     return;
-  const target = Object.fromEntries(
-    [
-      "tab_id",
-      "document_id",
-      "viewport_width",
-      "viewport_height",
-      "scroll_x",
-      "scroll_y",
-      "position_revision",
-    ].map((name) => [name, current?.[name as keyof BrowserState]]),
-  );
+  const target =
+    command.target ??
+    Object.fromEntries(
+      [
+        "tab_id",
+        "document_id",
+        "viewport_width",
+        "viewport_height",
+        "scroll_x",
+        "scroll_y",
+        "position_revision",
+      ].map((name) => [name, current?.[name as keyof BrowserState]]),
+    );
   const tail = inputQueue.at(-1);
+  if (
+    command.operation === "pointer" &&
+    command.phase === "move" &&
+    tail?.operation === "pointer" &&
+    tail.phase === "move"
+  ) {
+    Object.assign(tail, command);
+    return;
+  }
   // Only adjacent wheel deltas at the same displayed target are replaceable.
   // Never merge across a click, key, text or reset boundary.
   if (
@@ -627,6 +667,11 @@ function frameLoaded(event: Event) {
 }
 
 function resetKeyboard() {
+  const pointer = pointerGesture?.id;
+  pointerGesture = null;
+  dragging.value = false;
+  if (pointer !== undefined && browserImage.value?.hasPointerCapture(pointer))
+    browserImage.value.releasePointerCapture(pointer);
   keyboardFocused.value = false;
   composing.value = false;
   committedComposition = null;
@@ -638,7 +683,125 @@ function resetKeyboard() {
     enqueueInput({ operation: "reset_keys" });
 }
 
+/** Forward a captured left-button drag, keeping its original page identity. */
+function pointerPage(event: PointerEvent) {
+  if (state.value?.drag_input_version !== 1 || !humanControl.value) return;
+  const image = event.currentTarget as HTMLImageElement;
+  if (event.type === "pointerdown") {
+    if (
+      event.button !== 0 ||
+      pointerGesture ||
+      dragging.value ||
+      manualPending.value ||
+      inputCount.value ||
+      awaitingFrame.value ||
+      !displayedFrame.value?.image
+    )
+      return;
+    event.preventDefault();
+    keyboardSink.value?.focus({ preventScroll: true });
+    suppressClick = false;
+    pointerGesture = {
+      id: event.pointerId,
+      x: event.clientX,
+      y: event.clientY,
+      target: { ...displayedFrame.value },
+    };
+    image.setPointerCapture(event.pointerId);
+    return;
+  }
+  const gesture = pointerGesture;
+  if (!gesture || gesture.id !== event.pointerId) return;
+  if (event.type === "pointercancel" || event.type === "lostpointercapture") {
+    suppressClick = dragging.value;
+    resetKeyboard();
+    return;
+  }
+  event.preventDefault();
+  const bounds = image.getBoundingClientRect();
+  if (!bounds.width || !bounds.height) {
+    resetKeyboard();
+    return;
+  }
+  const target = Object.fromEntries(
+    [
+      "tab_id",
+      "document_id",
+      "viewport_width",
+      "viewport_height",
+      "scroll_x",
+      "scroll_y",
+      "position_revision",
+    ].map((name) => [name, gesture.target[name as keyof BrowserState]]),
+  );
+  const width = gesture.target.viewport_width!;
+  const height = gesture.target.viewport_height!;
+  const x = Math.max(
+    0,
+    Math.min(
+      width - 0.01,
+      ((event.clientX - bounds.left) / bounds.width) * width,
+    ),
+  );
+  const y = Math.max(
+    0,
+    Math.min(
+      height - 0.01,
+      ((event.clientY - bounds.top) / bounds.height) * height,
+    ),
+  );
+  if (
+    event.type === "pointermove" &&
+    !dragging.value &&
+    Math.hypot(event.clientX - gesture.x, event.clientY - gesture.y) >= 4
+  ) {
+    dragging.value = true;
+    suppressClick = true;
+    enqueueInput({
+      operation: "pointer",
+      phase: "down",
+      target,
+      x: Math.max(
+        0,
+        Math.min(
+          width - 0.01,
+          ((gesture.x - bounds.left) / bounds.width) * width,
+        ),
+      ),
+      y: Math.max(
+        0,
+        Math.min(
+          height - 0.01,
+          ((gesture.y - bounds.top) / bounds.height) * height,
+        ),
+      ),
+    });
+  }
+  if (dragging.value)
+    enqueueInput({
+      operation: "pointer",
+      phase: event.type === "pointerup" ? "up" : "move",
+      x,
+      y,
+      target,
+    });
+  if (event.type === "pointerup") {
+    pointerGesture = null;
+    if (image.hasPointerCapture(event.pointerId))
+      image.releasePointerCapture(event.pointerId);
+  }
+}
+
 function clickPage(event: MouseEvent | WheelEvent) {
+  if (event.type === "click" && suppressClick) {
+    suppressClick = false;
+    event.preventDefault();
+    return;
+  }
+  if (dragging.value) {
+    event.preventDefault();
+    return;
+  }
   if (
     event.type === "wheel" &&
     humanControl.value &&
@@ -823,7 +986,25 @@ watch(
     ]),
   (identity, previous) => {
     if (identity !== previous) displayedFrame.value = null;
-    if (identity !== previous && keyboardFocused.value) {
+    const gestureTarget = pointerGesture?.target;
+    const changedDocument =
+      gestureTarget &&
+      [
+        "generation",
+        "browser_session_id",
+        "tab_id",
+        "document_id",
+        "viewport_width",
+        "viewport_height",
+      ].some(
+        (name) =>
+          gestureTarget[name as keyof BrowserState] !==
+          state.value?.[name as keyof BrowserState],
+      );
+    if (
+      changedDocument ||
+      (identity !== previous && keyboardFocused.value && !dragging.value)
+    ) {
       resetKeyboard();
       keyboardSink.value?.blur();
     }
@@ -861,6 +1042,7 @@ watch(
     state.value?.current_action?.action_id,
     humanControl.value,
     inputCount.value,
+    dragging.value,
     awaitingFrame.value,
   ],
   () => {
@@ -869,8 +1051,6 @@ watch(
   },
 );
 let pending: AbortController | null = null;
-let retryTimer: ReturnType<typeof setTimeout> | undefined;
-let retryAttempts = 0;
 let lastIdentity = "";
 const now = ref(Date.now());
 let markerTimer: ReturnType<typeof setTimeout> | undefined;
@@ -1149,6 +1329,8 @@ async function follow(
                 ...event,
                 ...(unchanged
                   ? {
+                      touchAction: "none",
+                      userSelect: "none",
                       image: previous?.image,
                       mime_type: previous?.mime_type,
                       width: previous?.width,
@@ -1184,7 +1366,6 @@ async function follow(
           connection.value = event.execution_state;
           return;
         }
-        retryAttempts = 0;
       }
       if (buffer.length > 3 * 1024 * 1024)
         throw new Error(t(`${key}.unavailable`));
@@ -1199,15 +1380,9 @@ async function follow(
   }
 }
 
-/**
- * Reauthorize and resynchronize observation without starting a browser.
- *
- * Args:
- *   resuming: Reauthorize in the background without replacing the current view.
- */
-async function refresh(resuming = false): Promise<void> {
+/** Reauthorize observation on opening or explicit refresh, without a retry loop. */
+async function refresh(): Promise<void> {
   disconnectControl();
-  clearTimeout(retryTimer);
   pending?.abort();
   displayedFrame.value = null;
   const retain = Boolean(
@@ -1238,15 +1413,10 @@ async function refresh(resuming = false): Promise<void> {
   }
   const controller = new AbortController();
   pending = controller;
-  loading.value = !resuming;
+  loading.value = true;
   if (retain) connection.value = "reconnecting";
-  else if (!resuming) connection.value = "loading";
+  else connection.value = "loading";
   const chatId = props.chatId;
-  let retry = true;
-  let delay = Math.min(
-    observationPollMs * 2 ** Math.min(retryAttempts, 2),
-    30000,
-  );
   try {
     const initial = await pluginExtensionApi.get<BrowserState>(
       "browser-use/status",
@@ -1270,8 +1440,6 @@ async function refresh(resuming = false): Promise<void> {
       observationStale.value = false;
       connection.value =
         current.execution_state === "closed" ? "closed" : "idle";
-      retryAttempts = 0;
-      delay = observationPollMs;
       return;
     }
     if (
@@ -1361,13 +1529,10 @@ async function refresh(resuming = false): Promise<void> {
           current_action: null,
         };
       }
-      retry = connection.value !== "denied";
-      retryAttempts += 1;
     }
   } finally {
     if (pending === controller && !controller.signal.aborted) {
       loading.value = false;
-      if (retry) retryTimer = setTimeout(() => void refresh(true), delay);
     }
   }
 }
@@ -1411,7 +1576,6 @@ async function control(operation: "stop" | "close"): Promise<void> {
     if (response.data.status !== "ok") throw new Error("Control failed.");
     if (operation === "close") {
       pending?.abort();
-      clearTimeout(retryTimer);
       state.value = {
         ...response.data.data,
         image: undefined,
@@ -1421,7 +1585,6 @@ async function control(operation: "stop" | "close"): Promise<void> {
       imageFrame.value = null;
       observationStale.value = false;
       loading.value = false;
-      retryTimer = setTimeout(() => void refresh(true), observationPollMs);
     } else {
       if ((response.data.data.sequence ?? 0) >= (state.value?.sequence ?? 0))
         state.value = {
@@ -1452,9 +1615,31 @@ watch(
       imageFrame.value = null;
       observationStale.value = false;
     }
-    retryAttempts = 0;
     resynchronized.value = false;
-    void refresh();
+    if (!previous || next[0] !== previous[0] || (next[1] && !previous[1])) {
+      // Opening a chat subscribes once. Time, visibility and connectivity never retry.
+      void refresh();
+    } else if (!next[1] || !next[2] || !next[3]) {
+      disconnectControl();
+      pending?.abort();
+      displayedFrame.value = null;
+      observationStale.value = Boolean(imageFrame.value?.image);
+      if (state.value)
+        state.value = {
+          ...state.value,
+          available: false,
+          image: undefined,
+          highlight: null,
+          current_action: null,
+        };
+      if (!next[1]) {
+        state.value = null;
+        imageFrame.value = null;
+        observationStale.value = false;
+      }
+      loading.value = false;
+      connection.value = "disconnected";
+    }
   },
   { immediate: true, flush: "sync" },
 );
@@ -1471,7 +1656,6 @@ window.addEventListener("pagehide", disconnectControl);
 const accountChanged = () => {
   disconnectControl();
   pending?.abort();
-  clearTimeout(retryTimer);
   state.value = null;
   imageFrame.value = null;
   displayedFrame.value = null;
@@ -1487,7 +1671,6 @@ onBeforeUnmount(() => {
   disconnectControl();
   window.removeEventListener("blur", windowBlurred);
   document.removeEventListener("keydown", onFullscreenKeyDown, true);
-  clearTimeout(retryTimer);
   clearTimeout(markerTimer);
   pending?.abort();
   document.removeEventListener("visibilitychange", visibilityChanged);
@@ -1644,6 +1827,11 @@ onBeforeUnmount(() => {
               "
               draggable="false"
               @click="clickPage"
+              @pointerdown="pointerPage"
+              @pointermove="pointerPage"
+              @pointerup="pointerPage"
+              @pointercancel="pointerPage"
+              @lostpointercapture="pointerPage"
               @wheel="clickPage"
               @load="frameLoaded"
             />
@@ -1740,7 +1928,9 @@ onBeforeUnmount(() => {
                   t(
                     `${key}.${
                       state?.keyboard_input_version === 1
-                        ? "keyboardHint"
+                        ? state?.drag_input_version === 1
+                          ? "dragKeyboardHint"
+                          : "keyboardHint"
                         : "upgradeKeyboard"
                     }`,
                   )

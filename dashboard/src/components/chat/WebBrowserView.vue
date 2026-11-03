@@ -6,7 +6,7 @@
      and current URL, so there is no back/forward and the address bar only
      holds the entry point. -->
 <template>
-  <div class="web-browser-view">
+  <div ref="browserRoot" class="web-browser-view">
     <div class="web-browser-tabs" :aria-label="tm(`${I18N}.tabsLabel`)">
       <div
         v-for="tab in tabs"
@@ -101,6 +101,21 @@
       >
         <v-icon size="16">mdi-open-in-new</v-icon>
       </button>
+      <button
+        ref="fullscreenButton"
+        type="button"
+        class="web-browser-icon-btn web-browser-fullscreen"
+        :aria-pressed="fullscreen"
+        :title="tm(`${I18N}.${fullscreen ? 'exitFullscreen' : 'fullscreen'}`)"
+        :aria-label="
+          tm(`${I18N}.${fullscreen ? 'exitFullscreen' : 'fullscreen'}`)
+        "
+        @click="toggleFullscreen"
+      >
+        <v-icon size="16">{{
+          fullscreen ? "mdi-fullscreen-exit" : "mdi-fullscreen"
+        }}</v-icon>
+      </button>
     </div>
 
     <div v-if="bookmarks.length" class="web-browser-options">
@@ -133,38 +148,41 @@
       {{ errorMessage }}
     </p>
 
-    <div v-if="!committedUrl" class="web-browser-empty">
-      <v-icon size="28" class="web-browser-empty-icon">mdi-web</v-icon>
-      <p class="web-browser-empty-title">{{ tm(`${I18N}.emptyTitle`) }}</p>
-      <p class="web-browser-empty-hint">{{ tm(`${I18N}.emptyHint`) }}</p>
-      <div class="web-browser-quick">
-        <button
-          v-for="quick in quickLinks"
-          :key="quick.url"
-          type="button"
-          class="web-browser-quick-btn"
-          @click="openQuick(quick.url)"
-        >
-          {{ quick.label }}
-        </button>
+    <div ref="viewport" class="web-browser-content">
+      <div v-if="!committedUrl" class="web-browser-empty">
+        <v-icon size="28" class="web-browser-empty-icon">mdi-web</v-icon>
+        <p class="web-browser-empty-title">{{ tm(`${I18N}.emptyTitle`) }}</p>
+        <p class="web-browser-empty-hint">{{ tm(`${I18N}.emptyHint`) }}</p>
+        <div class="web-browser-quick">
+          <button
+            v-for="quick in quickLinks"
+            :key="quick.url"
+            type="button"
+            class="web-browser-quick-btn"
+            @click="openQuick(quick.url)"
+          >
+            {{ quick.label }}
+          </button>
+        </div>
       </div>
-    </div>
 
-    <div
-      v-for="tab in tabs"
-      :key="tab.id"
-      v-show="tab.url && tab.id === activeTabId"
-      class="web-browser-stage"
-    >
-      <iframe
-        v-if="tab.url"
-        :key="tab.reloadNonce"
-        class="web-browser-frame"
-        :src="tab.url"
-        :sandbox="buildIframeSandbox(tab.url, dashboardOrigin)"
-        referrerpolicy="no-referrer"
-        :title="tm(`${I18N}.frameTitle`)"
-      />
+      <div
+        v-for="tab in tabs"
+        :key="tab.id"
+        v-show="tab.url && tab.id === activeTabId"
+        class="web-browser-stage"
+      >
+        <iframe
+          v-if="tab.url"
+          :key="tab.reloadNonce"
+          class="web-browser-frame"
+          :style="frameStyle"
+          :src="tab.url"
+          :sandbox="buildIframeSandbox(tab.url, dashboardOrigin)"
+          referrerpolicy="no-referrer"
+          :title="tm(`${I18N}.frameTitle`)"
+        />
+      </div>
     </div>
 
     <p v-if="committedUrl" class="web-browser-note">
@@ -174,7 +192,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useModuleI18n } from "@/i18n/composables";
 import {
   MAX_BOOKMARKS,
@@ -186,11 +204,55 @@ import {
   saveBrowserState,
 } from "./webBrowser";
 
-const props = defineProps<{ projectRoot: string | null }>();
+const props = withDefaults(
+  defineProps<{ projectRoot: string | null; visible?: boolean }>(),
+  {
+    visible: true,
+  },
+);
 
 const { tm } = useModuleI18n("features/chat");
 const I18N = "spcodeProjectLoad.webBrowser";
 const dashboardOrigin = window.location.origin;
+const browserRoot = ref<HTMLElement | null>(null);
+const fullscreenButton = ref<HTMLButtonElement | null>(null);
+const viewport = ref<HTMLElement | null>(null);
+const viewportSize = ref({ width: 0, height: 0 });
+const fullscreen = ref(false);
+let resizeObserver: ResizeObserver | undefined;
+
+// Scale the iframe itself: cross-origin documents remain private and interactive.
+// Use the same desktop width floor as Agent browser, with vertical scrolling inside it.
+const frameStyle = computed(() => {
+  const { width, height } = viewportSize.value;
+  const layoutWidth = Math.max(1280, width);
+  const scale = width > 0 ? width / layoutWidth : 1;
+  return {
+    width: `${layoutWidth}px`,
+    height: `${Math.max(1, Math.floor(height / scale))}px`,
+    transform: `scale(${scale})`,
+    visibility:
+      width > 0 && height > 0 ? ("visible" as const) : ("hidden" as const),
+  };
+});
+
+/** Toggle native fullscreen without moving or reloading the iframe document. */
+async function toggleFullscreen(): Promise<void> {
+  const root = browserRoot.value;
+  if (!root) return;
+  try {
+    if (document.fullscreenElement === root) await document.exitFullscreen();
+    else await root.requestFullscreen();
+  } catch {
+    errorMessage.value = tm(`${I18N}.fullscreenFailed`);
+  }
+}
+const fullscreenChanged = () => {
+  const wasFullscreen = fullscreen.value;
+  fullscreen.value = document.fullscreenElement === browserRoot.value;
+  if (wasFullscreen && !fullscreen.value && props.visible)
+    fullscreenButton.value?.focus({ preventScroll: true });
+};
 
 let nextTabId = 0;
 const tabs = ref([
@@ -343,8 +405,31 @@ function removeBookmark(url: string): void {
 }
 
 watch(() => props.projectRoot, hydrate);
+watch(
+  () => props.visible,
+  (visible) => {
+    if (!visible && document.fullscreenElement === browserRoot.value)
+      void document.exitFullscreen().catch(() => {});
+  },
+);
 watch([tabs, activeTabId, bookmarks], persist, { deep: true });
-onMounted(hydrate);
+onMounted(() => {
+  hydrate();
+  document.addEventListener("fullscreenchange", fullscreenChanged);
+  if (typeof ResizeObserver === "undefined" || !viewport.value) return;
+  resizeObserver = new ResizeObserver(([entry]) => {
+    if (entry && entry.contentRect.width > 0 && entry.contentRect.height > 0)
+      viewportSize.value = {
+        width: entry.contentRect.width,
+        height: entry.contentRect.height,
+      };
+  });
+  resizeObserver.observe(viewport.value);
+});
+onBeforeUnmount(() => {
+  resizeObserver?.disconnect();
+  document.removeEventListener("fullscreenchange", fullscreenChanged);
+});
 </script>
 
 <style scoped>
@@ -353,7 +438,17 @@ onMounted(hydrate);
   flex-direction: column;
   height: 100%;
   min-height: 320px;
+  min-width: 0;
   gap: 8px;
+}
+.web-browser-view:fullscreen {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  padding: 12px;
+  box-sizing: border-box;
+  background: rgb(var(--v-theme-surface));
+  color: rgb(var(--v-theme-on-surface));
 }
 
 .web-browser-tabs {
@@ -552,6 +647,8 @@ onMounted(hydrate);
 
 .web-browser-empty {
   flex: 1;
+  height: 100%;
+  box-sizing: border-box;
   min-height: 0;
   display: flex;
   flex-direction: column;
@@ -599,19 +696,27 @@ onMounted(hydrate);
   color: rgb(var(--v-theme-primary));
 }
 
-.web-browser-stage {
+.web-browser-content {
   flex: 1;
   min-height: 0;
+  min-width: 0;
+  position: relative;
   overflow: hidden;
   border-radius: 8px;
   border: 1px solid rgba(var(--v-theme-on-surface), 0.1);
   background: rgb(var(--v-theme-surface));
+}
+.web-browser-stage {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
 }
 .web-browser-frame {
   display: block;
   width: 100%;
   height: 100%;
   border: 0;
+  transform-origin: top left;
   background: #fff;
 }
 

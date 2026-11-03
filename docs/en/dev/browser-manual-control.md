@@ -169,3 +169,9 @@ records observed end-to-end latency and screenshots.
 
 
 Stale wheel samples receive a consumed-ID `status: stale` acknowledgement, without dispatch or automatic replay. Human ownership remains active while the next image synchronizes. Other rejected/uncertain commands retain fail-closed behavior.
+
+## Mouse dragging and explicit refresh
+
+`drag_input_version: 1` advertises ordered `pointer` input with `phase: down|move|up|cancel`. A press validates the complete displayed target. Moves and release stay bound to the original tab, document and viewport while allowing drag-induced scrolling. Only adjacent unsent moves are coalesced; release is never dropped or gated on a new frame. Target changes, focus loss, cancellation and disconnect release the mouse on its original CDP session, without replaying uncertain input. `cancel` and `reset_keys` do not depend on stale frame coordinates.
+
+Observation subscribes once on opening. Idle or disconnected clients never retry automatically; Refresh explicitly reauthorizes, captures and subscribes again. Lease heartbeats remain independent of observation refresh.

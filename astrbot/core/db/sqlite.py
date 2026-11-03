@@ -150,6 +150,40 @@ class SQLiteDatabase(BaseDatabase):
             await conn.execute(text("PRAGMA temp_store=MEMORY"))
             await conn.execute(text("PRAGMA mmap_size=134217728"))
             await conn.execute(text("PRAGMA optimize"))
+            # SQLite does not implicitly start a transaction for DDL.
+            await conn.execute(text("BEGIN"))
+            await self._ensure_workflow_message_scope_identity(conn)
+            # Preserve existing requests while replacing the old one-request-per-task index.
+            indexes = (
+                await conn.execute(text("PRAGMA index_list(agent_workflow_todos)"))
+            ).all()
+            for index in indexes:
+                name, unique = index[1], bool(index[2])
+                if not unique:
+                    continue
+                escaped_name = name.replace('"', '""')
+                columns = (
+                    await conn.exec_driver_sql(f'PRAGMA index_info("{escaped_name}")')
+                ).all()
+                if [column[2] for column in columns] != ["task_run_id"]:
+                    continue
+                if (
+                    name != "ix_agent_workflow_todos_task_run_id"
+                    or index[3] != "c"
+                    or index[4]
+                ):
+                    raise RuntimeError(f"Unexpected unique todo task index: {name}")
+                raw_connection = await conn.get_raw_connection()
+                if not raw_connection.driver_connection.in_transaction:
+                    await conn.exec_driver_sql("BEGIN IMMEDIATE")
+                await conn.execute(
+                    text("DROP INDEX ix_agent_workflow_todos_task_run_id")
+                )
+                await conn.execute(
+                    text(
+                        "CREATE INDEX ix_agent_workflow_todos_task_run_id ON agent_workflow_todos (task_run_id)"
+                    )
+                )
             # 确保 personas 表有 folder_id、sort_order、skills 列（前向兼容）
             await self._ensure_persona_folder_columns(conn)
             await self._ensure_persona_skills_column(conn)
@@ -252,6 +286,138 @@ class SQLiteDatabase(BaseDatabase):
                 "CREATE INDEX IF NOT EXISTS "
                 "ix_conversations_platform_created_at_inner_id "
                 "ON conversations (platform_id, created_at DESC, inner_conversation_id DESC)"
+            )
+        )
+
+    async def _ensure_workflow_message_scope_identity(self, conn) -> None:
+        """Upgrade the identified message table without changing stored deliveries.
+
+        Args:
+            conn: SQLite connection in an explicit transaction.
+
+        Raises:
+            RuntimeError: The existing table does not match a known schema.
+        """
+        columns = (
+            await conn.execute(text("PRAGMA table_info(agent_workflow_messages)"))
+        ).all()
+        expected = [
+            ("created_at", "DATETIME", 1, 0),
+            ("updated_at", "DATETIME", 1, 0),
+            ("message_id", "VARCHAR", 1, 1),
+            ("root_run_id", "VARCHAR", 1, 0),
+            ("scope_id", "VARCHAR", 1, 0),
+            ("sender_member_id", "VARCHAR", 1, 0),
+            ("recipient_member_id", "VARCHAR", 1, 0),
+            ("sender_task_run_id", "VARCHAR", 1, 0),
+            ("sender_attempt_id", "VARCHAR", 1, 0),
+            ("request_id", "VARCHAR", 1, 0),
+            ("payload", "JSON", 1, 0),
+            ("consumption", "JSON", 0, 0),
+        ]
+        if [(r[1], r[2].upper(), r[3], r[5]) for r in columns] != expected or any(
+            r[4] is not None for r in columns
+        ):
+            raise RuntimeError("Unknown agent_workflow_messages column structure")
+        indexes = (
+            await conn.execute(text("PRAGMA index_list(agent_workflow_messages)"))
+        ).all()
+        definitions = {}
+        for index in indexes:
+            name = index[1]
+            if not name.replace("_", "").isalnum():
+                raise RuntimeError("Unknown agent_workflow_messages index")
+            definitions[name] = (
+                index[2],
+                index[3],
+                index[4],
+                tuple(
+                    row[2]
+                    for row in (
+                        await conn.execute(text(f'PRAGMA index_info("{name}")'))
+                    ).all()
+                ),
+            )
+        old_key = ("root_run_id", "sender_member_id", "request_id")
+        new_key = ("root_run_id", "scope_id", "sender_member_id", "request_id")
+        expected_indexes = {
+            "ix_agent_workflow_messages_root_run_id": (0, "c", 0, ("root_run_id",)),
+            "ix_agent_workflow_messages_recipient_member_id": (
+                0,
+                "c",
+                0,
+                ("recipient_member_id",),
+            ),
+            "sqlite_autoindex_agent_workflow_messages_1": (1, "pk", 0, ("message_id",)),
+        }
+        unique_name = "sqlite_autoindex_agent_workflow_messages_2"
+        unique = definitions.pop(unique_name, None)
+        triggers = (
+            await conn.execute(
+                text(
+                    "SELECT name FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'agent_workflow_messages'"
+                )
+            )
+        ).all()
+        if definitions != expected_indexes or unique not in {
+            (1, "u", 0, old_key),
+            (1, "u", 0, new_key),
+        }:
+            raise RuntimeError("Unknown agent_workflow_messages indexes")
+        if unique[3] == new_key:
+            return
+        if triggers:
+            raise RuntimeError("Unknown agent_workflow_messages triggers")
+        from sqlalchemy.schema import CreateTable
+
+        from astrbot.core.db.po import AgentWorkflowMessage
+
+        actual = (
+            await conn.execute(
+                text(
+                    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'agent_workflow_messages'"
+                )
+            )
+        ).scalar_one()
+        expected_ddl = str(
+            CreateTable(AgentWorkflowMessage.__table__).compile(dialect=conn.dialect)
+        ).replace(
+            "root_run_id, scope_id, sender_member_id, request_id",
+            "root_run_id, sender_member_id, request_id",
+        )
+        if "".join(actual.split()).lower() != "".join(expected_ddl.split()).lower():
+            raise RuntimeError("Unknown agent_workflow_messages table definition")
+        await conn.execute(
+            text("""CREATE TABLE agent_workflow_messages_rebuild (
+            created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL,
+            message_id VARCHAR NOT NULL PRIMARY KEY, root_run_id VARCHAR NOT NULL,
+            scope_id VARCHAR NOT NULL, sender_member_id VARCHAR NOT NULL,
+            recipient_member_id VARCHAR NOT NULL, sender_task_run_id VARCHAR NOT NULL,
+            sender_attempt_id VARCHAR NOT NULL, request_id VARCHAR NOT NULL,
+            payload JSON NOT NULL, consumption JSON,
+            UNIQUE (root_run_id, scope_id, sender_member_id, request_id)
+        )""")
+        )
+        names = ", ".join(row[1] for row in columns)
+        await conn.execute(
+            text(
+                f"INSERT INTO agent_workflow_messages_rebuild ({names}) SELECT {names} FROM agent_workflow_messages"
+            )
+        )
+        await conn.execute(text("DROP TABLE agent_workflow_messages"))
+        await conn.execute(
+            text(
+                "ALTER TABLE agent_workflow_messages_rebuild RENAME TO agent_workflow_messages"
+            )
+        )
+        await conn.execute(
+            text(
+                "CREATE INDEX ix_agent_workflow_messages_root_run_id ON agent_workflow_messages (root_run_id)"
+            )
+        )
+        await conn.execute(
+            text(
+                "CREATE INDEX ix_agent_workflow_messages_recipient_member_id ON agent_workflow_messages (recipient_member_id)"
             )
         )
 

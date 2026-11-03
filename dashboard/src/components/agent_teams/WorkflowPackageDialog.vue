@@ -14,7 +14,7 @@
       <v-card-text class="package-body">
         <p class="mb-4">{{ tm("package.scope") }}</p>
         <template v-if="exportedPackage">
-          <p class="mb-3">{{ tm("package.includedPrompt") }}</p>
+          <p class="mb-3">{{ tm("package.scope") }}</p>
           <v-textarea
             :model-value="JSON.stringify(exportedPackage, null, 2)"
             :label="tm('package.content')"
@@ -65,13 +65,6 @@
             </ul>
             <p class="text-caption mt-2">{{ tm("package.versionSafety") }}</p>
             <v-alert
-              v-if="preview.existing_asset_id"
-              type="info"
-              variant="tonal"
-              class="my-3"
-              >{{ tm("package.existing") }}</v-alert
-            >
-            <v-alert
               :type="preview.ready ? 'success' : 'warning'"
               variant="tonal"
               class="my-3"
@@ -80,110 +73,119 @@
                 tm(preview.ready ? "package.ready" : "package.pending")
               }}</v-alert
             >
+            <p class="text-caption">{{ tm("package.autoRecheck") }}</p>
             <v-card
-              v-for="role in preview.roles"
-              :key="role.key"
+              v-for="requirement in preview.requirements"
+              :key="`${requirement.kind}:${requirement.source_id}`"
               variant="outlined"
               class="my-4"
             >
               <v-card-text>
-                <h4 class="text-subtitle-1 package-text">{{ role.name }}</h4>
-                <p class="text-caption package-text">{{ role.key }}</p>
-                <p class="text-caption">
-                  {{ tm("package.includedPrompt") }} ·
-                  {{ tm("package.promptOrigin") }}: {{ role.prompt_source }}
+                <p class="package-text">
+                  <strong>{{
+                    requirement.display_name || requirement.source_id
+                  }}</strong>
+                  · {{ tm(`package.kinds.${requirement.kind}`) }} ·
+                  {{ requirement.source_id }}
                 </p>
-                <pre class="package-text my-3">{{ role.prompt }}</pre>
-                <div
-                  v-for="dependency in role.dependencies"
-                  :key="dependency.slot"
-                  class="my-4"
-                >
-                  <p class="package-text">
-                    <strong>{{
-                      dependency.display_name || dependency.slot
-                    }}</strong>
-                    · {{ dependency.kind }} ·
-                    {{ tm(`package.status.${dependency.status}`) }}
-                  </p>
-                  <p class="text-caption package-text">
-                    {{ dependency.capabilities.join(", ") }}
-                    {{
-                      dependency.fingerprint
-                        ? tm("package.verifiedSource")
-                        : tm("package.manualSource")
-                    }}
-                  </p>
-                  <p
-                    v-if="dependency.logical_slots?.length"
-                    class="package-text"
-                  >
-                    {{ tm("package.logicalPurpose") }}:
-                    {{ dependency.logical_slots.join(", ") }}
-                  </p>
-                  <p v-if="dependency.description" class="package-text my-2">
-                    {{ dependency.description }}
-                  </p>
-                  <details v-if="dependency.input_schema" class="my-2">
-                    <summary>{{ tm("package.requiredInput") }}</summary>
-                    <pre class="package-text">{{
-                      JSON.stringify(dependency.input_schema, null, 2)
-                    }}</pre>
-                  </details>
-                  <v-select
-                    :menu-props="{ contentClass: 'workflow-package-menu' }"
-                    :model-value="dependency.selected"
-                    :items="dependency.candidates"
-                    item-title="name"
-                    item-value="id"
-                    :label="tm('package.localResource')"
-                    clearable
-                    :disabled="installing || checking"
-                    @update:model-value="
-                      chooseResource(role.key, dependency, $event)
-                    "
-                  >
-                    <template #selection="{ item }"
-                      ><span class="package-text">{{
-                        item.title
-                      }}</span></template
-                    >
-                  </v-select>
-                  <template
-                    v-for="candidate in dependency.candidates"
+                <p v-if="requirement.description" class="package-text">
+                  {{ requirement.description }}
+                </p>
+                <p v-if="requirement.capabilities?.length" class="text-caption">
+                  {{ tm("package.requiredCapabilities") }}:
+                  {{ requirement.capabilities.join(", ") }}
+                </p>
+                <p v-if="requirement.fingerprint" class="text-caption">
+                  {{ tm("package.verifiedSource") }}
+                </p>
+                <details v-if="requirement.input_schema" class="my-2">
+                  <summary>{{ tm("package.requiredInput") }}</summary>
+                  <pre class="package-text">{{
+                    JSON.stringify(requirement.input_schema, null, 2)
+                  }}</pre>
+                </details>
+                <v-select
+                  :model-value="requirement.selected"
+                  :items="requirement.candidates"
+                  item-title="name"
+                  item-value="id"
+                  item-props
+                  :label="tm('package.localResource')"
+                  clearable
+                  :disabled="installing || checking"
+                  @update:model-value="chooseResource(requirement, $event)"
+                />
+                <ul class="package-text pl-5">
+                  <li
+                    v-for="candidate in requirement.candidates"
                     :key="candidate.id"
                   >
-                    <details
-                      v-if="candidate.description || candidate.input_schema"
-                      class="mb-3"
+                    {{ candidate.name }} ({{ candidate.id }})
+                    <span v-if="candidate.reasons.length">
+                      · {{ candidate.reasons.join(", ") }}</span
                     >
-                      <summary class="package-text">
-                        {{ tm("package.resourceDetails") }} ·
-                        {{ candidate.name }}
-                      </summary>
-                      <p class="package-text">{{ candidate.description }}</p>
-                      <pre v-if="candidate.input_schema" class="package-text">{{
-                        JSON.stringify(candidate.input_schema, null, 2)
-                      }}</pre>
-                    </details>
-                  </template>
-                  <router-link
-                    v-if="!dependency.candidates.length"
-                    :to="
-                      dependency.kind === 'profiles'
-                        ? '/config'
-                        : dependency.kind === 'models'
-                        ? '/providers'
-                        : dependency.kind === 'knowledge_bases'
-                        ? '/knowledge-base'
-                        : '/extension'
-                    "
-                    @click="close(false)"
-                    >{{ tm("package.configureResources") }}</router-link
-                  >
-                </div>
+                    <span v-if="candidate.warnings?.length">
+                      · {{ tm("package.differentSource") }}</span
+                    >
+                  </li>
+                </ul>
               </v-card-text>
             </v-card>
+            <details
+              v-if="preview.effective?.length"
+              :open="preview.ready"
+              class="my-3"
+            >
+              <summary>{{ tm("package.effective") }}</summary>
+              <v-card
+                v-for="item in preview.effective"
+                :key="`${item.asset_id}:${item.version}:${item.member}`"
+                variant="outlined"
+                class="my-2"
+              >
+                <v-card-text>
+                  <strong>{{ item.asset_name }} · {{ item.member }}</strong>
+                  <p
+                    v-for="field in [
+                      'prompt',
+                      'provider_id',
+                      'persona_id',
+                      'tools',
+                      'skills',
+                      'knowledge_bases',
+                    ]"
+                    :key="field"
+                    class="package-text my-1"
+                  >
+                    {{ tm(`package.fields.${field}`) }}:
+                    {{
+                      Array.isArray(item.effective[field])
+                        ? item.effective[field].join(", ") || "—"
+                        : item.effective[field] ?? "—"
+                    }}
+                    <span v-if="item.sources[field]" class="text-caption">
+                      · {{ tm("package.source") }}:
+                      {{
+                        tm(
+                          `package.sources.${
+                            item.sources[field].split(":")[0]
+                          }`,
+                        )
+                      }}<template
+                        v-if="
+                          item.sources[field].includes(':') &&
+                          !item.sources[field].startsWith('workflow:')
+                        "
+                        >:
+                        {{
+                          item.sources[field].split(":").slice(1).join(":")
+                        }}</template
+                      ></span
+                    >
+                  </p>
+                </v-card-text>
+              </v-card>
+            </details>
             <details class="my-3">
               <summary>{{ tm("package.definition") }}</summary>
               <pre class="package-text">{{
@@ -220,19 +222,12 @@
         >
         <template v-else-if="preview">
           <v-btn
-            v-if="!preview.ready"
-            variant="tonal"
-            :disabled="checking || installing"
-            @click="install(true)"
-            >{{ tm("package.savePending") }}</v-btn
-          >
-          <v-btn
             variant="tonal"
             color="primary"
             :disabled="!preview.ready || checking || installing"
             :loading="installing"
             data-testid="confirm-package"
-            @click="install(false)"
+            @click="install"
             >{{ tm("package.confirm") }}</v-btn
           >
         </template>
@@ -262,9 +257,7 @@ const emit = defineEmits<{
 const { tm } = useModuleI18n("features/agent-teams");
 const content = ref("");
 const preview = ref<any>(null);
-const installations = ref<NonNullable<WorkflowImportRequest["installations"]>>(
-  {},
-);
+const selections = ref<NonNullable<WorkflowImportRequest["selections"]>>([]);
 const checking = ref(false);
 const installing = ref(false);
 const error = ref("");
@@ -276,7 +269,7 @@ watch(
     generation++;
     content.value = "";
     preview.value = null;
-    installations.value = {};
+    selections.value = [];
     checking.value = false;
     error.value = "";
   },
@@ -290,7 +283,7 @@ function changeContent(value: string) {
   generation++;
   content.value = value;
   preview.value = null;
-  installations.value = {};
+  selections.value = [];
   checking.value = false;
   error.value = "";
 }
@@ -318,13 +311,10 @@ async function previewPackage() {
   try {
     const result = await workflowAssetsApi.previewImport({
       package: preview.value?.package ?? JSON.parse(content.value),
-      installations: installations.value,
+      selections: selections.value,
     });
     if (current !== generation) return;
     preview.value = result;
-    installations.value = Object.fromEntries(
-      result.roles.map((role: any) => [role.key, role.installation]),
-    );
   } catch (cause) {
     if (current !== generation) return;
     preview.value = null;
@@ -338,32 +328,29 @@ async function previewPackage() {
   }
 }
 
-async function chooseResource(
-  key: string,
-  dependency: any,
-  resourceId: string | null,
-) {
-  const installation = installations.value[key];
-  if (dependency.kind === "profiles")
-    installation.profile_id = resourceId || "__unconfigured__";
-  else if (resourceId)
-    installation.bindings = {
-      ...installation.bindings,
-      [dependency.slot]: resourceId,
-    };
-  else delete installation.bindings?.[dependency.slot];
+async function chooseResource(requirement: any, resourceId: string | null) {
+  selections.value = selections.value.filter(
+    (item) =>
+      item.kind !== requirement.kind ||
+      item.source_id !== requirement.source_id,
+  );
+  if (resourceId)
+    selections.value.push({
+      kind: requirement.kind,
+      source_id: requirement.source_id,
+      target_id: resourceId,
+    });
   await previewPackage();
 }
 
-async function install(savePending: boolean) {
+async function install() {
   if (!preview.value || checking.value || installing.value) return;
   installing.value = true;
   error.value = "";
   try {
     await workflowAssetsApi.importPackage({
       package: preview.value.package,
-      installations: installations.value,
-      save_pending: savePending,
+      selections: selections.value,
     });
     emit(
       "installed",

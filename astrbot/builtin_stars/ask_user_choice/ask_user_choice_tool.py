@@ -16,6 +16,11 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from astrbot.api import FunctionTool, logger
+from astrbot.core.agent.tool import current_tool_invocation
+from astrbot.core.agent_team_execution import (
+    CheckpointRecoveryError,
+    current_team_execution,
+)
 
 # Module-level import so tests can monkeypatch this binding.
 from astrbot.core.platform.sources.webchat.webchat_queue_mgr import webchat_queue_mgr
@@ -201,6 +206,44 @@ class AskUserChoiceTool(FunctionTool):
             On cancellation: ``"[User input was cancelled] ..."``.
             On invalid parameters: ``"Error: ..."``.
         """
+        execution = current_team_execution.get()
+        if execution is not None and execution.profile_snapshot is not None:
+            record_id = current_tool_invocation.get()
+            if (
+                not execution.request_human
+                or not execution.save_checkpoint
+                or not record_id
+            ):
+                execution.recovery_error = CheckpointRecoveryError(
+                    "This executor cannot durably resume a human choice."
+                )
+                raise execution.recovery_error
+            spec = self._validate_and_build_spec(kwargs)
+            if isinstance(spec, str):
+                return spec
+            if any(
+                len(option["id"]) > 128 or option["id"] == "__free_text__"
+                for option in spec["options"]
+            ):
+                return "Error: option IDs must fit 128 characters and cannot use __free_text__"
+            choice = kwargs.get("recommended_choice_id")
+            reason = kwargs.get("recommendation_reason")
+            if choice is not None or reason is not None:
+                if (
+                    choice not in {item["id"] for item in spec["options"]}
+                    or not isinstance(reason, str)
+                    or not reason.strip()
+                ):
+                    return (
+                        "Error: a recommendation needs a valid option ID and a reason"
+                    )
+                spec["recommendation"] = {
+                    "value": choice,
+                    "reason": reason.strip()[:_EXTRA_CONTENT_MAX],
+                }
+            decision = await execution.request_human(record_id, spec)
+            return self._format_choice_for_llm(decision, spec)
+
         # 1. Platform guard.
         event = context.context.event
         umo = event.unified_msg_origin

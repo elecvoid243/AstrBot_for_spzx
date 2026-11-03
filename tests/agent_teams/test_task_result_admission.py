@@ -3,13 +3,11 @@
 import asyncio
 import copy
 import json
-import os
-import subprocess
-import sys
-import time
 
 import pytest
 
+from astrbot.core.agent_team_execution import AgentTeamExecutionRegistry
+from astrbot.core.agent_team_tools import AgentTeamToolRegistry
 from astrbot.core.agent_teams.assets import RoleAssetError, RoleAssetService
 from astrbot.core.agent_teams.workflows import WorkflowService
 from astrbot.core.db.sqlite import SQLiteDatabase
@@ -87,11 +85,12 @@ async def test_default_text_task_requires_result_protocol_before_dispatch(
         local = await roles.save_role(
             "alice",
             {
-                "definition": {"name": "Coordinator", "prompt": "Coordinate evidence."},
-                "installation": {
-                    "profile_id": "local",
-                    "bindings": {"model": "model-a"},
+                "definition": {
+                    "name": "Coordinator",
+                    "prompt": "Coordinate evidence.",
+                    "provider_id": "model-a",
                 },
+                "installation": {"profile_id": "local"},
             },
         )
         ref = {"role_id": role["role_id"], "role_version": 1}
@@ -100,23 +99,40 @@ async def test_default_text_task_requires_result_protocol_before_dispatch(
         team = {
             "kind": "autonomous",
             "name": "Team",
-            "coordinator": ref if kind == "coordinator" else local_ref,
-            "allowed_roles": [local_ref] if kind == "coordinator" else [ref],
+            "coordinator": {
+                "id": "lead",
+                **(ref if kind == "coordinator" else local_ref),
+            },
+            "allowed_roles": [
+                {"id": "worker", **(local_ref if kind == "coordinator" else ref)}
+            ],
         }
         definition = (
-            task
-            if kind == "single"
-            else {
+            {
                 "name": "Graph",
+                "result_task_id": "research",
                 "tasks": [{"id": "research", "member": "research", **task}],
             }
-            if kind == "graph"
+            if kind in {"single", "graph"}
             else team
         )
+        if kind == "graph":
+            definition["tasks"].insert(
+                0,
+                {
+                    "id": "local",
+                    "name": "Local",
+                    "member": "local",
+                    **local_ref,
+                    "task": "Prepare evidence.",
+                },
+            )
+            definition["edges"] = [{"source": "local", "target": "research"}]
         if kind == "nested_team":
             child = await service.save_asset("alice", {"definition": team})
             definition = {
                 "name": "Parent graph",
+                "result_task_id": "team",
                 "required_inputs": ["goal"],
                 "tasks": [
                     {
@@ -128,15 +144,23 @@ async def test_default_text_task_requires_result_protocol_before_dispatch(
                 ],
             }
         elif kind == "nested_workflow":
-            child = await service.save_asset("alice", {"definition": task})
+            child = await service.save_asset(
+                "alice",
+                {
+                    "definition": {
+                        "name": "Child graph",
+                        "result_task_id": "research",
+                        "tasks": [{"id": "research", "member": "research", **task}],
+                    }
+                },
+            )
             definition = {
                 **team,
-                "allowed_roles": [local_ref],
+                "allowed_roles": [{"id": "worker", **local_ref}],
                 "allowed_workflows": [
                     {
                         "asset_id": child["asset_id"],
                         "version": 1,
-                        "result_task_id": "result",
                     }
                 ],
             }
@@ -180,91 +204,175 @@ async def test_default_text_task_requires_result_protocol_before_dispatch(
         assert (await roles.resolve_role("alice", role["role_id"], 1))["ready"] is True
         assert readiness["issues"] == error
         assert "task_result" in error[0]["message"]
-        assert error[0]["path"] == (
-            "definition.tasks.0.role_id"
-            if kind == "graph"
-            else "definition.coordinator.role_id"
-            if kind == "coordinator"
-            else "definition.allowed_roles.0.role_id"
-            if kind in {"allowed", "nested_team"}
-            else "definition.role_id"
-        )
         assert calls == []
         assert (await service.list_runs("alice"))["runs"] == []
         assert await db.get_platform_sessions_by_creator("alice") == []
+        assert error[0]["path"] == (
+            "definition.tasks.1.role_id"
+            if kind == "graph"
+            else "definition.tasks.0.role_id"
+            if kind == "single"
+            else "definition.coordinator.role_id"
+            if kind == "coordinator"
+            else "definition.allowed_roles.0.role_id"
+            if kind == "allowed"
+            else "definition.tasks.0.team.allowed_roles.0.role_id"
+            if kind == "nested_team"
+            else "definition.allowed_workflows.0.tasks.0.role_id"
+        )
     finally:
         await service.shutdown()
         await db.engine.dispose()
 
 
-@pytest.mark.parametrize("runner", ["coze", "deerflow", "dify", "dashscope"])
-def test_unsupported_frozen_task_is_blocked_after_process_loss(tmp_path, runner):
-    """Keep old evidence readable while refusing incompatible frozen execution.
+@pytest.mark.asyncio
+async def test_frozen_graph_rechecks_current_resources_before_recovery(tmp_path):
+    """Block a frozen graph when its selected model disappears, then recover it.
 
     Args:
-        tmp_path: Isolated durable history and independent process observations.
-        runner: Historical executor missing the intrinsic task result capability.
+        tmp_path: Isolated durable database reopened for recovery.
     """
-    args = [
-        sys.executable,
-        "-m",
-        "tests.agent_teams.frozen_capability_worker",
-        str(tmp_path),
-    ]
-    environment = {**os.environ, "PYTHONUTF8": "1"}
-    with (tmp_path / "first.log").open("w", encoding="utf-8") as output:
-        process = subprocess.Popen(
-            [*args, "seed", runner],
-            stdout=output,
-            stderr=subprocess.STDOUT,
-            env=environment,
+    db = SQLiteDatabase(str(tmp_path / "recovery.db"))
+    catalog = {
+        "profiles": [{"id": "default"}],
+        "models": [{"id": "model-a"}],
+        "personas": [],
+        "tools": [],
+        "skills": [],
+        "knowledge_bases": [],
+    }
+
+    async def inventory():
+        return catalog
+
+    entered, release = asyncio.Event(), asyncio.Event()
+    calls = []
+
+    async def deliver(
+        session_id, text, context=None, execution_token=None, message_id=None
+    ):
+        binding = AgentTeamExecutionRegistry.resolve(execution_token)
+        if binding.checkpoint is None:
+            calls.append(message_id)
+            await binding.save_checkpoint(
+                {
+                    "format_version": 2,
+                    "phase": "response",
+                    "invocation_id": "original",
+                    "model_calls": 1,
+                    "steps_used": 1,
+                    "messages": [],
+                    "tools": [],
+                    "tool_calls": [],
+                    "tool_result_files": {},
+                    "response": {"role": "assistant", "completion_text": "Evidence"},
+                }
+            )
+            entered.set()
+            await release.wait()
+        await binding.admit_work()
+        return message_id
+
+    async def collect(session_id, message_id, member_id):
+        tools = AgentTeamToolRegistry.get_tools(f"webchat:FriendMessage:{session_id}")
+        submit = next(tool for tool in tools if tool.name == "submit_task_result")
+        await submit.call(None, text="Evidence")
+        return "Evidence", []
+
+    ports = TeamPorts(
+        deliver=deliver,
+        collect=collect,
+        is_busy=lambda sid: False,
+        emit=lambda event: None,
+    )
+    roles = RoleAssetService(db, catalog_loader=inventory)
+    service = WorkflowService(db, roles, ports_factory=lambda owner: ports)
+    reopened_db = None
+    try:
+        asset = await service.save_asset(
+            "alice",
+            {
+                "definition": {
+                    "name": "Research",
+                    "result_task_id": "research",
+                    "tasks": [
+                        {
+                            "id": "research",
+                            "name": "Research",
+                            "member": "research",
+                            "role": {
+                                "name": "Researcher",
+                                "prompt": "Check evidence.",
+                                "provider_id": "model-a",
+                            },
+                            "installation": {"profile_id": "default"},
+                            "task": "Check evidence.",
+                        }
+                    ],
+                }
+            },
         )
-        try:
-            deadline = time.monotonic() + 30
-            while not (tmp_path / "kill-ready.json").exists():
-                assert process.poll() is None, (tmp_path / "first.log").read_text(
-                    encoding="utf-8"
-                )
-                assert time.monotonic() < deadline
-                time.sleep(0.05)
-        finally:
-            process.kill()
-            process.wait(timeout=10)
-    restarted = subprocess.run(
-        [*args, "recover", runner],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        timeout=30,
-        env=environment,
-    )
-    (tmp_path / "second.log").write_text(
-        restarted.stdout + restarted.stderr, encoding="utf-8"
-    )
-    assert restarted.returncode == 0, restarted.stdout + restarted.stderr
-    evidence = json.loads((tmp_path / "recovered.json").read_text(encoding="utf-8"))
-    original = json.loads((tmp_path / "before.json").read_text(encoding="utf-8"))
-    assert evidence["after"]["status"] == "blocked"
-    assert evidence["after"]["snapshot"] == original["snapshot"]
-    assert evidence["after"]["state"]["attempt_id"] == "attempt-original"
-    assert evidence["after"]["recovery"]["boundary"] == "remote_running"
-    assert evidence["after"]["recovery"]["available"] is False
-    assert "task_result" in evidence["after"]["recovery"]["reason"]
-    assert evidence["after"]["result"] is None
-    assert evidence["error"]["status"] == 409
-    assert evidence["error"]["fields"] == [
-        {
-            "path": "definition.role_id",
-            "code": "INCOMPATIBLE",
-            "message": f"{'dify (chat)' if runner == 'dify' else runner} does not support task_result",
-        }
-    ]
-    assert not (tmp_path / "dispatch.jsonl").exists()
+        run = await service.start_run("alice", asset["asset_id"], {"version": 1})
+        await asyncio.wait_for(entered.wait(), 5)
+        before = await service.get_run("alice", run["run_id"])
+        catalog["models"] = []
+        release.set()
+        for _ in range(200):
+            blocked = await service.get_run("alice", run["run_id"])
+            if blocked["status"] != "running":
+                break
+            await asyncio.sleep(0.01)
+        assert blocked["status"] == "blocked", blocked
+        assert blocked["snapshot"] == before["snapshot"]
+        assert len(calls) == 1
+        await service.shutdown()
+        await db.engine.dispose()
+        reopened_db = SQLiteDatabase(str(tmp_path / "recovery.db"))
+        service = WorkflowService(
+            reopened_db,
+            RoleAssetService(reopened_db, catalog_loader=inventory),
+            ports_factory=lambda owner: ports,
+        )
+        await service.boot_sweep()
+        task_run_id = blocked["tasks"][0]["run_id"]
+        with pytest.raises(RoleAssetError):
+            await service.recover_run("bob", task_run_id)
+        await service.recover_run("alice", task_run_id)
+        for _ in range(200):
+            still_blocked = await service.get_run("alice", task_run_id)
+            blocked_events = [
+                event
+                for event in still_blocked["events"]
+                if event["kind"] == "task.blocked"
+            ]
+            if len(blocked_events) >= 2:
+                break
+            await asyncio.sleep(0.01)
+        assert len(blocked_events) >= 2, still_blocked
+        assert still_blocked["status"] == "blocked", still_blocked
+        assert (await service.get_run("alice", run["run_id"]))["snapshot"] == before[
+            "snapshot"
+        ]
+        assert len(calls) == 1
+        catalog["models"] = [{"id": "model-a"}]
+        await service.recover_run("alice", task_run_id)
+        for _ in range(200):
+            recovered = await service.get_run("alice", run["run_id"])
+            if recovered["status"] == "completed":
+                break
+            await asyncio.sleep(0.01)
+        assert recovered["status"] == "completed", recovered
+        assert recovered["snapshot"] == before["snapshot"]
+        assert len(calls) == 1
+    finally:
+        release.set()
+        await service.shutdown()
+        await (reopened_db or db).engine.dispose()
 
 
 @pytest.mark.asyncio
-async def test_import_derives_result_protocol_even_when_manifest_omits_it(tmp_path):
-    """Keep import candidates and pending nested assets consistent with launch.
+async def test_import_requires_result_protocol_before_atomic_install(tmp_path):
+    """A target executor without result submission cannot install a package.
 
     Args:
         tmp_path: Isolated durable source and target installations.
@@ -301,36 +409,40 @@ async def test_import_derives_result_protocol_even_when_manifest_omits_it(tmp_pa
             {
                 "definition": {
                     "name": "Evidence",
-                    "role_id": role["role_id"],
-                    "role_version": 1,
-                    "task": "Check evidence.",
+                    "result_task_id": "check",
+                    "tasks": [
+                        {
+                            "id": "check",
+                            "name": "Check",
+                            "member": "check",
+                            "role_id": role["role_id"],
+                            "role_version": 1,
+                            "task": "Check evidence.",
+                        }
+                    ],
                 }
             },
         )
         package = await service.export_asset("alice", asset["asset_id"], 1)
-        dependency = package["roles"][0]["dependencies"][0]
-        assert dependency["capabilities"] == ["task_result"]
-        untrusted = copy.deepcopy(package)
-        untrusted["roles"][0]["dependencies"][0]["capabilities"] = []
-        catalog["profiles"][0]["runner_config"]["dify_api_type"] = "chat"
-        key = f"{role['role_id']}:1"
-        payload = {
-            "package": untrusted,
-            "installations": {key: {"profile_id": "default"}},
-        }
-        preview = await service.preview_import("bob", payload)
-        assert preview["ready"] is False
-        assert preview["roles"][0]["dependencies"][0]["capabilities"] == ["task_result"]
-        assert preview["roles"][0]["dependencies"][0]["candidates"] == []
-        installed = await service.import_asset("bob", {**payload, "save_pending": True})
-        readiness = await service.check_readiness(
-            "bob", installed["asset"]["asset_id"], 1
+        dependency = next(
+            item for item in package["requirements"] if item["kind"] == "profiles"
         )
-        assert readiness["ready"] is False
+        assert "task_result" in dependency["capabilities"]
+        untrusted = copy.deepcopy(package)
+        untrusted["requirements"][0]["capabilities"] = []
         with pytest.raises(RoleAssetError):
-            await service.start_run(
-                "bob", installed["asset"]["asset_id"], {"version": 1}
-            )
+            await service.preview_import("bob", {"package": untrusted})
+        catalog["profiles"][0]["runner_config"]["dify_api_type"] = "chat"
+        selections = [
+            {"kind": "profiles", "source_id": "default", "target_id": "default"}
+        ]
+        payload = {"package": package, "selections": selections}
+        preview = await service.preview_import("bob", payload)
+        assert not preview["ready"]
+        assert preview["requirements"][0]["candidates"][0]["disabled"]
+        with pytest.raises(RoleAssetError):
+            await service.import_asset("bob", payload)
+        assert (await service.list_assets("bob"))["assets"] == []
         assert (await service.list_runs("bob"))["runs"] == []
         assert await db.get_platform_sessions_by_creator("bob") == []
     finally:

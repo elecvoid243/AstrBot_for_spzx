@@ -1,12 +1,12 @@
 <template>
   <div class="run-overview">
-    <div class="d-flex flex-wrap align-start ga-3 mb-5">
+    <div v-if="!compact" class="d-flex flex-wrap align-start ga-3 mb-5">
       <div class="run-name flex-grow-1">
         <h2 class="text-h5 font-weight-bold">
           {{ run.snapshot.definition.name }}
         </h2>
         <p class="text-body-2 text-medium-emphasis mt-2">
-          {{ run.run_id }} · v{{ run.snapshot.asset_version }} ·
+          {{ run.run_id }} · {{ run.snapshot.trial ? `${tm('trial.test')} · ${tm('trial.revision')} ${run.snapshot.trial.draft_revision}` : `v${run.snapshot.asset_version}` }} ·
           {{ run.snapshot.source }}
         </p>
         <p class="run-text mt-3" data-testid="run-goal">
@@ -45,7 +45,7 @@
         >{{ tm(`v2.states.${run.status}`) }}</v-chip
       >
     </div>
-    <div class="run-columns">
+    <div class="run-columns" :class="{ 'is-compact': compact }">
       <v-card variant="outlined" class="run-progress">
         <v-card-title
           class="d-flex flex-wrap align-center ga-2 text-subtitle-1"
@@ -70,14 +70,12 @@
             class="run-task"
             :class="{
               'run-task-selected':
-                task.node_id === selectedTask || task.run_id === selectedTask,
+                task.run_id === selectedTask,
             }"
             @click="
               $emit(
                 'select',
-                task.snapshot.parent_run_id !== run.run_id
-                  ? task.run_id
-                  : task.node_id ?? null,
+                task.run_id,
               )
             "
           >
@@ -95,11 +93,40 @@
             />
             <div class="run-name flex-grow-1 text-left">
               <strong>{{ task.snapshot.definition.name }}</strong>
-              <p class="text-caption text-medium-emphasis mt-1">
+              <p v-if="scopeNames[task.run_id] || task.snapshot.iteration != null" class="text-caption text-medium-emphasis mt-1">
+                <span v-if="scopeNames[task.run_id]">{{ tm("child.scope") }}: {{ scopeNames[task.run_id] }}</span>
+                <span v-if="task.snapshot.iteration != null"> · {{ tm("loops.iteration") }} {{ task.snapshot.iteration }}</span>
+              </p>
+              <p v-if="!compact" class="text-caption text-medium-emphasis mt-1">
                 {{ task.snapshot.member?.name }} · {{ tm("v2.attempt") }}
                 {{ task.state.attempt_id }}
               </p>
-              <p v-if="task.state.reason" class="run-text text-body-2 mt-2">
+              <p
+                v-if="task.state.waiting_on?.length"
+                class="run-text text-body-2 mt-2"
+                data-testid="waiting-on"
+              >
+                {{
+                  tm(
+                    task.status === "dependency_failed"
+                      ? "graph.failedDependencies"
+                      : "graph.waitingOn",
+                  )
+                }}:
+                {{
+                  task.state.waiting_on
+                    .map(
+                      (id: string) =>
+                        tasks.find((item) => item.node_id === id)?.snapshot
+                          .definition.name ?? id,
+                    )
+                    .join(", ")
+                }}
+              </p>
+              <p
+                v-else-if="task.state.reason"
+                class="run-text text-body-2 mt-2"
+              >
                 {{ task.state.reason }}
               </p>
               <p v-else class="run-text text-body-2 text-medium-emphasis mt-2">
@@ -108,7 +135,13 @@
             </div>
             <span class="text-caption run-status">{{
               tm(
-                task.status === "running" && task.state.capacity_released
+                task.status === "pending"
+                  ? task.state.wait_kind === "predecessors"
+                    ? "graph.waitingPredecessors"
+                    : task.state.wait_kind === "capacity"
+                    ? "graph.waitingCapacity"
+                    : "graph.notStarted"
+                  : task.status === "running" && task.state.capacity_released
                   ? "autonomous.waiting"
                   : `v2.states.${task.status}`,
               )
@@ -116,7 +149,7 @@
           </button>
         </v-card-text>
       </v-card>
-      <aside class="run-aside">
+      <aside v-if="!compact" class="run-aside">
         <v-card
           variant="outlined"
           class="mb-4"
@@ -136,9 +169,7 @@
               @click="
                 $emit(
                   'select',
-                  task.snapshot.parent_run_id !== run.run_id
-                    ? task.run_id
-                    : task.node_id ?? null,
+                  task.run_id,
                 )
               "
             >
@@ -165,7 +196,7 @@
               </p>
             </div>
             <p class="text-caption text-medium-emphasis">
-              {{ tm("progress.context") }}
+              {{ tm(run.snapshot.team_definition ? "progress.teamContext" : "progress.taskContext") }}
             </p>
           </v-card-text>
         </v-card>
@@ -185,7 +216,7 @@
       <summary class="run-text">
         {{ tm("child.scope") }}:
         {{
-          run.tasks.find(
+          [...run.tasks, ...(run.scopes ?? []).flatMap((item: any) => item.tasks)].find(
             (task: any) => task.run_id === scope.snapshot.parent_run_id,
           )?.snapshot.definition.name
         }}
@@ -201,9 +232,11 @@
       <p v-if="scope.state.reason" class="run-text mb-3">
         {{ scope.state.reason }}
       </p>
+      <WorkflowLoopHistory :run="scope" @select="$emit('select', $event)" />
       <WorkflowGraphCanvas
         :definition="scope.runtime_definition ?? scope.snapshot.definition"
         :tasks="scope.tasks"
+        :child-assets="scope.snapshot.child_assets ?? {}"
         :dispatch-tasks="
           scope.tasks
             .filter((task: any) => task.snapshot.created_by_task_id)
@@ -219,7 +252,7 @@
         "
       />
     </details>
-    <details v-if="run.snapshot.definition.tasks" class="mt-4">
+    <details v-if="!compact && run.snapshot.definition.tasks" class="mt-4">
       <summary>{{ tm("progress.graph") }}</summary>
       <WorkflowGraphCanvas
         :definition="run.runtime_definition ?? run.snapshot.definition"
@@ -246,13 +279,19 @@ import { computed } from "vue";
 import { useModuleI18n } from "@/i18n/composables";
 import WorkflowGraphCanvas from "./WorkflowGraphCanvas.vue";
 import WorkflowLoopHistory from "./WorkflowLoopHistory.vue";
-const props = defineProps<{ run: any; selectedTask: string | null }>();
+const props = defineProps<{ run: any; selectedTask: string | null; compact?: boolean }>();
 defineEmits<{ select: [nodeId: string | null] }>();
 const { tm } = useModuleI18n("features/agent-teams");
 const tasks = computed<any[]>(() => [
   ...(props.run.tasks ?? [props.run]),
   ...(props.run.scopes ?? []).flatMap((scope: any) => scope.tasks),
 ]);
+const scopeNames = computed<Record<string, string>>(() => Object.fromEntries(
+  (props.run.scopes ?? []).flatMap((scope: any) => [
+    ...(scope.tasks ?? []),
+    ...(scope.loops ?? []).flatMap((loop: any) => loop.iterations.flatMap((iteration: any) => iteration.tasks)),
+  ].map((task: any) => [task.run_id, scope.snapshot?.definition?.name ?? scope.run_id])),
+));
 const waiting = computed(() =>
   tasks.value.filter(
     (task) =>
@@ -286,6 +325,9 @@ const members = computed(() =>
 </script>
 
 <style scoped>
+.run-overview {
+  container-type: inline-size;
+}
 .child-scope {
   border: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
   border-radius: 10px;
@@ -307,6 +349,8 @@ const members = computed(() =>
 .run-aside {
   min-width: 0;
 }
+.run-columns.is-compact { grid-template-columns: minmax(0, 1fr); }
+.run-columns.is-compact .run-task { padding: 14px 12px; }
 .run-attention {
   border-color: rgba(var(--v-theme-warning), 0.55);
 }
@@ -344,12 +388,12 @@ summary {
   font-weight: 600;
   padding: 12px 0;
 }
-@media (max-width: 900px) {
+@container (max-width: 700px) {
   .run-columns {
     grid-template-columns: minmax(0, 1fr);
   }
 }
-@media (max-width: 500px) {
+@container (max-width: 380px) {
   .run-task {
     padding: 14px;
     gap: 10px;

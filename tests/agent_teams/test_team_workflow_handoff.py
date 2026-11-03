@@ -19,10 +19,10 @@ from tests.agent_teams.test_workflow_assets import workflow_env as workflow_env
 @pytest.mark.asyncio
 @pytest.mark.parametrize("pre_read", [True, False])
 @pytest.mark.parametrize("source_location", ["pinned", "member"])
-async def test_coordinator_hands_pinned_text_and_file_to_independent_child(
+async def test_coordinator_hands_selected_pinned_text_to_independent_child(
     workflow_env, pre_read, source_location
 ):
-    """Deliver exact v1 through actual child tools after the source gains v2.
+    """Deliver selected v1 text while denying the child the complete artifact.
 
     Args:
         workflow_env: Public services backed by real SQLite persistence.
@@ -36,25 +36,46 @@ async def test_coordinator_hands_pinned_text_and_file_to_independent_child(
         {
             "definition": {
                 **env.asset["definition"],
-                "output_contract": {
-                    "type": "object",
-                    "properties": {
-                        "text": {"type": "string"},
-                        "files": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "properties": {"file_id": {"type": "string"}},
-                                "required": ["file_id"],
+                "tasks": [
+                    {
+                        **env.asset["definition"]["tasks"][0],
+                        "output_contract": {
+                            "type": "object",
+                            "properties": {
+                                "text": {"type": "string"},
+                                "files": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {"file_id": {"type": "string"}},
+                                        "required": ["file_id"],
+                                    },
+                                },
                             },
+                            "required": ["text", "files"],
                         },
-                    },
-                    "required": ["text", "files"],
-                },
+                    }
+                ],
             }
         },
     )
-    bindings, receipts, child_reads = {}, [], []
+    child_asset = await env.service.save_asset(
+        "alice",
+        {
+            "definition": {
+                **env.asset["definition"],
+                "required_inputs": ["evidence"],
+                "tasks": [
+                    {
+                        **env.asset["definition"]["tasks"][0],
+                        "task": "Read {evidence}",
+                        "inputs": {"evidence": {"input": "evidence"}},
+                    }
+                ],
+            }
+        },
+    )
+    bindings, delivered, receipts, child_reads = {}, {}, [], []
     source_ref = None
     original = None
 
@@ -74,6 +95,7 @@ async def test_coordinator_hands_pinned_text_and_file_to_independent_child(
             Original request identity acknowledged by the external boundary.
         """
         bindings[session_id] = AgentTeamExecutionRegistry.resolve(execution_token)
+        delivered[session_id] = text
         return message_id
 
     async def collect(session_id, message_id, member_id):
@@ -117,7 +139,7 @@ async def test_coordinator_hands_pinned_text_and_file_to_independent_child(
                         None,
                         action="create_member",
                         request_id="source-member",
-                        role_id=source_role["role_id"],
+                        preset_id="source",
                         name="Evidence source",
                     )
                 )
@@ -129,7 +151,9 @@ async def test_coordinator_hands_pinned_text_and_file_to_independent_child(
                         member_id=member["member_id"],
                         name="Same-scope evidence",
                         task="Produce complete evidence",
-                        output_contract=asset["definition"]["output_contract"],
+                        output_contract=asset["definition"]["tasks"][0][
+                            "output_contract"
+                        ],
                     )
                 )
                 observed = json.loads(
@@ -142,12 +166,17 @@ async def test_coordinator_hands_pinned_text_and_file_to_independent_child(
                 )
                 source_ref = observed["tasks"][0]["result_ref"]
                 assert source_ref is not None, observed
-            if pre_read:
-                for _ in range(2):
-                    read = json.loads(
-                        await tools["read_task_artifact"].call(None, **source_ref)
+            for _ in range(2 if pre_read else 1):
+                read = json.loads(
+                    await tools["read_task_artifact"].call(None, **source_ref)
+                )
+                assert read["content"] == original
+                file = json.loads(
+                    await tools["read_task_artifact"].call(
+                        None, **source_ref, file_id=original["files"][0]["file_id"]
                     )
-                    assert read["content"] == original
+                )
+                assert file["content"] == report
             await env.service.revise_artifact(
                 "alice",
                 source_ref["artifact_id"],
@@ -161,8 +190,9 @@ async def test_coordinator_hands_pinned_text_and_file_to_independent_child(
                 "action": "call_workflow",
                 "request_id": "handoff",
                 "name": "Read v1",
-                "asset_id": env.asset["asset_id"],
+                "asset_id": child_asset["asset_id"],
                 "version": 1,
+                "inputs": {"evidence": read["content"]["text"]},
                 "input_artifacts": [source_ref],
             }
             for _ in range(2):
@@ -187,22 +217,14 @@ async def test_coordinator_hands_pinned_text_and_file_to_independent_child(
             )
         else:
             for _ in range(2):
-                read = json.loads(
-                    await tools["read_task_artifact"].call(None, **source_ref)
-                )
-                file = json.loads(
-                    await tools["read_task_artifact"].call(
-                        None,
-                        **source_ref,
-                        file_id=original["files"][0]["file_id"],
-                    )
+                read = await tools["read_task_artifact"].call(None, **source_ref)
+                file = await tools["read_task_artifact"].call(
+                    None, **source_ref, file_id=original["files"][0]["file_id"]
                 )
                 child_reads.append((read, file))
-                assert read["content"] == original
-                assert file["version"] == 1 and file["content"] == report
-            accepted = await tools["submit_task_result"].call(
-                None, text=read["content"]["text"]
-            )
+                assert read.startswith("Error") and file.startswith("Error")
+            assert delivered[session_id] == f"Read {report}"
+            accepted = await tools["submit_task_result"].call(None, text=report)
             assert accepted == "Result accepted.", accepted
         return "Done", []
 
@@ -232,16 +254,19 @@ async def test_coordinator_hands_pinned_text_and_file_to_independent_child(
             "definition": {
                 "kind": "autonomous",
                 "name": "Explicit handoff",
-                "coordinator": role,
+                "coordinator": {"id": "coordinator", **role},
                 "allowed_roles": [
-                    {"role_id": source_role["role_id"], "role_version": 1}
+                    {
+                        "id": "source",
+                        "role_id": source_role["role_id"],
+                        "role_version": 1,
+                    }
                 ],
                 "max_parallel": 1,
                 "allowed_workflows": [
                     {
-                        "asset_id": env.asset["asset_id"],
+                        "asset_id": child_asset["asset_id"],
                         "version": 1,
-                        "result_task_id": "result",
                     }
                 ],
             }
@@ -273,7 +298,8 @@ async def test_coordinator_hands_pinned_text_and_file_to_independent_child(
         if task["snapshot"]["engine"] == "workflow_call_v2"
     )
     child = current["scopes"][0]["tasks"][0]
-    assert child["snapshot"]["input_artifacts"] == [source_ref]
+    assert current["scopes"][0]["snapshot"]["input_artifacts"] == [source_ref]
+    assert child["snapshot"]["input_artifacts"] == []
     assert (
         child["snapshot"]["member"]["conversation_id"]
         != coordinator["snapshot"]["member"]["conversation_id"]
@@ -282,11 +308,9 @@ async def test_coordinator_hands_pinned_text_and_file_to_independent_child(
         call["result"] == {"text": report}
         and call["state"]["child_result_ref"] == child["result_ref"]
     )
-    for consumer in (coordinator, child):
-        assert consumer["read_artifacts"] == [source_ref]
-        assert (
-            sum(event["kind"] == "artifact.read" for event in consumer["events"]) == 1
-        )
+    assert coordinator["read_artifacts"] == [source_ref]
+    assert sum(event["kind"] == "artifact.read" for event in coordinator["events"]) == 1
+    assert child["read_artifacts"] == []
     assert sum(event["kind"] == "child.returned" for event in current["events"]) == 1
     assert (await env.service.read_artifact("alice", source_ref["artifact_id"], 2))[
         "content"
@@ -349,7 +373,12 @@ async def test_rejected_handoff_cannot_save_read_or_dependent_call(
             {
                 "definition": {
                     **env.asset["definition"],
-                    "role_id": bob_role["role_id"],
+                    "tasks": [
+                        {
+                            **env.asset["definition"]["tasks"][0],
+                            "role_id": bob_role["role_id"],
+                        }
+                    ],
                 }
             },
         )
@@ -370,14 +399,13 @@ async def test_rejected_handoff_cannot_save_read_or_dependent_call(
             "definition": {
                 "kind": "autonomous",
                 "name": "Restricted handoff",
-                "coordinator": role,
-                "allowed_roles": [role],
+                "coordinator": {"id": "coordinator", **role},
+                "allowed_roles": [{"id": "writer", **role}],
                 "max_parallel": 1,
                 "allowed_workflows": [
                     {
                         "asset_id": env.asset["asset_id"],
                         "version": 1,
-                        "result_task_id": "result",
                     }
                 ],
             }
@@ -532,13 +560,12 @@ async def test_sibling_scope_output_cannot_be_handed_to_workflow(workflow_env):
                     "definition": {
                         "kind": "autonomous",
                         "name": name,
-                        "coordinator": role,
-                        "allowed_roles": [role],
+                        "coordinator": {"id": "coordinator", **role},
+                        "allowed_roles": [{"id": "writer", **role}],
                         "allowed_workflows": [
                             {
                                 "asset_id": env.asset["asset_id"],
                                 "version": 1,
-                                "result_task_id": "result",
                             }
                         ],
                     }
@@ -550,6 +577,7 @@ async def test_sibling_scope_output_cannot_be_handed_to_workflow(workflow_env):
         {
             "definition": {
                 "name": "Sibling scopes",
+                "result_task_id": "consumer",
                 "required_inputs": ["goal"],
                 "max_parallel": 1,
                 "tasks": [

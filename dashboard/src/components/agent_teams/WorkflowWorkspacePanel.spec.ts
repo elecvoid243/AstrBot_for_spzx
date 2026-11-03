@@ -1,6 +1,8 @@
 import { flushPromises, mount } from "@vue/test-utils";
 import { createMemoryHistory, createRouter } from "vue-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { draftApi } from "@/composables/useAssetDraft";
+import { mockDrafts } from "./draftTestMocks";
 import WorkflowWorkspacePanel from "./WorkflowWorkspacePanel.vue";
 
 const api = vi.hoisted(() => ({
@@ -9,6 +11,7 @@ const api = vi.hoisted(() => ({
   start: vi.fn(),
   readiness: vi.fn(),
   runs: vi.fn(),
+  humanRequests: vi.fn(),
   history: vi.fn(),
   run: vi.fn(),
   artifact: vi.fn(),
@@ -16,13 +19,19 @@ const api = vi.hoisted(() => ({
   file: vi.fn(),
   storeFile: vi.fn(),
   events: vi.fn(),
+  processPage: vi.fn(),
+  runHistoryPage: vi.fn(),
   recover: vi.fn(),
   resolveTool: vi.fn(),
   control: vi.fn(),
   retry: vi.fn(),
   answer: vi.fn(),
+  delete: vi.fn(),
 }));
-const roles = vi.hoisted(() => ({ list: vi.fn() }));
+const roles = vi.hoisted(() => ({ list: vi.fn(), resources: vi.fn() }));
+vi.mock("@/stores/customizer", () => ({
+  useCustomizerStore: () => ({ isDark: false }),
+}));
 vi.mock("@/api/workflowAssets", () => ({ workflowAssetsApi: api }));
 vi.mock("@/api/roleAssets", () => ({ roleAssetsApi: roles }));
 vi.mock("@/i18n/composables", () => ({
@@ -34,18 +43,26 @@ const asset = {
   version: 1,
   definition: {
     name: "Report",
-    role_id: "role-1",
-    role_version: 1,
-    task: "Research {topic}",
     required_inputs: ["topic"],
-    overrides: {},
+    result_task_id: "research",
+    max_parallel: 1,
+    tasks: [{
+      id: "research",
+      name: "Research",
+      member: "research",
+      role_id: "role-1",
+      role_version: 1,
+      task: "Research {topic}",
+      inputs: { topic: { input: "topic" } },
+    }],
+    edges: [],
   },
 };
 const run = {
   run_id: "run-1",
   status: "running",
   snapshot: {
-    definition: asset.definition,
+    definition: { ...asset.definition.tasks[0], name: asset.definition.name },
     asset_id: "asset-1",
     asset_version: 1,
     task: "Research energy",
@@ -116,7 +133,72 @@ Object.assign(stubs, {
   },
 });
 
-describe("single-task workflow workspace", () => {
+describe("workflow workspace", () => {
+  it.each(["workflows", "teams"] as const)("confirms deletion in %s", async (kind) => {
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: "/", component: slotStub }] });
+    await router.push("/");
+    const item = { ...asset, definition: kind === "teams" ? { name: "Team", kind: "autonomous", allowed_roles: [] } : asset.definition };
+    api.list.mockResolvedValueOnce({ assets: [item] }).mockResolvedValue({ assets: [] });
+    api.delete.mockResolvedValue({});
+    const wrapper = mount(WorkflowWorkspacePanel, { props: { mode: "assets", assetKind: kind }, global: { plugins: [router], stubs } });
+    await flushPromises();
+    await wrapper.get('[data-testid="delete-asset"]').trigger("click");
+    expect(wrapper.text()).toContain("deletion.impact");
+    expect(api.delete).not.toHaveBeenCalled();
+    await wrapper.get('[data-testid="confirm-asset-deletion"]').trigger("click");
+    await flushPromises();
+    expect(api.delete).toHaveBeenCalledWith("asset-1");
+    expect(wrapper.text()).not.toContain("Report · v1");
+    wrapper.unmount();
+  });
+  it("answers a persisted request from the global inbox", async () => {
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: "/", component: { template: "<div />" } }] });
+    await router.push("/");
+    const todo = { run_name: "Market research", task_name: "Select market", recommendation_source_name: "Forecast", todo_id: "todo-1", root_run_id: "run-1", task_run_id: "task-1", kind: "question", question: "Which region?", status: "pending", control_status: "active", constraints: { choices: [], max_length: 100 }, recommendation: {value: "Asia", reason: "Demand"}, recommendation_ref: { artifact_id: "source-1", version: 1 }, recommendation_fields: { value: "choice", reason: "reason" } };
+    api.humanRequests.mockResolvedValueOnce({ requests: [todo] }).mockResolvedValue({ requests: [] });
+    api.answer.mockResolvedValue(run);
+    const wrapper = mount(WorkflowWorkspacePanel, { props: { mode: "runs" }, global: { plugins: [router], stubs } });
+    await flushPromises();
+    expect(wrapper.get('[data-testid="runs-pending"]').text()).toContain("1");
+    await wrapper.get('[data-testid="runs-pending"]').trigger("click");
+    expect(wrapper.get('[data-testid="human-inbox"]').text()).toContain("Demand");
+    expect(wrapper.get('[data-testid="human-origin"]').text()).toContain("Market research");
+    expect(wrapper.get('[data-testid="human-origin"]').text()).toContain("Select market");
+    expect(wrapper.get('[data-testid="human-inbox"]').text()).toContain("Forecast");
+    await wrapper.get('[data-testid="human-answer"]').setValue("Europe");
+    await wrapper.get('[data-testid="human-submit"]').trigger("click");
+    await flushPromises();
+    expect(api.answer).toHaveBeenCalledWith("run-1", "todo-1", expect.objectContaining({ action: "answer", answer: "Europe" }));
+    expect(wrapper.get('[data-testid="human-inbox"]').text()).not.toContain("Which region?");
+    wrapper.unmount();
+  });
+
+  it("opens the exact recommendation task from the inbox in the workbench", async () => {
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: "/", component: slotStub }] });
+    await router.push("/");
+    const todo = { todo_id: "todo-1", root_run_id: "run-1", task_run_id: "question", kind: "question", question: "Choose a region", status: "pending", constraints: { choices: [], max_length: 100 }, recommendation_ref: { artifact_id: "source-1", version: 1 } };
+    api.humanRequests.mockResolvedValue({ requests: [todo] });
+    api.run.mockResolvedValue({ ...run, tasks: [
+      { ...run, run_id: "question" },
+      { ...run, run_id: "recommendation-task", result_ref: todo.recommendation_ref },
+    ] });
+    const wrapper = mount(WorkflowWorkspacePanel, { props: { mode: "runs" }, global: { plugins: [router], stubs: {
+      ...stubs,
+      WorkflowRunProcess: { props: ["run"], template: '<div data-testid="selected-process">{{ run.run_id }}</div>' },
+    } } });
+    try {
+      await flushPromises();
+      await wrapper.get('[data-testid="runs-pending"]').trigger("click");
+      await wrapper.get('[data-testid="human-inbox"]').findAll("button").find((button) => button.text() === "human.openProcess")!.trigger("click");
+      await flushPromises();
+      expect(wrapper.find('[data-testid="human-inbox"]').exists()).toBe(false);
+      expect(wrapper.get('[data-testid="runs-all"]').attributes("aria-pressed")).toBe("true");
+      expect(wrapper.get('[data-testid="selected-process"]').text()).toBe("recommendation-task");
+    } finally {
+      wrapper.unmount();
+    }
+  });
+
   it("finds active, waiting and historical runs without editing their definitions", async () => {
     const router = createRouter({
       history: createMemoryHistory(),
@@ -191,6 +273,24 @@ describe("single-task workflow workspace", () => {
     ).toBe(false);
     wrapper.unmount();
   });
+  it("labels unpublished drafts and published assets with edits", async () => {
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: "/", component: slotStub }] });
+    await router.push("/");
+    vi.mocked(draftApi.list).mockResolvedValueOnce([
+      { asset_id: "asset-1", revision: 2, base_version: 1, body: { definition: { name: "Edited" } } },
+      { asset_id: "new-flow", revision: 1, base_version: null, body: { definition: { name: "Unpublished" } } },
+    ]).mockResolvedValueOnce([
+      { asset_id: "new-team", revision: 1, base_version: null, body: { definition: { kind: "autonomous", name: "Team draft" } } },
+    ]);
+    const wrapper = mount(WorkflowWorkspacePanel, { props: { mode: "assets" }, global: { plugins: [router], stubs } });
+    await flushPromises();
+    expect(wrapper.text()).toContain("Unpublished · draft.unpublished");
+    expect(wrapper.text()).toContain("Team draft · draft.unpublished");
+    expect(wrapper.get('[data-testid="editing-draft"]').text()).toBe("draft.editing");
+    expect(wrapper.text()).toContain("Report · v1");
+    wrapper.unmount();
+  });
+
   it("keeps teams and workflows in their own asset directories", async () => {
     const router = createRouter({
       history: createMemoryHistory(),
@@ -245,7 +345,7 @@ describe("single-task workflow workspace", () => {
       snapshot: {
         ...run.snapshot,
         engine: "workflow_call_v2",
-        workflow: { asset_id: "report", version: 1, result_task_id: "result" },
+        workflow: { asset_id: "report", version: 1 },
         created_by_task_id: "coordinator-task",
         definition: { name: "Pinned report call" },
       },
@@ -294,6 +394,54 @@ describe("single-task workflow workspace", () => {
       await flushPromises();
       expect(wrapper.get('[data-testid="run-detail"]').text()).toContain(
         "Independent report writer",
+      );
+    } finally {
+      wrapper.unmount();
+    }
+  });
+  it("opens the selected static team call in its own scope", async () => {
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: "/", component: slotStub }],
+    });
+    await router.push("/?workflow_run=run-1");
+    const call = {
+      ...run,
+      run_id: "team-call",
+      snapshot: {
+        ...run.snapshot,
+        engine: "team_call_v2",
+        definition: { name: "Fixed team" },
+      },
+      state: { ...run.state, child_scope_run_id: "team-scope" },
+    };
+    const coordinator = {
+      ...run,
+      run_id: "team-coordinator",
+      snapshot: { ...run.snapshot, definition: { name: "Team coordinator" } },
+    };
+    api.run.mockResolvedValue({
+      ...run,
+      tasks: [call],
+      scopes: [{ run_id: "team-scope", tasks: [coordinator] }],
+    });
+    const wrapper = mount(WorkflowWorkspacePanel, {
+      props: { mode: "runs" },
+      global: {
+        plugins: [router],
+        stubs: { ...stubs, WorkflowRunProgress: true },
+      },
+    });
+    try {
+      await flushPromises();
+      wrapper
+        .findComponent({ name: "WorkflowRunProgress" })
+        .vm.$emit("select", call.run_id);
+      await flushPromises();
+      await wrapper.get('[data-testid="open-child-workflow"]').trigger("click");
+      await flushPromises();
+      expect(wrapper.get('[data-testid="run-detail"]').text()).toContain(
+        "Team coordinator",
       );
     } finally {
       wrapper.unmount();
@@ -617,6 +765,8 @@ describe("single-task workflow workspace", () => {
           await wrapper.get('[data-testid="human-preview"]').trigger("click");
           await flushPromises();
         } else {
+          await wrapper.get('[data-testid="human-preview"]').trigger("click");
+          await flushPromises();
           await wrapper
             .get('[data-testid="human-feedback"]')
             .setValue("Second report needs verified evidence.");
@@ -663,10 +813,13 @@ describe("single-task workflow workspace", () => {
         else if (action === "approve") {
           await wrapper.get('[data-testid="human-preview"]').trigger("click");
           await flushPromises();
-        } else
+        } else {
+          await wrapper.get('[data-testid="human-preview"]').trigger("click");
+          await flushPromises();
           await wrapper
             .get('[data-testid="human-feedback"]')
             .setValue("Second report needs verified evidence.");
+        }
         if (outcome === "failure") {
           failCurrent(new Error("Current response failed"));
           await flushPromises();
@@ -1604,7 +1757,7 @@ describe("single-task workflow workspace", () => {
         await flushPromises();
         expect(api.events).toHaveBeenCalledWith(
           "run-1",
-          outcome === "success" ? 11 : 10,
+          10,
         );
         expect(wrapper.get('[data-testid="run-detail"]').text()).toContain(
           "v2.states.completed",
@@ -1752,7 +1905,10 @@ describe("single-task workflow workspace", () => {
     blocked.unmount();
   });
   beforeEach(() => {
+    vi.restoreAllMocks();
     vi.resetAllMocks();
+    api.humanRequests.mockResolvedValue({ requests: [] });
+    mockDrafts((id, body) => api.save(id, body));
     api.readiness.mockResolvedValue({ ready: true, issues: [], roles: [] });
     api.list.mockResolvedValue({ assets: [asset] });
     roles.list.mockResolvedValue({
@@ -1879,6 +2035,412 @@ describe("single-task workflow workspace", () => {
     wrapper.unmount();
   });
 
+  it("routes duplicate nested and loop observations to their own run", async () => {
+    vi.useFakeTimers();
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: "/", component: slotStub }] });
+    await router.push("/?workflow_run=run-1");
+    const child = { ...run, run_id: "child", node_id: "same", process: [], snapshot: { ...run.snapshot, definition: { name: "Child" } } };
+    const round = { ...run, run_id: "round", node_id: "same", process: [], snapshot: { ...run.snapshot, definition: { name: "Round" } } };
+    api.run.mockResolvedValue({ ...run, cursor: 10, tasks: [run], scopes: [{ run_id: "scope", tasks: [child] }], loops: [{ iterations: [{ tasks: [round] }] }] });
+    const record = (id: string, text: string) => ({ record_id: id, run_id: id, attempt_id: "attempt-1", kind: "model_response", data: { text } });
+    api.events.mockResolvedValue({ cursor: 11, reset: false, records: [record("child", "Child output"), record("round", "Round output")], snapshot: null });
+    const wrapper = mount(WorkflowWorkspacePanel, { props: { mode: "runs" }, global: { plugins: [router], stubs: { ...stubs, WorkflowRunProgress: true } } });
+    await flushPromises();
+    await vi.advanceTimersByTimeAsync(4000);
+    wrapper.findComponent({ name: "WorkflowRunProgress" }).vm.$emit("select", "child");
+    await flushPromises();
+    expect(wrapper.text()).toContain("Child output");
+    expect(wrapper.text()).not.toContain("Round output");
+    wrapper.findComponent({ name: "WorkflowRunProgress" }).vm.$emit("select", "round");
+    await flushPromises();
+    expect(wrapper.text()).toContain("Round output");
+    expect(wrapper.text()).not.toContain("Child output");
+    expect(wrapper.findAll('[data-testid="process-record"]')).toHaveLength(1);
+    wrapper.unmount();
+  });
+
+  it("pages older observations and keeps them when a state snapshot arrives", async () => {
+    vi.useFakeTimers();
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: "/", component: slotStub }] });
+    await router.push("/?workflow_run=run-1");
+    const current = { record_id: "current", cursor: 10, run_id: "run-1", attempt_id: "attempt-1", kind: "model_response", data: { text: "Current" } };
+    const old = { record_id: "old", cursor: 3, run_id: "run-1", attempt_id: "attempt-1", kind: "model_response", data: { text: "Older" } };
+    api.run.mockResolvedValue({ ...run, cursor: 10, process: [current] });
+    api.processPage.mockResolvedValue({ records: [old], next_before: null });
+    api.events.mockResolvedValue({ cursor: 11, reset: true, records: [], snapshot: { ...run, cursor: 11, process: [current] } });
+    const wrapper = mount(WorkflowWorkspacePanel, { props: { mode: "runs" }, global: { plugins: [router], stubs } });
+    await flushPromises();
+    const button = wrapper.findAll("button").find((element) => element.text() === "progress.loadOlder")!;
+    await button.trigger("click");
+    await flushPromises();
+    expect(api.processPage).toHaveBeenCalledWith("run-1", "run-1", 10);
+    expect(wrapper.text()).toContain("Older");
+    await vi.advanceTimersByTimeAsync(2000);
+    await flushPromises();
+    expect(api.events).toHaveBeenCalledWith("run-1", 10);
+    expect(wrapper.text()).toContain("Older");
+    expect(wrapper.text()).toContain("Current");
+    wrapper.unmount();
+  });
+
+  it("keeps the latest scroll intent when an older page finishes late", async () => {
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: "/", component: slotStub }] });
+    await router.push("/?workflow_run=run-1");
+    api.run.mockResolvedValue({ ...run, cursor: 10, process: [] });
+    let finish!: (page: any) => void;
+    api.processPage.mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+    const wrapper = mount(WorkflowWorkspacePanel, { props: { mode: "runs" }, global: { plugins: [router], stubs } });
+    await flushPromises();
+    const pane = wrapper.get(".workbench-process");
+    Object.defineProperty(pane.element, "scrollHeight", { get: () => wrapper.text().includes("Older page") ? 1100 : 1000 });
+    pane.element.scrollTop = 100;
+    await wrapper.findAll("button").find((button) => button.text() === "progress.loadOlder")!.trigger("click");
+    pane.element.scrollTop = 250;
+    finish({records:[{record_id:"old",cursor:5,run_id:"run-1",attempt_id:"attempt-1",kind:"model_response",data:{text:"Older page"}}],next_before:null});
+    await flushPromises();
+    expect(pane.element.scrollTop).toBe(350);
+    wrapper.unmount();
+  });
+
+  it("pages scoped message and event history without duplicating entries", async () => {
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: "/", component: slotStub }] });
+    await router.push("/?workflow_run=run-1");
+    api.run.mockResolvedValue({ ...run, cursor: 100, event_history_before: 50, message_history_before: 60, attempt_history_before: 70, messages: [], events: [] });
+    api.runHistoryPage.mockImplementation(async (_root: string, _task: string, kind: string) => kind === "events"
+      ? { items: [{ cursor: 10, kind: "task.changed", data: { event: "Older event" } }], next_before: null }
+      : kind === "attempts"
+      ? { items: [{ cursor: 11, attempt_id: "older-attempt", status: "failed", state: { reason: "Original failure" }, snapshot: { inputs: {} } }], next_before: null }
+      : { items: [{ cursor: 12, message_id: "older-message", sender_member_id: "one", recipient_member_id: "two", text: "Older message", artifact_refs: [] }], next_before: null });
+    const wrapper = mount(WorkflowWorkspacePanel, { props: { mode: "runs" }, global: { plugins: [router], stubs } });
+    await flushPromises();
+    await wrapper.findAll("button").find((button) => button.text() === "progress.loadMessages")!.trigger("click");
+    await flushPromises();
+    expect(wrapper.text()).toContain("Older message");
+    expect(api.runHistoryPage).toHaveBeenCalledWith("run-1", "run-1", "messages", "60");
+    await wrapper.findAll("button").find((button) => button.text() === "progress.loadEvents")!.trigger("click");
+    await flushPromises();
+    expect(wrapper.text()).toContain("Older event");
+    expect(api.runHistoryPage).toHaveBeenCalledWith("run-1", "run-1", "events", "50");
+    await wrapper.findAll("button").find((button) => button.text() === "progress.loadAttempts")!.trigger("click");
+    await flushPromises();
+    expect(wrapper.text()).toContain("Original failure");
+    expect(api.runHistoryPage).toHaveBeenCalledWith("run-1", "run-1", "attempts", "70");
+    wrapper.unmount();
+  });
+
+  it("keeps the applied event cursor when refreshing newer task state", async () => {
+    vi.useFakeTimers();
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: "/", component: slotStub }] });
+    await router.push("/?workflow_run=run-1");
+    const record = { record_id:"old-delivery", run_id:"run-1", cursor:11, attempt_id:"attempt-1", kind:"model_response", data:{text:"Read before refresh"} };
+    api.run.mockResolvedValueOnce({ ...run, cursor:10 }).mockResolvedValue({ ...run, cursor:200, status:"completed", process:[] });
+    api.events.mockResolvedValueOnce({ cursor:12, reset:false, events:[{cursor:11,kind:"process.model_response"},{cursor:12,kind:"task.completed"}], records:[record], snapshot:null })
+      .mockResolvedValue({ cursor:12, reset:false, events:[], records:[], snapshot:null });
+    const wrapper = mount(WorkflowWorkspacePanel, { props:{mode:"runs"}, global:{plugins:[router],stubs} });
+    await flushPromises();
+    await vi.advanceTimersByTimeAsync(2000);
+    await flushPromises();
+    expect(wrapper.text()).toContain("Read before refresh");
+    await vi.advanceTimersByTimeAsync(2000);
+    await flushPromises();
+    expect(api.events).toHaveBeenLastCalledWith("run-1",12);
+    wrapper.unmount();
+  });
+
+  it("keeps following the newest output and final response beyond 512 observations", async () => {
+    vi.useFakeTimers();
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: "/", component: slotStub }] });
+    await router.push("/?workflow_run=run-1");
+    const start = { record_id: "start", cursor: 10, run_id: "run-1", attempt_id: "attempt-1", kind: "model_delivery", data: { receipt_id: "delivery", status: "started", streaming: true } };
+    const end = { record_id: "end", cursor: 611, run_id: "run-1", attempt_id: "attempt-1", kind: "model_delivery", data: { receipt_id: "delivery", status: "completed", text: "FINAL COMPLETION" } };
+    const response = { record_id: "response", cursor: 612, run_id: "run-1", attempt_id: "attempt-1", kind: "model_response", data: { receipt_id: "delivery", text: "FINAL COMPLETION" } };
+    api.run.mockResolvedValueOnce({ ...run, cursor: 10, process: [start] }).mockResolvedValue({ ...run, cursor: 613, status: "completed", process: [end, response] });
+    let sequence = 0;
+    api.events.mockImplementation(async (_id: string, after: number) => {
+      if (sequence < 600) {
+        const records = Array.from({ length: 100 }, () => {
+          const current = sequence++;
+          return { record_id: `delta-${current}`, cursor: 11 + current, run_id: "run-1", attempt_id: "attempt-1", kind: "model_delta", data: { receipt_id: "delivery", sequence: current, text: `CHUNK[${String(current).padStart(3, "0")}]` } };
+        });
+        return { cursor: records[records.length - 1].cursor, reset: false, records, messages: [], events: records.map((record) => ({ cursor: record.cursor, run_id: record.run_id, kind: "process.model_delta" })), snapshot: null };
+      }
+      if (sequence++ === 600) return { cursor: 613, reset: false, records: [end, response], messages: [], events: [{ cursor: 613, run_id: "run-1", kind: "run.completed" }], snapshot: null };
+      return { cursor: after, reset: false, records: [], messages: [], events: [], snapshot: null };
+    });
+    const wrapper = mount(WorkflowWorkspacePanel, { props: { mode: "runs" }, global: { plugins: [router], stubs } });
+    await flushPromises();
+    for (let index = 0; index < 6; index++) { await vi.advanceTimersByTimeAsync(2000); await flushPromises(); }
+    expect(wrapper.text()).toContain("CHUNK599");
+    expect(wrapper.text()).not.toContain("CHUNK000");
+    expect(wrapper.text()).toContain("progress.olderHistoryHidden");
+    expect(wrapper.text()).not.toContain("progress.reloadLatest");
+    expect(wrapper.getComponent({ name: "WorkflowRunProcess" }).props("run").process.length).toBeLessThanOrEqual(512);
+    await vi.advanceTimersByTimeAsync(2000);
+    await flushPromises();
+    expect(wrapper.text()).toContain("FINAL COMPLETION");
+    expect(wrapper.text()).toContain("progress.deliveryStates.completed");
+    expect(wrapper.getComponent({ name: "WorkflowRunProcess" }).props("run").process.length).toBeLessThanOrEqual(512);
+    wrapper.unmount();
+  });
+
+  it("preserves a historical window and scroll position until return to latest", async () => {
+    vi.useFakeTimers();
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: "/", component: slotStub }] });
+    await router.push("/?workflow_run=run-1");
+    const delta = (sequence: number, cursor: number) => ({ record_id: `delta-${sequence}`, cursor, run_id: "run-1", attempt_id: "attempt-1", kind: "model_delta", data: { receipt_id: "delivery", sequence, text: `CHUNK[${sequence}]` } });
+    const initial = Array.from({ length: 512 }, (_, index) => delta(100 + index, 200 + index));
+    const end = { record_id: "end", cursor: 1002, run_id: "run-1", attempt_id: "attempt-1", kind: "model_delivery", data: { receipt_id: "delivery", status: "completed", text: "FINISHED WHILE READING" } };
+    const response = { record_id: "response", cursor: 1003, run_id: "run-1", attempt_id: "attempt-1", kind: "model_response", data: { receipt_id: "delivery", text: "FINISHED WHILE READING" } };
+    api.run.mockResolvedValueOnce({ ...run, cursor: 1000, process: initial }).mockResolvedValue({ ...run, cursor: 1004, status: "completed", process: [end, response] });
+    api.processPage.mockImplementation(async (_root: string, _task: string, before: number) => before === 200
+      ? { records: Array.from({ length: 20 }, (_, index) => delta(80 + index, 180 + index)), next_before: "180" }
+      : { records: [...initial.slice(-126), end, response], next_before: "586" });
+    api.runHistoryPage.mockResolvedValue({ items: [], next_before: null });
+    api.events.mockResolvedValueOnce({ cursor: 1004, reset: false, records: [delta(612, 1001), end, response], messages: [], events: [{ cursor: 1004, run_id: "run-1", kind: "run.completed" }], snapshot: null })
+      .mockImplementation(async (_id: string, after: number) => ({ cursor: after, reset: false, records: [], messages: [], events: [], snapshot: null }));
+    const wrapper = mount(WorkflowWorkspacePanel, { props: { mode: "runs" }, global: { plugins: [router], stubs } });
+    await flushPromises();
+    const pane = wrapper.get(".workbench-process");
+    Object.defineProperties(pane.element, { scrollHeight: { value: 3000 }, clientHeight: { value: 400 } });
+    pane.element.scrollTop = 250;
+    await pane.trigger("scroll");
+    await wrapper.findAll("button").find((button) => button.text() === "progress.loadOlder")!.trigger("click");
+    await flushPromises();
+    expect(wrapper.text()).toContain("CHUNK80");
+    expect(pane.element.scrollTop).toBe(250);
+    await vi.advanceTimersByTimeAsync(2000);
+    await flushPromises();
+    expect(wrapper.text()).toContain("CHUNK80");
+    expect(wrapper.text()).not.toContain("FINISHED WHILE READING");
+    expect(wrapper.text()).toContain("progress.newActivity");
+    expect(wrapper.text()).toContain("progress.historyWindow");
+    expect(pane.element.scrollTop).toBe(250);
+    await wrapper.findAll("button").find((button) => button.text() === "progress.reloadLatest")!.trigger("click");
+    await flushPromises();
+    expect(api.processPage).toHaveBeenLastCalledWith("run-1", "run-1", 1005);
+    expect(wrapper.text()).toContain("FINISHED WHILE READING");
+    expect(wrapper.text()).not.toContain("progress.newActivity");
+    expect(pane.element.scrollTop).toBe(3000);
+    await vi.advanceTimersByTimeAsync(2000);
+    await flushPromises();
+    expect(api.events).toHaveBeenLastCalledWith("run-1", 1004);
+    wrapper.unmount();
+  });
+
+  it("keeps events arriving while returning to the latest window", async () => {
+    vi.useFakeTimers();
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: "/", component: slotStub }] });
+    await router.push("/?workflow_run=run-1");
+    const delta = (id: number, cursor: number, text: string) => ({ record_id: `delta-${id}`, cursor, run_id: "run-1", attempt_id: "attempt-1", kind: "model_delta", data: { receipt_id: "delivery", sequence: id, text } });
+    const initial = Array.from({ length: 512 }, (_, index) => delta(index, index + 1, `OLD-${index};`));
+    const first = delta(512, 1001, "BEFORE RETURN;");
+    const second = delta(513, 1002, "DURING RETURN;");
+    api.run.mockResolvedValue({ ...run, cursor: 1000, process: initial });
+    let finish!: (page: any) => void;
+    api.processPage.mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+    api.runHistoryPage.mockResolvedValue({ items: [], next_before: null });
+    api.events.mockResolvedValueOnce({ cursor: 1001, reset: false, records: [first], messages: [], events: [{ cursor: 1001, run_id: "run-1", kind: "process.model_delta" }], snapshot: null })
+      .mockResolvedValueOnce({ cursor: 1002, reset: false, records: [second], messages: [], events: [{ cursor: 1002, run_id: "run-1", kind: "process.model_delta" }], snapshot: null })
+      .mockImplementation(async (_id: string, after: number) => ({ cursor: after, reset: false, records: [], messages: [], events: [], snapshot: null }));
+    const wrapper = mount(WorkflowWorkspacePanel, { props: { mode: "runs" }, global: { plugins: [router], stubs } });
+    await flushPromises();
+    const pane = wrapper.get(".workbench-process");
+    Object.defineProperties(pane.element, { scrollHeight: { value: 3000 }, clientHeight: { value: 400 } });
+    pane.element.scrollTop = 250;
+    await pane.trigger("scroll");
+    await vi.advanceTimersByTimeAsync(2000);
+    await flushPromises();
+    await wrapper.findAll("button").find((button) => button.text() === "progress.reloadLatest")!.trigger("click");
+    await vi.advanceTimersByTimeAsync(2000);
+    await flushPromises();
+    expect(wrapper.text()).not.toContain("DURING RETURN");
+    finish({ records: [...initial.slice(-127), first], next_before: "385" });
+    await flushPromises();
+    expect(wrapper.text()).toContain("BEFORE RETURN");
+    expect(wrapper.text()).toContain("DURING RETURN");
+    expect(wrapper.text()).not.toContain("progress.newActivity");
+    await vi.advanceTimersByTimeAsync(2000);
+    await flushPromises();
+    expect(api.events).toHaveBeenLastCalledWith("run-1", 1002);
+    wrapper.unmount();
+  });
+
+  it("resumes following when a user scrolls back to the live edge without a gap", async () => {
+    vi.useFakeTimers();
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: "/", component: slotStub }] });
+    await router.push("/?workflow_run=run-1");
+    api.run.mockResolvedValue({ ...run, cursor: 10, process: [] });
+    api.events.mockImplementation(async (_id: string, after: number) => ({ cursor: after, reset: false, records: [], messages: [], events: [], snapshot: null }));
+    const wrapper = mount(WorkflowWorkspacePanel, { props: { mode: "runs" }, global: { plugins: [router], stubs } });
+    await flushPromises();
+    const pane = wrapper.get(".workbench-process");
+    Object.defineProperties(pane.element, { scrollHeight: { value: 1000 }, clientHeight: { value: 200 } });
+    pane.element.scrollTop = 100;
+    await pane.trigger("scroll");
+    expect(wrapper.text()).toContain("progress.reloadLatest");
+    pane.element.scrollTop = 800;
+    await pane.trigger("scroll");
+    expect(wrapper.text()).not.toContain("progress.reloadLatest");
+    api.events.mockResolvedValueOnce({ cursor: 11, reset: false, records: [{ record_id: "new", cursor: 11, run_id: "run-1", attempt_id: "attempt-1", kind: "model_response", data: { text: "NEW LIVE RESPONSE" } }], messages: [], events: [{ cursor: 11, run_id: "run-1", kind: "process.model_response" }], snapshot: null });
+    await vi.advanceTimersByTimeAsync(2000);
+    await flushPromises();
+    expect(wrapper.text()).toContain("NEW LIVE RESPONSE");
+    expect(pane.element.scrollTop).toBe(1000);
+    wrapper.unmount();
+  });
+
+  it("retains the newest messages and events through repeated state snapshots", async () => {
+    vi.useFakeTimers();
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: "/", component: slotStub }] });
+    await router.push("/?workflow_run=run-1");
+    api.run.mockImplementation(async () => ({ ...run, cursor: 10, process: [], messages: [], events: [] }));
+    let sequence = 0;
+    api.events.mockImplementation(async (_id: string, after: number) => {
+      if (sequence >= 600) return { cursor: after, reset: false, records: [], messages: [], events: [], snapshot: null };
+      const messages = Array.from({ length: 100 }, () => {
+        const current = sequence++;
+        return { message_id: `message-${current}`, cursor: 11 + current, sender_member_id: "sender", recipient_member_id: "member-1", sender_task_run_id: "sender-task", sender_attempt_id: "sender-attempt", scope_id: "scope", text: `MESSAGE-${String(current).padStart(3, "0")}`, artifact_refs: [] };
+      });
+      return { cursor: messages[messages.length - 1].cursor, reset: false, records: [], messages, events: messages.map((message) => ({ cursor: message.cursor, run_id: "run-1", kind: "member.message_sent", data: { message_id: message.message_id } })), snapshot: null };
+    });
+    const wrapper = mount(WorkflowWorkspacePanel, { props: { mode: "runs" }, global: { plugins: [router], stubs } });
+    await flushPromises();
+    for (let index = 0; index < 6; index++) { await vi.advanceTimersByTimeAsync(2000); await flushPromises(); }
+    expect(wrapper.text()).toContain("MESSAGE-599");
+    expect(wrapper.text()).not.toContain("MESSAGE-000");
+    const displayed = wrapper.getComponent({ name: "WorkflowRunProcess" }).props("run");
+    expect(displayed.messages).toHaveLength(512);
+    expect(displayed.events).toHaveLength(512);
+    expect(displayed.messages[511].message_id).toBe("message-599");
+    expect(displayed.events[511].cursor).toBe(610);
+    expect(wrapper.text()).toContain("progress.olderHistoryHidden");
+    expect(wrapper.text()).not.toContain("progress.reloadLatest");
+    wrapper.unmount();
+  });
+
+  it("keeps the newest observations for an unselected concurrent task", async () => {
+    vi.useFakeTimers();
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: "/", component: slotStub }] });
+    await router.push("/?workflow_run=root");
+    const first = { ...run, run_id: "first", node_id: "first", process: [], snapshot: { ...run.snapshot, definition: { name: "First" } } };
+    const second = { ...run, run_id: "second", node_id: "second", process: [], snapshot: { ...run.snapshot, definition: { name: "Second" } } };
+    api.run.mockResolvedValue({ ...run, run_id: "root", cursor: 10, tasks: [first, second], scopes: [], loops: [] });
+    let sequence = 0;
+    api.events.mockImplementation(async (_id: string, after: number) => {
+      if (sequence >= 600) return { cursor: after, reset: false, records: [], messages: [], events: [], snapshot: null };
+      const records = Array.from({ length: 100 }, () => {
+        const current = sequence++;
+        return { record_id: `other-${current}`, cursor: 11 + current, run_id: "second", attempt_id: "attempt-1", kind: "model_delta", data: { receipt_id: "other-delivery", sequence: current, text: `OTHER[${String(current).padStart(3, "0")}]` } };
+      });
+      return { cursor: records[records.length - 1].cursor, reset: false, records, messages: [], events: records.map((record) => ({ cursor: record.cursor, run_id: record.run_id, kind: "process.model_delta" })), snapshot: null };
+    });
+    const wrapper = mount(WorkflowWorkspacePanel, { props: { mode: "runs" }, global: { plugins: [router], stubs: { ...stubs, WorkflowRunProgress: true } } });
+    await flushPromises();
+    for (let index = 0; index < 6; index++) { await vi.advanceTimersByTimeAsync(2000); await flushPromises(); }
+    wrapper.findComponent({ name: "WorkflowRunProgress" }).vm.$emit("select", "second");
+    await flushPromises();
+    expect(wrapper.text()).toContain("OTHER599");
+    expect(wrapper.text()).not.toContain("OTHER000");
+    expect(wrapper.getComponent({ name: "WorkflowRunProcess" }).props("run").process.length).toBeLessThanOrEqual(512);
+    wrapper.unmount();
+  });
+
+  it("restores a task's latest window when switching away from truncated history", async () => {
+    vi.useFakeTimers();
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: "/", component: slotStub }] });
+    await router.push("/?workflow_run=root");
+    const delta = (sequence: number, cursor: number, text: string) => ({ record_id: `a-${sequence}`, cursor, run_id: "first", attempt_id: "attempt-1", kind: "model_delta", data: { receipt_id: "first-delivery", sequence, text } });
+    const initial = Array.from({ length: 512 }, (_, index) => delta(100 + index, 200 + index, `OLD-${index};`));
+    const first = { ...run, run_id: "first", node_id: "first", process: initial, snapshot: { ...run.snapshot, definition: { name: "First" } } };
+    const second = { ...run, run_id: "second", node_id: "second", process: [], snapshot: { ...run.snapshot, definition: { name: "Second" } } };
+    api.run.mockResolvedValue({ ...run, run_id: "root", cursor: 1000, tasks: [first, second], scopes: [], loops: [] });
+    const firstNew = delta(612, 1001, "FIRST-NEW;");
+    const secondNew = delta(613, 1002, "SECOND-NEW;");
+    let finishRestore!: (page: any) => void;
+    api.processPage.mockImplementation(async (_root: string, _task: string, before: number) => before === 200
+      ? { records: Array.from({ length: 20 }, (_, index) => delta(80 + index, 180 + index, `EARLIER-${index};`)), next_before: "180" }
+      : new Promise((resolve) => { finishRestore = resolve; }));
+    api.runHistoryPage.mockResolvedValue({ items: [], next_before: null });
+    const batch = (record: any) => ({ cursor: record.cursor, reset: false, records: [record], messages: [], events: [{ cursor: record.cursor, run_id: record.run_id, kind: "process.model_delta" }], snapshot: null });
+    api.events.mockResolvedValueOnce(batch(firstNew)).mockResolvedValueOnce(batch(secondNew))
+      .mockImplementation(async (_id: string, after: number) => ({ cursor: after, reset: false, records: [], messages: [], events: [], snapshot: null }));
+    const wrapper = mount(WorkflowWorkspacePanel, { props: { mode: "runs" }, global: { plugins: [router], stubs: { ...stubs, WorkflowRunProgress: true } } });
+    await flushPromises();
+    await wrapper.findAll("button").find((button) => button.text() === "progress.loadOlder")!.trigger("click");
+    await flushPromises();
+    await vi.advanceTimersByTimeAsync(2000);
+    await flushPromises();
+    expect(wrapper.text()).toContain("progress.newActivity");
+    wrapper.findComponent({ name: "WorkflowRunProgress" }).vm.$emit("select", "second");
+    await flushPromises();
+    expect(api.processPage).toHaveBeenCalledWith("root", "first", 1002);
+    await vi.advanceTimersByTimeAsync(2000);
+    await flushPromises();
+    finishRestore({ records: [...initial.slice(-126), firstNew], next_before: "586" });
+    await flushPromises();
+    wrapper.findComponent({ name: "WorkflowRunProgress" }).vm.$emit("select", "first");
+    await flushPromises();
+    expect(wrapper.text()).toContain("FIRST-NEW");
+    expect(wrapper.text()).toContain("SECOND-NEW");
+    expect(wrapper.text()).not.toContain("progress.newActivity");
+    expect(wrapper.getComponent({ name: "WorkflowRunProcess" }).props("run").process.length).toBeLessThanOrEqual(512);
+    await vi.advanceTimersByTimeAsync(2000);
+    await flushPromises();
+    expect(api.events).toHaveBeenLastCalledWith("root", 1002);
+    wrapper.unmount();
+  });
+
+  it("merges incremental records without replacing the reader or forcing scroll", async () => {
+    vi.useFakeTimers();
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: "/", component: slotStub }] });
+    await router.push("/?workflow_run=run-1");
+    const start = { record_id: "start", run_id: "run-1", attempt_id: "attempt-1", kind: "model_delivery", data: { receipt_id: "delivery", invocation_id: "invocation", status: "started" } };
+    const delta = { record_id: "delta", run_id: "run-1", attempt_id: "attempt-1", kind: "model_delta", data: { receipt_id: "delivery", sequence: 0, text: "First", reasoning_content: "" } };
+    api.run.mockResolvedValue({ ...run, cursor: 10, process: [start] });
+    api.events.mockResolvedValue({ cursor: 11, reset: false, events: [{ cursor: 11 }], records: [delta], snapshot: null });
+    const wrapper = mount(WorkflowWorkspacePanel, { props: { mode: "runs" }, global: { plugins: [router], stubs } });
+    await flushPromises();
+    const reader = wrapper.get('[data-testid="model-delivery"]').element;
+    const pane = wrapper.get(".workbench-process");
+    Object.defineProperties(pane.element, { scrollHeight: { value: 1000 }, clientHeight: { value: 200 } });
+    pane.element.scrollTop = 100;
+    await pane.trigger("scroll");
+    await vi.advanceTimersByTimeAsync(2000);
+    await flushPromises();
+    expect(wrapper.get('[data-testid="model-delivery"]').element).toBe(reader);
+    expect(wrapper.findAll('[data-testid="model-delivery"]')).toHaveLength(1);
+    expect(pane.element.scrollTop).toBe(100);
+    expect(api.run).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(2000);
+    await flushPromises();
+    expect(wrapper.findAll('[data-testid="model-delivery"]')).toHaveLength(1);
+    expect(api.events).toHaveBeenLastCalledWith("run-1", 11);
+    wrapper.unmount();
+  });
+
+  it.each([["image/png", "ImagePreview"], ["application/pdf", "PdfPreview"]])(
+    "uses the chat preview for stored %s artifacts", async (mediaType, componentName) => {
+      const router = createRouter({ history: createMemoryHistory(), routes: [{ path: "/", component: slotStub }] });
+      await router.push("/?workflow_run=run-1");
+      api.run.mockResolvedValue({ ...run, cursor: 1, result_ref: { artifact_id: "artifact", version: 1 } });
+      api.artifact.mockResolvedValue({ artifact_id: "artifact", version: 1, content: { text: "Report", files: [{file_id: "file", filename: "report"}] } });
+      const blob = new Blob(["sample"], { type: mediaType });
+      api.file.mockResolvedValue({ data: blob, headers: {} });
+      const wrapper = mount(WorkflowWorkspacePanel, { props: { mode: "runs" }, global: { plugins: [router], stubs: { ...stubs,
+        ImagePreview: { props: ["blob", "filename"], template: '<div data-testid="image-preview">{{ filename }}</div>' },
+        PdfPreview: { props: ["blob"], template: '<div data-testid="pdf-preview" />' },
+      } } });
+      await flushPromises();
+      const button = wrapper.findAll("button").find(item => item.text() === "v2.previewFile");
+      expect(button).toBeDefined();
+      await button!.trigger("click");
+      await flushPromises();
+      expect(api.file).toHaveBeenCalledWith("artifact", 1, "file", false);
+      expect(wrapper.findComponent({ name: componentName }).exists() || wrapper.find(componentName === "ImagePreview" ? '[data-testid="image-preview"]' : '[data-testid="pdf-preview"]').exists()).toBe(true);
+      wrapper.unmount();
+    },
+  );
+
   it("continues a cursor, ignores duplicate observations and resets to a persisted snapshot", async () => {
     vi.useFakeTimers();
     const router = createRouter({
@@ -1966,34 +2528,89 @@ describe("single-task workflow workspace", () => {
     wrapper.unmount();
   });
 
-  it("saves a pinned asset and presents required input errors before starting a run", async () => {
+  it("saves the inline graph, corrects an input error and starts its fixed version", async () => {
     const router = createRouter({
       history: createMemoryHistory(),
       routes: [{ path: "/", component: slotStub }],
     });
     await router.push("/");
+    roles.resources.mockResolvedValue({
+      profiles: [{ id: "default" }],
+      models: [{ id: "m", name: "Model" }],
+      personas: [],
+      tools: [],
+      skills: [],
+      knowledge_bases: [],
+    });
     const wrapper = mount(WorkflowWorkspacePanel, {
       props: { mode: "assets" },
-      global: { plugins: [router], stubs },
+      global: {
+        plugins: [router],
+        stubs: {
+          ...stubs,
+          WorkflowGraphCanvas: {
+            props: ["definition"],
+            template: '<div data-testid="graph-editor" />',
+          },
+        },
+      },
     });
     await flushPromises();
     await wrapper
       .findAll("button")
-      .find((button) => button.text() === "v2.edit")!
-      .trigger("click");
-    api.save.mockResolvedValue(asset);
-    await wrapper
-      .find(".dialog textarea")
-      .setValue("Research {topic} carefully");
-    await wrapper
-      .findAll(".dialog button")
-      .find((button) => button.text() === "v2.save")!
+      .find((button) => button.text() === "graph.create")!
       .trigger("click");
     await flushPromises();
-    expect(api.save).toHaveBeenCalledWith("asset-1", {
-      definition: { ...asset.definition, task: "Research {topic} carefully" },
-      expected_version: 1,
+    expect(wrapper.find('[data-testid="graph-editor"]').exists()).toBe(true);
+    await wrapper.find(".dialog input").setValue("My workflow");
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text() === "page.refresh")!
+      .trigger("click");
+    await flushPromises();
+    expect(
+      (wrapper.find(".dialog input").element as HTMLInputElement).value,
+    ).toBe("My workflow");
+    const saved = {
+      asset_id: "inline-1",
+      version: 3,
+      definition: {
+        name: "My workflow",
+        required_inputs: ["input"],
+        max_parallel: 4,
+        tasks: [
+          {
+            id: "agent",
+            name: "Agent",
+            member: "agent",
+            task: "{input}",
+            role: { name: "Agent" },
+            installation: { profile_id: "default" },
+            inputs: { input: { input: "input" } },
+          },
+        ],
+        edges: [],
+      },
+    };
+    api.save.mockImplementation(async () => {
+      api.list.mockResolvedValue({ assets: [saved] });
+      return saved;
     });
+    await wrapper
+      .findAll(".dialog button")
+      .find((button) => button.text() === "draft.publish")!
+      .trigger("click");
+    await flushPromises();
+    expect(api.save.mock.calls[0][1].definition.name).toBe("My workflow");
+    expect(api.save.mock.calls[0][1].definition.tasks[0]).toMatchObject({
+      role: { name: "Agent" },
+      installation: { profile_id: "default" },
+      inputs: { input: { input: "input" } },
+      task: "{input}",
+    });
+    expect(
+      api.save.mock.calls[0][1].definition.tasks[0].role_id,
+    ).toBeUndefined();
     await wrapper
       .findAll("button")
       .find((button) => button.text() === "v2.start")!
@@ -2005,7 +2622,7 @@ describe("single-task workflow workspace", () => {
           message: "Invalid run inputs",
           data: {
             fields: [
-              { path: "inputs.topic", message: "Provide non-empty text" },
+              { path: "inputs.input", message: "Provide non-empty text" },
             ],
           },
         },
@@ -2016,21 +2633,21 @@ describe("single-task workflow workspace", () => {
       .find((button) => button.text() === "v2.start")!
       .trigger("click");
     await flushPromises();
-    expect(wrapper.text()).toContain("inputs.topic: Provide non-empty text");
-    api.start.mockResolvedValue(run);
+    expect(wrapper.text()).toContain("inputs.input: Provide non-empty text");
+    api.start.mockResolvedValue({ run_id: "inline-run" });
     await wrapper.find(".dialog input").setValue("energy");
     await wrapper
       .findAll(".dialog button")
       .find((button) => button.text() === "v2.start")!
       .trigger("click");
     await flushPromises();
-    expect(api.start).toHaveBeenLastCalledWith("asset-1", {
-      version: 1,
-      inputs: { topic: "energy" },
+    expect(api.start).toHaveBeenLastCalledWith("inline-1", {
+      version: 3,
+      inputs: { input: "energy" },
       source: "dashboard",
     });
-    expect(wrapper.emitted("started")).toEqual([["run-1"]]);
-    expect(router.currentRoute.value.query.workflow_run).toBe("run-1");
+    expect(wrapper.emitted("started")).toEqual([["inline-run"]]);
+    expect(router.currentRoute.value.query.workflow_run).toBe("inline-run");
     wrapper.unmount();
   });
 

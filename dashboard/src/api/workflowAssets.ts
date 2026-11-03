@@ -9,9 +9,17 @@ import type {
   HumanAnswerRequest,
   WorkflowImportRequest,
   ChatAccessRequest,
+  TrialRunRequest,
 } from "./generated/openapi-v1";
 
 export const workflowAssetsApi = {
+  async delete(assetId: string) {
+    return (
+      await httpClient.delete(
+        `/api/v1/workflow_assets/${encodeURIComponent(assetId)}`,
+      )
+    ).data.data;
+  },
   async history(offset = 0) {
     return (
       await httpClient.get("/api/v1/agent_history", { params: { offset } })
@@ -93,6 +101,25 @@ export const workflowAssetsApi = {
       )
     ).data.data;
   },
+  async previewTrial(assetId: string, payload: TrialRunRequest) {
+    return (
+      await httpClient.post(
+        `/api/v1/workflow_assets/${encodeURIComponent(assetId)}/trials/preview`,
+        payload,
+      )
+    ).data.data;
+  },
+  async startTrial(assetId: string, payload: TrialRunRequest) {
+    return (
+      await httpClient.post(
+        `/api/v1/workflow_assets/${encodeURIComponent(assetId)}/trials`,
+        payload,
+      )
+    ).data.data;
+  },
+  async humanRequests() {
+    return (await httpClient.get("/api/v1/workflow_human_requests")).data.data;
+  },
   async runs() {
     return (await httpClient.get("/api/v1/workflow_runs")).data.data;
   },
@@ -108,6 +135,18 @@ export const workflowAssetsApi = {
     return (
       await httpClient.get(`/api/v1/workflow_runs/${encodeURIComponent(runId)}`)
     ).data.data;
+  },
+  async runHistoryPage(runId: string, taskRunId: string, kind: "events" | "messages" | "usage" | "attempts", before?: string | null) {
+    return (await httpClient.get(
+      `/api/v1/workflow_runs/${encodeURIComponent(runId)}/history`,
+      { params: { task_run_id: taskRunId, kind, before } },
+    )).data.data;
+  },
+  async processPage(runId: string, taskRunId: string, before: number) {
+    return (await httpClient.get(
+      `/api/v1/workflow_runs/${encodeURIComponent(runId)}/process`,
+      { params: { task_run_id: taskRunId, before } },
+    )).data.data;
   },
   async events(runId: string, after: number) {
     return (

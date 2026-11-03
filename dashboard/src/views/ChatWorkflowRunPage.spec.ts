@@ -109,12 +109,70 @@ describe("source-confirmed run details", () => {
           action: "answer",
           answer: "Asia",
           feedback: null,
+          artifact_ref: null,
         },
       );
       expect(wrapper.get('[data-testid="chat-final-result"]').text()).toContain(
         "Asia accepted",
       );
       expect(wrapper.text()).not.toContain("task_run_id");
+    } finally {
+      wrapper.unmount();
+    }
+  });
+  it("shows a dynamic choice and submits the original choice identity", async () => {
+    api.connection.mockResolvedValue({
+      session_id: "nonce",
+      token: "secret",
+      command: "/asset connect nonce",
+      expires_at: 2000000000,
+    });
+    api.status.mockResolvedValue({ confirmed: true });
+    const run = {
+      run_id: "root-run",
+      status: "running",
+      control_status: "active",
+      result: null,
+      result_files: [],
+      todos: [
+        {
+          todo_id: "choice:one",
+          kind: "question",
+          source_kind: "tool_call",
+          question: "Which report?",
+          constraints: { choices: ["brief", "detail"], max_length: 10000 },
+          choice_spec: {
+            options: [
+              { id: "brief", label: "Brief" },
+              {
+                id: "detail",
+                label: "Detailed",
+                description: "Include evidence",
+              },
+            ],
+          },
+          recommendation: { value: "detail", reason: "Evidence is available" },
+          artifact_ref: null,
+          status: "pending",
+        },
+      ],
+    };
+    api.run.mockResolvedValue(run);
+    api.answer.mockResolvedValue(run);
+    const wrapper = mount(ChatWorkflowRunPage, { global: { stubs } });
+    try {
+      await flushPromises();
+      expect(wrapper.text()).toContain("Detailed");
+      expect(wrapper.text()).toContain("Evidence is available");
+      await wrapper.get('input[value="detail"]').setValue();
+      await wrapper.get('[data-testid="human-submit"]').trigger("click");
+      await flushPromises();
+      expect(api.answer).toHaveBeenCalledWith(
+        "root-run",
+        "nonce.secret",
+        "choice:one",
+        expect.objectContaining({ action: "answer", choice_id: "detail" }),
+      );
     } finally {
       wrapper.unmount();
     }

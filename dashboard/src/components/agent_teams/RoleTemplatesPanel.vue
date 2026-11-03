@@ -22,7 +22,9 @@
     <div class="role-grid">
       <v-card v-for="role in roles" :key="role.role_id" variant="outlined">
         <v-card-text>
-          <h3 class="role-name text-h6">{{ role.definition.name }}</h3>
+          <h3 class="role-name text-h6">
+            {{ role.definition.name || tm("draft.untitled") }}
+          </h3>
           <v-chip
             size="x-small"
             variant="outlined"
@@ -30,17 +32,28 @@
             prepend-icon="mdi-account-outline"
             >{{ tm("workbench.template") }}</v-chip
           >
-          <p class="text-caption">
+          <p v-if="role.version" class="text-caption">
             {{ tm("roles.version") }} {{ role.version }}
+          </p>
+          <p v-else class="text-caption" data-testid="unpublished-draft">
+            {{ tm("draft.unpublished") }}
+          </p>
+          <p
+            v-if="role.version && role.hasDraft"
+            class="text-caption"
+            data-testid="editing-draft"
+          >
+            {{ tm("draft.editing") }}
           </p>
           <p class="role-name my-2">
             {{
               role.definition.description ||
               role.definition.prompt ||
-              tm("roles.personaPrompt")
+              tm("roles.none")
             }}
           </p>
           <v-chip
+            v-if="role.version"
             size="small"
             :color="role.readiness?.ready ? 'success' : 'warning'"
             variant="tonal"
@@ -61,32 +74,56 @@
           </p>
           <p v-else class="text-caption mt-2">
             {{ tm("roles.model") }}:
-            {{
-              role.installation.bindings[role.definition.model_slot] ||
-              tm("roles.unbound")
-            }}
+            {{ role.definition.provider_id || tm("roles.unbound") }}
           </p>
         </v-card-text>
         <v-card-actions
           ><v-btn variant="text" @click="edit(role)">{{
             tm("roles.edit")
-          }}</v-btn></v-card-actions
+          }}</v-btn
+          ><v-btn
+            data-testid="delete-role"
+            variant="text"
+            color="error"
+            @click="deleteTarget = role"
+            >{{ tm("deletion.delete") }}</v-btn
+          ></v-card-actions
         >
       </v-card>
     </div>
 
+    <DeleteAssetDialog
+      :name="
+        deleteTarget?.definition.name ||
+        (deleteTarget ? tm('draft.untitled') : null)
+      "
+      :busy="deleting"
+      :error="deleteError"
+      @cancel="
+        deleteTarget = null;
+        deleteError = '';
+      "
+      @confirm="deleteRole"
+    />
     <v-dialog
       v-model="dialog"
       class="workbench-dialog"
       max-width="1100"
       scrollable
       :fullscreen="mobile"
+      persistent
     >
       <v-card>
         <v-card-title class="text-h3 pa-4 pb-0 pl-6">{{
           currentId ? tm("roles.edit") : tm("roles.create")
         }}</v-card-title>
-        <v-card-text>
+        <v-card-text :inert="saving || draft.busy.value ? '' : undefined">
+          <DraftStatus
+            :draft="draft"
+            @reload="reloadDraft"
+            @discard="dialog = false"
+            @use-latest="useLatestDraft"
+          />
           <v-alert
             v-if="errorMessage"
             type="error"
@@ -126,14 +163,7 @@
                     tm("roles.responsibility")
                   }}</v-expansion-panel-title>
                   <v-expansion-panel-text>
-                    <v-select
-                      v-model="promptMode"
-                      :items="promptModes"
-                      :label="tm('roles.promptSource')"
-                      :aria-label="tm('roles.promptSource')"
-                    />
                     <v-textarea
-                      v-if="promptMode === 'inline'"
                       data-testid="role-prompt"
                       data-issue-path="definition.prompt"
                       v-model="definition.prompt"
@@ -141,27 +171,16 @@
                       rows="4"
                       :error-messages="fieldErrors('definition.prompt')"
                     />
-                    <v-text-field
-                      data-issue-path="definition.persona_slot"
-                      v-model="definition.persona_slot"
-                      :label="tm('roles.personaSlot')"
-                      clearable
-                    />
                     <v-select
-                      v-if="definition.persona_slot"
-                      :data-issue-path="`installation.bindings.${definition.persona_slot}`"
-                      v-model="installation.bindings[definition.persona_slot]"
+                      data-issue-path="definition.persona_id"
+                      v-model="definition.persona_id"
                       :items="catalog.personas"
                       item-title="name"
                       item-value="id"
                       :label="tm('roles.localPersona')"
                       :aria-label="tm('roles.localPersona')"
                       clearable
-                      :error-messages="
-                        fieldErrors(
-                          `installation.bindings.${definition.persona_slot}`,
-                        )
-                      "
+                      :error-messages="fieldErrors('definition.persona_id')"
                     />
                     <p class="text-caption">{{ tm("roles.exportNotice") }}</p>
                   </v-expansion-panel-text>
@@ -181,32 +200,20 @@
                       :aria-label="tm('roles.profile')"
                       :error-messages="fieldErrors('installation.profile_id')"
                     />
-                    <v-text-field
-                      v-if="
-                        (selectedProfile?.runner_type ?? 'local') === 'local'
-                      "
-                      v-model="definition.model_slot"
-                      data-issue-path="definition.model_slot"
-                      :label="tm('roles.modelSlot')"
-                      :error-messages="fieldErrors('definition.model_slot')"
-                    />
                     <v-select
                       v-if="
-                        (selectedProfile?.runner_type ?? 'local') === 'local'
+                        (selectedProfile?.runner_type ?? 'local') === 'local' ||
+                        definition.provider_id
                       "
-                      v-model="installation.bindings[definition.model_slot]"
-                      :data-issue-path="`installation.bindings.${definition.model_slot}`"
+                      v-model="definition.provider_id"
+                      data-issue-path="definition.provider_id"
                       :items="catalog.models"
                       item-title="name"
                       item-value="id"
                       :label="tm('roles.localModel')"
                       :aria-label="tm('roles.localModel')"
                       clearable
-                      :error-messages="
-                        fieldErrors(
-                          `installation.bindings.${definition.model_slot}`,
-                        )
-                      "
+                      :error-messages="fieldErrors('definition.provider_id')"
                     />
                     <v-select
                       data-issue-path="definition.model_capabilities"
@@ -242,59 +249,12 @@
                     />
                   </v-expansion-panel-text>
                 </v-expansion-panel>
-                <v-expansion-panel
-                  v-for="field in resourceFields"
-                  :key="field"
-                  :value="field"
-                >
-                  <v-expansion-panel-title>{{
-                    tm(`roles.${field}`)
-                  }}</v-expansion-panel-title>
-                  <v-expansion-panel-text>
-                    <v-select
-                      v-model="modes[field]"
-                      :data-issue-path="
-                        modes[field] === 'custom'
-                          ? undefined
-                          : `definition.${field}`
-                      "
-                      :items="capabilityModes"
-                      :label="tm('roles.mode')"
-                      :aria-label="`${tm(`roles.${field}`)}: ${tm(
-                        'roles.mode',
-                      )}`"
-                    />
-                    <template v-if="modes[field] === 'custom'">
-                      <v-combobox
-                        :data-issue-path="`definition.${field}`"
-                        v-model="definition[field]"
-                        multiple
-                        chips
-                        closable-chips
-                        :label="tm('roles.logicalSlots')"
-                        :aria-label="`${tm(`roles.${field}`)}: ${tm(
-                          'roles.logicalSlots',
-                        )}`"
-                        :error-messages="fieldErrors(`definition.${field}`)"
-                      />
-                      <v-select
-                        v-for="slot in definition[field] || []"
-                        :key="slot"
-                        :data-issue-path="`installation.bindings.${slot}`"
-                        v-model="installation.bindings[slot]"
-                        :items="catalog[field]"
-                        item-title="name"
-                        item-value="id"
-                        :label="`${tm('roles.binding')}: ${slot}`"
-                        :aria-label="`${tm('roles.binding')}: ${slot}`"
-                        clearable
-                        :error-messages="
-                          fieldErrors(`installation.bindings.${slot}`)
-                        "
-                      />
-                    </template>
-                  </v-expansion-panel-text>
-                </v-expansion-panel>
+                <RoleResourcesEditor
+                  :definition="definition"
+                  :modes="modes"
+                  :catalog="catalog"
+                  :field-errors="fieldErrors"
+                />
                 <v-expansion-panel value="limits">
                   <v-expansion-panel-title>{{
                     tm("roles.limits")
@@ -366,7 +326,17 @@
                   }}</span>
                   <p>
                     {{
-                      Array.isArray(value)
+                      field === "human_wait"
+                        ? (value as any)?.timeout_seconds == null
+                          ? tm("humanWait.unlimited")
+                          : `${(value as any).timeout_seconds} ${tm(
+                              "humanWait.seconds",
+                            )} · ${tm(
+                              (value as any).timeout_action === "wait"
+                                ? "humanWait.wait"
+                                : "humanWait.recommendation",
+                            )}`
+                        : Array.isArray(value)
                         ? value.join(", ") || tm("roles.none")
                         : value ?? tm("roles.none")
                     }}
@@ -385,18 +355,21 @@
           </div>
         </v-card-text>
         <v-card-actions class="pa-4">
-          <v-btn variant="text" :disabled="saving" @click="dialog = false">{{
-            tm("roles.cancel")
-          }}</v-btn>
+          <v-btn
+            variant="text"
+            :disabled="saving || draft.busy.value"
+            @click="closeEditor"
+            >{{ tm("v2.close") }}</v-btn
+          >
           <v-spacer />
           <v-btn
             data-testid="save-role"
             color="primary"
             variant="tonal"
             :loading="saving"
-            :disabled="loading || previewing"
+            :disabled="loading || previewing || draft.busy.value"
             @click="save"
-            >{{ currentId ? tm("roles.saveVersion") : tm("roles.save") }}</v-btn
+            >{{ tm("draft.publish") }}</v-btn
           >
         </v-card-actions>
       </v-card>
@@ -408,13 +381,38 @@
 import { computed, nextTick, onMounted, ref, watch } from "vue";
 import { useDisplay } from "vuetify";
 import { roleAssetsApi } from "@/api/roleAssets";
+import { draftApi, useAssetDraft } from "@/composables/useAssetDraft";
+import DraftStatus from "./DraftStatus.vue";
 import { useModuleI18n } from "@/i18n/composables";
 import { extractApiError } from "@/utils/extractApiError";
 import RunnerCapabilities from "./RunnerCapabilities.vue";
+import RoleResourcesEditor from "./RoleResourcesEditor.vue";
+import DeleteAssetDialog from "./DeleteAssetDialog.vue";
 
 const { tm } = useModuleI18n("features/agent-teams");
 const { mobile } = useDisplay();
 const roles = ref<any[]>([]);
+const deleteTarget = ref<any>(null);
+const deleting = ref(false);
+const deleteError = ref("");
+async function deleteRole() {
+  if (!deleteTarget.value) return;
+  deleting.value = true;
+  deleteError.value = "";
+  try {
+    await roleAssetsApi.delete(deleteTarget.value.role_id);
+    deleteTarget.value = null;
+    await load();
+  } catch (cause) {
+    deleteError.value = extractApiError(
+      cause,
+      tm("errors.operationFailed"),
+    ).message;
+  } finally {
+    deleting.value = false;
+  }
+}
+const draft = useAssetDraft("role");
 const catalog = ref<Record<string, any[]>>({
   profiles: [],
   models: [],
@@ -434,8 +432,7 @@ const versions = ref<number[]>([]);
 const definition = ref<Record<string, any>>({});
 const installation = ref<{
   profile_id: string;
-  bindings: Record<string, string | null>;
-}>({ profile_id: "default", bindings: {} });
+}>({ profile_id: "default" });
 const resourceFields = ["tools", "skills", "knowledge_bases"] as const;
 const limitFields = [
   "max_instances",
@@ -447,16 +444,6 @@ const limitFields = [
   "context_length",
 ] as const;
 const modes = ref<Record<string, string>>({});
-const promptMode = ref("inline");
-const promptModes = computed(() => [
-  { title: tm("roles.inlinePrompt"), value: "inline" },
-  { title: tm("roles.personaPrompt"), value: "persona" },
-]);
-const capabilityModes = computed(() => [
-  { title: tm("roles.inherit"), value: "inherit" },
-  { title: tm("roles.disable"), value: "none" },
-  { title: tm("roles.override"), value: "custom" },
-]);
 const groups = ref<string[]>(["responsibility", "model"]);
 const resolved = ref<any>(null);
 const effectiveFields = computed(() =>
@@ -486,21 +473,30 @@ const saving = ref(false);
 const errorMessage = ref("");
 let editorRevision = 0;
 watch(
-  [definition, installation, modes, promptMode],
+  [definition, installation, modes],
   () => {
     editorRevision++;
     previewStale.value = true;
+    if (dialog.value)
+      draft.change({
+        definition: payload().definition,
+        installation: payload().installation,
+      });
   },
   { deep: true },
 );
+watch(dialog, (open, wasOpen) => {
+  if (!open && wasOpen) void load();
+});
 
 async function load() {
   loading.value = true;
   loadError.value = "";
   try {
-    const [directory, resources] = await Promise.all([
+    const [directory, resources, drafts] = await Promise.all([
       roleAssetsApi.list(),
       roleAssetsApi.resources(),
+      draftApi.list("role"),
     ]);
     catalog.value = resources;
     roles.value = await Promise.all(
@@ -509,6 +505,20 @@ async function load() {
         readiness: await roleAssetsApi.preview(role),
       })),
     );
+    for (const item of drafts) {
+      const published = roles.value.find(
+        (role) => role.role_id === item.asset_id,
+      );
+      if (published) published.hasDraft = item.published_revision !== item.revision;
+      else
+        roles.value.push({
+          role_id: item.asset_id,
+          version: null,
+          definition: item.body.definition,
+          installation: item.body.installation,
+          versions: [],
+        });
+    }
   } catch (err) {
     loadError.value = extractApiError(err, tm("roles.loadFailed")).message;
   } finally {
@@ -516,7 +526,9 @@ async function load() {
   }
 }
 
-function edit(role?: any) {
+async function edit(role?: any) {
+  dialog.value = false;
+  draft.close();
   currentId.value = role?.role_id ?? null;
   latestVersion.value = role?.versions?.[0] ?? role?.version ?? null;
   selectedVersion.value = role?.version ?? null;
@@ -527,52 +539,99 @@ function edit(role?: any) {
         name: "",
         description: "",
         prompt: "",
-        model_slot: "model",
-        persona_slot: null,
+        provider_id: null,
+        persona_id: null,
         model_capabilities: [],
         runner_capabilities: [],
       };
   installation.value = role
     ? JSON.parse(JSON.stringify(role.installation))
-    : { profile_id: "default", bindings: {} };
-  promptMode.value = definition.value.prompt == null ? "persona" : "inline";
+    : { profile_id: "default" };
   for (const field of resourceFields)
-    modes.value[field] =
-      definition.value[field] == null
-        ? "inherit"
-        : definition.value[field].length
-        ? "custom"
-        : "none";
+    modes.value[field] = definition.value[field] == null ? "inherit" : "custom";
   issues.value = [];
   resolved.value = null;
   errorMessage.value = "";
   groups.value = ["responsibility", "model"];
+  try {
+    const item = await draft.open(currentId.value, {
+      definition: payload().definition,
+      installation: payload().installation,
+    });
+    currentId.value = item.asset_id;
+    definition.value = item.body.definition;
+    installation.value = item.body.installation ?? { profile_id: "default" };
+    for (const field of resourceFields)
+      modes.value[field] =
+        definition.value[field] == null ? "inherit" : "custom";
+    await nextTick();
+    dialog.value = true;
+  } catch (err) {
+    loadError.value = extractApiError(err, tm("roles.loadFailed")).message;
+  }
+}
+
+async function reloadDraft() {
+  const item = await draft.reload();
+  dialog.value = false;
+  definition.value = item.body.definition;
+  installation.value = item.body.installation ?? { profile_id: "default" };
+  for (const field of resourceFields)
+    modes.value[field] = definition.value[field] == null ? "inherit" : "custom";
+  await nextTick();
   dialog.value = true;
+}
+
+async function useLatestDraft(latest: any) {
+  definition.value = JSON.parse(JSON.stringify(latest.definition));
+  installation.value = JSON.parse(JSON.stringify(latest.installation));
+  for (const field of resourceFields)
+    modes.value[field] = definition.value[field] == null ? "inherit" : "custom";
+  draft.change({
+    definition: payload().definition,
+    installation: payload().installation,
+  });
+  try {
+    await draft.rebase();
+  } catch (err) {
+    errorMessage.value = extractApiError(err, tm("roles.saveFailed")).message;
+  }
+}
+
+async function closeEditor() {
+  if (draft.status.value === "failed" || draft.status.value === "conflict")
+    return;
+  try {
+    await draft.flush();
+    dialog.value = false;
+  } catch {
+    /* The draft status retains the failure. */
+  }
 }
 
 async function openVersion(version: number) {
   if (!currentId.value) return;
   try {
-    edit(await roleAssetsApi.get(currentId.value, version));
+    const role = await roleAssetsApi.get(currentId.value, version);
+    definition.value = role.definition;
+    installation.value = role.installation;
+    for (const field of resourceFields)
+      modes.value[field] =
+        definition.value[field] == null ? "inherit" : "custom";
+    selectedVersion.value = version;
   } catch (err) {
     errorMessage.value = extractApiError(err, tm("roles.loadFailed")).message;
   }
 }
 
 function payload() {
-  // Preserve null (inherit), [] (disable), and logical slots (custom) in storage.
-  const content: Record<string, any> = {
-    ...definition.value,
-    prompt: promptMode.value === "persona" ? null : definition.value.prompt,
-  };
-  content.persona_slot = content.persona_slot?.trim() || null;
+  // Preserve null (inherit), [] (disable), and selected resource identities.
+  const content: Record<string, any> = { ...definition.value };
+  content.persona_id = content.persona_id || null;
+  content.provider_id = content.provider_id || null;
   for (const field of resourceFields)
     content[field] =
-      modes.value[field] === "inherit"
-        ? null
-        : modes.value[field] === "none"
-        ? []
-        : content[field] ?? [];
+      modes.value[field] === "inherit" ? null : content[field] ?? [];
   for (const field of limitFields)
     content[field] =
       content[field] == null || content[field] === ""
@@ -580,21 +639,10 @@ function payload() {
         : Number.isFinite(Number(content[field]))
         ? Number(content[field])
         : content[field];
-  const activeSlots = new Set([
-    content.model_slot,
-    content.persona_slot,
-    ...resourceFields.flatMap((field) => content[field] ?? []),
-  ]);
-  const bindings = Object.fromEntries(
-    Object.entries(installation.value.bindings).filter(
-      ([slot, id]) => activeSlots.has(slot) && id,
-    ),
-  );
   return {
     definition: content as any,
     installation: {
       profile_id: installation.value.profile_id,
-      bindings: bindings as Record<string, string>,
     },
     expected_version: latestVersion.value,
   };
@@ -626,7 +674,11 @@ async function save() {
   saving.value = true;
   errorMessage.value = "";
   try {
-    await roleAssetsApi.save(currentId.value, payload());
+    draft.change({
+      definition: payload().definition,
+      installation: payload().installation,
+    });
+    await draft.publish();
     dialog.value = false;
     await load();
   } catch (err) {
@@ -645,28 +697,17 @@ function fieldErrors(path: string) {
 }
 
 async function focusIssue(path: string) {
-  // Binding errors name logical slots; reveal the section that owns that slot.
   const field = path.split(".")[1];
-  const group = path.startsWith("installation.bindings.")
-    ? resourceFields.find(
-        (key) =>
-          definition.value[key]?.includes(
-            path.slice("installation.bindings.".length),
-          ),
-      ) ||
-      (path.endsWith(definition.value.persona_slot)
-        ? "responsibility"
-        : "model")
-    : resourceFields.includes(field as any)
+  const group = resourceFields.includes(field as any)
     ? field
     : limitFields.includes(field as any)
     ? "limits"
-    : ["name", "prompt", "persona_slot"].includes(field)
+    : ["name", "prompt", "persona_id"].includes(field)
     ? "responsibility"
     : "model";
   groups.value = [...new Set([...groups.value, group])];
   await nextTick();
-  // Match the longest field path so indexed errors and dotted slots stay exact.
+  // Match the longest field path so indexed errors locate their control.
   const target = Array.from(
     editor.value?.querySelectorAll<HTMLElement>("[data-issue-path]") ?? [],
   )

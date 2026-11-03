@@ -12,6 +12,7 @@ vi.mock("@/i18n/composables", () => ({
   useModuleI18n: () => ({ tm: (key: string) => key }),
 }));
 const stubs = {
+  MarkdownView: { props: ["source"], template: "<div>{{ source }}</div>" },
   "v-card": { template: "<div><slot /></div>" },
   "v-card-text": { template: "<div><slot /></div>" },
   "v-alert": { template: "<div><slot /></div>" },
@@ -166,6 +167,7 @@ describe("persistent human request handling", () => {
           action: "approve",
           answer: null,
           feedback: null,
+          artifact_ref: todo.artifact_ref,
         },
       ]);
       await wrapper.setProps({ todo: { ...todo, status: "approved" } });
@@ -179,6 +181,62 @@ describe("persistent human request handling", () => {
     }
   });
 
+  it("discards a stale preview when the request changes", async () => {
+    let resolve!: (value: any) => void;
+    api.artifact.mockReturnValue(
+      new Promise((done) => {
+        resolve = done;
+      }),
+    );
+    const wrapper = mount(WorkflowHumanTodo, {
+      props: { todo, busy: false, paused: false, cancelled: false },
+      global: { stubs },
+    });
+    try {
+      await wrapper.get('[data-testid="human-preview"]').trigger("click");
+      await wrapper.setProps({
+        todo: {
+          ...todo,
+          todo_id: "new",
+          artifact_ref: { artifact_id: "report", version: 2 },
+        },
+      });
+      resolve({ content: { text: "Old version" }, files: [] });
+      await flushPromises();
+      expect(wrapper.text()).not.toContain("Old version");
+      expect(
+        wrapper.get('[data-testid="human-submit"]').attributes("disabled"),
+      ).toBeDefined();
+    } finally {
+      wrapper.unmount();
+    }
+  });
+
+  it("keeps the reviewed version and feedback when polling replaces a request", async () => {
+    api.artifact.mockResolvedValue({ content: { text: "Reviewed report" }, files: [] });
+    const wrapper = mount(WorkflowHumanTodo, {
+      props: { todo, busy: false, paused: false, cancelled: false },
+      global: { stubs },
+    });
+    try {
+      await wrapper.get('[data-testid="human-preview"]').trigger("click");
+      await flushPromises();
+      await wrapper.get('[data-testid="human-feedback"]').setValue("Add evidence");
+      await wrapper.setProps({ todo: JSON.parse(JSON.stringify(todo)) });
+      expect(wrapper.text()).toContain("Reviewed report");
+      await wrapper.get('[data-testid="human-reject"]').trigger("click");
+      expect(wrapper.emitted("submit")?.[0]?.[1]).toMatchObject({
+        action: "reject", feedback: "Add evidence", artifact_ref: todo.artifact_ref,
+      });
+      await wrapper.setProps({ todo: { ...todo, artifact_ref: { artifact_id: "report", version: 2 } } });
+      expect(wrapper.text()).not.toContain("Reviewed report");
+      expect((wrapper.get('[data-testid="human-feedback"]').element as HTMLTextAreaElement).value).toBe("");
+      expect(wrapper.get('[data-testid="human-submit"]').attributes("disabled")).toBeDefined();
+    } finally {
+      wrapper.unmount();
+    }
+  });
+
   it("requires rejection feedback and reuses request identity on repeated submit", async () => {
     const wrapper = mount(WorkflowHumanTodo, {
       props: { todo, busy: false, paused: true, cancelled: false },
@@ -188,6 +246,12 @@ describe("persistent human request handling", () => {
       expect(
         wrapper.get('[data-testid="human-reject"]').attributes("disabled"),
       ).toBeDefined();
+      api.artifact.mockResolvedValue({
+        content: { text: "Report" },
+        files: [],
+      });
+      await wrapper.get('[data-testid="human-preview"]').trigger("click");
+      await flushPromises();
       await wrapper
         .get('[data-testid="human-feedback"]')
         .setValue("Missing evidence");
@@ -235,6 +299,110 @@ describe("persistent human request handling", () => {
     }
   });
 
+  it("submits a labelled option and note idempotently and isolates requests", async () => {
+    const choice = {
+      ...todo,
+      kind: "question",
+      source_kind: "tool_call",
+      artifact_ref: null,
+      question: "Pick one",
+      choice_spec: {
+        title: "Decision",
+        extra_content: "**Details**",
+        options: [
+          { id: "a", label: "Option A", description: "First option" },
+          { id: "b", label: "Option B" },
+        ],
+      },
+      recommendation: { value: "a", reason: "Fits best" },
+    };
+    const wrapper = mount(WorkflowHumanTodo, {
+      props: { todo: choice, busy: false, paused: true, cancelled: false },
+      global: { stubs },
+    });
+    expect(wrapper.text()).toContain("Option A");
+    expect(wrapper.text()).toContain("First option");
+    expect(
+      wrapper.get('[data-testid="human-recommendation"]').text(),
+    ).toContain("Option A");
+    expect(wrapper.find('[data-testid="human-reject"]').exists()).toBe(false);
+    await wrapper.get('input[value="a"]').setValue();
+    await wrapper.get('[data-testid="human-choice-text"]').setValue("a note");
+    await wrapper.setProps({ todo: JSON.parse(JSON.stringify(choice)) });
+    expect((wrapper.get('input[value="a"]').element as HTMLInputElement).checked).toBe(true);
+    expect((wrapper.get('[data-testid="human-choice-text"]').element as HTMLTextAreaElement).value).toBe("a note");
+    await wrapper.get('[data-testid="human-submit"]').trigger("click");
+    await wrapper.get('[data-testid="human-submit"]').trigger("click");
+    expect(wrapper.emitted("submit")?.[0]).toEqual(
+      wrapper.emitted("submit")?.[1],
+    );
+    expect(wrapper.emitted("submit")?.[0]?.[1]).toEqual({
+      request_id: expect.any(String),
+      action: "answer",
+      choice_id: "a",
+      free_text: "a note",
+    });
+    await wrapper.setProps({ todo: { ...choice, todo_id: "other" } });
+    expect(
+      (
+        wrapper.get('[data-testid="human-choice-text"]')
+          .element as HTMLTextAreaElement
+      ).value,
+    ).toBe("");
+    expect(
+      wrapper.get('[data-testid="human-submit"]').attributes("disabled"),
+    ).toBeDefined();
+    await wrapper.get('input[value="a"]').setValue();
+    await wrapper.get('[data-testid="human-choice-text"]').setValue("a note");
+    await wrapper.get('[data-testid="human-submit"]').trigger("click");
+    expect((wrapper.emitted("submit")?.[2]?.[1] as any).request_id).not.toBe(
+      (wrapper.emitted("submit")?.[0]?.[1] as any).request_id,
+    );
+    await wrapper.setProps({
+      todo: {
+        ...choice,
+        status: "consumed",
+        response: { choice_id: "a", free_text: "a note" },
+      },
+    });
+    expect(
+      wrapper.get('[data-testid="human-choice-response"]').text(),
+    ).toContain("Option A");
+    expect(wrapper.text()).toContain("a note");
+    expect(wrapper.find('[data-testid="human-submit"]').exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it("requires text for a free choice and disables cancelled requests", async () => {
+    const choice = {
+      ...todo,
+      kind: "question",
+      source_kind: "tool_call",
+      artifact_ref: null,
+      choice_spec: { options: [] },
+    };
+    const wrapper = mount(WorkflowHumanTodo, {
+      props: { todo: choice, busy: false, paused: false, cancelled: false },
+      global: { stubs },
+    });
+    await wrapper.get('input[value="__free_text__"]').setValue();
+    expect(
+      wrapper.get('[data-testid="human-submit"]').attributes("disabled"),
+    ).toBeDefined();
+    await wrapper
+      .get('[data-testid="human-choice-text"]')
+      .setValue("My answer");
+    await wrapper.get('[data-testid="human-submit"]').trigger("click");
+    expect(wrapper.emitted("submit")?.[0]?.[1]).toMatchObject({
+      action: "answer",
+      choice_id: "__free_text__",
+      free_text: "My answer",
+    });
+    await wrapper.setProps({ cancelled: true });
+    expect(wrapper.find('[data-testid="human-submit"]').exists()).toBe(false);
+    wrapper.unmount();
+  });
+
   it("ignores a preview response after changing runs unmounts its request", async () => {
     let finish!: (value: any) => void;
     api.artifact.mockReturnValue(
@@ -251,5 +419,41 @@ describe("persistent human request handling", () => {
     finish({ content: { text: "Old run content" }, files: [] });
     await flushPromises();
     expect(wrapper.emitted("submit")).toBeUndefined();
+  });
+});
+
+describe("persisted deadline display", () => {
+  it("shows the saved deadline and both decision sources across refreshes", async () => {
+    const deadline = 1800000000;
+    const wrapper = mount(WorkflowHumanTodo, {
+      props: {
+        todo: {
+          ...todo,
+          deadline,
+          human_wait: {
+            timeout_seconds: 60,
+            timeout_action: "use_recommendation",
+          },
+          timeout_reason: "missing_recommendation",
+        },
+        busy: false,
+        paused: false,
+        cancelled: false,
+      },
+      global: { stubs },
+    });
+    const displayed = new Date(deadline * 1000).toLocaleString();
+    expect(wrapper.text()).toContain(displayed);
+    expect(wrapper.text()).toContain("humanWait.missing_recommendation");
+    await wrapper.setProps({
+      todo: { ...todo, deadline, decision_source: { type: "human" } },
+    });
+    expect(wrapper.text()).toContain(displayed);
+    expect(wrapper.text()).toContain("humanWait.decisionHuman");
+    await wrapper.setProps({
+      todo: { ...todo, deadline, decision_source: { type: "recommendation" } },
+    });
+    expect(wrapper.text()).toContain(displayed);
+    expect(wrapper.text()).toContain("humanWait.decisionRecommendation");
   });
 });

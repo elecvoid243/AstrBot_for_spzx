@@ -1,21 +1,35 @@
 # Agent Teams role templates
 
+Use **Delete** on a role card and confirm the impact to remove the entire role from new selections. All fixed versions remain available to workflows and teams that already pinned them, but a new reference cannot use a deleted role. Existing runs and their history are retained. Deletion cannot be undone.
+
+![Role deletion confirmation](/images/agent-teams-delete-asset-en.jpg)
+
+The screenshot shows the actual component with isolated sample data; it is not a backend integration test.
+
 Open **More Features → Agent Teams → Assets → Role templates**, then choose **New role**. A template stores responsibilities and capability requirements without creating a member chat session or starting a run.
+
+Edits are saved automatically as a draft, including incomplete settings. The status shows saving, saved, failure, or conflict. After a conflict, local edits remain visible; choose **Discard local changes and load server draft** only when ready to replace them. Select **Save version** to create an immutable version for references. Reopen the draft from the asset list after refreshing.
+
+When a newer fixed version causes a conflict, review the old and current base versions. You can keep the entire draft on the reviewed latest base, or load that version to edit it; no fields are merged. If the draft or latest version changes during review, review the conflict again.
+
+![Draft save status and manual version button](/images/agent-teams-drafts-en.jpg)
+
+The screenshot shows the actual component with isolated sample data; it is not a backend integration test.
 
 Assets retain their pinned role versions until you explicitly edit those references; existing runs retain their frozen configuration. Create and configure role templates directly, without migrating previous members.
 
-1. Enter a name and description. Under **Responsibility and prompt**, write an inline prompt or define a logical persona slot, bind a local persona and select **Inherit local persona prompt**.
-2. Under **Model**, select the profile that chooses the actual executor. The built-in executor uses a logical model slot and a local model binding; remote executors use the configured remote application and hide unused local model fields. Select `tool_use`, `image` or `audio` requirements as needed. Under **Required executor capabilities**, choose internal invocation checkpoints, original remote run query, local task/team tools or explicit task result submission.
-3. Under **Tools, Skills, Knowledge bases**, choose **Inherit**, **Disable all** or **Local override**. For an override, type logical slot names and press Enter, then bind each slot to a local resource. Slots express portable requirements; bindings record identities on this machine.
-4. Configure instances, parallelism, steps, iterations, nesting depth, tool timeout and context length under **Instances and execution limits**. Empty values inherit. Independent single-task runs freeze the effective configuration; see the [workflow instructions](./agent-team-workflows.md) for supported behavior and limits.
+1. Enter a name and description. Under **Responsibility and prompt**, write the responsibility and optionally select a persona. The two remain separate; leaving persona empty does not inherit the profile default.
+2. Under **Model**, select the profile that chooses the actual executor. The built-in executor uses the selected model; remote executors use the configured remote application and hide unused local model fields. Select `tool_use`, `image` or `audio` requirements as needed. Under **Required executor capabilities**, choose internal invocation checkpoints, original remote run query, local task/team tools or explicit task result submission.
+3. Under **Tools, Skills, Knowledge bases**, choose **Inherit** or **Custom selection**. Select actual resources in a custom list; leave it empty to disable that category. Resource IDs, not display names, are saved.
+4. Configure instances, parallelism, steps, iterations, nesting depth, tool timeout and context length under **Instances and execution limits**. Empty values inherit. Workflow Agent runs freeze the effective configuration; see the [workflow instructions](./agent-team-workflows.md) for supported behavior and limits.
 5. Choose **Preview configuration** to inspect effective values, inheritance and overrides. Missing, ambiguous, disabled or incompatible resources have field paths; click a path to expand its group, scroll the field into view and focus its input. Preview again after changing the form.
-6. Choose **Save role**. Incomplete templates can be saved and are marked **Needs configuration**. Editing uses **Save new version**, preserving previous definitions and bindings. **View historical version** reopens an old version; saving its edited content creates another new version.
+6. Choose **Save version**. Incomplete templates can be saved and are marked **Needs configuration**. Editing also uses **Save version**, preserving previous definitions and resource selections. **View historical version** reopens an old version; saving its edited content creates another new version.
 
-Inline prompts are portable definition content and appear explicitly in the preview. A persona reference declares a dependency; its local prompt is not embedded in the definition. Complete asset package import and export is available from the cards and toolbar in Assets → Teams / Workflows; see the [asset workspace](./agent-team-workflows.md).
+The preview shows the responsibility and persona content separately, with their sources. A persona reference stores its ID rather than embedding its prompt. Complete asset package import and export is available from the cards and toolbar in Assets → Teams / Workflows; see the [asset workspace](./agent-team-workflows.md).
 
-Tool and skill availability follows the selected profile's enabled plugins, and skills also use that profile's runtime. Local overrides respect the persona's tool and skill allowlists; without an explicit persona binding, these capabilities inherit the profile's default persona. An excluded binding receives a field diagnostic instead of being shown as ready. Built-in tools follow their own profile availability, as in the existing main Agent pipeline.
+Tool and skill availability follows the selected profile's enabled plugins, and skills also use that profile's runtime. Custom selections respect the selected persona's tool and skill allowlists. No persona is inherited when none is selected. An excluded resource receives a field diagnostic instead of being shown as ready. Built-in tools follow their own profile availability, as in the existing main Agent pipeline.
 
-File write tools also follow the profile's `provider_settings.file_tool_mode`: `patch` (the default) exposes `astrbot_apply_patch`; `legacy` exposes `astrbot_file_write_tool` and `astrbot_file_edit_tool`. Missing or invalid values use `patch`; explicitly saved `legacy` settings still apply. Both local and sandbox runtimes use this rule. Inherited tools include only the selected group. An explicit dependency on the other group blocks preview and launch with a diagnostic on its binding; it never selects a replacement tool or expands the role's allowlist. The resource catalog reports the selected mode for each profile.
+File write tools also follow the profile's `provider_settings.file_tool_mode`: `patch` (the default) exposes `astrbot_apply_patch`; `legacy` exposes `astrbot_file_write_tool` and `astrbot_file_edit_tool`. Missing or invalid values use `patch`; explicitly saved `legacy` settings still apply. Both local and sandbox runtimes use this rule. Inherited tools include only the selected group. An explicit dependency on the other group blocks preview and launch with a diagnostic on its field; it never selects a replacement tool or expands the role's allowlist. The resource catalog reports the selected mode for each profile.
 
 Existing runs retain their original file tool mode after profile edits and process restarts. Recovery checks the frozen mode against current resource authorization: disabling the runtime or a required tool blocks the affected task. A saved snapshot cannot restore revoked access, and a tool with an unknown outcome still requires reconciliation or confirmation before replay.
 
@@ -33,14 +47,22 @@ Dify, Coze and DashScope Application receive the frozen role/persona framing as 
 | Creating a reusable role | Agent Teams → Assets → Role templates → New role; templates are independent of legacy teams and members. |
 | Workflow Editor, Run Monitor, History | Assets → Workflows pins role versions; Runs and History display frozen snapshots. |
 
-See [Asset and run workspace](./agent-team-workflows.md) for scheduling, invocation recovery, human tasks and bounded loops. Role, readiness and launch checks use the same executor rules. Edits do not change existing runs' pinned roles and configuration; recovery still checks current access and remote binding compatibility.
+See [Asset and run workspace](./agent-team-workflows.md) for scheduling, invocation recovery, human tasks and bounded loops. Role, readiness and launch checks use the same executor rules. Edits do not change existing runs' pinned roles and configuration; recovery still checks current access and remote executor configuration compatibility.
 
 Previews use current local resources. Historical definitions never silently fall back to a default model. Deleting or disabling a resource produces a diagnostic on the next preview. See the workspace instructions for existing run and recovery behavior.
 
 Previous entry: **Role templates → Assets → Role templates**. Template identity is separate from runtime member state; editing a template does not change the fixed configuration of an existing run.
 
-![Actual role overview and template identity](/images/agent-teams-roles-t25-en.jpg)
+The following screenshots show the real role component with an isolated example resource catalog and a preview produced by the role service. The error response is simulated; no model was called.
 
-![Actual role form with effective configuration and inheritance](/images/agent-teams-role-config-t25-en.jpg)
+![Role template overview with example resources](/images/agent-teams-roles-t25-en.jpg)
+
+![Role editor and effective configuration](/images/agent-teams-role-config-t25-en.jpg)
+
+![Direct selection of tools, skills and knowledge bases](/images/agent-teams-role-resources-en.jpg)
 
 ![The error path expands the limits section and focuses the invalid field](/images/agent-teams-role-error-focus-en.jpg)
+
+## Human wait policy
+
+The role’s human wait policy controls dynamic choices requested by its Agent. The default is indefinite waiting. An explicit deadline may either keep waiting or use the valid recommendation already shown with the request. An Agent using a fixed role version can inherit this policy or override it, including resetting it to indefinite waiting. This does not change ordinary chat timeouts.

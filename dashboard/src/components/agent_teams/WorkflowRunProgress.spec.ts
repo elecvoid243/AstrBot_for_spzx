@@ -7,6 +7,14 @@ vi.mock("@/i18n/composables", () => ({
 }));
 
 describe("nested run progress", () => {
+  it("labels a draft revision without rendering a null asset version", () => {
+    const wrapper = mount(WorkflowRunProgress, {
+      props: {selectedTask: null, run: {run_id: "trial", status: "completed", snapshot: {asset_version: null, trial: {draft_revision: 3}, definition: {name: "Trial", tasks: []}}, tasks: []}},
+      global: {stubs: {WorkflowGraphCanvas: true, WorkflowLoopHistory: true, RunUsagePanel: true, "v-icon": true, "v-chip": true, "v-card": true, "v-card-title": true, "v-card-text": true, "v-progress-linear": true, "v-spacer": true}},
+    });
+    expect(wrapper.text()).toContain("trial.test · trial.revision 3");
+    expect(wrapper.text()).not.toContain("vnull");
+  });
   it("shows real child tasks and selects their unique run identities", async () => {
     const child = {
       run_id: "child-task",
@@ -16,6 +24,7 @@ describe("nested run progress", () => {
         parent_run_id: "child-scope",
         engine: "single_task_v2",
         definition: { name: "Child coordinator" },
+        iteration: 2,
         member: { member_id: "child-member", name: "Child member" },
       },
       state: { attempt_id: "child-attempt" },
@@ -76,6 +85,8 @@ describe("nested run progress", () => {
     try {
       expect(wrapper.findAll(".run-task")).toHaveLength(2);
       expect(wrapper.findAll(".run-waiting")).toHaveLength(0);
+      expect(wrapper.findAll(".run-task")[1].text()).toContain("child.scope: Pinned child");
+      expect(wrapper.findAll(".run-task")[1].text()).toContain("loops.iteration 2");
       await wrapper.findAll(".run-task")[1].trigger("click");
       expect(wrapper.emitted("select")?.at(-1)).toEqual(["child-task"]);
       expect(
@@ -86,4 +97,20 @@ describe("nested run progress", () => {
       wrapper.unmount();
     }
   });
+  it("distinguishes scheduling waits and keeps them out of human attention", () => {
+    const makeTask = (node_id: string, status: string, state: any = {}) => ({run_id: node_id, node_id, status, snapshot: {parent_run_id: "root", definition: {name: node_id}}, state: {attempt_id: node_id, ...state}});
+    const wrapper = mount(WorkflowRunProgress, {props: {selectedTask: null, run: {run_id: "root", status: "running", snapshot: {asset_version: 1, definition: {name: "Graph", tasks: []}}, tasks: [makeTask("upstream", "running"), makeTask("join", "pending", {wait_kind: "predecessors", waiting_on: ["upstream"]}), makeTask("capacity", "pending", {wait_kind: "capacity"}), makeTask("new", "pending"), makeTask("skip", "skipped"), makeTask("failed", "dependency_failed")]}}, global: {stubs: {WorkflowGraphCanvas: true, WorkflowLoopHistory: true, "v-icon": true, "v-chip": true, "v-card": {template: "<section><slot /></section>"}, "v-card-title": {template: "<div><slot /></div>"}, "v-card-text": {template: "<div><slot /></div>"}, "v-progress-linear": true, "v-spacer": true}}});
+    try {
+      const tasks = wrapper.findAll(".run-task");
+      expect(tasks[1].text()).toContain("graph.waitingPredecessors");
+      expect(tasks[1].get('[data-testid="waiting-on"]').text()).toContain("upstream");
+      expect(tasks[2].text()).toContain("graph.waitingCapacity");
+      expect(tasks[3].text()).toContain("graph.notStarted");
+      expect(tasks[4].text()).toContain("v2.states.skipped");
+      expect(tasks[5].text()).toContain("v2.states.dependency_failed");
+      expect(wrapper.findAll(".run-waiting")).toHaveLength(1);
+      expect(wrapper.find(".run-waiting").text()).toContain("failed");
+    } finally { wrapper.unmount(); }
+  });
+
 });

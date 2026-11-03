@@ -27,10 +27,18 @@ async def test_saved_workflow_versions_reopen_and_pin_the_role(tmp_path):
     payload = {
         "definition": {
             "name": "Report",
-            "role_id": role["role_id"],
-            "role_version": 1,
-            "task": "Research {topic}.",
             "required_inputs": ["topic"],
+            "tasks": [
+                {
+                    "id": "writer",
+                    "name": "Writer",
+                    "member": "writer",
+                    "role_id": role["role_id"],
+                    "role_version": 1,
+                    "task": "Research {topic}.",
+                    "inputs": {"topic": {"input": "topic"}},
+                }
+            ],
         }
     }
     asset = await service.save_asset("alice", payload)
@@ -41,16 +49,10 @@ async def test_saved_workflow_versions_reopen_and_pin_the_role(tmp_path):
     reopened_db = SQLiteDatabase(str(tmp_path / "workflows.db"))
     reopened = WorkflowService(reopened_db, RoleAssetService(reopened_db))
     try:
-        assert (await reopened.get_asset("alice", asset["asset_id"], 1))[
-            "definition"
-        ] == {
-            "name": "Report",
-            "role_id": role["role_id"],
-            "role_version": 1,
-            "task": "Research {topic}.",
-            "required_inputs": ["topic"],
-            "overrides": {},
-        }
+        first = (await reopened.get_asset("alice", asset["asset_id"], 1))["definition"]
+        assert first["name"] == "Report"
+        assert first["tasks"][0]["role_id"] == role["role_id"]
+        assert first["tasks"][0]["role_version"] == 1
         assert (await reopened.list_assets("alice"))["assets"][0]["version"] == 2
         with pytest.raises(RoleAssetError, match="not found"):
             await reopened.get_asset("bob", asset["asset_id"])
@@ -79,8 +81,13 @@ async def test_run_persists_before_dispatch_and_finishes_only_by_explicit_submis
     role = await roles.save_role(
         "alice",
         {
-            "definition": {"name": "Writer", "prompt": "Check evidence.", "tools": []},
-            "installation": {"bindings": {"model": "model-a"}},
+            "definition": {
+                "name": "Writer",
+                "prompt": "Check evidence.",
+                "provider_id": "model-a",
+                "tools": [],
+            },
+            "installation": {"profile_id": "default"},
         },
     )
     observed = []
@@ -103,10 +110,10 @@ async def test_run_persists_before_dispatch_and_finishes_only_by_explicit_submis
         collected.set()
         await release.wait()
         tools = AgentTeamToolRegistry.get_tools(f"webchat:FriendMessage:{session_id}")
-        assert len(tools) == 1
-        assert "Error" in await tools[0].call(None, text=" ")
-        assert await tools[0].call(None, text="Full report.") == "Result accepted."
-        assert await tools[0].call(None, text="Full report.") == "Result accepted."
+        submit = next(tool for tool in tools if tool.name == "submit_task_result")
+        assert "Error" in await submit.call(None, text=" ")
+        assert await submit.call(None, text="Full report.") == "Result accepted."
+        assert await submit.call(None, text="Full report.") == "Result accepted."
         return "Done", [{"type": "plain", "text": "Done"}]
 
     service = WorkflowService(
@@ -124,10 +131,19 @@ async def test_run_persists_before_dispatch_and_finishes_only_by_explicit_submis
         {
             "definition": {
                 "name": "Report",
-                "role_id": role["role_id"],
-                "role_version": 1,
-                "task": "Research {topic}.",
+                "result_task_id": "writer",
                 "required_inputs": ["topic"],
+                "tasks": [
+                    {
+                        "id": "writer",
+                        "name": "Writer",
+                        "member": "writer",
+                        "role_id": role["role_id"],
+                        "role_version": 1,
+                        "task": "Research {topic}.",
+                        "inputs": {"topic": {"input": "topic"}},
+                    }
+                ],
             }
         },
     )
@@ -159,7 +175,7 @@ async def test_run_persists_before_dispatch_and_finishes_only_by_explicit_submis
         }
         assert observed[0]["snapshot"]["task"] == "Research energy."
         assert observed[0]["snapshot"]["effective"]["provider_id"] == "model-a"
-        await service.finish_submission("alice", run["run_id"])
+        await service.finish_submission("alice", current["tasks"][0]["run_id"])
         assert await service.get_result("alice", run["run_id"]) == {
             "text": "Full report."
         }
@@ -200,9 +216,10 @@ async def workflow_env(tmp_path):
             "definition": {
                 "name": "Writer",
                 "prompt": "Original instructions",
+                "provider_id": "model-a",
                 "max_steps": 4,
             },
-            "installation": {"bindings": {"model": "model-a"}},
+            "installation": {"profile_id": "default"},
         },
     )
     observations = []
@@ -234,9 +251,17 @@ async def workflow_env(tmp_path):
         {
             "definition": {
                 "name": "Report",
-                "role_id": role["role_id"],
-                "role_version": 1,
-                "task": "Write a report",
+                "result_task_id": "writer",
+                "tasks": [
+                    {
+                        "id": "writer",
+                        "name": "Writer",
+                        "member": "writer",
+                        "role_id": role["role_id"],
+                        "role_version": 1,
+                        "task": "Write a report",
+                    }
+                ],
             }
         },
     )
@@ -285,12 +310,15 @@ async def test_new_asset_versions_and_runs_keep_prior_snapshot_and_member_contex
             "name": "New Writer",
             "prompt": "New instructions",
             "max_steps": 2,
+            "provider_id": "model-a",
         },
-        "installation": {"bindings": {"model": "model-a"}},
+        "installation": {"profile_id": "default"},
         "expected_version": 1,
     }
     await env.roles.save_role("alice", payload, env.role["role_id"])
-    definition = dict(env.asset["definition"], name="Report v2", role_version=2)
+    definition = copy.deepcopy(env.asset["definition"])
+    definition["name"] = "Report v2"
+    definition["tasks"][0]["role_version"] = 2
     await env.service.save_asset(
         "alice",
         {"definition": definition, "expected_version": 1},
@@ -298,7 +326,9 @@ async def test_new_asset_versions_and_runs_keep_prior_snapshot_and_member_contex
     )
     second = await env.service.start_run("alice", env.asset["asset_id"], {"version": 2})
     await completed_run(env.service, second["run_id"])
-    unchanged = await env.service.get_run("alice", first["run_id"])
+    unchanged = (await env.service.get_run("alice", first["run_id"]))["tasks"][0]
+    first = first["tasks"][0]
+    second = second["tasks"][0]
     assert unchanged["snapshot"]["effective"]["prompt"] == "Original instructions"
     assert unchanged["snapshot"]["effective"]["max_steps"] == 4
     assert second["snapshot"]["effective"]["prompt"] == "New instructions"
@@ -322,7 +352,7 @@ async def test_full_result_and_process_reopen_without_active_execution(workflow_
             "text": "Complete report. " * 1000
         }
         queried = await reopened.get_run("alice", run["run_id"])
-        assert queried["state"]["response"]["parts"] == [
+        assert queried["tasks"][0]["state"]["response"]["parts"] == [
             {"type": "think", "text": "Verified."}
         ]
         assert (await reopened.list_runs("alice"))["runs"][0]["status"] == "completed"
@@ -346,6 +376,8 @@ async def test_saved_result_intent_can_finish_idempotently_after_completion_writ
         await session.commit()
     run = await env.service.start_run("alice", env.asset["asset_id"], {"version": 1})
     failed = await completed_run(env.service, run["run_id"])
+    assert failed["status"] == "blocked"
+    failed = failed["tasks"][0]
     assert failed["status"] == "failed"
     assert failed["pending_result"] == {"text": "Complete report. " * 1000}
     assert failed["result"] is None
@@ -356,10 +388,10 @@ async def test_saved_result_intent_can_finish_idempotently_after_completion_writ
     await env.service.shutdown()
     reopened = WorkflowService(env.db, env.roles)
     await reopened.boot_sweep()
-    completed = await reopened.finish_submission("alice", run["run_id"])
+    completed = await reopened.finish_submission("alice", failed["run_id"])
     assert completed["status"] == "completed"
     assert completed["result"] == failed["pending_result"]
-    assert await reopened.finish_submission("alice", run["run_id"]) == completed
+    assert await reopened.finish_submission("alice", failed["run_id"]) == completed
     assert len(env.observations) == 1
 
 
@@ -395,11 +427,11 @@ async def test_removed_or_disallowed_bindings_cannot_fall_back_to_another_model(
         env.inventory["models"][0]["enabled"] = False
     with pytest.raises(RoleAssetError) as rejected:
         await env.service.start_run("alice", env.asset["asset_id"], {"version": 1})
-    assert rejected.value.fields[0]["path"] == "installation.bindings.model"
+    assert rejected.value.fields[0]["path"] == "definition.tasks.0.role.provider_id"
     assert len(env.observations) == 1
-    assert (await env.service.get_run("alice", run["run_id"]))["snapshot"]["effective"][
-        "provider_id"
-    ] == "model-a"
+    assert (await env.service.get_run("alice", run["run_id"]))["tasks"][0]["snapshot"][
+        "effective"
+    ]["provider_id"] == "model-a"
 
 
 @pytest.mark.asyncio
@@ -418,10 +450,12 @@ async def test_model_losing_required_capability_before_dispatch_is_blocked(
         },
         env.role["role_id"],
     )
+    changed = copy.deepcopy(env.asset["definition"])
+    changed["tasks"][0]["role_version"] = 2
     await env.service.save_asset(
         "alice",
         {
-            "definition": dict(env.asset["definition"], role_version=2),
+            "definition": changed,
             "expected_version": 1,
         },
         env.asset["asset_id"],
@@ -440,6 +474,7 @@ async def test_model_losing_required_capability_before_dispatch_is_blocked(
     run = await env.service.start_run("alice", env.asset["asset_id"], {"version": 2})
     blocked = await completed_run(env.service, run["run_id"])
     assert blocked["status"] == "blocked"
+    blocked = blocked["tasks"][0]
     assert blocked["state"]["issues"][0]["code"] == "INCOMPATIBLE"
     assert blocked["snapshot"]["role"]["definition"]["model_capabilities"] == ["image"]
     assert env.observations == []
@@ -454,8 +489,11 @@ async def test_task_templates_cannot_evaluate_attributes_or_undeclared_inputs(
     workflow_env, task
 ):
     env = workflow_env
-    definition = dict(env.asset["definition"], task=task, required_inputs=["topic"])
+    definition = copy.deepcopy(env.asset["definition"])
+    definition["required_inputs"] = ["topic"]
+    definition["tasks"][0]["task"] = task
+    definition["tasks"][0]["inputs"] = {"topic": {"input": "topic"}}
     with pytest.raises(RoleAssetError) as invalid:
         await env.service.save_asset("alice", {"definition": definition})
-    assert invalid.value.fields[0]["path"] == "definition.task"
+    assert invalid.value.fields[0]["path"] == "definition.tasks.0.task"
     assert len((await env.service.list_assets("alice"))["assets"]) == 1

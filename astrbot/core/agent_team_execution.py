@@ -35,6 +35,10 @@ class CheckpointRecoveryError(ProcessPersistenceError):
     """Block the original attempt until its saved capabilities can be restored."""
 
 
+class HumanInputRequired(Exception):
+    """Unwind an invocation after its durable human request has been saved."""
+
+
 @dataclass
 class NodeExecutionBinding:
     """Execution profile a dispatched team node turn must run with."""
@@ -56,6 +60,10 @@ class NodeExecutionBinding:
     """
     config_id: str | None
     """The config profile id whose PipelineScheduler should execute the turn."""
+    role_prompt: str | None = None
+    """Role text actually used to assemble the team framing."""
+    task_framing: str | None = None
+    """Explicit task and input framing used in the delivered turn."""
     persona_id: str | None = None
     """The persona override for this member, if any."""
     tools: list[str] | None = None
@@ -68,8 +76,8 @@ class NodeExecutionBinding:
     """Tool-loop step limit override (agent_runner.config.misc.max_steps)."""
     tool_call_timeout: float | None = None
     """Tool call timeout override in seconds."""
-    kb_names: list[str] | None = None
-    """Knowledge base names override (kb_names)."""
+    kb_ids: list[str] | None = None
+    """Frozen knowledge base identities for this member."""
     context_length: int | None = None
     """Context length override (request-level model/compression cap)."""
     turn_id: str | None = None
@@ -102,6 +110,10 @@ class NodeExecutionBinding:
     """Account for the admitted delivery, including late provider reports."""
     recovery_error: CheckpointRecoveryError | None = None
     """Restore failure retained when the main pipeline renders an error reply."""
+    request_human: Callable[[str, dict], Awaitable[dict]] | None = None
+    """Persist or read a choice for the trusted original tool invocation."""
+    human_wait: HumanInputRequired | None = None
+    """Durable suspension retained until the internal transport finishes."""
 
 
 current_team_execution: ContextVar[NodeExecutionBinding | None] = ContextVar(
@@ -252,6 +264,7 @@ async def execute_team_turn(
     pending_messages: Callable[[], Awaitable[list[dict]]] | None = None,
     begin_usage: Callable[[dict], Awaitable[dict]] | None = None,
     report_usage: Callable[[str, dict], Awaitable[dict]] | None = None,
+    request_human: Callable[[str, dict], Awaitable[dict]] | None = None,
 ) -> tuple[str, list]:
     """Execute a member or coordinator turn through the existing pipeline ports.
 
@@ -269,13 +282,14 @@ async def execute_team_turn(
         config_checker: Optional check that the selected profile still exists.
         on_delivered: Persists or publishes the dispatched message association.
         on_event: Receives interactive waiting events from collection.
-        record_process: Saves complete model responses and original tool results.
+        record_process: Saves model deliveries, deltas and original tool observations.
         save_checkpoint: Saves the built-in runner's durable execution boundaries.
         checkpoint: Saved effective context and response for this original attempt.
         admit_work: Wait for durable whole-run permission before external work.
         pending_messages: Scoped deliveries to commit with the next fresh context.
         begin_usage: Reserve an actual delivery under shared frozen limits.
         report_usage: Save consumption without altering the current executor fence.
+        request_human: Persist or read the original tool's human choice.
 
     Returns:
         Full reply text and existing chat message parts.
@@ -298,13 +312,15 @@ async def execute_team_turn(
         umo=member["umo"],
         owner_username=username,
         config_id=config_id,
+        role_prompt=member.get("system_prompt"),
+        task_framing=context,
         persona_id=execution.get("persona_id") or None,
         provider_id=execution.get("provider_id") or None,
         tools=execution.get("tools"),
         skills=execution.get("skills"),
         max_steps=execution.get("max_steps"),
         tool_call_timeout=execution.get("tool_call_timeout"),
-        kb_names=execution.get("kb_names"),
+        kb_ids=execution.get("kb_ids"),
         context_length=execution.get("context_length"),
         turn_id=turn_id,
         message_id=execution.get("message_id"),
@@ -319,6 +335,7 @@ async def execute_team_turn(
         pending_messages=pending_messages,
         begin_usage=begin_usage,
         report_usage=report_usage,
+        request_human=request_human,
     )
     token = AgentTeamExecutionRegistry.register(binding)
     framing = (
@@ -345,6 +362,8 @@ async def execute_team_turn(
             result = await ports.collect(
                 member["session_id"], binding.message_id, member["member_id"]
             )
+        if binding.human_wait is not None:
+            raise binding.human_wait
         if binding.recovery_error is not None:
             raise binding.recovery_error
         return result

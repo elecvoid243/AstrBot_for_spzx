@@ -6,7 +6,7 @@ import json
 import pytest
 
 from astrbot.core.agent_teams.assets import RoleAssetError
-from tests.agent_teams.test_autonomous_assets import team_env
+from tests.agent_teams.test_autonomous_assets import team_env as team_env
 
 
 @pytest.mark.asyncio
@@ -30,7 +30,7 @@ async def test_dependency_consumer_can_share_only_its_pinned_version_with_author
         try:
             members = [json.loads(await tools["team_manage"].call(None,
                 action="create_member", request_id=name, name=name,
-                role_id=env.writer["role_id"])) for name in ["Author", "Reviewer"]]
+                preset_id="writer")) for name in ["Author", "Reviewer"]]
             source = json.loads(await tools["team_manage"].call(None, action="dispatch",
                 request_id="source", member_id=members[0]["member_id"],
                 name="Evidence", task="Produce evidence"))
@@ -115,21 +115,28 @@ async def test_message_delivery_is_durable_deduplicated_and_does_not_dispatch(te
                 action="create_member",
                 request_id="writer",
                 name="Writer",
-                role_id=env.writer["role_id"],
+                preset_id="writer",
             )
         )
-        payload = dict(
-            action="send",
-            request_id="question-one",
-            recipient_member_id=member["member_id"],
-            text="Please check the complete source. 中文 {literal}",
-        )
-        receipts.append(
-            json.loads(await tools["team_communicate"].call(None, **payload))
-        )
-        receipts.append(
-            json.loads(await tools["team_communicate"].call(None, **payload))
-        )
+        payload = {
+            "action": "send",
+            "request_id": "question-one",
+            "recipient_member_id": member["member_id"],
+            "text": "Please check the complete source. 中文 {literal}",
+        }
+        ready = asyncio.Queue()
+        gate = asyncio.Event()
+
+        async def send():
+            ready.put_nowait(True)
+            await gate.wait()
+            return json.loads(await tools["team_communicate"].call(None, **payload))
+
+        writers = [asyncio.create_task(send()) for _ in range(2)]
+        await ready.get()
+        await ready.get()
+        gate.set()
+        receipts.extend(await asyncio.gather(*writers))
         delivered.set()
         await release.wait()
 
@@ -191,10 +198,10 @@ async def test_member_scope_versions_and_late_authority_are_enforced(team_env):
     other_tools, _ = callers[1]
     members = [json.loads(await tools["team_manage"].call(None,
         action="create_member", request_id=name, name=name,
-        role_id=env.writer["role_id"])) for name in ["Writer A", "Writer B"]]
+        preset_id="writer")) for name in ["Writer A", "Writer B"]]
     stranger = json.loads(await other_tools["team_manage"].call(None,
         action="create_member", request_id="other", name="Other instance",
-        role_id=env.writer["role_id"]))
+        preset_id="writer"))
     forbidden = await tools["team_communicate"].call(None, action="send",
         request_id="cross-run", recipient_member_id=stranger["member_id"], text="Private")
     assert "Error:" in forbidden

@@ -25,6 +25,7 @@ async def test_graph_saves_pinned_roles_and_rejects_unbounded_back_edges(workflo
         "role_id": role["role_id"],
         "role_version": 1,
         "task": "Research {topic}.",
+        "inputs": {"topic": {"input": "topic"}},
     }
     definition = {
         "name": "Report",
@@ -86,6 +87,7 @@ async def test_fast_successor_starts_while_independent_slow_task_is_running(
         {
             "definition": {
                 "name": "Parallel",
+                "result_task_id": "successor",
                 "tasks": tasks,
                 "edges": [{"source": "fast", "target": "successor"}],
                 "max_parallel": 2,
@@ -159,6 +161,7 @@ async def test_conditions_skip_one_path_without_blocking_the_merge_and_pin_input
     tasks[1]["task"] = "accept {evidence}"
     definition = {
         "name": "Review",
+        "result_task_id": "merge",
         "tasks": tasks,
         "edges": [
             {
@@ -194,7 +197,14 @@ async def test_conditions_skip_one_path_without_blocking_the_merge_and_pin_input
     )
     consumer = next(task for task in current["tasks"] if task["node_id"] == "accept")
     producer = next(task for task in current["tasks"] if task["node_id"] == "review")
-    assert consumer["snapshot"]["member"] == producer["snapshot"]["member"]
+    assert (
+        consumer["snapshot"]["member"]["member_id"]
+        == producer["snapshot"]["member"]["member_id"]
+    )
+    assert (
+        consumer["snapshot"]["member"]["conversation_id"]
+        != producer["snapshot"]["member"]["conversation_id"]
+    )
     assert consumer["snapshot"]["input_artifacts"] == [producer["result_ref"]]
     await env.service.revise_artifact(
         "alice",
@@ -293,9 +303,9 @@ async def graph_script(workflow_env):
         session_id, text, context=None, execution_token=None, message_id=None
     ):
         binding = AgentTeamExecutionRegistry.resolve(execution_token)
-        if session_id in script.active:
+        if binding.member_id in script.active:
             script.overlap = True
-        script.active.add(session_id)
+        script.active.add(binding.member_id)
         bindings[message_id] = binding
         script.starts.append(binding)
         script.texts.append(text)
@@ -319,7 +329,7 @@ async def graph_script(workflow_env):
                 await tools[0].call(None, text="Validated " + binding.node_id)
             return "Done", []
         finally:
-            script.active.remove(session_id)
+            script.active.remove(binding.member_id)
 
     script.ports = lambda _: TeamPorts(
         deliver=deliver, collect=collect, is_busy=lambda _: False, emit=lambda _: None
@@ -387,6 +397,7 @@ async def test_task_aliases_resolve_from_frozen_workflow_inputs(
         {
             "definition": {
                 "name": "Input aliases",
+                "result_task_id": "consumer",
                 "required_inputs": ["a", "b"],
                 "tasks": [first, consumer] if source == "result" else [consumer],
                 "edges": [{"source": "first", "target": "consumer"}]
@@ -407,7 +418,6 @@ async def test_task_aliases_resolve_from_frozen_workflow_inputs(
     assert finished["snapshot"]["inputs"] == {"a": "ORIGINAL_A", "b": "ORIGINAL_B"}
     assert finished["tasks"][-1]["snapshot"]["inputs"] == {
         "a": expected_alias,
-        "b": "ORIGINAL_B",
         "copy_a": "ORIGINAL_A",
     }
 
@@ -429,7 +439,15 @@ async def test_same_member_is_serial_while_another_member_finishes(graph_script)
         for name in ["first", "second", "independent"]
     ]
     asset = await env.service.save_asset(
-        "alice", {"definition": {"name": "Members", "tasks": tasks, "max_parallel": 3}}
+        "alice",
+        {
+            "definition": {
+                "name": "Members",
+                "result_task_id": "second",
+                "tasks": tasks,
+                "max_parallel": 3,
+            }
+        },
     )
     run = await env.service.start_run("alice", asset["asset_id"], {"version": 1})
     for _ in range(200):
@@ -442,13 +460,21 @@ async def test_same_member_is_serial_while_another_member_finishes(graph_script)
         "pending",
         "completed",
     ]
+    assert current["tasks"][1]["state"]["wait_kind"] == "capacity"
+    overview = (await env.service.list_runs("alice"))["runs"][0]
+    assert overview["tasks"][1]["state"]["wait_kind"] == "capacity"
+    assert not current["tasks"][1]["todos"]
     script.holds["first"].set()
     finished = await wait_graph(env.service, run["run_id"])
     assert finished["status"] == "completed"
     assert not script.overlap
     assert (
-        finished["tasks"][0]["snapshot"]["member"]
-        == finished["tasks"][1]["snapshot"]["member"]
+        finished["tasks"][0]["snapshot"]["member"]["member_id"]
+        == finished["tasks"][1]["snapshot"]["member"]["member_id"]
+    )
+    assert (
+        finished["tasks"][0]["snapshot"]["member"]["conversation_id"]
+        != finished["tasks"][1]["snapshot"]["member"]["conversation_id"]
     )
     assert (
         finished["tasks"][2]["snapshot"]["member"]["conversation_id"]
@@ -477,6 +503,7 @@ async def test_failure_only_blocks_related_dependencies(graph_script):
         {
             "definition": {
                 "name": "Local failure",
+                "result_task_id": "successor",
                 "tasks": tasks,
                 "edges": [
                     {"source": "failure", "target": "blocked"},
@@ -522,8 +549,7 @@ async def test_failure_only_blocks_related_dependencies(graph_script):
     )
     assert len(overview["artifacts"]) == 2
     assert all(
-        task["cursor"] == task["events"][-1]["cursor"]
-        for task in finished["tasks"]
+        task["cursor"] == task["events"][-1]["cursor"] for task in finished["tasks"]
     )
     assert all(
         "process" not in task and "events" not in task for task in overview["tasks"]
@@ -552,6 +578,7 @@ async def test_duplicate_notifications_from_two_services_do_not_dispatch_twice(
         {
             "definition": {
                 "name": "Notifications",
+                "result_task_id": "next",
                 "tasks": [task, {**task, "id": "next", "name": "Next"}],
                 "edges": [{"source": "first", "target": "next"}],
             }
@@ -631,6 +658,7 @@ async def test_scalar_conditions_round_trip_and_execute(
         {
             "definition": {
                 "name": "Scalar conditions",
+                "result_task_id": "first",
                 "tasks": [task, next_task],
                 "edges": [edge],
             }
@@ -700,6 +728,7 @@ async def test_graph_root_cannot_submit_read_or_store_as_a_task(graph_script):
         {
             "definition": {
                 "name": "Root scope",
+                "result_task_id": "second",
                 "tasks": [task, {**task, "id": "second"}],
                 "edges": [{"source": "first", "target": "second"}],
             }
@@ -775,6 +804,7 @@ async def test_allof_combines_same_property_constraints_across_branches(
         {
             "definition": {
                 "name": "Combined fields",
+                "result_task_id": "first",
                 "tasks": [task, {**task, "id": "next", "output_contract": None}],
                 "edges": [
                     {
@@ -829,6 +859,7 @@ async def test_union_conditions_distinguish_booleans_from_numbers(
         {
             "definition": {
                 "name": "Typed equality",
+                "result_task_id": "first",
                 "tasks": [task, {**task, "id": "next", "output_contract": None}],
                 "edges": [
                     {
@@ -903,3 +934,123 @@ async def test_nested_field_references_require_object_intermediates(
     assert invalid.value.fields[0]["code"] == (
         "CONDITION" if reference_kind == "condition" else "REFERENCE"
     )
+
+
+@pytest.mark.asyncio
+async def test_selected_skipped_result_blocks_graph(graph_script):
+    script, env = graph_script, graph_script.env
+    script.outputs["first"] = {"approved": False}
+    task = {
+        "id": "first",
+        "name": "First",
+        "member": "writer",
+        "role_id": env.role["role_id"],
+        "role_version": 1,
+        "task": "First",
+        "output_contract": {
+            "type": "object",
+            "properties": {"approved": {"type": "boolean"}},
+            "required": ["approved"],
+        },
+    }
+    definition = {
+        "name": "Skipped output",
+        "result_task_id": "next",
+        "tasks": [task, {**task, "id": "next", "output_contract": None}],
+        "edges": [
+            {
+                "source": "first",
+                "target": "next",
+                "condition": {"field": "approved", "value": True},
+            }
+        ],
+    }
+    asset = await env.service.save_asset("alice", {"definition": definition})
+    run = await env.service.start_run("alice", asset["asset_id"], {"version": 1})
+    finished = await wait_graph(env.service, run["run_id"])
+    assert finished["status"] == "blocked"
+    assert finished["tasks"][1]["status"] == "skipped"
+    assert finished["result_ref"] is None
+    assert "selected result task" in finished["state"]["reason"].lower()
+    with pytest.raises(RoleAssetError) as missing:
+        await env.service.get_result("alice", run["run_id"])
+    assert missing.value.status == 409
+
+
+@pytest.mark.asyncio
+async def test_control_condition_and_join_execute_without_agent_sessions(workflow_env):
+    env = workflow_env
+    calls = []
+    completed = asyncio.Event()
+
+    async def deliver(
+        session_id, text, context=None, execution_token=None, message_id=None
+    ):
+        calls.append(text)
+        return message_id
+
+    async def collect(session_id, message_id, member_id):
+        tools = AgentTeamToolRegistry.get_tools(f"webchat:FriendMessage:{session_id}")
+        await tools[0].call(None, text="done")
+        if len(calls) == 2:
+            completed.set()
+        return "Done", []
+
+    env.service.ports_factory = lambda _: TeamPorts(
+        deliver=deliver, collect=collect, is_busy=lambda _: False, emit=lambda _: None
+    )
+    agents = [
+        {
+            "id": name,
+            "name": name,
+            "member": "writer",
+            "role_id": env.role["role_id"],
+            "role_version": 1,
+            "task": name,
+        }
+        for name in ("yes", "no", "result")
+    ]
+    definition = {
+        "name": "Control",
+        "required_inputs": ["choice"],
+        "result_task_id": "result",
+        "tasks": [
+            {
+                "id": "condition",
+                "name": "Condition",
+                "control": {"kind": "condition", "value": "yes"},
+                "inputs": {"value": {"input": "choice"}},
+            },
+            *agents[:2],
+            {"id": "join", "name": "Join", "control": {"kind": "join"}},
+            agents[2],
+        ],
+        "edges": [
+            {
+                "source": "condition",
+                "target": branch,
+                "condition": {"field": "matched", "value": matched},
+            }
+            for branch, matched in (("yes", True), ("no", False))
+        ]
+        + [{"source": branch, "target": "join"} for branch in ("yes", "no")]
+        + [{"source": "join", "target": "result"}],
+    }
+    asset = await env.service.save_asset("alice", {"definition": definition})
+    run = await env.service.start_run(
+        "alice", asset["asset_id"], {"version": 1, "inputs": {"choice": "yes"}}
+    )
+    await asyncio.wait_for(completed.wait(), 5)
+    for _ in range(200):
+        current = await env.service.get_run("alice", run["run_id"])
+        if current["status"] != "running":
+            break
+        await asyncio.sleep(0.01)
+    assert current["status"] == "completed", current
+    assert calls == ["yes", "result"]
+    tasks = {task["node_id"]: task for task in current["tasks"]}
+    assert tasks["no"]["status"] == "skipped"
+    assert tasks["condition"]["result"] == {"matched": True}
+    assert tasks["join"]["status"] == "completed"
+    assert "member" not in tasks["condition"]["snapshot"]
+    assert "member" not in tasks["join"]["snapshot"]

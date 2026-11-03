@@ -2,7 +2,6 @@
 import { mount } from "@vue/test-utils";
 import { defineComponent, h, inject, nextTick, provide } from "vue";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import AgentTeamsSidebar from "@/components/agent_teams/AgentTeamsSidebar.vue";
 import AgentTeamsPage from "./AgentTeamsPage.vue";
 
 const mocks = vi.hoisted(() => ({ route: null as any }));
@@ -18,22 +17,6 @@ vi.mock("vue-router", async () => {
     }),
   };
 });
-const TEAMS = [
-  {
-    team_id: "t1",
-    name: "Alpha 团队",
-    members: [
-      { member_id: "m1", name: "Alice" },
-      { member_id: "m2", name: "Bob" },
-    ],
-    coordinator_member_id: "m1",
-  },
-  {
-    team_id: "t2",
-    name: "Beta 团队",
-    members: [{ member_id: "m3", name: "Carol" }],
-  },
-];
 const TABS_KEY = Symbol("tabs-stub");
 const stubs = {
   WorkflowWorkspacePanel: {
@@ -81,17 +64,6 @@ const stubs = {
 };
 function mountPage() {
   return mount(AgentTeamsPage, { global: { stubs } });
-}
-function mountSidebar(props: Record<string, unknown> = {}) {
-  return mount(AgentTeamsSidebar, {
-    props: {
-      teams: TEAMS,
-      selectedTeamId: "t1",
-      selectedTeam: TEAMS[0],
-      ...props,
-    },
-    global: { stubs },
-  });
 }
 beforeEach(() => {
   vi.clearAllMocks();
@@ -156,79 +128,5 @@ describe("AgentTeamsPage", () => {
       schedule.mockRestore();
       vi.useRealTimers();
     }
-  });
-});
-describe("AgentTeamsSidebar", () => {
-  it("emits create when the create button is clicked", async () => {
-    const wrapper = mountSidebar();
-    const createBtn = wrapper
-      .findAll("button")
-      .find((btn) => btn.text() === "新建团队");
-    expect(createBtn).toBeTruthy();
-    await createBtn!.trigger("click");
-    expect(wrapper.emitted("create")).toHaveLength(1);
-  });
-
-  it("renders team rows with names, member counts and the selected highlight", () => {
-    const wrapper = mountSidebar();
-    const rows = wrapper.findAll(".team-row");
-    expect(rows).toHaveLength(2);
-    expect(rows[0].text()).toContain("Alpha 团队");
-    expect(rows[0].text()).toContain("2");
-    expect(rows[1].text()).toContain("Beta 团队");
-    expect(rows[1].text()).toContain("1");
-    expect(rows[0].classes()).toContain("is-selected");
-    expect(rows[1].classes()).not.toContain("is-selected");
-  });
-
-  it("emits select with the team id when a row is clicked", async () => {
-    const wrapper = mountSidebar();
-    const rows = wrapper.findAll(".team-row");
-    await rows[1].trigger("click");
-    expect(wrapper.emitted("select")).toEqual([["t2"]]);
-  });
-
-  it("renders the edit pencil only on the selected team row and emits edit without select", async () => {
-    const wrapper = mountSidebar();
-    const rows = wrapper.findAll(".team-row");
-    expect(rows[0].find(".team-edit").exists()).toBe(true);
-    expect(rows[1].find(".team-edit").exists()).toBe(false);
-    expect(rows[0].find(".team-edit").attributes("aria-label")).toBe(
-      "编辑团队",
-    );
-
-    await rows[0].find(".team-edit").trigger("click");
-    expect(wrapper.emitted("edit")).toHaveLength(1);
-    // The pencil must not double as a row selection (.stop).
-    expect(wrapper.emitted("select")).toBeUndefined();
-  });
-
-  it("marks the coordinator member and emits removeMember from the remove button", async () => {
-    const wrapper = mountSidebar();
-
-    const coordinatorRow = wrapper.find(".member-row.is-coordinator");
-    expect(coordinatorRow.text()).toContain("Alice");
-    expect(coordinatorRow.text()).toContain("协调者");
-    expect(coordinatorRow.find(".mdi-crown").exists()).toBe(true);
-    expect(wrapper.text()).toContain("Bob");
-
-    const removeButtons = wrapper.findAll('button[aria-label="移除"]');
-    expect(removeButtons).toHaveLength(2);
-    await removeButtons[1].trigger("click");
-    expect(wrapper.emitted("removeMember")).toEqual([["m2"]]);
-  });
-
-  it("hides the member list when no team is selected", () => {
-    const wrapper = mountSidebar({ selectedTeamId: null, selectedTeam: null });
-    expect(wrapper.find(".member-row").exists()).toBe(false);
-  });
-
-  it("shows the empty hint when there are no teams", () => {
-    const wrapper = mountSidebar({
-      teams: [],
-      selectedTeamId: null,
-      selectedTeam: null,
-    });
-    expect(wrapper.text()).toContain("暂无团队");
   });
 });

@@ -70,7 +70,10 @@ async def test_pause_stops_dispatch_and_continue_keeps_the_original_attempt(
     )
     await asyncio.wait_for(delivered.wait(), 3)
     assert continued["snapshot"] == run["snapshot"]
-    assert continued["state"]["attempt_id"] == run["state"]["attempt_id"]
+    assert (
+        continued["tasks"][0]["state"]["attempt_id"]
+        == run["tasks"][0]["state"]["attempt_id"]
+    )
     with pytest.raises(RoleAssetError):
         await env.service.control_run(
             "bob",
@@ -94,7 +97,7 @@ async def test_retry_retains_failed_attempt_usage_and_fixed_inputs(workflow_env)
     source = await completed_run(env.service, source["run_id"])
     await env.service.revise_artifact(
         "alice",
-        source["run_id"],
+        source["tasks"][0]["run_id"],
         {
             "request_id": "source-v2",
             "expected_version": 1,
@@ -128,24 +131,44 @@ async def test_retry_retains_failed_attempt_usage_and_fixed_inputs(workflow_env)
     env.service.ports_factory = lambda _: TeamPorts(
         deliver=deliver, collect=collect, is_busy=lambda _: False, emit=lambda _: None
     )
+    definition = {
+        "kind": "autonomous",
+        "name": "Pinned retry inputs",
+        "coordinator": {
+            "id": "coordinator",
+            "role_id": env.role["role_id"],
+            "role_version": 1,
+        },
+        "allowed_roles": [
+            {"id": "writer", "role_id": env.role["role_id"], "role_version": 1}
+        ],
+    }
+    asset = await env.service.save_asset("alice", {"definition": definition})
     original = await env.service.start_run(
         "alice",
-        env.asset["asset_id"],
-        {"version": 1, "input_artifacts": [source["result_ref"]]},
+        asset["asset_id"],
+        {
+            "version": 1,
+            "inputs": {"goal": "Frozen subject"},
+            "input_artifacts": [source["result_ref"]],
+        },
     )
+    assert original["snapshot"]["input_artifacts"] == [source["result_ref"]]
     failed = await completed_run(env.service, original["run_id"])
-    assert failed["status"] == "failed"
+    assert failed["status"] == "blocked"
+    failed = failed["tasks"][0]
     payload = {
         "request_id": "retry-one",
         "attempt_id": failed["state"]["attempt_id"],
         "input_policy": "original",
     }
-    retried = await env.service.retry_task("alice", original["run_id"], payload)
+    retried = await env.service.retry_task("alice", failed["run_id"], payload)
     await asyncio.wait_for(stopped.wait(), 3)
-    repeated = await env.service.retry_task("alice", original["run_id"], payload)
+    repeated = await env.service.retry_task("alice", failed["run_id"], payload)
     assert repeated["state"]["attempt_id"] == retried["state"]["attempt_id"]
     assert retried["state"]["attempt_id"] != failed["state"]["attempt_id"]
     assert retried["snapshot"] == failed["snapshot"]
+    assert retried["snapshot"]["inputs"] == {"goal": "Frozen subject"}
     assert retried["snapshot"]["input_artifacts"] == [source["result_ref"]]
     assert retried["attempts"][0]["status"] == "failed"
     assert retried["attempts"][0]["state"]["reason"] == "Provider rejected the request"
@@ -153,13 +176,13 @@ async def test_retry_retains_failed_attempt_usage_and_fixed_inputs(workflow_env)
     with pytest.raises(RoleAssetError, match="Attempt"):
         await env.service.submit_result(
             "alice",
-            original["run_id"],
+            failed["run_id"],
             payload["attempt_id"],
             {"text": "Late old result"},
         )
     with pytest.raises(RoleAssetError):
         await env.service.retry_task(
-            "alice", original["run_id"], {**payload, "input_policy": "latest"}
+            "alice", failed["run_id"], {**payload, "input_policy": "latest"}
         )
 
 
@@ -206,6 +229,7 @@ async def test_pause_preserves_local_failure_and_retry_uses_graph_capacity(
         {
             "definition": {
                 "name": "Controlled graph",
+                "result_task_id": "successor",
                 "max_parallel": 1,
                 "tasks": [
                     {
@@ -297,17 +321,17 @@ async def test_cancel_is_terminal_propagates_and_rejects_late_public_writes(
     for operation in [
         env.service.record_process(
             "alice",
-            run["run_id"],
+            binding.run_id,
             binding.turn_id,
             "late-model",
             "model_response",
             {"text": "Late model"},
-            execution_id=(await env.service.get_run("alice", run["run_id"]))["state"][
+            execution_id=(await env.service.get_run("alice", binding.run_id))["state"][
                 "execution_id"
             ],
         ),
         env.service.submit_result(
-            "alice", run["run_id"], binding.turn_id, {"text": "Late result"}
+            "alice", binding.run_id, binding.turn_id, {"text": "Late result"}
         ),
     ]:
         with pytest.raises(RoleAssetError):
@@ -374,13 +398,13 @@ async def test_http_controls_validate_owner_revision_and_reused_request(workflow
                 json={**payload, "request_id": "stale-continue", "action": "continue"},
             )
         ).status_code == 409
-        retry = f"/api/v1/workflow_runs/{run['run_id']}/retry"
+        retry = f"/api/v1/workflow_runs/{run['tasks'][0]['run_id']}/retry"
         assert (
             await client.post(
                 retry,
                 json={
                     "request_id": "unsafe",
-                    "attempt_id": run["state"]["attempt_id"],
+                    "attempt_id": run["tasks"][0]["state"]["attempt_id"],
                     "input_policy": "latest",
                 },
             )
@@ -418,14 +442,14 @@ async def test_paused_time_does_not_exhaust_the_reply_timeout(workflow_env):
         collect=collect,
         is_busy=lambda _: False,
         emit=lambda _: None,
-        reply_timeout=0.1,
+        reply_timeout=1.0,
     )
     run = await env.service.start_run("alice", env.asset["asset_id"], {"version": 1})
     await asyncio.wait_for(entered.wait(), 3)
     await env.service.control_run(
         "alice", run["run_id"], {"request_id": "pause-timeout", "action": "pause"}
     )
-    await asyncio.sleep(0.3)
+    await asyncio.sleep(1.5)
     assert (await env.service.get_run("alice", run["run_id"]))["status"] == "running"
     await env.service.control_run(
         "alice", run["run_id"], {"request_id": "continue-timeout", "action": "continue"}
@@ -477,7 +501,9 @@ async def test_resumed_reply_budget_excludes_a_previously_paused_poll(workflow_e
     await asyncio.sleep(2.3)
     assert (await env.service.get_run("alice", run["run_id"]))["status"] == "running"
     await env.service.control_run(
-        "alice", run["run_id"], {"request_id": "continue-sampling", "action": "continue"}
+        "alice",
+        run["run_id"],
+        {"request_id": "continue-sampling", "action": "continue"},
     )
     release.set()
     finished = await completed_run(env.service, run["run_id"])

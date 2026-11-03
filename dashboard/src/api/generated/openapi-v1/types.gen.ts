@@ -122,6 +122,7 @@ export type AuthSessionResponse = {
 export type AutonomousDefinition = {
     kind: "autonomous";
     name: string;
+    default_provider_id?: (string | null);
     coordinator: TeamRole;
     allowed_roles: Array<TeamRole>;
     required_inputs?: Array<(string)>;
@@ -607,6 +608,17 @@ export type CommandPatchRequest = {
     permission_group?: string;
 };
 
+/**
+ * A scalar comparison evaluated by the graph scheduler.
+ */
+export type ConditionTask = {
+    kind: "condition";
+    operator?: 'eq' | 'ne' | 'gt' | 'ge' | 'lt' | 'le';
+    value: (string | boolean | number | null);
+};
+
+export type operator = 'eq' | 'ne' | 'gt' | 'ge' | 'lt' | 'le';
+
 export type ConfigRoutesReplaceRequest = {
     routing: {
         [key: string]: (string);
@@ -684,6 +696,41 @@ export type CronJobRequest = {
     [key: string]: unknown | string | boolean;
 };
 
+/**
+ * Initial editable snapshot and optional existing asset identity.
+ */
+export type DraftCreateRequest = {
+    body: {
+        [key: string]: unknown;
+    };
+    asset_id?: (string | null);
+};
+
+/**
+ * Revision to publish as an immutable asset version.
+ */
+export type DraftPublishRequest = {
+    revision: number;
+};
+
+/**
+ * Expected draft revision and explicitly reviewed latest version.
+ */
+export type DraftRebaseRequest = {
+    expected_revision: number;
+    published_version: number;
+};
+
+/**
+ * Snapshot update guarded by an expected revision.
+ */
+export type DraftUpdateRequest = {
+    body: {
+        [key: string]: unknown;
+    };
+    expected_revision: number;
+};
+
 export type DynamicConfig = {
     [key: string]: unknown;
 };
@@ -707,8 +754,6 @@ export type FieldCondition = {
     value: (string | boolean | number | null);
 };
 
-export type operator = 'eq' | 'ne' | 'gt' | 'ge' | 'lt' | 'le';
-
 export type FileUploadRequest = {
     file: (Blob | File);
 };
@@ -722,7 +767,9 @@ export type GhproxyTestRequest = {
  */
 export type GraphDefinition = {
     name: string;
+    default_provider_id?: (string | null);
     required_inputs?: Array<(string)>;
+    result_task_id?: (string | null);
     max_parallel?: number;
     max_depth?: number;
     limits?: (RunLimits | null);
@@ -754,7 +801,7 @@ export type GraphLoop = {
 };
 
 /**
- * A task bound to a named member instance with a fixed role version.
+ * A task bound to a named member with inline or pinned configuration.
  */
 export type GraphTask = {
     id: string;
@@ -762,7 +809,10 @@ export type GraphTask = {
     member?: string;
     role_id?: (string | null);
     role_version?: (number | null);
+    role?: (RoleDefinition | null);
+    installation?: (RoleInstallation | null);
     task?: string;
+    control?: (ConditionTask | JoinTask | null);
     human?: (HumanTask | null);
     team?: (TeamCall | null);
     workflow?: (WorkflowCall | null);
@@ -790,6 +840,9 @@ export type HumanAnswerRequest = {
     action: 'answer' | 'approve' | 'reject';
     answer?: (string | null);
     feedback?: (string | null);
+    choice_id?: (string | null);
+    free_text?: (string | null);
+    artifact_ref?: (ArtifactReference | null);
 };
 
 export type action2 = 'answer' | 'approve' | 'reject';
@@ -798,19 +851,40 @@ export type action2 = 'answer' | 'approve' | 'reject';
  * A frozen question or approval of one upstream artifact version.
  */
 export type HumanTask = {
+    human_wait?: HumanWaitPolicy;
     kind: 'question' | 'approval';
     question: string;
     choices?: Array<(string)>;
     max_length?: number;
     artifact_task_id?: (string | null);
     artifact_version?: number;
+    recommendation_task_id?: (string | null);
+    recommendation_value_field?: (string | null);
+    recommendation_reason_field?: (string | null);
 };
 
 export type kind = 'question' | 'approval';
 
+/**
+ * Automatic recommendation use requires an explicit deadline.
+ */
+export type HumanWaitPolicy = {
+    timeout_seconds?: (number | null);
+    timeout_action?: 'wait' | 'use_recommendation';
+};
+
+export type timeout_action = 'wait' | 'use_recommendation';
+
 export type ImMessageRequest = {
     umo: string;
     message: (string | Array<MessagePart>);
+};
+
+/**
+ * An ALL join evaluated by the graph scheduler.
+ */
+export type JoinTask = {
+    kind: "join";
 };
 
 export type JsonSchema = {
@@ -853,14 +927,6 @@ export type KnowledgeRetrieveRequest = {
     query: string;
     top_k?: number;
     score_threshold?: number;
-};
-
-/**
- * Confirm exactly the reviewed definition proposal, optionally pending.
- */
-export type LegacyMigrationRequest = {
-    preview_token: string;
-    save_pending?: boolean;
 };
 
 export type LoginRequest = {
@@ -912,18 +978,6 @@ export type MessagePart = {
 
 export type type = 'text' | 'plain' | 'image' | 'file' | 'audio' | 'record' | 'video' | 'reply';
 
-/**
- * Unresolved legacy semantics retained until a reviewed definition version.
- */
-export type MigrationState = {
-    issues: Array<{
-        [key: string]: unknown;
-    }>;
-    source: {
-        [key: string]: unknown;
-    };
-};
-
 export type ModelScopeSyncRequest = {
     access_token?: string;
 };
@@ -943,51 +997,41 @@ export type NeoReleaseActionRequest = {
 };
 
 /**
- * One exact portable asset version in the entry's reference closure.
+ * One exact asset version in the entry's reference closure.
  */
 export type PackageAsset = {
     asset_id: string;
     version: number;
-    definition: (WorkflowDefinition | GraphDefinition | AutonomousDefinition);
+    definition: (GraphDefinition | AutonomousDefinition);
 };
 
 /**
- * A logical resource requirement; fingerprints contain no local identity.
+ * A source resource identity and its non-secret compatibility contract.
  */
 export type PackageDependency = {
-    slot: string;
-    kind: 'profiles' | 'models' | 'tools' | 'skills' | 'knowledge_bases';
+    kind: 'profiles' | 'models' | 'personas' | 'tools' | 'skills' | 'knowledge_bases';
+    source_id: string;
+    display_name?: string;
+    description?: string;
     fingerprint?: (string | null);
     runner_type?: (string | null);
     capabilities?: Array<(string)>;
-    logical_slots?: Array<(string)>;
-    /**
-     * Original aliases used by role defaults or exact asset_id:version contexts; omitted provenance keeps all declared requirements global.
-     */
-    uses?: ({
-    [key: string]: Array<(string)>;
-} | null);
-    description?: string;
-    display_name?: string;
     input_schema?: ({
     [key: string]: unknown;
 } | null);
 };
 
-export type kind2 = 'profiles' | 'models' | 'tools' | 'skills' | 'knowledge_bases';
+export type kind2 = 'profiles' | 'models' | 'personas' | 'tools' | 'skills' | 'knowledge_bases';
 
 /**
- * Fixed role content with an explicit description of included prompt origin.
+ * An exact role version and its source profile identity.
  */
 export type PackageRole = {
     role_id: string;
     version: number;
     definition: RoleDefinition;
-    prompt_source: 'role' | 'persona' | 'profile' | 'task';
-    dependencies: Array<PackageDependency>;
+    installation: RoleInstallation;
 };
-
-export type prompt_source = 'role' | 'persona' | 'profile' | 'task';
 
 export type ParameterAttachmentId = string;
 
@@ -1196,11 +1240,22 @@ export type ReorderRequest = {
 };
 
 /**
- * Portable role content; resource names refer to logical slots.
+ * One explicit source-to-local resource choice.
+ */
+export type ResourceSelection = {
+    kind: 'profiles' | 'models' | 'personas' | 'tools' | 'skills' | 'knowledge_bases';
+    source_id: string;
+    target_id: string;
+};
+
+/**
+ * Role content with direct resource identities.
  */
 export type RoleDefinition = {
-    migration?: (MigrationState | null);
+    human_wait?: (HumanWaitPolicy | null);
     prompt?: (string | null);
+    provider_id?: (string | null);
+    persona_id?: (string | null);
     tools?: (Array<(string)> | null);
     skills?: (Array<(string)> | null);
     knowledge_bases?: (Array<(string)> | null);
@@ -1213,8 +1268,6 @@ export type RoleDefinition = {
     max_depth?: (number | null);
     name: string;
     description?: string;
-    model_slot?: string;
-    persona_slot?: (string | null);
     model_capabilities?: Array<('tool_use' | 'image' | 'audio')>;
     runner_capabilities?: Array<('internal_checkpoint' | 'remote_query' | 'task_tools' | 'task_result')>;
 };
@@ -1224,16 +1277,16 @@ export type RoleDefinition = {
  */
 export type RoleInstallation = {
     profile_id?: string;
-    bindings?: {
-        [key: string]: (string);
-    };
 };
 
 /**
- * Optional configuration; null inherits and an empty list disables.
+ * Optional configuration; lists inherit on null and disable when empty.
  */
 export type RoleOverrides = {
+    human_wait?: (HumanWaitPolicy | null);
     prompt?: (string | null);
+    provider_id?: (string | null);
+    persona_id?: (string | null);
     tools?: (Array<(string)> | null);
     skills?: (Array<(string)> | null);
     knowledge_bases?: (Array<(string)> | null);
@@ -1385,11 +1438,14 @@ export type TeamCall = {
 };
 
 /**
- * A pinned role permitted by an autonomous asset.
+ * A stable preset with an inline or pinned role source.
  */
 export type TeamRole = {
-    role_id: string;
-    role_version: number;
+    id: string;
+    role_id?: (string | null);
+    role_version?: (number | null);
+    role?: (RoleDefinition | null);
+    installation?: (RoleInstallation | null);
     overrides?: RoleOverrides;
 };
 
@@ -1420,6 +1476,30 @@ export type TraceSettingsRequest = {
     enabled?: boolean;
     level?: string;
     [key: string]: unknown | boolean | string;
+};
+
+export type TrialRunRequest = {
+    kind: 'workflow' | 'autonomous';
+    revision: number;
+    mode: 'full' | 'single' | 'partial';
+    node_id?: (string | null);
+    inputs?: {
+        [key: string]: (string);
+    };
+    sources?: {
+        [key: string]: TrialSource;
+    };
+};
+
+export type kind3 = 'workflow' | 'autonomous';
+
+export type mode3 = 'full' | 'single' | 'partial';
+
+export type TrialSource = {
+    content?: ({
+    [key: string]: unknown;
+} | null);
+    artifact?: (ArtifactReference | null);
 };
 
 export type UmoListRequest = {
@@ -1475,12 +1555,11 @@ export type ValidationError = {
 };
 
 /**
- * An allowed workflow version and the task whose exact result is returned.
+ * An exact workflow version invoked in an independent scope.
  */
 export type WorkflowCall = {
     asset_id: string;
     version: number;
-    result_task_id: string;
 };
 
 /**
@@ -1493,22 +1572,6 @@ export type WorkflowControlRequest = {
 };
 
 export type action4 = 'pause' | 'continue' | 'cancel';
-
-/**
- * A single task with a pinned role and declared input/output contracts.
- */
-export type WorkflowDefinition = {
-    name: string;
-    role_id: string;
-    role_version: number;
-    task: string;
-    required_inputs?: Array<(string)>;
-    overrides?: RoleOverrides;
-    output_contract?: ({
-    [key: string]: unknown;
-} | null);
-    limits?: (RunLimits | null);
-};
 
 export type WorkflowEdge = {
     from: string;
@@ -1525,10 +1588,7 @@ export type WorkflowGraph = {
  */
 export type WorkflowImportRequest = {
     package: WorkflowPackage;
-    installations?: {
-        [key: string]: RoleInstallation;
-    };
-    save_pending?: boolean;
+    selections?: Array<ResourceSelection>;
 };
 
 export type WorkflowNode = {
@@ -1539,19 +1599,18 @@ export type WorkflowNode = {
 };
 
 /**
- * A self-contained definition closure without local authorization.
+ * A complete source closure with direct resource requirements.
  */
 export type WorkflowPackage = {
     asset_id: string;
     version: number;
-    definition: (WorkflowDefinition | GraphDefinition | AutonomousDefinition);
+    definition: (GraphDefinition | AutonomousDefinition);
     format: "astrbot.workflow";
-    format_version: 1 | 2;
+    format_version: 3;
     roles: Array<PackageRole>;
     assets?: Array<PackageAsset>;
+    requirements?: Array<PackageDependency>;
 };
-
-export type format_version = 1 | 2;
 
 /**
  * Explicit new attempt using the failed attempt's exact frozen inputs.
@@ -1566,7 +1625,7 @@ export type WorkflowRetryRequest = {
  * Create an asset or append an immutable version using optimistic locking.
  */
 export type WorkflowSaveRequest = {
-    definition: (WorkflowDefinition | GraphDefinition | AutonomousDefinition);
+    definition: (GraphDefinition | AutonomousDefinition);
     expected_version?: (number | null);
 };
 
@@ -1579,6 +1638,9 @@ export type WorkflowStartRequest = {
         [key: string]: (string);
     };
     source?: string;
+    /**
+     * Fixed full-artifact inputs for autonomous teams. Workflow graphs use explicitly selected node inputs.
+     */
     input_artifacts?: Array<ArtifactReference>;
 };
 
@@ -5185,230 +5247,6 @@ export type ReceivePlatformWebhookResponse = (unknown);
 
 export type ReceivePlatformWebhookError = unknown;
 
-export type ListAgentTeamsResponse = (SuccessEnvelope);
-
-export type ListAgentTeamsError = unknown;
-
-export type CreateAgentTeamData = {
-    body: AgentTeamCreatePayload;
-};
-
-export type CreateAgentTeamResponse = (SuccessEnvelope);
-
-export type CreateAgentTeamError = unknown;
-
-export type GetAgentTeamData = {
-    path: {
-        team_id: string;
-    };
-};
-
-export type GetAgentTeamResponse = (SuccessEnvelope);
-
-export type GetAgentTeamError = unknown;
-
-export type UpdateAgentTeamData = {
-    body: AgentTeamUpdatePayload;
-    path: {
-        team_id: string;
-    };
-};
-
-export type UpdateAgentTeamResponse = (SuccessEnvelope);
-
-export type UpdateAgentTeamError = unknown;
-
-export type DeleteAgentTeamData = {
-    path: {
-        team_id: string;
-    };
-};
-
-export type DeleteAgentTeamResponse = (SuccessEnvelope);
-
-export type DeleteAgentTeamError = unknown;
-
-export type AddAgentTeamMemberData = {
-    body: AgentTeamMemberPayload;
-    path: {
-        team_id: string;
-    };
-};
-
-export type AddAgentTeamMemberResponse = (SuccessEnvelope);
-
-export type AddAgentTeamMemberError = unknown;
-
-export type RemoveAgentTeamMemberData = {
-    path: {
-        member_id: string;
-        team_id: string;
-    };
-};
-
-export type RemoveAgentTeamMemberResponse = (SuccessEnvelope);
-
-export type RemoveAgentTeamMemberError = unknown;
-
-export type ListAgentTeamWorkflowsData = {
-    path: {
-        team_id: string;
-    };
-};
-
-export type ListAgentTeamWorkflowsResponse = (SuccessEnvelope);
-
-export type ListAgentTeamWorkflowsError = unknown;
-
-export type CreateAgentTeamWorkflowData = {
-    body: AgentTeamWorkflowPayload;
-    path: {
-        team_id: string;
-    };
-};
-
-export type CreateAgentTeamWorkflowResponse = (SuccessEnvelope);
-
-export type CreateAgentTeamWorkflowError = unknown;
-
-export type UpdateAgentTeamWorkflowData = {
-    body: AgentTeamWorkflowPayload;
-    path: {
-        team_id: string;
-        workflow_id: string;
-    };
-};
-
-export type UpdateAgentTeamWorkflowResponse = (SuccessEnvelope);
-
-export type UpdateAgentTeamWorkflowError = unknown;
-
-export type DeleteAgentTeamWorkflowData = {
-    path: {
-        team_id: string;
-        workflow_id: string;
-    };
-};
-
-export type DeleteAgentTeamWorkflowResponse = (SuccessEnvelope);
-
-export type DeleteAgentTeamWorkflowError = unknown;
-
-export type ListAgentTeamRunsData = {
-    path: {
-        team_id: string;
-    };
-};
-
-export type ListAgentTeamRunsResponse = (SuccessEnvelope);
-
-export type ListAgentTeamRunsError = unknown;
-
-export type StartAgentTeamRunData = {
-    body: AgentTeamRunStartPayload;
-    path: {
-        team_id: string;
-    };
-};
-
-export type ListActiveAgentTeamRunsResponse = (SuccessEnvelope);
-
-export type ListActiveAgentTeamRunsError = unknown;
-
-export type PauseAgentTeamRunData = {
-    path: {
-        run_id: string;
-    };
-};
-
-export type PauseAgentTeamRunResponse = (SuccessEnvelope);
-
-export type PauseAgentTeamRunError = unknown;
-
-export type ResumeAgentTeamRunData = {
-    path: {
-        run_id: string;
-    };
-};
-
-export type ResumeAgentTeamRunResponse = (SuccessEnvelope);
-
-export type ResumeAgentTeamRunError = (ErrorEnvelope);
-
-export type StopAgentTeamRunData = {
-    path: {
-        run_id: string;
-    };
-};
-
-export type StopAgentTeamRunResponse = (SuccessEnvelope);
-
-export type StopAgentTeamRunError = unknown;
-
-export type RetryAgentTeamNodeData = {
-    path: {
-        node_id: string;
-        run_id: string;
-    };
-};
-
-export type RetryAgentTeamNodeResponse = (SuccessEnvelope);
-
-export type RetryAgentTeamNodeError = unknown;
-
-export type SkipAgentTeamNodeData = {
-    path: {
-        node_id: string;
-        run_id: string;
-    };
-};
-
-export type SkipAgentTeamNodeResponse = (SuccessEnvelope);
-
-export type SkipAgentTeamNodeError = unknown;
-
-export type InterruptAgentTeamMemberData = {
-    path: {
-        member_id: string;
-        run_id: string;
-    };
-};
-
-export type InterruptAgentTeamMemberResponse = (SuccessEnvelope);
-
-export type InterruptAgentTeamMemberError = unknown;
-
-export type GetAgentTeamMemberTranscriptData = {
-    path: {
-        member_id: string;
-        run_id: string;
-    };
-    query?: {
-        /**
-         * Exclusive cursor; only rows with a smaller id are returned.
-         */
-        before_id?: number;
-        /**
-         * Page size.
-         */
-        limit?: number;
-    };
-};
-
-export type GetAgentTeamMemberTranscriptResponse = (SuccessEnvelope);
-
-export type GetAgentTeamMemberTranscriptError = unknown;
-
-export type StreamAgentTeamRunData = {
-    path: {
-        run_id: string;
-    };
-};
-
-export type StreamAgentTeamRunResponse = (string);
-
-export type StreamAgentTeamRunError = unknown;
-
 export type ListRoleAssetsResponse = (SuccessEnvelope);
 
 export type ListRoleAssetsError = (unknown);
@@ -5456,6 +5294,16 @@ export type ReviseRoleAssetData = {
 export type ReviseRoleAssetResponse = (SuccessEnvelope);
 
 export type ReviseRoleAssetError = (unknown);
+
+export type DeleteRoleAssetData = {
+    path: {
+        role_id: string;
+    };
+};
+
+export type DeleteRoleAssetResponse = (SuccessEnvelope);
+
+export type DeleteRoleAssetError = (unknown);
 
 export type ResolveRoleAssetData = {
     body: RoleOverrides;
@@ -5589,6 +5437,16 @@ export type SaveAssetApiV1WorkflowAssetsAssetIdPutResponse = (unknown);
 
 export type SaveAssetApiV1WorkflowAssetsAssetIdPutError = (HTTPValidationError);
 
+export type DeleteWorkflowAssetData = {
+    path: {
+        asset_id: string;
+    };
+};
+
+export type DeleteWorkflowAssetResponse = (SuccessEnvelope);
+
+export type DeleteWorkflowAssetError = (unknown);
+
 export type ListChatAccessApiV1WorkflowAssetsAssetIdChatAccessGetData = {
     path: {
         asset_id: string;
@@ -5633,6 +5491,32 @@ export type StartRunApiV1WorkflowAssetsAssetIdRunsPostResponse = (unknown);
 
 export type StartRunApiV1WorkflowAssetsAssetIdRunsPostError = (HTTPValidationError);
 
+export type PreviewTrialApiV1WorkflowAssetsAssetIdTrialsPreviewPostData = {
+    body: TrialRunRequest;
+    path: {
+        asset_id: string;
+    };
+};
+
+export type PreviewTrialApiV1WorkflowAssetsAssetIdTrialsPreviewPostResponse = (unknown);
+
+export type PreviewTrialApiV1WorkflowAssetsAssetIdTrialsPreviewPostError = (unknown);
+
+export type StartTrialApiV1WorkflowAssetsAssetIdTrialsPostData = {
+    body: TrialRunRequest;
+    path: {
+        asset_id: string;
+    };
+};
+
+export type StartTrialApiV1WorkflowAssetsAssetIdTrialsPostResponse = (unknown);
+
+export type StartTrialApiV1WorkflowAssetsAssetIdTrialsPostError = (unknown);
+
+export type ListHumanRequestsApiV1WorkflowHumanRequestsGetResponse = (unknown);
+
+export type ListHumanRequestsApiV1WorkflowHumanRequestsGetError = unknown;
+
 export type ListRunsApiV1WorkflowRunsGetData = {
     query?: {
         limit?: number;
@@ -5665,6 +5549,37 @@ export type ResolveToolCallApiV1WorkflowRunsRunIdToolCallsRecordIdResolvePostRes
 
 export type ResolveToolCallApiV1WorkflowRunsRunIdToolCallsRecordIdResolvePostError = (HTTPValidationError);
 
+export type GetRunHistoryPageApiV1WorkflowRunsRunIdHistoryGetData = {
+    path: {
+        run_id: string;
+    };
+    query: {
+        before?: (string | null);
+        kind: 'events' | 'messages' | 'usage' | 'attempts';
+        limit?: number;
+        task_run_id: string;
+    };
+};
+
+export type GetRunHistoryPageApiV1WorkflowRunsRunIdHistoryGetResponse = (unknown);
+
+export type GetRunHistoryPageApiV1WorkflowRunsRunIdHistoryGetError = (HTTPValidationError);
+
+export type GetProcessPageApiV1WorkflowRunsRunIdProcessGetData = {
+    path: {
+        run_id: string;
+    };
+    query: {
+        before: number;
+        limit?: number;
+        task_run_id: string;
+    };
+};
+
+export type GetProcessPageApiV1WorkflowRunsRunIdProcessGetResponse = (unknown);
+
+export type GetProcessPageApiV1WorkflowRunsRunIdProcessGetError = (HTTPValidationError);
+
 export type GetEventsApiV1WorkflowRunsRunIdEventsGetData = {
     path: {
         run_id: string;
@@ -5677,6 +5592,19 @@ export type GetEventsApiV1WorkflowRunsRunIdEventsGetData = {
 export type GetEventsApiV1WorkflowRunsRunIdEventsGetResponse = (unknown);
 
 export type GetEventsApiV1WorkflowRunsRunIdEventsGetError = (HTTPValidationError);
+
+export type StreamEventsApiV1WorkflowRunsRunIdEventsStreamGetData = {
+    path: {
+        run_id: string;
+    };
+    query?: {
+        after?: number;
+    };
+};
+
+export type StreamEventsApiV1WorkflowRunsRunIdEventsStreamGetResponse = (string);
+
+export type StreamEventsApiV1WorkflowRunsRunIdEventsStreamGetError = (HTTPValidationError | unknown);
 
 export type ControlRunApiV1WorkflowRunsRunIdControlPostData = {
     body: WorkflowControlRequest;
@@ -5835,27 +5763,6 @@ export type ImportAssetApiV1WorkflowAssetsImportPostResponse = (unknown);
 
 export type ImportAssetApiV1WorkflowAssetsImportPostError = (HTTPValidationError);
 
-export type PreviewLegacyMigrationApiV1AgentTeamsTeamIdMigrationPreviewGetData = {
-    path: {
-        team_id: string;
-    };
-};
-
-export type PreviewLegacyMigrationApiV1AgentTeamsTeamIdMigrationPreviewGetResponse = (unknown);
-
-export type PreviewLegacyMigrationApiV1AgentTeamsTeamIdMigrationPreviewGetError = (HTTPValidationError);
-
-export type ConfirmLegacyMigrationApiV1AgentTeamsTeamIdMigrationPostData = {
-    body: LegacyMigrationRequest;
-    path: {
-        team_id: string;
-    };
-};
-
-export type ConfirmLegacyMigrationApiV1AgentTeamsTeamIdMigrationPostResponse = (unknown);
-
-export type ConfirmLegacyMigrationApiV1AgentTeamsTeamIdMigrationPostError = (HTTPValidationError);
-
 export type ListHistoryApiV1AgentHistoryGetData = {
     query?: {
         limit?: number;
@@ -5866,33 +5773,3 @@ export type ListHistoryApiV1AgentHistoryGetData = {
 export type ListHistoryApiV1AgentHistoryGetResponse = (unknown);
 
 export type ListHistoryApiV1AgentHistoryGetError = (HTTPValidationError);
-
-export type GetHistoryRecordApiV1AgentHistoryKindIdentityGetData = {
-    path: {
-        identity: string;
-        kind: 'v2_run' | 'legacy_run' | 'legacy_conversation';
-    };
-    query?: {
-        limit?: number;
-        offset?: number;
-    };
-};
-
-export type GetHistoryRecordApiV1AgentHistoryKindIdentityGetResponse = (unknown);
-
-export type GetHistoryRecordApiV1AgentHistoryKindIdentityGetError = (HTTPValidationError);
-
-export type GetHistoryProcessApiV1AgentHistoryLegacyRunIdentityMembersMemberIdGetData = {
-    path: {
-        identity: string;
-        member_id: string;
-    };
-    query?: {
-        before_id?: (number | null);
-        limit?: number;
-    };
-};
-
-export type GetHistoryProcessApiV1AgentHistoryLegacyRunIdentityMembersMemberIdGetResponse = (unknown);
-
-export type GetHistoryProcessApiV1AgentHistoryLegacyRunIdentityMembersMemberIdGetError = (HTTPValidationError);

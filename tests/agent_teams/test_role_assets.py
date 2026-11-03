@@ -8,6 +8,7 @@ from astrbot.api import AstrBotConfig
 from astrbot.core.agent.tool import FunctionTool
 from astrbot.core.agent_teams.assets import RoleAssetError, RoleAssetService
 from astrbot.core.astrbot_config_mgr import AstrBotConfigManager
+from astrbot.core.db.po import AgentAssetTombstone
 from astrbot.core.db.sqlite import SQLiteDatabase
 from astrbot.core.knowledge_base.kb_mgr import KnowledgeBaseManager
 from astrbot.core.persona_mgr import PersonaManager
@@ -16,6 +17,30 @@ from astrbot.core.skills.skill_manager import SkillManager
 from astrbot.core.star import star
 from astrbot.core.umop_config_router import UmopConfigRouter
 from astrbot.core.utils.shared_preferences import SharedPreferences
+
+
+@pytest.mark.asyncio
+async def test_asset_tombstone_is_owned_idempotent_and_preserves_versions(tmp_path):
+    db = SQLiteDatabase(str(tmp_path / "roles.db"))
+    service = RoleAssetService(db)
+    role = await service.save_role(
+        "alice", {"definition": {"name": "Researcher", "prompt": "Check evidence."}}
+    )
+    role_id = role["role_id"]
+    with pytest.raises(RoleAssetError) as exc:
+        await service.delete_asset("bob", "role", role_id)
+    assert exc.value.status == 404
+    await service.delete_asset("alice", "role", role_id)
+    await service.delete_asset("alice", "role", role_id)
+    await db.engine.dispose()
+    reopened = SQLiteDatabase(str(tmp_path / "roles.db"))
+    async with reopened.get_db() as session:
+        tombstone = await session.get(AgentAssetTombstone, ("role", role_id))
+        assert tombstone is not None and tombstone.owner_username == "alice"
+    assert (await RoleAssetService(reopened).get_role("alice", role_id, 1))[
+        "version"
+    ] == 1
+    await reopened.engine.dispose()
 
 
 @pytest.mark.asyncio
@@ -64,19 +89,22 @@ async def test_unsaved_preview_distinguishes_persona_content_and_disabled_capabi
     payload = {
         "definition": {
             "name": "Reviewer",
-            "persona_slot": "review-persona",
+            "persona_id": "local-persona",
+            "provider_id": "m",
+            "prompt": "Review evidence.",
             "tools": [],
         },
-        "installation": {"bindings": {"model": "m", "review-persona": "local-persona"}},
     }
     preview = await service.preview_role(payload)
     assert preview["ready"] is True
-    assert preview["effective"]["prompt"] == "Find errors."
-    assert preview["sources"]["prompt"] == "persona:review-persona"
+    assert preview["effective"]["prompt"] == "Review evidence."
+    assert preview["effective"]["persona_prompt"] == "Find errors."
+    assert preview["sources"]["persona_prompt"] == "persona:local-persona"
     assert preview["effective"]["tools"] == []
     assert preview["export_content"] == {
-        "prompt": None,
-        "persona_slot": "review-persona",
+        "prompt": "Review evidence.",
+        "persona_id": "local-persona",
+        "persona_prompt": "Find errors.",
     }
     assert (await service.list_roles("alice"))["roles"] == []
     inventory["models"][0]["enabled"] = False
@@ -90,7 +118,7 @@ async def test_unsaved_preview_distinguishes_persona_content_and_disabled_capabi
 
 
 @pytest.mark.asyncio
-async def test_rejects_conflicting_logical_slot_kinds_with_a_field_error(tmp_path):
+async def test_duplicate_ids_within_a_category_are_rejected(tmp_path):
     db = SQLiteDatabase(str(tmp_path / "roles.db"))
     service = RoleAssetService(db)
     with pytest.raises(RoleAssetError) as caught:
@@ -100,12 +128,12 @@ async def test_rejects_conflicting_logical_slot_kinds_with_a_field_error(tmp_pat
                 "definition": {
                     "name": "Researcher",
                     "prompt": "Check evidence.",
-                    "model_slot": "shared",
-                    "tools": ["shared"],
+                    "provider_id": "shared",
+                    "tools": ["shared", "shared"],
                 }
             },
         )
-    assert caught.value.fields[0]["path"] == "definition.tools.0"
+    assert caught.value.fields[0]["path"] == "definition.tools.1"
     assert (await service.list_roles("alice"))["roles"] == []
     await db.engine.dispose()
 
@@ -146,10 +174,10 @@ async def test_effective_role_shows_inheritance_overrides_and_missing_resources(
             "definition": {
                 "name": "Researcher",
                 "prompt": "Check evidence.",
+                "provider_id": "local-model",
                 "model_capabilities": ["tool_use"],
                 "max_steps": 12,
             },
-            "installation": {"bindings": {"model": "local-model"}},
         },
     )
     resolved = await service.resolve_role("alice", role["role_id"], 1, {"max_steps": 8})
@@ -163,7 +191,7 @@ async def test_effective_role_shows_inheritance_overrides_and_missing_resources(
     missing = await service.resolve_role("alice", role["role_id"], 1)
     assert missing["ready"] is False
     assert {
-        "path": "installation.bindings.model",
+        "path": "definition.provider_id",
         "code": "MISSING",
         "message": "Resource is missing: local-model",
     } in missing["issues"]
@@ -212,14 +240,17 @@ async def test_profile_disabled_tools_are_excluded_from_inheritance_and_reported
 
     service = RoleAssetService(db, catalog_loader=load_inventory)
     payload = {
-        "definition": {"name": "Researcher", "prompt": "Read evidence."},
-        "installation": {"bindings": {"model": "m", "local-shell": "shell"}},
+        "definition": {
+            "name": "Researcher",
+            "prompt": "Read evidence.",
+            "provider_id": "m",
+        },
     }
     assert (await service.preview_role(payload))["effective"]["tools"] == []
-    payload["definition"]["tools"] = ["local-shell"]
+    payload["definition"]["tools"] = ["shell"]
     assert (await service.preview_role(payload))["issues"] == [
         {
-            "path": "installation.bindings.local-shell",
+            "path": "definition.tools.0",
             "code": "FORBIDDEN",
             "message": "Resource is unavailable: shell",
         }
@@ -335,24 +366,22 @@ async def test_capability_readiness_uses_the_selected_runtime_and_plugin_scope(
             "plugin-search"
             not in (await service.preview_role(payload))["effective"]["tools"]
         )
-        payload["definition"]["tools"] = ["search"]
-        payload["installation"]["bindings"] = {"search": "plugin-search"}
+        payload["definition"]["tools"] = ["plugin-search"]
         assert {
-            "path": "installation.bindings.search",
+            "path": "definition.tools.0",
             "code": "FORBIDDEN",
             "message": "Resource is unavailable: plugin-search",
         } in (await service.preview_role(payload))["issues"]
-        payload["definition"]["skills"] = ["remote"]
-        payload["installation"]["bindings"]["remote"] = "sandbox-evidence"
+        payload["definition"]["skills"] = ["sandbox-evidence"]
         blocked = await service.preview_role(payload)
         assert {
-            "path": "installation.bindings.remote",
+            "path": "definition.skills.0",
             "code": "FORBIDDEN",
             "message": "Resource is unavailable: sandbox-evidence",
         } in blocked["issues"]
         payload["installation"]["profile_id"] = "sandbox"
         assert not any(
-            issue["path"] == "installation.bindings.remote"
+            issue["path"] == "definition.skills.0"
             for issue in (await service.preview_role(payload))["issues"]
         )
         payload["definition"]["skills"] = None
@@ -390,18 +419,10 @@ async def test_explicit_capabilities_cannot_expand_persona_allowlists(tmp_path):
                 "definition": {
                     "name": "Researcher",
                     "prompt": "Check evidence.",
-                    "persona_slot": "persona",
-                    "tools": ["tool", "builtin-tool"],
-                    "skills": ["skill"],
-                },
-                "installation": {
-                    "bindings": {
-                        "model": "m",
-                        "persona": "restricted",
-                        "tool": "b",
-                        "builtin-tool": "builtin",
-                        "skill": "b",
-                    }
+                    "persona_id": "restricted",
+                    "provider_id": "m",
+                    "tools": ["b", "builtin"],
+                    "skills": ["b"],
                 },
             }
         )
@@ -410,12 +431,12 @@ async def test_explicit_capabilities_cannot_expand_persona_allowlists(tmp_path):
         assert preview["effective"]["skills"] == []
         assert preview["issues"] == [
             {
-                "path": "installation.bindings.tool",
+                "path": "definition.tools.0",
                 "code": "FORBIDDEN",
                 "message": "Resource is excluded by persona: b",
             },
             {
-                "path": "installation.bindings.skill",
+                "path": "definition.skills.0",
                 "code": "FORBIDDEN",
                 "message": "Resource is excluded by persona: b",
             },
@@ -425,7 +446,7 @@ async def test_explicit_capabilities_cannot_expand_persona_allowlists(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_capability_inheritance_uses_the_profiles_default_persona(
+async def test_no_persona_does_not_inherit_the_profiles_default_persona(
     tmp_path, monkeypatch
 ):
     monkeypatch.setenv("ASTRBOT_ROOT", str(tmp_path))
@@ -464,23 +485,78 @@ async def test_capability_inheritance_uses_the_profiles_default_persona(
     payload = {"definition": {"name": "Researcher", "prompt": "Check evidence."}}
     try:
         preview = await service.preview_role(payload)
-        assert preview["effective"]["tools"] == ["a"]
-        assert preview["effective"]["skills"] == ["a"]
-        assert preview["effective"]["persona_id"] == "restricted"
-        assert preview["sources"]["skills"] == "profile:default"
+        assert {"a", "b"}.issubset(preview["effective"]["tools"])
+        assert preview["effective"]["skills"] == ["a", "b"]
+        assert preview["effective"]["persona_id"] is None
+        assert preview["effective"]["persona_prompt"] is None
         assert preview["effective"]["prompt"] == "Check evidence."
+        payload["definition"]["persona_id"] = "restricted"
+        explicit = await service.preview_role(payload)
+        assert "a" in explicit["effective"]["tools"]
+        assert "b" not in explicit["effective"]["tools"]
+        assert explicit["effective"]["skills"] == ["a"]
+        assert explicit["sources"]["skills"] == "persona:restricted"
         await personas.delete_persona("restricted")
         assert {
-            "path": "installation.profile_id",
+            "path": "definition.persona_id",
             "code": "MISSING",
             "message": "Resource is missing: restricted",
         } in (await service.preview_role(payload))["issues"]
-        # Webchat's implicit system default has no stored persona allowlist.
-        config["agent_runner"]["config"]["persona"]["persona_id"] = "default"
+        payload["definition"]["persona_id"] = None
         assert (await service.preview_role(payload))["effective"]["skills"] == [
             "a",
             "b",
         ]
     finally:
         await preferences.close()
+        await db.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_model_and_persona_profile_scope_applies_to_preview_and_resolve(tmp_path):
+    db = SQLiteDatabase(str(tmp_path / "roles.db"))
+    inventory = {
+        "profiles": [{"id": "default"}],
+        "models": [{"id": "m", "enabled_profiles": ["other"]}],
+        "personas": [{"id": "p", "prompt": "Persona", "enabled_profiles": ["other"]}],
+        "tools": [],
+        "skills": [],
+        "knowledge_bases": [],
+    }
+
+    async def load_inventory():
+        return inventory
+
+    service = RoleAssetService(db, catalog_loader=load_inventory)
+    try:
+        payload = {
+            "definition": {
+                "name": "Researcher",
+                "prompt": "Duty",
+                "provider_id": "m",
+                "persona_id": "p",
+            }
+        }
+        role = await service.save_role("alice", payload)
+        for preview in (
+            await service.preview_role(payload),
+            await service.resolve_role("alice", role["role_id"], 1),
+        ):
+            assert not preview["ready"]
+            assert {(issue["path"], issue["code"]) for issue in preview["issues"]} == {
+                ("definition.provider_id", "FORBIDDEN"),
+                ("definition.persona_id", "FORBIDDEN"),
+            }
+        inventory["models"][0]["enabled_profiles"] = ["default"]
+        inventory["personas"][0]["enabled_profiles"] = ["default"]
+        resolved = await service.resolve_role("alice", role["role_id"], 1)
+        assert resolved["ready"]
+        await service.validate_frozen_role(resolved)
+        inventory["personas"][0]["enabled_profiles"] = []
+        with pytest.raises(RoleAssetError) as exc:
+            await service.validate_frozen_role(resolved)
+        assert any(
+            issue["path"] == "effective.persona_id" for issue in exc.value.fields
+        )
+    finally:
         await db.engine.dispose()

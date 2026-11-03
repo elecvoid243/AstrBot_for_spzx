@@ -282,34 +282,63 @@ class KnowledgeBaseManager:
     async def retrieve(
         self,
         query: str,
-        kb_names: list[str],
+        kb_names: list[str] | None = None,
         top_k_fusion: int = 20,
         top_m_final: int = 5,
+        *,
+        kb_ids: list[str] | None = None,
     ) -> dict | None:
-        """从指定知识库中检索相关内容"""
-        kb_ids = []
+        """Retrieve from either names or exact knowledge base identities.
+
+        Args:
+            query: Search text.
+            kb_names: Ordinary chat's selected knowledge base names.
+            top_k_fusion: Candidate count before final ranking.
+            top_m_final: Maximum number of final results.
+            kb_ids: Exact selected identities, including an empty selection.
+
+        Returns:
+            Formatted context and results, or no matching content.
+
+        Raises:
+            ValueError: Names and identities are both supplied, or all selected
+                available bases failed to initialize.
+        """
+        if kb_names is not None and kb_ids is not None:
+            raise ValueError("Choose knowledge bases by name or by ID, not both")
+        requested_ids = kb_ids
+        resolved_ids = []
         kb_id_helper_map = {}
         unavailable_kbs = []
-        for kb_name in kb_names:
-            if kb_helper := await self.get_kb_by_name(kb_name):
+        for identity in (
+            requested_ids if requested_ids is not None else (kb_names or [])
+        ):
+            kb_helper = (
+                await self.get_kb(identity)
+                if requested_ids is not None
+                else await self.get_kb_by_name(identity)
+            )
+            if kb_helper:
                 if kb_helper.init_error:
-                    unavailable_kbs.append((kb_name, kb_helper.init_error))
-                    logger.warning(f"知识库 {kb_name} 不可用: {kb_helper.init_error}")
+                    unavailable_kbs.append((identity, kb_helper.init_error))
+                    logger.warning(
+                        f"Knowledge base {identity} is unavailable: {kb_helper.init_error}"
+                    )
                     continue
-                kb_ids.append(kb_helper.kb.kb_id)
+                resolved_ids.append(kb_helper.kb.kb_id)
                 kb_id_helper_map[kb_helper.kb.kb_id] = kb_helper
 
         # all requested KBs are unavailable
-        if not kb_ids and unavailable_kbs:
+        if not resolved_ids and unavailable_kbs:
             errors = "; ".join(f"{n}: {e}" for n, e in unavailable_kbs)
             raise ValueError(f"所有请求的知识库均不可用: {errors}")
 
-        if not kb_ids:
+        if not resolved_ids:
             return {}
 
         results = await self.retrieval_manager.retrieve(
             query=query,
-            kb_ids=kb_ids,
+            kb_ids=resolved_ids,
             kb_id_helper_map=kb_id_helper_map,
             top_k_fusion=top_k_fusion,
             top_m_final=top_m_final,

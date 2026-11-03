@@ -250,3 +250,72 @@ async def test_raising_handler_leaves_no_entry_and_others_traced():
     items = [i for i in read_injections(event) if i["plugin"] == "demo_plugin"]
     # Only the successful injector leaves a trace; the raiser leaves none.
     assert [i["handler"] for i in items] == ["inject"]
+
+
+def test_bounded_team_context_omits_binary_and_url_credentials():
+    from astrbot.core.pipeline.llm_request_trace import bounded_context_value
+
+    result = bounded_context_value({"messages": [{"role": "user", "content": [
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,SECRET"}},
+        {"type": "audio_url", "audio_url": {"url": "https://user:password@example.com/a?token=secret#fragment"}},
+        {"type": "image_url", "image_url": {"url": "C:/private.png"}},
+        {"type": "input_audio", "input_audio": {"data": "AUDIO_SECRET", "format": "wav"}},
+        {"type": "file", "file": {"filename": "C:/private.txt", "file_data": "FILE_SECRET"}},
+        {"type": "video", "video": {"data": "VIDEO_SECRET"}},
+    ]}], "provider_config": {"api_key": "secret"}})
+    rendered = str(result)
+    assert "SECRET" not in rendered and "password" not in rendered and "token=secret" not in rendered
+    parts = result["value"]["messages"][0]["content"]
+    assert parts[0]["omitted"] == "binary data URI"
+    assert parts[1]["url"] == "https://example.com/a"
+    assert parts[1]["reference_redacted"] is True
+    assert bounded_context_value({"type": ["string", "null"]})["value"]["type"] == ["string", "null"]
+    assert parts[2]["omitted"] == "no authorized file reference"
+    assert all("SECRET" not in str(part) and part["omitted"] == "binary media content" for part in parts[3:])
+    assert result["value"]["provider_config"]["omitted"] == "sensitive or binary field"
+    file_result = bounded_context_value({"content": '{"encoding":"base64","content":"SECRET_BINARY"}'})
+    assert "SECRET_BINARY" not in str(file_result)
+    assert "sensitive or binary field" in str(file_result)
+    structured = bounded_context_value({"text": '{"api_key":"PRIVATE_CREDENTIAL","value":"allowed"}'})
+    assert "PRIVATE_CREDENTIAL" not in str(structured)
+    assert "sensitive or binary field" in str(structured)
+    embedded = bounded_context_value({"text": "attachment data:image/png;base64,SECRETIMAGE"})
+    assert "SECRETIMAGE" not in str(embedded) and "binary data URI omitted" in str(embedded)
+    truncated = bounded_context_value({"text": "x" * 10000})
+    assert truncated["truncated"] and truncated["reason"] == "content limit"
+    assert 0 < len(truncated["value"]["text"]) < 8192
+    assert truncated["original_length"] > 8192
+
+
+def test_bounded_context_limits_nested_json_and_keeps_business_data():
+    import json
+
+    from astrbot.core.agent.tool import FunctionTool, ToolSet
+    from astrbot.core.pipeline.llm_request_trace import bounded_context_value
+
+    schema = ToolSet(tools=[FunctionTool(
+        name="submit", description="Submit business data",
+        parameters={"type": "object", "properties": {
+            "data": {"type": "string", "description": "Business data"},
+            "filename": {"type": "string", "description": "Report title"},
+        }},
+    )]).openai_schema()
+    inputs = {"data": "revenue", "filename": "report", "file_data": "ordinary value"}
+    visible = bounded_context_value({"tools": schema, "inputs": inputs})
+    assert visible["value"]["tools"] == schema
+    assert visible["value"]["inputs"] == inputs
+    assert not visible["truncated"]
+
+    huge = json.dumps({"api_key": "PRIVATE", "nested": {"data": "x" * 100000}})
+    result = bounded_context_value({"messages": [{"role": "assistant", "tool_calls": [{"function": {"arguments": huge}}]}]})
+    assert result["truncated"] and result["reason"] == "content limit"
+    assert "PRIVATE" not in str(result)
+    assert len(json.dumps(result["value"])) < 9000
+    argument = result["value"]["messages"][0]["tool_calls"][0]["function"]["arguments"]
+    assert argument == ""
+
+    media = json.dumps({"payload": [{"type": "input_audio", "input_audio": {"data": "SECRET_AUDIO"}}], "data": "business"})
+    sanitized = bounded_context_value({"arguments": media})
+    assert "SECRET_AUDIO" not in str(sanitized)
+    assert "binary media content" in str(sanitized)
+    assert "business" in str(sanitized)

@@ -4,12 +4,18 @@
     scrollable
     :model-value="modelValue"
     max-width="760"
-    :persistent="saving"
+    persistent
     @update:model-value="$emit('update:modelValue', $event)"
   >
-    <v-card>
+    <v-card v-if="draftReady">
       <h3 class="text-h3 pa-4 pb-0 pl-6">{{ tm("autonomous.title") }}</h3>
-      <v-card-text>
+      <v-card-text :inert="saving || draft.busy.value ? '' : undefined">
+        <DraftStatus
+          :draft="draft"
+          @reload="reloadDraft"
+          @discard="emit('update:modelValue', false)"
+          @use-latest="useLatestDraft"
+        />
         <v-alert v-if="error" type="error" variant="tonal" class="mb-4">{{
           error
         }}</v-alert>
@@ -20,44 +26,35 @@
           data-testid="team-name"
         />
         <v-select
-          v-model="form.coordinator.role_id"
-          :items="roleItems"
-          :label="tm('autonomous.coordinator')"
-          data-testid="team-coordinator"
-          @update:model-value="
-            form.coordinator.role_version = roleById($event)?.version ?? 1
-          "
+          v-model="form.default_provider_id"
+          :items="catalog.models"
+          item-title="name"
+          item-value="id"
+          :label="tm('graph.defaultModel')"
+          clearable
         />
-        <v-select
-          v-model="form.coordinator.role_version"
-          :items="roleById(form.coordinator.role_id)?.versions ?? []"
-          :label="tm('v2.roleVersion')"
+        <TeamPresetEditor
+          :preset="form.coordinator"
+          :initially-open="!asset"
+          :title="tm('autonomous.coordinator')"
+          :roles="roles"
+          :catalog="catalog"
+          :default-provider="form.default_provider_id"
         />
-        <v-select
-          v-model="allowedIds"
-          :items="roleItems"
-          multiple
-          chips
-          :label="tm('autonomous.allowedRoles')"
-          data-testid="team-roles"
-          @update:model-value="selectAllowed"
+        <TeamPresetEditor
+          v-for="(preset, index) in form.allowed_roles"
+          :key="preset.id"
+          :preset="preset"
+          :title="`${tm('autonomous.allowedRoles')} ${index + 1}`"
+          :roles="roles"
+          :catalog="catalog"
+          :default-provider="form.default_provider_id"
+          removable
+          @remove="form.allowed_roles.splice(index, 1)"
         />
-        <div
-          v-for="role in form.allowed_roles"
-          :key="role.role_id"
-          class="team-role"
-        >
-          <strong class="text-body-2">{{
-            roleItems.find((item) => item.value === role.role_id)?.title ??
-            role.role_id
-          }}</strong>
-          <v-select
-            v-model="role.role_version"
-            :items="roleById(role.role_id)?.versions ?? []"
-            :label="tm('v2.roleVersion')"
-            density="compact"
-          />
-        </div>
+        <v-btn variant="tonal" class="mb-4" @click="addPreset">{{
+          tm("autonomous.addPreset")
+        }}</v-btn>
         <div class="team-limits">
           <v-text-field
             v-model.number="form.max_members"
@@ -108,49 +105,102 @@
         <v-textarea v-model="contract" :label="tm('v2.contract')" rows="3" />
       </v-card-text>
       <v-card-actions class="flex-wrap">
+        <v-btn variant="tonal" :disabled="saving || draft.busy.value" @click="openTrial">{{
+          tm("trial.title")
+        }}</v-btn>
         <v-spacer />
-        <v-btn
-          variant="text"
-          :disabled="saving"
-          @click="$emit('update:modelValue', false)"
-          >{{ tm("roles.cancel") }}</v-btn
-        >
+        <v-btn variant="text" :disabled="saving" @click="closeEditor">{{
+          tm("v2.close")
+        }}</v-btn>
         <v-btn
           variant="tonal"
           color="primary"
           :loading="saving"
           :disabled="
+            draft.busy.value ||
             !form.name.trim() ||
-            !form.coordinator.role_id ||
+            (!form.coordinator.role_id && !form.coordinator.role) ||
             !form.allowed_roles.length ||
             workflowInvalid ||
             usageInvalid
           "
           data-testid="team-save"
           @click="save"
-          >{{ tm("v2.save") }}</v-btn
+          >{{ tm("draft.publish") }}</v-btn
         >
       </v-card-actions>
     </v-card>
+    <v-card v-else
+      ><v-card-text>{{ error || tm("draft.saving") }}</v-card-text
+      ><v-card-actions
+        ><v-btn variant="text" @click="$emit('update:modelValue', false)">{{
+          tm("v2.close")
+        }}</v-btn></v-card-actions
+      ></v-card
+    >
   </v-dialog>
+  <TrialRunDialog
+    v-if="trialDraft"
+    v-model="trialOpen"
+    :asset-id="trialDraft.asset_id"
+    :revision="trialDraft.revision"
+    kind="autonomous"
+    :nodes="[]"
+    @started="onTrialStarted"
+  />
 </template>
 
 <script setup lang="ts">
+import DraftStatus from "./DraftStatus.vue";
+import TrialRunDialog from "./TrialRunDialog.vue";
+import TeamPresetEditor from "./TeamPresetEditor.vue";
 import RunLimitsForm from "./RunLimitsForm.vue";
-import { computed, onBeforeUnmount, ref, watch } from "vue";
+import { nextTick, onBeforeUnmount, ref, watch } from "vue";
+import { useAssetDraft } from "@/composables/useAssetDraft";
 import AllowedWorkflowsPanel from "./AllowedWorkflowsPanel.vue";
-import { workflowAssetsApi } from "@/api/workflowAssets";
 import { useModuleI18n } from "@/i18n/composables";
 import { extractApiError } from "@/utils/extractApiError";
 import type { AutonomousDefinition } from "@/api/generated/openapi-v1";
 
-const props = defineProps<{ modelValue: boolean; asset: any; roles: any[] }>();
+const props = defineProps<{
+  modelValue: boolean;
+  asset: any;
+  roles: any[];
+  catalog: Record<string, any[]>;
+}>();
 const emit = defineEmits<{
   "update:modelValue": [value: boolean];
   saved: [];
+  started: [runId: string];
 }>();
 const { tm } = useModuleI18n("features/agent-teams");
 const saving = ref(false);
+const draft = useAssetDraft("autonomous");
+const trialOpen = ref(false);
+const trialDraft = ref<any>(null);
+async function openTrial() {
+  try {
+    draft.change({
+      definition: {
+        ...form.value,
+        approval_question: approval.value.trim() || null,
+        output_contract: contract.value.trim() ? JSON.parse(contract.value) : null,
+      },
+      editor: { approval: approval.value, contract: contract.value },
+    });
+    if (draft.status.value === "failed" || draft.status.value === "conflict")
+      throw new Error(tm(`draft.${draft.status.value}`));
+    trialDraft.value = await draft.flush();
+    trialOpen.value = true;
+  } catch (cause) {
+    error.value = extractApiError(cause, tm("errors.operationFailed")).message;
+  }
+}
+function onTrialStarted(runId: string) {
+  emit("update:modelValue", false);
+  emit("started", runId);
+}
+const draftReady = ref(false);
 const error = ref("");
 const workflowInvalid = ref(false);
 let editGeneration = 0;
@@ -160,11 +210,15 @@ onBeforeUnmount(() => {
 const approval = ref("");
 const contract = ref("");
 const usageInvalid = ref(false);
-const allowedIds = ref<string[]>([]);
 const form = ref<AutonomousDefinition>({
   kind: "autonomous",
   name: "",
-  coordinator: { role_id: "", role_version: 1, overrides: {} },
+  coordinator: {
+    id: "coordinator",
+    role: { name: "Coordinator" },
+    installation: { profile_id: "default" },
+    overrides: {},
+  },
   allowed_roles: [],
   required_inputs: ["goal"],
   max_members: 8,
@@ -173,19 +227,14 @@ const form = ref<AutonomousDefinition>({
   max_depth: 3,
   allowed_workflows: [],
 });
-const roleItems = computed(() =>
-  props.roles.map((role) => ({
-    title: role.definition.name,
-    value: role.role_id,
-  })),
-);
-const roleById = (identity: string) =>
-  props.roles.find((role) => role.role_id === identity);
 
 watch(
   () => [props.modelValue, props.asset] as const,
-  ([open]) => {
+  async ([open]) => {
     editGeneration++;
+    const generation = editGeneration;
+    draftReady.value = false;
+    draft.close();
     saving.value = false;
     if (!open) return;
     form.value = props.asset
@@ -193,7 +242,12 @@ watch(
       : {
           kind: "autonomous",
           name: "",
-          coordinator: { role_id: "", role_version: 1, overrides: {} },
+          coordinator: {
+            id: "coordinator",
+            role: { name: "Coordinator" },
+            installation: { profile_id: "default" },
+            overrides: {},
+          },
           allowed_roles: [],
           required_inputs: ["goal"],
           max_members: 8,
@@ -204,25 +258,100 @@ watch(
         };
     form.value.allowed_workflows ??= [];
     form.value.max_depth ??= 3;
-    allowedIds.value = form.value.allowed_roles.map((role) => role.role_id);
     approval.value = form.value.approval_question ?? "";
     contract.value = form.value.output_contract
       ? JSON.stringify(form.value.output_contract, null, 2)
       : "";
     error.value = "";
+    try {
+      const item = await draft.open(props.asset?.asset_id ?? null, {
+        definition: form.value,
+        editor: { approval: approval.value, contract: contract.value },
+      });
+      if (generation !== editGeneration) return;
+      form.value = item.body.definition;
+      approval.value =
+        item.body.editor?.approval ?? form.value.approval_question ?? "";
+      contract.value =
+        item.body.editor?.contract ??
+        (form.value.output_contract
+          ? JSON.stringify(form.value.output_contract, null, 2)
+          : "");
+      await nextTick();
+      draftReady.value = true;
+    } catch (err) {
+      if (generation === editGeneration)
+        error.value = extractApiError(
+          err,
+          tm("errors.operationFailed"),
+        ).message;
+    }
   },
   { immediate: true },
 );
 
-function selectAllowed(identities: string[]) {
-  form.value.allowed_roles = identities.map(
-    (identity) =>
-      form.value.allowed_roles.find((role) => role.role_id === identity) ?? {
-        role_id: identity,
-        role_version: roleById(identity)?.version ?? 1,
-        overrides: {},
-      },
-  );
+watch(
+  [form, approval, contract],
+  () => {
+    if (draftReady.value && props.modelValue)
+      draft.change({
+        definition: form.value,
+        editor: { approval: approval.value, contract: contract.value },
+      });
+  },
+  { deep: true },
+);
+
+async function reloadDraft() {
+  draftReady.value = false;
+  const item = await draft.reload();
+  form.value = item.body.definition;
+  approval.value =
+    item.body.editor?.approval ?? form.value.approval_question ?? "";
+  contract.value =
+    item.body.editor?.contract ??
+    (form.value.output_contract
+      ? JSON.stringify(form.value.output_contract, null, 2)
+      : "");
+  await nextTick();
+  draftReady.value = true;
+}
+
+async function useLatestDraft(latest: any) {
+  form.value = JSON.parse(JSON.stringify(latest.definition));
+  approval.value = form.value.approval_question ?? "";
+  contract.value = form.value.output_contract
+    ? JSON.stringify(form.value.output_contract, null, 2)
+    : "";
+  draft.change({
+    definition: form.value,
+    editor: { approval: approval.value, contract: contract.value },
+  });
+  try {
+    await draft.rebase();
+  } catch (err) {
+    error.value = extractApiError(err, tm("errors.operationFailed")).message;
+  }
+}
+
+async function closeEditor() {
+  if (draft.status.value === "failed" || draft.status.value === "conflict")
+    return;
+  try {
+    await draft.flush();
+    emit("update:modelValue", false);
+  } catch {
+    /* The draft status retains the failure. */
+  }
+}
+
+function addPreset() {
+  form.value.allowed_roles.push({
+    id: crypto.randomUUID(),
+    role: { name: "Member" },
+    installation: { profile_id: "default" },
+    overrides: {},
+  });
 }
 
 async function save() {
@@ -241,10 +370,11 @@ async function save() {
         ? JSON.parse(contract.value)
         : null,
     };
-    await workflowAssetsApi.save(asset?.asset_id ?? null, {
+    draft.change({
       definition,
-      expected_version: asset?.version,
+      editor: { approval: approval.value, contract: contract.value },
     });
+    await draft.publish();
     if (!current()) return;
     emit("update:modelValue", false);
     emit("saved");

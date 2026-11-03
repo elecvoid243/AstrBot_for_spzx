@@ -22,6 +22,7 @@ from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
 )
 from astrbot.dashboard.api.workflow_assets import router
 from astrbot.dashboard.responses import ApiError, error
+from astrbot.dashboard.services.auth_service import AuthService
 from tests.agent_teams.test_chat_invocations import chat_env as chat_env
 
 
@@ -40,7 +41,16 @@ async def browser_http(chat_env, monkeypatch):
     service, _, _, _ = chat_env
     app = FastAPI()
     app.state.jwt_secret = "isolated-chat-browser-fixture-key-at-least-32-bytes"
-    app.state.services = SimpleNamespace(workflow_assets=service)
+    config = {
+        "dashboard": {
+            "username": "operator",
+            "password": "test-hash",
+            "password_storage_upgraded": False,
+        }
+    }
+    app.state.services = SimpleNamespace(
+        workflow_assets=service, auth=AuthService(service.db, config)
+    )
     app.include_router(router, prefix="/api/v1")
 
     @app.exception_handler(ApiError)
@@ -125,6 +135,7 @@ async def test_initiator_connects_through_returned_entry_and_answers_original_to
         {
             "definition": {
                 "name": "Caller decision",
+                "result_task_id": "question",
                 "tasks": [
                     {
                         "id": "question",
@@ -160,7 +171,7 @@ async def test_initiator_connects_through_returned_entry_and_answers_original_to
     )
     assert (
         await client.get(old_path, headers={"Authorization": "Bearer " + caller_jwt})
-    ).status_code == 404
+    ).status_code == 401
     owner_jwt = jwt.encode({"username": "operator"}, jwt_secret, algorithm="HS256")
     assert (
         await client.get(old_path, headers={"Authorization": "Bearer " + owner_jwt})
@@ -281,6 +292,7 @@ async def test_confirmed_browser_loses_read_and_answer_access_after_source_chang
         {
             "definition": {
                 "name": "Waiting",
+                "result_task_id": "question",
                 "tasks": [
                     {
                         "id": "question",
@@ -369,6 +381,7 @@ async def test_browser_previews_only_the_version_named_by_its_approval_request(
         {
             "definition": {
                 "name": "Report approval",
+                "result_task_id": "approval",
                 "tasks": [
                     {
                         "id": "report",
@@ -449,11 +462,15 @@ async def test_browser_previews_only_the_version_named_by_its_approval_request(
             f"/api/v1/workflow_artifacts/{artifact['artifact_id']}/versions/2",
             headers={"Authorization": "Bearer " + caller_jwt},
         )
-    ).status_code == 404
+    ).status_code == 401
     approved = await client.post(
         path + "/todos/" + todo["todo_id"] + "/answer",
         headers=headers,
-        json={"request_id": "approve-pinned", "action": "approve"},
+        json={
+            "request_id": "approve-pinned",
+            "action": "approve",
+            "artifact_ref": artifact,
+        },
     )
     assert approved.status_code == 200
     assert approved.json()["data"]["status"] == "completed"
@@ -479,6 +496,7 @@ async def test_other_authorized_group_sender_cannot_connect_or_read_the_initiato
         {
             "definition": {
                 "name": "Group question",
+                "result_task_id": "question",
                 "tasks": [
                     {
                         "id": "question",
@@ -491,15 +509,15 @@ async def test_other_authorized_group_sender_cannot_connect_or_read_the_initiato
     )
     callers = []
     for sender in ("12345", "54321"):
-        event, _ = await send_chat_command(
+        event, messages = await send_chat_command(
             service, "/asset whoami", sender=sender, source="88888", group=True
         )
-        caller = ChatCaller(
-            platform_id=event.get_platform_id(),
-            sender_id=event.get_sender_id(),
-            source=event.unified_msg_origin,
-            profile_id="default",
+        caller = ChatCaller.model_validate_json(
+            messages[0]["message"][0]["data"]["text"]
         )
+        assert caller.sender_id == event.get_sender_id()
+        assert caller.source == event.unified_msg_origin
+        assert caller.source == "qq-main:GroupMessage:88888"
         callers.append(caller)
         await service.chat.save_access(
             "operator", asset["asset_id"], {**caller.model_dump(), "version": 1}
@@ -565,3 +583,162 @@ async def test_other_authorized_group_sender_cannot_connect_or_read_the_initiato
     assert (await service.get_run("operator", accepted[0][0]))["todos"][0][
         "status"
     ] == "pending"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("group", [False, True])
+async def test_chat_command_answers_saved_request_only_for_initiator(chat_env, group):
+    """Route explicit request IDs through the real command and source grant.
+
+    Args:
+        chat_env: Real shared services and database.
+        group: Exercise both private and group platform events.
+    """
+    service, _, _, _ = chat_env
+    event, _ = await send_chat_command(
+        service, "/asset whoami", source="42", group=group
+    )
+    caller = ChatCaller(
+        platform_id=event.get_platform_id(),
+        sender_id=event.get_sender_id(),
+        source=event.unified_msg_origin,
+        profile_id="default",
+    )
+    asset = await service.save_asset(
+        "operator",
+        {
+            "definition": {
+                "name": "Two questions",
+                "result_task_id": "first",
+                "tasks": [
+                    {
+                        "id": "first",
+                        "name": "First",
+                        "human": {"kind": "question", "question": "First?"},
+                    },
+                    {
+                        "id": "second",
+                        "name": "Second",
+                        "human": {"kind": "question", "question": "Second?"},
+                    },
+                ],
+            }
+        },
+    )
+    await service.chat.save_access(
+        "operator", asset["asset_id"], {**caller.model_dump(), "version": 1}
+    )
+    accepted = await service.chat.invoke(caller, asset["asset_id"], {})
+    run_id = accepted["run_id"]
+    run = await service.get_run("operator", run_id)
+    assert len(run["todos"]) == 2
+    target = next(todo for todo in run["todos"] if todo["question"] == "First?")
+    notices = []
+
+    async def send(actual, text):
+        notices.append(text)
+        return True
+
+    await service.chat.deliver_pending(send, run_id)
+    assert sum("Human request" in text for text in notices) == 2
+    assert all(todo["todo_id"] in "\n".join(notices) for todo in run["todos"])
+    await service.chat.deliver_pending(send, run_id)
+    assert sum("Human request" in text for text in notices) == 2
+    command = f'/asset answer {run_id} {target["todo_id"]} {{"action":"answer","answer":"yes"}}'
+    if group:
+        await send_chat_command(
+            service, command, sender="other", source="42", group=True
+        )
+        assert (await service.get_run("operator", run_id))["todos"][0][
+            "status"
+        ] == "pending"
+    await send_chat_command(service, command, source="42", group=group)
+    updated = await service.get_run("operator", run_id)
+    answered = next(
+        todo for todo in updated["todos"] if todo["todo_id"] == target["todo_id"]
+    )
+    assert answered["response"]["answer"] == "yes"
+    assert answered["decision_source"]["caller"] == caller.model_dump()
+    assert (
+        next(todo for todo in updated["todos"] if todo["todo_id"] != target["todo_id"])[
+            "status"
+        ]
+        == "pending"
+    )
+
+
+@pytest.mark.asyncio
+async def test_failed_notice_retries_and_chat_competes_with_dashboard(chat_env):
+    """Keep failed notices pending and persist only one competing decision.
+
+    Args:
+        chat_env: Real shared services and database.
+    """
+    service, _, _, _ = chat_env
+    event, _ = await send_chat_command(service, "/asset whoami")
+    caller = ChatCaller(
+        platform_id=event.get_platform_id(),
+        sender_id=event.get_sender_id(),
+        source=event.unified_msg_origin,
+        profile_id="default",
+    )
+    asset = await service.save_asset(
+        "operator",
+        {
+            "definition": {
+                "name": "Competing answers",
+                "result_task_id": "q",
+                "tasks": [
+                    {
+                        "id": "q",
+                        "name": "Question",
+                        "human": {"kind": "question", "question": "Ready?"},
+                    }
+                ],
+            }
+        },
+    )
+    await service.chat.save_access(
+        "operator", asset["asset_id"], {**caller.model_dump(), "version": 1}
+    )
+    accepted = await service.chat.invoke(caller, asset["asset_id"], {})
+    run_id = accepted["run_id"]
+    todo_id = (await service.get_run("operator", run_id))["todos"][0]["todo_id"]
+    sent = []
+
+    async def fail(actual, text):
+        return False
+
+    async def send(actual, text):
+        sent.append(text)
+        return True
+
+    assert await service.chat.deliver_pending(fail, run_id) == 0
+    await service.chat.deliver_pending(send, run_id)
+    assert any(todo_id in text and "Ready?" in text for text in sent)
+    from astrbot.core.agent_teams.assets import RoleAssetError
+
+    results = await asyncio.gather(
+        service.chat.answer_browser_todo(
+            caller,
+            run_id,
+            todo_id,
+            {"request_id": "chat", "action": "answer", "answer": "chat"},
+        ),
+        service.answer_todo(
+            "operator",
+            run_id,
+            todo_id,
+            {"request_id": "dashboard", "action": "answer", "answer": "dashboard"},
+        ),
+        return_exceptions=True,
+    )
+    assert (
+        sum(
+            isinstance(result, RoleAssetError) and result.status == 409
+            for result in results
+        )
+        == 1
+    )
+    current = await service.get_run("operator", run_id)
+    assert current["todos"][0]["response"]["answer"] in {"chat", "dashboard"}

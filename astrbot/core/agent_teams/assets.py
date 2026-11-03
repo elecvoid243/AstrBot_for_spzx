@@ -6,9 +6,11 @@ import uuid
 from collections.abc import Awaitable, Callable
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from sqlalchemy import exists, text
 from sqlalchemy.exc import IntegrityError
-from sqlmodel import col, select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlmodel import col, select, update
 
 from astrbot.core.config.agent_runner import (
     get_agent_runner_capabilities,
@@ -16,9 +18,12 @@ from astrbot.core.config.agent_runner import (
 )
 from astrbot.core.db import BaseDatabase
 from astrbot.core.db.po import (
+    AgentAssetDraft,
+    AgentAssetDraftPublication,
+    AgentAssetTombstone,
     AgentRoleInstallation,
     AgentRoleVersion,
-    AgentWorkflowPackage,
+    AgentWorkflowVersion,
 )
 from astrbot.core.tools.file_tool_mode import (
     DEFAULT_FILE_TOOL_MODE,
@@ -26,17 +31,43 @@ from astrbot.core.tools.file_tool_mode import (
     resolve_file_tool_mode,
 )
 
-SlotName = Annotated[str, Field(min_length=1, max_length=128)]
+ResourceId = Annotated[str, Field(min_length=1, max_length=128)]
+
+
+class HumanWaitPolicy(BaseModel):
+    """Designer-selected deadline behavior, independent of ordinary chat timeouts."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    timeout_seconds: int | None = Field(default=None, ge=1, le=31_536_000)
+    timeout_action: Literal["wait", "use_recommendation"] = "wait"
+
+    @model_validator(mode="after")
+    def require_automatic_deadline(self):
+        """Require an explicit deadline before allowing automatic decisions.
+
+        Returns:
+            The validated waiting policy.
+
+        Raises:
+            ValueError: Automatic recommendation use has no configured deadline.
+        """
+        if self.timeout_action == "use_recommendation" and self.timeout_seconds is None:
+            raise ValueError(
+                "Set a deadline before using a recommendation automatically"
+            )
+        return self
 
 
 class RoleOverrides(BaseModel):
-    """Optional configuration; null inherits and an empty list disables."""
+    """Optional configuration; lists inherit on null and disable when empty."""
 
     model_config = ConfigDict(extra="forbid", strict=True, str_strip_whitespace=True)
     prompt: str | None = Field(default=None, max_length=100_000)
-    tools: list[SlotName] | None = None
-    skills: list[SlotName] | None = None
-    knowledge_bases: list[SlotName] | None = None
+    provider_id: ResourceId | None = None
+    persona_id: ResourceId | None = None
+    tools: list[ResourceId] | None = None
+    skills: list[ResourceId] | None = None
+    knowledge_bases: list[ResourceId] | None = None
     max_steps: int | None = Field(default=None, ge=1, le=200)
     tool_call_timeout: float | None = Field(default=None, gt=0, le=3600)
     context_length: int | None = Field(default=None, ge=1, le=1_000_000)
@@ -44,40 +75,27 @@ class RoleOverrides(BaseModel):
     max_parallel: int | None = Field(default=None, ge=1, le=100)
     max_iterations: int | None = Field(default=None, ge=1, le=100)
     max_depth: int | None = Field(default=None, ge=1, le=20)
-
-
-class MigrationState(BaseModel):
-    """Unresolved legacy semantics retained until a reviewed definition version."""
-
-    model_config = ConfigDict(extra="forbid", strict=True)
-    issues: list[dict]
-    source: dict
+    human_wait: HumanWaitPolicy | None = None
 
 
 class RoleDefinition(RoleOverrides):
-    """Portable role content; resource names refer to logical slots."""
+    """Role content with direct resource identities."""
 
     name: str = Field(min_length=1, max_length=128)
     description: str = Field(default="", max_length=2000)
-    model_slot: SlotName = "model"
-    persona_slot: SlotName | None = None
     model_capabilities: list[Literal["tool_use", "image", "audio"]] = Field(
         default_factory=list
     )
     runner_capabilities: list[
         Literal["internal_checkpoint", "remote_query", "task_tools", "task_result"]
     ] = Field(default_factory=list)
-    migration: MigrationState | None = Field(
-        default=None, exclude_if=lambda value: value is None
-    )
 
 
 class RoleInstallation(BaseModel):
     """Machine-local configuration stored separately from the definition."""
 
     model_config = ConfigDict(extra="forbid", strict=True, str_strip_whitespace=True)
-    profile_id: SlotName = "default"
-    bindings: dict[SlotName, SlotName] = Field(default_factory=dict)
+    profile_id: ResourceId = "default"
 
 
 class RoleSaveRequest(BaseModel):
@@ -392,15 +410,13 @@ class RoleAssetService:
         """Check current resources against a frozen task role's requirements.
 
         Args:
-            role: Pinned definition, bindings, effective configuration and resolved
-                package dependencies. Legacy snapshots omit the dependency field
-                and retain their original database-based contract checks.
+            role: Pinned definition and effective configuration.
             profile_snapshot: Original behavior settings. Only the file tool mode
                 affects catalog selection; live runtime and resource permissions
                 cannot be restored by this snapshot.
 
         Raises:
-            RoleAssetError: A frozen binding is unavailable or incompatible.
+            RoleAssetError: A frozen resource is unavailable or incompatible.
         """
         profile_id = role["installation"]["profile_id"]
         catalog = await self.get_resources(
@@ -436,7 +452,7 @@ class RoleAssetService:
                 runner, {"definition.role_id": "task_result"}
             )
         )
-        if effective.get("runner", runner) != runner:
+        if effective.get("runner") != runner:
             issues.append(
                 {
                     "path": "installation.profile_id",
@@ -467,6 +483,13 @@ class RoleAssetService:
                     or not resources[0].get("enabled", True)
                     or profile_id
                     not in resources[0].get("enabled_profiles", [profile_id])
+                    or (
+                        kind == "tools"
+                        and not file_tool_allowed(
+                            resource_id,
+                            profile.get("file_tool_mode", DEFAULT_FILE_TOOL_MODE),
+                        )
+                    )
                     or (
                         kind in ("models", "personas")
                         and "*" not in pool
@@ -499,90 +522,6 @@ class RoleAssetService:
                             "message": "Bound model no longer declares the required capabilities",
                         }
                     )
-        dependencies = role.get("package_dependencies")
-        # New snapshots carry their resolved contract. Legacy snapshots retain
-        # the original database-based requirements and frozen binding identities.
-        if dependencies is None and role.get("role_id"):
-            async with self.db.get_db() as session:
-                origin = await session.get(AgentRoleVersion, (role["role_id"], 1))
-                packages = (
-                    (
-                        await session.execute(
-                            select(AgentWorkflowPackage).where(
-                                AgentWorkflowPackage.owner_username
-                                == origin.owner_username
-                            )
-                        )
-                    )
-                    .scalars()
-                    .all()
-                    if origin is not None
-                    else []
-                )
-            dependencies = []
-            for package in packages:
-                source_key = next(
-                    (
-                        key
-                        for key, identity in package.role_ids.items()
-                        if identity == role["role_id"]
-                    ),
-                    None,
-                )
-                if source_key is None:
-                    continue
-                source = next(
-                    included
-                    for included in package.package["roles"]
-                    if f"{included['role_id']}:{included['version']}" == source_key
-                )
-                dependencies.extend(source["dependencies"])
-        for dependency in dependencies or []:
-            kind, slot = dependency["kind"], dependency["slot"]
-            identity = (
-                profile_id
-                if kind == "profiles"
-                else role["installation"]["bindings"].get(slot)
-            )
-            matches = [r for r in catalog[kind] if r["id"] == identity]
-            resource = matches[0] if len(matches) == 1 else {}
-            fingerprint = resource.get("fingerprint")
-            if kind == "profiles":
-                fingerprint = "astrbot.local.v1" if runner["type"] == "local" else None
-            pool = profile.get(
-                "provider_pool" if kind == "models" else "persona_pool", ["*"]
-            )
-            if (
-                not resource
-                or not resource.get("enabled", True)
-                or profile_id not in resource.get("enabled_profiles", [profile_id])
-                or kind in ("models", "personas")
-                and "*" not in pool
-                and identity not in pool
-                or kind in ("tools", "skills")
-                and persona.get(kind) is not None
-                and identity not in persona[kind]
-                and (kind == "skills" or resource.get("persona_restricted", True))
-                or kind == "profiles"
-                and runner["type"] != dependency["runner_type"]
-                or dependency["fingerprint"]
-                and fingerprint != dependency["fingerprint"]
-                or dependency["input_schema"] is not None
-                and resource.get("input_schema") != dependency["input_schema"]
-                or not set(dependency["capabilities"]).issubset(
-                    runner["capabilities"]
-                    if kind == "profiles"
-                    else resource.get("capabilities", [])
-                )
-            ):
-                issues.append(
-                    {
-                        "path": "installation."
-                        + ("profile_id" if kind == "profiles" else f"bindings.{slot}"),
-                        "code": "INCOMPATIBLE",
-                        "message": f"Frozen package dependency is unavailable or incompatible: {slot}",
-                    }
-                )
         if issues:
             raise RoleAssetError("Frozen resources are no longer available", issues)
 
@@ -612,8 +551,14 @@ class RoleAssetService:
         }
         try:
             task = RoleOverrides.model_validate(overrides or {}).model_dump(
-                exclude_none=True
+                exclude_unset=True
             )
+            task = {
+                key: value
+                for key, value in task.items()
+                if value is not None
+                or key in ("persona_id", "provider_id", "human_wait")
+            }
         except ValidationError as exc:
             raise RoleAssetError(
                 "Invalid task overrides",
@@ -626,14 +571,25 @@ class RoleAssetService:
                     for e in exc.errors()
                 ],
             ) from exc
+        for field in ("tools", "skills", "knowledge_bases"):
+            seen = set()
+            for index, resource_id in enumerate(task.get(field) or []):
+                if resource_id in seen:
+                    raise RoleAssetError(
+                        "Resource identities must be unique within each list",
+                        [
+                            {
+                                "path": f"overrides.{field}.{index}",
+                                "code": "CONFLICT",
+                                "message": f"Duplicate resource: {resource_id}",
+                            }
+                        ],
+                    )
+                seen.add(resource_id)
         definition = role["definition"]
         installation = role["installation"]
-        bindings = installation.get("bindings", {})
         catalog = await self.get_resources()
-        issues: list[dict] = [
-            dict(issue)
-            for issue in (definition.get("migration") or {}).get("issues", [])
-        ]
+        issues: list[dict] = []
         sources: dict[str, str] = {}
         effective: dict = {}
         profile_id = installation.get("profile_id", "default")
@@ -668,11 +624,25 @@ class RoleAssetService:
                 }
             )
         persona: dict = {}
-        requirements = [("provider_id", "models", definition["model_slot"])]
+        provider_id = task.get("provider_id", definition["provider_id"])
+        persona_id = task.get("persona_id", definition["persona_id"])
+        requirements = [("provider_id", "models", provider_id)]
+        effective["persona_id"] = persona_id
+        sources["persona_id"] = "task" if "persona_id" in task else "role"
         if runner["type"] != "local":
             requirements = []
             effective["provider_id"] = None
             sources["provider_id"] = f"profile:{profile_id}"
+            if provider_id:
+                issues.append(
+                    {
+                        "path": "overrides.provider_id"
+                        if "provider_id" in task
+                        else "definition.provider_id",
+                        "code": "INCOMPATIBLE",
+                        "message": f"{runner['label']} does not use a local model",
+                    }
+                )
             for index, capability in enumerate(definition["model_capabilities"]):
                 if capability not in runner["modalities"]:
                     issues.append(
@@ -682,38 +652,24 @@ class RoleAssetService:
                             "message": f"{runner['label']} does not support {capability}",
                         }
                     )
-        if definition.get("persona_slot"):
-            requirements.insert(
-                0, ("persona_id", "personas", definition["persona_slot"])
-            )
-        elif profile.get("persona_id"):
-            requirements.insert(0, ("persona_id", "personas", profile["persona_id"]))
-        for field, kind, slot in requirements:
-            inherited_persona = field == "persona_id" and not definition.get(
-                "persona_slot"
-            )
-            resource_id = slot if inherited_persona else bindings.get(slot)
+        if persona_id:
+            requirements.insert(0, ("persona_id", "personas", persona_id))
+        for field, kind, resource_id in requirements:
             matches = (
                 [r for r in catalog[kind] if r["id"] == resource_id]
                 if resource_id
                 else []
             )
-            path = (
-                "installation.profile_id"
-                if inherited_persona
-                else f"installation.bindings.{slot}"
-            )
+            path = f"{'overrides' if field in task else 'definition'}.{field}"
             effective[field] = resource_id
-            sources[field] = (
-                f"profile:{profile_id}" if inherited_persona else f"installation:{slot}"
-            )
+            sources[field] = "task" if field in task else "role"
             if len(matches) != 1:
                 code = "AMBIGUOUS" if len(matches) > 1 else "MISSING"
                 issues.append(
                     {
                         "path": path,
                         "code": code,
-                        "message": f"Resource is {'ambiguous' if len(matches) > 1 else 'missing'}: {resource_id or slot}",
+                        "message": f"Resource is {'ambiguous' if len(matches) > 1 else 'missing'}: {resource_id or field}",
                     }
                 )
                 continue
@@ -721,8 +677,10 @@ class RoleAssetService:
             pool = profile.get(
                 "provider_pool" if kind == "models" else "persona_pool", ["*"]
             )
-            if resource.get("enabled", True) is False or (
-                "*" not in pool and resource_id not in pool
+            if (
+                resource.get("enabled", True) is False
+                or profile_id not in resource.get("enabled_profiles", [profile_id])
+                or ("*" not in pool and resource_id not in pool)
             ):
                 issues.append(
                     {
@@ -743,6 +701,13 @@ class RoleAssetService:
                         "message": "Model does not declare the required capabilities",
                     }
                 )
+        effective["persona_prompt"] = persona.get("prompt")
+        sources["persona_prompt"] = f"persona:{persona_id}" if persona else "role"
+        effective["human_wait"] = (
+            task.get("human_wait", definition.get("human_wait"))
+            or HumanWaitPolicy().model_dump()
+        )
+        sources["human_wait"] = "task" if "human_wait" in task else "role"
         defaults = {
             "max_instances": 1,
             "max_parallel": 1,
@@ -757,14 +722,14 @@ class RoleAssetService:
             "knowledge_bases": [],
         }
         for field, default in defaults.items():
-            value = profile.get(field, default)
+            value = default if field == "prompt" else profile.get(field, default)
             if runner["type"] != "local" and field in (
                 "tools",
                 "skills",
                 "knowledge_bases",
             ):
                 value = []
-            source = f"profile:{profile_id}"
+            source = "role" if field == "prompt" else f"profile:{profile_id}"
             if runner["type"] != "local" and field in (
                 "max_steps",
                 "tool_call_timeout",
@@ -781,15 +746,12 @@ class RoleAssetService:
                             "message": f"{runner['label']} does not enforce the local runner setting {field}",
                         }
                     )
-            if field in ("prompt", "tools", "skills") and (
-                definition.get("persona_slot") or (field != "prompt" and persona)
+            if (
+                runner["type"] == "local"
+                and field in ("tools", "skills")
+                and persona.get(field) is not None
             ):
-                value, source = (
-                    persona.get(field),
-                    f"persona:{definition['persona_slot']}"
-                    if definition.get("persona_slot")
-                    else f"profile:{profile_id}",
-                )
+                value, source = persona[field], f"persona:{persona_id}"
             logical = False
             if definition.get(field) is not None:
                 value, source, logical = definition[field], "role", True
@@ -802,7 +764,7 @@ class RoleAssetService:
             ):
                 issues.append(
                     {
-                        "path": f"effective.{field}",
+                        "path": f"{'overrides' if field in task else 'definition'}.{field}",
                         "code": "INCOMPATIBLE",
                         "message": f"{runner['label']} does not execute local {field}",
                     }
@@ -817,11 +779,18 @@ class RoleAssetService:
                         for r in catalog[field]
                         if r.get("enabled", True)
                         and profile_id in r.get("enabled_profiles", [profile_id])
+                        and (
+                            field != "tools"
+                            or file_tool_allowed(
+                                r["id"],
+                                profile.get("file_tool_mode", DEFAULT_FILE_TOOL_MODE),
+                            )
+                        )
                     ]
                 )
                 resolved = []
                 for index, reference in enumerate(selected):
-                    resource_id = bindings.get(reference) if logical else reference
+                    resource_id = reference
                     matches = [
                         r
                         for r in catalog[field]
@@ -833,7 +802,9 @@ class RoleAssetService:
                         )
                     ]
                     path = (
-                        f"installation.bindings.{reference}"
+                        f"definition.{field}.{index}"
+                        if source == "role"
+                        else f"overrides.{field}.{index}"
                         if logical
                         else f"effective.{field}.{index}"
                     )
@@ -842,6 +813,13 @@ class RoleAssetService:
                         or not matches[0].get("enabled", True)
                         or profile_id
                         not in matches[0].get("enabled_profiles", [profile_id])
+                        or (
+                            field == "tools"
+                            and not file_tool_allowed(
+                                resource_id,
+                                profile.get("file_tool_mode", DEFAULT_FILE_TOOL_MODE),
+                            )
+                        )
                     ):
                         file_mode = profile.get(
                             "file_tool_mode", DEFAULT_FILE_TOOL_MODE
@@ -915,9 +893,133 @@ class RoleAssetService:
             "ready": not issues,
             "export_content": {
                 "prompt": definition.get("prompt"),
-                "persona_slot": definition.get("persona_slot"),
+                "persona_id": definition.get("persona_id"),
+                "persona_prompt": persona.get("prompt"),
             },
         }
+
+    @staticmethod
+    async def check_active_references(
+        session: AsyncSession, definition: dict, base: dict | None = None
+    ) -> None:
+        """Reject newly introduced references to deleted identities.
+
+        Args:
+            session: Transaction holding the SQLite write lock.
+            definition: Definition being saved, possibly incomplete.
+            base: Immutable base definition whose exact references may remain.
+
+        Raises:
+            RoleAssetError: A deleted identity is newly referenced.
+        """
+
+        def references(value: dict) -> set[tuple[str, str, int]]:
+            """Collect exact direct references from complete or partial definitions.
+
+            Args:
+                value: Current or base definition.
+
+            Returns:
+                Identity namespace, identity and fixed version for each reference.
+            """
+            members = value.get("tasks") if isinstance(value.get("tasks"), list) else []
+            if value.get("kind") == "autonomous" or "coordinator" in value:
+                members = [
+                    value.get("coordinator"),
+                    *(
+                        value.get("allowed_roles")
+                        if isinstance(value.get("allowed_roles"), list)
+                        else []
+                    ),
+                ]
+            refs = set()
+            for member in members:
+                if not isinstance(member, dict):
+                    continue
+                if isinstance(member.get("role_id"), str) and isinstance(
+                    member.get("role_version"), int
+                ):
+                    refs.add(("role", member["role_id"], member["role_version"]))
+                for name in ("team", "workflow"):
+                    ref = member.get(name)
+                    if (
+                        isinstance(ref, dict)
+                        and isinstance(ref.get("asset_id"), str)
+                        and isinstance(ref.get("version"), int)
+                    ):
+                        refs.add(("workflow", ref["asset_id"], ref["version"]))
+            workflows = value.get("allowed_workflows")
+            for ref in workflows if isinstance(workflows, list) else []:
+                if (
+                    isinstance(ref, dict)
+                    and isinstance(ref.get("asset_id"), str)
+                    and isinstance(ref.get("version"), int)
+                ):
+                    refs.add(("workflow", ref["asset_id"], ref["version"]))
+            return refs
+
+        for kind, asset_id, version in references(definition) - references(base or {}):
+            if await session.get(AgentAssetTombstone, (kind, asset_id)):
+                raise RoleAssetError(
+                    f"Deleted {kind} {asset_id} version {version} cannot be newly referenced",
+                    status=409,
+                )
+
+    async def delete_asset(self, username: str, kind: str, asset_id: str) -> None:
+        """Record deletion of an owned asset identity without removing its versions.
+
+        Args:
+            username: Authenticated asset owner.
+            kind: Identity namespace, either role or workflow.
+            asset_id: Stable asset identity.
+
+        Raises:
+            RoleAssetError: The kind is invalid or the asset is inaccessible.
+        """
+        if kind not in {"role", "workflow"}:
+            raise RoleAssetError("Invalid asset kind")
+        async with self.db.get_db() as session:
+            await session.execute(text("BEGIN IMMEDIATE"))
+            tombstone = await session.get(AgentAssetTombstone, (kind, asset_id))
+            if tombstone is not None:
+                if tombstone.owner_username != username:
+                    raise RoleAssetError("Asset not found", status=404)
+                return
+            model = AgentRoleVersion if kind == "role" else AgentWorkflowVersion
+            identity = model.role_id if kind == "role" else model.asset_id
+            row = (
+                (
+                    await session.execute(
+                        select(model).where(
+                            identity == asset_id, model.owner_username == username
+                        )
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            draft_kinds = ["role"] if kind == "role" else ["workflow", "autonomous"]
+            draft = (
+                (
+                    await session.execute(
+                        select(AgentAssetDraft).where(
+                            AgentAssetDraft.kind.in_(draft_kinds),
+                            AgentAssetDraft.asset_id == asset_id,
+                            AgentAssetDraft.owner_username == username,
+                        )
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            if row is None and draft is None:
+                raise RoleAssetError("Asset not found", status=404)
+            session.add(
+                AgentAssetTombstone(
+                    kind=kind, asset_id=asset_id, owner_username=username
+                )
+            )
+            await session.commit()
 
     async def list_roles(self, username: str) -> dict:
         """List the latest version of each role owned by a user.
@@ -935,6 +1037,11 @@ class RoleAssetService:
                         select(AgentRoleVersion.role_id)
                         .where(
                             AgentRoleVersion.owner_username == username,
+                            ~exists().where(
+                                AgentAssetTombstone.kind == "role",
+                                AgentAssetTombstone.asset_id
+                                == AgentRoleVersion.role_id,
+                            ),
                         )
                         .distinct()
                         .order_by(AgentRoleVersion.role_id)
@@ -943,14 +1050,335 @@ class RoleAssetService:
                 .scalars()
                 .all()
             )
-        return {
-            "roles": [
-                await self.get_role(username, identity) for identity in identities
+        roles = [await self.get_role(username, identity) for identity in identities]
+        return {"roles": [role for role in roles if not role["deleted"]]}
+
+    @staticmethod
+    def _validate_draft_body(kind: str, body: dict) -> None:
+        """Limit draft size and reject obsolete or unknown configuration fields.
+
+        Args:
+            kind: Asset category.
+            body: Potentially incomplete editor state.
+
+        Raises:
+            RoleAssetError: The draft is oversized or contains unknown fields.
+        """
+        if kind not in {"role", "workflow", "autonomous"}:
+            raise RoleAssetError("Invalid draft kind")
+        if (
+            not isinstance(body, dict)
+            or set(body) - {"definition", "installation", "editor"}
+            or len(json.dumps(body).encode("utf-8")) > 1_000_000
+        ):
+            raise RoleAssetError("Invalid or oversized draft")
+        from astrbot.core.agent_teams.graph import GraphDefinition, GraphTask
+        from astrbot.core.agent_teams.workflows import (
+            AutonomousDefinition,
+            TeamRole,
+        )
+
+        definition = body.get("definition", {})
+        if not isinstance(definition, dict):
+            raise RoleAssetError("Invalid draft definition")
+        if kind == "role":
+            allowed = set(RoleDefinition.model_fields)
+        elif kind == "autonomous":
+            allowed = set(AutonomousDefinition.model_fields)
+        elif kind == "workflow":
+            allowed = set(GraphDefinition.model_fields)
+        else:
+            raise RoleAssetError("Invalid draft kind")
+        if set(definition) - allowed:
+            raise RoleAssetError("Unknown draft definition fields")
+        installation = body.get("installation", {})
+        if not isinstance(installation, dict) or set(installation) - set(
+            RoleInstallation.model_fields
+        ):
+            raise RoleAssetError("Unknown draft installation fields")
+        if "editor" in body and (
+            not isinstance(body["editor"], dict)
+            or set(body["editor"]) - {"approval", "contract"}
+        ):
+            raise RoleAssetError("Unknown draft editor fields")
+        entries = []
+        if kind == "workflow" and isinstance(definition.get("tasks"), list):
+            entries = definition["tasks"]
+            entry_fields = set(GraphTask.model_fields)
+        elif kind == "autonomous":
+            entries = [
+                definition.get("coordinator"),
+                *(
+                    definition.get("allowed_roles")
+                    if isinstance(definition.get("allowed_roles"), list)
+                    else []
+                ),
             ]
-        }
+            entry_fields = set(TeamRole.model_fields)
+        else:
+            entry_fields = set()
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            if set(entry) - entry_fields:
+                raise RoleAssetError("Unknown draft member fields")
+            for field, model in (
+                ("role", RoleDefinition),
+                ("installation", RoleInstallation),
+                ("overrides", RoleOverrides),
+            ):
+                value = entry.get(field)
+                if isinstance(value, dict) and set(value) - set(model.model_fields):
+                    raise RoleAssetError("Unknown draft member configuration fields")
+
+    async def create_draft(
+        self, username: str, kind: str, body: dict, asset_id: str | None = None
+    ) -> dict:
+        """Create a persistent editing snapshot with a stable asset identity.
+
+        Args:
+            username: Authenticated owner.
+            kind: Role, workflow or autonomous team.
+            body: Incomplete editing snapshot.
+            asset_id: Existing published identity, when editing one.
+
+        Returns:
+            The saved draft.
+
+        Raises:
+            RoleAssetError: Invalid content, identity or duplicate draft.
+        """
+        self._validate_draft_body(kind, body)
+        base_version = None
+        if asset_id:
+            if kind == "role":
+                base_version = (await self.get_role(username, asset_id))["version"]
+            else:
+                async with self.db.get_db() as session:
+                    row = (
+                        (
+                            await session.execute(
+                                select(AgentWorkflowVersion)
+                                .where(
+                                    AgentWorkflowVersion.asset_id == asset_id,
+                                    AgentWorkflowVersion.owner_username == username,
+                                )
+                                .order_by(col(AgentWorkflowVersion.version).desc())
+                            )
+                        )
+                        .scalars()
+                        .first()
+                    )
+                    if row is None or (row.definition.get("kind") == "autonomous") != (
+                        kind == "autonomous"
+                    ):
+                        raise RoleAssetError("Asset not found", status=404)
+                    base_version = row.version
+        else:
+            asset_id = uuid.uuid4().hex
+        async with self.db.get_db() as session:
+            await session.execute(text("BEGIN IMMEDIATE"))
+            identity_kind = "role" if kind == "role" else "workflow"
+            if await session.get(AgentAssetTombstone, (identity_kind, asset_id)):
+                raise RoleAssetError("Asset has been deleted", status=409)
+            base = None
+            if kind != "role" and base_version is not None:
+                row = await session.get(AgentWorkflowVersion, (asset_id, base_version))
+                base = row.definition if row else None
+            await self.check_active_references(
+                session, body.get("definition", {}), base
+            )
+            row = AgentAssetDraft(
+                kind=kind,
+                asset_id=asset_id,
+                owner_username=username,
+                body=body,
+                base_version=base_version,
+            )
+            session.add(row)
+            try:
+                await session.flush()
+                saved = row.model_dump()
+                await session.commit()
+            except IntegrityError as exc:
+                raise RoleAssetError("Draft already exists", status=409) from exc
+        return saved
+
+    async def get_draft(self, username: str, kind: str, asset_id: str) -> dict:
+        """Read an owner-scoped draft.
+
+        Args:
+            username: Authenticated owner.
+            kind: Asset kind.
+            asset_id: Stable asset identity.
+
+        Returns:
+            The persisted draft fields.
+
+        Raises:
+            RoleAssetError: The draft is inaccessible.
+        """
+        async with self.db.get_db() as session:
+            row = await session.get(AgentAssetDraft, (kind, asset_id))
+            if row is None or row.owner_username != username:
+                raise RoleAssetError("Draft not found", status=404)
+            return row.model_dump()
+
+    async def list_drafts(self, username: str, kind: str) -> list[dict]:
+        """List an owner's editing snapshots for an asset kind.
+
+        Args:
+            username: Authenticated owner.
+            kind: Asset kind.
+
+        Returns:
+            Drafts including assets without published versions.
+        """
+        async with self.db.get_db() as session:
+            rows = (
+                (
+                    await session.execute(
+                        select(AgentAssetDraft).where(
+                            AgentAssetDraft.owner_username == username,
+                            AgentAssetDraft.kind == kind,
+                            ~exists().where(
+                                AgentAssetTombstone.kind
+                                == ("role" if kind == "role" else "workflow"),
+                                AgentAssetTombstone.asset_id
+                                == AgentAssetDraft.asset_id,
+                            ),
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            return [row.model_dump() for row in rows]
+
+    async def update_draft(
+        self, username: str, kind: str, asset_id: str, revision: int, body: dict
+    ) -> dict:
+        """Compare and update a draft without overwriting concurrent edits.
+
+        Args:
+            username: Authenticated owner.
+            kind: Asset kind.
+            asset_id: Stable asset identity.
+            revision: Expected current revision.
+            body: New incomplete editing snapshot.
+
+        Returns:
+            The updated draft.
+
+        Raises:
+            RoleAssetError: Invalid content or conflicting revision.
+        """
+        self._validate_draft_body(kind, body)
+        async with self.db.get_db() as session:
+            await session.execute(text("BEGIN IMMEDIATE"))
+            identity_kind = "role" if kind == "role" else "workflow"
+            if await session.get(AgentAssetTombstone, (identity_kind, asset_id)):
+                raise RoleAssetError("Asset has been deleted", status=409)
+            draft = await session.get(AgentAssetDraft, (kind, asset_id))
+            base = None
+            if kind != "role" and draft and draft.base_version is not None:
+                row = await session.get(
+                    AgentWorkflowVersion, (asset_id, draft.base_version)
+                )
+                base = row.definition if row else None
+            await self.check_active_references(
+                session, body.get("definition", {}), base
+            )
+            result = await session.execute(
+                update(AgentAssetDraft)
+                .where(
+                    AgentAssetDraft.kind == kind,
+                    AgentAssetDraft.asset_id == asset_id,
+                    AgentAssetDraft.owner_username == username,
+                    AgentAssetDraft.revision == revision,
+                )
+                .values(body=body, revision=revision + 1)
+                .returning(AgentAssetDraft)
+            )
+            row = result.scalars().first()
+            if row is None:
+                raise RoleAssetError("Draft was edited elsewhere", status=409)
+            saved = row.model_dump()
+            await session.commit()
+        return saved
+
+    async def rebase_draft(
+        self, username: str, kind: str, asset_id: str, revision: int, version: int
+    ) -> dict:
+        """Explicitly move a saved draft onto a reviewed published version.
+
+        Args:
+            username: Authenticated owner.
+            kind: Asset kind.
+            asset_id: Stable asset identity.
+            revision: Expected current draft revision.
+            version: Latest published version reviewed by the caller.
+
+        Returns:
+            The updated draft without changing its body.
+
+        Raises:
+            RoleAssetError: The draft or reviewed published version changed.
+        """
+        if kind not in {"role", "workflow", "autonomous"}:
+            raise RoleAssetError("Invalid draft kind")
+        model = AgentRoleVersion if kind == "role" else AgentWorkflowVersion
+        identity = model.role_id if kind == "role" else model.asset_id
+        matching = exists().where(
+            identity == asset_id,
+            model.owner_username == username,
+            model.version == version,
+        )
+        newer = exists().where(
+            identity == asset_id,
+            model.owner_username == username,
+            model.version > version,
+        )
+        async with self.db.get_db() as session:
+            await session.execute(text("BEGIN IMMEDIATE"))
+            if await session.get(
+                AgentAssetTombstone,
+                ("role" if kind == "role" else "workflow", asset_id),
+            ):
+                raise RoleAssetError("Asset has been deleted", status=409)
+            draft = await session.get(AgentAssetDraft, (kind, asset_id))
+            if kind != "role" and draft and draft.owner_username == username:
+                target = await session.get(AgentWorkflowVersion, (asset_id, version))
+                if target and target.owner_username == username:
+                    await self.check_active_references(
+                        session, draft.body.get("definition", {}), target.definition
+                    )
+            result = await session.execute(
+                update(AgentAssetDraft)
+                .where(
+                    AgentAssetDraft.kind == kind,
+                    AgentAssetDraft.asset_id == asset_id,
+                    AgentAssetDraft.owner_username == username,
+                    AgentAssetDraft.revision == revision,
+                    matching,
+                    ~newer,
+                )
+                .values(base_version=version, revision=revision + 1)
+                .returning(AgentAssetDraft)
+            )
+            row = result.scalars().first()
+            if row is None:
+                raise RoleAssetError("Draft or reviewed version changed", status=409)
+            saved = row.model_dump()
+            await session.commit()
+        return saved
 
     async def save_role(
-        self, username: str, payload: dict, role_id: str | None = None
+        self,
+        username: str,
+        payload: dict,
+        role_id: str | None = None,
+        draft_revision: int | None = None,
     ) -> dict:
         """Create a role or append a version without overwriting history.
 
@@ -958,6 +1386,7 @@ class RoleAssetService:
             username: Authenticated owner.
             payload: Complete definition, installation and expected version.
             role_id: Existing identity when appending a version.
+            draft_revision: Trusted draft revision to publish, when supplied.
 
         Returns:
             The persisted role version and local installation.
@@ -965,18 +1394,79 @@ class RoleAssetService:
         Raises:
             RoleAssetError: Invalid fields, inaccessible role or stale version.
         """
+        draft = None
+        if draft_revision is not None:
+            if role_id is None:
+                raise RoleAssetError("Draft identity is required")
+            try:
+                draft = await self.get_draft(username, "role", role_id)
+            except RoleAssetError as exc:
+                if exc.status == 404:
+                    raise RoleAssetError("Draft is inaccessible", status=409) from exc
+                raise
+            self._validate_draft_body("role", draft["body"])
+            async with self.db.get_db() as session:
+                if await session.get(AgentAssetTombstone, ("role", role_id)):
+                    raise RoleAssetError("Role has been deleted", status=409)
+                published = await session.get(
+                    AgentAssetDraftPublication, ("role", role_id, draft_revision)
+                )
+                published_version = published.version if published else None
+            if published_version is not None:
+                return await self.get_role(username, role_id, published_version)
+            if draft["revision"] != draft_revision:
+                raise RoleAssetError("Draft was edited elsewhere", status=409)
+            payload = {
+                **{k: v for k, v in draft["body"].items() if k != "editor"},
+                "expected_version": draft["base_version"],
+            }
         request = self._validate_request(payload)
         version = 1
-        if role_id is not None:
+        if role_id is not None and (draft is None or draft["base_version"] is not None):
             current = await self.get_role(username, role_id)
             if request.expected_version != current["version"]:
                 raise RoleAssetError(
                     "Role was edited elsewhere; reload first", status=409
                 )
             version = current["version"] + 1
-        else:
+        elif role_id is None:
             role_id = uuid.uuid4().hex
         async with self.db.get_db() as session:
+            await session.execute(text("BEGIN IMMEDIATE"))
+            if await session.get(AgentAssetTombstone, ("role", role_id)):
+                raise RoleAssetError("Role has been deleted", status=409)
+            if draft is not None:
+                result = await session.execute(
+                    update(AgentAssetDraft)
+                    .where(
+                        AgentAssetDraft.kind == "role",
+                        AgentAssetDraft.asset_id == role_id,
+                        AgentAssetDraft.owner_username == username,
+                        AgentAssetDraft.revision == draft_revision,
+                        AgentAssetDraft.base_version == draft["base_version"],
+                    )
+                    .values(
+                        base_version=version,
+                        published_revision=draft_revision,
+                        published_version=version,
+                    )
+                )
+                if result.rowcount != 1:
+                    await session.rollback()
+                    published = await session.get(
+                        AgentAssetDraftPublication, ("role", role_id, draft_revision)
+                    )
+                    if published is not None:
+                        return await self.get_role(username, role_id, published.version)
+                    raise RoleAssetError("Draft was edited elsewhere", status=409)
+                session.add(
+                    AgentAssetDraftPublication(
+                        kind="role",
+                        asset_id=role_id,
+                        revision=draft_revision,
+                        version=version,
+                    )
+                )
             session.add(
                 AgentRoleVersion(
                     role_id=role_id,
@@ -1002,7 +1492,7 @@ class RoleAssetService:
 
     @staticmethod
     def _validate_request(payload: dict) -> RoleSaveRequest:
-        """Validate field shapes and cross-field logical slot uniqueness.
+        """Validate field shapes and resource identity uniqueness within each list.
 
         Args:
             payload: Complete role save or preview request.
@@ -1011,7 +1501,7 @@ class RoleAssetService:
             Validated definition and installation.
 
         Raises:
-            RoleAssetError: A field is invalid or slots have conflicting kinds.
+            RoleAssetError: A field is invalid or contains duplicate identities.
         """
         try:
             request = RoleSaveRequest.model_validate(payload)
@@ -1027,34 +1517,21 @@ class RoleAssetService:
                     for e in exc.errors()
                 ],
             ) from exc
-        slots = {request.definition.model_slot: "model_slot"}
-        if request.definition.persona_slot:
-            if request.definition.persona_slot in slots:
-                raise RoleAssetError(
-                    "Logical slots must have one resource kind",
-                    [
-                        {
-                            "path": "definition.persona_slot",
-                            "code": "CONFLICT",
-                            "message": "Slot already used by model_slot",
-                        }
-                    ],
-                )
-            slots[request.definition.persona_slot] = "persona_slot"
         for field in ("tools", "skills", "knowledge_bases"):
+            slots = set()
             for index, slot in enumerate(getattr(request.definition, field) or []):
                 if slot in slots:
                     raise RoleAssetError(
-                        "Logical slots must be unique",
+                        "Resource identities must be unique within each list",
                         [
                             {
                                 "path": f"definition.{field}.{index}",
                                 "code": "CONFLICT",
-                                "message": f"Slot already used by {slots[slot]}",
+                                "message": f"Duplicate resource: {slot}",
                             }
                         ],
                     )
-                slots[slot] = field
+                slots.add(slot)
         return request
 
     async def get_role(
@@ -1096,10 +1573,18 @@ class RoleAssetService:
             installation = await session.get(
                 AgentRoleInstallation, (role_id, row.version)
             )
+            self._validate_request(
+                {
+                    "definition": row.definition,
+                    "installation": installation.installation if installation else {},
+                }
+            )
             return {
                 "role_id": role_id,
                 "version": row.version,
                 "definition": row.definition,
                 "installation": installation.installation if installation else {},
                 "versions": [r.version for r in rows],
+                "deleted": await session.get(AgentAssetTombstone, ("role", role_id))
+                is not None,
             }

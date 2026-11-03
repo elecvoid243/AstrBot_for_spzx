@@ -82,17 +82,22 @@ async def run_instance(
     config["provider_settings"]["provider_pool"] = []
     personas = PersonaManager(db, acm)
     providers = ProviderManager(acm, db, personas)
+    selected_model = (
+        "portable-target-model"
+        if action == "import-different-model"
+        else "portable-test-model"
+    )
     provider_config = {
         "id": model_id,
         "type": "openai_chat_completion",
-        "model": "portable-test-model",
+        "model": selected_model,
         "api_base": endpoint + "/v1",
         "key": [f"private-key-{instance}"],
         "modalities": ["text", "tool_use"],
         "timeout": 10,
     }
     provider = ProviderOpenAIOfficial(provider_config, {})
-    provider.set_model("portable-test-model")
+    provider.set_model(selected_model)
     providers.inst_map[model_id] = provider
     providers.provider_insts.append(provider)
     if action == "serve-ambiguous":
@@ -190,6 +195,7 @@ async def run_instance(
                     {
                         "definition": {
                             "name": "Portable evidence writer",
+                            "provider_id": model_id,
                             "prompt": "Preserve the exact verified evidence and submit the contracted result.",
                             "tools": [],
                             "skills": [],
@@ -202,10 +208,7 @@ async def run_instance(
                                 "task_result",
                             ],
                         },
-                        "installation": {
-                            "profile_id": profile_id,
-                            "bindings": {"model": model_id},
-                        },
+                        "installation": {"profile_id": profile_id},
                     },
                 )
                 contract = {
@@ -231,6 +234,7 @@ async def run_instance(
                         "definition": {
                             "name": "Cross-instance evidence workflow",
                             "required_inputs": ["topic"],
+                            "result_task_id": "write",
                             "tasks": [
                                 task,
                                 {
@@ -256,47 +260,29 @@ async def run_instance(
             (folder / "export.json").write_text(
                 json.dumps(package, indent=2), encoding="utf-8"
             )
-        elif action in {"import", "inflight-recover"}:
+        elif action in {"import", "import-different-model"}:
             package = json.loads((folder / "input.json").read_text(encoding="utf-8"))
-            preview = await service.preview_import("alice", {"package": package})
-            installed = await service.import_asset("alice", {"package": package})
+            selections = [
+                {
+                    "kind": r["kind"],
+                    "source_id": r["source_id"],
+                    "target_id": profile_id if r["kind"] == "profiles" else model_id,
+                }
+                for r in package["requirements"]
+            ]
+            payload = {"package": package, "selections": selections}
+            preview = await service.preview_import("alice", payload)
+            installed = await service.import_asset("alice", payload)
             run = await service.start_run(
                 "alice",
                 installed["asset"]["asset_id"],
                 {"version": 1, "inputs": {"topic": "portable evidence"}},
             )
-            runtime = {}
-            if action == "inflight-recover":
-                for _ in range(1000):
-                    if (folder / "http-entered").exists():
-                        break
-                    await asyncio.sleep(0.01)
-                assert (folder / "http-entered").exists()
-                runtime["before"] = await service.get_run("alice", run["run_id"])
-                provider.set_model("incompatible-runtime-model")
-                runtime["readiness"] = await service.check_readiness(
-                    "alice", installed["asset"]["asset_id"], 1
-                )
-                (folder / "drift-ready").write_text("ready", encoding="utf-8")
             for _ in range(500):
                 current = await service.get_run("alice", run["run_id"])
                 if current["status"] != "running":
                     break
                 await asyncio.sleep(0.02)
-            if action == "inflight-recover":
-                runtime["blocked"] = current
-                research = next(
-                    task
-                    for task in current["tasks"]
-                    if task["snapshot"].get("node_id") == "research"
-                )
-                provider.set_model("portable-test-model")
-                await service.recover_run("alice", research["run_id"])
-                for _ in range(1000):
-                    current = await service.get_run("alice", run["run_id"])
-                    if current["status"] != "running":
-                        break
-                    await asyncio.sleep(0.01)
             (folder / "result.json").write_text(
                 json.dumps(
                     {
@@ -304,7 +290,6 @@ async def run_instance(
                         "installed": installed,
                         "run": current,
                         "resources": await roles.get_resources(),
-                        **runtime,
                     }
                 ),
                 encoding="utf-8",

@@ -1,6 +1,6 @@
 <template>
   <section class="workflow-workspace">
-    <div class="d-flex flex-wrap align-center ga-2 mb-4">
+    <div v-if="mode === 'assets' || !selectedRun" class="d-flex flex-wrap align-center ga-2 mb-4">
       <h2 class="text-h5">
         {{
           tm(
@@ -43,13 +43,6 @@
         @click="refresh"
         >{{ tm("page.refresh") }}</v-btn
       >
-      <v-btn
-        v-if="mode === 'assets' && assetKind !== 'teams'"
-        variant="tonal"
-        color="primary"
-        @click="edit(null)"
-        >{{ tm("v2.create") }}</v-btn
-      >
     </div>
     <v-alert
       v-if="error"
@@ -59,7 +52,7 @@
       role="alert"
       >{{ error }}</v-alert
     >
-    <p class="text-body-2 text-medium-emphasis mb-4">
+    <p v-if="mode === 'assets' || !selectedRun" class="text-body-2 text-medium-emphasis mb-4">
       {{
         tm(
           mode === "runs"
@@ -73,11 +66,39 @@
 
     <template v-if="mode === 'assets'">
       <v-alert
-        v-if="!visibleAssets.length && !loading"
+        v-if="!visibleAssets.length && !visibleDrafts.length && !loading"
         type="info"
         variant="tonal"
         >{{ tm("v2.emptyAssets") }}</v-alert
       >
+      <v-card
+        v-for="item in visibleDrafts"
+        :key="item.asset_id"
+        class="mb-3"
+        variant="outlined"
+      >
+        <v-card-title
+          >{{ item.body.definition?.name || tm("draft.untitled") }} ·
+          {{ tm("draft.unpublished") }}</v-card-title
+        >
+        <v-card-actions
+          ><v-btn
+            variant="text"
+            @click="
+              item.kind === 'autonomous'
+                ? editTeam({
+                    asset_id: item.asset_id,
+                    definition: item.body.definition,
+                  })
+                : editGraph({
+                    asset_id: item.asset_id,
+                    definition: item.body.definition,
+                  })
+            "
+            >{{ tm("v2.edit") }}</v-btn
+          ><v-btn data-testid="delete-asset" variant="text" color="error" @click="deleteTarget = { asset_id: item.asset_id, definition: item.body.definition }">{{ tm('deletion.delete') }}</v-btn></v-card-actions
+        >
+      </v-card>
       <v-card
         v-for="asset in visibleAssets"
         :key="asset.asset_id"
@@ -88,23 +109,15 @@
           >{{ asset.definition.name }} · v{{ asset.version }}</v-card-title
         >
         <v-card-text class="text-wrap">
+          <p v-if="drafts.some((item) => item.asset_id === asset.asset_id && item.published_revision !== item.revision)" data-testid="editing-draft">{{ tm("draft.editing") }}</p>
           <p v-if="asset.definition.kind === 'autonomous'">
             {{ tm("autonomous.title") }} · {{ tm("autonomous.allowedRoles") }}:
             {{ asset.definition.allowed_roles.length }}
           </p>
-          <p v-else-if="asset.definition.tasks">
+          <p v-else>
             {{ tm("graph.count", { count: asset.definition.tasks.length }) }} ·
             {{ tm("graph.parallel") }}: {{ asset.definition.max_parallel }}
           </p>
-          <p v-else>
-            {{ tm("v2.role") }}:
-            {{
-              roles.find((role) => role.role_id === asset.definition.role_id)
-                ?.definition.name ?? asset.definition.role_id
-            }}
-            · v{{ asset.definition.role_version }}
-          </p>
-          <p class="workflow-text mt-2">{{ asset.definition.task }}</p>
         </v-card-text>
         <v-card-actions class="flex-wrap">
           <v-btn
@@ -121,22 +134,22 @@
             @click="
               asset.definition.kind === 'autonomous'
                 ? editTeam(asset)
-                : asset.definition.tasks
-                ? editGraph(asset)
-                : edit(asset)
+                : editGraph(asset)
             "
             >{{ tm("v2.edit") }}</v-btn
           >
           <v-btn variant="tonal" color="primary" @click="prepareRun(asset)">{{
             tm("v2.start")
           }}</v-btn>
+          <v-btn data-testid="delete-asset" variant="text" color="error" @click="deleteTarget = asset">{{ tm('deletion.delete') }}</v-btn>
         </v-card-actions>
       </v-card>
     </template>
 
-    <template v-else>
+    <DeleteAssetDialog :name="deleteTarget?.definition.name || (deleteTarget ? tm('draft.untitled') : null)" :busy="deleting" :error="deleteError" @cancel="deleteTarget = null; deleteError = ''" @confirm="deleteAsset" />
+    <template v-if="mode !== 'assets'">
       <nav
-        class="d-flex flex-wrap ga-2 mb-4"
+        class="d-flex flex-wrap align-center ga-2 mb-4"
         :aria-label="tm('workbench.runs')"
       >
         <v-btn
@@ -147,11 +160,42 @@
           :aria-pressed="runView === view"
           color="primary"
           @click="runView = view"
-          >{{ tm(`workbench.${view}`) }}</v-btn
+          >{{ tm(`workbench.${view}`) }}<span v-if="view === 'pending'">
+            · {{ humanRequests.length }}</span
+          ></v-btn
         >
+        <v-spacer />
+        <v-select
+          v-model="runType"
+          :label="tm('trial.filter')"
+          :items="runTypeOptions"
+          density="compact"
+          hide-details
+          style="max-width: 220px; min-width: 160px"
+        />
+        <v-btn v-if="selectedRun" variant="text" :disabled="!!currentOperation" @click="refresh">{{ tm('page.refresh') }}</v-btn>
       </nav>
+      <section
+        v-if="runView === 'pending'"
+        :aria-label="tm('human.inbox')"
+        data-testid="human-inbox"
+      >
+        <h3 class="text-h6">{{ tm("human.inbox") }} · {{ visibleHumanRequests.length }}</h3>
+        <div v-for="todo in visibleHumanRequests" :key="todo.todo_id">
+          <v-chip size="small">{{ tm(todo.trial ? "trial.test" : "trial.production") }}</v-chip>
+          <v-btn variant="text" @click="openRequest(todo)">{{ tm("human.openProcess") }}</v-btn>
+          <WorkflowHumanTodo
+            :todo="todo"
+            :paused="todo.control_status === 'paused'"
+            :cancelled="false"
+            :busy="inboxBusy"
+            @submit="(id, payload) => answerInbox(todo.root_run_id, id, payload)"
+          />
+        </div>
+      </section>
       <UnifiedRunHistory
         v-if="runView === 'history'"
+        :run-type="runType"
         @open-run="
           runView = 'all';
           openRun($event);
@@ -188,6 +232,9 @@
           <v-card-text class="d-flex flex-wrap align-center ga-2">
             <div class="flex-grow-1 workflow-name">
               <strong>{{ run.snapshot.definition.name }}</strong>
+              <v-chip size="small" class="ml-2">{{
+                tm(run.snapshot.trial ? "trial.test" : "trial.production")
+              }}</v-chip>
               <p class="text-body-2">
                 {{ tm(`v2.states.${run.status}`) }} · {{ run.run_id }}
               </p>
@@ -221,19 +268,45 @@
         class="mt-4"
         data-testid="run-detail"
       >
-        <v-card-text>
-          <v-alert
-            type="info"
-            variant="tonal"
-            class="mb-4"
-            icon="mdi-lock-outline"
-            >{{ tm("workbench.snapshotHint") }}</v-alert
-          >
-          <WorkflowRunProgress
-            :run="selectedRun"
-            :selected-task="selectedTaskNode"
-            @select="selectRunTask"
-          />
+        <v-card-text class="workbench-body">
+          <div class="d-flex flex-wrap align-center ga-3 mb-4">
+            <h2 class="text-h5 font-weight-bold flex-grow-1">{{ selectedRun.snapshot.definition.name }}</h2>
+            <v-chip v-if="selectedRun.snapshot.trial" size="small" color="primary" variant="outlined">{{ tm('trial.test') }} · r{{ selectedRun.snapshot.trial.draft_revision }}</v-chip>
+            <v-chip variant="tonal" :color="selectedRun.status === 'completed' ? 'success' : 'primary'">{{ tm(`v2.states.${selectedRun.status}`) }}</v-chip>
+            <v-btn variant="text" :aria-pressed="runDisplay === 'workbench'" @click="runDisplay = 'workbench'">{{ tm('workbench.workspace') }}</v-btn>
+            <v-btn variant="text" :aria-pressed="runDisplay === 'graph'" @click="runDisplay = 'graph'">{{ tm('progress.graph') }}</v-btn>
+          </div>
+          <p class="workflow-text text-body-2 mb-3" data-testid="run-goal">{{ selectedRun.snapshot.task ?? Object.values(selectedRun.snapshot.inputs ?? {}).join(' · ') }}</p>
+          <p class="text-caption text-medium-emphasis mb-4">
+            <v-icon size="small" class="mr-1">mdi-lock-outline</v-icon>{{ tm("workbench.snapshotHint") }}
+          </p>
+          <nav v-show="runDisplay === 'workbench'" class="workbench-panel-nav mb-4" :aria-label="tm('workbench.panels')">
+            <v-btn v-for="panel in ['tasks', 'process', 'results'] as const" :key="panel" :variant="activeRunPanel === panel ? 'tonal' : 'text'" :aria-pressed="activeRunPanel === panel" @click="activeRunPanel = panel">{{ tm(`workbench.panel${panel}`) }}</v-btn>
+          </nav>
+          <WorkflowGraphCanvas v-if="runDisplay === 'graph'" :definition="selectedRun.runtime_definition ?? selectedRun.snapshot.definition" :tasks="selectedRun.tasks" :child-assets="selectedRun.snapshot.child_assets ?? {}" readonly @select-task="selectRunTask" />
+          <div v-show="runDisplay === 'workbench'" class="workbench-columns" :data-active-panel="activeRunPanel">
+            <div class="workbench-column workbench-tasks">
+              <WorkflowRunProgress
+                compact
+                :run="selectedRun"
+                :selected-task="selectedTaskNode"
+                @select="selectRunTask"
+              />
+            </div>
+            <div ref="processPane" class="workbench-column workbench-process" @scroll="onProcessScroll">
+              <p class="text-caption text-medium-emphasis">{{ tm("progress.historyHint") }}</p>
+              <v-btn variant="tonal" :disabled="historyBusy || historyDone[detailRun.run_id]" @click="loadOlderProcess">{{ tm("progress.loadOlder") }}</v-btn>
+              <v-btn variant="text" :disabled="historyBusy || historyNext[detailRun.run_id + ':messages'] === null" @click="loadOlderHistory('messages')">{{ tm("progress.loadMessages") }}</v-btn>
+              <v-btn variant="text" :disabled="historyBusy || historyNext[detailRun.run_id + ':events'] === null" @click="loadOlderHistory('events')">{{ tm("progress.loadEvents") }}</v-btn>
+              <v-btn variant="text" :disabled="historyBusy || historyNext[detailRun.run_id + ':attempts'] === null" @click="loadOlderHistory('attempts')">{{ tm("progress.loadAttempts") }}</v-btn>
+              <v-btn v-if="historyReading[detailRun.run_id] || historyTruncated[detailRun.run_id] || historyNewUpdates[detailRun.run_id]" variant="text" :loading="historyRestoring[detailRun.run_id]" @click="reloadLatestProcess">{{ tm("progress.reloadLatest") }}</v-btn>
+              <p v-if="historyNewUpdates[detailRun.run_id]" class="text-info" role="status">{{ tm("progress.newActivity") }}</p>
+              <p v-if="historyTruncated[detailRun.run_id]" class="text-warning">{{ tm("progress.historyWindow") }}</p>
+              <p v-else-if="historyOlderHidden[detailRun.run_id]" class="text-caption">{{ tm("progress.olderHistoryHidden") }}</p>
+              <p v-if="historyErrors[detailRun.run_id]" role="alert">{{ historyErrors[detailRun.run_id] }}</p>
+              <WorkflowRunProcess :run="detailRun" :busy="!!currentOperation" @resolve="resolveTool" />
+            </div>
+            <div class="workbench-column workbench-results">
           <section
             v-if="selectedRun.todos?.length"
             :aria-label="tm('human.title')"
@@ -258,10 +331,16 @@
             :busy="!!currentOperation"
             @submit="applyRunControl"
           />
+          <details class="my-3 text-caption">
+            <summary>{{ tm('workbench.identifiers') }}</summary>
+            <p class="workflow-text mt-2">{{ tm('v2.attempt') }}: {{ detailRun.state.attempt_id }}</p>
+            <p class="workflow-text">{{ tm('v2.member') }}: {{ detailRun.snapshot.member?.member_id ?? '—' }}</p>
+            <p class="workflow-text">{{ tm('child.root') }}: {{ selectedRun.run_id }}</p>
+          </details>
           <h3 class="text-h6 mt-6 mb-3">{{ tm("progress.artifacts") }}</h3>
           <v-btn
             v-if="
-              detailRun.snapshot.engine === 'workflow_call_v2' &&
+              ['workflow_call_v2', 'team_call_v2'].includes(detailRun.snapshot.engine) &&
               detailRun.state.child_scope_run_id
             "
             variant="tonal"
@@ -308,6 +387,10 @@
             :items="
               allRunTasks.map((task: any) => ({
                 title: `${task.snapshot.definition.name}${
+                  taskScopeNames[task.run_id]
+                    ? ` · ${tm('child.scope')}: ${taskScopeNames[task.run_id]}`
+                    : ''
+                }${
                   task.snapshot.iteration
                     ? ` · ${tm('loops.iteration')} ${task.snapshot.iteration}`
                     : ''
@@ -386,14 +469,14 @@
               }}</v-btn
             >
           </v-alert>
+          <details v-if="!['interrupted', 'failed', 'blocked'].includes(detailRun.status)" class="my-3">
+            <summary>{{ tm('workbench.executionDetails') }}</summary>
           <RunnerCapabilities
-            v-if="
-              !['interrupted', 'failed', 'blocked'].includes(detailRun.status)
-            "
             :runner="detailRun.snapshot.effective?.runner"
             :identity="detailRun.recovery?.remote_identity"
             class="my-3"
           />
+          </details>
           <v-alert
             v-if="detailRun.state.reason"
             type="warning"
@@ -459,13 +542,13 @@
             @click="prepareRevision"
             >{{ tm("v2.revise") }}</v-btn
           >
-          <p
+          <details
             v-if="detailRun.snapshot.input_artifacts?.length"
             class="workflow-text mt-3"
           >
-            {{ tm("v2.pinnedInputs") }}:
-            {{ JSON.stringify(detailRun.snapshot.input_artifacts) }}
-          </p>
+            <summary>{{ tm("v2.pinnedInputs") }}</summary>
+            <p v-for="ref in detailRun.snapshot.input_artifacts" :key="`${ref.artifact_id}:${ref.version}`" class="text-caption mt-2">{{ ref.artifact_id }} · v{{ ref.version }}</p>
+          </details>
           <v-expansion-panels class="mt-4" variant="accordion">
             <v-expansion-panel :title="tm('v2.contract')">
               <v-expansion-panel-text>
@@ -488,7 +571,7 @@
                 <pre class="workflow-text">{{
                   JSON.stringify(
                     detailRun.events?.filter((event: any) =>
-                      event.kind.startsWith("result."),
+                      event.kind?.startsWith("result."),
                     ),
                     null,
                     2,
@@ -504,11 +587,8 @@
               </v-expansion-panel-text>
             </v-expansion-panel>
           </v-expansion-panels>
-          <WorkflowRunProcess
-            :run="detailRun"
-            :busy="!!currentOperation"
-            @resolve="resolveTool"
-          />
+            </div>
+          </div>
         </v-card-text>
       </v-card>
     </template>
@@ -517,37 +597,47 @@
       v-model="teamEditing"
       :asset="editingAsset"
       :roles="roles"
+      :catalog="catalog"
       @saved="refresh"
+      @started="trialStarted"
     />
     <v-dialog
       class="workbench-dialog"
       scrollable
       v-model="graphEditing"
       max-width="1600"
-      :persistent="saving"
+      persistent
+      content-class="graph-dialog-overlay"
     >
-      <v-card>
+      <v-card class="graph-dialog-card">
         <v-card-title class="text-h3 pa-4 pb-0 pl-6">{{
           tm("graph.canvas")
         }}</v-card-title>
-        <v-card-text>
+        <v-card-text class="graph-dialog-content" :inert="saving || graphDraft.busy.value ? '' : undefined">
+          <DraftStatus :draft="graphDraft" @reload="reloadGraphDraft" @discard="graphEditing = false" @use-latest="useLatestDraft" />
           <div class="d-flex flex-wrap ga-3 mb-3">
             <v-text-field
               v-model="graphForm.name"
               :label="tm('v2.name')"
+              density="compact"
+              hide-details
               style="min-width: 180px"
             />
-            <v-text-field
-              v-model="graphInputNames"
-              :label="tm('v2.inputNames')"
+            <v-select
+              v-model="graphForm.default_provider_id"
+              :items="catalog.models"
+              item-title="name"
+              item-value="id"
+              :label="tm('graph.defaultModel')"
+              density="compact"
+              hide-details
+              clearable
               style="min-width: 220px"
-              @update:model-value="
-                graphForm.required_inputs = graphInputNames
-                  .split(',')
-                  .map((name) => name.trim())
-                  .filter(Boolean)
-              "
             />
+          </div>
+          <details :open="graphUsageInvalid" class="mb-3">
+            <summary class="text-subtitle-1">{{ tm("graph.executionSettings") }}</summary>
+            <div class="d-flex flex-wrap ga-3 mt-3">
             <v-text-field
               v-model.number="graphForm.max_parallel"
               type="number"
@@ -564,21 +654,37 @@
               :label="tm('child.maxDepth')"
               style="max-width: 220px"
             />
-          </div>
-          <details :open="graphUsageInvalid" class="mb-3">
-            <summary class="text-subtitle-1">{{ tm("usage.limits") }}</summary>
+            </div>
             <RunLimitsForm
               v-model="graphForm.limits"
               @validation="graphUsageInvalid = $event"
             />
           </details>
           <WorkflowGraphCanvas
+            class="graph-dialog-canvas"
+            :key="graphEditorKey"
             v-model:definition="graphForm"
             :roles="roles"
+            :catalog="catalog"
+            :issues="graphIssues"
             :teams="
               assets.filter((asset) => asset.definition.kind === 'autonomous')
             "
+            :workflows="assets.filter((asset) => asset.definition.kind !== 'autonomous')"
             @validation="graphInvalid = $event"
+            @select-task="graphSelectedNode = $event"
+            @role-saved="
+              roleAssetsApi
+                .list()
+                .then((data) => (roles = data.roles))
+                .catch(
+                  (error) =>
+                    (formError = extractApiError(
+                      error,
+                      tm('errors.operationFailed'),
+                    ).message),
+                )
+            "
           />
           <v-alert
             v-if="formError"
@@ -591,91 +697,35 @@
           <p class="text-caption mt-3">{{ tm("graph.saveHint") }}</p>
         </v-card-text>
         <v-card-actions
-          ><v-spacer /><v-btn
+          ><v-btn variant="tonal" :disabled="saving || graphDraft.busy.value" @click="openGraphTrial">{{
+            tm("trial.title")
+          }}</v-btn><v-spacer /><v-btn
             variant="text"
-            :disabled="saving"
-            @click="graphEditing = false"
+            :disabled="saving || graphDraft.busy.value"
+            @click="closeGraph"
             >{{ tm("v2.close") }}</v-btn
           ><v-btn
             variant="tonal"
             color="primary"
             :loading="saving"
-            :disabled="graphInvalid || graphUsageInvalid"
+            :disabled="graphInvalid || graphUsageInvalid || graphDraft.busy.value"
             @click="saveGraph"
-            >{{ tm("v2.save") }}</v-btn
+            >{{ tm("draft.publish") }}</v-btn
           ></v-card-actions
         >
       </v-card>
     </v-dialog>
 
-    <v-dialog
-      class="workbench-dialog"
-      scrollable
-      v-model="editing"
-      max-width="720"
-      :persistent="saving"
-    >
-      <v-card>
-        <v-card-title class="text-h3 pa-4 pb-0 pl-6">{{
-          tm("v2.edit")
-        }}</v-card-title>
-        <v-card-text>
-          <v-text-field v-model="form.name" :label="tm('v2.name')" />
-          <v-select
-            v-model="form.role_id"
-            :items="roles"
-            item-title="definition.name"
-            item-value="role_id"
-            :label="tm('v2.role')"
-            @update:model-value="selectRole"
-          />
-          <v-select
-            v-model="form.role_version"
-            :items="roleVersions"
-            :label="tm('v2.roleVersion')"
-          />
-          <v-text-field
-            v-model="inputNames"
-            :label="tm('v2.inputNames')"
-            :hint="tm('v2.inputHint')"
-            persistent-hint
-          />
-          <v-textarea
-            v-model="form.task"
-            :label="tm('v2.task')"
-            :hint="tm('v2.taskHint')"
-            persistent-hint
-          />
-          <v-textarea
-            v-model="contractText"
-            :label="tm('v2.contract')"
-            :hint="tm('v2.contractHint')"
-            persistent-hint
-          />
-          <RunLimitsForm
-            v-model="form.limits"
-            @validation="usageInvalid = $event"
-          />
-          <v-alert v-if="formError" type="error" variant="tonal" class="mt-3">{{
-            formError
-          }}</v-alert>
-        </v-card-text>
-        <v-card-actions>
-          <v-spacer />
-          <v-btn variant="text" :disabled="saving" @click="editing = false">{{
-            tm("v2.close")
-          }}</v-btn>
-          <v-btn
-            variant="tonal"
-            color="primary"
-            :loading="saving"
-            :disabled="usageInvalid"
-            @click="save"
-            >{{ tm("v2.save") }}</v-btn
-          >
-        </v-card-actions>
-      </v-card>
-    </v-dialog>
+    <TrialRunDialog
+      v-if="trialDraft"
+      v-model="trialOpen"
+      :asset-id="trialDraft.asset_id"
+      :revision="trialDraft.revision"
+      kind="workflow"
+      :nodes="graphForm.tasks"
+      :initial-node="graphSelectedNode"
+      @started="trialStarted"
+    />
 
     <v-dialog
       class="workbench-dialog"
@@ -702,12 +752,15 @@
               {{ issue.path }} · {{ issue.message }}
             </p>
           </v-alert>
+          <details v-if="readiness?.roles?.length" class="mb-4">
+            <summary>{{ tm('workbench.executionDetails') }}</summary>
           <RunnerCapabilities
             v-for="role in readiness?.roles ?? []"
             :key="role.role_id + ':' + role.version"
             :runner="role.runner"
             class="mb-3"
           />
+          </details>
           <p class="mb-4">
             {{ runAsset.definition.name }} · v{{ runAsset.version }}
           </p>
@@ -719,6 +772,7 @@
             :rules="[(value) => !!value?.trim() || tm('v2.required')]"
           />
           <v-select
+            v-if="runAsset.definition.kind === 'autonomous'"
             v-model="inputArtifacts"
             :items="availableInputs"
             item-title="label"
@@ -804,6 +858,8 @@
         }}</v-card-title>
         <v-card-text>
           <pre v-if="previewText" class="workflow-text">{{ previewText }}</pre>
+          <ImagePreview v-else-if="previewBlob?.type.startsWith('image/')" :blob="previewBlob" :filename="previewFilename" />
+          <PdfPreview v-else-if="previewBlob?.type === 'application/pdf'" :blob="previewBlob" />
           <iframe
             v-else-if="previewUrl"
             :src="previewUrl"
@@ -839,9 +895,13 @@
 
 <script setup lang="ts">
 import UnifiedRunHistory from "./UnifiedRunHistory.vue";
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import ImagePreview from "@/components/chat/message_list_comps/binary_preview/ImagePreview.vue";
+import PdfPreview from "@/components/chat/message_list_comps/binary_preview/PdfPreview.vue";
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { roleAssetsApi } from "@/api/roleAssets";
+import DraftStatus from "./DraftStatus.vue";
+import { draftApi, useAssetDraft } from "@/composables/useAssetDraft";
 import { workflowAssetsApi } from "@/api/workflowAssets";
 import { useModuleI18n } from "@/i18n/composables";
 import { extractApiError } from "@/utils/extractApiError";
@@ -856,9 +916,10 @@ import WorkflowRunProcess from "./WorkflowRunProcess.vue";
 import WorkflowRunControls from "./WorkflowRunControls.vue";
 import WorkflowHumanTodo from "./WorkflowHumanTodo.vue";
 import RunnerCapabilities from "./RunnerCapabilities.vue";
+import DeleteAssetDialog from "./DeleteAssetDialog.vue";
+import TrialRunDialog from "./TrialRunDialog.vue";
 import type {
   GraphDefinition,
-  WorkflowDefinition,
   ToolResolutionRequest,
   WorkflowControlRequest,
   WorkflowRetryRequest,
@@ -878,6 +939,57 @@ const { tm } = useModuleI18n("features/agent-teams");
 const route = useRoute();
 const router = useRouter();
 const assets = ref<any[]>([]);
+const deleteTarget = ref<any>(null);
+const deleting = ref(false);
+const deleteError = ref("");
+async function deleteAsset() {
+  if (!deleteTarget.value) return;
+  deleting.value = true;
+  deleteError.value = "";
+  try {
+    await workflowAssetsApi.delete(deleteTarget.value.asset_id);
+    deleteTarget.value = null;
+    await refresh();
+  } catch (cause) {
+    deleteError.value = extractApiError(cause, tm("errors.operationFailed")).message;
+  } finally {
+    deleting.value = false;
+  }
+}
+const drafts = ref<any[]>([]);
+const graphDraft = useAssetDraft("workflow");
+const trialOpen = ref(false);
+const trialDraft = ref<any>(null);
+const graphSelectedNode = ref<string | null>(null);
+async function openGraphTrial() {
+  try {
+    graphDraft.change({ definition: graphForm.value });
+    if (graphDraft.status.value === "failed" || graphDraft.status.value === "conflict")
+      throw new Error(tm(`draft.${graphDraft.status.value}`));
+    trialDraft.value = await graphDraft.flush();
+    trialOpen.value = true;
+  } catch (cause) {
+    formError.value = extractApiError(
+      cause, tm("errors.operationFailed"),
+    ).message;
+  }
+}
+async function trialStarted(runId: string) {
+  graphEditing.value = false;
+  await router.replace({ query: { ...route.query, workflow_run: runId } });
+  emit("started", runId);
+}
+const visibleDrafts = computed(() =>
+  drafts.value.filter(
+    (item) =>
+      !assets.value.some((asset) => asset.asset_id === item.asset_id) &&
+      (props.assetKind === "teams"
+        ? item.kind === "autonomous"
+        : props.assetKind === "workflows"
+        ? item.kind === "workflow"
+        : true),
+  ),
+);
 const visibleAssets = computed(() =>
   assets.value.filter(
     (asset) =>
@@ -902,10 +1014,63 @@ async function exportWorkflow(asset: any) {
   }
 }
 const roles = ref<any[]>([]);
+const catalog = ref<Record<string, any[]>>({
+  profiles: [],
+  models: [],
+  personas: [],
+  tools: [],
+  skills: [],
+  knowledge_bases: [],
+});
 const runs = ref<any[]>([]);
+const humanRequests = ref<any[]>([]);
+const inboxBusy = ref(false);
+async function openRequest(todo: any) {
+  await openRun(todo.root_run_id);
+  if (selectedRun.value?.run_id !== todo.root_run_id) return;
+  runView.value = "all";
+  const source = allRunTasks.value.find((task) =>
+    todo.recommendation_ref &&
+    task.result_ref?.artifact_id === todo.recommendation_ref.artifact_id &&
+    task.result_ref?.version === todo.recommendation_ref.version,
+  );
+  selectRunTask(source?.run_id ?? todo.task_run_id);
+}
+async function answerInbox(
+  rootId: string,
+  todoId: string,
+  payload: HumanAnswerRequest,
+) {
+  if (inboxBusy.value) return;
+  inboxBusy.value = true;
+  try {
+    const updated = await workflowAssetsApi.answer(rootId, todoId, payload);
+    if (selectedRun.value?.run_id === rootId) selectedRun.value = updated;
+    humanRequests.value = (await workflowAssetsApi.humanRequests()).requests;
+  } catch (err) {
+    error.value = extractApiError(err, tm("errors.operationFailed")).message;
+  } finally {
+    inboxBusy.value = false;
+  }
+}
+
 const runView = ref<"all" | "active" | "pending" | "history">("all");
+const runType = ref<"all" | "test" | "production">("all");
+const runTypeOptions = computed(() =>
+  (["all", "test", "production"] as const).map((value) => ({
+    title: tm(`trial.${value}`), value,
+  })),
+);
+const visibleHumanRequests = computed(() =>
+  humanRequests.value.filter((todo) => {
+    if (runType.value === "all") return true;
+    return (runType.value === "test") === !!todo.trial;
+  }),
+);
 const visibleRuns = computed(() =>
   runs.value.filter((run) => {
+    if (runType.value !== "all" && (runType.value === "test") !== !!run.snapshot.trial)
+      return false;
     const terminal = ["completed", "cancelled", "skipped"].includes(run.status);
     if (runView.value === "history")
       return terminal || ["failed", "interrupted"].includes(run.status);
@@ -928,6 +1093,8 @@ const visibleRuns = computed(() =>
   }),
 );
 const selectedRun = ref<any>(null);
+const runDisplay = ref<'workbench' | 'graph'>('workbench');
+const activeRunPanel = ref<'tasks' | 'process' | 'results'>('process');
 const runOperations = ref(
   new Map<
     string,
@@ -940,31 +1107,281 @@ const currentOperation = computed(() =>
     : undefined,
 );
 const selectedTaskNode = ref<string | null>(null);
+const processPane = ref<HTMLElement | null>(null);
+const followProcess = ref(true);
+function onProcessScroll() {
+  const pane = processPane.value;
+  const taskId = detailRun.value?.run_id;
+  if (!pane || !taskId) return;
+  if (pane.scrollHeight - pane.scrollTop - pane.clientHeight >= 48) {
+    followProcess.value = false;
+    historyReading.value[taskId] = true;
+  } else if (!historyPinned.value[taskId] && !historyTruncated.value[taskId] && !historyReturning.value[taskId]) {
+    delete historyReading.value[taskId];
+    delete historyNewUpdates.value[taskId];
+    followProcess.value = true;
+  }
+}
+watch(() => selectedRun.value?.cursor, async () => {
+  if (!followProcess.value) return;
+  await nextTick();
+  if (processPane.value) processPane.value.scrollTop = processPane.value.scrollHeight;
+});
 const allRunTasks = computed<any[]>(() => [
   ...new Map(
     [
       ...(selectedRun.value?.tasks ?? []),
       ...(selectedRun.value?.scopes ?? []).flatMap((scope: any) => scope.tasks),
-      ...(selectedRun.value?.loops ?? []).flatMap((loop: any) =>
-        loop.iterations.flatMap((iteration: any) => iteration.tasks),
+      ...[selectedRun.value, ...(selectedRun.value?.scopes ?? [])].flatMap((scope: any) =>
+        (scope?.loops ?? []).flatMap((loop: any) =>
+          loop.iterations.flatMap((iteration: any) => iteration.tasks),
+        ),
       ),
     ].map((task: any) => [task.run_id, task]),
   ).values(),
 ]);
+const taskScopeNames = computed<Record<string, string>>(() => Object.fromEntries(
+  (selectedRun.value?.scopes ?? []).flatMap((scope: any) => [
+    ...(scope.tasks ?? []),
+    ...(scope.loops ?? []).flatMap((loop: any) => loop.iterations.flatMap((iteration: any) => iteration.tasks)),
+  ].map((task: any) => [task.run_id, scope.snapshot?.definition?.name ?? scope.run_id])),
+));
 const detailRun = computed(
   () =>
     allRunTasks.value.find(
       (task: any) =>
-        task.node_id === selectedTaskNode.value ||
         task.run_id === selectedTaskNode.value,
     ) ??
     selectedRun.value?.tasks?.[0] ??
     selectedRun.value,
 );
+function runViews(root: any): any[] {
+  if (!root) return [];
+  return [root, ...(root.tasks ?? []),
+    ...(root.scopes ?? []).flatMap((scope: any) => [scope, ...scope.tasks]),
+    ...[root, ...(root.scopes ?? [])].flatMap((scope: any) =>
+      (scope.loops ?? []).flatMap((loop: any) =>
+        loop.iterations.flatMap((iteration: any) => iteration.tasks)))];
+}
+function messageBelongs(root: any, target: any, message: any): boolean {
+  return target.run_id === root.run_id ||
+    (target.snapshot?.engine === "graph_v2" && target.state?.scope_id === message.scope_id) ||
+    target.run_id === message.sender_task_run_id ||
+    (target.state?.scope_id === message.scope_id && target.snapshot?.member?.member_id === message.recipient_member_id);
+}
+const historyNext = ref<Record<string, string | null>>({});
+const historyDone = ref<Record<string, boolean>>({});
+const historyBusy = ref(false);
+const historyErrors = ref<Record<string, string>>({});
+const historyTruncated = ref<Record<string, boolean>>({});
+const historyReading = ref<Record<string, boolean>>({});
+const historyPinned = ref<Record<string, boolean>>({});
+const historyNewUpdates = ref<Record<string, boolean>>({});
+const historyOlderHidden = ref<Record<string, boolean>>({});
+const historyRestoring = ref<Record<string, boolean>>({});
+const historyReturning = ref<Record<string, boolean>>({});
+const historyPending = ref<Record<string, Partial<Record<"process" | "events" | "messages" | "attempts", any[]>>>>({});
+watch(() => selectedRun.value?.run_id, () => {
+  historyDone.value = {};
+  historyNext.value = {};
+  historyErrors.value = {};
+  historyTruncated.value = {};
+  historyReading.value = {};
+  historyPinned.value = {};
+  historyNewUpdates.value = {};
+  historyOlderHidden.value = {};
+  historyRestoring.value = {};
+  historyReturning.value = {};
+  historyPending.value = {};
+});
+watch(() => detailRun.value?.run_id, (taskId, previousId) => {
+  if (previousId && previousId !== taskId) {
+    delete historyReading.value[previousId];
+    delete historyPinned.value[previousId];
+    if (historyTruncated.value[previousId]) void restoreLatest(previousId);
+    else delete historyNewUpdates.value[previousId];
+  }
+  followProcess.value = true;
+  if (taskId && taskId !== previousId && historyTruncated.value[taskId]) {
+    delete historyReading.value[taskId];
+    delete historyPinned.value[taskId];
+    void restoreLatest(taskId);
+  } else if (taskId && taskId !== previousId) {
+    void nextTick().then(() => {
+      if (detailRun.value?.run_id === taskId && followProcess.value && processPane.value)
+        processPane.value.scrollTop = processPane.value.scrollHeight;
+    });
+  }
+});
+
+function mergeHistoryWindow(target: any, kind: "process" | "events" | "messages" | "attempts", incoming: any[], older = false) {
+  const key = kind === "process" ? "record_id" : kind === "events" ? "cursor" : kind === "messages" ? "message_id" : "attempt_id";
+  const existing = target[kind] ?? [];
+  const known = new Set(existing.map((entry: any) => entry[key]));
+  if (!older && historyReturning.value[target.run_id]) {
+    const pending = historyPending.value[target.run_id] ??= {};
+    const entries = new Map([...(pending[kind] ?? []), ...incoming].map((entry: any) => [entry[key], entry]));
+    pending[kind] = [...entries.values()].sort((a: any, b: any) => (a.cursor ?? 0) - (b.cursor ?? 0)).slice(-512);
+  }
+  const isReading = target.run_id === detailRun.value?.run_id && !!(historyReading.value[target.run_id] || historyReturning.value[target.run_id]);
+  if (!older && isReading && incoming.some((entry: any) => !known.has(entry[key])))
+    historyNewUpdates.value[target.run_id] = true;
+  const entries = new Map([...existing, ...incoming].map((entry: any) => [entry[key], entry]));
+  const ordered = [...entries.values()].sort((a: any, b: any) => (a.cursor ?? 0) - (b.cursor ?? 0));
+  if (ordered.length <= 512) {
+    target[kind] = ordered;
+    return;
+  }
+  if (older || isReading) {
+    target[kind] = ordered.slice(0, 512);
+    historyTruncated.value[target.run_id] = true;
+  } else {
+    target[kind] = ordered.slice(-512);
+    historyOlderHidden.value[target.run_id] = true;
+    if (kind === "process") delete historyDone.value[target.run_id];
+    else {
+      delete historyNext.value[`${target.run_id}:${kind}`];
+      const floor = `${kind === "events" ? "event" : kind === "messages" ? "message" : "attempt"}_history_before`;
+      target[floor] = Math.max(Number(target[floor] ?? 1), target[kind][0].cursor ?? 1);
+    }
+  }
+}
+
+async function loadOlderProcess() {
+  if (historyBusy.value || !selectedRun.value || !detailRun.value) return;
+  const rootId = selectedRun.value.run_id;
+  const taskId = detailRun.value.run_id;
+  const cursors = (detailRun.value.process ?? []).map((record: any) => record.cursor).filter((cursor: any) => Number.isInteger(cursor));
+  const before = cursors.length ? Math.min(...cursors) : selectedRun.value.cursor + 1;
+  historyBusy.value = true;
+  historyReading.value[taskId] = true;
+  historyPinned.value[taskId] = true;
+  followProcess.value = false;
+  delete historyErrors.value[taskId];
+  try {
+    const page = await workflowAssetsApi.processPage(rootId, taskId, before);
+    if (selectedRun.value?.run_id !== rootId || detailRun.value?.run_id !== taskId || !historyReading.value[taskId]) return;
+    const pane = processPane.value;
+    const height = pane?.scrollHeight ?? 0;
+    const top = pane?.scrollTop ?? 0;
+    const targets = runViews(selectedRun.value);
+    for (const target of targets.filter((run: any) => run.run_id === taskId)) {
+      mergeHistoryWindow(target, "process", page.records, true);
+    }
+    historyDone.value = { ...historyDone.value, [taskId]: page.next_before === null };
+    await nextTick();
+    if (pane && detailRun.value?.run_id === taskId) pane.scrollTop = top + pane.scrollHeight - height;
+  } catch (cause) {
+    historyErrors.value[taskId] = extractApiError(cause, tm("errors.operationFailed")).message;
+  } finally {
+    historyBusy.value = false;
+  }
+}
+async function loadOlderHistory(kind: "events" | "messages" | "attempts") {
+  if (historyBusy.value || !selectedRun.value || !detailRun.value) return;
+  const rootId = selectedRun.value.run_id;
+  const taskId = detailRun.value.run_id;
+  const key = `${taskId}:${kind}`;
+  const next = historyNext.value[key];
+  if (next === null) return;
+  const before = next ?? String(detailRun.value[kind === "events" ? "event_history_before" : kind === "messages" ? "message_history_before" : "attempt_history_before"] ?? 1);
+  historyBusy.value = true;
+  historyReading.value[taskId] = true;
+  historyPinned.value[taskId] = true;
+  followProcess.value = false;
+  delete historyErrors.value[taskId];
+  try {
+    const page = await workflowAssetsApi.runHistoryPage(rootId, taskId, kind, before);
+    if (selectedRun.value?.run_id !== rootId || detailRun.value?.run_id !== taskId || !historyReading.value[taskId]) return;
+    const pane = processPane.value;
+    const height = pane?.scrollHeight ?? 0;
+    const top = pane?.scrollTop ?? 0;
+    for (const target of runViews(selectedRun.value).filter((view: any) => view.run_id === taskId)) {
+      mergeHistoryWindow(target, kind, page.items, true);
+    }
+    historyNext.value[key] = page.next_before;
+    await nextTick();
+    if (pane && detailRun.value?.run_id === taskId) pane.scrollTop = top + pane.scrollHeight - height;
+  } catch (cause) {
+    historyErrors.value[taskId] = extractApiError(cause, tm("errors.operationFailed")).message;
+  } finally {
+    historyBusy.value = false;
+  }
+}
+async function restoreLatest(taskId: string) {
+  const root = selectedRun.value;
+  if (!root || historyRestoring.value[taskId]) return;
+  const rootId = root.run_id;
+  const boundary = root.cursor;
+  historyRestoring.value[taskId] = true;
+  delete historyErrors.value[taskId];
+  try {
+    const [process, events, messages, attempts] = await Promise.all([
+      workflowAssetsApi.processPage(rootId, taskId, boundary + 1),
+      workflowAssetsApi.runHistoryPage(rootId, taskId, "events", String(boundary + 1)),
+      workflowAssetsApi.runHistoryPage(rootId, taskId, "messages", String(boundary + 1)),
+      workflowAssetsApi.runHistoryPage(rootId, taskId, "attempts", String(boundary + 1)),
+    ]);
+    if (selectedRun.value?.run_id !== rootId || historyReading.value[taskId]) return;
+    const pages = { process: process.records, events: events.items, messages: messages.items, attempts: attempts.items };
+    for (const target of runViews(selectedRun.value).filter((view: any) => view.run_id === taskId)) {
+      for (const kind of ["process", "events", "messages", "attempts"] as const) {
+        const key = kind === "process" ? "record_id" : kind === "events" ? "cursor" : kind === "messages" ? "message_id" : "attempt_id";
+        const later = (target[kind] ?? []).filter((entry: any) => entry.cursor > boundary);
+        const pending = (historyPending.value[taskId]?.[kind] ?? []).filter((entry: any) => entry.cursor > boundary);
+        const entries = new Map([...pages[kind], ...later, ...pending].map((entry: any) => [entry[key], entry]));
+        const ordered = [...entries.values()].sort((a: any, b: any) => (a.cursor ?? 0) - (b.cursor ?? 0));
+        const trimmed = ordered.length > 512;
+        target[kind] = ordered.slice(-512);
+        if (kind === "process") historyDone.value[taskId] = !trimmed && process.next_before === null;
+        else {
+          const page = kind === "events" ? events : kind === "messages" ? messages : attempts;
+          historyNext.value[`${taskId}:${kind}`] = trimmed ? String(target[kind][0].cursor) : page.next_before;
+        }
+        if (trimmed || (kind === "process" ? process.next_before : (kind === "events" ? events : kind === "messages" ? messages : attempts).next_before))
+          historyOlderHidden.value[taskId] = true;
+      }
+    }
+    delete historyTruncated.value[taskId];
+    delete historyPinned.value[taskId];
+    delete historyNewUpdates.value[taskId];
+    delete historyReturning.value[taskId];
+    if (detailRun.value?.run_id === taskId) {
+      followProcess.value = true;
+      await nextTick();
+      if (detailRun.value?.run_id === taskId && followProcess.value && processPane.value)
+        processPane.value.scrollTop = processPane.value.scrollHeight;
+    }
+  } catch (cause) {
+    if (selectedRun.value?.run_id === rootId) {
+      historyErrors.value[taskId] = extractApiError(cause, tm("errors.operationFailed")).message;
+      if (detailRun.value?.run_id === taskId) {
+        historyReading.value[taskId] = true;
+        followProcess.value = false;
+      }
+    }
+  } finally {
+    delete historyRestoring.value[taskId];
+    delete historyPending.value[taskId];
+  }
+}
+async function reloadLatestProcess() {
+  const taskId = detailRun.value?.run_id;
+  if (!taskId || historyBusy.value || historyRestoring.value[taskId]) return;
+  delete historyReading.value[taskId];
+  historyReturning.value[taskId] = true;
+  followProcess.value = false;
+  try {
+    await restoreLatest(taskId);
+  } finally {
+    delete historyReturning.value[taskId];
+  }
+}
 const graphEditing = ref(false);
+const graphEditorKey = ref(0);
 const teamEditing = ref(false);
 const graphInvalid = ref(false);
-const usageInvalid = ref(false);
+const graphIssues = ref<{ path: string; message: string }[]>([]);
 const graphUsageInvalid = ref(false);
 const graphForm = ref<GraphDefinition>({
   name: "",
@@ -974,7 +1391,6 @@ const graphForm = ref<GraphDefinition>({
   tasks: [],
   edges: [],
 });
-const graphInputNames = ref("");
 const selectedArtifact = ref<any>(null);
 const artifactVersions = computed(() =>
   (detailRun.value?.artifacts ?? []).map(
@@ -990,7 +1406,6 @@ const resultText = computed(() => {
     : JSON.stringify(content, null, 2);
 });
 const artifactVersion = ref<number>(1);
-const contractText = ref("");
 const inputArtifacts = ref<string[]>([]);
 const revising = ref(false);
 const revisionText = ref("");
@@ -999,6 +1414,8 @@ const revisionRequestId = ref("");
 const previewing = ref(false);
 const previewText = ref("");
 const previewUrl = ref("");
+const previewBlob = ref<Blob | null>(null);
+const previewFilename = ref("");
 const availableInputs = computed(() =>
   runs.value.flatMap((run) =>
     (run.artifacts ?? []).map((artifact: any) => ({
@@ -1014,25 +1431,10 @@ const loading = ref(false);
 const saving = ref(false);
 const error = ref("");
 const formError = ref("");
-const editing = ref(false);
 const starting = ref(false);
 const editingAsset = ref<any>(null);
 const runAsset = ref<any>(null);
-const form = ref<WorkflowDefinition>({
-  name: "",
-  role_id: "",
-  role_version: 1,
-  task: "",
-  required_inputs: [],
-  overrides: {},
-});
-const inputNames = ref("");
 const inputs = ref<Record<string, string>>({});
-const roleVersions = computed(
-  () =>
-    roles.value.find((role) => role.role_id === form.value.role_id)?.versions ??
-    [],
-);
 let timer: ReturnType<typeof setInterval> | undefined;
 let disposed = false;
 let artifactRead = 0;
@@ -1046,19 +1448,28 @@ async function refresh() {
   try {
     error.value = "";
     if (props.mode === "assets") {
-      const [assetData, roleData, runData] = await Promise.all([
+      const [assetData, roleData, runData, resources, workflowDrafts, teamDrafts] = await Promise.all([
         workflowAssetsApi.list(),
         roleAssetsApi.list(),
         workflowAssetsApi.runs(),
+        roleAssetsApi.resources(),
+        draftApi.list("workflow"),
+        draftApi.list("autonomous"),
       ]);
       if (disposed || read !== runRead) return;
       assets.value = assetData.assets;
+      drafts.value = [...workflowDrafts.map((item) => ({ ...item, kind: "workflow" })), ...teamDrafts.map((item) => ({ ...item, kind: "autonomous" }))];
       roles.value = roleData.roles;
       runs.value = runData.runs;
+      if (resources) catalog.value = resources;
     } else {
-      const runData = await workflowAssetsApi.runs();
+      const [runData, inboxData] = await Promise.all([
+        workflowAssetsApi.runs(),
+        workflowAssetsApi.humanRequests(),
+      ]);
       if (disposed || read !== runRead) return;
       runs.value = runData.runs;
+      humanRequests.value = inboxData.requests;
       const id = route.query.workflow_run ?? selectedRun.value?.run_id;
       if (typeof id === "string" && id) {
         const artifactId = detailRun.value?.result_ref?.artifact_id;
@@ -1071,11 +1482,54 @@ async function refresh() {
             selectedRun.value.cursor,
           );
           if (disposed || read !== runRead) return;
-          if (
-            changes.snapshot &&
-            (changes.reset || changes.cursor > selectedRun.value.cursor)
-          )
-            selectedRun.value = changes.snapshot;
+          if (!changes.snapshot && changes.events?.some((event: any) =>
+            typeof event.kind === "string" && !event.kind.startsWith("process.") &&
+            !event.kind.startsWith("checkpoint.") &&
+            !["usage.started", "usage.reported", "usage.resumed"].includes(event.kind),
+          )) {
+            const state = await workflowAssetsApi.run(id);
+            if (disposed || read !== runRead) return;
+            changes.snapshot = { ...state, cursor: changes.cursor };
+          }
+          if (changes.snapshot) {
+            if (changes.reset || changes.cursor > selectedRun.value.cursor) {
+              const previous = selectedRun.value;
+              const snapshot = changes.snapshot;
+              if (changes.cursor >= previous.cursor) {
+                const oldViews = runViews(previous);
+                const newViews = runViews(snapshot);
+                for (const target of newViews) {
+                  const old = oldViews.find((view: any) => view.run_id === target.run_id);
+                  for (const kind of ["process", "events", "messages", "attempts"] as const) {
+                    const incoming = [...(target[kind] ?? [])];
+                    if (kind === "process") incoming.push(...(changes.records ?? []).filter((record: any) => record.run_id === target.run_id));
+                    else if (kind === "events") incoming.push(...(changes.events ?? []).filter((event: any) => target.run_id === snapshot.run_id || target.run_id === event.run_id));
+                    else if (kind === "messages") incoming.push(...(changes.messages ?? []).filter((message: any) => messageBelongs(snapshot, target, message)));
+                    target[kind] = old?.[kind] ?? [];
+                    mergeHistoryWindow(target, kind, incoming);
+                  }
+                }
+              } else {
+                historyDone.value = {};
+                historyNext.value = {};
+                historyTruncated.value = {};
+                historyReading.value = {};
+                historyPinned.value = {};
+                historyNewUpdates.value = {};
+                historyOlderHidden.value = {};
+              }
+              selectedRun.value = snapshot;
+            }
+          } else {
+            const root = selectedRun.value;
+            const runs = runViews(root);
+            for (const target of runs) {
+              mergeHistoryWindow(target, "process", (changes.records ?? []).filter((record: any) => record.run_id === target.run_id));
+              mergeHistoryWindow(target, "events", (changes.events ?? []).filter((event: any) => target.run_id === root.run_id || target.run_id === event.run_id));
+              mergeHistoryWindow(target, "messages", (changes.messages ?? []).filter((message: any) => messageBelongs(root, target, message)));
+            }
+            root.cursor = changes.cursor;
+          }
         } else {
           const snapshot = await workflowAssetsApi.run(id);
           if (disposed || read !== runRead) return;
@@ -1102,42 +1556,84 @@ async function refresh() {
   }
 }
 
-function edit(asset: any) {
+async function editGraph(asset: any) {
+  graphSelectedNode.value = null;
+  graphEditing.value = false;
+  graphDraft.close();
   editingAsset.value = asset;
-  form.value = asset
-    ? JSON.parse(JSON.stringify(asset.definition))
-    : {
-        name: "",
-        role_id: "",
-        role_version: 1,
-        task: "",
-        required_inputs: [],
-        overrides: {},
-      };
-  inputNames.value = form.value.required_inputs?.join(", ") ?? "";
-  contractText.value = form.value.output_contract
-    ? JSON.stringify(form.value.output_contract, null, 2)
-    : "";
-  formError.value = "";
-  editing.value = true;
-}
-
-function editGraph(asset: any) {
-  editingAsset.value = asset;
+  graphEditorKey.value++;
   graphForm.value = asset
     ? JSON.parse(JSON.stringify(asset.definition))
     : {
         name: "",
-        required_inputs: [],
+        default_provider_id: null,
+        required_inputs: ["input"],
+        result_task_id: "agent",
         max_parallel: 4,
         max_depth: 3,
-        tasks: [],
+        tasks: [
+          {
+            id: "agent",
+            name: "Agent",
+            member: "agent",
+            role: { name: "Agent" },
+            installation: { profile_id: "default" },
+            task: "{input}",
+            inputs: { input: { input: "input", field: "text" } },
+            position: { x: 300, y: 100 },
+          },
+        ],
         edges: [],
       };
-  graphInputNames.value = graphForm.value.required_inputs?.join(", ") ?? "";
   formError.value = "";
   graphInvalid.value = false;
+  graphIssues.value = [];
+  try {
+    const item = await graphDraft.open(asset?.asset_id ?? null, {
+      definition: graphForm.value,
+    });
+    graphForm.value = item.body.definition;
+    await nextTick();
+    graphEditing.value = true;
+  } catch (err) {
+    error.value = extractApiError(err, tm("errors.operationFailed")).message;
+  }
+}
+
+async function reloadGraphDraft() {
+  const item = await graphDraft.reload();
+  graphEditing.value = false;
+  graphForm.value = item.body.definition;
+  graphEditorKey.value++;
+  await nextTick();
   graphEditing.value = true;
+}
+
+async function useLatestDraft(latest: any) {
+  graphForm.value = JSON.parse(JSON.stringify(latest.definition));
+  graphEditorKey.value++;
+  graphDraft.change({ definition: graphForm.value });
+  try { await graphDraft.rebase(); } catch (err) { formError.value = extractApiError(err, tm("errors.operationFailed")).message; }
+}
+
+watch(
+  [graphEditing, teamEditing],
+  ([graph, team], [previousGraph, previousTeam]) => {
+    if ((!graph && previousGraph) || (!team && previousTeam)) void refresh();
+  },
+);
+
+watch(
+  graphForm,
+  () => {
+    if (graphEditing.value) graphDraft.change({ definition: graphForm.value });
+  },
+  { deep: true },
+);
+
+async function closeGraph() {
+  if (graphDraft.status.value === "failed" || graphDraft.status.value === "conflict") return;
+  try { await graphDraft.flush(); graphEditing.value = false; } catch { /* The draft status retains the failure. */ }
 }
 
 function editTeam(asset: any) {
@@ -1150,16 +1646,21 @@ async function saveGraph() {
   saving.value = true;
   formError.value = "";
   try {
-    const definition = JSON.parse(JSON.stringify(graphForm.value));
-    await workflowAssetsApi.save(editingAsset.value?.asset_id ?? null, {
-      definition,
-      expected_version: editingAsset.value?.version,
-    });
+    graphDraft.change({ definition: graphForm.value });
+    await graphDraft.publish();
     graphEditing.value = false;
     await refresh();
   } catch (err) {
     const failure = extractApiError(err, tm("errors.operationFailed"));
-    formError.value = `${failure.message} ${failure.fields
+    graphIssues.value = failure.fields
+      .filter((field) => !field.path.includes(".AutonomousDefinition."))
+      .map((field) => ({
+        ...field,
+        path: field.path
+          .replace(/^body\./, "")
+          .replace("definition.GraphDefinition.", "definition."),
+      }));
+    formError.value = `${failure.message} ${graphIssues.value
       .map((field) => `${field.path}: ${field.message}`)
       .join("; ")}`;
   } finally {
@@ -1168,6 +1669,8 @@ async function saveGraph() {
 }
 
 function selectRunTask(nodeId: string | null) {
+  runDisplay.value = 'workbench';
+  activeRunPanel.value = 'process';
   if (nodeId)
     selectedTaskNode.value =
       allRunTasks.value.find((task) => task.run_id === nodeId)?.run_id ??
@@ -1184,39 +1687,6 @@ watch(
     await loadArtifact();
   },
 );
-
-function selectRole(id: string) {
-  form.value.role_version =
-    roles.value.find((role) => role.role_id === id)?.version ?? 1;
-}
-
-async function save() {
-  if (saving.value || usageInvalid.value) return;
-  saving.value = true;
-  formError.value = "";
-  try {
-    form.value.required_inputs = inputNames.value
-      .split(",")
-      .map((name) => name.trim())
-      .filter(Boolean);
-    if (contractText.value.trim())
-      form.value.output_contract = JSON.parse(contractText.value);
-    else delete form.value.output_contract;
-    await workflowAssetsApi.save(editingAsset.value?.asset_id ?? null, {
-      definition: form.value,
-      expected_version: editingAsset.value?.version,
-    });
-    editing.value = false;
-    await refresh();
-  } catch (err) {
-    const failure = extractApiError(err, tm("errors.operationFailed"));
-    formError.value = `${failure.message} ${failure.fields
-      .map((field) => `${field.path}: ${field.message}`)
-      .join("; ")}`;
-  } finally {
-    saving.value = false;
-  }
-}
 
 const readiness = ref<any>(null);
 const checkingReadiness = ref(false);
@@ -1297,6 +1767,33 @@ async function start() {
   }
 }
 
+function applyOperationSnapshot(next: any) {
+  const previous = selectedRun.value;
+  const snapshot = { ...next };
+  if (previous?.run_id === snapshot.run_id && Number.isInteger(previous.cursor) && snapshot.cursor >= previous.cursor) {
+    const oldViews = runViews(previous);
+    for (const target of runViews(snapshot)) {
+      const old = oldViews.find((view: any) => view.run_id === target.run_id);
+      for (const kind of ["process", "events", "messages", "attempts"] as const) {
+        const incoming = target[kind] ?? [];
+        target[kind] = old?.[kind] ?? [];
+        mergeHistoryWindow(target, kind, incoming);
+      }
+    }
+    // A newer state snapshot does not acknowledge events that have not been read.
+    snapshot.cursor = previous.cursor;
+  } else {
+    historyDone.value = {};
+    historyNext.value = {};
+    historyTruncated.value = {};
+    historyReading.value = {};
+    historyPinned.value = {};
+    historyNewUpdates.value = {};
+    historyOlderHidden.value = {};
+  }
+  selectedRun.value = snapshot;
+}
+
 async function openRun(runId: string) {
   const read = ++runRead;
   openingRun = true;
@@ -1306,6 +1803,15 @@ async function openRun(runId: string) {
     const snapshot = await workflowAssetsApi.run(runId);
     if (disposed || read !== runRead) return;
     selectedRun.value = snapshot;
+    historyDone.value = {};
+    historyNext.value = {};
+    historyErrors.value = {};
+    historyTruncated.value = {};
+    historyReading.value = {};
+    historyPinned.value = {};
+    historyNewUpdates.value = {};
+    historyOlderHidden.value = {};
+    followProcess.value = true;
     selectedTaskNode.value = snapshot.tasks?.[0]?.run_id ?? null;
     await router.replace({ query: { ...route.query, workflow_run: runId } });
     if (disposed || read !== runRead) return;
@@ -1340,7 +1846,7 @@ async function recoverAttempt() {
     const recovered = await workflowAssetsApi.recover(taskId);
     const snapshot =
       rootId === taskId ? recovered : await workflowAssetsApi.run(rootId);
-    if (!disposed && read === runRead) selectedRun.value = snapshot;
+    if (!disposed && read === runRead) applyOperationSnapshot(snapshot);
   } catch (err) {
     if (!disposed && read === runRead)
       error.value = extractApiError(err, tm("errors.operationFailed")).message;
@@ -1366,7 +1872,7 @@ async function resolveTool(recordId: string, payload: ToolResolutionRequest) {
     );
     const snapshot =
       rootId === taskId ? resolved : await workflowAssetsApi.run(rootId);
-    if (!disposed && read === runRead) selectedRun.value = snapshot;
+    if (!disposed && read === runRead) applyOperationSnapshot(snapshot);
   } catch (err) {
     if (!disposed && read === runRead)
       error.value = extractApiError(err, tm("errors.operationFailed")).message;
@@ -1385,7 +1891,7 @@ async function answerTodo(todoId: string, payload: HumanAnswerRequest) {
   try {
     error.value = "";
     const updated = await workflowAssetsApi.answer(rootId, todoId, payload);
-    if (!disposed && read === runRead) selectedRun.value = updated;
+    if (!disposed && read === runRead) applyOperationSnapshot(updated);
   } catch (err) {
     // Returning to the same run keeps its pending response and failure visible.
     if (!disposed && !openingRun && selectedRun.value?.run_id === rootId)
@@ -1416,7 +1922,7 @@ async function applyRunControl(
       retry && rootId !== taskId
         ? await workflowAssetsApi.run(rootId)
         : updated;
-    if (!disposed && read === runRead) selectedRun.value = snapshot;
+    if (!disposed && read === runRead) applyOperationSnapshot(snapshot);
   } catch (err) {
     if (!disposed && read === runRead)
       error.value = extractApiError(err, tm("errors.operationFailed")).message;
@@ -1513,7 +2019,11 @@ async function readFile(fileId: string, download: boolean) {
       previewText.value = response.data.type.startsWith("text/")
         ? await response.data.text()
         : "";
-      previewUrl.value = previewText.value
+      previewBlob.value = response.data.type.startsWith("image/") || response.data.type === "application/pdf"
+        ? response.data : null;
+      const files = ref.files ?? ref.content?.files ?? [];
+      previewFilename.value = files.find((file: any) => file.file_id === fileId)?.filename ?? fileId;
+      previewUrl.value = previewText.value || previewBlob.value
         ? ""
         : URL.createObjectURL(response.data);
       previewing.value = true;
@@ -1536,6 +2046,68 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
+.workbench-columns { display: grid; grid-template-columns: minmax(210px, 0.8fr) minmax(320px, 1.65fr) minmax(250px, 1fr); gap: 20px; align-items: start; }
+.workbench-column { min-width: 0; }
+.workbench-process { max-height: 75vh; overflow-y: auto; }
+.workbench-panel-nav { display: none; }
+@media (max-width: 1100px) {
+  .workbench-columns { grid-template-columns: minmax(0, 1fr); }
+  .workbench-process { max-height: 70vh; }
+  .workbench-panel-nav { display: flex; flex-wrap: wrap; gap: 4px; }
+  .workbench-columns:not([data-active-panel='tasks']) > .workbench-tasks,
+  .workbench-columns:not([data-active-panel='process']) > .workbench-process,
+  .workbench-columns:not([data-active-panel='results']) > .workbench-results { display: none; }
+}
+@media (max-width: 600px) {
+  .workbench-body { padding: 16px; }
+  .workbench-panel-nav { display: grid; grid-template-columns: auto auto auto; }
+  .workbench-panel-nav :deep(.v-btn) { min-width: 0; padding-inline: 6px; font-size: 12px; }
+}
+
+:deep(.graph-dialog-overlay) {
+  height: min(900px, calc(100vh - 48px));
+}
+.graph-dialog-card {
+  height: 100%;
+  min-height: 0;
+}
+.graph-dialog-content {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1 1 0;
+  overflow-y: auto;
+}
+:deep(.graph-dialog-overlay > .graph-dialog-card > .graph-dialog-content) {
+  overflow-y: auto;
+}
+.graph-dialog-content > :not(.graph-dialog-canvas) {
+  flex: 0 0 auto;
+}
+.graph-dialog-canvas {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: min(480px, 65vh);
+}
+.graph-dialog-canvas :deep(.graph-columns) {
+  flex: 1 1 0;
+  height: auto;
+  min-height: 0;
+  grid-template-rows: minmax(0, 1fr);
+}
+@media (max-width: 1000px) {
+  :deep(.graph-dialog-overlay > .graph-dialog-card > .graph-dialog-content) {
+    overflow-y: auto;
+  }
+  .graph-dialog-canvas {
+    flex: 0 0 auto;
+  }
+  .graph-dialog-canvas :deep(.graph-columns) {
+    flex: 0 0 auto;
+    grid-template-rows: none;
+  }
+}
 .workflow-text {
   white-space: pre-wrap;
   overflow-wrap: anywhere;

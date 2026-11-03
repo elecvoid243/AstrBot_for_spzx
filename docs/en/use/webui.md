@@ -31,7 +31,7 @@ These paths use the current default sidebar. If you customized it, open `Setting
 | Standalone MCP / Skills entries | Extensions → MCP Servers / Skills |
 | Custom Rules / Future Tasks / SubAgents | More Features → The corresponding feature |
 | Agent Teams → Members | More Features → Agent Teams → Assets → Role templates |
-| Agent Teams → Workflow Editor, Run Monitor | Assets → Workflows → Start Run is the default; New Canvas Workflow opens the versioned editor, and Runs displays frozen snapshots |
+| Agent Teams → Workflow Editor, Run Monitor | Assets → Workflows → Start Run is the default; New Workflow opens the versioned editor, and Runs displays frozen snapshots |
 | Workflow Assets → Export workflow JSON / Import workflow package | Assets → Teams / Workflows → Export asset JSON / Import asset package → Validate and preview → Confirm installation; includes exact nested versions and grouped dependencies. Edit Asset / Start Run remain. Upgrades add versions; pending entries cannot run until their dependencies are ready |
 | Migrate previous definitions / active legacy run check | Removed; configure versioned Assets and start runs directly. See [the asset workspace](./agent-team-workflows.md) |
 | Previous History tab | Agent Teams → Runs → History, showing asset runs only |
@@ -43,7 +43,7 @@ Old log, trace, conversation, and statistics URLs still redirect to the correspo
 
 ## Accessing the Admin Panel
 
-See [Agent Teams role templates](./agent-team-roles.md) for resource bindings, inheritance previews and versioned saving.
+See [Agent Teams role templates](./agent-team-roles.md) for direct resource selection, inheritance previews and versioned saving.
 See [Asset and run workspace](./agent-team-workflows.md) for saving, starting and inspecting workflows and task results.
 
 After starting AstrBot, you can access the admin panel by visiting `http://localhost:6185` in your browser.

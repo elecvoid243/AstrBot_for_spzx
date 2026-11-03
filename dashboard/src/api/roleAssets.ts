@@ -1,12 +1,19 @@
-import { httpClient } from './http';
-import type { RoleSaveRequest } from './generated/openapi-v1';
+import { httpClient } from "./http";
+import type { RoleSaveRequest } from "./generated/openapi-v1";
 
 export const roleAssetsApi = {
+  async delete(roleId: string) {
+    return (
+      await httpClient.delete(
+        `/api/v1/agent_roles/${encodeURIComponent(roleId)}`,
+      )
+    ).data.data;
+  },
   async list() {
-    return (await httpClient.get('/api/v1/agent_roles')).data.data;
+    return (await httpClient.get("/api/v1/agent_roles")).data.data;
   },
   async resources() {
-    return (await httpClient.get('/api/v1/agent_roles/resources')).data.data;
+    return (await httpClient.get("/api/v1/agent_roles/resources")).data.data;
   },
   async get(roleId: string, version?: number) {
     return (
@@ -17,8 +24,21 @@ export const roleAssetsApi = {
     ).data.data;
   },
   async preview(payload: RoleSaveRequest) {
-    return (await httpClient.post('/api/v1/agent_roles/preview', payload)).data
+    return (await httpClient.post("/api/v1/agent_roles/preview", payload)).data
       .data;
+  },
+  async resolve(
+    roleId: string,
+    version: number,
+    overrides: Record<string, unknown>,
+  ) {
+    return (
+      await httpClient.post(
+        `/api/v1/agent_roles/${encodeURIComponent(roleId)}/resolve`,
+        overrides,
+        { params: { version } },
+      )
+    ).data.data;
   },
   async save(roleId: string | null, payload: RoleSaveRequest) {
     return (
@@ -27,7 +47,7 @@ export const roleAssetsApi = {
             `/api/v1/agent_roles/${encodeURIComponent(roleId)}`,
             payload,
           )
-        : await httpClient.post('/api/v1/agent_roles', payload)
+        : await httpClient.post("/api/v1/agent_roles", payload)
     ).data.data;
   },
 };

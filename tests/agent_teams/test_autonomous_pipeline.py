@@ -107,7 +107,7 @@ def test_autonomous_team_uses_main_pipeline_and_recovers_without_duplicate_decis
                                 "id": parameter_plans[payload["member_id"]]["id"] + "-parameters"}
                 elif "team_manage" in payload["tools"]:
                     role_id = re.search(
-                        r'Allowed roles: \{"([^"]+)"',
+                        r'Allowed presets: \{"([^"]+)"',
                         payload["tool_descriptions"]["team_manage"],
                     )[1]
                     if scenario == "team_steps" and "dispatch-a" in results:
@@ -124,7 +124,7 @@ def test_autonomous_team_uses_main_pipeline_and_recovers_without_duplicate_decis
                                     {
                                         "action": "create_member",
                                         "request_id": "member-a",
-                                        "role_id": role_id,
+                                        "preset_id": role_id,
                                         "name": "Writer A",
                                     },
                                     "create-a",
@@ -134,8 +134,8 @@ def test_autonomous_team_uses_main_pipeline_and_recovers_without_duplicate_decis
                                     {
                                         "action": "create_member",
                                         "request_id": "member-b",
-                                        "role_id": role_id,
-                                        "name": "Writer B",
+                                        "preset_id": "inline",
+                                        "name": "Writer A",
                                     },
                                     "create-b",
                                 ),
@@ -149,6 +149,12 @@ def test_autonomous_team_uses_main_pipeline_and_recovers_without_duplicate_decis
                             ("team_communicate", {"action": "send", "request_id": "initial-note",
                              "recipient_member_id": json.JSONDecoder().raw_decode(results["create-a"])[0]["member_id"],
                              "text": "INITIAL_MESSAGE 中文 {literal}"}, "message-duplicate"),
+                        ])
+                    elif scenario == "team_pipeline" and "forbidden" not in results:
+                        response = call("team-boundaries", [
+                            ("team_manage", {"action": "create_member", "request_id": "forbidden", "preset_id": "outside", "name": "Outside"}, "forbidden"),
+                            ("team_manage", {"action": "create_member", "request_id": "template-limit", "preset_id": "writer-copy", "name": "Extra"}, "template-limit"),
+                            ("team_manage", {"action": "create_member", "request_id": "inline-limit", "preset_id": "inline", "name": "Extra"}, "inline-limit"),
                         ])
                     elif "dispatch-a" not in results:
                         response = call(
@@ -496,6 +502,11 @@ def test_autonomous_team_uses_main_pipeline_and_recovers_without_duplicate_decis
             assert effects == []
             return
         assert current["status"] == "completed", current
+        if scenario == "team_pipeline":
+            observed = [record["data"] for task in current["tasks"] for record in task.get("process", []) if record["kind"] == "model_context"]
+            upstream = [source for context in observed for source in context["assembly"]["value"].get("sources", []) if source["kind"] == "upstream"]
+            assert upstream and any("COMPLETE_END" in source["content"] for source in upstream)
+            assert any("COMPLETE_END" in str(request["contexts"]) for request in requests)
         if scenario.startswith("team_message_"):
             assert len(current["messages"]) == (4 if scenario == "team_message_live" else 3)
             assert all(message["consumption"] is not None for message in current["messages"])
@@ -516,7 +527,27 @@ def test_autonomous_team_uses_main_pipeline_and_recovers_without_duplicate_decis
             assert "COMPLETE_END" in json.dumps(shared["contexts"])
             assert "Complete evidence writer-two-first" in json.dumps(shared["contexts"])
             assert all("Error:" not in message.get("content", "") for message in shared["contexts"] if message.get("tool_call_id") == "read-shared")
+        if scenario == "team_pipeline":
+            tool_results = {message.get("tool_call_id"): message.get("content", "") for request in requests for message in request["contexts"] if message.get("role") == "tool"}
+            assert "FORBIDDEN" in tool_results["forbidden"]
+            assert "LIMIT" in tool_results["template-limit"]
+            assert "LIMIT" in tool_results["inline-limit"]
         assert len(current["members"]) == 3
+        member_tasks = [task for task in current["tasks"] if not task["snapshot"].get("coordinator")]
+        assert {task["snapshot"]["preset_id"] for task in member_tasks} == {"writer", "inline"}
+        inline = next(task for task in member_tasks if task["snapshot"]["preset_id"] == "inline")
+        assert inline["snapshot"]["effective"]["persona_id"] is None
+        assert inline["snapshot"]["effective"]["prompt"] == "Inline responsibility."
+        inline_member_id = inline["snapshot"]["member"]["member_id"]
+        writer = next(task for task in member_tasks if task["snapshot"]["preset_id"] == "writer")
+        writer_member_id = writer["snapshot"]["member"]["member_id"]
+        inline_requests = [request for request in requests if request["member_id"] == inline_member_id]
+        assert inline_requests
+        assert any("Inline responsibility." in json.dumps(request["contexts"]) for request in inline_requests)
+        coordinator_member_id = current["tasks"][0]["snapshot"]["member"]["member_id"]
+        assert {request["member_id"] for request in requests} == {coordinator_member_id, writer_member_id, inline_member_id}
+        assert all(request["provider_id"] == "model-original" for request in inline_requests)
+        assert all("Original verified persona." not in json.dumps(request, ensure_ascii=False) for request in inline_requests)
         assert len(current["tasks"]) == 4
         if scenario.startswith("team_message_"):
             assert sorted(effect["value"] for effect in effects) == ["writer-followup", "writer-one-first", "writer-two-first"]
@@ -561,31 +592,24 @@ def test_autonomous_team_uses_main_pipeline_and_recovers_without_duplicate_decis
             request
             for request in requests
             if "writer-followup" in json.dumps(request["contexts"])
-            and "team_manage" not in request["tools"]
+            and request["member_id"] == writer_member_id
         )
         assert "Complete evidence writer-one-first" in json.dumps(followup["contexts"])
         second = next(
             request
             for request in requests
             if "writer-two-first" in json.dumps(request["contexts"])
-            and "team_manage" not in request["tools"]
+            and request["member_id"] == inline_member_id
         )
         assert "writer-one-first" not in json.dumps(second["contexts"])
         assert all(
-            "Original verified persona" in json.dumps(request["contexts"])
+            ("Original verified persona" in json.dumps(request["contexts"])) == (request["member_id"] != inline_member_id)
             and "profile=original" in json.dumps(request["contexts"])
             for request in requests
         )
-        member_requests = [
-            request
-            for request in requests
-            if any(
-                "Original role prompt" in json.dumps(message)
-                for message in request["contexts"]
-                if message["role"] == "user"
-            )
-        ]
+        member_requests = [request for request in requests if request["member_id"] == writer_member_id]
         assert len(member_requests) >= 3
+        assert any("Original role prompt" in json.dumps(request["contexts"]) for request in member_requests)
         assert all("team_manage" not in request["tools"] for request in member_requests)
         assert current["tasks"][0]["read_artifacts"] == [
             {"artifact_id": current["tasks"][1]["run_id"], "version": 1}

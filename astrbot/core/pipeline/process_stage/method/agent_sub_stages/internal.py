@@ -36,6 +36,7 @@ from astrbot.core.provider.entities import (
     LLMResponse,
     ProviderRequest,
 )
+from astrbot.core.provider.provider import Provider
 from astrbot.core.star.session_llm_manager import SessionServiceManager
 from astrbot.core.star.star_handler import EventType
 from astrbot.core.utils.image_input import prepare_request_images
@@ -263,6 +264,9 @@ class InternalAgentSubStage(Stage):
             streaming_response = self.streaming_response
             if (enable_streaming := event.get_extra("enable_streaming")) is not None:
                 streaming_response = bool(enable_streaming)
+            binding = event.get_extra("agent_team_execution")
+            if binding is not None and getattr(binding, "record_process", None):
+                streaming_response = True
 
             show_reasoning = self.show_reasoning
 
@@ -404,6 +408,12 @@ class InternalAgentSubStage(Stage):
                     req = build_result.provider_request
                     provider = build_result.provider
                     reset_coro = build_result.reset_coro
+                    if (
+                        binding is not None
+                        and getattr(binding, "record_process", None)
+                        and type(provider).text_chat_stream is Provider.text_chat_stream
+                    ):
+                        streaming_response = False
 
                     api_base = provider.provider_config.get("api_base", "")
                     for host in decoded_blocked:
@@ -451,6 +461,8 @@ class InternalAgentSubStage(Stage):
                     if reset_coro:
                         await reset_coro
                         reset_coro = None
+                    if binding is not None and getattr(binding, "record_process", None):
+                        agent_runner.streaming = streaming_response
 
                     register_active_runner(event.unified_msg_origin, agent_runner)
                     runner_registered = True

@@ -12,10 +12,11 @@ from fastapi import FastAPI
 from astrbot.core.agent_team_tools import AgentTeamToolRegistry
 from astrbot.core.agent_teams.assets import RoleAssetError
 from astrbot.core.agent_teams.workflows import WorkflowService
-from astrbot.dashboard.services.agent_team_ports import TeamPorts
 from astrbot.dashboard.api.auth import require_dashboard_user
 from astrbot.dashboard.api.workflow_assets import router
-from tests.agent_teams.test_workflow_assets import completed_run, workflow_env
+from astrbot.dashboard.services.agent_team_ports import TeamPorts
+from tests.agent_teams.test_workflow_assets import completed_run
+from tests.agent_teams.test_workflow_assets import workflow_env as workflow_env
 
 
 @pytest_asyncio.fixture
@@ -80,7 +81,9 @@ async def test_contract_errors_can_be_corrected_before_a_result_is_consumable(
         {
             "definition": {
                 **env.asset["definition"],
-                "output_contract": contract,
+                "tasks": [
+                    {**env.asset["definition"]["tasks"][0], "output_contract": contract}
+                ],
             }
         },
     )
@@ -119,7 +122,9 @@ async def test_contract_errors_can_be_corrected_before_a_result_is_consumable(
         await asyncio.wait_for(reached.wait(), 2)
         assert "result.approved" in errors[0] and "result.evidence" in errors[0]
         rejected = await service.get_run("alice", run["run_id"])
-        assert rejected["validation_errors"][0]["path"].startswith("result.")
+        assert next(task for task in rejected["tasks"] if task["node_id"] == "writer")[
+            "validation_errors"
+        ][0]["path"].startswith("result.")
         with pytest.raises(RoleAssetError, match="no completed result"):
             await service.get_result("alice", run["run_id"])
         release.set()
@@ -171,7 +176,9 @@ async def test_ready_file_reference_remains_readable_after_reopening(
         {
             "definition": {
                 **env.asset["definition"],
-                "output_contract": contract,
+                "tasks": [
+                    {**env.asset["definition"]["tasks"][0], "output_contract": contract}
+                ],
             }
         },
     )
@@ -229,7 +236,7 @@ async def test_ready_file_reference_remains_readable_after_reopening(
             assert download.content == expected
             assert download.headers["content-disposition"].startswith("attachment;")
             stored = await client.post(
-                f"/api/v1/workflow_runs/{run['run_id']}/files?filename=revision.txt",
+                f"/api/v1/workflow_runs/{ref['artifact_id']}/files?filename=revision.txt",
                 content=b"Revised ready file.",
             )
             assert stored.status_code == 200
@@ -256,16 +263,48 @@ async def test_ready_file_reference_remains_readable_after_reopening(
             tools = AgentTeamToolRegistry.get_tools(
                 f"webchat:FriendMessage:{session_id}"
             )
-            read = json.loads(await tools[1].call(None, **ref, file_id=file_id))
+            by_name = {tool.name: tool for tool in tools}
+            read = json.loads(
+                await by_name["read_task_artifact"].call(None, **ref, file_id=file_id)
+            )
             assert read["encoding"] == "utf-8"
             assert read["content"] == expected.decode()
-            await tools[0].call(None, text="Consumed full file evidence.")
+            await by_name["submit_task_result"].call(
+                None, text="Consumed full file evidence."
+            )
             return "Done", []
 
         consumer = scripted_workflow(read_file)
+        consumer_asset = await consumer.save_asset(
+            "alice",
+            {
+                "definition": {
+                    "kind": "autonomous",
+                    "name": "File reader",
+                    "coordinator": {
+                        "id": "coordinator",
+                        "role_id": env.role["role_id"],
+                        "role_version": 1,
+                    },
+                    "allowed_roles": [
+                        {
+                            "id": "reader",
+                            "role_id": env.role["role_id"],
+                            "role_version": 1,
+                        }
+                    ],
+                }
+            },
+        )
         try:
             task = await consumer.start_run(
-                "alice", env.asset["asset_id"], {"version": 1, "input_artifacts": [ref]}
+                "alice",
+                consumer_asset["asset_id"],
+                {
+                    "version": 1,
+                    "inputs": {"goal": "Read evidence"},
+                    "input_artifacts": [ref],
+                },
             )
             assert (await completed_run(consumer, task["run_id"]))[
                 "status"
@@ -298,20 +337,43 @@ async def test_revision_preserves_pinned_consumers_and_full_content(
         await release.wait()
         import json
 
-        consumed.append(json.loads(await tools[1].call(None, **ref)))
-        assert "Error" in await tools[1].call(
+        by_name = {tool.name: tool for tool in tools}
+        consumed.append(
+            json.loads(await by_name["read_task_artifact"].call(None, **ref))
+        )
+        assert "Error" in await by_name["read_task_artifact"].call(
             None, artifact_id=ref["artifact_id"], version=2
         )
-        await tools[0].call(None, text="Read the final complete evidence.")
+        await by_name["submit_task_result"].call(
+            None, text="Read the final complete evidence."
+        )
         return "Done", []
 
     service = scripted_workflow(collect)
+    consumer_asset = await service.save_asset(
+        "alice",
+        {
+            "definition": {
+                "kind": "autonomous",
+                "name": "Evidence reader",
+                "coordinator": {
+                    "id": "coordinator",
+                    "role_id": env.role["role_id"],
+                    "role_version": 1,
+                },
+                "allowed_roles": [
+                    {"id": "reader", "role_id": env.role["role_id"], "role_version": 1}
+                ],
+            }
+        },
+    )
     try:
         consumer = await service.start_run(
             "alice",
-            env.asset["asset_id"],
+            consumer_asset["asset_id"],
             {
                 "version": 1,
+                "inputs": {"goal": "Read evidence"},
                 "input_artifacts": [ref],
             },
         )
@@ -339,7 +401,9 @@ async def test_revision_preserves_pinned_consumers_and_full_content(
         finished = await completed_run(service, consumer["run_id"])
         assert finished["snapshot"]["input_artifacts"] == [ref]
         assert consumed[0]["content"]["text"] == original
-        assert finished["read_artifacts"] == [ref]
+        assert next(
+            task for task in finished["tasks"] if task["node_id"] == "coordinator"
+        )["read_artifacts"] == [ref]
         assert len(env.observations) == 2
         assert (await env.service.read_artifact("alice", **revision))["content"] == {
             "text": "Revised evidence."
@@ -383,7 +447,14 @@ async def test_schema_keywords_in_result_data_are_preserved(
         }
     asset = await env.service.save_asset(
         "alice",
-        {"definition": {**env.asset["definition"], "output_contract": contract}},
+        {
+            "definition": {
+                **env.asset["definition"],
+                "tasks": [
+                    {**env.asset["definition"]["tasks"][0], "output_contract": contract}
+                ],
+            }
+        },
     )
 
     async def collect(session_id, message_id, member_id):
@@ -414,7 +485,14 @@ async def test_recursive_local_contract_can_be_saved_and_consumed(
     }
     asset = await env.service.save_asset(
         "alice",
-        {"definition": {**env.asset["definition"], "output_contract": contract}},
+        {
+            "definition": {
+                **env.asset["definition"],
+                "tasks": [
+                    {**env.asset["definition"]["tasks"][0], "output_contract": contract}
+                ],
+            }
+        },
     )
     result = {"next": {"next": None}}
 
@@ -470,9 +548,19 @@ async def test_invalid_contracts_are_rejected_before_an_asset_can_start(
     with pytest.raises(RoleAssetError) as rejected:
         await env.service.save_asset(
             "alice",
-            {"definition": {**env.asset["definition"], "output_contract": schema}},
+            {
+                "definition": {
+                    **env.asset["definition"],
+                    "tasks": [
+                        {
+                            **env.asset["definition"]["tasks"][0],
+                            "output_contract": schema,
+                        }
+                    ],
+                }
+            },
         )
-    assert rejected.value.fields[0]["path"] == "definition.output_contract"
+    assert rejected.value.fields[0]["path"] == "definition.tasks.0.output_contract"
     assert len((await env.service.list_assets("alice"))["assets"]) == 1
 
 
@@ -494,12 +582,17 @@ async def test_duplicate_submissions_and_revisions_commit_one_version_and_comple
     try:
         run = await service.start_run("alice", env.asset["asset_id"], {"version": 1})
         await asyncio.wait_for(reached.wait(), 2)
+        leaf = next(
+            task
+            for task in (await service.get_run("alice", run["run_id"]))["tasks"]
+            if task["node_id"] == "writer"
+        )
         await asyncio.gather(
             *(
                 service.submit_result(
                     "alice",
-                    run["run_id"],
-                    run["state"]["attempt_id"],
+                    leaf["run_id"],
+                    leaf["state"]["attempt_id"],
                     {"text": "Verified result"},
                 )
                 for _ in range(5)
@@ -510,9 +603,10 @@ async def test_duplicate_submissions_and_revisions_commit_one_version_and_comple
         release.set()
         completed = await completed_run(service, run["run_id"])
         repeats = await asyncio.gather(
-            *(service.finish_submission("alice", run["run_id"]) for _ in range(5))
+            *(service.finish_submission("alice", leaf["run_id"]) for _ in range(5))
         )
-        assert all(row == completed for row in repeats)
+        assert all(row == repeats[0] for row in repeats)
+        assert repeats[0]["result_ref"] == completed["result_ref"]
         assert len(completed["artifacts"]) == 1
         assert [event["kind"] for event in completed["events"]].count(
             "task.completed"
@@ -524,15 +618,15 @@ async def test_duplicate_submissions_and_revisions_commit_one_version_and_comple
         }
         revisions = await asyncio.gather(
             *(
-                service.revise_artifact("alice", run["run_id"], request)
+                service.revise_artifact("alice", leaf["run_id"], request)
                 for _ in range(5)
             )
         )
-        assert revisions == [{"artifact_id": run["run_id"], "version": 2}] * 5
-        assert len((await service.get_run("alice", run["run_id"]))["artifacts"]) == 2
+        assert revisions == [{"artifact_id": leaf["run_id"], "version": 2}] * 5
+        assert len((await service.get_run("alice", leaf["run_id"]))["artifacts"]) == 2
         with pytest.raises(RoleAssetError):
             await service.submit_result(
-                "alice", run["run_id"], "stale-attempt", {"text": "Wrong"}
+                "alice", leaf["run_id"], "stale-attempt", {"text": "Wrong"}
             )
         assert await service.get_result("alice", run["run_id"]) == {
             "text": "Verified result"

@@ -388,10 +388,14 @@ async def test_explicit_auxiliary_failure_never_executes_the_original_plan(stage
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("repair", [False, True])
 async def test_parameter_admission_persists_the_exact_final_view_and_invocation(
-    streaming,
+    streaming, repair,
 ):
-    checkpoints, admissions = [], []
+    checkpoints, admissions, observations = [], [], []
+
+    async def record_process(record_id, kind, data):
+        observations.append((record_id, kind, copy.deepcopy(data)))
 
     async def save_checkpoint(value):
         checkpoints.append(copy.deepcopy(value))
@@ -416,21 +420,40 @@ async def test_parameter_admission_persists_the_exact_final_view_and_invocation(
         config_id=None,
         begin_usage=begin_usage,
         save_checkpoint=save_checkpoint,
+        record_process=record_process,
     )
     token = current_team_execution.set(binding)
     try:
         provider = BudgetProvider(
-            [selected_tool(), selected_tool()], max_context_tokens=20000
+            [selected_tool()] + ([LLMResponse(role="assistant")] if repair else []) + [selected_tool()], max_context_tokens=20000
         )
         runner, executor = await parameter_runner(provider, streaming=streaming)
+        runner._tool_schema_param_set.tools[0].parameters["properties"]["data"] = {
+            "type": "string", "description": "Business data"
+        }
         runner.req.session_id = f"parameter-checkpoint-{streaming}"
         async for _ in runner.step():
             pass
     finally:
         current_team_execution.reset(token)
 
-    assert len(provider.requests) == 2 and len(executor.calls) == 1
+    assert len(provider.requests) == 2 + int(repair) and len(executor.calls) == 1
     sent = provider.requests[1]
+    contexts = [data for _, kind, data in observations if kind == "model_context"]
+    assert [item["stage"] for item in contexts] == ["main", "parameters"] + (["repair"] if repair else [])
+    if repair:
+        assert contexts[2]["receipt_id"] == admissions[2]["receipt_id"]
+        repair_messages = contexts[2]["observation"]["value"]["messages"]
+        assert [item["content"] for item in repair_messages] == [message.model_dump(mode="json")["content"] for message in provider.requests[2]["contexts"]]
+    parameter_context = contexts[1]
+    assert parameter_context["receipt_id"] == admissions[1]["receipt_id"]
+    assert parameter_context["invocation_id"] == admissions[1]["invocation_id"]
+    recorded_tools = parameter_context["observation"]["value"]["tools"]
+    assert recorded_tools == sent["func_tool"].openai_schema()
+    assert recorded_tools[0]["function"]["parameters"]["properties"]["data"]["description"] == "Business data"
+    recorded = parameter_context["observation"]["value"]["messages"]
+    assert [item["content"] for item in recorded] == [message.model_dump(mode="json")["content"] for message in sent["contexts"]]
+    assert "late instruction" in str(recorded) and "late extra" in str(recorded)
     requests = [
         item
         for item in checkpoints
@@ -450,8 +473,8 @@ async def test_parameter_admission_persists_the_exact_final_view_and_invocation(
         bind_checkpoint_messages(requests[1]["input_contexts"])
     ) == fingerprint_messages(sent["contexts"])
     record = get_session_request(runner.req.session_id)
-    assert record["msg_hashes"] == fingerprint_messages(sent["contexts"])
-    assert record["tools"] == fingerprint_tools(sent["func_tool"])
+    assert record["msg_hashes"] == fingerprint_messages(provider.requests[-1]["contexts"])
+    assert record["tools"] == fingerprint_tools(provider.requests[-1]["func_tool"])
     assert (
         sum(str(message.content).count("late extra") for message in sent["contexts"])
         == 1
@@ -626,3 +649,38 @@ async def test_selection_retry_and_parameter_repair_execute_the_tool_once(stream
         "old history" in str(request["contexts"]) for request in provider.requests
     )
     assert not any(event.type == "context_compression" for event in events)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failed_delivery", [1, 2, 3])
+async def test_context_persistence_failure_stops_the_provider_call(failed_delivery):
+    from astrbot.core.agent_team_execution import ProcessPersistenceError
+
+    async def begin_usage(request):
+        return {"receipt_id": request["receipt_id"], "max_output_tokens": 20}
+
+    contexts_seen = 0
+
+    async def record_process(record_id, kind, data):
+        nonlocal contexts_seen
+        if kind == "model_context":
+            contexts_seen += 1
+            if contexts_seen == failed_delivery:
+                raise ProcessPersistenceError("context persistence failed")
+
+    binding = NodeExecutionBinding(
+        run_id="run", team_id="team", member_id="member", node_id=None,
+        umo="test:parameters", owner_username="owner", config_id=None,
+        begin_usage=begin_usage, record_process=record_process,
+    )
+    provider = BudgetProvider([selected_tool(), LLMResponse(role="assistant"), selected_tool()], max_context_tokens=20000)
+    token = current_team_execution.set(binding)
+    try:
+        runner, executor = await parameter_runner(provider)
+        with pytest.raises(ProcessPersistenceError, match="context persistence failed"):
+            async for _ in runner.step():
+                pass
+    finally:
+        current_team_execution.reset(token)
+    assert len(provider.requests) == failed_delivery - 1
+    assert executor.calls == []

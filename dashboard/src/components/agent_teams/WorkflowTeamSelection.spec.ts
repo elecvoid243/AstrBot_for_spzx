@@ -19,8 +19,8 @@ const teams = ["oldGoal", "newGoal", "goal"].map((key, index) => ({
     kind: "autonomous",
     name: `Research ${index + 1}`,
     required_inputs: ["goal", ...(key === "goal" ? [] : [key])],
-    coordinator: { role_id: "coordinator", role_version: 1 },
-    allowed_roles: [{ role_id: "writer", role_version: 1 }],
+    coordinator: { id: "coordinator", role_id: "coordinator", role_version: 1 },
+    allowed_roles: [{ id: "writer", role_id: "writer", role_version: 1 }],
     output_contract: {
       type: "object",
       properties: { [key]: { type: "string" } },
@@ -31,6 +31,7 @@ const teams = ["oldGoal", "newGoal", "goal"].map((key, index) => ({
 const definition = {
   name: "Parent",
   required_inputs: ["goal", "newGoal", "oldGoal"],
+  result_task_id: "second",
   tasks: ["first", "second"].map((id) => ({
     id,
     name: id,
@@ -52,6 +53,7 @@ const canvasGlobal = {
     "v-spacer": true,
     "v-alert": { template: '<div role="alert"><slot /></div>' },
     "v-switch": true,
+    "v-expansion-panels": { template: "<div><slot /></div>" },
   },
 };
 
@@ -98,8 +100,10 @@ describe("pinned child team selection", () => {
         expect(wrapper.text()).not.toContain("child.unavailable");
         expect(wrapper.emitted("validation")?.at(-1)).toEqual([false]);
         expect(
-          wrapper.getComponent(TeamsFlowCanvas).props("nodes")[0].data
-            .configLabel,
+          wrapper
+            .getComponent(TeamsFlowCanvas)
+            .props("nodes")
+            .find((node: any) => node.id === "first")?.data.configLabel,
         ).toBe("v3");
         expect(wrapper.emitted("update:definition")).toBeUndefined();
       } finally {
@@ -157,8 +161,10 @@ describe("pinned child team selection", () => {
           editCount,
         );
         expect(
-          wrapper.getComponent(TeamsFlowCanvas).props("nodes")[0].data
-            .configLabel,
+          wrapper
+            .getComponent(TeamsFlowCanvas)
+            .props("nodes")
+            .find((node: any) => node.id === "first")?.data.configLabel,
         ).toBe(`v${expected}`);
         const saved: any =
           wrapper.emitted("update:definition")?.at(-1)?.[0] ?? definition;
@@ -298,8 +304,10 @@ describe("pinned child team selection", () => {
         expect(wrapper.emitted("validation")?.at(-1)).toEqual([false]);
         expect(wrapper.text()).not.toContain("child.unavailable");
         expect(
-          wrapper.getComponent(TeamsFlowCanvas).props("nodes")[0].data
-            .configLabel,
+          wrapper
+            .getComponent(TeamsFlowCanvas)
+            .props("nodes")
+            .find((node: any) => node.id === "first")?.data.configLabel,
         ).toBe("v3");
       } finally {
         wrapper.unmount();

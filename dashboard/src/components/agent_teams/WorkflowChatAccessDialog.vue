@@ -25,36 +25,46 @@
           >{{ error }}</v-alert
         >
         <p class="text-body-2 mb-3">{{ tm("chatAccess.identityHelp") }}</p>
-        <v-text-field
-          v-model="platformId"
-          :label="tm('chatAccess.platform')"
+        <v-textarea
+          v-model="identityText"
+          :label="tm('chatAccess.identity')"
           :disabled="busy"
+          data-testid="identity-text"
         />
-        <v-text-field
-          v-model="senderId"
-          :label="tm('chatAccess.sender')"
-          :disabled="busy"
-        />
-        <v-text-field
-          v-model="source"
-          :label="tm('chatAccess.source')"
-          :disabled="busy"
-        />
-        <v-text-field
-          v-model="profileId"
-          :label="tm('chatAccess.profile')"
-          :disabled="busy"
-        />
+        <v-alert
+          v-if="identityText && !identity"
+          type="error"
+          variant="tonal"
+          role="alert"
+          >{{ tm("chatAccess.invalidIdentity") }}</v-alert
+        >
+        <template v-if="identity">
+          <v-text-field
+            :model-value="identity.platform_id"
+            :label="tm('chatAccess.platform')"
+            readonly
+          />
+          <v-text-field
+            :model-value="identity.sender_id"
+            :label="tm('chatAccess.sender')"
+            readonly
+          />
+          <v-text-field
+            :model-value="identity.source"
+            :label="tm('chatAccess.source')"
+            readonly
+          />
+          <v-text-field
+            :model-value="identity.profile_id"
+            :label="tm('chatAccess.profile')"
+            readonly
+          />
+        </template>
         <v-btn
           variant="tonal"
           color="primary"
           :loading="busy"
-          :disabled="
-            !platformId.trim() ||
-            !senderId.trim() ||
-            !source.trim() ||
-            !profileId.trim()
-          "
+          :disabled="!identity"
           data-testid="save-chat-access"
           @click="save"
           >{{ tm("chatAccess.save") }}</v-btn
@@ -107,7 +117,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch } from "vue";
+import { computed, ref, watch } from "vue";
 import { workflowAssetsApi } from "@/api/workflowAssets";
 import type { ChatAccessRequest } from "@/api/generated/openapi-v1";
 import { useModuleI18n } from "@/i18n/composables";
@@ -121,10 +131,44 @@ const emit = defineEmits<{
   (event: "update:modelValue", value: boolean): void;
 }>();
 const { tm } = useModuleI18n("features/agent-teams");
-const platformId = ref("");
-const senderId = ref("");
-const source = ref("");
-const profileId = ref("");
+const identityText = ref("");
+const identity = computed(() => {
+  try {
+    const value = JSON.parse(identityText.value);
+    const limits = {
+      platform_id: 128,
+      sender_id: 256,
+      source: 512,
+      profile_id: 128,
+    };
+    if (
+      !value ||
+      typeof value !== "object" ||
+      Array.isArray(value) ||
+      Object.keys(value).length !== 4 ||
+      !Object.entries(limits).every(
+        ([key, max]) =>
+          typeof value[key] === "string" &&
+          value[key].trim() === value[key] &&
+          value[key].length > 0 &&
+          value[key].length <= max,
+      )
+    )
+      return null;
+    const match =
+      /^([^:]+):(FriendMessage|GroupMessage|OtherMessage):(.+)$/.exec(
+        value.source,
+      );
+    if (!match || match[1] !== value.platform_id || !match[3].trim())
+      return null;
+    return value as Pick<
+      ChatAccessRequest,
+      "platform_id" | "sender_id" | "source" | "profile_id"
+    >;
+  } catch {
+    return null;
+  }
+});
 const grants = ref<ChatAccessRequest[]>([]);
 const busy = ref(false);
 const error = ref("");
@@ -152,14 +196,12 @@ watch(
 );
 
 async function save() {
+  if (!identity.value) return;
   busy.value = true;
   error.value = "";
   try {
     await workflowAssetsApi.saveChatAccess(props.asset.asset_id, {
-      platform_id: platformId.value.trim(),
-      sender_id: senderId.value.trim(),
-      source: source.value.trim(),
-      profile_id: profileId.value.trim(),
+      ...identity.value,
       version: props.asset.version,
     });
     grants.value = (

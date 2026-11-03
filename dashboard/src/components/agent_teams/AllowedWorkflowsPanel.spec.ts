@@ -18,6 +18,7 @@ const versions = [1, 2, 3].map((version) => ({
   definition: {
     name: `Research v${version}`,
     required_inputs: [`topic${version}`],
+    result_task_id: `result${version}`,
     tasks: [
       {
         id: `result${version}`,
@@ -28,11 +29,7 @@ const versions = [1, 2, 3].map((version) => ({
   },
 }));
 
-function openPanel(
-  initialRefs = [
-    { asset_id: "research", version: 3, result_task_id: "result3" },
-  ],
-) {
+function openPanel(initialRefs = [{ asset_id: "research", version: 3 }]) {
   vi.mocked(workflowAssetsApi.list).mockResolvedValue({
     assets: [
       versions[2],
@@ -63,6 +60,16 @@ function openPanel(
 }
 
 describe("allowed fixed workflow versions", () => {
+  it("explains a deleted pinned workflow without offering it as a new choice", async () => {
+    vi.mocked(workflowAssetsApi.get).mockReset().mockResolvedValue({ ...versions[0], asset_id: "removed", deleted: true });
+    const wrapper = openPanel([{ asset_id: "removed", version: 1 }]);
+    await flushPromises();
+    const panel = wrapper.getComponent(AllowedWorkflowsPanel);
+    expect(panel.text()).toContain("Research v1");
+    expect(panel.text()).toContain("deletion.referenced");
+    expect(panel.getComponent<any>('[data-testid="allowed-workflow-add"]').props("items")).toEqual([versions[2]]);
+    wrapper.unmount();
+  });
   it("preserves concurrent selections in independent workflow rows", async () => {
     let finishFirst!: (value: any) => void;
     const delayed = new Promise((resolve) => {
@@ -79,8 +86,8 @@ describe("allowed fixed workflow versions", () => {
             ),
       );
     const wrapper = openPanel([
-      { asset_id: "research", version: 3, result_task_id: "result3" },
-      { asset_id: "other", version: 3, result_task_id: "result3" },
+      { asset_id: "research", version: 3 },
+      { asset_id: "other", version: 3 },
     ]);
     try {
       await flushPromises();
@@ -97,8 +104,8 @@ describe("allowed fixed workflow versions", () => {
       finishFirst(versions[0]);
       await flushPromises();
       expect(panel.props("modelValue")).toEqual([
-        { asset_id: "research", version: 1, result_task_id: "result1" },
-        { asset_id: "other", version: 2, result_task_id: "result2" },
+        { asset_id: "research", version: 1 },
+        { asset_id: "other", version: 2 },
       ]);
       expect(panel.emitted("validation")?.at(-1)).toEqual([false]);
     } finally {
@@ -123,7 +130,7 @@ describe("allowed fixed workflow versions", () => {
       .vm.$emit("update:modelValue", 2);
     await flushPromises();
     expect(panel.props("modelValue")).toEqual([
-      { asset_id: "research", version: 2, result_task_id: "result2" },
+      { asset_id: "research", version: 2 },
     ]);
     expect(panel.text()).toContain("topic2");
     expect(panel.text()).toContain("proof2");
@@ -160,7 +167,7 @@ describe("allowed fixed workflow versions", () => {
       else rejectOld(new Error("Late inaccessible v1"));
       await flushPromises();
       expect(panel.props("modelValue")).toEqual([
-        { asset_id: "research", version: 2, result_task_id: "result2" },
+        { asset_id: "research", version: 2 },
       ]);
       expect(panel.text()).toContain("topic2");
       expect(panel.text()).not.toContain("Late inaccessible");
@@ -195,8 +202,8 @@ describe("allowed fixed workflow versions", () => {
       if (change === "close") (wrapper.vm as any).active = false;
       if (change === "replace")
         (wrapper.vm as any).refs = [
-          { asset_id: "research", version: 3, result_task_id: "result3" },
-          { asset_id: "other", version: 1, result_task_id: "result" },
+          { asset_id: "research", version: 3 },
+          { asset_id: "other", version: 1 },
         ];
       if (change === "unmount") wrapper.unmount();
       await flushPromises();

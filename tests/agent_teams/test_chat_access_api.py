@@ -39,9 +39,17 @@ def test_http_owner_opens_and_revokes_fixed_version_without_granting_dashboard_i
             json={
                 "definition": {
                     "name": "Report",
-                    "role_id": role["role_id"],
-                    "role_version": 1,
-                    "task": "Write",
+                    "result_task_id": "writer",
+                    "tasks": [
+                        {
+                            "id": "writer",
+                            "name": "Writer",
+                            "member": "writer",
+                            "role_id": role["role_id"],
+                            "role_version": 1,
+                            "task": "Write",
+                        }
+                    ],
                 }
             },
         ).json()["data"]
@@ -54,6 +62,13 @@ def test_http_owner_opens_and_revokes_fixed_version_without_granting_dashboard_i
             "profile_id": "default",
         }
         assert client.put(url, json=grant).status_code == 200
+        assert client.get(url).json()["data"] == {"grants": [grant]}
+        assert (
+            client.put(
+                url, json={k: v for k, v in grant.items() if k != "source"}
+            ).status_code
+            == 422
+        )
         assert client.get(url).json()["data"] == {"grants": [grant]}
         assert (
             client.put(url, json={**grant, "owner_username": "other"}).status_code

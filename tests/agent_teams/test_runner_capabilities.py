@@ -2,8 +2,7 @@
 
 import pytest
 
-from astrbot.core.agent_teams.assets import RoleAssetService
-from astrbot.core.agent_teams.assets import RoleAssetError
+from astrbot.core.agent_teams.assets import RoleAssetError, RoleAssetService
 from astrbot.core.agent_teams.workflows import WorkflowService
 from astrbot.core.db.sqlite import SQLiteDatabase
 
@@ -88,18 +87,29 @@ async def test_readiness_and_launch_use_the_same_required_runner_capability(
         "task": "Check evidence.",
     }
     definition = (
-        task
+        {
+            "name": "Research",
+            "result_task_id": "research",
+            "tasks": [{"id": "research", "member": "research", **task}],
+        }
         if kind == "single"
         else {
             "name": "Research",
+            "result_task_id": "research",
             "tasks": [{"id": "research", "member": "research", **task}],
         }
         if kind == "graph"
         else {
             "kind": "autonomous",
             "name": "Research team",
-            "coordinator": {"role_id": role["role_id"], "role_version": 1},
-            "allowed_roles": [{"role_id": role["role_id"], "role_version": 1}],
+            "coordinator": {
+                "id": "research",
+                "role_id": role["role_id"],
+                "role_version": 1,
+            },
+            "allowed_roles": [
+                {"id": "worker", "role_id": role["role_id"], "role_version": 1}
+            ],
         }
     )
     service = WorkflowService(
@@ -111,7 +121,17 @@ async def test_readiness_and_launch_use_the_same_required_runner_capability(
     preview = await roles.resolve_role("alice", role["role_id"], 1)
     readiness = await service.check_readiness("alice", asset["asset_id"], 1)
     assert readiness["ready"] is False
-    assert readiness["issues"] == preview["issues"]
+    expected = [
+        {
+            **issue,
+            "path": issue["path"].replace(
+                "definition.",
+                "definition.tasks.0.role." if kind != "autonomous" else "definition.",
+            ),
+        }
+        for issue in preview["issues"]
+    ]
+    assert readiness["issues"] == expected
     with pytest.raises(RoleAssetError) as rejected:
         await service.start_run(
             "alice",
@@ -121,7 +141,7 @@ async def test_readiness_and_launch_use_the_same_required_runner_capability(
                 "inputs": {"goal": "Check evidence."} if kind == "autonomous" else {},
             },
         )
-    assert rejected.value.fields == preview["issues"]
+    assert rejected.value.fields == expected
     assert (await service.list_runs("alice"))["runs"] == []
     assert await db.get_platform_sessions_by_creator("alice") == []
     await service.shutdown()

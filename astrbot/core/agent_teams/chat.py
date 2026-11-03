@@ -11,11 +11,12 @@ from typing import TYPE_CHECKING
 from urllib.parse import quote
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
-from sqlmodel import select
+from sqlmodel import select, text
 
 from astrbot.core import logger
 from astrbot.core.agent_teams.assets import RoleAssetError
 from astrbot.core.db.po import (
+    AgentAssetTombstone,
     AgentWorkflowChatAccess,
     AgentWorkflowChatDelivery,
     AgentWorkflowRun,
@@ -205,7 +206,9 @@ class WorkflowChat:
             if row is None:
                 raise RoleAssetError("Run not found", status=404)
             owner = row.owner_username
-        await self.service.answer_todo(owner, run_id, todo_id, payload)
+        await self.service.answer_todo(
+            owner, run_id, todo_id, payload, caller=caller.model_dump()
+        )
         return await self.get_run(caller, run_id, include_todos=True)
 
     async def read_browser_artifact(
@@ -303,6 +306,9 @@ class WorkflowChat:
             asset_id=asset_id, owner_username=username, **request.model_dump()
         )
         async with self.service.db.get_db() as session:
+            await session.execute(text("BEGIN IMMEDIATE"))
+            if await session.get(AgentAssetTombstone, ("workflow", asset_id)):
+                raise RoleAssetError("Asset has been deleted", status=409)
             await session.merge(grant)
             await session.commit()
         return request.model_dump()
@@ -347,6 +353,8 @@ class WorkflowChat:
             asset = await self.service.get_asset(
                 grant.owner_username, grant.asset_id, grant.version
             )
+            if asset["deleted"]:
+                continue
             assets.append(
                 {
                     "asset_id": grant.asset_id,
@@ -610,16 +618,34 @@ class WorkflowChat:
             projection["todos"] = [
                 {
                     **{
-                        key: todo[key]
+                        key: todo.get(key)
                         for key in (
                             "todo_id",
                             "kind",
+                            "source_kind",
+                            "choice_spec",
+                            "recommendation",
+                            "deadline",
+                            "timeout_reason",
                             "question",
                             "constraints",
                             "artifact_ref",
                             "status",
                         )
                     },
+                    "human_wait": (
+                        {
+                            key: todo["human_wait"].get(key)
+                            for key in ("timeout_seconds", "timeout_action")
+                        }
+                        if todo.get("human_wait") is not None
+                        else None
+                    ),
+                    "decision_source": (
+                        {"type": todo["decision_source"].get("type")}
+                        if todo.get("decision_source") is not None
+                        else None
+                    ),
                     "response": None,
                 }
                 for todo in run.get("todos", [])
@@ -701,16 +727,101 @@ class WorkflowChat:
                         ("accepted", f"Accepted run {row.run_id}. Details: {link}")
                     ]
                     pending = [
-                        t["todo_id"]
-                        for t in run.get("todos", [])
-                        if t["status"] == "pending"
+                        t for t in run.get("todos", []) if t["status"] == "pending"
                     ]
-                    if pending:
-                        notices.append(
-                            (
-                                "waiting:" + ":".join(sorted(pending)),
-                                f"Run {row.run_id} needs human input. Answer the existing pending request in WebUI: {link}",
+                    for todo in pending:
+                        dynamic = todo.get("source_kind") == "tool_call"
+                        spec = todo.get("choice_spec") or {}
+                        lines = [
+                            f"Human request {todo['todo_id']}",
+                            f"Run: {row.run_id}",
+                        ]
+                        if spec.get("title"):
+                            lines.append(str(spec["title"]))
+                        lines.append(f"Question: {todo['question']}")
+                        if spec.get("extra_content"):
+                            lines.append(str(spec["extra_content"]))
+                        if dynamic:
+                            options = spec.get("options", [])
+                            for option in options:
+                                line = f"- {option['id']}: {option['label']}"
+                                if option.get("description"):
+                                    line += f" — {option['description']}"
+                                lines.append(line)
+                            example = {"action": "answer", "choice_id": "OPTION_ID"}
+                        elif todo["kind"] == "approval":
+                            options = []
+                            ref = todo["artifact_ref"]
+                            lines.append(
+                                f"Artifact: {ref['artifact_id']} · v{ref['version']}"
                             )
+                            example = {"action": "approve", "artifact_ref": ref}
+                        else:
+                            options = []
+                            for choice in todo.get("constraints", {}).get(
+                                "choices", []
+                            ):
+                                lines.append(f"- {choice}")
+                            example = {"action": "answer", "answer": "YOUR_ANSWER"}
+                        recommendation = todo.get("recommendation")
+                        if recommendation:
+                            value = recommendation["value"]
+                            label = next(
+                                (
+                                    item["label"]
+                                    for item in options
+                                    if item["id"] == value
+                                ),
+                                value,
+                            )
+                            lines.append(f"Recommended: {label}")
+                            lines.append(f"Reason: {recommendation['reason']}")
+                        lines.append(f"Review and evidence: {link}")
+                        command = f"/asset answer {row.run_id} {todo['todo_id']} "
+                        lines.append(
+                            "Answer: "
+                            + command
+                            + json.dumps(example, ensure_ascii=False)
+                        )
+                        if dynamic:
+                            lines.append(
+                                "Free text: "
+                                + command
+                                + json.dumps(
+                                    {
+                                        "action": "answer",
+                                        "choice_id": "__free_text__",
+                                        "free_text": "YOUR_TEXT",
+                                    },
+                                    ensure_ascii=False,
+                                )
+                            )
+                        if todo["kind"] == "approval":
+                            lines.append(
+                                "Reject with feedback: "
+                                + command
+                                + json.dumps(
+                                    {
+                                        "action": "reject",
+                                        "artifact_ref": todo["artifact_ref"],
+                                        "feedback": "YOUR_FEEDBACK",
+                                    },
+                                    ensure_ascii=False,
+                                )
+                            )
+                        text = "\n".join(lines)
+                        parts = []
+                        while text:
+                            end = min(len(text), 1500)
+                            if end < len(text):
+                                line_end = text.rfind("\n", 0, end)
+                                if line_end > 0:
+                                    end = line_end + 1
+                            parts.append(text[:end])
+                            text = text[end:]
+                        notices.extend(
+                            (f"todo:{todo['todo_id']}:{index}", part)
+                            for index, part in enumerate(parts)
                         )
                     terminal = projected["status"] in {
                         "completed",

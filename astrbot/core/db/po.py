@@ -244,6 +244,39 @@ class CronJob(TimestampMixin, SQLModel, table=True):
     last_error: str | None = Field(default=None, sa_type=Text)
 
 
+class AgentAssetTombstone(TimestampMixin, SQLModel, table=True):
+    """Persistent deletion of an entire role or workflow identity."""
+
+    __tablename__: str = "agent_asset_tombstones"
+    kind: str = Field(primary_key=True)
+    asset_id: str = Field(primary_key=True)
+    owner_username: str = Field(index=True)
+
+
+class AgentAssetDraft(TimestampMixin, SQLModel, table=True):
+    """Mutable owner-scoped editing snapshot for a versioned asset."""
+
+    __tablename__: str = "agent_asset_drafts"
+    kind: str = Field(primary_key=True)
+    asset_id: str = Field(primary_key=True)
+    owner_username: str = Field(index=True)
+    body: dict = Field(sa_type=JSON)
+    base_version: int | None = Field(default=None)
+    revision: int = Field(default=1)
+    published_revision: int | None = Field(default=None)
+    published_version: int | None = Field(default=None)
+
+
+class AgentAssetDraftPublication(SQLModel, table=True):
+    """Idempotency record for each published draft revision."""
+
+    __tablename__: str = "agent_asset_draft_publications"
+    kind: str = Field(primary_key=True)
+    asset_id: str = Field(primary_key=True)
+    revision: int = Field(primary_key=True)
+    version: int
+
+
 class AgentRoleVersion(TimestampMixin, SQLModel, table=True):
     """Immutable reusable role definitions, independent of member sessions."""
 
@@ -349,7 +382,7 @@ class AgentWorkflowTodo(TimestampMixin, SQLModel, table=True):
     __tablename__: str = "agent_workflow_todos"  # pyright: ignore[reportIncompatibleVariableOverride]
     todo_id: str = Field(primary_key=True)
     root_run_id: str = Field(index=True)
-    task_run_id: str = Field(index=True, unique=True)
+    task_run_id: str = Field(index=True)
     data: dict = Field(sa_type=JSON)
 
 
@@ -401,7 +434,7 @@ class AgentWorkflowMessage(TimestampMixin, SQLModel, table=True):
 
     __tablename__: str = "agent_workflow_messages"  # pyright: ignore[reportIncompatibleVariableOverride]
     __table_args__ = (
-        UniqueConstraint("root_run_id", "sender_member_id", "request_id"),
+        UniqueConstraint("root_run_id", "scope_id", "sender_member_id", "request_id"),
     )
     message_id: str = Field(primary_key=True)
     root_run_id: str = Field(index=True)

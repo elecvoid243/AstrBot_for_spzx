@@ -9,7 +9,8 @@ from astrbot.core.agent_team_execution import AgentTeamExecutionRegistry
 from astrbot.core.agent_team_tools import AgentTeamToolRegistry
 from astrbot.core.agent_teams.assets import RoleAssetError
 from astrbot.dashboard.services.agent_team_ports import TeamPorts
-from tests.agent_teams.test_workflow_assets import completed_run, workflow_env
+from tests.agent_teams.test_workflow_assets import completed_run
+from tests.agent_teams.test_workflow_assets import workflow_env as workflow_env
 
 
 @pytest.mark.asyncio
@@ -35,8 +36,14 @@ async def test_one_capacity_workflow_calls_pinned_team_with_declared_inputs(
             "definition": {
                 "kind": "autonomous",
                 "name": "Research child",
-                "coordinator": {"role_id": env.role["role_id"], "role_version": 1},
-                "allowed_roles": [{"role_id": env.role["role_id"], "role_version": 1}],
+                "coordinator": {
+                    "id": "coordinator",
+                    "role_id": env.role["role_id"],
+                    "role_version": 1,
+                },
+                "allowed_roles": [
+                    {"id": "worker", "role_id": env.role["role_id"], "role_version": 1}
+                ],
                 "required_inputs": ["goal", "notes"],
                 "max_parallel": 1,
                 "output_contract": contract,
@@ -48,6 +55,7 @@ async def test_one_capacity_workflow_calls_pinned_team_with_declared_inputs(
         {
             "definition": {
                 "name": "Parent",
+                "result_task_id": "write",
                 "required_inputs": ["goal", "notes"],
                 "max_parallel": 1,
                 "tasks": [
@@ -160,8 +168,14 @@ async def test_child_required_input_rejects_empty_upstream_result(workflow_env, 
             "definition": {
                 "kind": "autonomous",
                 "name": "Child",
-                "coordinator": {"role_id": env.role["role_id"], "role_version": 1},
-                "allowed_roles": [{"role_id": env.role["role_id"], "role_version": 1}],
+                "coordinator": {
+                    "id": "coordinator",
+                    "role_id": env.role["role_id"],
+                    "role_version": 1,
+                },
+                "allowed_roles": [
+                    {"id": "worker", "role_id": env.role["role_id"], "role_version": 1}
+                ],
             }
         },
     )
@@ -182,6 +196,7 @@ async def test_child_required_input_rejects_empty_upstream_result(workflow_env, 
         {
             "definition": {
                 "name": "Input boundary",
+                "result_task_id": "independent",
                 "max_parallel": 1,
                 "tasks": [
                     {
@@ -236,7 +251,9 @@ async def test_child_required_input_rejects_empty_upstream_result(workflow_env, 
             if tool.name == "submit_task_result"
         )
         response = (
-            await tool.call(None, result_json=json.dumps({"text": value, "valid": True}))
+            await tool.call(
+                None, result_json=json.dumps({"text": value, "valid": True})
+            )
             if bindings[session_id].node_id == "produce"
             else await tool.call(None, text="Complete")
         )
@@ -274,8 +291,14 @@ async def test_root_cancel_reaches_child_scope_and_keeps_effects(workflow_env):
             "definition": {
                 "kind": "autonomous",
                 "name": "Child",
-                "coordinator": {"role_id": env.role["role_id"], "role_version": 1},
-                "allowed_roles": [{"role_id": env.role["role_id"], "role_version": 1}],
+                "coordinator": {
+                    "id": "coordinator",
+                    "role_id": env.role["role_id"],
+                    "role_version": 1,
+                },
+                "allowed_roles": [
+                    {"id": "worker", "role_id": env.role["role_id"], "role_version": 1}
+                ],
             }
         },
     )
@@ -284,6 +307,7 @@ async def test_root_cancel_reaches_child_scope_and_keeps_effects(workflow_env):
         {
             "definition": {
                 "name": "Root cancel",
+                "result_task_id": "call",
                 "required_inputs": ["goal"],
                 "max_parallel": 1,
                 "tasks": [
@@ -348,8 +372,14 @@ async def test_child_wait_or_failure_leaves_independent_branch_ready(
             "definition": {
                 "kind": "autonomous",
                 "name": "Child",
-                "coordinator": {"role_id": env.role["role_id"], "role_version": 1},
-                "allowed_roles": [{"role_id": env.role["role_id"], "role_version": 1}],
+                "coordinator": {
+                    "id": "coordinator",
+                    "role_id": env.role["role_id"],
+                    "role_version": 1,
+                },
+                "allowed_roles": [
+                    {"id": "worker", "role_id": env.role["role_id"], "role_version": 1}
+                ],
                 **(
                     {}
                     if failure
@@ -369,6 +399,7 @@ async def test_child_wait_or_failure_leaves_independent_branch_ready(
         {
             "definition": {
                 "name": "Independent branch",
+                "result_task_id": "independent",
                 "required_inputs": ["goal"],
                 "max_parallel": 1,
                 "tasks": [
@@ -438,7 +469,6 @@ async def test_child_wait_or_failure_leaves_independent_branch_ready(
     else:
         todo = current["todos"][0]
         assert todo["root_run_id"] == run["run_id"]
-        cursor = current["cursor"]
         paused = await env.service.control_run(
             "alice", run["run_id"], {"action": "pause", "request_id": "pause"}
         )
@@ -447,7 +477,11 @@ async def test_child_wait_or_failure_leaves_independent_branch_ready(
             "alice",
             run["run_id"],
             todo["todo_id"],
-            {"action": "approve", "request_id": "approval"},
+            {
+                "action": "approve",
+                "request_id": "approval",
+                "artifact_ref": todo["artifact_ref"],
+            },
         )
         assert answered["todos"][0]["status"] == "answered"
         assert answered["tasks"][0]["status"] == "waiting_child"
@@ -457,8 +491,10 @@ async def test_child_wait_or_failure_leaves_independent_branch_ready(
         completed = await completed_run(env.service, run["run_id"])
         assert completed["status"] == "completed"
         assert completed["tasks"][0]["result"] == {"text": "Pinned child report"}
-        changed = await env.service.get_events("alice", run["run_id"], cursor)
-        assert any(event["kind"] == "child.returned" for event in changed["events"])
+        assert (
+            completed["tasks"][0]["result_ref"]
+            == completed["scopes"][0]["tasks"][0]["result_ref"]
+        )
 
 
 @pytest.mark.asyncio
@@ -493,8 +529,14 @@ async def test_invalid_child_call_is_rejected_without_partial_execution(
             "definition": {
                 "kind": "autonomous",
                 "name": "Child",
-                "coordinator": {"role_id": env.role["role_id"], "role_version": 1},
-                "allowed_roles": [{"role_id": env.role["role_id"], "role_version": 1}],
+                "coordinator": {
+                    "id": "coordinator",
+                    "role_id": env.role["role_id"],
+                    "role_version": 1,
+                },
+                "allowed_roles": [
+                    {"id": "worker", "role_id": env.role["role_id"], "role_version": 1}
+                ],
             }
         },
     )
@@ -553,8 +595,14 @@ async def test_later_child_creation_uses_original_asset_and_role_snapshot(workfl
             "definition": {
                 "kind": "autonomous",
                 "name": "Original child",
-                "coordinator": {"role_id": env.role["role_id"], "role_version": 1},
-                "allowed_roles": [{"role_id": env.role["role_id"], "role_version": 1}],
+                "coordinator": {
+                    "id": "coordinator",
+                    "role_id": env.role["role_id"],
+                    "role_version": 1,
+                },
+                "allowed_roles": [
+                    {"id": "worker", "role_id": env.role["role_id"], "role_version": 1}
+                ],
             }
         },
     )
@@ -563,6 +611,7 @@ async def test_later_child_creation_uses_original_asset_and_role_snapshot(workfl
         {
             "definition": {
                 "name": "Delayed call",
+                "result_task_id": "call",
                 "required_inputs": ["goal"],
                 "tasks": [
                     {
@@ -590,8 +639,12 @@ async def test_later_child_creation_uses_original_asset_and_role_snapshot(workfl
         "alice",
         {
             "expected_version": 1,
-            "definition": {"name": "New role", "prompt": "Changed instructions"},
-            "installation": {"bindings": {"model": "model-a"}},
+            "definition": {
+                "name": "New role",
+                "prompt": "Changed instructions",
+                "provider_id": "model-a",
+            },
+            "installation": {"profile_id": "default"},
         },
         env.role["role_id"],
     )
@@ -602,7 +655,11 @@ async def test_later_child_creation_uses_original_asset_and_role_snapshot(workfl
             "definition": {
                 **team["definition"],
                 "name": "Edited child",
-                "coordinator": {"role_id": env.role["role_id"], "role_version": 2},
+                "coordinator": {
+                    "id": "coordinator",
+                    "role_id": env.role["role_id"],
+                    "role_version": 2,
+                },
             },
         },
         team["asset_id"],
@@ -648,8 +705,14 @@ async def test_loop_creates_new_child_scope_and_task_without_sharing_context(
             "definition": {
                 "kind": "autonomous",
                 "name": "Review child",
-                "coordinator": {"role_id": env.role["role_id"], "role_version": 1},
-                "allowed_roles": [{"role_id": env.role["role_id"], "role_version": 1}],
+                "coordinator": {
+                    "id": "coordinator",
+                    "role_id": env.role["role_id"],
+                    "role_version": 1,
+                },
+                "allowed_roles": [
+                    {"id": "worker", "role_id": env.role["role_id"], "role_version": 1}
+                ],
                 "output_contract": contract,
             }
         },
@@ -659,6 +722,7 @@ async def test_loop_creates_new_child_scope_and_task_without_sharing_context(
         {
             "definition": {
                 "name": "Child revision",
+                "result_task_id": "call",
                 "required_inputs": ["goal"],
                 "max_parallel": 1,
                 "tasks": [
@@ -746,9 +810,34 @@ async def test_loop_creates_new_child_scope_and_task_without_sharing_context(
         for scope in current["scopes"]
         if scope["snapshot"]["parent_run_id"] == second["run_id"]
     )
-    assert second_scope["tasks"][0]["snapshot"]["input_artifacts"] == [
-        first["result_ref"]
-    ]
+    assert second_scope["tasks"][0]["snapshot"]["input_artifacts"] == []
+    children = [scope["tasks"][0] for scope in current["scopes"]]
+    saved = await asyncio.gather(
+        *[
+            env.service.record_process(
+                "alice",
+                child["run_id"],
+                child["state"]["attempt_id"],
+                "same-observation",
+                "model_delta",
+                {"receipt_id": "same-receipt", "sequence": 0, "text": child["run_id"]},
+            )
+            for child in children
+        ]
+    )
+    updates = await env.service.get_events("alice", run["run_id"], current["cursor"])
+    assert {record["record_id"] for record in updates["records"]} == {
+        record["record_id"] for record in saved
+    }
+    reopened = await env.service.get_run("alice", run["run_id"])
+    for scope in reopened["scopes"]:
+        child = scope["tasks"][0]
+        observations = [
+            record for record in child["process"] if record["kind"] == "model_delta"
+        ]
+        assert len(observations) == 1
+        assert observations[0]["data"]["text"] == child["run_id"]
+        assert observations[0]["scope_id"] == scope["state"]["scope_id"]
 
 
 @pytest.mark.asyncio
@@ -765,8 +854,14 @@ async def test_retry_child_task_keeps_scope_and_parent_attempt(workflow_env):
             "definition": {
                 "kind": "autonomous",
                 "name": "Retry child",
-                "coordinator": {"role_id": env.role["role_id"], "role_version": 1},
-                "allowed_roles": [{"role_id": env.role["role_id"], "role_version": 1}],
+                "coordinator": {
+                    "id": "coordinator",
+                    "role_id": env.role["role_id"],
+                    "role_version": 1,
+                },
+                "allowed_roles": [
+                    {"id": "worker", "role_id": env.role["role_id"], "role_version": 1}
+                ],
             }
         },
     )
@@ -775,6 +870,7 @@ async def test_retry_child_task_keeps_scope_and_parent_attempt(workflow_env):
         {
             "definition": {
                 "name": "Retry parent",
+                "result_task_id": "call",
                 "required_inputs": ["goal"],
                 "tasks": [
                     {
@@ -858,8 +954,14 @@ async def test_parent_ancestry_does_not_grant_child_member_visibility(workflow_e
             "definition": {
                 "kind": "autonomous",
                 "name": "Scope child",
-                "coordinator": {"role_id": env.role["role_id"], "role_version": 1},
-                "allowed_roles": [{"role_id": env.role["role_id"], "role_version": 1}],
+                "coordinator": {
+                    "id": "coordinator",
+                    "role_id": env.role["role_id"],
+                    "role_version": 1,
+                },
+                "allowed_roles": [
+                    {"id": "worker", "role_id": env.role["role_id"], "role_version": 1}
+                ],
             }
         },
     )
@@ -868,6 +970,7 @@ async def test_parent_ancestry_does_not_grant_child_member_visibility(workflow_e
         {
             "definition": {
                 "name": "Scoped inputs",
+                "result_task_id": "call",
                 "required_inputs": ["goal"],
                 "max_parallel": 1,
                 "tasks": [
@@ -951,7 +1054,6 @@ async def test_parent_ancestry_does_not_grant_child_member_visibility(workflow_e
         {
             "version": 1,
             "inputs": {"goal": "Declared only"},
-            "input_artifacts": [common_ref],
         },
     )
     current = await completed_run(env.service, run["run_id"])
@@ -976,8 +1078,14 @@ async def test_missing_child_resources_cannot_leave_a_started_root(workflow_env)
             "definition": {
                 "kind": "autonomous",
                 "name": "Resource child",
-                "coordinator": {"role_id": env.role["role_id"], "role_version": 1},
-                "allowed_roles": [{"role_id": env.role["role_id"], "role_version": 1}],
+                "coordinator": {
+                    "id": "coordinator",
+                    "role_id": env.role["role_id"],
+                    "role_version": 1,
+                },
+                "allowed_roles": [
+                    {"id": "worker", "role_id": env.role["role_id"], "role_version": 1}
+                ],
             }
         },
     )
@@ -1006,3 +1114,100 @@ async def test_missing_child_resources_cannot_leave_a_started_root(workflow_env)
     assert (await env.service.list_runs("alice"))["runs"] == []
     assert await env.db.get_platform_sessions_by_creator("alice") == []
     assert env.observations == []
+
+
+@pytest.mark.asyncio
+async def test_graph_field_handoff_does_not_grant_child_full_artifact(workflow_env):
+    env = workflow_env
+    team = await env.service.save_asset(
+        "alice",
+        {
+            "definition": {
+                "kind": "autonomous",
+                "name": "Child",
+                "coordinator": {
+                    "id": "coordinator",
+                    "role_id": env.role["role_id"],
+                    "role_version": 1,
+                },
+                "allowed_roles": [
+                    {"id": "worker", "role_id": env.role["role_id"], "role_version": 1}
+                ],
+            }
+        },
+    )
+    contract = {
+        "type": "object",
+        "properties": {"public": {"type": "string"}, "secret": {"type": "string"}},
+        "required": ["public", "secret"],
+    }
+    parent = await env.service.save_asset(
+        "alice",
+        {
+            "definition": {
+                "name": "Field handoff",
+                "result_task_id": "call",
+                "tasks": [
+                    {
+                        "id": "produce",
+                        "name": "Produce",
+                        "member": "writer",
+                        "role_id": env.role["role_id"],
+                        "role_version": 1,
+                        "task": "Produce",
+                        "output_contract": contract,
+                    },
+                    {
+                        "id": "call",
+                        "name": "Call",
+                        "team": {"asset_id": team["asset_id"], "version": 1},
+                        "inputs": {"goal": {"task_id": "produce", "field": "public"}},
+                    },
+                ],
+                "edges": [{"source": "produce", "target": "call"}],
+            }
+        },
+    )
+    bindings, observed = {}, {}
+
+    async def deliver(
+        session_id, text, context=None, execution_token=None, message_id=None
+    ):
+        binding = AgentTeamExecutionRegistry.resolve(execution_token)
+        bindings[session_id] = binding
+        observed[binding.node_id] = {
+            "text": text,
+            "context": context,
+            "run_id": binding.run_id,
+        }
+        return message_id
+
+    async def collect(session_id, message_id, member_id):
+        binding = bindings[session_id]
+        tools = {
+            tool.name: tool
+            for tool in AgentTeamToolRegistry.get_tools(
+                f"webchat:FriendMessage:{session_id}"
+            )
+        }
+        if binding.node_id == "produce":
+            await tools["submit_task_result"].call(
+                None, result_json=json.dumps({"public": "visible", "secret": "hidden"})
+            )
+        else:
+            observed["read"] = await tools["read_task_artifact"].call(
+                None, artifact_id=observed["produce"]["run_id"], version=1
+            )
+            await tools["submit_task_result"].call(None, text="Done")
+        return "Done", []
+
+    env.service.ports_factory = lambda _: TeamPorts(
+        deliver=deliver, collect=collect, is_busy=lambda _: False, emit=lambda _: None
+    )
+    run = await env.service.start_run("alice", parent["asset_id"], {"version": 1})
+    finished = await completed_run(env.service, run["run_id"])
+    assert finished["status"] == "completed", finished
+    assert observed["coordinator"]["text"] == "visible"
+    assert "hidden" not in observed["coordinator"]["context"]
+    assert "Error" in observed["read"]
+    assert finished["scopes"][0]["snapshot"]["input_artifacts"] == []

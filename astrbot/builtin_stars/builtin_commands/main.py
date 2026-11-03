@@ -1,4 +1,5 @@
 import json
+import uuid
 from typing import cast
 
 from pydantic import ValidationError
@@ -137,6 +138,18 @@ class Main(star.Star):
                     caller, request.removeprefix("connect ").strip()
                 )
                 await send_source(caller, json.dumps(connection, ensure_ascii=False))
+            elif request.startswith("answer "):
+                parts = request.split(maxsplit=3)
+                if len(parts) != 4:
+                    raise ValueError("Usage: /asset answer <run> <todo> <JSON answer>")
+                payload = json.loads(parts[3])
+                if not isinstance(payload, dict):
+                    raise ValueError("Answer must be a JSON object")
+                payload["request_id"] = str(uuid.uuid4())
+                projection = await service.chat.answer_browser_todo(
+                    caller, parts[1], parts[2], payload
+                )
+                await send_source(caller, json.dumps(projection, ensure_ascii=False))
             elif request.startswith("status "):
                 run_id = request.removeprefix("status ").strip()
                 await service.chat.get_run(caller, run_id)

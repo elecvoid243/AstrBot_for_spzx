@@ -57,21 +57,25 @@ async def retrieve_knowledge_base(
     kb_mgr = context.kb_manager
     config = context.get_config(umo=umo)
 
-    session_config = await sp.session_get(umo, "kb_config", default={})
     execution = current_team_execution.get()
-    if execution and execution.umo == umo and execution.kb_names is not None:
-        kb_names = execution.kb_names
+    kb_ids = None
+    kb_names = None
+    if execution and execution.umo == umo and execution.kb_ids is not None:
+        kb_ids = execution.kb_ids
         top_k = config.get("kb_final_top_k", 5)
-    elif session_config and "kb_ids" in session_config:
-        kb_ids = session_config.get("kb_ids", [])
-        if not kb_ids:
+        session_config = None
+    else:
+        session_config = await sp.session_get(umo, "kb_config", default={})
+    if kb_ids is None and session_config and "kb_ids" in session_config:
+        session_ids = session_config.get("kb_ids", [])
+        if not session_ids:
             logger.info(f"[知识库] 会话 {umo} 已被配置为不使用知识库")
             return None
 
         top_k = session_config.get("top_k", 5)
         kb_names = []
         invalid_kb_ids = []
-        for kb_id in kb_ids:
+        for kb_id in session_ids:
             kb_helper = await kb_mgr.get_kb(kb_id)
             if kb_helper:
                 kb_names.append(kb_helper.kb.kb_name)
@@ -86,24 +90,31 @@ async def retrieve_knowledge_base(
         if not kb_names:
             return None
         logger.debug(f"[知识库] 使用会话级配置，知识库数量: {len(kb_names)}")
-    else:
+    elif kb_ids is None:
         kb_names = config.get("kb_names", [])
         top_k = config.get("kb_final_top_k", 5)
         logger.debug(f"[知识库] 使用全局配置，知识库数量: {len(kb_names)}")
 
     top_k_fusion = config.get("kb_fusion_top_k", 20)
-    if not kb_names:
+    selected = kb_ids if kb_ids is not None else kb_names
+    if not selected:
         return None
 
-    all_kbs = [await kb_mgr.get_kb_by_name(kb) for kb in kb_names]
+    all_kbs = [
+        await kb_mgr.get_kb(kb)
+        if kb_ids is not None
+        else await kb_mgr.get_kb_by_name(kb)
+        for kb in selected
+    ]
     if check_all_kb(all_kbs):
         logger.debug("所配置的所有知识库全为空，跳过检索过程")
         return None
 
-    logger.debug(f"[知识库] 开始检索知识库，数量: {len(kb_names)}, top_k={top_k}")
+    logger.debug(f"Retrieving from {len(selected)} knowledge bases, top_k={top_k}")
     kb_context = await kb_mgr.retrieve(
         query=query,
         kb_names=kb_names,
+        kb_ids=kb_ids,
         top_k_fusion=top_k_fusion,
         top_m_final=top_k,
     )

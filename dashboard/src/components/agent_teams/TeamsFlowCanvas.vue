@@ -7,7 +7,6 @@
       :nodes-draggable="isEdit"
       :nodes-connectable="isEdit"
       :elements-selectable="isEdit"
-      :selection-key-code="['Control', 'Meta']"
       :selection-mode="SelectionMode.Partial"
       :snap-to-grid="isEdit && snapToGrid"
       :snap-grid="[16, 16]"
@@ -24,8 +23,14 @@
       @pane-click="onPaneClick"
     >
       <Background :gap="16" />
-      <Controls />
-      <MiniMap v-if="minimapVisible" pannable zoomable />
+      <Controls :show-interactive="isEdit">
+        <template #icon-zoom-in><span aria-hidden="true">+</span><span class="canvas-control-label">{{ tm('graph.zoomIn') }}</span></template>
+        <template #icon-zoom-out><span aria-hidden="true">−</span><span class="canvas-control-label">{{ tm('graph.zoomOut') }}</span></template>
+        <template #icon-fit-view><v-icon size="small" aria-hidden="true">mdi-fit-to-screen-outline</v-icon><span class="canvas-control-label">{{ tm('graph.fit') }}</span></template>
+        <template #icon-unlock><v-icon size="small" aria-hidden="true">mdi-lock-open-outline</v-icon><span class="canvas-control-label">{{ tm('graph.lock') }}</span></template>
+        <template #icon-lock><v-icon size="small" aria-hidden="true">mdi-lock-outline</v-icon><span class="canvas-control-label">{{ tm('graph.unlock') }}</span></template>
+      </Controls>
+      <MiniMap v-if="minimapVisible" :width="140" :height="90" pannable zoomable />
     </VueFlow>
   </div>
 </template>
@@ -76,6 +81,17 @@ const nodeTypes: NodeTypesObject = {
 
 export default {};
 </script>
+
+<style scoped>
+.canvas-control-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+</style>
 
 <script setup lang="ts">
 // Shared DAG canvas for the agent-teams workflow editor (edit mode) and the
@@ -137,7 +153,7 @@ const props = withDefaults(
 );
 
 const emit = defineEmits<{
-  (e: 'connect', params: { from: string; to: string }): void;
+  (e: 'connect', params: { from: string; to: string; sourceHandle?: string | null }): void;
   (e: 'positionChange', positions: Record<string, { x: number; y: number }>): void;
   (e: 'selectNode', nodeId: string | null): void;
   (e: 'dropAt', memberId: string, position: { x: number; y: number }): void;
@@ -230,7 +246,7 @@ const displayEdges = computed(() => {
 function onConnect(connection: Connection) {
   const { source, target } = connection ?? ({} as Connection);
   if (!source || !target || source === target) return;
-  emit('connect', { from: source, to: target });
+  emit('connect', { from: source, to: target, ...(connection.sourceHandle ? { sourceHandle: connection.sourceHandle } : {}) });
 }
 
 /**
@@ -299,7 +315,7 @@ function onEdgeDoubleClick(event: EdgeMouseEvent) {
   }
 }
 
-/** Forward a Ctrl/Cmd-drag box selection as the selected node id list. */
+/** Forward a Shift-drag box selection as the selected node id list. */
 function onSelectionDragStop(event: { nodes?: { id: string }[] }) {
   const ids = (event?.nodes ?? []).map((node) => node.id).filter((id): id is string => Boolean(id));
   emit('selectionChange', ids);

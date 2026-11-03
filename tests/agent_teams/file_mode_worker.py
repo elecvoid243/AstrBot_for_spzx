@@ -184,18 +184,13 @@ async def run_file_mode_scenario(
             "definition": {
                 "name": "File writer",
                 "prompt": "File role prompt.",
-                "persona_slot": "persona",
+                "persona_id": "writer",
+                "provider_id": "model-original",
                 "tools": case["tools"],
                 "skills": [],
                 "knowledge_bases": [],
             },
-            "installation": {
-                "bindings": {
-                    "model": "model-original",
-                    "persona": "writer",
-                    **{name: name for name in case["tools"] or []},
-                }
-            },
+            "installation": {"profile_id": "default"},
         }
         observed["preview"] = await roles.preview_role(payload)
         role = await roles.save_role("alice", payload)
@@ -214,6 +209,7 @@ async def run_file_mode_scenario(
         else:
             definition = {
                 "name": "File workflow",
+                "result_task_id": "write",
                 "tasks": [
                     {
                         "id": "write",
@@ -233,21 +229,25 @@ async def run_file_mode_scenario(
                         "definition": {
                             "name": "Coordinator",
                             "prompt": "Coordinate and submit the file result.",
+                            "provider_id": "model-original",
                             "tools": [],
                             "skills": [],
                             "knowledge_bases": [],
                         },
-                        "installation": {"bindings": {"model": "model-original"}},
+                        "installation": {"profile_id": "default"},
                     },
                 )
                 definition = {
                     "kind": "autonomous",
                     "name": "File team",
                     "coordinator": {
+                        "id": "coordinator",
                         "role_id": coordinator["role_id"],
                         "role_version": 1,
                     },
-                    "allowed_roles": [{"role_id": role["role_id"], "role_version": 1}],
+                    "allowed_roles": [
+                        {"id": "writer", "role_id": role["role_id"], "role_version": 1}
+                    ],
                     "max_parallel": 1,
                 }
             asset = await service.save_asset("alice", {"definition": definition})

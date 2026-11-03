@@ -2292,6 +2292,18 @@ class ChatService:
                         )
                         saved = saved or run.history_record
                         previous = serialize_history_entry(saved) if saved else None
+                        if previous is not None:
+                            # Updates persist through a separate DB session; the
+                            # original row object still contains its first save.
+                            previous["content"] = build_bot_history_content(
+                                deepcopy(run.history_parts),
+                                agent_stats=deepcopy(run.agent_stats),
+                                file_changes=deepcopy(run.file_changes),
+                                llm_request_injections=deepcopy(
+                                    run.llm_request_injections
+                                ),
+                                refs=deepcopy(run.refs),
+                            )
                         user = await self.platform_history_mgr.insert(
                             **result["history"]
                         )

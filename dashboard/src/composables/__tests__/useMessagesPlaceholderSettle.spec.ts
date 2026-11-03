@@ -196,6 +196,132 @@ describe("useMessages placeholder terminal state", () => {
     composable.cleanupConnections();
   });
 
+  it.each([
+    ["history", "boundary", "ack"],
+    ["history", "ack", "boundary"],
+    ["boundary", "history", "ack"],
+    ["boundary", "ack", "history"],
+    ["ack", "history", "boundary"],
+    ["ack", "boundary", "history"],
+  ])("reconciles follow-ups in order %s / %s / %s", async (...order) => {
+    const controllers: ReadableStreamDefaultController<Uint8Array>[] = [];
+    vi.mocked(fetchWithAuth).mockImplementation(
+      async () =>
+        new Response(
+          new ReadableStream({
+            start(value) {
+              controllers.push(value);
+            },
+          }),
+          { headers: { "content-type": "text/event-stream" } },
+        ),
+    );
+    const composable = createComposable();
+    const { botRecord } = sendMessage(composable);
+    const push = (index: number, payload: unknown) =>
+      controllers[index].enqueue(new TextEncoder().encode(sseFrame(payload)));
+    push(0, {
+      type: "user_message_saved",
+      data: { id: 1, created_at: "2020-01-01T00:00:00Z" },
+    });
+    botRecord.created_at = "2020-01-01T00:00:01Z";
+    push(0, { type: "plain", data: "before", streaming: true });
+    await vi.waitFor(() =>
+      expect(recordText(botRecord.content.message)).toBe("before"),
+    );
+    const parts = [{ type: "plain" as const, text: "follow-up" }];
+    const followup = composable.createLocalExchange({
+      sessionId: "s1",
+      messageId: "m2",
+      parts,
+    });
+    composable.sendMessageStream({
+      sessionId: "s1",
+      messageId: "m2",
+      parts,
+      transport: "sse",
+      ...followup,
+    });
+    // Equal text is a separate send and must never be removed by reconciliation.
+    const later = composable.createLocalExchange({
+      sessionId: "s1",
+      messageId: "m3",
+      parts,
+    });
+    const history = [
+      record(1, "user", "hi"),
+      record(2, "bot", "before"),
+      record(3, "user", "follow-up"),
+    ].map((row, index) => ({
+      ...row,
+      created_at: `2020-01-01T00:00:0${index}Z`,
+    }));
+    api.getSession.mockResolvedValue(sessionPayload(history));
+    try {
+      for (const event of order) {
+        if (event === "history") {
+          await composable.loadSessionMessages("s1", false, false);
+        } else if (event === "ack") {
+          push(1, { type: "user_message_saved", data: history[2] });
+          await vi.waitFor(() => expect(followup.userRecord.id).toBe(3));
+          // Flush the stream callback even when the boundary already adopted the id.
+          await new Promise((resolve) => setTimeout(resolve, 0));
+        } else {
+          push(0, {
+            type: "message_segment",
+            data: {
+              previous: history[1],
+              user: history[2],
+              segment_id: "seg2",
+              client_message_id: "m2",
+              preceding_plain_text: "before",
+            },
+          });
+          await vi.waitFor(() =>
+            expect(botRecord.id).toBe("active-segment-seg2"),
+          );
+        }
+      }
+      push(0, { type: "plain", data: "after", streaming: true });
+      await vi.waitFor(() =>
+        expect(recordText(botRecord.content.message)).toBe("after"),
+      );
+      expect(
+        composable.activeMessages.value.map((r) =>
+          recordText(r.content.message),
+        ),
+      ).toEqual(["hi", "before", "follow-up", "after", "follow-up"]);
+      expect(
+        composable.activeMessages.value.filter((r) => String(r.id) === "3"),
+      ).toHaveLength(1);
+      expect(composable.activeMessages.value).toContain(followup.userRecord);
+      expect(composable.activeMessages.value).toContain(later.userRecord);
+      // A second boundary must freeze the first continuation and keep its handle live.
+      push(0, {
+        type: "message_segment",
+        data: {
+          previous: record(4, "bot", "after"),
+          user: record(5, "user", "follow-up"),
+          segment_id: "seg3",
+          client_message_id: "m3",
+          preceding_plain_text: "beforeafter",
+        },
+      });
+      push(0, { type: "plain", data: "last", streaming: true });
+      push(0, { type: "complete", data: "beforeafterlast", streaming: true });
+      await vi.waitFor(() =>
+        expect(recordText(botRecord.content.message)).toBe("last"),
+      );
+      expect(
+        composable.activeMessages.value.map((r) =>
+          recordText(r.content.message),
+        ),
+      ).toEqual(["hi", "before", "follow-up", "after", "follow-up", "last"]);
+    } finally {
+      composable.cleanupConnections();
+      controllers.forEach((controller) => controller.close());
+    }
+  });
   it("surfaces a JSON rejection instead of spinning forever", async () => {
     vi.mocked(fetchWithAuth).mockResolvedValue(
       jsonRejection("Message content is empty (reply only is not allowed)"),

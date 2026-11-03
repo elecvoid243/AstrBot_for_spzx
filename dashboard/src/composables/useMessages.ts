@@ -823,12 +823,17 @@ export function useMessages(options: UseMessagesOptions) {
       // then the snapshot's copy is all there is to show.
       const ownedIds = new Set<string>();
       for (const connection of Object.values(activeConnections)) {
-        if (connection.sessionId !== sessionId || !connection.botRecord) {
+        if (connection.sessionId !== sessionId) {
           continue;
         }
-        const ownedId = String(connection.botRecord.id ?? "");
-        if (existing.some((r) => String(r.id ?? "") === ownedId)) {
-          ownedIds.add(ownedId);
+        // Keep user handles too: their save acknowledgement can arrive after
+        // a history refresh and must still update the rendered record.
+        for (const record of [connection.botRecord, connection.userRecord]) {
+          if (!record) continue;
+          const ownedId = String(record.id ?? "");
+          if (existing.some((r) => String(r.id ?? "") === ownedId)) {
+            ownedIds.add(ownedId);
+          }
         }
       }
       const snapshot = ownedIds.size
@@ -1777,10 +1782,12 @@ export function useMessages(options: UseMessagesOptions) {
       selected_provider: selectedProvider,
       selected_model: selectedModel,
       thinking_effort: thinkingEffort,
-      ...(options.accountRole === "user" ? {} : {
-        _client_message_id: messageId,
-        flags: buildChatRequestFlags(enableStreaming),
-      }),
+      ...(options.accountRole === "user"
+        ? {}
+        : {
+            _client_message_id: messageId,
+            flags: buildChatRequestFlags(enableStreaming),
+          }),
     });
   }
 
@@ -2114,27 +2121,45 @@ export function useMessages(options: UseMessagesOptions) {
     if (msgType === "message_segment" && connection && sessionId) {
       const records = messagesBySession[sessionId] || [];
       const oldIndex = records.indexOf(botRecord);
-      // Retain the reactive handle for subsequent chunks; freeze the old row.
-      if (oldIndex >= 0) {
-        if (data.previous) {
-          records.splice(oldIndex, 1, normalizeHistoryRecord(data.previous));
-        } else {
-          records.splice(oldIndex, 1);
+      // Retain the reactive handle for subsequent chunks. History may already
+      // contain the closed segment; replace it once at the confirmed boundary.
+      if (oldIndex >= 0) records.splice(oldIndex, 1);
+      if (data.previous) {
+        for (let i = records.length - 1; i >= 0; i -= 1) {
+          if (String(records[i].id) === String(data.previous.id)) {
+            records.splice(i, 1);
+          }
         }
       }
       const savedUser = data.user;
-      let boundaryUser = records.find(
-        (record) =>
-          String(record.id) === String(savedUser?.id) ||
-          (data.client_message_id &&
-            String(record.id) === `local-user-${data.client_message_id}`),
-      );
+      const localUserId = `local-user-${data.client_message_id}`;
+      const sender = data.client_message_id
+        ? activeConnections[data.client_message_id]
+        : undefined;
+      let boundaryUser =
+        (sender?.sessionId === sessionId ? sender.userRecord : undefined) ||
+        records.find((record) => String(record.id) === localUserId) ||
+        records.find((record) => String(record.id) === String(savedUser?.id));
       if (savedUser && !boundaryUser) {
         boundaryUser = normalizeHistoryRecord(savedUser);
         records.push(boundaryUser);
       } else if (savedUser && boundaryUser) {
         boundaryUser.id = savedUser.id;
         boundaryUser.created_at = savedUser.created_at;
+        boundaryUser.llm_checkpoint_id = savedUser.llm_checkpoint_id;
+        // Reconcile by identity, never text: identical follow-ups are valid.
+        for (let i = records.length - 1; i >= 0; i -= 1) {
+          const record = records[i];
+          if (
+            record !== boundaryUser &&
+            (String(record.id) === String(savedUser.id) ||
+              String(record.id) === localUserId)
+          ) {
+            if (records.includes(boundaryUser)) records.splice(i, 1);
+            else records.splice(i, 1, boundaryUser);
+          }
+        }
+        if (!records.includes(boundaryUser)) records.push(boundaryUser);
       }
       connection.precedingPlainText = String(data.preceding_plain_text || "");
       botRecord.id = `active-segment-${data.segment_id}`;
@@ -2143,9 +2168,17 @@ export function useMessages(options: UseMessagesOptions) {
         content: data.content || { type: "bot", message: [] },
       }).content;
       botRecord.content.isLoading = botRecord.content.message.length === 0;
-      const userIndex = boundaryUser
+      let userIndex = boundaryUser
         ? records.indexOf(boundaryUser)
         : records.length - 1;
+      if (data.previous) {
+        records.splice(
+          Math.max(userIndex, 0),
+          0,
+          normalizeHistoryRecord(data.previous),
+        );
+        userIndex += 1;
+      }
       records.splice(userIndex + 1, 0, botRecord);
       connection.botVisible = true;
       return;
@@ -2187,6 +2220,17 @@ export function useMessages(options: UseMessagesOptions) {
         userRecord.created_at = data?.created_at || userRecord.created_at;
         userRecord.llm_checkpoint_id =
           data?.llm_checkpoint_id || userRecord.llm_checkpoint_id;
+        // History can arrive before either stream acknowledges the local row.
+        const records = sessionId ? messagesBySession[sessionId] || [] : [];
+        for (let i = records.length - 1; i >= 0; i -= 1) {
+          if (
+            records[i] !== userRecord &&
+            String(records[i].id) === String(userRecord.id)
+          ) {
+            if (records.includes(userRecord)) records.splice(i, 1);
+            else records.splice(i, 1, userRecord);
+          }
+        }
       }
       return;
     }

@@ -735,8 +735,9 @@ async def test_save_uploaded_file_rejects_oversized_saved_file(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("pending_tool", [False, True])
+@pytest.mark.parametrize("mid_segment_save", [False, True])
 async def test_followup_timeline_survives_database_reopen(
-    chat_service_instance, tmp_path, pending_tool
+    chat_service_instance, tmp_path, pending_tool, mid_segment_save
 ):
     """Recover chronological reply segments and follow-ups from real storage."""
     service = chat_service_instance
@@ -761,8 +762,16 @@ async def test_followup_timeline_survives_database_reopen(
         "ts": 1,
     }
     try:
+        if mid_segment_save:
+            run.back_queue.put_nowait(
+                {"type": "plain", "data": "be", "streaming": False}
+            )
         run.back_queue.put_nowait(
-            {"type": "plain", "data": "before", "streaming": True}
+            {
+                "type": "plain",
+                "data": "fore" if mid_segment_save else "before",
+                "streaming": True,
+            }
         )
         if pending_tool:
             run.back_queue.put_nowait(
@@ -776,6 +785,14 @@ async def test_followup_timeline_survives_database_reopen(
         second = await service.build_chat_stream(
             "alice", {"message": "follow-up", "session_id": session_id}
         )
+        while True:
+            event = _decode_sse_event(await asyncio.wait_for(anext(first), 3))
+            if event["type"] == "message_segment":
+                break
+        previous = event["data"]["previous"]
+        assert "".join(
+            part.get("text", "") for part in previous["content"]["message"]
+        ) == "before"
         resumed = service.get_active_chat_runs("alice", session_id)[0]
         assert resumed["content"]["message"] == (
             [{"type": "tool_call", "tool_calls": [tool]}] if pending_tool else []
@@ -801,6 +818,7 @@ async def test_followup_timeline_survives_database_reopen(
         service.platform_history_mgr = PlatformMessageHistoryManager(service.db)
         restored = await service.get_session("alice", session_id)
         rows = restored["history"]
+        assert previous["content"] == rows[1]["content"]
         assert [row["content"]["type"] for row in rows] == [
             "user",
             "bot",

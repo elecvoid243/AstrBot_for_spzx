@@ -79,7 +79,8 @@
               )
             "
           >
-            <v-icon
+            <v-icon class="task-type-icon" :icon="task.snapshot.engine === 'workflow_call_v2' ? 'mdi-sitemap-outline' : task.snapshot.engine === 'team_call_v2' ? 'mdi-account-group-outline' : 'mdi-robot-outline'" size="20" aria-hidden="true" />
+            <v-icon class="task-status-icon"
               :icon="
                 task.status === 'completed'
                   ? 'mdi-check-circle-outline'
@@ -93,6 +94,19 @@
             />
             <div class="run-name flex-grow-1 text-left">
               <strong>{{ task.snapshot.definition.name }}</strong>
+              <span v-if="compact" class="text-caption run-status">{{
+                tm(
+                  task.status === "pending"
+                    ? task.state.wait_kind === "predecessors"
+                      ? "graph.waitingPredecessors"
+                      : task.state.wait_kind === "capacity"
+                      ? "graph.waitingCapacity"
+                      : "graph.notStarted"
+                    : task.status === "running" && task.state.capacity_released
+                    ? "autonomous.waiting"
+                    : `v2.states.${task.status}`,
+                )
+              }}</span>
               <p v-if="scopeNames[task.run_id] || task.snapshot.iteration != null" class="text-caption text-medium-emphasis mt-1">
                 <span v-if="scopeNames[task.run_id]">{{ tm("child.scope") }}: {{ scopeNames[task.run_id] }}</span>
                 <span v-if="task.snapshot.iteration != null"> · {{ tm("loops.iteration") }} {{ task.snapshot.iteration }}</span>
@@ -129,11 +143,11 @@
               >
                 {{ task.state.reason }}
               </p>
-              <p v-else class="run-text text-body-2 text-medium-emphasis mt-2">
+              <p v-else class="run-text task-description text-body-2 text-medium-emphasis mt-2" :title="compact ? task.snapshot.task : undefined">
                 {{ task.snapshot.task }}
               </p>
             </div>
-            <span class="text-caption run-status">{{
+            <span v-if="!compact" class="text-caption run-status">{{
               tm(
                 task.status === "pending"
                   ? task.state.wait_kind === "predecessors"
@@ -407,4 +421,20 @@ summary {
     margin-left: 32px;
   }
 }
+
+.run-progress { border-color: var(--at-line, rgba(var(--v-border-color), var(--v-border-opacity))); border-radius: var(--at-radius, 12px); background: var(--at-surface, rgb(var(--v-theme-surface))); }
+.run-task { gap: 10px; padding: 14px; border: 1px solid transparent; border-radius: 9px; color: var(--at-ink, rgb(var(--v-theme-on-surface))); }
+.run-task:hover { background: var(--at-paper, rgba(var(--v-theme-primary), .04)); }
+.run-task-selected, .run-task-selected:hover { background: var(--at-accent-soft, rgba(var(--v-theme-primary), .08)); border-color: var(--at-accent, #287fad); }
+.task-type-icon { flex: 0 0 32px; width: 32px; height: 32px; border-radius: 8px; color: var(--at-accent, #287fad); background: var(--at-accent-soft, rgba(var(--v-theme-primary), .08)); }
+.task-status-icon { color: var(--at-muted, #718393); flex-shrink: 0; }
+.run-status { color: var(--at-muted, #718393); overflow-wrap: anywhere; }
+
+
+.run-columns.is-compact .run-task { flex-wrap: nowrap; gap: 9px; padding: 10px 8px; }
+.run-columns.is-compact .task-status-icon { display: none; }
+.run-columns.is-compact .run-name { width: auto; }
+.run-columns.is-compact .run-name strong { display: inline; }
+.run-columns.is-compact .run-status { display: inline; max-width: none; margin-left: 6px; }
+.run-columns.is-compact .task-description { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
 </style>

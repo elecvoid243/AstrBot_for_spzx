@@ -1,5 +1,5 @@
 <template>
-  <section class="my-4" data-testid="run-controls">
+  <section class="run-controls my-4" data-testid="run-controls">
     <h3 class="text-h6 mb-2">{{ tm("controls.title") }}</h3>
     <p class="text-body-2 mb-3" role="status">
       {{ tm(`controls.states.${status}`) }}
@@ -60,7 +60,7 @@
     <details
       v-for="attempt in task.attempts ?? []"
       :key="attempt.attempt_id"
-      class="mt-3"
+      class="attempt-history mt-3"
       data-testid="attempt-history"
     >
       <summary>
@@ -214,4 +214,12 @@ function submit(action: WorkflowControlRequest["action"] | "retry") {
   max-height: 240px;
   overflow: auto;
 }
+
+.run-controls { min-width: 0; color: var(--at-ink, rgb(var(--v-theme-on-surface))); }
+.run-controls :deep(.v-btn) { min-height: 40px; }
+.run-controls > .text-caption { color: var(--at-muted, #718393); }
+.attempt-history { border: 1px solid var(--at-line, rgba(var(--v-border-color), var(--v-border-opacity))); border-radius: 8px; padding: 10px 12px; overflow-wrap: anywhere; }
+.attempt-history summary { cursor: pointer; }
+.attempt-history summary:focus-visible, .run-controls :deep(button:focus-visible) { outline: 2px solid var(--at-accent, #287fad); outline-offset: 2px; }
+
 </style>

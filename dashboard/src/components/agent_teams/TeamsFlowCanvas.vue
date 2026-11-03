@@ -232,8 +232,8 @@ const displayEdges = computed(() => {
       const selected = props.selectedEdgeId === edge.id;
       next.selected = selected;
       next.style = selected
-        ? { stroke: '#1976d2', strokeWidth: 2.5 }
-        : { stroke: '#b1b1b7', strokeWidth: 1.5 };
+        ? { stroke: '#287fad', strokeWidth: 2.5 }
+        : { stroke: '#a9c2d3', strokeWidth: 1.7 };
     }
     if (!isEdit.value && statusByNodeId.get(edge.source) === 'running') {
       next.animated = true;
@@ -339,4 +339,11 @@ function onPaneClick() {
   overflow: hidden;
   background: var(--dashboard-surface, rgba(128, 128, 128, 0.04));
 }
+
+.teams-flow-canvas { border-color: var(--at-line, #dce5ed); background: var(--at-paper, #f6f8fb); }
+.teams-flow-canvas :deep(.vue-flow__controls) { overflow: hidden; border: 1px solid var(--at-line, #dce5ed); border-radius: 8px; box-shadow: var(--at-shadow, 0 3px 10px #26405710); }
+.teams-flow-canvas :deep(.vue-flow__controls-button) { width: 36px; height: 36px; color: var(--at-ink, #263849); background: var(--at-surface, #fff); border-color: var(--at-line, #dce5ed); }
+.teams-flow-canvas :deep(.vue-flow__controls-button:hover) { background: var(--at-accent-soft, #eaf4fa); }
+.teams-flow-canvas :deep(.vue-flow__controls-button:focus-visible) { position: relative; z-index: 1; outline: 2px solid var(--at-accent, #287fad); outline-offset: -2px; }
+.teams-flow-canvas :deep(.vue-flow__minimap) { border: 1px solid var(--at-line, #dce5ed); border-radius: 8px; overflow: hidden; background: var(--at-surface, #fff); box-shadow: var(--at-shadow, 0 3px 10px #26405710); }
 </style>

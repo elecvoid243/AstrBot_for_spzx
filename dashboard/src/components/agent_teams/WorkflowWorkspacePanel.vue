@@ -1,6 +1,6 @@
 <template>
   <section class="workflow-workspace">
-    <div v-if="mode === 'assets' || !selectedRun" class="d-flex flex-wrap align-center ga-2 mb-4">
+    <div v-if="mode === 'assets' || !selectedRun" class="at-asset-toolbar">
       <h2 class="text-h5">
         {{
           tm(
@@ -12,10 +12,12 @@
           )
         }}
       </h2>
+      <span v-if="mode === 'assets'" class="at-asset-count">{{ visibleAssets.length + visibleDrafts.length }}</span>
       <v-spacer />
       <v-btn
         v-if="mode === 'assets'"
-        variant="tonal"
+        prepend-icon="mdi-import"
+        variant="text"
         @click="
           exportedPackage = null;
           packageDialog = true;
@@ -26,6 +28,8 @@
         v-if="mode === 'assets' && assetKind !== 'workflows'"
         variant="tonal"
         color="primary"
+        class="at-primary-action"
+        prepend-icon="mdi-plus"
         data-testid="create-autonomous-team"
         @click="editTeam(null)"
         >{{ tm("autonomous.create") }}</v-btn
@@ -34,13 +38,15 @@
         v-if="mode === 'assets' && assetKind !== 'teams'"
         variant="tonal"
         color="primary"
+        class="at-primary-action"
+        prepend-icon="mdi-plus"
         @click="editGraph(null)"
         >{{ tm("graph.create") }}</v-btn
       >
       <v-btn
         variant="text"
         :loading="loading || !!currentOperation"
-        @click="refresh"
+        @click="refresh()"
         >{{ tm("page.refresh") }}</v-btn
       >
     </div>
@@ -52,7 +58,7 @@
       role="alert"
       >{{ error }}</v-alert
     >
-    <p v-if="mode === 'assets' || !selectedRun" class="text-body-2 text-medium-emphasis mb-4">
+    <p v-if="mode === 'assets' || !selectedRun" class="at-asset-intro">
       {{
         tm(
           mode === "runs"
@@ -65,91 +71,55 @@
     </p>
 
     <template v-if="mode === 'assets'">
-      <v-alert
-        v-if="!visibleAssets.length && !visibleDrafts.length && !loading"
-        type="info"
-        variant="tonal"
-        >{{ tm("v2.emptyAssets") }}</v-alert
-      >
-      <v-card
-        v-for="item in visibleDrafts"
-        :key="item.asset_id"
-        class="mb-3"
-        variant="outlined"
-      >
-        <v-card-title
-          >{{ item.body.definition?.name || tm("draft.untitled") }} ·
-          {{ tm("draft.unpublished") }}</v-card-title
-        >
-        <v-card-actions
-          ><v-btn
-            variant="text"
-            @click="
-              item.kind === 'autonomous'
-                ? editTeam({
-                    asset_id: item.asset_id,
-                    definition: item.body.definition,
-                  })
-                : editGraph({
-                    asset_id: item.asset_id,
-                    definition: item.body.definition,
-                  })
-            "
-            >{{ tm("v2.edit") }}</v-btn
-          ><v-btn data-testid="delete-asset" variant="text" color="error" @click="deleteTarget = { asset_id: item.asset_id, definition: item.body.definition }">{{ tm('deletion.delete') }}</v-btn></v-card-actions
-        >
-      </v-card>
-      <v-card
-        v-for="asset in visibleAssets"
-        :key="asset.asset_id"
-        class="mb-3"
-        variant="outlined"
-      >
-        <v-card-title class="text-wrap"
-          >{{ asset.definition.name }} · v{{ asset.version }}</v-card-title
-        >
-        <v-card-text class="text-wrap">
-          <p v-if="drafts.some((item) => item.asset_id === asset.asset_id && item.published_revision !== item.revision)" data-testid="editing-draft">{{ tm("draft.editing") }}</p>
-          <p v-if="asset.definition.kind === 'autonomous'">
-            {{ tm("autonomous.title") }} · {{ tm("autonomous.allowedRoles") }}:
-            {{ asset.definition.allowed_roles.length }}
-          </p>
-          <p v-else>
-            {{ tm("graph.count", { count: asset.definition.tasks.length }) }} ·
-            {{ tm("graph.parallel") }}: {{ asset.definition.max_parallel }}
-          </p>
-        </v-card-text>
-        <v-card-actions class="flex-wrap">
-          <v-btn
-            variant="text"
-            data-testid="open-chat-access"
-            @click="chatAccessAsset = asset"
-            >{{ tm("chatAccess.title") }}</v-btn
-          >
-          <v-btn variant="text" @click="exportWorkflow(asset)">{{
-            tm("package.export")
-          }}</v-btn>
-          <v-btn
-            variant="text"
-            @click="
-              asset.definition.kind === 'autonomous'
-                ? editTeam(asset)
-                : editGraph(asset)
-            "
-            >{{ tm("v2.edit") }}</v-btn
-          >
-          <v-btn variant="tonal" color="primary" @click="prepareRun(asset)">{{
-            tm("v2.start")
-          }}</v-btn>
-          <v-btn data-testid="delete-asset" variant="text" color="error" @click="deleteTarget = asset">{{ tm('deletion.delete') }}</v-btn>
-        </v-card-actions>
-      </v-card>
+      <v-alert v-if="!visibleAssets.length && !visibleDrafts.length && !loading" type="info" variant="tonal" class="at-empty-state">{{ tm("v2.emptyAssets") }}</v-alert>
+      <div class="at-asset-grid">
+        <v-card v-for="item in visibleDrafts" :key="item.asset_id" class="at-asset-card at-draft-card" variant="outlined">
+          <v-card-text>
+            <div class="at-card-topline">
+              <span class="at-asset-icon" :class="{ 'is-team': item.kind === 'autonomous' }" aria-hidden="true"><v-icon :icon="item.kind === 'autonomous' ? 'mdi-account-group-outline' : 'mdi-sitemap-outline'" size="23" /></span>
+              <v-chip size="small" color="warning" variant="tonal">{{ tm("draft.unpublished") }}</v-chip>
+            </div>
+            <v-card-title>{{ item.body.definition?.name || tm("draft.untitled") }}</v-card-title>
+            <p class="at-card-description">{{ tm(item.kind === 'autonomous' ? "workbench.teamIntro" : "workbench.workflowIntro") }}</p>
+          </v-card-text>
+          <v-card-actions>
+            <v-btn variant="tonal" color="primary" prepend-icon="mdi-pencil-outline" @click="item.kind === 'autonomous' ? editTeam({ asset_id: item.asset_id, definition: item.body.definition }) : editGraph({ asset_id: item.asset_id, definition: item.body.definition })">{{ tm("v2.edit") }}</v-btn>
+            <v-spacer />
+            <v-btn data-testid="delete-asset" variant="text" color="error" :aria-label="tm('deletion.delete')" :title="tm('deletion.delete')" class="at-card-icon-action" @click="deleteTarget = { asset_id: item.asset_id, definition: item.body.definition }"><v-icon icon="mdi-trash-can-outline" size="18" /><span class="at-sr-only">{{ tm('deletion.delete') }}</span></v-btn>
+          </v-card-actions>
+        </v-card>
+        <v-card v-for="asset in visibleAssets" :key="asset.asset_id" class="at-asset-card" variant="outlined">
+          <v-card-text>
+            <div class="at-card-topline">
+              <span class="at-asset-icon" :class="{ 'is-team': asset.definition.kind === 'autonomous' }" aria-hidden="true"><v-icon :icon="asset.definition.kind === 'autonomous' ? 'mdi-account-group-outline' : 'mdi-sitemap-outline'" size="23" /></span>
+              <v-chip size="small" variant="tonal">v{{ asset.version }}</v-chip>
+            </div>
+            <v-card-title>{{ asset.definition.name }}</v-card-title>
+            <p class="at-card-description">{{ asset.definition.kind === 'autonomous' ? asset.definition.allowed_roles.map((member: any) => member.role?.name || roles.find((role: any) => role.role_id === member.role_id)?.definition.name || member.id).filter(Boolean).join(' · ') : asset.definition.tasks.map((task: any) => task.name).slice(0, 4).join(' · ') }}</p>
+            <div class="at-card-metadata">
+              <span v-if="asset.definition.kind === 'autonomous'"><v-icon icon="mdi-account-multiple-outline" size="15" /> {{ tm("autonomous.allowedRoles") }} · {{ asset.definition.allowed_roles.length }}</span>
+              <span v-else><v-icon icon="mdi-transit-connection-variant" size="15" /> {{ tm("graph.count", { count: asset.definition.tasks.length }) }} <span class="at-meta-divider">·</span> {{ tm("graph.parallel") }} {{ asset.definition.max_parallel }}</span>
+              <span v-if="drafts.some((item) => item.asset_id === asset.asset_id && item.published_revision !== item.revision)" class="at-draft-indicator" data-testid="editing-draft"><i />{{ tm("draft.editing") }}</span>
+            </div>
+          </v-card-text>
+          <v-card-actions class="at-card-footer">
+            <div class="at-card-secondary-actions">
+              <v-btn variant="text" class="at-card-icon-action" data-testid="open-chat-access" :aria-label="tm('chatAccess.title')" :title="tm('chatAccess.title')" @click="chatAccessAsset = asset"><v-icon icon="mdi-link-variant" size="18" /><span class="at-sr-only">{{ tm("chatAccess.title") }}</span></v-btn>
+              <v-btn variant="text" class="at-card-icon-action" :aria-label="tm('package.export')" :title="tm('package.export')" @click="exportWorkflow(asset)"><v-icon icon="mdi-export-variant" size="18" /><span class="at-sr-only">{{ tm("package.export") }}</span></v-btn>
+              <v-btn data-testid="delete-asset" variant="text" class="at-card-icon-action" :aria-label="tm('deletion.delete')" :title="tm('deletion.delete')" @click="deleteTarget = asset"><v-icon icon="mdi-trash-can-outline" size="18" /><span class="at-sr-only">{{ tm('deletion.delete') }}</span></v-btn>
+            </div>
+            <v-spacer />
+            <v-btn variant="text" @click="asset.definition.kind === 'autonomous' ? editTeam(asset) : editGraph(asset)">{{ tm("v2.edit") }}</v-btn>
+            <v-btn variant="tonal" color="primary" prepend-icon="mdi-play-outline" @click="prepareRun(asset)">{{ tm("v2.start") }}</v-btn>
+          </v-card-actions>
+        </v-card>
+      </div>
     </template>
 
     <DeleteAssetDialog :name="deleteTarget?.definition.name || (deleteTarget ? tm('draft.untitled') : null)" :busy="deleting" :error="deleteError" @cancel="deleteTarget = null; deleteError = ''" @confirm="deleteAsset" />
     <template v-if="mode !== 'assets'">
       <nav
-        class="d-flex flex-wrap align-center ga-2 mb-4"
+        class="at-run-filters"
         :aria-label="tm('workbench.runs')"
       >
         <v-btn
@@ -265,19 +235,19 @@
       <v-card
         v-if="selectedRun && runView !== 'history'"
         variant="outlined"
-        class="mt-4"
+        class="at-run-workspace"
         data-testid="run-detail"
       >
         <v-card-text class="workbench-body">
-          <div class="d-flex flex-wrap align-center ga-3 mb-4">
+          <div class="at-run-header">
             <h2 class="text-h5 font-weight-bold flex-grow-1">{{ selectedRun.snapshot.definition.name }}</h2>
             <v-chip v-if="selectedRun.snapshot.trial" size="small" color="primary" variant="outlined">{{ tm('trial.test') }} · r{{ selectedRun.snapshot.trial.draft_revision }}</v-chip>
             <v-chip variant="tonal" :color="selectedRun.status === 'completed' ? 'success' : 'primary'">{{ tm(`v2.states.${selectedRun.status}`) }}</v-chip>
             <v-btn variant="text" :aria-pressed="runDisplay === 'workbench'" @click="runDisplay = 'workbench'">{{ tm('workbench.workspace') }}</v-btn>
             <v-btn variant="text" :aria-pressed="runDisplay === 'graph'" @click="runDisplay = 'graph'">{{ tm('progress.graph') }}</v-btn>
           </div>
-          <p class="workflow-text text-body-2 mb-3" data-testid="run-goal">{{ selectedRun.snapshot.task ?? Object.values(selectedRun.snapshot.inputs ?? {}).join(' · ') }}</p>
-          <p class="text-caption text-medium-emphasis mb-4">
+          <p class="workflow-text at-run-goal" data-testid="run-goal">{{ selectedRun.snapshot.task ?? Object.values(selectedRun.snapshot.inputs ?? {}).join(' · ') }}</p>
+          <p class="at-run-snapshot">
             <v-icon size="small" class="mr-1">mdi-lock-outline</v-icon>{{ tm("workbench.snapshotHint") }}
           </p>
           <nav v-show="runDisplay === 'workbench'" class="workbench-panel-nav mb-4" :aria-label="tm('workbench.panels')">
@@ -294,12 +264,13 @@
               />
             </div>
             <div ref="processPane" class="workbench-column workbench-process" @scroll="onProcessScroll">
-              <p class="text-caption text-medium-emphasis">{{ tm("progress.historyHint") }}</p>
+              <details class="at-process-history"><summary><v-icon icon="mdi-history" size="16" />{{ tm("progress.loadOlder") }}</summary><p class="text-caption text-medium-emphasis">{{ tm("progress.historyHint") }}</p><div class="at-history-actions">
               <v-btn variant="tonal" :disabled="historyBusy || historyDone[detailRun.run_id]" @click="loadOlderProcess">{{ tm("progress.loadOlder") }}</v-btn>
               <v-btn variant="text" :disabled="historyBusy || historyNext[detailRun.run_id + ':messages'] === null" @click="loadOlderHistory('messages')">{{ tm("progress.loadMessages") }}</v-btn>
               <v-btn variant="text" :disabled="historyBusy || historyNext[detailRun.run_id + ':events'] === null" @click="loadOlderHistory('events')">{{ tm("progress.loadEvents") }}</v-btn>
               <v-btn variant="text" :disabled="historyBusy || historyNext[detailRun.run_id + ':attempts'] === null" @click="loadOlderHistory('attempts')">{{ tm("progress.loadAttempts") }}</v-btn>
               <v-btn v-if="historyReading[detailRun.run_id] || historyTruncated[detailRun.run_id] || historyNewUpdates[detailRun.run_id]" variant="text" :loading="historyRestoring[detailRun.run_id]" @click="reloadLatestProcess">{{ tm("progress.reloadLatest") }}</v-btn>
+              </div></details>
               <p v-if="historyNewUpdates[detailRun.run_id]" class="text-info" role="status">{{ tm("progress.newActivity") }}</p>
               <p v-if="historyTruncated[detailRun.run_id]" class="text-warning">{{ tm("progress.historyWindow") }}</p>
               <p v-else-if="historyOlderHidden[detailRun.run_id]" class="text-caption">{{ tm("progress.olderHistoryHidden") }}</p>
@@ -310,7 +281,7 @@
           <section
             v-if="selectedRun.todos?.length"
             :aria-label="tm('human.title')"
-            class="my-4"
+            class="at-human-section"
           >
             <h3 class="text-h6">{{ tm("human.title") }}</h3>
             <p class="text-body-2">{{ tm("human.localWait") }}</p>
@@ -337,7 +308,7 @@
             <p class="workflow-text">{{ tm('v2.member') }}: {{ detailRun.snapshot.member?.member_id ?? '—' }}</p>
             <p class="workflow-text">{{ tm('child.root') }}: {{ selectedRun.run_id }}</p>
           </details>
-          <h3 class="text-h6 mt-6 mb-3">{{ tm("progress.artifacts") }}</h3>
+          <h3 class="at-artifacts-heading">{{ tm("progress.artifacts") }}</h3>
           <v-btn
             v-if="
               ['workflow_call_v2', 'team_call_v2'].includes(detailRun.snapshot.engine) &&
@@ -598,24 +569,22 @@
       :asset="editingAsset"
       :roles="roles"
       :catalog="catalog"
-      @saved="refresh"
+      @saved="refresh()"
       @started="trialStarted"
     />
     <v-dialog
       class="workbench-dialog"
       scrollable
       v-model="graphEditing"
-      max-width="1600"
+      max-width="1800"
       persistent
       content-class="graph-dialog-overlay"
     >
       <v-card class="graph-dialog-card">
-        <v-card-title class="text-h3 pa-4 pb-0 pl-6">{{
-          tm("graph.canvas")
-        }}</v-card-title>
+        <v-card-title class="text-h3 pa-4 pb-0 pl-6 at-canvas-title"><span class="at-asset-icon" aria-hidden="true"><v-icon icon="mdi-sitemap-outline" size="20" /></span>{{ tm("graph.canvas") }}</v-card-title>
         <v-card-text class="graph-dialog-content" :inert="saving || graphDraft.busy.value ? '' : undefined">
-          <DraftStatus :draft="graphDraft" @reload="reloadGraphDraft" @discard="graphEditing = false" @use-latest="useLatestDraft" />
-          <div class="d-flex flex-wrap ga-3 mb-3">
+
+          <div class="at-canvas-settings">
             <v-text-field
               v-model="graphForm.name"
               :label="tm('v2.name')"
@@ -635,7 +604,9 @@
               style="min-width: 220px"
             />
           </div>
-          <details :open="graphUsageInvalid" class="mb-3">
+          <div class="at-canvas-meta">
+          <DraftStatus :draft="graphDraft" @reload="reloadGraphDraft" @discard="graphEditing = false" @use-latest="useLatestDraft" />
+          <details :open="graphUsageInvalid" class="at-execution-settings">
             <summary class="text-subtitle-1">{{ tm("graph.executionSettings") }}</summary>
             <div class="d-flex flex-wrap ga-3 mt-3">
             <v-text-field
@@ -660,6 +631,7 @@
               @validation="graphUsageInvalid = $event"
             />
           </details>
+          </div>
           <WorkflowGraphCanvas
             class="graph-dialog-canvas"
             :key="graphEditorKey"
@@ -697,7 +669,7 @@
           <p class="text-caption mt-3">{{ tm("graph.saveHint") }}</p>
         </v-card-text>
         <v-card-actions
-          ><v-btn variant="tonal" :disabled="saving || graphDraft.busy.value" @click="openGraphTrial">{{
+          ><v-btn variant="tonal" prepend-icon="mdi-play-outline" class="at-primary-action" :disabled="saving || graphDraft.busy.value" @click="openGraphTrial">{{
             tm("trial.title")
           }}</v-btn><v-spacer /><v-btn
             variant="text"
@@ -1439,14 +1411,31 @@ let timer: ReturnType<typeof setInterval> | undefined;
 let disposed = false;
 let artifactRead = 0;
 let runRead = 0;
+let refreshingRead: number | null = null;
 let openingRun = false;
 
-async function refresh() {
-  if (loading.value || currentOperation.value || openingRun) return;
+/**
+ * Refresh visible data while keeping timer-driven observations quiet.
+ *
+ * Args:
+ *   background: Avoid foreground loading state and skip polling in history.
+ *
+ * Returns:
+ *   Resolves when the current observation completes or becomes obsolete.
+ */
+async function refresh(background = false) {
+  if (
+    loading.value ||
+    refreshingRead === runRead ||
+    currentOperation.value ||
+    openingRun ||
+    (background && runView.value === "history")
+  )
+    return;
   const read = ++runRead;
-  loading.value = true;
+  refreshingRead = read;
+  if (!background) loading.value = true;
   try {
-    error.value = "";
     if (props.mode === "assets") {
       const [assetData, roleData, runData, resources, workflowDrafts, teamDrafts] = await Promise.all([
         workflowAssetsApi.list(),
@@ -1467,7 +1456,12 @@ async function refresh() {
         workflowAssetsApi.runs(),
         workflowAssetsApi.humanRequests(),
       ]);
-      if (disposed || read !== runRead) return;
+      if (
+        disposed ||
+        read !== runRead ||
+        (background && runView.value === "history")
+      )
+        return;
       runs.value = runData.runs;
       humanRequests.value = inboxData.requests;
       const id = route.query.workflow_run ?? selectedRun.value?.run_id;
@@ -1481,14 +1475,14 @@ async function refresh() {
             id,
             selectedRun.value.cursor,
           );
-          if (disposed || read !== runRead) return;
+          if (disposed || read !== runRead || (background && runView.value === "history")) return;
           if (!changes.snapshot && changes.events?.some((event: any) =>
             typeof event.kind === "string" && !event.kind.startsWith("process.") &&
             !event.kind.startsWith("checkpoint.") &&
             !["usage.started", "usage.reported", "usage.resumed"].includes(event.kind),
           )) {
             const state = await workflowAssetsApi.run(id);
-            if (disposed || read !== runRead) return;
+            if (disposed || read !== runRead || (background && runView.value === "history")) return;
             changes.snapshot = { ...state, cursor: changes.cursor };
           }
           if (changes.snapshot) {
@@ -1532,7 +1526,12 @@ async function refresh() {
           }
         } else {
           const snapshot = await workflowAssetsApi.run(id);
-          if (disposed || read !== runRead) return;
+          if (
+            disposed ||
+            read !== runRead ||
+            (background && runView.value === "history")
+          )
+            return;
           selectedRun.value = snapshot;
           selectedTaskNode.value = snapshot.tasks?.[0]?.run_id ?? null;
         }
@@ -1544,15 +1543,21 @@ async function refresh() {
           selectedArtifact.value.artifact_id !==
             detailRun.value.result_ref?.artifact_id
         ) {
-          await loadArtifact();
+          if (!(await loadArtifact())) return;
         }
       }
     }
+    if (!disposed && read === runRead) error.value = "";
   } catch (err) {
-    if (!disposed && read === runRead)
+    if (
+      !disposed &&
+      read === runRead &&
+      !(background && runView.value === "history")
+    )
       error.value = extractApiError(err, tm("errors.operationFailed")).message;
   } finally {
     if (read === runRead) loading.value = false;
+    if (refreshingRead === read) refreshingRead = null;
   }
 }
 
@@ -1932,10 +1937,16 @@ async function applyRunControl(
   }
 }
 
+/**
+ * Read the selected artifact without discarding a newer version selection.
+ *
+ * Returns:
+ *   Whether the artifact read succeeded or no artifact was required.
+ */
 async function loadArtifact() {
   const read = ++artifactRead;
   const ref = detailRun.value?.result_ref;
-  if (!ref) return;
+  if (!ref) return true;
   selectedArtifact.value = null;
   try {
     const artifact = await workflowAssetsApi.artifact(
@@ -1943,12 +1954,16 @@ async function loadArtifact() {
       Number(artifactVersion.value),
     );
     // A slower response must not overwrite a more recent version selection.
-    if (read === artifactRead) selectedArtifact.value = artifact;
+    if (!disposed && read === artifactRead && runView.value !== "history") {
+      selectedArtifact.value = artifact;
+      return true;
+    }
   } catch (err) {
-    if (read === artifactRead) {
+    if (!disposed && read === artifactRead && runView.value !== "history") {
       error.value = extractApiError(err, tm("errors.operationFailed")).message;
     }
   }
+  return false;
 }
 
 function prepareRevision() {
@@ -2036,7 +2051,8 @@ async function readFile(fileId: string, download: boolean) {
 onMounted(async () => {
   await refresh();
   // Poll persisted progress. Unmount only closes observation, never the run.
-  if (!disposed && props.mode === "runs") timer = setInterval(refresh, 2000);
+  if (!disposed && props.mode === "runs")
+    timer = setInterval(() => void refresh(true), 2000);
 });
 onUnmounted(() => {
   disposed = true;
@@ -2046,81 +2062,98 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
-.workbench-columns { display: grid; grid-template-columns: minmax(210px, 0.8fr) minmax(320px, 1.65fr) minmax(250px, 1fr); gap: 20px; align-items: start; }
-.workbench-column { min-width: 0; }
-.workbench-process { max-height: 75vh; overflow-y: auto; }
+.workflow-workspace { min-width: 0; container-type: inline-size; }
+.at-asset-count { display: grid; place-items: center; min-width: 24px; height: 24px; padding: 0 7px; border: 1px solid var(--at-line); border-radius: 7px; color: var(--at-muted); font-size: 12px; }
+.at-card-topline { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
+.at-card-description { min-height: 42px; margin-top: 9px; color: var(--at-muted); font-size: 12px; line-height: 1.8; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+.at-card-metadata { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; color: var(--at-muted); font-size: 11px; line-height: 1.7; }
+.at-meta-divider { margin-inline: 5px; opacity: .6; }
+.at-draft-indicator { display: inline-flex; align-items: center; gap: 5px; }
+.at-draft-indicator i { width: 5px; height: 5px; background: #bd8e45; border-radius: 50%; }
+.at-card-secondary-actions { display: flex; align-items: center; }
+.at-card-icon-action { min-width: 30px; width: 30px; height: 34px; padding: 0; color: var(--at-muted); }
+.at-card-icon-action:hover { color: var(--at-accent); }
+.at-card-footer { gap: 3px !important; padding: 11px 12px !important; }
+.at-card-footer :deep(.v-btn:not(.at-card-icon-action)) { padding-inline: 10px; }
+.at-empty-state { padding: 32px; border: 1px dashed var(--at-line); background: var(--at-surface) !important; color: var(--at-muted) !important; }
+.at-run-filters { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; margin-bottom: 16px; }
+.at-run-filters :deep(.v-btn) { color: var(--at-muted) !important; }
+.at-run-filters :deep(.v-btn[aria-pressed='true']) { background: var(--at-surface); color: var(--at-accent) !important; box-shadow: 0 1px 6px #2433420a; }
+.at-run-filters :deep(.v-select .v-field) { font-size: 12px; }
+.workflow-run-list > summary { cursor: pointer; font-size: 12px !important; font-weight: 550; color: var(--at-muted); padding: 8px 0; }
+.workflow-run-list :deep(.v-card) { border: 1px solid var(--at-line); }
+.at-run-workspace { overflow: hidden; box-shadow: var(--at-shadow); }
+.workbench-body { padding: 0 !important; }
+.at-run-header { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 20px 22px 10px; }
+.at-run-header h2 { font-size: 18px !important; font-weight: 650 !important; color: var(--at-ink); line-height: 1.5; }
+.at-run-header :deep(.v-btn) { padding-inline: 10px; }
+.at-run-header :deep(.v-btn[aria-pressed='true']) { background: var(--at-accent-soft); color: var(--at-accent); }
+.at-run-goal { padding: 0 22px; color: var(--at-muted); font-size: 12px; line-height: 1.7; margin: 0; }
+.at-run-goal:empty { display: none; }
+.at-run-snapshot { margin: 0; padding: 10px 22px 16px; color: var(--at-muted); font-size: 11px; border-bottom: 1px solid var(--at-line); }
+.workbench-columns { display: grid; grid-template-columns: 220px minmax(0, 1fr) 310px; align-items: stretch; gap: 0; }
+.workbench-column { min-width: 0; max-height: max(520px, calc(100dvh - 300px)); overflow: auto; scrollbar-width: thin; scrollbar-color: var(--at-line) transparent; }
+.workbench-tasks { padding: 18px 12px; background: color-mix(in srgb, var(--at-paper) 45%, var(--at-surface)); border-right: 1px solid var(--at-line); }
+.workbench-process { padding: 18px 22px 26px; min-height: 520px; }
+.workbench-results { padding: 20px 16px; border-left: 1px solid var(--at-line); background: color-mix(in srgb, var(--at-paper) 25%, var(--at-surface)); font-size: 12px; }
+.workbench-results :deep(.text-h6), .at-artifacts-heading { font-size: 13px !important; font-weight: 650; }
+.workbench-results :deep(.text-body-2) { font-size: 12px !important; line-height: 1.8; }
+.workbench-results > details { border-top: 1px solid var(--at-line); padding-top: 12px; color: var(--at-muted); font-size: 11px; }
+.workbench-results summary { cursor: pointer; }
+.at-human-section { margin-bottom: 22px; }
+.at-human-section > p { color: var(--at-muted); font-size: 11px !important; line-height: 1.75; margin: 6px 0 14px; }
+.at-artifacts-heading { margin: 24px 0 14px; padding-top: 18px; border-top: 1px solid var(--at-line); }
+.at-process-history { border-bottom: 1px solid var(--at-line); padding-bottom: 12px; margin-bottom: 18px; color: var(--at-muted); }
+.at-process-history > summary { display: flex; align-items: center; gap: 6px; cursor: pointer; width: fit-content; font-size: 11px; }
+.at-process-history > p { font-size: 11px !important; margin-top: 10px; }
+.at-history-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.at-history-actions :deep(.v-btn) { height: 30px; padding-inline: 8px; font-size: 11px; }
 .workbench-panel-nav { display: none; }
-@media (max-width: 1100px) {
+.workflow-text { white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; max-width: 100%; font: inherit; }
+.workflow-name { min-width: 0; overflow-wrap: anywhere; }
+.workflow-result { max-height: 28rem; overflow: auto; padding: 14px; background: var(--at-paper); border: 1px solid var(--at-line); border-radius: 9px; line-height: 1.8; font-size: 12px; }
+:deep(.graph-dialog-overlay) { height: calc(100dvh - 32px); max-height: calc(100dvh - 32px); }
+.graph-dialog-card { height: 100%; min-height: 0; }
+.at-canvas-title { display: flex; align-items: center; gap: 12px; font-size: 18px !important; padding-block: 10px !important; border-bottom: 1px solid var(--at-line); }
+.at-canvas-title .at-asset-icon { width: 32px; height: 32px; border-radius: 8px; }
+.graph-dialog-content { display: flex; flex-direction: column; min-height: 0; flex: 1 1 0; overflow-y: auto; padding: 14px 20px 0 !important; }
+:deep(.graph-dialog-overlay > .graph-dialog-card > .graph-dialog-content) { overflow-y: auto; }
+.graph-dialog-content > :not(.graph-dialog-canvas) { flex: 0 0 auto; }
+.at-canvas-settings { display: grid; grid-template-columns: minmax(180px, 1.6fr) minmax(220px, 1fr); gap: 12px; margin-bottom: 10px; }
+.at-canvas-meta { display: flex; align-items: start; flex-wrap: wrap; gap: 8px 20px; justify-content: space-between; margin-bottom: 10px; color: var(--at-muted); font-size: 11px; }
+.at-canvas-meta > :deep(.mb-3) { margin-bottom: 0 !important; }
+.at-execution-settings { color: var(--at-muted); }
+.at-execution-settings[open] { flex-basis: 100%; }
+.at-execution-settings > summary { font-size: 12px !important; cursor: pointer; }
+.graph-dialog-canvas { display: flex; flex: 1 1 0; flex-direction: column; min-height: 400px; }
+.graph-dialog-canvas :deep(.graph-columns) { flex: 1 1 0; height: auto; min-height: 0; grid-template-rows: minmax(0, 1fr); }
+.graph-dialog-canvas :deep(.graph-footer) { padding: 6px 12px; font-size: 11px !important; }
+.graph-dialog-canvas :deep(.loop-panel) { padding: 5px 12px; }
+.graph-dialog-canvas :deep(.graph-toolbar) { padding: 6px 12px; }
+@container (max-width: 1000px) {
   .workbench-columns { grid-template-columns: minmax(0, 1fr); }
-  .workbench-process { max-height: 70vh; }
-  .workbench-panel-nav { display: flex; flex-wrap: wrap; gap: 4px; }
+  .workbench-column { max-height: 70vh; }
+  .workbench-process { min-height: 400px; }
+  .workbench-panel-nav { display: flex; flex-wrap: wrap; gap: 4px; padding: 12px 18px; margin-bottom: 0 !important; border-bottom: 1px solid var(--at-line); }
   .workbench-columns:not([data-active-panel='tasks']) > .workbench-tasks,
   .workbench-columns:not([data-active-panel='process']) > .workbench-process,
   .workbench-columns:not([data-active-panel='results']) > .workbench-results { display: none; }
-}
-@media (max-width: 600px) {
-  .workbench-body { padding: 16px; }
-  .workbench-panel-nav { display: grid; grid-template-columns: auto auto auto; }
-  .workbench-panel-nav :deep(.v-btn) { min-width: 0; padding-inline: 6px; font-size: 12px; }
-}
-
-:deep(.graph-dialog-overlay) {
-  height: min(900px, calc(100vh - 48px));
-}
-.graph-dialog-card {
-  height: 100%;
-  min-height: 0;
-}
-.graph-dialog-content {
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  flex: 1 1 0;
-  overflow-y: auto;
-}
-:deep(.graph-dialog-overlay > .graph-dialog-card > .graph-dialog-content) {
-  overflow-y: auto;
-}
-.graph-dialog-content > :not(.graph-dialog-canvas) {
-  flex: 0 0 auto;
-}
-.graph-dialog-canvas {
-  display: flex;
-  flex: 1 1 auto;
-  flex-direction: column;
-  min-height: min(480px, 65vh);
-}
-.graph-dialog-canvas :deep(.graph-columns) {
-  flex: 1 1 0;
-  height: auto;
-  min-height: 0;
-  grid-template-rows: minmax(0, 1fr);
+  .workbench-tasks, .workbench-results { border: 0; }
 }
 @media (max-width: 1000px) {
-  :deep(.graph-dialog-overlay > .graph-dialog-card > .graph-dialog-content) {
-    overflow-y: auto;
-  }
-  .graph-dialog-canvas {
-    flex: 0 0 auto;
-  }
-  .graph-dialog-canvas :deep(.graph-columns) {
-    flex: 0 0 auto;
-    grid-template-rows: none;
-  }
+  .graph-dialog-canvas { flex: 0 0 auto; }
+  .graph-dialog-canvas :deep(.graph-columns) { flex: 0 0 auto; grid-template-rows: none; }
 }
-.workflow-text {
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  word-break: break-word;
-  max-width: 100%;
-  font: inherit;
-}
-.workflow-name {
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-.workflow-result {
-  max-height: 28rem;
-  overflow: auto;
+@media (max-width: 600px) {
+  .at-card-icon-action { width: 34px; height: 38px; }
+  .at-run-header { padding: 16px; gap: 8px; }
+  .at-run-header h2 { flex-basis: 100%; }
+  .at-run-goal, .at-run-snapshot { padding-inline: 16px; }
+  .workbench-process, .workbench-results { padding: 16px; }
+  .workbench-panel-nav { display: grid; grid-template-columns: 1fr 1fr 1fr; padding: 8px; }
+  .workbench-panel-nav :deep(.v-btn) { min-width: 0; padding-inline: 6px; font-size: 12px; }
+  .at-canvas-settings { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+  .at-canvas-settings :deep(.v-input) { min-width: 0 !important; }
+  .graph-dialog-content { padding: 12px !important; }
 }
 </style>

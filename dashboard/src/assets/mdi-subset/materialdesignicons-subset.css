@@ -1,4 +1,4 @@
-/* Auto-generated MDI subset – 390 icons */
+/* Auto-generated MDI subset – 397 icons */
 /* Do not edit manually. Run: pnpm run subset-icons */
 
 @font-face {
@@ -24,6 +24,10 @@
   content: "\F0004";
 }
 
+.mdi-account-check-outline::before {
+  content: "\F0BE2";
+}
+
 .mdi-account-edit::before {
   content: "\F06BC";
 }
@@ -36,6 +40,10 @@
   content: "\F0849";
 }
 
+.mdi-account-group-outline::before {
+  content: "\F0B58";
+}
+
 .mdi-account-lock-outline::before {
   content: "\F115F";
 }
@@ -46,6 +54,10 @@
 
 .mdi-account-outline::before {
   content: "\F0013";
+}
+
+.mdi-account-question-outline::before {
+  content: "\F0B5A";
 }
 
 .mdi-account-voice::before {
@@ -566,6 +578,10 @@
 
 .mdi-export::before {
   content: "\F0207";
+}
+
+.mdi-export-variant::before {
+  content: "\F0B93";
 }
 
 .mdi-eye::before {
@@ -1188,6 +1204,10 @@
   content: "\F040D";
 }
 
+.mdi-play-outline::before {
+  content: "\F0F1B";
+}
+
 .mdi-plus::before {
   content: "\F0415";
 }
@@ -1332,6 +1352,10 @@
   content: "\F049F";
 }
 
+.mdi-sitemap-outline::before {
+  content: "\F199C";
+}
+
 .mdi-skip-next-circle-outline::before {
   content: "\F0662";
 }
@@ -1470,6 +1494,10 @@
 
 .mdi-tools::before {
   content: "\F1064";
+}
+
+.mdi-transit-connection-variant::before {
+  content: "\F0D3D";
 }
 
 .mdi-translate::before {

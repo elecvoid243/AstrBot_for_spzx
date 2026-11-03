@@ -1,11 +1,14 @@
 <template>
   <section :aria-label="tm('roles.title')">
-    <div class="d-flex align-center flex-wrap ga-3 mb-4">
+    <div class="at-asset-toolbar d-flex align-center flex-wrap ga-3 mb-4">
       <h2 class="text-h5">{{ tm("roles.title") }}</h2>
+      <v-spacer />
       <v-btn
         data-testid="new-role"
         variant="tonal"
         color="primary"
+        class="at-primary-action"
+        prepend-icon="mdi-plus"
         @click="edit()"
         >{{ tm("roles.create") }}</v-btn
       >
@@ -13,18 +16,28 @@
         tm("page.refresh")
       }}</v-btn>
     </div>
-    <p class="text-body-2 mb-4">{{ tm("roles.intro") }}</p>
+    <p class="at-asset-intro">{{ tm("roles.intro") }}</p>
     <v-alert v-if="loadError" type="error" variant="tonal" class="mb-4">{{
       loadError
     }}</v-alert>
     <p v-if="loading" role="status">{{ tm("roles.loading") }}</p>
     <p v-else-if="!roles.length && !loadError">{{ tm("roles.empty") }}</p>
-    <div class="role-grid">
-      <v-card v-for="role in roles" :key="role.role_id" variant="outlined">
+    <div class="role-grid at-asset-grid">
+      <v-card
+        v-for="role in roles"
+        :key="role.role_id"
+        variant="outlined"
+        class="role-card at-asset-card"
+      >
         <v-card-text>
-          <h3 class="role-name text-h6">
-            {{ role.definition.name || tm("draft.untitled") }}
-          </h3>
+          <div class="role-card-heading">
+            <span class="role-icon" aria-hidden="true"
+              ><v-icon icon="mdi-account-outline" size="21"
+            /></span>
+            <h3 class="role-name text-h6">
+              {{ role.definition.name || tm("draft.untitled") }}
+            </h3>
+          </div>
           <v-chip
             size="x-small"
             variant="outlined"
@@ -45,7 +58,7 @@
           >
             {{ tm("draft.editing") }}
           </p>
-          <p class="role-name my-2">
+          <p class="role-description role-name my-2">
             {{
               role.definition.description ||
               role.definition.prompt ||
@@ -278,7 +291,7 @@
                 </v-expansion-panel>
               </v-expansion-panels>
             </div>
-            <aside :aria-label="tm('roles.effective')">
+            <aside class="role-preview" :aria-label="tm('roles.effective')">
               <h3 class="text-h6 mb-3">{{ tm("roles.effective") }}</h3>
               <p v-if="previewStale" role="status" class="mb-3">
                 {{ tm("roles.previewStale") }}
@@ -509,7 +522,8 @@ async function load() {
       const published = roles.value.find(
         (role) => role.role_id === item.asset_id,
       );
-      if (published) published.hasDraft = item.published_revision !== item.revision;
+      if (published)
+        published.hasDraft = item.published_revision !== item.revision;
       else
         roles.value.push({
           role_id: item.asset_id,
@@ -741,6 +755,58 @@ onMounted(load);
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(min(100%, 270px), 1fr));
   gap: 16px;
+}
+.role-card {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border-color: var(--at-line, rgba(var(--v-theme-on-surface), 0.12));
+  border-radius: var(--at-radius, 12px);
+  background: var(--at-surface, rgb(var(--v-theme-surface)));
+}
+.role-card :deep(.v-card-text) {
+  flex: 1;
+  padding: 18px;
+}
+.role-card :deep(.v-card-actions) {
+  border-top: 1px solid var(--at-line, rgba(var(--v-theme-on-surface), 0.12));
+  padding: 8px 12px;
+}
+.role-card-heading {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+.role-icon {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  color: var(--at-accent, #287fad);
+  background: var(--at-accent-soft, #eaf4fb);
+}
+.role-description {
+  color: var(--at-muted, #718191);
+  line-height: 1.55;
+}
+.role-preview {
+  padding: 18px;
+  border: 1px solid var(--at-line, rgba(var(--v-theme-on-surface), 0.12));
+  border-radius: var(--at-radius, 12px);
+  background: var(--at-paper, rgba(var(--v-theme-on-surface), 0.025));
+  align-self: start;
+}
+.role-editor :deep(.v-expansion-panel) {
+  border: 1px solid var(--at-line, rgba(var(--v-theme-on-surface), 0.12));
+  border-radius: 10px !important;
+  margin-bottom: 8px;
+  overflow: hidden;
+}
+.role-editor :deep(.v-expansion-panel-title) {
+  font-weight: 600;
 }
 .role-name {
   overflow-wrap: anywhere;

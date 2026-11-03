@@ -2,11 +2,14 @@
   <div class="dashboard-page agent-teams-page">
     <v-container fluid class="dashboard-shell pa-4 pa-md-6">
       <div class="dashboard-header">
-        <div class="dashboard-header-main">
+        <div class="dashboard-header-main at-page-heading">
+          <span class="at-page-mark" aria-hidden="true"><v-icon icon="mdi-graph-outline" size="24" /></span>
+          <div>
           <div class="d-flex align-center flex-wrap ga-2">
             <h1 class="dashboard-title">{{ tm("page.title") }}</h1>
           </div>
           <p class="dashboard-subtitle">{{ tm("workbench.intro") }}</p>
+          </div>
         </div>
       </div>
       <nav
@@ -15,6 +18,7 @@
       >
         <v-btn
           :variant="tab !== 'runs' ? 'tonal' : 'text'"
+          :aria-pressed="tab !== 'runs'"
           color="primary"
           prepend-icon="mdi-folder-outline"
           @click="tab = 'assets'"
@@ -22,6 +26,7 @@
         >
         <v-btn
           :variant="tab === 'runs' ? 'tonal' : 'text'"
+          :aria-pressed="tab === 'runs'"
           color="primary"
           prepend-icon="mdi-play-circle-outline"
           @click="tab = 'runs'"
@@ -96,8 +101,8 @@ watch(tab, (selected, previous) => {
 </script>
 
 <style scoped>
-@import "@/styles/dashboard-shell.css";
 .agent-teams-page {
-  padding-bottom: 40px;
+  background: var(--at-paper);
+  min-height: calc(100vh - 64px);
 }
 </style>

@@ -20,94 +20,103 @@
           error
         }}</v-alert>
         <p class="text-body-2 mb-4">{{ tm("autonomous.explanation") }}</p>
-        <v-text-field
-          v-model="form.name"
-          :label="tm('autonomous.name')"
-          data-testid="team-name"
-        />
-        <v-select
-          v-model="form.default_provider_id"
-          :items="catalog.models"
-          item-title="name"
-          item-value="id"
-          :label="tm('graph.defaultModel')"
-          clearable
-        />
-        <TeamPresetEditor
-          :preset="form.coordinator"
-          :initially-open="!asset"
-          :title="tm('autonomous.coordinator')"
-          :roles="roles"
-          :catalog="catalog"
-          :default-provider="form.default_provider_id"
-        />
-        <TeamPresetEditor
-          v-for="(preset, index) in form.allowed_roles"
-          :key="preset.id"
-          :preset="preset"
-          :title="`${tm('autonomous.allowedRoles')} ${index + 1}`"
-          :roles="roles"
-          :catalog="catalog"
-          :default-provider="form.default_provider_id"
-          removable
-          @remove="form.allowed_roles.splice(index, 1)"
-        />
-        <v-btn variant="tonal" class="mb-4" @click="addPreset">{{
-          tm("autonomous.addPreset")
-        }}</v-btn>
-        <div class="team-limits">
+        <div class="team-basics">
           <v-text-field
-            v-model.number="form.max_members"
-            type="number"
-            min="2"
-            max="100"
-            :label="tm('autonomous.maxMembers')"
-            :hint="tm('autonomous.coordinatorCount')"
-            persistent-hint
+            v-model="form.name"
+            :label="tm('autonomous.name')"
+            data-testid="team-name"
           />
-          <v-text-field
-            v-model.number="form.max_parallel"
-            type="number"
-            min="1"
-            max="100"
-            :label="tm('graph.parallel')"
-          />
-          <v-text-field
-            v-model.number="form.max_tasks"
-            type="number"
-            min="1"
-            max="100"
-            :label="tm('autonomous.maxTasks')"
-          />
-          <v-text-field
-            v-model.number="form.max_depth"
-            type="number"
-            min="1"
-            max="20"
-            :label="tm('child.maxDepth')"
+          <v-select
+            v-model="form.default_provider_id"
+            :items="catalog.models"
+            item-title="name"
+            item-value="id"
+            :label="tm('graph.defaultModel')"
+            clearable
           />
         </div>
-        <RunLimitsForm
-          v-model="form.limits"
-          @validation="usageInvalid = $event"
-        />
-        <AllowedWorkflowsPanel
-          :model-value="form.allowed_workflows ?? []"
-          @update:model-value="form.allowed_workflows = $event"
-          :active="modelValue"
-          @validation="workflowInvalid = $event"
-        />
-        <v-textarea
-          v-model="approval"
-          :label="tm('autonomous.approval')"
-          rows="2"
-        />
-        <v-textarea v-model="contract" :label="tm('v2.contract')" rows="3" />
+        <div class="team-members">
+          <TeamPresetEditor
+            :preset="form.coordinator"
+            :initially-open="!asset"
+            :title="tm('autonomous.coordinator')"
+            :roles="roles"
+            :catalog="catalog"
+            :default-provider="form.default_provider_id"
+          />
+          <TeamPresetEditor
+            v-for="(preset, index) in form.allowed_roles"
+            :key="preset.id"
+            :preset="preset"
+            :title="`${tm('autonomous.allowedRoles')} ${index + 1}`"
+            :roles="roles"
+            :catalog="catalog"
+            :default-provider="form.default_provider_id"
+            removable
+            @remove="form.allowed_roles.splice(index, 1)"
+          />
+          <v-btn variant="tonal" class="mb-4" @click="addPreset">{{
+            tm("autonomous.addPreset")
+          }}</v-btn>
+        </div>
+        <div class="team-settings">
+          <div class="team-limits">
+            <v-text-field
+              v-model.number="form.max_members"
+              type="number"
+              min="2"
+              max="100"
+              :label="tm('autonomous.maxMembers')"
+              :hint="tm('autonomous.coordinatorCount')"
+              persistent-hint
+            />
+            <v-text-field
+              v-model.number="form.max_parallel"
+              type="number"
+              min="1"
+              max="100"
+              :label="tm('graph.parallel')"
+            />
+            <v-text-field
+              v-model.number="form.max_tasks"
+              type="number"
+              min="1"
+              max="100"
+              :label="tm('autonomous.maxTasks')"
+            />
+            <v-text-field
+              v-model.number="form.max_depth"
+              type="number"
+              min="1"
+              max="20"
+              :label="tm('child.maxDepth')"
+            />
+          </div>
+          <RunLimitsForm
+            v-model="form.limits"
+            @validation="usageInvalid = $event"
+          />
+          <AllowedWorkflowsPanel
+            :model-value="form.allowed_workflows ?? []"
+            @update:model-value="form.allowed_workflows = $event"
+            :active="modelValue"
+            @validation="workflowInvalid = $event"
+          />
+          <v-textarea
+            v-model="approval"
+            :label="tm('autonomous.approval')"
+            rows="2"
+          />
+          <v-textarea v-model="contract" :label="tm('v2.contract')" rows="3" />
+        </div>
       </v-card-text>
-      <v-card-actions class="flex-wrap">
-        <v-btn variant="tonal" :disabled="saving || draft.busy.value" @click="openTrial">{{
-          tm("trial.title")
-        }}</v-btn>
+      <v-card-actions class="team-actions flex-wrap pa-4">
+        <v-btn
+          variant="tonal"
+          :disabled="saving || draft.busy.value"
+          @click="openTrial"
+          >{{ tm("trial.title") }}</v-btn
+        >
         <v-spacer />
         <v-btn variant="text" :disabled="saving" @click="closeEditor">{{
           tm("v2.close")
@@ -184,7 +193,9 @@ async function openTrial() {
       definition: {
         ...form.value,
         approval_question: approval.value.trim() || null,
-        output_contract: contract.value.trim() ? JSON.parse(contract.value) : null,
+        output_contract: contract.value.trim()
+          ? JSON.parse(contract.value)
+          : null,
       },
       editor: { approval: approval.value, contract: contract.value },
     });
@@ -391,8 +402,26 @@ async function save() {
 </script>
 
 <style scoped>
-.team-role {
-  overflow-wrap: anywhere;
+.team-basics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.team-members,
+.team-settings {
+  padding: 16px;
+  margin-bottom: 16px;
+  border: 1px solid var(--at-line, rgba(var(--v-theme-on-surface), 0.12));
+  border-radius: var(--at-radius, 12px);
+  background: var(--at-paper, rgba(var(--v-theme-on-surface), 0.025));
+}
+.team-actions {
+  border-top: 1px solid var(--at-line, rgba(var(--v-theme-on-surface), 0.12));
+}
+.team-members :deep(.v-btn:focus-visible),
+.team-actions :deep(.v-btn:focus-visible) {
+  outline: 2px solid var(--at-accent, #287fad);
+  outline-offset: 2px;
 }
 .team-limits {
   display: grid;
@@ -400,6 +429,7 @@ async function save() {
   gap: 12px;
 }
 @media (max-width: 600px) {
+  .team-basics,
   .team-limits {
     grid-template-columns: minmax(0, 1fr);
   }

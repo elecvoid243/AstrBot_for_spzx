@@ -25,6 +25,14 @@
       :aria-label="tm('editor.handleSource')"
     />
 
+    <div class="at-node-type-icon" :class="'kind-' + (data.nodeKind || 'agent')" aria-hidden="true">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+        <template v-if="data.nodeKind === 'control'"><circle cx="6" cy="5" r="2"/><circle cx="18" cy="6" r="2"/><circle cx="18" cy="18" r="2"/><path d="M6 7v3c0 5 4 8 10 8M6 10c0-3 4-4 10-4"/></template>
+        <template v-else-if="data.nodeKind === 'human'"><circle cx="12" cy="8" r="3"/><path d="M5 20c0-4 3-6 7-6s7 2 7 6"/></template>
+        <template v-else-if="data.nodeKind === 'call'"><rect x="4" y="5" width="16" height="14" rx="3"/><path d="M8 12h8m-3-3 3 3-3 3"/></template>
+        <template v-else><rect x="4" y="7" width="16" height="12" rx="4"/><path d="M12 4v3M8 12h.01M16 12h.01M9 16h6"/></template>
+      </svg>
+    </div>
     <div class="at-node-header">
       <span class="at-node-title">{{ titleText }}</span>
       <span v-if="data.nodeNumber !== undefined" class="at-node-number">#{{ data.nodeNumber }}</span>
@@ -91,6 +99,7 @@ export interface MemberFlowNodeData {
   configLabel?: string;
   personaLabel?: string;
   approval?: boolean;
+  nodeKind?: string;
   controlKind?: string;
   trueLabel?: string;
   falseLabel?: string;
@@ -351,4 +360,21 @@ const cardClasses = computed(() => ({
 .member-flow-node :deep(.vue-flow__handle-right) {
   right: -4px;
 }
+
+.member-flow-node { position: relative; padding: 12px; border-color: var(--at-line, #d8e2eb); background: var(--at-surface, #fff); color: var(--at-ink, #263849); box-shadow: var(--at-shadow, 0 3px 10px #26405710); }
+.at-node-type-icon { display: grid; place-items: center; width: 28px; height: 28px; margin-bottom: 9px; border-radius: 8px; color: var(--at-accent, #287fad); background: var(--at-accent-soft, #eaf4fa); }
+.at-node-type-icon svg { width: 16px; height: 16px; }
+.at-node-type-icon.kind-control { color: #8066a6; background: #f1edf8; }
+.at-node-type-icon.kind-human { color: #a47332; background: #fbf2e4; }
+.at-node-type-icon.kind-call { color: #568374; background: #eaf5f0; }
+.at-node-member, .at-node-task, .at-node-footer, .at-node-number { color: var(--at-muted, #788b9b); }
+.at-node-member { font-weight: 400; }
+.at-node-footer { display: flex; flex-wrap: wrap; gap: 8px; border-top: 1px solid var(--at-line, #dce5ed); }
+.member-flow-node.selected { outline-color: var(--at-accent, #287fad); }
+.member-flow-node :deep(.vue-flow__handle) { width: 12px; height: 12px; border: 2px solid var(--at-accent, #287fad); border-radius: 50%; background: var(--at-surface, #fff); }
+.member-flow-node :deep(.vue-flow__handle::after) { content: ""; position: absolute; inset: -8px; }
+.member-flow-node :deep(.vue-flow__handle-left) { left: -6px; }
+.member-flow-node :deep(.vue-flow__handle-right) { right: -6px; }
+.member-flow-node :deep(.vue-flow__handle:focus-visible) { outline: 3px solid var(--at-accent, #287fad); outline-offset: 3px; }
+@media (prefers-reduced-motion: reduce) { .member-flow-node.at-node-running { animation: none; } }
 </style>

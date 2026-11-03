@@ -1,7 +1,10 @@
 <template>
-  <v-expansion-panels v-model="open" class="mb-4">
+  <v-expansion-panels v-model="open" class="preset-card mb-4">
     <v-expansion-panel value="details">
       <v-expansion-panel-title>
+        <span class="preset-icon" aria-hidden="true"
+          ><v-icon icon="mdi-account-outline" size="20"
+        /></span>
         <div class="preset-summary">
           <strong data-testid="preset-name"
             >{{ title }} ·
@@ -371,9 +374,37 @@ function setOverride(field: string, enabled: boolean | null) {
 }
 </script>
 <style scoped>
+.preset-card :deep(.v-expansion-panel) {
+  border: 1px solid var(--at-line, rgba(var(--v-theme-on-surface), 0.12));
+  border-radius: 10px !important;
+  background: var(--at-surface, rgb(var(--v-theme-surface)));
+  overflow: hidden;
+}
+.preset-card :deep(.v-expansion-panel-title) {
+  gap: 12px;
+}
+.preset-card :deep(.v-expansion-panel-title:focus-visible) {
+  outline: 2px solid var(--at-accent, #287fad);
+  outline-offset: -3px;
+}
+.preset-icon {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  color: var(--at-accent, #287fad);
+  background: var(--at-accent-soft, #eaf4fb);
+}
 .preset-summary {
+  min-width: 0;
   overflow-wrap: anywhere;
   padding-right: 12px;
+}
+.preset-summary .text-caption {
+  color: var(--at-muted, #718191);
+  margin-top: 4px;
 }
 .preview {
   white-space: pre-wrap;

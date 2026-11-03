@@ -1,5 +1,5 @@
 <template>
-  <section aria-labelledby="run-history-title">
+  <section class="run-history" aria-labelledby="run-history-title">
     <div class="d-flex flex-wrap align-center ga-2 mb-3">
       <h2 id="run-history-title" class="text-h6">
         {{ tm("runHistory.title") }}
@@ -31,14 +31,14 @@
         v-for="record in visibleRecords"
         :key="record.source.id"
         variant="outlined"
-        class="mb-3"
+        class="history-record mb-3"
       >
         <v-card-text class="d-flex flex-wrap align-center ga-3">
           <div class="history-name flex-grow-1">
             <strong>{{ record.title }}</strong>
             <v-chip size="small" class="ml-2">{{ tm(record.trial ? 'trial.test' : 'trial.production') }}</v-chip>
             <div class="d-flex flex-wrap ga-2 my-2">
-              <span>{{ tm(`v2.states.${record.status}`) }}</span>
+              <span class="history-status">{{ tm(`v2.states.${record.status}`) }}</span>
             </div>
             <p class="history-text">{{ record.goal }}</p>
             <p class="text-caption history-text">
@@ -116,4 +116,13 @@ onUnmounted(() => {
   word-break: break-word;
   max-width: 100%;
 }
+
+.run-history { color: var(--at-ink, rgb(var(--v-theme-on-surface))); min-width: 0; }
+.history-list > summary { cursor: pointer; font-weight: 600; }
+.history-record { border-color: var(--at-line, rgba(var(--v-border-color), var(--v-border-opacity))); border-radius: var(--at-radius, 12px); background: var(--at-surface, rgb(var(--v-theme-surface))); }
+.history-record :deep(.v-card-text) { padding: 12px 16px; }
+.history-status { color: var(--at-accent, #287fad); font-size: .8rem; font-weight: 600; }
+.history-record .text-caption { color: var(--at-muted, #718393); margin-top: 4px; }
+.run-history summary:focus-visible, .run-history :deep(button:focus-visible) { outline: 2px solid var(--at-accent, #287fad); outline-offset: 2px; }
+
 </style>

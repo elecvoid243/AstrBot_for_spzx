@@ -205,6 +205,7 @@
           variant="tonal"
           size="small"
           class="mb-3"
+          prepend-icon="mdi-account-question-outline"
           data-testid="add-human-question"
           @click="addTask('human:question')"
           >{{ tm("human.questionNode") }}</v-btn
@@ -213,6 +214,7 @@
           variant="tonal"
           size="small"
           class="mb-3"
+          prepend-icon="mdi-account-check-outline"
           data-testid="add-human-approval"
           @click="addTask('human:approval')"
           >{{ tm("human.approvalNode") }}</v-btn
@@ -221,6 +223,7 @@
           variant="tonal"
           size="small"
           class="mb-3"
+          prepend-icon="mdi-source-branch"
           data-testid="add-condition"
           @click="addTask('control:condition')"
           >{{ tm("graph.conditionNode") }}</v-btn
@@ -229,6 +232,7 @@
           variant="tonal"
           size="small"
           class="mb-3"
+          prepend-icon="mdi-source-merge"
           data-testid="add-join"
           @click="addTask('control:join')"
           >{{ tm("graph.joinNode") }}</v-btn
@@ -239,6 +243,7 @@
           variant="tonal"
           size="small"
           class="graph-team-button mb-3"
+          prepend-icon="mdi-account-group-outline"
           data-testid="add-team-call"
           @click="addTask(`team:${team.asset_id}`)"
           >{{ tm("child.call") }}: {{ team.definition.name }} · v{{
@@ -251,6 +256,7 @@
           variant="tonal"
           size="small"
           class="graph-team-button mb-3"
+          prepend-icon="mdi-graph-outline"
           data-testid="add-workflow-call"
           @click="addTask(`workflow:${workflow.asset_id}`)"
         >
@@ -1587,6 +1593,7 @@ const taskNodes = computed<FlowNode[]>(() =>
       },
       data: {
         label: task.name,
+        nodeKind: task.control ? "control" : task.human ? "human" : task.team || task.workflow ? "call" : "agent",
         controlKind: task.control?.kind,
         approval: task.human?.kind === "approval",
         trueLabel: tm(
@@ -2618,5 +2625,40 @@ summary {
     display: inline-flex;
     margin-right: 8px;
   }
+}
+
+/* Workbench surfaces inherit the surrounding theme tokens. */
+.graph-workbench { border-color: var(--at-line, #dce5ed); border-radius: var(--at-radius, 12px); background: var(--at-surface, #fff); color: var(--at-ink, #263849); }
+.graph-toolbar { gap: 4px; padding: 10px 14px; background: var(--at-surface, #fff); border-color: var(--at-line, #dce5ed); }
+.graph-toolbar .text-caption, .graph-footer { color: var(--at-muted, #788b9b); }
+.graph-toolbar :deep(.v-btn) { min-height: 36px; text-transform: none; letter-spacing: 0; }
+.graph-columns { --toolbox-width: 200px; --inspector-width: 310px; }
+.graph-toolbox, .graph-inspector { background: var(--at-surface, #fff); border-color: var(--at-line, #dce5ed); }
+.graph-toolbox > summary, .graph-inspector > summary { color: var(--at-ink, #263849); font-size: 13px; font-weight: 700; }
+.graph-toolbox > p { color: var(--at-muted, #788b9b); line-height: 1.5; }
+.graph-toolbox :deep(.v-btn) { justify-content: flex-start; min-height: 40px; margin-bottom: 3px !important; padding: 8px; border-radius: 7px; background: transparent; color: var(--at-ink, #263849); text-align: left; text-transform: none; letter-spacing: 0; }
+.graph-toolbox :deep(.v-btn:hover) { background: var(--at-accent-soft, #eaf4fa); }
+.graph-toolbox :deep(.v-btn__prepend) { color: var(--at-accent, #287fad); margin-inline-end: 9px; }
+.graph-toolbox :deep(.v-btn__content) { justify-content: flex-start; text-align: left; }
+.graph-role { min-height: 44px; margin: 3px 0; padding: 8px; border-color: transparent; border-radius: 7px; }
+.graph-role:hover { background: var(--at-accent-soft, #eaf4fa); }
+.graph-role small { color: var(--at-muted, #788b9b); opacity: 1; margin-top: 2px; }
+.graph-role:focus-visible, .graph-workbench summary:focus-visible { outline: 2px solid var(--at-accent, #287fad); outline-offset: 2px; }
+.graph-stage { background: var(--at-paper, #f6f8fb); }
+.graph-stage :deep(.teams-flow-canvas) { border: 0; border-radius: 0; }
+.graph-stage :deep(.member-flow-node) { width: 220px; padding: 12px; border: 1px solid var(--at-line, #d8e2eb); border-radius: 10px; background: var(--at-surface, #fff); box-shadow: var(--at-shadow, 0 3px 10px #26405710); }
+.graph-stage :deep(.member-flow-node.selected) { border-color: var(--at-accent, #287fad); }
+.graph-stage :deep(.at-node-title) { font-size: 13px; }
+.graph-stage :deep(.at-node-footer) { margin-top: 9px; }
+.graph-inspector-heading { margin: 14px -16px 18px; padding: 0 16px 14px; border-bottom: 1px solid var(--at-line, #dce5ed); }
+.graph-inspector-heading code { color: var(--at-muted, #788b9b); overflow-wrap: anywhere; }
+.graph-inspector h3 { padding-top: 14px; border-top: 1px solid var(--at-line, #dce5ed); color: var(--at-ink, #263849); }
+.graph-input, .graph-child-preview { border-color: var(--at-line, #dce5ed); background: var(--at-paper, #f6f8fb); }
+.graph-footer { border-color: var(--at-line, #dce5ed); opacity: 1; }
+@media (max-width: 1000px) {
+  .graph-columns { grid-template-columns: minmax(0, 1fr); }
+  .graph-toolbox, .graph-inspector { border: 0; border-bottom: 1px solid var(--at-line, #dce5ed); }
+  .graph-toolbox :deep(.v-btn), .graph-role { max-width: none; }
+  .graph-stage { height: clamp(300px, 45vh, 460px); }
 }
 </style>

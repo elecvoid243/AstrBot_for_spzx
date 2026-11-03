@@ -1,130 +1,97 @@
-.workbench-navigation {
-  display: flex;
-  gap: 8px;
-  margin-bottom: 20px;
+.agent-teams-page, .workbench-dialog {
+  --at-ink: #243342; --at-muted: #6d7d8d; --at-line: #e4eaf0;
+  --at-paper: #f6f8fb; --at-surface: #fff; --at-accent: #287fad;
+  --at-accent-soft: #eaf4fa; --at-shadow: 0 8px 28px #24334208;
+  --at-radius: 12px; --v-theme-primary: 40, 127, 173;
+  color: var(--at-ink); font-family: Inter, 'Segoe UI', 'Microsoft YaHei', sans-serif; font-size: 14px;
 }
-
-.workbench-content,
-.workbench-legacy {
-  min-width: 0;
-  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
-  border-radius: 16px;
-  background: rgb(var(--v-theme-surface));
+.v-theme--PurpleThemeDark .agent-teams-page,
+.v-theme--PurpleThemeDark .workbench-dialog,
+.workbench-dialog.v-theme--PurpleThemeDark {
+  --at-ink: #e0e8f1; --at-muted: #a1afc1; --at-line: #334152;
+  --at-paper: #19212c; --at-surface: #202b38; --at-accent: #6cb8df;
+  --at-accent-soft: #263e50; --at-shadow: 0 8px 28px #00000018;
+  --v-theme-primary: 108, 184, 223;
 }
-
-.workbench-asset-navigation {
-  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.1);
-  padding-inline: 12px;
+.agent-teams-page .dashboard-shell { max-width: 1720px; margin: 0 auto; padding: 24px 30px 36px !important; color: var(--at-ink); }
+.agent-teams-page .dashboard-header { display: flex; align-items: center; margin-bottom: 18px; gap: 20px; }
+.agent-teams-page .dashboard-title { margin: 0; font-size: 25px; line-height: 1.3; font-weight: 650; letter-spacing: -.6px; }
+.agent-teams-page .dashboard-subtitle { margin: 7px 0 0; font-size: 13px; line-height: 1.7; color: var(--at-muted); }
+.at-page-heading { display: flex; align-items: center; gap: 14px; min-width: 0; }
+.at-page-mark, .at-asset-icon { flex: 0 0 auto; display: grid; place-items: center; width: 42px; height: 42px; border-radius: 11px; background: var(--at-accent-soft); color: var(--at-accent); }
+.workbench-navigation { display: flex; align-items: center; gap: 4px; border-bottom: 1px solid var(--at-line); margin-bottom: 24px; }
+.workbench-navigation .v-btn { height: 46px; min-width: 96px; border-radius: 0; border-bottom: 2px solid transparent; color: var(--at-muted) !important; padding-inline: 16px; }
+.workbench-navigation .v-btn[aria-pressed='true'] { color: var(--at-accent) !important; border-bottom-color: var(--at-accent); font-weight: 650; }
+.workbench-navigation .v-btn__underlay { display: none; }
+.workbench-content, .workbench-panel { min-width: 0; }
+.workbench-asset-navigation { margin-bottom: 24px; }
+.workbench-asset-navigation .v-tabs { display: inline-flex; max-width: 100%; height: 40px; padding: 3px; background: color-mix(in srgb, var(--at-line) 50%, var(--at-paper)); border: 1px solid var(--at-line); border-radius: 9px; }
+.workbench-asset-navigation .v-tab { min-width: 88px; height: 32px; padding-inline: 18px; color: var(--at-muted); border-radius: 6px !important; font-size: 12px; }
+.workbench-asset-navigation .v-tab--selected { color: var(--at-ink) !important; background: var(--at-surface); box-shadow: 0 1px 4px #2433420c; }
+.workbench-asset-navigation .v-tab__slider { display: none; }
+.agent-teams-page .v-card, .workbench-dialog .v-card { border-radius: var(--at-radius); color: var(--at-ink); background: var(--at-surface); border-color: var(--at-line); }
+.agent-teams-page .v-card-title, .workbench-dialog .v-card-title, .agent-teams-page .v-alert__content, .workbench-dialog .v-alert__content { overflow-wrap: anywhere; white-space: normal; }
+.agent-teams-page .v-btn, .workbench-dialog .v-btn { box-sizing: border-box; letter-spacing: 0; text-transform: none; font-weight: 550; font-size: 12px; border-radius: 8px; }
+.agent-teams-page .workbench-navigation .v-btn { border-radius: 0; }
+.agent-teams-page .v-btn:focus-visible, .workbench-dialog .v-btn:focus-visible, .agent-teams-page summary:focus-visible, .workbench-dialog summary:focus-visible { outline: 2px solid var(--at-accent); outline-offset: 3px; }
+.agent-teams-page .at-primary-action, .workbench-dialog .at-primary-action { background: var(--at-accent) !important; color: var(--at-surface) !important; box-shadow: 0 3px 7px #287fad15; }
+.agent-teams-page .at-primary-action .v-btn__underlay, .workbench-dialog .at-primary-action .v-btn__underlay { display: none; }
+.agent-teams-page .v-chip, .workbench-dialog .v-chip { border-radius: 6px; font-size: 11px; font-weight: 500; }
+.agent-teams-page .v-card-actions, .workbench-dialog .v-card-actions { flex-wrap: wrap; gap: 6px; padding: 14px 18px; }
+.agent-teams-page .v-field, .workbench-dialog .v-field { border-radius: 8px; font-size: 13px; }
+.agent-teams-page .v-field--variant-filled, .workbench-dialog .v-field--variant-filled { background: var(--at-surface); border: 1px solid var(--at-line); }
+.agent-teams-page .v-field--variant-filled .v-field__overlay, .workbench-dialog .v-field--variant-filled .v-field__overlay, .agent-teams-page .v-field--variant-filled .v-field__outline, .workbench-dialog .v-field--variant-filled .v-field__outline { display: none; }
+.agent-teams-page .v-field--focused, .workbench-dialog .v-field--focused { border-color: var(--at-accent); }
+.agent-teams-page .v-label, .workbench-dialog .v-label { font-size: 12px; color: var(--at-muted); opacity: 1; }
+.agent-teams-page .v-alert, .workbench-dialog .v-alert { font-size: 13px; border-radius: 10px; }
+.agent-teams-page .v-expansion-panel, .workbench-dialog .v-expansion-panel { background: var(--at-surface); box-shadow: none; }
+.agent-teams-page .v-expansion-panel-title, .workbench-dialog .v-expansion-panel-title { font-size: 12px; min-height: 44px; padding: 12px 16px; }
+.agent-teams-page .v-expansion-panel__shadow, .workbench-dialog .v-expansion-panel__shadow { display: none; }
+.workbench-dialog .v-card-text { min-height: 0; }
+.workbench-dialog.v-dialog > .v-overlay__content > .v-card { background: var(--at-surface) !important; }
+.workbench-dialog .v-card-actions { flex-shrink: 0; border-top: 1px solid var(--at-line); }
+.workbench-dialog .v-card-title { color: var(--at-ink); font-weight: 650; }
+.at-asset-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 10px; }
+.at-asset-toolbar h2 { font-size: 17px !important; font-weight: 650; letter-spacing: -.25px; }
+.at-asset-intro { margin-bottom: 22px; color: var(--at-muted); font-size: 13px; line-height: 1.7; }
+.at-asset-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr)); gap: 18px; }
+.at-asset-card { min-width: 0; display: flex; flex-direction: column; border: 1px solid var(--at-line); box-shadow: 0 2px 6px #24334203; transition: border-color .16s, box-shadow .16s; }
+.at-asset-card:hover { border-color: color-mix(in srgb, var(--at-accent) 45%, var(--at-line)); box-shadow: var(--at-shadow); }
+.at-asset-card .v-card-title { font-size: 16px; line-height: 1.5; font-weight: 650; padding: 0; }
+.at-asset-card .v-card-text { padding: 18px 20px; }
+.at-asset-card .v-card-actions { margin-top: auto; border-top: 1px solid var(--at-line); }
+.at-asset-icon.is-team { background: color-mix(in srgb, #8a73b0 12%, var(--at-surface)); color: #8a73b0; }
+.at-sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+.graph-workbench .vue-flow__controls-button { background: var(--at-surface); color: var(--at-muted); border-color: var(--at-line); }
+.graph-workbench .vue-flow__controls-button svg { fill: currentColor; }
+.graph-workbench .vue-flow__controls-button:hover { background: var(--at-accent-soft); color: var(--at-accent); }
+.graph-workbench .vue-flow__minimap { background: var(--at-surface); border: 1px solid var(--at-line); border-radius: 8px; }
+.graph-workbench .vue-flow__minimap-node { fill: color-mix(in srgb, var(--at-accent) 35%, var(--at-surface)); }
+.graph-workbench .vue-flow__minimap-mask { fill: color-mix(in srgb, var(--at-paper) 70%, transparent); }
+.graph-workbench .at-node-member-dot { border-radius: 2px; }
+.graph-workbench .graph-toolbox .v-btn__underlay { display: none; }
+.graph-workbench .graph-toolbox .v-btn { color: var(--at-ink) !important; }
+.graph-workbench .loop-panel { padding: 6px 12px; }
+.graph-workbench .loop-panel > .v-btn { height: 28px; background: var(--at-accent-soft); color: var(--at-accent); }
+.graph-workbench .loop-panel > .v-btn .v-btn__underlay { display: none; }
+@media (max-width: 760px) {
+  .agent-teams-page .dashboard-shell { padding: 20px 16px 28px !important; }
+  .agent-teams-page .dashboard-title { font-size: 22px; }
+  .agent-teams-page .dashboard-subtitle { font-size: 12px; }
+  .at-page-mark { width: 36px; height: 36px; }
+  .workbench-navigation { margin-bottom: 18px; }
+  .at-asset-grid { gap: 12px; }
 }
-
-.workbench-panel,
-.workbench-legacy {
-  padding: 20px;
-}
-
-.workbench-legacy > summary {
-  cursor: pointer;
-  font-weight: 600;
-  color: rgba(var(--v-theme-on-surface), 0.78);
-}
-
-.agent-teams-page .v-card,
-.workbench-dialog .v-card {
-  border-radius: 16px;
-}
-
-.agent-teams-page .v-card-title,
-.workbench-dialog .v-card-title,
-.agent-teams-page .v-alert__content,
-.workbench-dialog .v-alert__content {
-  overflow-wrap: anywhere;
-  white-space: normal;
-}
-
-.agent-teams-page .v-btn,
-.workbench-dialog .v-btn {
-  letter-spacing: 0;
-  text-transform: none;
-}
-
-.agent-teams-page .v-card-actions,
-.workbench-dialog .v-card-actions {
-  flex-wrap: wrap;
-  gap: 4px;
-  padding: 12px 16px;
-}
-
-.workbench-dialog .v-card-text {
-  min-height: 0;
-}
-
-.workbench-dialog .v-card-actions {
-  flex-shrink: 0;
-}
-
-.graph-workbench .vue-flow__controls-button {
-  background: rgb(var(--v-theme-surface));
-  color: rgb(var(--v-theme-on-surface));
-  border-bottom-color: rgba(var(--v-theme-on-surface), 0.12);
-}
-
-.graph-workbench .vue-flow__controls-button svg {
-  fill: currentColor;
-}
-
-.graph-workbench .vue-flow__controls-button:hover {
-  background: rgba(var(--v-theme-primary), 0.12);
-}
-
-.graph-workbench .vue-flow__minimap {
-  background: rgb(var(--v-theme-surface));
-  border: 1px solid rgba(var(--v-theme-on-surface), 0.2);
-  border-radius: 8px;
-}
-
-.graph-workbench .vue-flow__minimap-node {
-  fill: rgba(var(--v-theme-primary), 0.4);
-}
-
-.graph-workbench .vue-flow__minimap-mask {
-  fill: rgba(var(--v-theme-on-surface), 0.08);
-}
-
-.graph-workbench .at-node-member-dot {
-  border-radius: 2px;
-}
-
 @media (max-width: 600px) {
-  .workbench-panel,
-  .workbench-legacy {
-    padding: 12px;
-  }
-
-  .workbench-dialog .v-overlay__content {
-    margin: 8px !important;
-    width: calc(100% - 16px) !important;
-    max-width: calc(100% - 16px) !important;
-    max-height: calc(100% - 16px) !important;
-  }
-
-  .workbench-dialog .v-card-text {
-    padding: 16px;
-  }
-
-  .workbench-dialog .v-card-title {
-    font-size: 1.25rem !important;
-  }
+  .at-asset-toolbar { gap: 6px; }
+  .at-asset-toolbar .v-btn { padding-inline: 10px; }
+  .workbench-dialog .v-overlay__content { margin: 8px !important; width: calc(100% - 16px) !important; max-width: calc(100% - 16px) !important; max-height: calc(100% - 16px) !important; }
+  .workbench-dialog .v-card-text { padding: 16px; }
+  .workbench-dialog .v-card-title { font-size: 1.25rem !important; }
 }
-
 @media (prefers-reduced-motion: reduce) {
-  .agent-teams-page *,
-  .agent-teams-page *::before,
-  .agent-teams-page *::after,
-  .workbench-dialog *,
-  .workbench-dialog *::before,
-  .workbench-dialog *::after {
-    animation: none !important;
-    transition: none !important;
-    scroll-behavior: auto !important;
+  .agent-teams-page *, .agent-teams-page *::before, .agent-teams-page *::after,
+  .workbench-dialog *, .workbench-dialog *::before, .workbench-dialog *::after {
+    animation: none !important; transition: none !important; scroll-behavior: auto !important;
   }
 }

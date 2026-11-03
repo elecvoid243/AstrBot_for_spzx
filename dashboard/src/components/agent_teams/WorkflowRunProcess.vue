@@ -142,9 +142,9 @@
       {{ tm("progress.emptyProcess") }}
     </p>
     <template v-for="item in readingItems" :key="item.kind + ':' + item.key">
-      <article v-if="item.kind === 'delivery'" class="process-record pa-4" data-testid="model-delivery">
+      <article v-if="item.kind === 'delivery'" class="process-record process-delivery pa-4" data-testid="model-delivery">
         <p class="text-caption text-medium-emphasis">
-          {{ tm("progress.modelResponse") }} · {{ tm(`progress.deliveryStates.${item.status}`) }} · {{ tm("v2.attempt") }} {{ item.attempt }}
+          {{ tm("progress.modelResponse") }} · {{ tm(`progress.deliveryStates.${item.status}`) }} · {{ tm("v2.attempt") }} <span class="delivery-attempt" :title="String(item.attempt)">{{ item.attempt }}</span>
         </p>
         <p v-if="item.streaming === false" class="text-caption">{{ tm("progress.finalOnly") }}</p>
         <p v-if="item.missingChunks" class="text-warning" data-testid="missing-stream-chunks">{{ tm("progress.missingChunks") }}</p>
@@ -182,7 +182,7 @@
         <ReasoningBlock v-if="item.reasoning" :reasoning="item.reasoning" :is-dark="isDark" />
         <MarkdownMessagePart v-if="item.text" :content="item.text" :refs="null" :is-dark="isDark" :custom-html-tags="CHAT_MARKDOWN_CUSTOM_TAGS" :is-streaming="item.status === 'started'" />
       </article>
-      <div v-else class="process-record pa-2" data-testid="observed-tool">
+      <div v-else class="process-record process-tool pa-2" data-testid="observed-tool">
         <p class="text-caption text-medium-emphasis">{{ tm(`progress.toolStates.${item.status}`) }} · {{ tm("v2.attempt") }} {{ item.attempt }}</p>
         <p v-if="item.missingParts" class="text-warning" data-testid="missing-tool-parts">{{ tm("progress.missingChunks") }}</p>
         <ToolCallCard :tool-call="item" :is-dark="isDark" :is-active="item.status === 'running' && run.status === 'running'" />
@@ -506,4 +506,15 @@ summary {
     padding: 12px;
   }
 }
+
+.process-record { border-color: var(--at-line, rgba(var(--v-border-color), var(--v-border-opacity))); border-radius: var(--at-radius, 12px); background: var(--at-surface, rgb(var(--v-theme-surface))); color: var(--at-ink, rgb(var(--v-theme-on-surface))); min-width: 0; }
+.process-delivery { border-left: 3px solid var(--at-accent, #287fad); }
+.process-tool { background: var(--at-paper, rgba(var(--v-theme-primary), .04)); }
+.process-delivery > .text-caption:first-child { color: var(--at-accent, #287fad) !important; font-weight: 600; }
+.context-details { border: 1px solid var(--at-line, rgba(var(--v-border-color), var(--v-border-opacity))); border-radius: 8px; padding: 2px 10px; color: var(--at-muted, #718393); font-size: .875rem; }
+.context-details summary { padding: 8px 0; }
+.run-process summary:focus-visible, .run-process button:focus-visible { outline: 2px solid var(--at-accent, #287fad); outline-offset: 2px; }
+
+
+.delivery-attempt { display: inline-block; max-width: 9ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
 </style>

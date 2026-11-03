@@ -1,5 +1,5 @@
 <template>
-  <v-card variant="outlined" class="my-3" data-testid="human-todo">
+  <v-card variant="outlined" class="human-todo my-3" data-testid="human-todo">
     <v-card-text>
       <div v-if="dynamic && todo.choice_spec?.title" class="text-overline">
         {{ todo.choice_spec.title }}
@@ -59,7 +59,7 @@
       </div>
       <div
         v-if="todo.recommendation"
-        class="mt-2"
+        class="human-recommendation mt-2"
         data-testid="human-recommendation"
       >
         <strong
@@ -245,6 +245,7 @@
                 ? !answer.trim()
                 : !preview)
             "
+            class="human-submit"
             data-testid="human-submit"
             @click="submit(todo.kind === 'question' ? 'answer' : 'approve')"
             >{{
@@ -540,4 +541,18 @@ onUnmounted(() => {
   overflow: auto;
   margin: 12px 0;
 }
+
+.human-todo { min-width: 0; border-color: var(--at-line, rgba(var(--v-border-color), var(--v-border-opacity))); border-radius: var(--at-radius, 12px); background: var(--at-surface, rgb(var(--v-theme-surface))); color: var(--at-ink, rgb(var(--v-theme-on-surface))); }
+.human-todo :deep(.v-card-text) { padding: 18px; overflow-wrap: anywhere; }
+.human-recommendation { padding: 12px; border: 1px solid var(--at-line, rgba(var(--v-border-color), var(--v-border-opacity))); border-radius: 8px; background: var(--at-accent-soft, rgba(var(--v-theme-primary), .06)); }
+.human-recommendation strong { color: var(--at-accent, #287fad); }
+.human-recommendation p { margin-top: 5px; }
+.choice-option.selected { border-color: var(--at-accent, #287fad); background: var(--at-accent-soft, rgba(var(--v-theme-primary), .06)); }
+.choice-option input { accent-color: var(--at-accent, #287fad); }
+.human-submit { background: var(--at-accent, #287fad); color: var(--at-surface, white); }
+.human-todo :deep(.v-btn) { max-width: 100%; min-height: 40px; height: auto; }
+.human-todo :deep(.v-btn__content) { white-space: normal; overflow-wrap: anywhere; }
+.human-todo summary { cursor: pointer; }
+.human-todo summary:focus-visible, .choice-option:focus-within { outline: 2px solid var(--at-accent, #287fad); outline-offset: 2px; }
+
 </style>

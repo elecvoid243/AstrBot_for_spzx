@@ -8,6 +8,8 @@ Open **More Features → Agent Teams → Assets**:
 - **Workflows** arrange one or more Agents, control nodes and child assets on a canvas.
 - **Role templates** hold reusable responsibilities and local resource configuration for teams and workflows.
 
+Asset cards show the fixed version, a task or member summary, and draft status, with edit and run actions below. The lower-left icons on team and workflow cards open chat access, export, and deletion respectively; hover to read their names or use the keyboard to activate them. Light and dark themes are supported.
+
 ## Create and configure
 
 Choose **Assets → Workflows → New Workflow**. Enter a name and optionally select a default model. Add Agents directly on the canvas without first creating a role template. Select an Agent to configure its task, responsibilities, profile, persona, model and resources. An unselected persona means no persona; an Agent without its own model uses the workflow default. Before launch, every local Agent must resolve to an allowed model.
@@ -17,6 +19,8 @@ Alternatively, select a role template and its **fixed version** in the Agent pro
 Choose **Assets → Teams → New Autonomous Team**, enter a name and default model, and configure the coordinator and member presets. Each can be configured directly or use a fixed role version with overrides; the same template can be used more than once with different overrides. The coordinator can create only allowed presets. Set member limits (including the coordinator), concurrency and member task limits; enter the goal at launch. Final version approval and an output contract are optional.
 
 ![Live workflow canvas](/images/agent-teams-live-canvas-en.png)
+
+Add nodes on the left, connect them on the canvas, and edit the selected node in the right inspector. Expand **Execution settings and budgets** above the canvas to adjust limits; draft save status is shown above. Collapse either side panel to make more room for the canvas.
 
 ## Drafts, fixed versions and tests
 
@@ -57,6 +61,8 @@ Choose **Start Run** on the asset card and fill in declared inputs and the team 
 The desktop workbench organizes tasks, process, and todos and artifacts into columns. Select a task to read saved model responses, thinking actually supplied by the provider, tool activity and artifacts. Load earlier process records or expand actual model context and its assembly sources as needed. Context may be truncated or unavailable for a remote executor; sources precede plugin changes and may not all remain in the final request. Switch to the execution graph for the read-only run snapshot and task states; expand child scopes and loop rounds. On narrow screens, switch panels to see the same content. Background refresh preserves answers being entered.
 
 ![Live run workbench](/images/agent-teams-live-workbench-en.png)
+
+Select a task on the left, read its process in the center, and handle human requests and artifacts on the right. Expand **Load older process** for separate process, message, event, and attempt history controls. On narrow screens, switching panels preserves the current view and answers being entered.
 
 Waits for predecessors, capacity or people show their reasons; a human wait blocks only the affected path. Choose **Open process** on a todo to check the evidence, then answer. For approval, first preview the specified version and files, then approve or reject with feedback. If the specified version is unavailable, create that version first; the system will not substitute the latest. After approval, export that approved version and its files. Answers can be saved while paused and are consumed after the run continues; cancellation closes requests and prevents late advancement.
 

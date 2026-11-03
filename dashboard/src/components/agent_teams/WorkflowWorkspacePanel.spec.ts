@@ -134,6 +134,259 @@ Object.assign(stubs, {
 });
 
 describe("workflow workspace", () => {
+  it.each([
+    ["all", true, "v2.emptyRuns"],
+    ["active", false, "workbench.emptyFilter"],
+    ["pending", false, "workbench.emptyFilter"],
+  ] as const)(
+    "keeps the %s empty state and refresh button stable during background polling",
+    async (view, empty, message) => {
+      vi.useFakeTimers();
+      const router = createRouter({
+        history: createMemoryHistory(),
+        routes: [{ path: "/", component: slotStub }],
+      });
+      await router.push("/");
+      const data = {
+        runs: empty ? [] : [{ ...runOverview, status: "completed" }],
+      };
+      api.runs.mockResolvedValue(data);
+      const wrapper = mount(WorkflowWorkspacePanel, {
+        props: { mode: "runs" },
+        global: { plugins: [router], stubs },
+      });
+      try {
+        await flushPromises();
+        await wrapper.get(`[data-testid="runs-${view}"]`).trigger("click");
+        const notice = wrapper
+          .findAll('[type="info"]')
+          .find((item) => item.text() === message)!.element;
+        const refresh = wrapper
+          .findAll("button")
+          .find((item) => item.text() === "page.refresh")!;
+        let finish!: (value: typeof data) => void;
+        api.runs.mockReturnValueOnce(
+          new Promise((resolve) => {
+            finish = resolve;
+          }),
+        );
+        await vi.advanceTimersByTimeAsync(2000);
+        expect(
+          wrapper.findAll('[type="info"]').map((item) => item.element),
+        ).toContain(notice);
+        expect(refresh.attributes("disabled")).toBeUndefined();
+        await vi.advanceTimersByTimeAsync(4000);
+        expect(api.runs).toHaveBeenCalledTimes(2);
+        finish(data);
+        await flushPromises();
+        expect(
+          wrapper.findAll('[type="info"]').map((item) => item.element),
+        ).toContain(notice);
+      } finally {
+        wrapper.unmount();
+      }
+    },
+  );
+
+  it("pauses hidden run polling in history and resumes it in the active view", async () => {
+    vi.useFakeTimers();
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: "/", component: slotStub }],
+    });
+    await router.push("/?workflow_run=run-1");
+    api.run.mockResolvedValue({ ...run, cursor: 10 });
+    api.events.mockResolvedValue({ cursor: 10, events: [], snapshot: null });
+    const wrapper = mount(WorkflowWorkspacePanel, {
+      props: { mode: "runs" },
+      global: { plugins: [router], stubs },
+    });
+    try {
+      await flushPromises();
+      await wrapper.get('[data-testid="runs-history"]').trigger("click");
+      await flushPromises();
+      const history = wrapper.getComponent({
+        name: "UnifiedRunHistory",
+      }).element;
+      await vi.advanceTimersByTimeAsync(6000);
+      expect(api.runs).toHaveBeenCalledTimes(1);
+      expect(api.run).toHaveBeenCalledTimes(1);
+      expect(api.events).not.toHaveBeenCalled();
+      expect(api.history).toHaveBeenCalledTimes(1);
+      expect(wrapper.getComponent({ name: "UnifiedRunHistory" }).element).toBe(
+        history,
+      );
+      await wrapper.get('[data-testid="runs-active"]').trigger("click");
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(api.runs).toHaveBeenCalledTimes(2);
+      expect(api.events).toHaveBeenCalledWith("run-1", 10);
+    } finally {
+      wrapper.unmount();
+    }
+  });
+
+  it("shows foreground loading for an explicit refresh without overlapping polls", async () => {
+    vi.useFakeTimers();
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: "/", component: slotStub }],
+    });
+    await router.push("/");
+    const wrapper = mount(WorkflowWorkspacePanel, {
+      props: { mode: "runs" },
+      global: { plugins: [router], stubs },
+    });
+    try {
+      await flushPromises();
+      let finish!: (value: any) => void;
+      api.runs.mockReturnValueOnce(
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+      );
+      const refresh = wrapper
+        .findAll("button")
+        .find((item) => item.text() === "page.refresh")!;
+      await refresh.trigger("click");
+      expect(refresh.attributes("disabled")).toBeDefined();
+      await vi.advanceTimersByTimeAsync(4000);
+      expect(api.runs).toHaveBeenCalledTimes(2);
+      finish({ runs: [runOverview] });
+      await flushPromises();
+      expect(refresh.attributes("disabled")).toBeUndefined();
+    } finally {
+      wrapper.unmount();
+    }
+  });
+
+  it("retains artifact read failures until the artifact can actually be loaded", async () => {
+    vi.useFakeTimers();
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: "/", component: slotStub }],
+    });
+    await router.push("/?workflow_run=run-1");
+    api.run.mockResolvedValue({
+      ...run,
+      cursor: 10,
+      result_ref: { artifact_id: "artifact-1", version: 1 },
+    });
+    api.events.mockResolvedValue({ cursor: 10, events: [], snapshot: null });
+    api.artifact.mockRejectedValue(new Error("Artifact unavailable"));
+    const wrapper = mount(WorkflowWorkspacePanel, {
+      props: { mode: "runs" },
+      global: { plugins: [router], stubs },
+    });
+    try {
+      await flushPromises();
+      const notice = wrapper.get('[role="alert"]').element;
+      let fail!: (error: Error) => void;
+      api.artifact.mockReturnValueOnce(
+        new Promise((_, reject) => {
+          fail = reject;
+        }),
+      );
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(wrapper.get('[role="alert"]').element).toBe(notice);
+      fail(new Error("Artifact unavailable"));
+      await flushPromises();
+      expect(wrapper.get('[role="alert"]').element).toBe(notice);
+      api.artifact.mockResolvedValue({
+        artifact_id: "artifact-1",
+        version: 1,
+        content: { text: "Complete result" },
+      });
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(wrapper.find('[role="alert"]').exists()).toBe(false);
+      expect(wrapper.get('[data-testid="result-text"]').text()).toBe(
+        "Complete result",
+      );
+    } finally {
+      wrapper.unmount();
+    }
+  });
+
+  it("keeps a polling error visible until a refresh succeeds", async () => {
+    vi.useFakeTimers();
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: "/", component: slotStub }],
+    });
+    await router.push("/");
+    const wrapper = mount(WorkflowWorkspacePanel, {
+      props: { mode: "runs" },
+      global: { plugins: [router], stubs },
+    });
+    try {
+      await flushPromises();
+      api.runs.mockRejectedValueOnce(new Error("Run list unavailable"));
+      await vi.advanceTimersByTimeAsync(2000);
+      const notice = wrapper.get('[role="alert"]').element;
+      let fail!: (error: Error) => void;
+      api.runs.mockReturnValueOnce(
+        new Promise((_, reject) => {
+          fail = reject;
+        }),
+      );
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(wrapper.get('[role="alert"]').element).toBe(notice);
+      fail(new Error("Run list unavailable"));
+      await flushPromises();
+      expect(wrapper.get('[role="alert"]').element).toBe(notice);
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(wrapper.find('[role="alert"]').exists()).toBe(false);
+    } finally {
+      wrapper.unmount();
+    }
+  });
+
+  it.each(["runs", "events", "artifact"] as const)(
+    "ignores a pending %s polling failure after switching to history",
+    async (phase) => {
+      vi.useFakeTimers();
+      const router = createRouter({
+        history: createMemoryHistory(),
+        routes: [{ path: "/", component: slotStub }],
+      });
+      await router.push("/?workflow_run=run-1");
+      api.run.mockResolvedValue({ ...run, cursor: 10 });
+      if (phase === "artifact") {
+        api.events.mockResolvedValue({
+          cursor: 11,
+          snapshot: {
+            ...run,
+            cursor: 11,
+            result_ref: { artifact_id: "artifact-1", version: 1 },
+          },
+        });
+      }
+      const wrapper = mount(WorkflowWorkspacePanel, {
+        props: { mode: "runs" },
+        global: { plugins: [router], stubs },
+      });
+      try {
+        await flushPromises();
+        let fail!: (error: Error) => void;
+        api[phase].mockReturnValueOnce(
+          new Promise((_, reject) => {
+            fail = reject;
+          }),
+        );
+        await vi.advanceTimersByTimeAsync(2000);
+        await wrapper.get('[data-testid="runs-history"]').trigger("click");
+        await flushPromises();
+        fail(new Error("Hidden run poll failed"));
+        await flushPromises();
+        expect(wrapper.text()).not.toContain("Hidden run poll failed");
+        expect(
+          wrapper.findComponent({ name: "UnifiedRunHistory" }).exists(),
+        ).toBe(true);
+      } finally {
+        wrapper.unmount();
+      }
+    },
+  );
+
   it.each(["workflows", "teams"] as const)("confirms deletion in %s", async (kind) => {
     const router = createRouter({ history: createMemoryHistory(), routes: [{ path: "/", component: slotStub }] });
     await router.push("/");
@@ -284,10 +537,14 @@ describe("workflow workspace", () => {
     ]);
     const wrapper = mount(WorkflowWorkspacePanel, { props: { mode: "assets" }, global: { plugins: [router], stubs } });
     await flushPromises();
-    expect(wrapper.text()).toContain("Unpublished · draft.unpublished");
-    expect(wrapper.text()).toContain("Team draft · draft.unpublished");
+    const draftCards = wrapper.findAll(".at-draft-card");
+    expect(draftCards.map((card) => card.text())).toEqual([
+      expect.stringContaining("Unpublished"),
+      expect.stringContaining("Team draft"),
+    ]);
+    expect(draftCards.every((card) => card.text().includes("draft.unpublished"))).toBe(true);
     expect(wrapper.get('[data-testid="editing-draft"]').text()).toBe("draft.editing");
-    expect(wrapper.text()).toContain("Report · v1");
+    expect(wrapper.findAll(".at-asset-card").find((card) => card.text().includes("Report"))?.text()).toContain("v1");
     wrapper.unmount();
   });
 
@@ -317,9 +574,9 @@ describe("workflow workspace", () => {
     });
     await flushPromises();
     expect(wrapper.text()).toContain("Research team");
-    expect(wrapper.text()).not.toContain("Report · v1");
+    expect(wrapper.text()).not.toContain("Report");
     await wrapper.setProps({ assetKind: "workflows" });
-    expect(wrapper.text()).toContain("Report · v1");
+    expect(wrapper.text()).toContain("Report");
     expect(wrapper.text()).not.toContain("Research team");
     wrapper.unmount();
   });

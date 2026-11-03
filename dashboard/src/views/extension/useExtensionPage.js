@@ -184,7 +184,9 @@ export const useExtensionPage = (initialTab = "installed") => {
   const sourceResolveVisible = ref(false);
   const sourceMarketMeta = ref(null);
   const customSources = ref([]);
-  const selectedSource = ref(null);
+  const selectedSource = ref(
+    localStorage.getItem("selectedPluginSource") || null,
+  );
   const showRemoveSourceDialog = ref(false);
   const sourceToRemove = ref(null);
   const editingSource = ref(false);
@@ -793,6 +795,7 @@ export const useExtensionPage = (initialTab = "installed") => {
       }
 
       const registryUrl = normalizeRegistryUrl(source.registry_url);
+      if (selectedSource.value && !registryUrl) return;
       if (!sourcePlugins.has(registryUrl)) {
         sourcePlugins.set(registryUrl, []);
       }
@@ -801,6 +804,7 @@ export const useExtensionPage = (initialTab = "installed") => {
 
     await Promise.all(
       [...sourcePlugins.entries()].map(async ([registryUrl, extensions]) => {
+        if (selectedSource.value && !registryUrl) return;
         let marketPlugins = [];
         try {
           marketPlugins =
@@ -814,6 +818,8 @@ export const useExtensionPage = (initialTab = "installed") => {
           console.warn("Failed to load plugin source for update check:", error);
           return;
         }
+
+        if (selectedSource.value && !registryUrl) return;
 
         const lookup = buildMarketPluginLookup(marketPlugins);
         extensions.forEach((extension) => {
@@ -947,10 +953,21 @@ export const useExtensionPage = (initialTab = "installed") => {
     const { repoUrl, needsSourceSelection } = buildUpdateContext(ext);
 
     if (
-      needsSourceSelection &&
-      !options.skipSourceCheck &&
-      !repoUrl
+      selectedSource.value &&
+      ext?.install_source?.install_method === "market" &&
+      !normalizeRegistryUrl(ext.install_source.registry_url)
     ) {
+      if (repoUrl) {
+        await openPluginSourceBindingDialog(ext, {
+          pendingUpdate: { extensionName: extension_name, forceUpdate },
+        });
+      } else {
+        toast(tm("messages.selectDefaultSourceToUpdate"), "info");
+      }
+      return;
+    }
+
+    if (needsSourceSelection && !options.skipSourceCheck && !repoUrl) {
       toast(tm("messages.updateDisabled"), "info");
       return;
     }
@@ -975,6 +992,16 @@ export const useExtensionPage = (initialTab = "installed") => {
     const ext = getInstalledExtensionByName(extensionName);
     if (!extensionName || !ext) {
       closeUpdateConfirmDialog();
+      return;
+    }
+
+    if (
+      selectedSource.value &&
+      ext.install_source?.install_method === "market" &&
+      !normalizeRegistryUrl(ext.install_source.registry_url)
+    ) {
+      closeUpdateConfirmDialog();
+      toast(tm("messages.selectDefaultSourceToUpdate"), "info");
       return;
     }
 
@@ -1059,7 +1086,20 @@ export const useExtensionPage = (initialTab = "installed") => {
     loadingDialog.result = "";
     loadingDialog.show = true;
 
-    const targets = updatableExtensions.value.map((ext) => ext.name);
+    const targets = updatableExtensions.value
+      .filter(
+        (ext) =>
+          !selectedSource.value ||
+          ext.install_source?.install_method !== "market" ||
+          normalizeRegistryUrl(ext.install_source.registry_url),
+      )
+      .map((ext) => ext.name);
+    if (!targets.length) {
+      updatingAll.value = false;
+      resetLoadingDialog();
+      toast(tm("messages.noUpdatesAvailable"), "info");
+      return;
+    }
     try {
       const res = await pluginApi.updateMany({
         names: targets,
@@ -1500,7 +1540,9 @@ export const useExtensionPage = (initialTab = "installed") => {
 
     await loadCustomSources();
     const sources = [
-      { name: tm("market.defaultSource"), url: null },
+      ...(!selectedSource.value
+        ? [{ name: tm("market.defaultSource"), url: null }]
+        : []),
       ...customSources.value.map((source) => ({
         name: source.name,
         url: source.url,
@@ -1521,6 +1563,7 @@ export const useExtensionPage = (initialTab = "installed") => {
     const candidates = [];
 
     for (const source of sources) {
+      if (selectedSource.value && !source.url) continue;
       let marketPlugins = [];
       try {
         marketPlugins = await commonStore.getPluginCollections(
@@ -1531,6 +1574,8 @@ export const useExtensionPage = (initialTab = "installed") => {
         console.warn("Failed to load plugin source for binding:", error);
         continue;
       }
+
+      if (selectedSource.value && !source.url) continue;
 
       marketPlugins.forEach((plugin) => {
         const marketPluginId = getMarketPluginId(plugin);
@@ -1707,6 +1752,13 @@ export const useExtensionPage = (initialTab = "installed") => {
 
   const removeCustomSource = (source) => {
     if (!source) return;
+    if (
+      normalizeRegistryUrl(selectedSource.value) ===
+      normalizeRegistryUrl(source.url)
+    ) {
+      toast(tm("market.selectAnotherSourceBeforeRemoving"), "info");
+      return;
+    }
     showSourceManagerDialog.value = false;
     sourceToRemove.value = source;
     showRemoveSourceDialog.value = true;
@@ -1714,18 +1766,18 @@ export const useExtensionPage = (initialTab = "installed") => {
 
   const confirmRemoveSource = () => {
     if (sourceToRemove.value) {
+      if (
+        normalizeRegistryUrl(selectedSource.value) ===
+        normalizeRegistryUrl(sourceToRemove.value.url)
+      ) {
+        showRemoveSourceDialog.value = false;
+        toast(tm("market.selectAnotherSourceBeforeRemoving"), "info");
+        return;
+      }
       customSources.value = customSources.value.filter(
         (s) => s.url !== sourceToRemove.value.url,
       );
       saveCustomSources();
-
-      // 如果删除的是当前选中的源，切换到默认源
-      if (selectedSource.value === sourceToRemove.value.url) {
-        selectedSource.value = null;
-        localStorage.removeItem("selectedPluginSource");
-        // 重新加载插件市场数据
-        refreshPluginMarket();
-      }
 
       toast(tm("market.sourceRemoved"), "success");
       showRemoveSourceDialog.value = false;
@@ -2331,11 +2383,10 @@ export const useExtensionPage = (initialTab = "installed") => {
     refreshingMarket.value = true;
     loading_.value = true;
     try {
+      const source = selectedSource.value;
       // 强制刷新插件市场数据
-      const data = await commonStore.getPluginCollections(
-        true,
-        selectedSource.value,
-      );
+      const data = await commonStore.getPluginCollections(true, source);
+      if (source !== selectedSource.value) return;
       pluginMarketData.value = data;
       trimExtensionName();
       checkAlreadyInstalled();
@@ -2374,10 +2425,9 @@ export const useExtensionPage = (initialTab = "installed") => {
 
       if (activeTab.value === "market") {
         await loadCustomSources();
-        const data = await commonStore.getPluginCollections(
-          false,
-          selectedSource.value,
-        );
+        const source = selectedSource.value;
+        const data = await commonStore.getPluginCollections(false, source);
+        if (source !== selectedSource.value) return;
         pluginMarketData.value = data;
         trimExtensionName();
         checkAlreadyInstalled();
@@ -2395,10 +2445,9 @@ export const useExtensionPage = (initialTab = "installed") => {
       void (async () => {
         try {
           await loadCustomSources();
-          const data = await commonStore.getPluginCollections(
-            false,
-            selectedSource.value,
-          );
+          const source = selectedSource.value;
+          const data = await commonStore.getPluginCollections(false, source);
+          if (source !== selectedSource.value) return;
           pluginMarketData.value = data;
           trimExtensionName();
           checkAlreadyInstalled();

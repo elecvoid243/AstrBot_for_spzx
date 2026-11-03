@@ -2220,6 +2220,13 @@ class ChatService:
             message_parts_to_save = pending_accumulator.build_message_parts(
                 include_pending_tool_calls=freeze_pending_tool_calls
             )
+            if freeze_pending_tool_calls:
+                for part in message_parts_to_save:
+                    if part.get("type") == "tool_call":
+                        for call in part.get("tool_calls", []):
+                            if not call.get("finished_ts") and "result" not in call:
+                                call["status"] = "interrupted"
+                                call["finished_ts"] = time.time()
             plain_text = collect_plain_text_from_message_parts(message_parts_to_save)
             try:
                 extracted_refs = extract_web_search_refs(
@@ -4041,7 +4048,7 @@ class ChatService:
         """Terminate a managed shell session on the user's behalf.
 
         On success, an active agent run in the same conversation is told via
-        a [SYSTEM NOTICE] so it does not keep polling the now-gone session.
+        a [SYSTEM NOTICE] so it stops waiting for the terminated process.
 
         Args:
             username: Authenticated dashboard user; must own the session.
@@ -4069,6 +4076,7 @@ class ChatService:
                 requester_id=username,
                 requester_is_admin=True,
                 session_id=shell_session_id,
+                consume_output=False,
             )
         except ValueError as exc:
             raise ChatServiceError(str(exc)) from exc
@@ -4083,8 +4091,9 @@ class ChatService:
         inject_system_notice_to_active_run(
             umo,
             f"User terminated managed shell session {shell_session_id} "
-            f"(pid {result.get('pid')}). If you were polling it, expect "
-            '"not found" errors — do not retry it.',
+            f"(pid {result.get('pid')}). Do not restart it or keep waiting for it. "
+            "Collect any remaining output if needed; if the session is already "
+            "gone, do not retry it.",
         )
         return result
 

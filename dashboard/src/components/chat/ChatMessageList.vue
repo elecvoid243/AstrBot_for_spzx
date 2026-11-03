@@ -440,6 +440,7 @@
                             v-else
                             :tool-call="normalizeToolCall(tool)"
                             :is-dark="isDark"
+                            :is-active="isMessageStreaming(msg, msgIndex)"
                           />
                         </template>
                       </div>
@@ -1269,7 +1270,8 @@ function isMessageStreaming(message: ChatRecord, messageIndex: number) {
   return (
     props.isStreaming &&
     !isUserMessage(message) &&
-    messageIndex === props.messages.length - 1
+    // An optimistic follow-up can sit after the assistant while its tool waits.
+    props.messages.slice(messageIndex + 1).every(isUserMessage)
   );
 }
 
@@ -1801,6 +1803,7 @@ function isIPythonToolCall(tool: Record<string, unknown>) {
 }
 
 function toolCallStatusText(tool: Record<string, unknown>) {
+  if (tool.status === "interrupted") return tm("toolStatus.interrupted");
   if (tool.finished_ts) return tm("toolStatus.done");
   return tm("toolStatus.running");
 }

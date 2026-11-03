@@ -31,6 +31,7 @@
           :parts="parts"
           :reasoning="reasoning"
           :is-dark="isDark"
+          :is-streaming="isStreaming"
         />
         <div v-else class="reasoning-sidebar-empty">
           {{ reasoningTitle }}
@@ -55,6 +56,7 @@ const props = defineProps<{
   parts: MessagePart[];
   reasoning?: string;
   isDark?: boolean;
+  isStreaming?: boolean;
   /**
    * 2026-08-11 file-change visibility: when set, the sidebar scrolls
    * to the pinned FileChangeCard of this tool call after opening

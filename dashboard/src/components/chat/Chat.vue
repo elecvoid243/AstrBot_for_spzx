@@ -1207,6 +1207,7 @@
     <ReasoningSidebar
       v-model="reasoningPanelOpen"
       :parts="activeReasoningParts"
+      :is-streaming="activeReasoningIsStreaming"
       :is-dark="isDark"
       :focus-call-id="activeReasoningTarget?.callId ?? null"
       :focus-query="activeReasoningTarget?.query ?? null"
@@ -2323,6 +2324,21 @@ const activeReasoningParts = computed<MessagePart[]>(() => {
   );
   const block = blocks[activeReasoningTarget.value.blockIndex];
   return block?.kind === "thinking" ? block.parts : [];
+});
+
+const activeReasoningIsStreaming = computed(() => {
+  const message = activeReasoningTarget.value?.message;
+  const latest = [...activeMessages.value].reverse().find(
+    (record) => record.content?.type === "bot",
+  );
+  return Boolean(
+    message &&
+    latest &&
+    String(message.id) === String(latest.id) &&
+    currSessionId.value &&
+    (isSessionRunning(currSessionId.value) ||
+      hasLiveSystemRecord(currSessionId.value)),
+  );
 });
 
 watch(reasoningPanelOpen, (open) => {

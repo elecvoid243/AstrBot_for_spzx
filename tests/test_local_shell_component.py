@@ -1255,6 +1255,29 @@ async def test_bounded_await_timeout_without_cancel_keeps_task_running():
 
 
 @pytest.mark.asyncio
+async def test_bounded_await_child_cancel_does_not_cancel_caller():
+    child = asyncio.create_task(asyncio.Event().wait())
+    caller = asyncio.create_task(local_booter._bounded_await(child, timeout=1))
+    await asyncio.sleep(0)
+    child.cancel()
+    assert await caller is True
+    assert not caller.cancelled()
+
+
+@pytest.mark.asyncio
+async def test_bounded_await_preserves_outer_cancellation():
+    child = asyncio.create_task(asyncio.Event().wait())
+    caller = asyncio.create_task(local_booter._bounded_await(child, timeout=1))
+    await asyncio.sleep(0)
+    caller.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await caller
+    assert not child.done()
+    child.cancel()
+    await asyncio.gather(child, return_exceptions=True)
+
+
+@pytest.mark.asyncio
 async def test_poll_session_returns_when_reader_task_stuck(monkeypatch, tmp_path):
     """A pipe held open by a detached child must not hang poll forever.
 
@@ -2269,3 +2292,77 @@ async def test_discard_refuses_running_session(monkeypatch, tmp_path):
             session_id=started["session_id"],
         )
     assert started["session_id"] in shell._sessions
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("agent_first", [False, True])
+async def test_dashboard_terminate_preserves_agent_output(
+    monkeypatch, tmp_path, agent_first
+):
+    """A dashboard termination must not consume output or fail after agent reap."""
+    holder = {}
+    _patch_output_spawn(monkeypatch, holder)
+    shell = LocalShellComponent()
+    started = await shell.exec_managed(
+        "dummy",
+        owner_id="owner-a",
+        creator_id="user-a",
+        creator_is_admin=True,
+        sandboxed=False,
+        cwd=str(tmp_path),
+        yield_time_ms=0,
+    )
+    session = shell._sessions[started["session_id"]]
+    args = {
+        "owner_id": "owner-a",
+        "requester_id": "user-a",
+        "requester_is_admin": True,
+        "session_id": session.session_id,
+    }
+    waiting = asyncio.Event()
+    reading = asyncio.Event()
+    release_read = asyncio.Event()
+    original_wait = session.output_event.wait
+    original_to_thread = asyncio.to_thread
+
+    async def observe_wait():
+        waiting.set()
+        await original_wait()
+
+    monkeypatch.setattr(session.output_event, "wait", observe_wait)
+
+    async def schedule_read(func, *args, **kwargs):
+        if (
+            not agent_first
+            and asyncio.current_task() is poll
+            and session.process.returncode is not None
+        ):
+            reading.set()
+            await release_read.wait()
+        return await original_to_thread(func, *args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "to_thread", schedule_read)
+    poll = asyncio.create_task(shell.poll_session(**args, yield_time_ms=15000))
+    await asyncio.wait_for(waiting.wait(), 1)
+
+    async def terminate(_session):
+        holder["proc"].stdout.feed(b"hello world\n")
+        holder["proc"].stdout.close()
+        holder["proc"].exit(1)
+        if agent_first:
+            await poll
+        else:
+            await asyncio.wait_for(reading.wait(), 1)
+
+    monkeypatch.setattr(shell, "_terminate_process", terminate)
+    result = await shell.terminate_session(**args, consume_output=False)
+    assert result["status"] == "terminated"
+    if not agent_first:
+        assert session.cursor == 0
+        assert session.session_id in shell._sessions
+    release_read.set()
+    result = await asyncio.wait_for(poll, 1)
+    assert result["stdout"] == "hello world\n"
+    assert result["status"] == "terminated"
+    assert result["session_closed"] is True
+    assert session.session_id not in shell._sessions

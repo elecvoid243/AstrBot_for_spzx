@@ -175,6 +175,7 @@ async def test_terminate_shell_session_injects_notice(monkeypatch):
     result = await service.terminate_shell_session("alice", "cid1", "sh_abc123")
 
     assert result["status"] == "terminated"
+    assert shell.terminate_session.await_args.kwargs["consume_output"] is False
     assert len(injected) == 1
     umo, text = injected[0]
     assert umo == "webchat:FriendMessage:webchat!alice!cid1"

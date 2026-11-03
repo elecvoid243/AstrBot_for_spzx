@@ -185,7 +185,7 @@
       <div v-else class="process-record pa-2" data-testid="observed-tool">
         <p class="text-caption text-medium-emphasis">{{ tm(`progress.toolStates.${item.status}`) }} · {{ tm("v2.attempt") }} {{ item.attempt }}</p>
         <p v-if="item.missingParts" class="text-warning" data-testid="missing-tool-parts">{{ tm("progress.missingChunks") }}</p>
-        <ToolCallCard :tool-call="item" :is-dark="isDark" />
+        <ToolCallCard :tool-call="item" :is-dark="isDark" :is-active="item.status === 'running' && run.status === 'running'" />
       </div>
     </template>
     <details

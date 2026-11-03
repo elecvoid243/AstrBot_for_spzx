@@ -296,3 +296,30 @@ async def test_pending_tool_survives_followups_in_stream_snapshot_and_history(
         if not run.task.done():
             run.task.cancel()
         await asyncio.gather(run.task, return_exceptions=True)
+
+@pytest.mark.asyncio
+async def test_unfinished_tool_is_persisted_as_interrupted_at_turn_end():
+    manager = await _drive_turn(
+        [
+            {
+                "type": "plain",
+                "chain_type": "tool_call",
+                "streaming": True,
+                "data": json.dumps(
+                    {
+                        "id": "poll-1",
+                        "name": "astrbot_shell_session",
+                        "args": {"action": "poll"},
+                        "ts": 100,
+                    }
+                ),
+                "message_id": RUN_ID,
+            },
+            {"type": "end", "message_id": RUN_ID},
+        ]
+    )
+    [content] = manager.rows.values()
+    [call] = content["message"][0]["tool_calls"]
+    assert call["status"] == "interrupted"
+    assert call["finished_ts"] >= call["ts"]
+    assert "result" not in call

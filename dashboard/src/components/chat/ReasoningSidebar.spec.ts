@@ -7,6 +7,7 @@ const timeline = vi.hoisted(() => ({ file: vi.fn(), text: vi.fn() }));
 vi.mock("@/components/chat/message_list_comps/ReasoningTimeline.vue", () => ({
   default: {
     name: "ReasoningTimeline",
+    props: ["isStreaming"],
     template: '<div><button type="button">Expand</button></div>',
     methods: { scrollToFile: timeline.file, scrollToText: timeline.text },
   },
@@ -46,6 +47,15 @@ function flushFrames() {
 }
 
 describe("reasoning sidebar scrolling", () => {
+  it("passes the selected run's activity to tool cards", async () => {
+    const { wrapper } = await mountSidebar();
+    const child = wrapper.getComponent({ name: "ReasoningTimeline" });
+    expect(child.props("isStreaming")).toBe(false);
+    await wrapper.setProps({ isStreaming: true });
+    expect(child.props("isStreaming")).toBe(true);
+    await wrapper.setProps({ isStreaming: false });
+    expect(child.props("isStreaming")).toBe(false);
+  });
   beforeEach(() => {
     vi.clearAllMocks();
     frames.clear();

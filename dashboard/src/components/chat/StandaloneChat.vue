@@ -151,6 +151,7 @@
                             v-else
                             :tool-call="normalizeToolCall(tool)"
                             :is-dark="isDark"
+                            :is-active="Boolean(currSessionId && isSessionRunning(currSessionId) && activeMessages.slice(msgIndex + 1).every(isUserMessage))"
                           />
                         </template>
                       </div>
@@ -521,6 +522,7 @@ function isIPythonToolCall(tool: Record<string, unknown>) {
 }
 
 function toolCallStatusText(tool: Record<string, unknown>) {
+  if (tool.status === "interrupted") return tm("toolStatus.interrupted");
   if (tool.finished_ts) return tm("toolStatus.done");
   return tm("toolStatus.running");
 }

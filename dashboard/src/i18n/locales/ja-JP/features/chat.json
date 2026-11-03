@@ -164,6 +164,7 @@
     "output": "出力"
   },
   "toolStatus": {
+    "interrupted": "中断",
     "done": "完了",
     "running": "実行中"
   },

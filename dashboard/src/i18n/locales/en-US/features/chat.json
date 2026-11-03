@@ -443,6 +443,7 @@
     "hint": "Collapse the subagent card"
   },
   "toolStatus": {
+    "interrupted": "Interrupted",
     "done": "Done",
     "running": "Running"
   },

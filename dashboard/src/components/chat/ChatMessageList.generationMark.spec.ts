@@ -9,6 +9,7 @@ import { describe, expect, it, vi } from "vitest";
 import { mount } from "@vue/test-utils";
 import { defineComponent, h } from "vue";
 import ChatMessageList from "@/components/chat/ChatMessageList.vue";
+import ToolCallCard from "@/components/chat/message_list_comps/ToolCallCard.vue";
 import type { ChatContent, ChatRecord } from "@/composables/useMessages";
 
 // The list mirrors pending interactive choices into Pinia on mount; this
@@ -72,6 +73,29 @@ function railMark(wrapper: ReturnType<typeof mountList>) {
 }
 
 describe("ChatMessageList generation mark", () => {
+  it("only enables tool timers for the live reply, including after history recovery", async () => {
+    const messages = ["old", "live"].map((id) => botRecord(id, {
+      message: [{ type: "tool_call", tool_calls: [{ id, name: "astrbot_shell_session", ts: 1 }] }],
+    }));
+    const wrapper = mountList(messages);
+    await wrapper.setProps({ variant: "thread" });
+    for (const pill of wrapper.findAll(".agent-work-pill")) await pill.trigger("click");
+    for (const header of wrapper.findAll(".reasoning-header")) await header.trigger("click");
+    const cards = wrapper.findAllComponents(ToolCallCard);
+    expect(cards).toHaveLength(2);
+    expect(cards.map((card) => card.props("isActive"))).toEqual([false, false]);
+    await wrapper.setProps({ isStreaming: true });
+    expect(cards.map((card) => card.props("isActive"))).toEqual([false, true]);
+    await wrapper.setProps({ messages: [
+      ...messages,
+      { id: "follow-up", content: { type: "user", message: [{ type: "plain", text: "continue" }] } },
+    ] });
+    expect(wrapper.findAllComponents(ToolCallCard).map((card) => card.props("isActive")))
+      .toEqual([false, true]);
+    await wrapper.setProps({ isStreaming: false });
+    expect(cards.map((card) => card.props("isActive"))).toEqual([false, false]);
+    wrapper.unmount();
+  });
   it("waits (fast orbit) before the first token", () => {
     const wrapper = mountList([botRecord("b1", { isLoading: true })], true);
     const mark = railMark(wrapper);

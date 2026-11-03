@@ -207,6 +207,7 @@
                           v-else
                           :tool-call="normalizeToolCall(tool)"
                           :is-dark="isDark"
+                          :is-active="isMessageStreaming(msgIndex)"
                         />
                       </template>
                     </div>
@@ -385,7 +386,9 @@ function messageParts(message: ChatRecord): MessagePart[] {
 }
 
 function isMessageStreaming(messageIndex: number) {
-  return props.isStreaming && messageIndex === messages.value.length - 1;
+  return props.isStreaming &&
+    !isUserMessage(messages.value[messageIndex]) &&
+    messages.value.slice(messageIndex + 1).every(isUserMessage);
 }
 
 function hasNonReasoningContent(message: ChatRecord) {
@@ -585,6 +588,7 @@ function isIPythonToolCall(tool: Record<string, unknown>) {
 }
 
 function toolCallStatusText(tool: Record<string, unknown>) {
+  if (tool.status === "interrupted") return tm("toolStatus.interrupted");
   if (tool.finished_ts) return tm("toolStatus.done");
   return tm("toolStatus.running");
 }

@@ -144,15 +144,12 @@ class PipelineScheduler:
 
             logger.debug("pipeline execution completed.")
         except (Exception, asyncio.CancelledError):
-            if (
-                isinstance(event, WebChatMessageEvent)
-                and event.get_extra("action_type") == "live"
-            ):
-                # Release the admitted Live consumer after all queued output.
+            if isinstance(event, WebChatMessageEvent):
+                # Release the chat consumer even when a tool aborts the pipeline.
                 try:
                     await event.send(None)
                 except (Exception, asyncio.CancelledError) as exc:
-                    logger.error(f"Failed to notify Live turn completion: {exc}")
+                    logger.error(f"Failed to notify WebChat turn completion: {exc}")
             raise
         finally:
             try:

@@ -95,7 +95,7 @@
               />
             </template>
           </ToolCallItem>
-          <ToolCallCard v-else :tool-call="entry.tool" :is-dark="isDark" />
+          <ToolCallCard v-else :tool-call="entry.tool" :is-dark="isDark" :is-active="isStreaming" />
         </div>
 
         <button
@@ -405,6 +405,7 @@ function isIPythonToolCall(tool: Record<string, unknown>) {
 }
 
 function toolCallStatusText(tool: Record<string, unknown>) {
+  if (tool.status === "interrupted") return tm("toolStatus.interrupted");
   if (tool.finished_ts) return tm("toolStatus.done");
   return tm("toolStatus.running");
 }

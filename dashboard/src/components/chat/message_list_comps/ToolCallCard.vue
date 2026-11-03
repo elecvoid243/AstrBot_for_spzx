@@ -137,7 +137,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, onUnmounted, reactive, ref } from "vue";
+import { computed, onUnmounted, reactive, ref, watch } from "vue";
 import { useModuleI18n } from "@/i18n/composables";
 import { parseFileEditResult, parseApplyPatchArgs, parseApplyPatchDisplay, parseApplyPatchResult, APPLY_PATCH_TOOL_NAME } from "@/utils/fileChangeTool";
 import DiffPreview from "./DiffPreview.vue";
@@ -163,12 +163,23 @@ const props = defineProps({
     type: Boolean,
     default: false,
   },
+  isActive: {
+    type: Boolean,
+    default: false,
+  },
 });
 
 const { tm } = useModuleI18n("features/chat");
 const isExpanded = ref(props.initialExpanded);
 const currentTime = ref(Date.now() / 1000);
 let timer = null;
+const isRunning = computed(
+  () =>
+    props.isActive &&
+    !props.toolCall.finished_ts &&
+    (props.toolCall.result === undefined || props.toolCall.status === "running") &&
+    props.toolCall.status !== "interrupted",
+);
 
 const elapsedTime = computed(() => {
   if (props.toolCall.finished_ts) return "";
@@ -310,6 +321,12 @@ const editToolSummary = computed(() => editToolParsed.value?.summary ?? "");
 // ── Duration ──────────────────────────────────────────────────
 
 const toolCallDuration = computed(() => {
+  if (props.toolCall.status === "interrupted") return tm("toolStatus.interrupted");
+  if (!props.toolCall.finished_ts && !isRunning.value) {
+    return tm(
+      props.toolCall.result === undefined ? "toolStatus.interrupted" : "toolStatus.done",
+    );
+  }
   const startTime = Number(props.toolCall.ts);
   if (!Number.isFinite(startTime) || startTime <= 0) return "";
   if (props.toolCall.finished_ts) {
@@ -339,11 +356,20 @@ const updateTime = () => {
   currentTime.value = Date.now() / 1000;
 };
 
-onMounted(() => {
-  if (!props.toolCall.finished_ts) {
-    timer = setInterval(updateTime, 100);
-  }
-});
+watch(
+  isRunning,
+  (running) => {
+    if (timer) {
+      clearInterval(timer);
+      timer = null;
+    }
+    if (running) {
+      updateTime();
+      timer = setInterval(updateTime, 100);
+    }
+  },
+  { immediate: true },
+);
 
 onUnmounted(() => {
   if (timer) {

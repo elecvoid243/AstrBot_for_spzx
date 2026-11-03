@@ -471,21 +471,20 @@ async def _bounded_await(
             reader that can be abandoned).
 
     Returns:
-        True if the task finished within the timeout (including finishing
-        with an exception — the caller waits for completion, not for the
+        True if the task finished within the timeout (including cancellation
+        or an exception — the caller waits for completion, not for the
         task's result), False otherwise.
     """
-    try:
-        await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
-        return True
-    except asyncio.TimeoutError:
+    # Waiting for completion must not propagate the child's cancellation into
+    # another poll. asyncio.wait still propagates cancellation of this caller.
+    done, _ = await asyncio.wait({task}, timeout=timeout)
+    if not done:
         if cancel_on_timeout:
             await _cancel_task_bounded(task)
         return False
-    except Exception:
-        # The task itself failed. From the caller's perspective it has
-        # finished, and its exception was already consumed by the await.
-        return True
+    if not task.cancelled():
+        task.exception()
+    return True
 
 
 @dataclass
@@ -1281,6 +1280,7 @@ class LocalShellComponent(ShellComponent):
         requester_is_admin: bool,
         session_id: str,
         max_output_chars: int = 10_000,
+        consume_output: bool = True,
     ) -> dict[str, Any]:
         """Terminate a managed shell process group.
 
@@ -1290,10 +1290,14 @@ class LocalShellComponent(ShellComponent):
             requester_is_admin: Whether the requester is an administrator.
             session_id: Managed shell session identifier.
             max_output_chars: Maximum remaining output bytes to return.
+            consume_output: Consume and reap output for a tool caller. Dashboard
+                termination leaves output available to the agent's pending poll.
 
         Returns:
             Remaining output and final process status.
         """
+        if max_output_chars < 1:
+            raise ValueError("`max_output_chars` must be greater than 0.")
         session = await self._get_owned_session(
             owner_id,
             requester_id,
@@ -1302,6 +1306,26 @@ class LocalShellComponent(ShellComponent):
         )
         session.terminated = True
         await self._terminate_process(session)
+        session.output_event.set()
+        if not consume_output:
+            # Keep the captured object: a concurrent agent poll may already
+            # have reaped the map entry after observing process exit.
+            await _bounded_await(session.reader_task, timeout=5)
+            raw_output, next_cursor, output_size = await asyncio.to_thread(
+                self._read_output_range, session, session.cursor, max_output_chars
+            )
+            return {
+                "session_id": session.session_id,
+                "pid": session.process.pid,
+                "status": self._session_status(session),
+                "stdout": _decode_shell_output(raw_output),
+                "stderr": "",
+                "exit_code": session.process.returncode,
+                "cursor": next_cursor,
+                "has_more": next_cursor < output_size,
+                "session_closed": session.process.returncode is not None
+                and next_cursor >= output_size,
+            }
         return await self.poll_session(
             owner_id=owner_id,
             requester_id=requester_id,

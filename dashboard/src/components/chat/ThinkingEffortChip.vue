@@ -143,7 +143,7 @@ function openEditor(): void {
             type="button"
             class="effort-chip-btn"
             :class="{ 'effort-chip-btn--open': menuOpen }"
-            :aria-label="tm('input.thinkingEffort')"
+            :aria-label="`${tm('input.thinkingEffort')}: ${activeLabel}`"
           >
             <v-icon size="14" class="effort-chip-btn__icon">mdi-brain</v-icon>
             <span class="effort-chip-btn__label">{{ activeLabel }}</span>

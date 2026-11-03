@@ -13,7 +13,8 @@
                     class="config-chip"
                     :class="{ 'config-chip--open': menuOpen }"
                     :disabled="loadingConfigs || saving"
-                    :title="tm('config.title')"
+                    :title="`${tm('config.title')}: ${selectedConfigLabel}`"
+                    :aria-label="`${tm('config.title')}: ${selectedConfigLabel}`"
                 >
                     <span class="config-chip-dot" aria-hidden="true"></span>
                     <span class="config-chip-label">{{ selectedConfigLabel }}</span>

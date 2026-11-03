@@ -2663,6 +2663,7 @@ defineExpose({
 
 <style scoped>
 .input-area {
+  container-type: inline-size;
   padding: 0 16px;
   background-color: transparent;
   position: relative;
@@ -3086,6 +3087,85 @@ defineExpose({
     rgba(var(--v-theme-on-surface), 0.055)
   ) !important;
   color: rgb(var(--v-theme-on-surface)) !important;
+}
+
+@container (max-width: 560px) {
+  .input-area__status-row {
+    box-sizing: border-box;
+    width: 100%;
+    flex-wrap: wrap;
+    justify-content: flex-start;
+  }
+
+  .input-area__status-row__left {
+    flex: 1 1 120px;
+  }
+
+  .input-area__status-row__right {
+    flex-wrap: wrap;
+    min-width: 0;
+  }
+
+  .input-container {
+    box-sizing: border-box;
+    width: 100% !important;
+  }
+
+  .composer-toolbar {
+    flex-wrap: wrap;
+    row-gap: 4px;
+  }
+
+  .composer-toolbar__left {
+    flex: 1 1 auto;
+    flex-wrap: wrap;
+  }
+
+  .composer-toolbar__left > * {
+    flex-shrink: 0;
+  }
+
+  .composer-toolbar__divider {
+    margin: 0 3px;
+  }
+
+  .composer-toolbar__left :deep(.config-chip) {
+    max-width: 108px;
+  }
+
+  .composer-toolbar__left :deep(.effort-chip-btn__label) {
+    width: auto;
+    max-width: 48px;
+  }
+
+  .composer-toolbar__left :deep(.quick-chip-btn__label),
+  .composer-toolbar__left :deep(.quick-chip-btn__chevron) {
+    display: none;
+  }
+
+  .composer-toolbar__left :deep(.quick-chip-btn) {
+    min-width: 36px;
+    justify-content: center;
+  }
+
+  .compression-readout-slot {
+    display: none;
+  }
+}
+
+@container (max-width: 380px) {
+  .input-area__status-row :deep(.sp-ghost-btn__label) {
+    display: none;
+  }
+
+  .input-area__status-row :deep(.sp-ghost-btn) {
+    min-width: 36px;
+    justify-content: center;
+  }
+
+  .composer-toolbar__left :deep(.config-chip) {
+    max-width: 84px;
+  }
 }
 
 .input-area:not(.is-dark) .input-action-btn {

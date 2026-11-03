@@ -5,7 +5,9 @@
 
 // Light theme (default)
 :root,
-.v-theme--light {
+.v-theme--light,
+.v-theme--PurpleTheme,
+.v-theme--PurpleThemeDark {
   // Solid near-white gray for opaque resting background on chips and ghost
   // buttons. Pushed whiter (2026-08-15) so chips blend toward the light
   // input surface while the border keeps them distinguishable.

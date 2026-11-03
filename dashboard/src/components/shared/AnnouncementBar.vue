@@ -25,8 +25,22 @@
       @mouseleave="hover = false"
     >
       <div class="ann-track" :class="{ paused: hover }">
-        <span class="ann-text">{{ summary }}</span>
-        <span class="ann-text" aria-hidden="true">{{ summary }}</span>
+        <span
+          v-for="copy in 2"
+          :key="copy"
+          class="ann-text"
+          :aria-hidden="copy === 2 ? 'true' : undefined"
+        >
+          <template v-for="(part, index) in summary" :key="index">
+            <img
+              v-if="part.src"
+              :src="part.src"
+              :alt="part.text"
+              class="ann-image"
+            />
+            <span v-else>{{ part.text }}</span>
+          </template>
+        </span>
       </div>
     </div>
 
@@ -56,7 +70,7 @@
 
   <v-dialog v-if="visible" v-model="open" max-width="720" scrollable>
     <v-card>
-      <v-card-title class="text-h6 font-weight-bold pa-4">
+      <v-card-title class="text-h3 pa-4 pb-0 pl-6">
         {{ data?.title }}
       </v-card-title>
       <v-card-text class="pa-4 pt-0">
@@ -113,6 +127,7 @@ import { computed, ref } from "vue";
 import { useAnnouncement } from "@/composables/useAnnouncement";
 import { useModuleI18n } from "@/i18n/composables";
 import { MarkdownRender } from "markstream-vue";
+import MarkdownIt from "markdown-it";
 import "markstream-vue/index.css";
 
 const { tm } = useModuleI18n("features/welcome");
@@ -122,25 +137,40 @@ const hover = ref(false);
 const open = ref(false);
 
 const visible = computed(() => !!data.value);
+const markdown = new MarkdownIt({ html: false });
 
 const summary = computed(() => {
-  if (!data.value) return "";
+  if (!data.value) return [];
   const title = (data.value.title || "").trim();
-  const text = stripMarkdown(data.value.content || "");
-  const combined = title && text ? `${title}　·　${text}` : title || text;
-  return combined.length > 200 ? combined.slice(0, 200) + "…" : combined;
+  const parts: { text: string; src?: string }[] = [];
+  if (title) parts.push({ text: title });
+  let remaining = 200 - title.length;
+  const tokens = markdown.parse(data.value.content || "", {});
+  for (const token of tokens) {
+    if (token.type === "fence" || token.type === "code_block") continue;
+    if (token.type !== "inline" || !token.children) continue;
+    if (parts.length)
+      parts.push({ text: parts.length === 1 && title ? "　·　" : " " });
+    for (const child of token.children) {
+      if (child.type === "image") {
+        const src = child.attrGet("src") || "";
+        if (/^https?:\/\//i.test(src)) parts.push({ text: child.content, src });
+        else if (child.content) parts.push({ text: child.content });
+      } else if (
+        ["text", "code_inline", "softbreak", "hardbreak"].includes(
+          child.type,
+        ) &&
+        remaining > 0
+      ) {
+        const value = child.type.endsWith("break") ? " " : child.content;
+        parts.push({ text: value.slice(0, remaining) });
+        remaining -= value.length;
+        if (remaining <= 0) parts.push({ text: "…" });
+      }
+    }
+  }
+  return parts;
 });
-
-function stripMarkdown(md: string): string {
-  return md
-    .replace(/```[\s\S]*?```/g, " [代码] ")
-    .replace(/`([^`]+)`/g, "$1")
-    .replace(/^#+\s*/gm, "")
-    .replace(/\*\*?(.+?)\*\*?/g, "$1")
-    .replace(/\[(.+?)\]\(.+?\)/g, "$1")
-    .replace(/\n+/g, " ")
-    .trim();
-}
 </script>
 
 <style scoped>
@@ -195,8 +225,17 @@ function stripMarkdown(md: string): string {
 }
 
 .ann-text {
+  display: inline-flex;
+  align-items: center;
   padding-right: 64px;
   user-select: none;
+}
+
+.ann-image {
+  max-height: 28px;
+  max-width: 120px;
+  object-fit: contain;
+  margin: 0 4px;
 }
 
 .ann-right {
@@ -217,5 +256,10 @@ function stripMarkdown(md: string): string {
 
 .ann-dialog-markdown {
   line-height: 1.7;
+}
+
+.ann-dialog-markdown :deep(img) {
+  max-width: 100%;
+  height: auto;
 }
 </style>

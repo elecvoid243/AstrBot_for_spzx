@@ -458,16 +458,16 @@
     "jumpToSource": "跳转到源会话"
   },
   "thread": {
-    "title": "分支",
-    "askInThread": "在新分支中询问",
+    "title": "侧边聊天",
+    "askInThread": "在侧边聊天中询问",
     "sideTitle": "侧边聊天",
     "newSideChat": "新建侧边聊天",
     "sideEmpty": "还没有侧边聊天",
     "sideLoading": "加载中…",
-    "count": "{count} 个分支",
-    "createFailed": "创建分支失败",
-    "delete": "删除分支",
-    "confirmDelete": "确定要删除这个分支吗？此操作无法撤销。",
+    "count": "{count} 个侧边聊天",
+    "createFailed": "创建侧边聊天失败",
+    "delete": "删除侧边聊天",
+    "confirmDelete": "确定要删除这个侧边聊天吗？此操作无法撤销。",
     "placeholder": "继续追问这段内容..."
   },
   "conversation": {

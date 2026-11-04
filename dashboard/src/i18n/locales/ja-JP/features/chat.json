@@ -170,16 +170,16 @@
     "running": "実行中"
   },
   "thread": {
-    "title": "分岐",
-    "askInThread": "新しい分岐で質問",
+    "title": "サイドチャット",
+    "askInThread": "サイドチャットで質問",
     "sideTitle": "サイドチャット",
     "newSideChat": "サイドチャットを新規作成",
     "sideEmpty": "サイドチャットはまだありません",
     "sideLoading": "読み込み中…",
-    "count": "{count} 件の分岐",
-    "createFailed": "分岐の作成に失敗しました",
-    "delete": "分岐を削除",
-    "confirmDelete": "この分岐を削除しますか？この操作は元に戻せません。",
+    "count": "{count} 件のサイドチャット",
+    "createFailed": "サイドチャットの作成に失敗しました",
+    "delete": "サイドチャットを削除",
+    "confirmDelete": "このサイドチャットを削除しますか？この操作は元に戻せません。",
     "placeholder": "この内容についてさらに質問…"
   },
   "conversation": {

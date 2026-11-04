@@ -73,8 +73,8 @@ afterEach(() => api.restore());
 
 describe("message lists with the real session-scoped choice store", () => {
   it.each([false, true])(
-    "renders ordinary history without a live UMO, sideChat=%s",
-    async (sideChat) => {
+    "renders ordinary history without a live UMO, quoted=%s",
+    async (quoted) => {
       api.onGet("/api/v1/chat/threads/thread-a").reply(200, {
         status: "ok",
         data: {
@@ -93,7 +93,15 @@ describe("message lists with the real session-scoped choice store", () => {
       store.hydrate(MAIN_UMO);
       const errors: unknown[] = [];
       const wrapper = mount(ThreadPanel, {
-        props: { modelValue: true, thread: THREAD, isDark: false, sideChat },
+        props: {
+          modelValue: true,
+          thread: {
+            ...THREAD,
+            parent_message_id: quoted ? 1 : 0,
+            selected_text: quoted ? THREAD.selected_text : "",
+          },
+          isDark: false,
+        },
         global: {
           plugins: [vuetify],
           config: { errorHandler: (error) => errors.push(error) },
@@ -109,8 +117,8 @@ describe("message lists with the real session-scoped choice store", () => {
   );
 
   it.each([false, true])(
-    "loads choice history without touching the main session, sideChat=%s",
-    async (sideChat) => {
+    "loads choice history without touching the main session, quoted=%s",
+    async (quoted) => {
       let resolveHistory!: () => void;
       const historyReady = new Promise<void>((resolve) => {
         resolveHistory = resolve;
@@ -170,7 +178,15 @@ describe("message lists with the real session-scoped choice store", () => {
       expect(persistenceBefore.every((value) => value !== null)).toBe(true);
       const errors: unknown[] = [];
       const wrapper = mount(ThreadPanel, {
-        props: { modelValue: true, thread: THREAD, isDark: false, sideChat },
+        props: {
+          modelValue: true,
+          thread: {
+            ...THREAD,
+            parent_message_id: quoted ? 1 : 0,
+            selected_text: quoted ? THREAD.selected_text : "",
+          },
+          isDark: false,
+        },
         global: {
           plugins: [vuetify],
           config: { errorHandler: (error) => errors.push(error) },

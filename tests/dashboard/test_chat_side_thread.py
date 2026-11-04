@@ -157,6 +157,42 @@ async def test_side_thread_title_uses_the_first_user_message() -> None:
 
 
 @pytest.mark.asyncio
+async def test_side_chat_menu_includes_quoted_and_empty_threads(temp_db) -> None:
+    """List both entry types while keeping foreign threads out of the menu.
+
+    Args:
+        temp_db: Isolated SQLite database.
+    """
+    service = make_service()
+    service.db = temp_db
+    service.platform_history_mgr = SimpleNamespace(get=AsyncMock(return_value=[]))
+    parent = await temp_db.create_platform_session(creator="alice")
+    own_threads = []
+    for creator, message_id, selected_text in (
+        ("alice", 0, ""),
+        ("alice", 7, "Quoted answer"),
+        ("bob", 8, "Foreign quote"),
+    ):
+        thread = await temp_db.create_webchat_thread(
+            creator=creator,
+            parent_session_id=parent.session_id,
+            parent_message_id=message_id,
+            base_checkpoint_id="",
+            selected_text=selected_text,
+        )
+        if creator == "alice":
+            own_threads.append(thread.thread_id)
+
+    result = await service.list_side_threads("alice", parent.session_id)
+
+    assert [item["thread_id"] for item in result["threads"]] == own_threads[::-1]
+    assert result["threads"][0]["title"] == "Quoted answer"
+    assert result["threads"][1]["title"] == ""
+    with pytest.raises(ChatServiceError):
+        await service.list_side_threads("bob", parent.session_id)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("side_chat", [True, False])
 @pytest.mark.parametrize("cleanup", ["thread", "session", "edit", "retry"])
 async def test_owned_thread_agent_reuses_and_cleans_up_conversation(
@@ -231,6 +267,16 @@ async def test_owned_thread_agent_reuses_and_cleans_up_conversation(
             '[{"role": "user", "content": "Side question"}]'
         )
         assert len(await temp_db.get_conversations(user_id=origin)) == 1
+        parent_origin = service._parent_session_umo("alice", parent.session_id)
+        set_mode_for_umo(parent_origin, FileAccessMode.READONLY)
+        try:
+            payload = await service.prepare_thread_chat_payload(
+                "alice", {"thread_id": thread["thread_id"], "message": "Follow up"}
+            )
+            assert payload["_thread_selected_text"] == ("" if side_chat else "Answer")
+            assert get_mode_for_umo(origin) is FileAccessMode.READONLY
+        finally:
+            clear_mode_for_umo(parent_origin)
         if cleanup == "session":
             await service.delete_webchat_session("alice", parent.session_id)
         elif cleanup == "thread":

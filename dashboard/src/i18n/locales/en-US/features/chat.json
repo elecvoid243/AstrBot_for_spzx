@@ -458,16 +458,16 @@
     "jumpToSource": "Jump to source session"
   },
   "thread": {
-    "title": "Thread",
-    "askInThread": "Ask in thread",
+    "title": "Side chat",
+    "askInThread": "Ask in side chat",
     "sideTitle": "Side chat",
     "newSideChat": "New side chat",
     "sideEmpty": "No side chats yet",
     "sideLoading": "Loading…",
-    "count": "{count} threads",
-    "createFailed": "Failed to create thread",
-    "delete": "Delete thread",
-    "confirmDelete": "Delete this thread? This action cannot be undone.",
+    "count": "{count} side chats",
+    "createFailed": "Failed to create side chat",
+    "delete": "Delete side chat",
+    "confirmDelete": "Delete this side chat? This action cannot be undone.",
     "placeholder": "Ask about this excerpt..."
   },
   "conversation": {

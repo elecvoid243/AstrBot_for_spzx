@@ -4606,6 +4606,9 @@ class ChatService:
             content=base_history,
         )
         await self._inherit_side_chat_config(username, session_id, thread.thread_id)
+        await self._inherit_side_chat_permissions(
+            username, session_id, thread.thread_id
+        )
         return serialize_thread(thread)
 
     async def create_thread_from_dashboard_payload(
@@ -4677,15 +4680,12 @@ class ChatService:
                 username, thread_id, allow_thread=True
             )
 
-        # Side chats inherit the parent session's workspace/permissions at
-        # send time, because the user may have changed the mode since the
-        # panel was opened. Branch threads keep their checkpoint context.
-        if thread.parent_message_id == 0:
-            await self._inherit_side_chat_permissions(
-                username,
-                thread.parent_session_id,
-                thread_id,
-            )
+        # Both empty and quoted side chats follow the parent's current permissions.
+        await self._inherit_side_chat_permissions(
+            username,
+            thread.parent_session_id,
+            thread_id,
+        )
 
         return {
             "session_id": thread.thread_id,
@@ -4778,7 +4778,7 @@ class ChatService:
 
         Returns:
             Dict with ``threads`` sorted newest-first, each carrying a derived
-            ``title`` (first user message) for the side-chat menu.
+            ``title`` (first user message or quoted text) for the side-chat menu.
         """
         session = await self.db.get_platform_session_by_id(session_id)
         if not session:
@@ -4792,16 +4792,18 @@ class ChatService:
             parent_session_id=session_id,
             creator=username,
         )
-        side_threads = [thread for thread in threads if thread.parent_message_id == 0]
-        side_threads.sort(
+        threads.sort(
             key=lambda thread: thread.updated_at or thread.created_at,
             reverse=True,
         )
 
         items = []
-        for thread in side_threads:
+        for thread in threads:
             item = serialize_thread(thread)
-            item["title"] = await self._side_thread_title(thread.thread_id)
+            item["title"] = (
+                await self._side_thread_title(thread.thread_id)
+                or thread.selected_text[:60]
+            )
             items.append(item)
         return {"threads": items}
 

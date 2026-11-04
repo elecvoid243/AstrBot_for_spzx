@@ -57,7 +57,6 @@ function mountPanel(
     modelValue: boolean;
     thread: ChatThread | null;
     isDark: boolean;
-    sideChat: boolean;
     title: string;
   }> = {},
 ) {
@@ -159,8 +158,8 @@ describe("ThreadPanel", () => {
   });
 
   it.each([false, true])(
-    "keeps live file results tied to the thread and server run (sideChat=%s)",
-    async (sideChat) => {
+    "keeps live file results tied to the thread and server run (quoted=%s)",
+    async (quoted) => {
       let controller!: ReadableStreamDefaultController<Uint8Array>;
       fetchMock.mockResolvedValue({
         ok: true,
@@ -170,16 +169,13 @@ describe("ThreadPanel", () => {
           },
         }),
       });
-      const wrapper = mountPanel({ sideChat });
+      const wrapper = mountPanel({
+        thread: { ...THREAD, parent_message_id: quoted ? 7 : 0 },
+      });
       await flushPromises();
-      if (sideChat)
-        wrapper
-          .getComponent({ name: "ChatInput" })
-          .vm.$emit("send-command", "Run the tool");
-      else {
-        await wrapper.get(".thread-input").setValue("Run the tool");
-        await wrapper.get("form").trigger("submit");
-      }
+      wrapper
+        .getComponent({ name: "ChatInput" })
+        .vm.$emit("send-command", "Run the tool");
       await flushPromises();
       const files = [
         {
@@ -250,7 +246,7 @@ describe("ThreadPanel", () => {
         },
       }),
     }));
-    const wrapper = mountPanel({ sideChat: true });
+    const wrapper = mountPanel();
     await flushPromises();
     await wrapper
       .getComponent({ name: "ChatInput" })
@@ -330,7 +326,7 @@ describe("ThreadPanel", () => {
         oldA = resolve;
       }),
     );
-    const wrapper = mountPanel({ sideChat: true });
+    const wrapper = mountPanel();
     await wrapper.setProps({ thread: { ...THREAD, thread_id: "thread-b" } });
     await flushPromises();
     oldA({
@@ -389,7 +385,7 @@ describe("ThreadPanel", () => {
   });
 
   it("renders the side-chat header, full composer and delete action", async () => {
-    const wrapper = mountPanel({ sideChat: true });
+    const wrapper = mountPanel({ thread: { ...THREAD, selected_text: "" } });
     await flushPromises();
 
     expect(wrapper.get(".thread-panel-title").text()).toBe("侧边聊天");
@@ -401,24 +397,24 @@ describe("ThreadPanel", () => {
   });
 
   it("prefers the list title supplied by the parent", async () => {
-    const wrapper = mountPanel({ sideChat: true, title: "这段代码为什么慢" });
+    const wrapper = mountPanel({ title: "这段代码为什么慢" });
     await flushPromises();
 
     expect(wrapper.get(".thread-panel-title").text()).toBe("这段代码为什么慢");
   });
 
-  it("keeps the quoted selection and delete button for branch threads", async () => {
+  it("uses the same full composer for quoted side chats", async () => {
     const wrapper = mountPanel();
     await flushPromises();
 
-    expect(wrapper.get(".thread-panel-title").text()).toBe("分支");
+    expect(wrapper.get(".thread-panel-title").text()).toBe("侧边聊天");
     expect(wrapper.get(".thread-selected-text").text()).toBe(
       "被选中的那段文字",
     );
     expect(wrapper.find('[data-icon="mdi-delete-outline"]').exists()).toBe(
       true,
     );
-    expect(wrapper.find("chat-input-stub").exists()).toBe(false);
+    expect(wrapper.find("chat-input-stub").exists()).toBe(true);
   });
 
   it("resizes by dragging the left handle and clamps to [320, 1800]", async () => {
@@ -444,7 +440,7 @@ describe("ThreadPanel", () => {
   });
 
   it("emits update:modelValue=false from the close button", async () => {
-    const wrapper = mountPanel({ sideChat: true });
+    const wrapper = mountPanel();
     await flushPromises();
 
     await wrapper.get('[data-icon="mdi-close"]').trigger("click");
@@ -522,7 +518,7 @@ describe("ThreadPanel account isolation and recovery", () => {
         };
       },
     );
-    const wrapper = mountPanel({ sideChat: true });
+    const wrapper = mountPanel();
     await flushPromises();
     expect(fetchMock).toHaveBeenCalledWith(
       "/runs/private-run/stream",
@@ -573,7 +569,7 @@ describe("ThreadPanel staged upload payload", () => {
         },
       }),
     });
-    const wrapper = mountPanel({ sideChat: true });
+    const wrapper = mountPanel();
     await flushPromises();
     const input = wrapper.getComponent({ name: "ChatInput" });
     input.vm.$emit("file-select", [

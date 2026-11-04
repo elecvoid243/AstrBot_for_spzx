@@ -733,7 +733,7 @@
         class="conversation-stack"
         :class="{ 'is-empty': isEmptyChat }"
       >
-        <!-- 2026-10-22 side-chat: persistent, zero-context conversations.
+        <!-- Persistent side chats, started empty or from a selected excerpt.
              The entry sits in the top-right margin, clear of the 28px
              scroll-marker rail; hovering it lists this session's side chats. -->
         <div
@@ -766,7 +766,7 @@
               <button
                 type="button"
                 class="side-chat-menu-new"
-                @click="openSideChat"
+                @click="openSideChat()"
               >
                 <v-icon size="14">mdi-plus</v-icon>
                 <span>{{ tm("thread.newSideChat") }}</span>
@@ -1148,6 +1148,7 @@
       <button
         class="thread-selection-button"
         type="button"
+        :disabled="creatingSideChat"
         @click="createThreadFromSelection"
       >
         {{ tm("thread.askInThread") }}
@@ -1198,7 +1199,6 @@
       :thread="activeThread"
       :is-dark="isDark"
       :deleting="deletingThread"
-      :side-chat="Boolean(sideChatThreadId)"
       :title="activeSideChatTitle"
       :main-session="currentSession"
       @update:model-value="onThreadPanelToggle"
@@ -1764,9 +1764,7 @@ watch(
 const replyTarget = ref<ChatRecord | null>(null);
 const threadPanelOpen = ref(false);
 const activeThread = ref<ChatThread | null>(null);
-// 2026-10-23 side-chat: the open persistent side thread (if any). Kept
-// separate from branch threads so the panel can show its list title and the
-// agent can inherit the main session's project/permissions.
+// Both empty and quoted side chats share the same panel and saved-chat menu.
 const sideChatThreadId = ref<string | null>(null);
 const creatingSideChat = ref(false);
 let sideChatGeneration = 0;
@@ -5516,42 +5514,14 @@ async function createThreadFromSelection() {
   if (!currSessionId.value || !message?.id || !threadSelection.selectedText)
     return;
   try {
-    const response = await chatApi.createThread({
-      session_id: currSessionId.value,
-      parent_message_id: message.id,
-      selected_text: threadSelection.selectedText,
-    });
-    assertCurrentAccount(chatAccountRevision);
-    if (response.data?.status !== "ok") {
-      toast.error(response.data?.message || tm("thread.createFailed"));
-      return;
-    }
-    const thread = response.data?.data as ChatThread | undefined;
-    if (!thread) {
-      toast.error(tm("thread.createFailed"));
-      return;
-    }
-    message.threads = message.threads || [];
-    if (!message.threads.some((item) => item.thread_id === thread.thread_id)) {
-      message.threads.push(thread);
-    }
-    openThreadPanel(thread);
-    window.getSelection()?.removeAllRanges();
-  } catch (error) {
-    toast.error(
-      isAxiosError(error)
-        ? error.response?.data?.message || error.message
-        : tm("thread.createFailed"),
-    );
-    console.error("Failed to create thread:", error);
+    await openSideChat({ message, selectedText: threadSelection.selectedText });
   } finally {
     threadSelection.visible = false;
   }
 }
 
 /**
- * Hide the thread panel. Side chats persist and can be reopened from the
- * side-chat menu; branch threads keep their data.
+ * Hide the panel. Side chats persist and can be reopened from the saved menu.
  */
 function closeThreadPanel() {
   // Invalidate a pending creation even before its thread ID is known, so a
@@ -5630,12 +5600,18 @@ onBeforeUnmount(() => {
 });
 
 /**
- * Create a persistent side chat with no inherited context.
+ * Create an empty side chat or one quoting a reply and its checkpoint context.
+ *
+ * Args:
+ *   selection: Optional source reply and selected text to continue discussing.
  *
  * Returns:
  *   Resolves after creation is handled or a stale response is discarded.
  */
-async function openSideChat(): Promise<void> {
+async function openSideChat(selection?: {
+  message: ChatRecord;
+  selectedText: string;
+}): Promise<void> {
   const sessionId = currSessionId.value;
   if (!sessionId || creatingSideChat.value) return;
   sideChatMenuOpen.value = false;
@@ -5644,7 +5620,12 @@ async function openSideChat(): Promise<void> {
   try {
     const response = await chatApi.createThread({
       session_id: sessionId,
-      side_chat: true,
+      ...(selection
+        ? {
+            parent_message_id: selection.message.id,
+            selected_text: selection.selectedText,
+          }
+        : { side_chat: true }),
     });
     assertCurrentAccount(chatAccountRevision);
     const thread = response.data?.data as ChatThread | undefined;
@@ -5666,6 +5647,16 @@ async function openSideChat(): Promise<void> {
     if (!thread) {
       toast.error(tm("thread.createFailed"));
       return;
+    }
+    if (selection) {
+      const message = selection.message;
+      message.threads = message.threads || [];
+      if (
+        !message.threads.some((item) => item.thread_id === thread.thread_id)
+      ) {
+        message.threads.push(thread);
+      }
+      window.getSelection()?.removeAllRanges();
     }
     await openSideChatPanel(thread);
     void loadSideChats();
@@ -5690,15 +5681,10 @@ async function openSideChatThread(thread: SideChatEntry) {
 
 async function openThreadPanel(thread: ChatThread) {
   if (!(await confirmFileNavigation())) return;
-  // Opening a branch cancels a pending side-chat creation and hides the
-  // panel; the side chat itself persists.
+  // Opening a saved quote also invalidates any pending side-chat creation.
   closeThreadPanel();
-  chatHeader.SET_WORKSPACE_FILES_OPEN(false);
-  reasoningPanelOpen.value = false;
-  activeReasoningTarget.value = null;
-  refsSidebarOpen.value = false;
-  activeThread.value = thread;
-  threadPanelOpen.value = true;
+  await openSideChatPanel(thread);
+  void loadSideChats();
 }
 
 async function openRefsSidebar(refs: unknown) {
@@ -5967,7 +5953,6 @@ async function deleteThread(thread: ChatThread) {
     if (activeThread.value?.thread_id === thread.thread_id) {
       closeThreadPanel();
     }
-    // Only the side-chat menu caches these rows; skip the request for branches.
     if (sideChats.value.some((item) => item.thread_id === thread.thread_id)) {
       void loadSideChats();
     }

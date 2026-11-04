@@ -1,5 +1,7 @@
 # Unreleased
 
+- Unify **Ask in thread → Ask in side chat** with the saved side-chat panel, full composer and menu. Quoted chats keep their excerpt and checkpoint context; existing quoted threads remain available. / 将 **在新分支中询问 → 在侧边聊天中询问**，统一使用侧边聊天面板、完整输入框和保存菜单，保留选中文字及检查点上下文，兼容已有引用分支。
+
 - Keep internal image attachment markers out of ChatUI reply text, completion events and recovery snapshots while preserving image display and surrounding text. / 修复 ChatUI 图片附件内部标记泄漏到回复正文、结束事件与恢复快照的问题，保留图片显示及前后文字。
 
 - Restyle the Agent browser with icon segments, an address bar, connection badges, a framed read-only viewport and an action timeline. **Refresh snapshot → address-bar refresh icon**; light, dark, idle and narrow layouts share the same observation lifecycle. / 美化 Agent 浏览器，加入分段切换、地址栏、连接状态徽标、只读画面与动作时间线；**刷新快照 → 地址栏刷新图标**，适配浅色、深色、空闲与窄侧栏布局。

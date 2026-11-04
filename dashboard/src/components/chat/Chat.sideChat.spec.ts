@@ -16,6 +16,7 @@ import {
 } from "@/utils/accountSession";
 import { flushPromises, mount } from "@vue/test-utils";
 import type { SessionGoalState } from "@/api/v1";
+import type { ChatRecord } from "@/composables/useMessages";
 import type {
   FileReferenceTarget,
   FileReferenceNavigation,
@@ -45,6 +46,7 @@ const wanted = new Set([
   "closeThreadPanel",
   "onThreadPanelToggle",
   "openSideChat",
+  "createThreadFromSelection",
   "openSideChatPanel",
   "loadSideChats",
   "openSideChatMenu",
@@ -167,7 +169,11 @@ function setup() {
         data: { status: "ok", data: { available: false } },
       }),
     },
-    threadSelection: { visible: false },
+    threadSelection: reactive<{
+      visible: boolean;
+      message: ChatRecord | null;
+      selectedText: string;
+    }>({ visible: false, message: null, selectedText: "" }),
     toast: { error: vi.fn() },
     tm: (key: string) => key,
     isAxiosError: (error: unknown) =>
@@ -234,6 +240,7 @@ function setup() {
     closeThreadPanel: () => void;
     onThreadPanelToggle: (open: boolean) => void;
     openSideChat: () => Promise<void>;
+    createThreadFromSelection: () => Promise<void>;
     openSideChatMenu: () => void;
     openThreadPanel: (thread: ThreadRef) => void;
     openRefsSidebar: (refs: unknown) => void;
@@ -596,6 +603,61 @@ describe("Chat side-chat lifecycle", () => {
     expect(ctx.chatApi.deleteThread).toHaveBeenCalledWith("late-a");
   });
 
+  it("opens a selected excerpt in the same saved side-chat panel", async () => {
+    const ctx = setup();
+    const message: ChatRecord = {
+      id: 7,
+      content: {
+        type: "bot",
+        message: [{ type: "plain", text: "Quoted answer" }],
+      },
+    };
+    ctx.threadSelection.message = message;
+    ctx.threadSelection.selectedText = "Quoted answer";
+    ctx.threadSelection.visible = true;
+    const pending = ctx.createThreadFromSelection();
+    expect(ctx.chatApi.createThread).toHaveBeenCalledWith({
+      session_id: "session-a",
+      parent_message_id: 7,
+      selected_text: "Quoted answer",
+    });
+    ctx.requests[0].resolve({
+      data: { status: "ok", data: { thread_id: "quoted-side" } },
+    });
+    await pending;
+    expect(ctx.sideChatThreadId.value).toBe("quoted-side");
+    expect(ctx.activeThread.value?.thread_id).toBe("quoted-side");
+    expect(ctx.threadPanelOpen.value).toBe(true);
+    expect(ctx.threadSelection.message?.threads?.[0].thread_id).toBe(
+      "quoted-side",
+    );
+    expect(ctx.chatApi.listSideThreads).toHaveBeenCalledWith("session-a");
+    expect(ctx.threadSelection.visible).toBe(false);
+    ctx.closeThreadPanel();
+    await ctx.openThreadPanel({ thread_id: "quoted-side" });
+    expect(ctx.sideChatThreadId.value).toBe("quoted-side");
+    expect(ctx.chatApi.deleteThread).not.toHaveBeenCalled();
+  });
+
+  it("discards an excerpt creation completed after switching sessions", async () => {
+    const ctx = setup();
+    ctx.threadSelection.message = {
+      id: 7,
+      content: { type: "bot", message: [] },
+    };
+    ctx.threadSelection.selectedText = "Quoted answer";
+    const pending = ctx.createThreadFromSelection();
+    ctx.currSessionId.value = "session-b";
+    await nextTick();
+    ctx.requests[0].resolve({
+      data: { status: "ok", data: { thread_id: "late-quoted-side" } },
+    });
+    await pending;
+    expect(ctx.sideChatThreadId.value).toBeNull();
+    expect(ctx.threadSelection.message?.threads).toBeUndefined();
+    expect(ctx.chatApi.deleteThread).toHaveBeenCalledWith("late-quoted-side");
+  });
+
   it("preserves a branch selected while side-chat creation is pending", async () => {
     const ctx = setup();
     const pending = ctx.openSideChat();
@@ -608,7 +670,7 @@ describe("Chat side-chat lifecycle", () => {
 
     expect(ctx.activeThread.value?.thread_id).toBe("branch-new");
     expect(ctx.threadPanelOpen.value).toBe(true);
-    expect(ctx.sideChatThreadId.value).toBeNull();
+    expect(ctx.sideChatThreadId.value).toBe("branch-new");
     expect(ctx.chatApi.deleteThread).toHaveBeenCalledTimes(1);
     expect(ctx.chatApi.deleteThread).toHaveBeenCalledWith("late-side");
     ctx.closeThreadPanel();

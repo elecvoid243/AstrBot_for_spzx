@@ -4,7 +4,7 @@
       v-if="modelValue && thread"
       ref="panelRef"
       class="thread-panel"
-      :class="{ 'is-side-chat': sideChat, 'is-dark': isDark }"
+      :class="{ 'is-dark': isDark }"
       :style="{ width: panelWidth + 'px' }"
     >
       <div class="thread-panel-resizer" @mousedown="startResize" />
@@ -13,11 +13,7 @@
           <div class="thread-panel-title">{{ panelTitle }}</div>
         </div>
         <div class="thread-panel-actions">
-          <ProviderModelMenu
-            v-if="sideChat"
-            variant="input"
-            class="thread-provider-menu"
-          />
+          <ProviderModelMenu variant="input" class="thread-provider-menu" />
           <v-btn
             icon="mdi-delete-outline"
             class="thread-delete-button"
@@ -32,10 +28,7 @@
         </div>
       </div>
 
-      <blockquote
-        v-if="!sideChat && thread.selected_text"
-        class="thread-selected-text"
-      >
+      <blockquote v-if="thread.selected_text" class="thread-selected-text">
         {{ thread.selected_text }}
       </blockquote>
 
@@ -50,34 +43,8 @@
         </div>
       </div>
 
-      <form v-if="!sideChat" class="thread-composer" @submit.prevent="send">
-        <div class="thread-composer-box">
-          <textarea
-            ref="textareaEl"
-            v-model="draft"
-            class="thread-input"
-            :placeholder="tm('thread.placeholder')"
-            rows="1"
-            :disabled="sending"
-            @input="resizeComposer"
-            @keydown.enter.exact.prevent="send"
-          ></textarea>
-          <button
-            class="thread-send-button"
-            type="submit"
-            :disabled="!draft.trim() || sending"
-            :aria-label="tm('input.send')"
-            :title="tm('input.send')"
-          >
-            <v-icon size="18">mdi-arrow-up</v-icon>
-          </button>
-        </div>
-      </form>
-
-      <!-- 2026-10-23 side-chat: full main-chat composer. The config chip
-           binds the thread UMO; project/file-access chips inherit the main
-           session passed via currentSession. -->
-      <div v-else class="thread-chat-input">
+      <!-- The config chip binds the side chat; workspace access follows its parent. -->
+      <div class="thread-chat-input">
         <ChatInput
           ref="chatInputRef"
           v-model:prompt="draft"
@@ -161,13 +128,7 @@ const props = defineProps<{
   thread: ChatThread | null;
   isDark: boolean;
   deleting?: boolean;
-  /**
-   * 2026-10-23 side-chat: persistent thread with no parent message. It uses
-   * the full main-chat composer and inherits project/file-access chips from
-   * the main session.
-   */
-  sideChat?: boolean;
-  /** List label of a side chat (first user message, derived by the backend). */
+  /** List label derived from the first user message or the selected excerpt. */
   title?: string | null;
   /**
    * Main session shown behind the panel. Passed to ChatInput as
@@ -213,7 +174,6 @@ const messages = computed(() => currentThreadState.value?.messages ?? []);
 const draft = ref("");
 const sending = computed(() => currentThreadState.value?.sending ?? false);
 const messagesEl = ref<HTMLElement | null>(null);
-const textareaEl = ref<HTMLTextAreaElement | null>(null);
 const chatInputRef = ref<InstanceType<typeof ChatInput> | null>(null);
 const enableStreaming = ref(true);
 
@@ -242,10 +202,8 @@ const {
   stopRecording: stopRecorder,
 } = useRecording();
 
-const panelTitle = computed(() =>
-  props.sideChat
-    ? props.title?.trim() || tm("thread.sideTitle")
-    : tm("thread.title"),
+const panelTitle = computed(
+  () => props.title?.trim() || tm("thread.sideTitle"),
 );
 
 // ── Drag resize (mirrors ReasoningSidebar) ─────────────────────────
@@ -288,14 +246,6 @@ function onMouseUp() {
 }
 
 onBeforeUnmount(onMouseUp);
-
-/** Grow the composer with its content, capped like the main input. */
-function resizeComposer() {
-  const el = textareaEl.value;
-  if (!el) return;
-  el.style.height = "0px";
-  el.style.height = `${Math.min(140, Math.max(40, el.scrollHeight))}px`;
-}
 
 watch(
   () => props.thread?.thread_id,
@@ -505,15 +455,6 @@ async function sendThreadParts(
   }
 }
 
-async function send() {
-  if (!props.thread || sending.value) return;
-  const text = draft.value.trim();
-  if (!text) return;
-  draft.value = "";
-  nextTick(resizeComposer);
-  await sendThreadParts([{ type: "plain", text }]);
-}
-
 async function sendFromChatInput(skillNames: string[] = []) {
   if (!props.thread || sending.value) return;
   const text = [draft.value.trim(), buildSkillText(skillNames)]
@@ -612,7 +553,8 @@ function normalizeRecord(record: any): ChatRecord {
         content.llmRequestInjections || content.llm_request_injections,
       refs: content.refs,
       fileChangeSummary:
-        content.fileChangeSummary || parseFileChangesPayload(content.file_changes),
+        content.fileChangeSummary ||
+        parseFileChangesPayload(content.file_changes),
       fileChangeRunId: content.fileChangeRunId,
       fileChangeSourceUnavailable: Boolean(
         content._imported || content.fileChangeSourceUnavailable,
@@ -675,7 +617,9 @@ function processPayload(
     return;
   }
   if (
-    type === "session_id" || type === "session_bound" || type === "run_started"
+    type === "session_id" ||
+    type === "session_bound" ||
+    type === "run_started"
   ) {
     botRecord.content.fileChangeRunId =
       normalized.run_id || data?.run_id || botRecord.content.fileChangeRunId;
@@ -927,94 +871,6 @@ function scrollToBottom() {
   margin: 0 auto;
 }
 
-.thread-composer {
-  flex: 0 0 auto;
-  padding: 0 0 18px;
-  background: transparent;
-}
-
-.thread-composer-box {
-  display: flex;
-  align-items: flex-end;
-  gap: 8px;
-  width: var(--chat-content-width, 80%);
-  max-width: var(--chat-content-max-width, 960px);
-  margin: 0 auto;
-  padding: 6px 8px 8px 14px;
-  border: 1px solid #e0e0e0;
-  border-radius: 24px;
-  background: rgb(var(--v-theme-surface));
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.06);
-}
-
-.thread-panel.is-dark .thread-composer-box {
-  border-color: rgba(255, 255, 255, 0.12);
-  background: #2d2d2d;
-  box-shadow: none;
-}
-
-.thread-input {
-  flex: 1;
-  min-width: 0;
-  box-sizing: border-box;
-  height: 40px;
-  min-height: 40px;
-  max-height: 140px;
-  padding: 9px 4px 9px 0;
-  border: 0;
-  outline: none;
-  resize: none;
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  line-height: 20px;
-}
-
-.thread-input::placeholder {
-  color: rgba(var(--v-theme-on-surface), 0.56);
-}
-
-.thread-send-button {
-  flex: 0 0 auto;
-  display: grid;
-  place-items: center;
-  width: 32px;
-  height: 32px;
-  padding: 0;
-  border: 0;
-  border-radius: 50%;
-  background: #5594c6;
-  color: #fff;
-  cursor: pointer;
-  transition:
-    background 0.14s ease,
-    opacity 0.14s ease;
-}
-
-.thread-send-button:hover:not(:disabled) {
-  background: #4c86b3;
-}
-
-.thread-send-button:disabled {
-  background: rgba(85, 148, 198, 0.24);
-  color: rgba(255, 255, 255, 0.72);
-  cursor: default;
-}
-
-.thread-panel.is-dark .thread-send-button {
-  background: rgb(var(--v-theme-on-surface));
-  color: rgb(var(--v-theme-surface));
-}
-
-.thread-panel.is-dark .thread-send-button:hover:not(:disabled) {
-  background: rgba(var(--v-theme-on-surface), 0.86);
-}
-
-.thread-panel.is-dark .thread-send-button:disabled {
-  background: rgba(var(--v-theme-on-surface), 0.14);
-  color: rgba(var(--v-theme-on-surface), 0.4);
-}
-
 @media (max-width: 760px) {
   .thread-panel {
     position: fixed;
@@ -1054,23 +910,8 @@ function scrollToBottom() {
     max-width: none;
   }
 
-  .thread-composer {
-    padding: 0 12px calc(10px + env(safe-area-inset-bottom));
-    background: var(--chat-page-bg, rgb(var(--v-theme-surface)));
-  }
-
-  .thread-composer-box {
-    width: 100%;
-    max-width: none;
-  }
-
   .thread-chat-input {
     padding-bottom: calc(10px + env(safe-area-inset-bottom));
-  }
-
-  .thread-input {
-    min-width: 0;
-    font-size: 16px;
   }
 }
 </style>

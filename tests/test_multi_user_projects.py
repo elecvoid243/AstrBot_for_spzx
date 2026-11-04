@@ -223,9 +223,9 @@ async def test_personal_projects_branches_threads_and_attachment_persistence(
         listed = await client.get(
             f"/api/v1/chat/sessions/{sid}/side-threads", headers=headers
         )
-        assert [row["thread_id"] for row in listed.json()["data"]["threads"]] == [
-            threads[1]
-        ]
+        assert [
+            row["thread_id"] for row in listed.json()["data"]["threads"]
+        ] == threads[::-1]
         saved.append((account, pid, sid, bot["id"], branch_id, threads, upload))
 
     for account, pid, sid, mid, bid, threads, upload in saved:

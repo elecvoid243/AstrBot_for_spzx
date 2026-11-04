@@ -82,7 +82,7 @@ The previous basic Chat entry now exposes **Select conversations**, **Search mes
 
 Use **Projects → +** to create a project, edit its existing workspace settings, or start a conversation with the project's **Create new session** button. Drag your conversations into or out of your projects. Project lists, workspace previews and downloads belong to the current account. Project workspace modes and administrator-provided tool capabilities retain their existing meaning; this does not create a separate server filesystem or execution sandbox for each account.
 
-Use **Branch** below one of your assistant replies to copy the history through that reply into a new conversation in the same project. The branch starts with the source profile and keeps references to your attachments. Deleting a parent, branch or side chat preserves files still referenced by another surviving conversation. Select text in your reply to **Ask in thread**, or use **New side chat** at the upper right to start a side chat with empty context. Both inherit the parent profile when created; a side chat's configuration chip can then select another administrator profile independently. Closing a side panel keeps it saved; reopen it from the side-chat menu. Stop or delete affects only that owned thread. Reloading an active side chat reconnects to its running reply.
+Use **Branch** below one of your assistant replies to copy the history through that reply into a new conversation in the same project. The branch starts with the source profile and keeps references to your attachments. Deleting a parent, branch or side chat preserves files still referenced by another surviving conversation. Select reply text to **Ask in side chat**, retaining the quote and context through that reply, or use **New side chat** at the upper right to start with empty context. Both entries share the side-chat panel, full composer and saved-chat menu, and inherit the parent profile when created; a side chat's configuration chip can then select another administrator profile independently. Closing a side panel keeps it saved; reopen it from the side-chat menu. Stop or delete affects only that owned thread. Reloading an active side chat reconnects to its running reply.
 
 | Previous entry | Current entry |
 | --- | --- |
@@ -400,13 +400,11 @@ Before a switch would leave unsaved edits, choose **Save and open**, **Discard a
 
 ![Side-chat citation opens the existing file pane and source lines](./images/side-chat-file-pane.png)
 
-An ordinary **Thread** still starts from selected reply text using **Ask in thread**. It retains the quote and the context through that reply's checkpoint. Closing its panel keeps the thread, which you can reopen from the reply's thread marker or count; its delete button removes it explicitly. This is also distinct from branching an entire conversation into another session.
+Select text in a past reply and choose **Ask in side chat** to open the same side-chat panel, including the quote and context through that reply's checkpoint. It shares the full composer, profile selection, attachments, Stop and Delete actions with **New side chat**. Both entry types appear in the saved side-chat menu. A quoted side chat initially uses the excerpt as its menu title, then uses its first user message. Existing quoted threads also appear in this menu; their inline quote markers and counts still reopen them.
 
-![Saved ordinary thread with its quote and delete button](/images/chat-thread-panel-en.jpg)
+![Quoted text and the full composer in the unified side chat](./images/quoted-side-chat.png)
 
-On desktop, drag the panel's **left edge** to change the width of either a branch thread or side chat. At narrow mobile widths the panel fills the screen and the resize handle is hidden.
-
-On mobile, use **×** at the top right to return to the main conversation. Side-chat and ordinary-thread histories remain saved when their panels close.
+On desktop, drag the panel's **left edge** to resize the side chat. At narrow mobile widths it fills the screen and hides the resize handle. Use **×** at the top right to return to the main conversation while keeping the side-chat history. To copy an entire conversation into another main session, continue using **Branch** below a reply.
 
 ### Project Workbench Web Preview
 
@@ -433,7 +431,7 @@ This is an embedded page, with no back/forward controls. Its address bar keeps t
 
 | Previous entry or behavior | Current location or behavior |
 | --- | --- |
-| Select reply text → Ask in thread | Unchanged: opens a saved branch thread; drag its left edge to resize on desktop |
+| Select reply text → Ask in thread | Select reply text → Ask in side chat; shares the side-chat panel, full composer and saved-chat menu |
 | Temporary side chat, destroyed on close | Message area → side-chat menu → New side chat or a saved title; independent context, history retained until explicitly deleted |
 | Side-chat file citations | Open the shared file pane; reopen the side chat from its saved title in the menu |
 | No workbench entry without a project | Files & Browser above the composer; the Workspace entry remains for loaded projects |

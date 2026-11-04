@@ -691,6 +691,141 @@ describe("Agent browser snapshots", () => {
     },
   );
 
+  it.each([
+    { document_id: "next-document" },
+    { url: "/next" },
+    { tab_id: "next-tab" },
+    { tab_id: undefined, document_id: undefined, url: "" },
+  ])(
+    "keeps manual control pixels mounted across an action metadata gap: %o",
+    async (change) => {
+      const sent: Record<string, unknown>[] = [];
+      let acknowledge: (
+        operation: string,
+        input_id?: number,
+      ) => void = () => {};
+      vi.stubGlobal(
+        "WebSocket",
+        class {
+          static OPEN = 1;
+          readyState = 1;
+          onmessage?: (event: { data: string }) => void;
+          constructor() {
+            acknowledge = (operation, input_id) =>
+              this.onmessage?.({
+                data: JSON.stringify({
+                  operation,
+                  input_id,
+                  status: "applied",
+                  control_epoch: 2,
+                }),
+              });
+          }
+          send(raw: string) {
+            sent.push(JSON.parse(raw));
+          }
+          close() {
+            this.readyState = 3;
+          }
+        },
+      );
+      const frame = {
+        ...current,
+        manual_control_version: 1,
+        pointer_input_version: 1,
+        control_epoch: 2,
+        document_id: "document",
+        url: "/form",
+        viewport_width: 1280,
+        viewport_height: 720,
+        width: 1280,
+        height: 720,
+        applied_input_id: 0,
+        image: "original",
+        mime_type: "image/jpeg",
+        sequence: 1,
+      };
+      get.mockResolvedValue(ok(frame));
+      createSession.mockResolvedValue({
+        data: { ticket: "ticket", websocket_path: "/control" },
+      });
+      const view = mount(AgentBrowserView, {
+        props: { chatId: "chat-1", visible: true },
+      });
+      try {
+        await flushPromises();
+        const image = view.get("img");
+        Object.defineProperty(image.element, "currentSrc", {
+          get: () => image.attributes("src"),
+        });
+        vi.spyOn(image.element, "getBoundingClientRect").mockReturnValue({
+          left: 0,
+          top: 0,
+          width: 1280,
+          height: 720,
+          right: 1280,
+          bottom: 720,
+        } as DOMRect);
+        await view.get(".agent-browser-takeover").trigger("click");
+        await flushPromises();
+        acknowledge("acquire");
+        await image.trigger("load");
+        await image.trigger("click", { clientX: 100, clientY: 100 });
+        expect(sent).toHaveLength(1);
+        acknowledge("click", 1);
+        const emit = async (event: unknown) => {
+          stream.enqueue(
+            new TextEncoder().encode(`data: ${JSON.stringify(event)}\n\n`),
+          );
+          await flushPromises();
+        };
+        for (const [index, type] of ["action", "state"].entries()) {
+          await emit({
+            ...frame,
+            ...change,
+            type,
+            image: undefined,
+            sequence: index + 2,
+            applied_input_id: 1,
+          });
+          expect(view.find(".agent-browser-empty").exists()).toBe(false);
+          expect(view.get("img").element).toBe(image.element);
+          expect(image.attributes("src")).toContain("original");
+          expect(view.attributes("data-human-control")).toBe("true");
+          expect(view.attributes("data-connection")).toBe("live");
+          expect(view.attributes("data-awaiting-frame")).toBe("true");
+          // Retained pixels cannot authorize a click or text on a new target.
+          await image.trigger("load");
+          await image.trigger("click", { clientX: 100, clientY: 100 });
+          expect(sent).toHaveLength(1);
+        }
+        await emit({
+          ...frame,
+          type: "frame",
+          document_id: "next-document",
+          image: "updated",
+          sequence: 4,
+          applied_input_id: 1,
+        });
+        expect(view.get("img").element).toBe(image.element);
+        await image.trigger("load");
+        expect(view.attributes("data-awaiting-frame")).toBe("false");
+        await image.trigger("click", { clientX: 100, clientY: 100 });
+        expect(sent).toHaveLength(2);
+        expect(sent[1]).toMatchObject({
+          operation: "click",
+          target: { document_id: "next-document" },
+        });
+        expect(createSession).toHaveBeenCalledTimes(1);
+        expect(get).toHaveBeenCalledTimes(2);
+        expect(fetchStream).toHaveBeenCalledTimes(1);
+      } finally {
+        view.unmount();
+        vi.unstubAllGlobals();
+      }
+    },
+  );
+
   it("maps displayed CSS bounds and merges only adjacent wheel input until a loaded frame", async () => {
     class Socket {
       static OPEN = 1;
@@ -1886,7 +2021,8 @@ describe("Agent browser snapshots", () => {
     expect(view.find('[data-action-status="succeeded"]').exists()).toBe(true);
     await emit({ ...terminal, sequence: 4, document_id: "doc-2" });
     expect(view.find(".agent-browser-target").exists()).toBe(false);
-    expect(view.find("img").exists()).toBe(false);
+    expect(view.get("img").attributes("src")).toContain("base64,frame");
+    expect(view.find(".agent-browser-empty").exists()).toBe(false);
     await emit({
       ...page,
       sequence: 5,
@@ -1961,7 +2097,7 @@ describe("Agent browser snapshots", () => {
     view.unmount();
   });
 
-  it("follows new targets, rejects old sequences/generations and clears old pixels", async () => {
+  it("retains pixels across target changes, rejects old sequences/generations and clears on hide", async () => {
     get.mockResolvedValueOnce(ok(current)).mockResolvedValueOnce(
       ok({
         ...current,
@@ -1989,7 +2125,7 @@ describe("Agent browser snapshots", () => {
       sequence: 3,
       url: "/second",
     });
-    expect(view.find("img").exists()).toBe(false);
+    expect(view.get("img").attributes("src")).toContain("base64,first");
     await emit({
       ...current,
       type: "frame",
@@ -2009,7 +2145,7 @@ describe("Agent browser snapshots", () => {
       width: 1280,
       height: 720,
     });
-    expect(view.find("img").exists()).toBe(false);
+    expect(view.get("img").attributes("src")).toContain("base64,first");
     await emit({
       ...current,
       tab_id: "tab-2",

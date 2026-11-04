@@ -290,18 +290,16 @@ watch(browserDisplay, (display) => {
 // retain its pixels but cannot advance their input, epoch or capture sequence.
 const imageFrame = ref<BrowserState | null>(null);
 const displayedFrame = ref<BrowserState | null>(null);
-// Keep same-document pixels on screen while new coordinates await a capture.
-// They never become the input target: displayedFrame still clears on movement.
+// Keep the last frame within the authorized browser lifetime while navigation
+// or input metadata awaits a capture. Retained pixels never authorize input.
 const visibleFrame = computed(() => {
   if (observationStale.value) return imageFrame.value;
   if (state.value?.image) return state.value;
   if (
     state.value?.available &&
-    !["closed", "disabled", "stopped"].includes(
-      state.value.execution_state || "",
-    ) &&
+    !["closed", "disabled"].includes(state.value.execution_state || "") &&
     imageFrame.value?.image &&
-    ["generation", "browser_session_id", "tab_id", "document_id", "url"].every(
+    ["generation", "browser_session_id"].every(
       (field) =>
         state.value?.[field as keyof BrowserState] ===
         imageFrame.value?.[field as keyof BrowserState],
@@ -631,6 +629,7 @@ function frameLoaded(event: Event) {
       "browser_session_id",
       "tab_id",
       "document_id",
+      "url",
       "viewport_width",
       "viewport_height",
       "scroll_x",
@@ -978,6 +977,7 @@ watch(
       state.value?.browser_session_id,
       state.value?.tab_id,
       state.value?.document_id,
+      state.value?.url,
       state.value?.viewport_width,
       state.value?.viewport_height,
       state.value?.scroll_x,

@@ -1773,6 +1773,12 @@ class ChatService:
             raise ChatServiceError(str(exc)) from exc
 
     async def delete_threads_by_ids(self, thread_ids: list[str], creator: str) -> None:
+        """Clean up thread state before removing records needed by ownership checks.
+
+        Args:
+            thread_ids: Identifiers of threads already authorized for deletion.
+            creator: Owner whose thread conversations should be removed.
+        """
         for thread_id in thread_ids:
             unified_msg_origin = build_thread_unified_msg_origin(creator, thread_id)
             active_event_registry.request_agent_stop_all(unified_msg_origin)
@@ -1805,6 +1811,7 @@ class ChatService:
                 )
             webchat_queue_mgr.remove_queues(thread_id)
             self.running_convs.pop(thread_id, None)
+            await self.db.delete_webchat_thread(thread_id)
 
     async def load_current_conversation_history(self, session) -> tuple[str, list]:
         unified_msg_origin = build_webchat_unified_msg_origin(session)
@@ -3211,10 +3218,12 @@ class ChatService:
             user_id=session_id,
             offset_sec=99999999,
         )
-        thread_ids = await self.db.delete_webchat_threads_by_parent_session(
+        threads = await self.db.get_webchat_threads_by_parent_session(
             session_id, creator=username
         )
-        await self.delete_threads_by_ids(thread_ids, username)
+        await self.delete_threads_by_ids(
+            [thread.thread_id for thread in threads], username
+        )
 
         if attachment_ids:
             principal = dashboard_account_context.get()
@@ -4711,7 +4720,6 @@ class ChatService:
                 username, thread_id, allow_thread=True
             )
 
-        await self.db.delete_webchat_thread(thread_id)
         await self.delete_threads_by_ids([thread_id], username)
         # Drop the config-profile route copied for the side chat (if any).
         try:
@@ -4901,12 +4909,17 @@ class ChatService:
         deleted_message_ids = await self.delete_platform_history_after(
             session, message_id
         )
-        thread_ids = await self.db.delete_webchat_threads_by_parent_message_ids(
-            session_id,
-            deleted_message_ids,
-            creator=username,
+        threads = await self.db.get_webchat_threads_by_parent_session(
+            session_id, creator=username
         )
-        await self.delete_threads_by_ids(thread_ids, username)
+        await self.delete_threads_by_ids(
+            [
+                thread.thread_id
+                for thread in threads
+                if thread.parent_message_id in deleted_message_ids
+            ],
+            username,
+        )
         await self.conv_mgr.update_conversation(
             unified_msg_origin=build_webchat_unified_msg_origin(session),
             conversation_id=conversation_id,
@@ -5053,12 +5066,17 @@ class ChatService:
             conversation_id=conversation_id,
             history=new_history,
         )
-        thread_ids = await self.db.delete_webchat_threads_by_parent_message_ids(
-            session_id,
-            old_bot_record_ids,
-            creator=username,
+        threads = await self.db.get_webchat_threads_by_parent_session(
+            session_id, creator=username
         )
-        await self.delete_threads_by_ids(thread_ids, username)
+        await self.delete_threads_by_ids(
+            [
+                thread.thread_id
+                for thread in threads
+                if thread.parent_message_id in old_bot_record_ids
+            ],
+            username,
+        )
         for old_bot_record_id in old_bot_record_ids:
             await self.platform_history_mgr.delete_by_id(old_bot_record_id)
         await self.platform_history_mgr.update(

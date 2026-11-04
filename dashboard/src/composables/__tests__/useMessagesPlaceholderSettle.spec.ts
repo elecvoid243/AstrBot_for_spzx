@@ -197,6 +197,84 @@ describe("useMessages placeholder terminal state", () => {
   });
 
   it.each([
+    [true, true],
+    [true, false],
+    [false, true],
+    [false, false],
+  ])(
+    "keeps an ordinary reply after its user across a history race (ack first=%s, user in snapshot=%s)",
+    async (ackFirst, userInSnapshot) => {
+      let controller!: ReadableStreamDefaultController<Uint8Array>;
+      vi.mocked(fetchWithAuth).mockResolvedValue(
+        new Response(
+          new ReadableStream({
+            start(value) {
+              controller = value;
+            },
+          }),
+          { headers: { "content-type": "text/event-stream" } },
+        ),
+      );
+      let finishHistory!: (value: ReturnType<typeof sessionPayload>) => void;
+      api.getSession.mockReturnValueOnce(
+        new Promise((resolve) => {
+          finishHistory = resolve;
+        }),
+      );
+      const composable = createComposable();
+      const loading = composable.loadSessionMessages("s1", false, false);
+      const { userRecord, botRecord } = sendMessage(composable);
+      userRecord.created_at = "2020-01-01T00:00:00.000Z";
+      botRecord.created_at = "2020-01-01T00:00:00.001Z";
+      const savedUser = {
+        ...record(1, "user", "hi"),
+        created_at: "2020-01-01T00:00:00.050Z",
+      };
+      const push = (payload: unknown) =>
+        controller.enqueue(new TextEncoder().encode(sseFrame(payload)));
+      try {
+        push({ type: "plain", data: "ordinary reply", streaming: true });
+        await vi.waitFor(() =>
+          expect(recordText(botRecord.content.message)).toBe("ordinary reply"),
+        );
+        if (ackFirst) {
+          push({ type: "user_message_saved", data: savedUser });
+          await vi.waitFor(() => expect(userRecord.id).toBe(1));
+        }
+        finishHistory(sessionPayload(userInSnapshot ? [savedUser] : []));
+        await loading;
+        if (!ackFirst) {
+          push({ type: "user_message_saved", data: savedUser });
+          await vi.waitFor(() => expect(userRecord.id).toBe(1));
+        }
+        expect(composable.activeMessages.value).toEqual([
+          userRecord,
+          botRecord,
+        ]);
+        // Keep the actual save times; display order must not depend on which
+        // record has already replaced its browser timestamp with a server one.
+        expect(userRecord.created_at).toBe(savedUser.created_at);
+        expect(botRecord.created_at).toBe("2020-01-01T00:00:00.001Z");
+        push({ type: "plain", data: " continues", streaming: true });
+        await vi.waitFor(() =>
+          expect(
+            recordText(composable.activeMessages.value[1].content.message),
+          ).toBe("ordinary reply continues"),
+        );
+        push({ type: "end" });
+        controller.close();
+        await vi.waitFor(() => expect(onStreamEnd).toHaveBeenCalled());
+        expect(composable.activeMessages.value).toEqual([
+          userRecord,
+          botRecord,
+        ]);
+      } finally {
+        composable.cleanupConnections();
+      }
+    },
+  );
+
+  it.each([
     ["history", "boundary", "ack"],
     ["history", "ack", "boundary"],
     ["boundary", "history", "ack"],

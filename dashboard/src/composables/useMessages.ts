@@ -816,8 +816,8 @@ export function useMessages(options: UseMessagesOptions) {
       // whatever id it carries. `message_saved` rewrites a streaming record's
       // id to the persisted numeric one (see processStreamPayload), so the
       // snapshot can hold a stale copy of the very same row: the live object is
-      // the one the stream keeps writing into, so it wins here and the snapshot
-      // copy is dropped — leaving both would render two bubbles with one id.
+      // the one the stream keeps writing into, so it replaces the snapshot copy
+      // below — leaving both would render two bubbles with one id.
       // Scoped to ids actually present in `existing`: on a fresh load the
       // connection is created after this merge runs (restoreNextActiveRun), and
       // then the snapshot's copy is all there is to show.
@@ -836,9 +836,7 @@ export function useMessages(options: UseMessagesOptions) {
           }
         }
       }
-      const snapshot = ownedIds.size
-        ? records.filter((r) => !ownedIds.has(String(r.id ?? "")))
-        : records;
+      const snapshot = records;
       messagesBySession[sessionId] = snapshot;
       if (existing.length) {
         const historyIds = new Set(
@@ -871,15 +869,24 @@ export function useMessages(options: UseMessagesOptions) {
           return !historyIds.has(recordId);
         });
         if (live.length) {
-          // Parse timestamps numerically: live segments can precede a saved
-          // follow-up, and UTC timestamps may use either Z or +00:00.
-          messagesBySession[sessionId] = [...snapshot, ...live].sort((a, b) => {
-            const first = Date.parse(a.created_at || "");
-            const second = Date.parse(b.created_at || "");
-            return Number.isFinite(first) && Number.isFinite(second)
-              ? first - second
-              : 0;
-          });
+          // Keep persisted history order and anchor live rows to their existing
+          // neighbors. Browser creation times and server save times can differ.
+          const liveRecords = new Set(live);
+          const merged = [...snapshot];
+          let insertBefore = merged.length;
+          for (let i = existing.length - 1; i >= 0; i -= 1) {
+            const record = existing[i];
+            const snapshotIndex = merged.findIndex(
+              (candidate) => String(candidate.id) === String(record.id),
+            );
+            if (snapshotIndex >= 0) {
+              if (liveRecords.has(record)) merged[snapshotIndex] = record;
+              insertBefore = snapshotIndex;
+            } else if (liveRecords.has(record)) {
+              merged.splice(insertBefore, 0, record);
+            }
+          }
+          messagesBySession[sessionId] = merged;
         }
       }
       sessionProjects[sessionId] = normalizeSessionProject(payload.project);

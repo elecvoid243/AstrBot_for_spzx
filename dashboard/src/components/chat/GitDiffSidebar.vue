@@ -3832,11 +3832,9 @@ async function onFileBrowserNavigate(payload: {
   previewPath: string | null;
 }): Promise<void> {
   const target = payload.previewPath ?? payload.dirPath;
-  if (
-    hostFileTarget.value ||
-    projectRelativePathStrict(target, currentRoot.value) === null
-  ) {
-    openHostPath(target);
+  // Explicit navigation back into the workspace must leave host-file mode.
+  if (projectRelativePathStrict(target, currentRoot.value) === null) {
+    await openHostPath(target);
     return;
   }
   if (!(await showProjectFiles())) return;

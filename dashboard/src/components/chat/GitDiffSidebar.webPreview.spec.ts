@@ -563,6 +563,102 @@ describe("GitDiffSidebar web preview tab", () => {
 });
 
 describe("explicit project return preserves platform path semantics", () => {
+  it.each(["project shortcut", "back button", "breadcrumb"])(
+    "restores project file actions after returning through the %s",
+    async (entry) => {
+      const project = "F:/github/testproj";
+      const projectFile = `${project}/project.py`;
+      const linkedFile = `${project}/linked.py`;
+      const outsideFile = "G:/outside/source.py";
+      const getDefault = getMock.getMockImplementation()!;
+      getMock.mockImplementation(
+        async (route: string, config?: { params?: { path?: string } }) => {
+          if (route !== "spcode/file-browser") return getDefault(route, config);
+          const target = config?.params?.path ?? "";
+          const resolved = target === linkedFile ? outsideFile : target;
+          if (target.endsWith(".py"))
+            return okEnvelope({
+              type: "file",
+              path: resolved,
+              name: "source.py",
+              is_binary: false,
+              content: resolved === outsideFile ? "EXTERNAL FILE" : "PROJECT FILE",
+            });
+          return okEnvelope({
+            type: "directory",
+            path: target,
+            entries: [projectFile, linkedFile].map((path) => ({
+              path,
+              name: path.split("/").pop(),
+              type: "file",
+              is_symlink: false,
+            })),
+          });
+        },
+      );
+      const wrapper = mount(GitDiffSidebar, {
+        props: { modelValue: true },
+        global: {
+          stubs: {
+            ...STUBS,
+            FileBrowserFilePreview: false,
+            FileBrowserView: false,
+            DocumentHistoryPanel: true,
+            CodeCheckFormatBar: true,
+            RecentFilesBlock: true,
+          },
+        },
+      });
+      try {
+        await flushPromises();
+        const files = wrapper.findComponent({ name: "FileBrowserView" });
+        files.vm.$emit("navigate", { dirPath: project, previewPath: null });
+        await flushPromises();
+        await wrapper.get(`[data-path="${projectFile}"]`).trigger("click");
+        await vi.waitFor(() => {
+          expect(wrapper.find(".file-browser-history").exists()).toBe(true);
+          expect(wrapper.find("code-check-format-bar-stub").exists()).toBe(true);
+        });
+
+        files.vm.$emit("open-path", outsideFile);
+        await vi.waitFor(() =>
+          expect(wrapper.find(".code-content").text()).toContain("EXTERNAL FILE"),
+        );
+        expect(wrapper.find(".file-browser-history").exists()).toBe(false);
+        expect(wrapper.find("code-check-format-bar-stub").exists()).toBe(false);
+
+        if (entry === "project shortcut") {
+          await wrapper.get('[icon="mdi-folder-home-outline"]').trigger("click");
+        } else if (entry === "back button") {
+          await wrapper.get('[icon="mdi-arrow-left"]').trigger("click");
+        } else {
+          files.findComponent({ name: "FileBrowserBreadcrumb" }).vm.$emit(
+            "navigate", { dirPath: project, previewPath: null },
+          );
+        }
+        await flushPromises();
+        expect(files.props("hostReference")).toBeNull();
+        await wrapper.get(`[data-path="${projectFile}"]`).trigger("click");
+        await vi.waitFor(() => {
+          expect(wrapper.find(".code-content").text()).toContain("PROJECT FILE");
+          expect(wrapper.find(".file-browser-history").exists()).toBe(true);
+          expect(wrapper.find("code-check-format-bar-stub").exists()).toBe(true);
+        });
+        expect(useSpcodeProjectStatus().status.value.directory).toBe(project);
+
+        // A workspace entry resolving outside the root still has no project actions.
+        await wrapper.get(`[data-path="${linkedFile}"]`).trigger("click");
+        await vi.waitFor(() =>
+          expect(wrapper.find(".code-content").text()).toContain("EXTERNAL FILE"),
+        );
+        expect(wrapper.find(".file-browser-history").exists()).toBe(false);
+        expect(wrapper.find("code-check-format-bar-stub").exists()).toBe(false);
+      } finally {
+        wrapper.unmount();
+      }
+    },
+  );
+
   it.each([
     ["/tmp/A", "/tmp/a", false],
     ["F:/Repo", "f:/repo", true],

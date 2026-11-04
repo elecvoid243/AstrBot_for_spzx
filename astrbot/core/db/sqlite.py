@@ -72,11 +72,31 @@ def _dashboard_conversation_visibility():
     owned_short = select(
         literal("webchat:FriendMessage:") + PlatformSession.session_id
     ).where(PlatformSession.creator == owner, PlatformSession.platform_id == "webchat")
+    # Threads have their own origins but are not platform sessions. Both the
+    # thread and its WebChat parent must belong to the authenticated owner.
+    owned_threads = (
+        select(
+            literal("webchat:FriendMessage:webchat!")
+            + WebChatThread.creator
+            + literal("!")
+            + WebChatThread.thread_id
+        )
+        .join(
+            PlatformSession,
+            PlatformSession.session_id == WebChatThread.parent_session_id,
+        )
+        .where(
+            WebChatThread.creator == owner,
+            PlatformSession.creator == owner,
+            PlatformSession.platform_id == "webchat",
+        )
+    )
     return or_(
         (ConversationV2.platform_id != "webchat")
         & ~col(ConversationV2.user_id).startswith("webchat:"),
         col(ConversationV2.user_id).in_(owned),
         col(ConversationV2.user_id).in_(owned_short),
+        col(ConversationV2.user_id).in_(owned_threads),
     )
 
 

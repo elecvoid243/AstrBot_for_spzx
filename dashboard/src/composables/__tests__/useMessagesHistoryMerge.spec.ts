@@ -148,4 +148,40 @@ describe("useMessages windowed history merge", () => {
       "6", "7", "8", "9", "10", "11",
     ]);
   });
+
+  it("keeps a new exchange after history even when the browser clock is behind", async () => {
+    api.getSession.mockResolvedValue(
+      sessionPayload(
+        [1, 2].map((id) => ({
+          ...record(id),
+          created_at: `2020-01-01T00:00:0${id}Z`,
+        })),
+        2,
+        false,
+      ),
+    );
+    const composable = createComposable();
+    await composable.loadSessionMessages("s1", false);
+    const { userRecord, botRecord } = composable.createLocalExchange({
+      sessionId: "s1",
+      messageId: "m1",
+      parts: [{ type: "plain", text: "hello" }],
+    });
+    userRecord.created_at = "2019-12-31T23:59:00Z";
+    botRecord.created_at = "2019-12-31T23:59:00Z";
+
+    await composable.loadSessionMessages("s1", false);
+
+    expect(loadedIds(composable.activeMessages.value)).toEqual([
+      "1",
+      "2",
+      "local-user-m1",
+      "local-bot-m1",
+    ]);
+    expect(composable.activeMessages.value.slice(2)).toEqual([
+      userRecord,
+      botRecord,
+    ]);
+    composable.cleanupConnections();
+  });
 });

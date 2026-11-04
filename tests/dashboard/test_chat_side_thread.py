@@ -11,11 +11,20 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from astrbot.core import sp
+from astrbot.core.astr_main_agent import _get_session_conv
+from astrbot.core.conversation_mgr import ConversationManager
+from astrbot.core.platform_message_history_mgr import PlatformMessageHistoryManager
 from astrbot.core.tools.fs_access import (
     FileAccessMode,
     clear_mode_for_umo,
     get_mode_for_umo,
     set_mode_for_umo,
+)
+from astrbot.core.utils.webchat_access import (
+    DashboardPrincipal,
+    dashboard_account_context,
+    webchat_resource_owner,
 )
 from astrbot.dashboard.services.chat_service import (
     ChatService,
@@ -145,3 +154,177 @@ async def test_side_thread_title_uses_the_first_user_message() -> None:
     service.platform_history_mgr = SimpleNamespace(get=AsyncMock(return_value=history))
 
     assert await service._side_thread_title("thread-1") == "第一问"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("side_chat", [True, False])
+@pytest.mark.parametrize("cleanup", ["thread", "session", "edit", "retry"])
+async def test_owned_thread_agent_reuses_and_cleans_up_conversation(
+    temp_db, monkeypatch, side_chat, cleanup
+) -> None:
+    """Exercise real conversation access under the authenticated owner's scope.
+
+    Args:
+        temp_db: Isolated SQLite database.
+        monkeypatch: Redirect shared preferences to the isolated database.
+        side_chat: Create an empty side chat or a checkpoint-based branch thread.
+        cleanup: Delete the thread or parent, edit the parent turn, or retry it.
+    """
+    monkeypatch.setattr(sp, "db_helper", temp_db)
+    monkeypatch.setattr(sp, "_cache", {})
+    monkeypatch.setattr(sp, "_cache_initialized", True)
+    service = make_service()
+    service.db = temp_db
+    service.conv_mgr = ConversationManager(temp_db)
+    service.platform_history_mgr = PlatformMessageHistoryManager(temp_db)
+    service.chat_runs = {}
+    service.chat_runs_by_session = {}
+    service.running_convs = {}
+    service.umop_config_router = service.core_lifecycle.umop_config_router
+    service.core_lifecycle.astrbot_config_mgr.confs = {"default": {}}
+    parent = await temp_db.create_platform_session(creator="alice")
+    await service.conv_mgr.new_conversation(
+        service._parent_session_umo("alice", parent.session_id),
+        content=[
+            {"role": "user", "content": "Question"},
+            {"role": "assistant", "content": "Answer"},
+            {"role": "_checkpoint", "content": {"id": "checkpoint-1"}},
+        ],
+    )
+    user_message = await temp_db.insert_platform_message_history(
+        platform_id="webchat",
+        user_id=parent.session_id,
+        content={"type": "user", "message": [{"type": "plain", "text": "Question"}]},
+        llm_checkpoint_id="checkpoint-1",
+    )
+    message = await temp_db.insert_platform_message_history(
+        platform_id="webchat",
+        user_id=parent.session_id,
+        content={"type": "bot", "message": [{"type": "plain", "text": "Answer"}]},
+        llm_checkpoint_id="checkpoint-1",
+    )
+    principal = DashboardPrincipal("account-1", "alice", "user", "alice")
+    account_token = dashboard_account_context.set(principal)
+    owner_token = webchat_resource_owner.set("alice")
+    try:
+        thread = await service.create_thread(
+            "alice",
+            {
+                "session_id": parent.session_id,
+                "side_chat": side_chat,
+                "parent_message_id": message.id,
+                "selected_text": "Answer",
+            },
+        )
+        origin = build_thread_unified_msg_origin("alice", thread["thread_id"])
+        cid = await service.conv_mgr.get_curr_conversation_id(origin)
+        event = SimpleNamespace(
+            unified_msg_origin=origin,
+            get_extra=lambda _: None,
+            get_platform_id=lambda: "webchat",
+        )
+        context = SimpleNamespace(conversation_manager=service.conv_mgr)
+        assert (await _get_session_conv(event, context)).cid == cid
+        history = [{"role": "user", "content": "Side question"}]
+        await service.conv_mgr.update_conversation(origin, cid, history=history)
+        assert (await _get_session_conv(event, context)).history == (
+            '[{"role": "user", "content": "Side question"}]'
+        )
+        assert len(await temp_db.get_conversations(user_id=origin)) == 1
+        if cleanup == "session":
+            await service.delete_webchat_session("alice", parent.session_id)
+        elif cleanup == "thread":
+            await service.delete_thread("alice", thread["thread_id"])
+        else:
+            if cleanup == "edit":
+                await service.update_message(
+                    "alice",
+                    {
+                        "session_id": parent.session_id,
+                        "message_id": user_message.id,
+                        "content": user_message.content,
+                    },
+                )
+            else:
+                await service.prepare_regenerate_message_payload(
+                    "alice",
+                    {"session_id": parent.session_id, "message_id": message.id},
+                )
+            if side_chat:
+                assert await temp_db.get_webchat_thread_by_id(thread["thread_id"])
+                assert (await _get_session_conv(event, context)).cid == cid
+                await service.delete_thread("alice", thread["thread_id"])
+    finally:
+        webchat_resource_owner.reset(owner_token)
+        dashboard_account_context.reset(account_token)
+    assert await temp_db.get_webchat_thread_by_id(thread["thread_id"]) is None
+    assert await temp_db.get_conversations(user_id=origin) == []
+    clear_mode_for_umo(origin)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("parent_message_id", [0, 7])
+async def test_thread_conversation_access_requires_thread_and_parent_ownership(
+    temp_db, parent_message_id
+) -> None:
+    """Keep foreign, forged and orphaned thread conversations inaccessible.
+
+    Args:
+        temp_db: Isolated SQLite database.
+        parent_message_id: Sentinel for a side chat or a branch's message ID.
+    """
+    own = await temp_db.create_platform_session(creator="alice")
+    foreign = await temp_db.create_platform_session(creator="bob")
+    other_platform = await temp_db.create_platform_session(
+        creator="alice", platform_id="qq"
+    )
+    records = []
+    for creator, parent_id in (
+        ("alice", own.session_id),
+        ("bob", foreign.session_id),
+        ("alice", foreign.session_id),
+        ("bob", own.session_id),
+        ("alice", "missing-parent"),
+        ("alice", other_platform.session_id),
+    ):
+        thread = await temp_db.create_webchat_thread(
+            creator=creator,
+            parent_session_id=parent_id,
+            parent_message_id=parent_message_id,
+            base_checkpoint_id="",
+            selected_text="",
+        )
+        records.append(
+            await temp_db.create_conversation(
+                user_id=build_thread_unified_msg_origin(creator, thread.thread_id),
+                platform_id="webchat",
+                content=[{"role": "user", "content": "Private history"}],
+            )
+        )
+    records.append(
+        await temp_db.create_conversation(
+            user_id=records[0].user_id.replace("!alice!", "!bob!"),
+            platform_id="webchat",
+            content=[],
+        )
+    )
+    token = webchat_resource_owner.set("alice")
+    try:
+        assert await temp_db.get_conversation_by_id(records[0].conversation_id)
+        listed, total = await temp_db.get_filtered_conversations(page_size=1)
+        assert total == 1
+        assert [item.conversation_id for item in listed] == [records[0].conversation_id]
+        for record in records[1:]:
+            assert await temp_db.get_conversation_by_id(record.conversation_id) is None
+            assert (
+                await temp_db.update_conversation(record.conversation_id, content=[])
+                is None
+            )
+            with pytest.raises(PermissionError):
+                await temp_db.delete_conversation(record.conversation_id)
+            await temp_db.delete_conversations_by_user_id(record.user_id)
+    finally:
+        webchat_resource_owner.reset(token)
+    for record in records[1:]:
+        stored = await temp_db.get_conversation_by_id(record.conversation_id)
+        assert stored.content == record.content

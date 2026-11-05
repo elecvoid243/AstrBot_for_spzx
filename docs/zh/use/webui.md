@@ -331,6 +331,12 @@ AstrBot WebUI支持基于 TOTP（Time-based One-Time Password）的双因素认�
 
 不传 `text` 时只创建，不启动模型；传入首条非空 `text` 时，沿用上述同一发送入口和来源标记。B 不复制 A 的历史，也不创建侧聊或隐藏成员。创建完成后会刷新原有普通/项目会话列表；点击 B 即可打开，查看记录或手动继续。之后 A 和 B 可继续使用 `send_chat_message` 双向交流。
 
+以下截图来自实际 ChatUI，采用英文界面设置；界面文字会随语言设置变化。第一张展示只创建、未发送首条消息的空项目会话；第二张展示新普通会话接收首条 Agent 消息并由用户继续后的历史，包括来源链接、模型和思考设置。
+
+![只创建而未首发的空项目会话](/images/chat-session-created-empty.jpg)
+
+![新普通会话收到首条 Agent 消息并显示来源链接](/images/chat-session-created-first-message.jpg)
+
 工具返回创建的会话 ID 和打开位置。若已创建但首条消息被拒收，会返回 `created_send_failed`、会话 ID 和 `send_error`；让 Agent 使用这个 ID 重试发送即可，无需重复创建。同一次真实工具调用的重试会复用创建结果，这项去重仅限当前执行，不提供进程重启恢复。配置创建失败会清理不完整会话；创建后发送同样计入原自动消息链的 8 次上限，不能通过另开会话重置预算。
 
 AstrBot 内置 ChatUI，可在浏览器中直接与已配置的模型对话。

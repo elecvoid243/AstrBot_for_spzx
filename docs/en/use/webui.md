@@ -378,6 +378,12 @@ Ask A to open a conversation titled “Research notes”. The Agent can call `cr
 
 Without `text`, the tool only creates B and does not start a model. Nonempty first-message `text` uses the same send path and provenance described above. B does not copy A's history or create a side chat or hidden member. Creation refreshes the existing ordinary/project conversation lists. Click B to open its history or continue manually; A and B can keep exchanging messages with `send_chat_message`.
 
+These screenshots show the real ChatUI with English selected; interface labels vary with the language setting. The first shows an empty project conversation created without a first message. The second shows a new ordinary conversation with its first Agent message and a later human continuation, including the source link, model and thinking setting.
+
+![Empty project conversation created without a first message](/images/chat-session-created-empty.jpg)
+
+![New ordinary conversation with its first Agent message and source link](/images/chat-session-created-first-message.jpg)
+
 The tool returns the created ID and opening location. If creation succeeds but the first message is rejected, it returns `created_send_failed`, the session ID and `send_error`. Ask the Agent to reuse that ID for sending. Retrying the same real tool invocation reuses its creation result within the current execution; this does not provide process-restart recovery. Configuration failures clean up the incomplete session. First-message sends share the original automatic chain's 8-send limit: creating another conversation cannot reset that budget.
 
 The reasoning sidebar follows the latest activity when opened. Scrolling up or dragging its scrollbar pauses following; scrolling back down to the bottom resumes it. Opening the sidebar through search or a file-change entry prioritizes that location, and streaming updates do not pull it back to the bottom.

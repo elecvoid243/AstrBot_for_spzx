@@ -69,6 +69,8 @@ class Main(star.Star):
         Priority 10 keeps this ahead of the builtin command handlers.
         """
         umo = event.unified_msg_origin
+        if event.get_extra("_agent_message_source") is not None:
+            return
         if not umo.startswith("webchat:"):
             return
 

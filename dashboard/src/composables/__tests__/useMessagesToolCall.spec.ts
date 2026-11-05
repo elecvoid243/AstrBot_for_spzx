@@ -229,3 +229,81 @@ describe("live tool-call notifications", () => {
     expect(onToolCall).toHaveBeenCalledOnce();
   });
 });
+
+describe("Agent message resume provenance", () => {
+  it("restores the accepted Agent input before its reply and keeps a single copy", async () => {
+    setActivePinia(createPinia());
+    let controller!: ReadableStreamDefaultController<Uint8Array>;
+    vi.mocked(fetchWithAuth).mockImplementation(async (url) =>
+      String(url).includes("system-stream")
+        ? new Response(null, { status: 403 })
+        : new Response(
+            new ReadableStream({
+              start(value) {
+                controller = value;
+              },
+            }),
+            { headers: { "content-type": "text/event-stream" } },
+          ),
+    );
+    const messages = useMessages({ currentSessionId: ref("s1") });
+    const parts = [{ type: "plain", text: "human initial" }];
+    const exchange = messages.createLocalExchange({
+      sessionId: "s1",
+      messageId: "m1",
+      parts,
+    });
+    messages.sendMessageStream({
+      sessionId: "s1",
+      messageId: "m1",
+      parts,
+      transport: "sse",
+      ...exchange,
+    });
+    await vi.waitFor(() => expect(controller).toBeDefined());
+    const source = {
+      kind: "agent",
+      account_id: "owner",
+      login_name: "alice",
+      session_id: "source",
+      display_name: "Research",
+    };
+    const input = {
+      id: 10,
+      content: {
+        type: "user",
+        message: [{ type: "plain", text: "Agent reply" }],
+        agent_source: source,
+      },
+    };
+    const snapshot = {
+      type: "run_snapshot",
+      data: {
+        run_id: "r1",
+        status: "running",
+        input_message: input,
+        content: { type: "bot", message: [] },
+      },
+    };
+    const push = (value: unknown) =>
+      controller.enqueue(
+        new TextEncoder().encode(`data: ${JSON.stringify(value)}\n\n`),
+      );
+    push(snapshot);
+    push(snapshot);
+    await vi.waitFor(() =>
+      expect(
+        messages.messagesBySession.s1.filter((r) => r.id === 10),
+      ).toHaveLength(1),
+    );
+    const records = messages.messagesBySession.s1;
+    expect(records.find((r) => r.id === 10)?.content.agent_source).toEqual(
+      source,
+    );
+    expect(records.findIndex((r) => r.id === 10)).toBeLessThan(
+      records.indexOf(exchange.botRecord),
+    );
+    push({ type: "end" });
+    controller.close();
+  });
+});

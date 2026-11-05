@@ -261,6 +261,22 @@ class InternalAgentSubStage(Stage):
         follow_up_activated = False
         typing_requested = False
         try:
+            source = event.get_extra("_agent_message_source")
+            chain = event.get_extra("_session_message_chain")
+            if source is not None or chain is not None:
+                from astrbot.core.tools.interactive_choice_registry import registry
+
+                cid = event.session_id.rsplit("!", 1)[-1]
+                if (chain is not None and cid in chain.stopped) or (
+                    source is not None
+                    and registry.find_pending_by_umo(event.unified_msg_origin)
+                    is not None
+                ):
+                    await self._send_llm_error_message(
+                        event,
+                        "Agent message cannot execute: chain stopped or waiting for a user answer.",
+                    )
+                    return
             streaming_response = self.streaming_response
             if (enable_streaming := event.get_extra("enable_streaming")) is not None:
                 streaming_response = bool(enable_streaming)

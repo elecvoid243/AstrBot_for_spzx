@@ -35,6 +35,7 @@ from astrbot.dashboard.schemas import (
     ChatFileChangeRestoreRemovedRequest,
     ChatFileChangeRestoreRequest,
     ChatFileChangeStatusRequest,
+    ChatHistoryResponse,
     ChatMessagePatchRequest,
     ChatMessageRegenerateRequest,
     ChatOpenFileRequest,
@@ -360,7 +361,11 @@ async def unarchive_chat_session(
     )
 
 
-@router.get("/chat/sessions/{session_id}")
+@router.get(
+    "/chat/sessions/{session_id}",
+    response_model=ChatHistoryResponse,
+    response_model_exclude_unset=True,
+)
 async def get_chat_session(
     session_id: str,
     limit: int | None = Query(default=None, ge=1, le=MAX_HISTORY_WINDOW_SIZE),
@@ -379,7 +384,11 @@ async def get_chat_session(
     )
 
 
-@router.get("/chat/sessions/{session_id}/history")
+@router.get(
+    "/chat/sessions/{session_id}/history",
+    response_model=ChatHistoryResponse,
+    response_model_exclude_unset=True,
+)
 async def get_chat_session_history(
     session_id: str,
     before_id: int | None = None,

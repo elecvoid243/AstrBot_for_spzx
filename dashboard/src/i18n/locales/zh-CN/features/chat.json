@@ -206,6 +206,7 @@
     }
   },
   "message": {
+    "agentSource": "Agent 消息来源",
     "user": "用户",
     "assistant": "助手",
     "system": "系统",

@@ -75,6 +75,20 @@
             </button>
           </div>
           <template v-else>
+            <RouterLink
+              v-if="messageContent(msg).agent_source"
+              class="agent-message-source"
+              :to="{
+                name: 'ChatDetail',
+                params: {
+                  conversationId: messageContent(msg).agent_source!.session_id,
+                },
+              }"
+            >
+              {{ tm("message.agentSource") }} ·
+              {{ messageContent(msg).agent_source!.login_name }} ·
+              {{ messageContent(msg).agent_source!.display_name }} ↗
+            </RouterLink>
             <!-- 2026-10-08 (elecvoid243): the injection panel opens at the
                  message's head, above the reply, so a long reply never
                  separates the disclosure from the message it describes.
@@ -111,7 +125,8 @@
                   v-else
                   class="sent-attachment-card sent-file-card"
                   :class="{
-                    'sent-media-card': part.type === 'record' || part.type === 'video',
+                    'sent-media-card':
+                      part.type === 'record' || part.type === 'video',
                   }"
                 >
                   <div
@@ -476,7 +491,9 @@
                   :session-id="sessionId"
                   :message-id="msg.id"
                   :run-id="messageContent(msg).fileChangeRunId"
-                  :source-unavailable="messageContent(msg).fileChangeSourceUnavailable"
+                  :source-unavailable="
+                    messageContent(msg).fileChangeSourceUnavailable
+                  "
                   :is-dark="isDark"
                 />
               </template>
@@ -685,6 +702,7 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onMounted, reactive, ref, watch } from "vue";
+import { RouterLink } from "vue-router";
 import { Check, ChevronDown } from "@lucide/vue";
 import axios from "axios";
 import { fileApi } from "@/api/v1";
@@ -1181,7 +1199,11 @@ function isInteractiveChoiceIgnored(message: ChatRecord): boolean {
   const idx = props.messages.findIndex((m) => m === message);
   if (idx < 0) return false;
   for (let i = idx + 1; i < props.messages.length; i += 1) {
-    if (isUserMessage(props.messages[i])) return true;
+    if (
+      isUserMessage(props.messages[i]) &&
+      !messageContent(props.messages[i]).agent_source
+    )
+      return true;
   }
   return false;
 }
@@ -1204,7 +1226,7 @@ function recomputeIgnored(records: ChatRecord[]): void {
   let hasUserAfter = false;
   for (let i = records.length - 1; i >= 0; i -= 1) {
     const m = records[i];
-    if (isUserMessage(m)) {
+    if (isUserMessage(m) && !messageContent(m).agent_source) {
       hasUserAfter = true;
       continue;
     }
@@ -1308,6 +1330,7 @@ function canEditMessage(message: ChatRecord, messageIndex: number) {
   return (
     props.enableEdit &&
     isUserMessage(message) &&
+    !messageContent(message).agent_source &&
     messageIndex === latestEditableUserIndex() &&
     message.id != null &&
     !String(message.id).startsWith("local-")
@@ -1332,6 +1355,8 @@ function canRegenerateMessage(message: ChatRecord, messageIndex: number) {
   return (
     props.enableRegenerate &&
     !isUserMessage(message) &&
+    !props.messages.slice(0, messageIndex).reverse().find(isUserMessage)
+      ?.content.agent_source &&
     messageIndex === props.messages.length - 1 &&
     !isMessageStreaming(message, messageIndex) &&
     Boolean(message.llm_checkpoint_id)
@@ -1634,7 +1659,9 @@ watch(
         block.parts.some(
           (part) =>
             part.type === "think" &&
-            String(part.think || "").toLowerCase().includes(needle),
+            String(part.think || "")
+              .toLowerCase()
+              .includes(needle),
         ),
     );
     if (blockIndex >= 0) {
@@ -2037,6 +2064,13 @@ function formatDuration(seconds: number) {
   display: flex;
   flex-direction: column;
   max-width: min(1000px, 95%);
+}
+
+.agent-message-source {
+  color: rgb(var(--v-theme-primary));
+  font-size: 12px;
+  margin-bottom: 6px;
+  overflow-wrap: anywhere;
 }
 
 .from-bot .message-stack {

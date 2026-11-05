@@ -206,6 +206,7 @@
     }
   },
   "message": {
+    "agentSource": "Agent message from",
     "user": "User",
     "assistant": "Assistant",
     "system": "System",

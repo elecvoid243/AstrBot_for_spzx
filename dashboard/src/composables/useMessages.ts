@@ -221,6 +221,13 @@ export interface TodoSnapshot {
 export interface ChatContent {
   type: "user" | "bot" | string;
   message: MessagePart[];
+  agent_source?: {
+    kind: "agent";
+    account_id: string;
+    login_name: string;
+    session_id: string;
+    display_name: string;
+  };
   reasoning?: string;
   isLoading?: boolean;
   agentStats?: any;
@@ -574,6 +581,14 @@ export function useMessages(options: UseMessagesOptions) {
               payload.synthetic &&
               payload.message_id != null
             ) {
+              const input = payload.data?.input_message;
+              const records = (messagesBySession[sessionId] ||= []);
+              if (
+                input &&
+                !records.some((r) => String(r.id) === String(input.id))
+              ) {
+                records.push(normalizeHistoryRecord(input));
+              }
               attachLiveRun(sessionId, String(payload.message_id));
               options.onStreamUpdate?.(sessionId);
               return;
@@ -2203,6 +2218,20 @@ export function useMessages(options: UseMessagesOptions) {
     }
     if (msgType === "run_snapshot") {
       const snapshot = data && typeof data === "object" ? data : {};
+      const input = snapshot.input_message;
+      const records = sessionId ? (messagesBySession[sessionId] ||= []) : [];
+      if (
+        input &&
+        sessionId &&
+        !records.some((r) => String(r.id) === String(input.id))
+      ) {
+        const index = records.indexOf(botRecord);
+        records.splice(
+          index < 0 ? records.length : index,
+          0,
+          normalizeHistoryRecord(input),
+        );
+      }
       const snapshotRecord = normalizeHistoryRecord({
         id: `active-run-${snapshot.run_id || "unknown"}`,
         content: snapshot.content || { type: "bot", message: [] },

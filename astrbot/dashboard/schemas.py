@@ -304,6 +304,37 @@ class ChatMessagePatchRequest(OpenModel):
     content: dict[str, Any]
 
 
+class ChatAgentMessageSource(BaseModel):
+    """Server-owned provenance; never accepted as a message request field."""
+
+    kind: Literal["agent"] = "agent"
+    account_id: str
+    login_name: str
+    session_id: str
+    display_name: str
+
+
+class ChatHistoryContent(OpenModel):
+    type: str
+    message: list[dict[str, Any]] = Field(default_factory=list)
+    agent_source: ChatAgentMessageSource | None = None
+
+
+class ChatHistoryRecord(OpenModel):
+    id: int
+    content: ChatHistoryContent
+
+
+class ChatHistoryPage(OpenModel):
+    history: list[ChatHistoryRecord] = Field(default_factory=list)
+
+
+class ChatHistoryResponse(BaseModel):
+    status: str
+    message: str | None = None
+    data: ChatHistoryPage | None = None
+
+
 class ChatFlags(BaseModel):
     enable_inline_genui: bool = True
     enable_default_system_prompt: bool = True

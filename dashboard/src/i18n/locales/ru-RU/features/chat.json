@@ -195,6 +195,7 @@
     }
   },
   "message": {
+    "agentSource": "Сообщение агента из",
     "user": "Вы",
     "assistant": "Ассистент",
     "system": "Система",

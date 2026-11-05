@@ -267,6 +267,17 @@ export type ChatAccessRequest = {
     source: string;
 };
 
+/**
+ * Server-owned Agent source, never accepted from message request bodies.
+ */
+export type ChatAgentMessageSource = {
+    kind?: "agent";
+    account_id: string;
+    login_name: string;
+    session_id: string;
+    display_name: string;
+};
+
 export type ChatChunkUploadRequest = {
     upload_id: string;
     chunk_index: number;
@@ -366,6 +377,32 @@ export type ChatFlags = {
      * Display reasoning content for this WebChat request independently of the global display_reasoning_text setting.
      */
     enable_reasoning?: boolean;
+};
+
+export type ChatHistoryContent = {
+    type: string;
+    message?: Array<{
+        [key: string]: unknown;
+    }>;
+    agent_source?: (ChatAgentMessageSource | null);
+    [key: string]: unknown | string;
+};
+
+export type ChatHistoryPage = {
+    history?: Array<ChatHistoryRecord>;
+    [key: string]: unknown | ChatHistoryRecord;
+};
+
+export type ChatHistoryRecord = {
+    id: number;
+    content: ChatHistoryContent;
+    [key: string]: unknown | number | ChatHistoryContent;
+};
+
+export type ChatHistoryResponse = {
+    status: string;
+    message?: (string | null);
+    data?: (ChatHistoryPage | null);
 };
 
 export type ChatMessageMarker = {
@@ -2507,7 +2544,7 @@ export type GetChatSessionData = {
     };
 };
 
-export type GetChatSessionResponse = (SuccessEnvelope);
+export type GetChatSessionResponse = (ChatHistoryResponse);
 
 export type GetChatSessionError = unknown;
 
@@ -2548,7 +2585,7 @@ export type GetChatSessionHistoryData = {
     };
 };
 
-export type GetChatSessionHistoryResponse = (SuccessEnvelope);
+export type GetChatSessionHistoryResponse = (ChatHistoryResponse);
 
 export type GetChatSessionHistoryError = unknown;
 

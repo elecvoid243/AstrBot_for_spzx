@@ -117,6 +117,11 @@ def build_goal_turn_event(
     if isinstance(allow_admin, bool):
         new_event.set_extra("_api_key_allow_admin_role", allow_admin)
     principal = event.get_extra("_dashboard_account")
+    chain = event.get_extra("_session_message_chain")
+    if chain is not None:
+        # Automatic goal continuations must retain the same message counter and
+        # user stop boundary instead of opening another automatic message chain.
+        new_event.set_extra("_session_message_chain", chain)
     if (
         isinstance(event, WebChatMessageEvent)
         and isinstance(principal, DashboardPrincipal)

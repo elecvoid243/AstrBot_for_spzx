@@ -2138,7 +2138,14 @@
         ],
         "responses": {
           "200": {
-            "$ref": "#/components/responses/Ok"
+            "description": "Session history with server-owned Agent provenance when present.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatHistoryResponse"
+                }
+              }
+            }
           }
         }
       },
@@ -2226,7 +2233,14 @@
         ],
         "responses": {
           "200": {
-            "$ref": "#/components/responses/Ok"
+            "description": "Session history with server-owned Agent provenance when present.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatHistoryResponse"
+                }
+              }
+            }
           }
         }
       }
@@ -10172,6 +10186,123 @@
           }
         },
         "additionalProperties": true
+      },
+      "ChatAgentMessageSource": {
+        "type": "object",
+        "description": "Server-owned Agent source, never accepted from message request bodies.",
+        "required": [
+          "account_id",
+          "login_name",
+          "session_id",
+          "display_name"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "agent",
+            "default": "agent"
+          },
+          "account_id": {
+            "type": "string"
+          },
+          "login_name": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "display_name": {
+            "type": "string"
+          }
+        }
+      },
+      "ChatHistoryContent": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": [
+          "type"
+        ],
+        "properties": {
+          "type": {
+            "type": "string"
+          },
+          "message": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "agent_source": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatAgentMessageSource"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "ChatHistoryRecord": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": [
+          "id",
+          "content"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "content": {
+            "$ref": "#/components/schemas/ChatHistoryContent"
+          }
+        }
+      },
+      "ChatHistoryPage": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "history": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ChatHistoryRecord"
+            }
+          }
+        }
+      },
+      "ChatHistoryResponse": {
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "properties": {
+          "status": {
+            "type": "string"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatHistoryPage"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
       }
     }
   }

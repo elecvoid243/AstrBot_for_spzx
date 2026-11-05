@@ -13,9 +13,15 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
 from typing import Any
+from weakref import WeakSet
 
 from sqlmodel import select
 
+from astrbot.builtin_stars.session_messages.tools import (
+    MAX_SESSION_MESSAGE_CHAIN,
+    AgentMessageSource,
+    SessionMessageChain,
+)
 from astrbot.core import logger, sp
 from astrbot.core.agent.message import get_checkpoint_id, is_checkpoint_message
 from astrbot.core.core_lifecycle import AstrBotCoreLifecycle
@@ -56,6 +62,7 @@ from astrbot.core.utils.media_utils import (
 )
 from astrbot.core.utils.upload import UploadTooLargeError
 from astrbot.core.utils.webchat_access import (
+    DashboardPrincipal,
     dashboard_account_context,
     webchat_account_role,
     webchat_resource_owner,
@@ -1228,6 +1235,7 @@ class ChatRunState:
     llm_checkpoint_id: str
     platform_history_id: str
     back_queue: asyncio.Queue
+    input_message: dict | None = None
     subscribers: set[asyncio.Queue] = field(default_factory=set)
     message_parts: list[dict] = field(default_factory=list)
     agent_stats: dict = field(default_factory=dict)
@@ -1267,6 +1275,7 @@ class ChatService:
         self.running_convs: dict[str, bool] = {}
         self.chat_runs: dict[str, ChatRunState] = {}
         self.chat_runs_by_session: dict[str, set[str]] = {}
+        self.session_message_chains: WeakSet[SessionMessageChain] = WeakSet()
         self.chunked_uploads = ChunkedUploadService(
             Path(get_astrbot_data_path()) / "webchat" / ".chunks"
         )
@@ -2021,6 +2030,7 @@ class ChatService:
                 "revision": run.revision,
                 "segment_id": run.segment_id,
                 "preceding_plain_text": run.preceding_plain_text,
+                "input_message": run.input_message,
                 "history_record_id": run.history_record.id
                 if run.history_record
                 else None,
@@ -3059,10 +3069,165 @@ class ChatService:
             await self.session_config(owner, session_id, payload.get("config_id"))
         return selection
 
+    async def list_message_sessions(self, event) -> list[dict]:
+        """Discover supported sessions for an authenticated ordinary execution.
+
+        Args:
+            event: Server-created event of the sending main Agent.
+
+        Returns:
+            Existing, unarchived ordinary sessions including project membership.
+
+        Raises:
+            ChatServiceError: The execution has no current trusted account or source.
+        """
+        from astrbot.core.cron.webchat_turn import parse_webchat_turn_session
+
+        account = event.get_extra("_dashboard_account")
+        if not isinstance(account, DashboardPrincipal) or event.get_extra(
+            "agent_team_execution"
+        ):
+            raise ChatServiceError("A trusted ordinary ChatUI execution is required")
+        async with self.db.get_db() as connection:
+            current = await connection.get(DashboardAccount, account.account_id)
+        if (
+            current is None
+            or not current.enabled
+            or current.resource_owner != account.resource_owner
+        ):
+            raise ChatServiceError("Account is unavailable")
+        sid, owner = parse_webchat_turn_session(event.unified_msg_origin)
+        if owner != account.resource_owner or event.get_sender_id() != owner:
+            raise ChatServiceError("Source session is unavailable")
+        source = await self.require_owned_chat_session(owner, sid)
+        if source.archived or source.is_group:
+            raise ChatServiceError("Source session is unavailable")
+        result = []
+        page = 1
+        while True:
+            rows, total = await self.db.get_platform_sessions_by_creator_paginated(
+                owner, "webchat", page=page, page_size=100, archived=False
+            )
+            for item in rows:
+                session = item["session"]
+                if session.session_id != sid and not session.is_group:
+                    result.append(
+                        {
+                            "session_id": session.session_id,
+                            "display_name": session.display_name,
+                            "project_id": item["project_id"],
+                        }
+                    )
+            if page * 100 >= total:
+                return result
+            page += 1
+
+    async def send_session_message(self, event, session_id: str, text: str) -> dict:
+        """Accept Agent text through the ordinary chat admission and collector.
+
+        Args:
+            event: Executing sender; models cannot supply its identity or chain.
+            session_id: Existing recipient session ID.
+            text: Agent-authored text, never a human command or choice answer.
+
+        Returns:
+            Input acceptance state and message/run location without waiting for output.
+
+        Raises:
+            ChatServiceError: The recipient, chain or current admission is unavailable.
+        """
+        from astrbot.core.cron.webchat_turn import parse_webchat_turn_session
+        from astrbot.core.pipeline.process_stage.follow_up import _ACTIVE_AGENT_RUNNERS
+        from astrbot.core.tools.interactive_choice_registry import registry
+
+        if (
+            not isinstance(session_id, str)
+            or not isinstance(text, str)
+            or not text.strip()
+        ):
+            raise ChatServiceError("A target session ID and nonempty text are required")
+        sessions = await self.list_message_sessions(event)
+        if not any(item["session_id"] == session_id for item in sessions):
+            raise ChatServiceError(
+                "Target session is unavailable (self, archived or unsupported)"
+            )
+        account = event.get_extra("_dashboard_account")
+        source_id, _ = parse_webchat_turn_session(event.unified_msg_origin)
+        source = await self.require_owned_chat_session(
+            account.resource_owner, source_id
+        )
+        target = await self.require_owned_chat_session(
+            account.resource_owner, session_id
+        )
+        umo = build_webchat_unified_msg_origin(target)
+        chain = event.get_extra("_session_message_chain")
+        if not isinstance(chain, SessionMessageChain):
+            chain = SessionMessageChain(sessions={source_id})
+            event.set_extra("_session_message_chain", chain)
+            self.session_message_chains.add(chain)
+        if (
+            event.get_extra("agent_stop_requested")
+            or source_id in chain.stopped
+            or session_id in chain.stopped
+        ):
+            raise ChatServiceError(
+                "This automatic message chain was stopped by the user"
+            )
+        if chain.count >= MAX_SESSION_MESSAGE_CHAIN:
+            raise ChatServiceError("Automatic message chain limit reached (8 sends)")
+        if registry.find_pending_by_umo(umo) is not None:
+            raise ChatServiceError(
+                "Target is waiting for a user answer; Agent messages cannot answer it"
+            )
+        runner = _ACTIVE_AGENT_RUNNERS.get(umo)
+        if self.chat_runs_by_session.get(session_id):
+            runner_event = getattr(
+                getattr(getattr(runner, "run_context", None), "context", None),
+                "event",
+                None,
+            )
+            if (
+                runner_event is None
+                or runner.done()
+                or runner_event.get_extra("agent_stop_requested")
+            ):
+                raise ChatServiceError(
+                    "Target is busy and cannot currently accept a safe follow-up"
+                )
+            existing = runner_event.get_extra("_session_message_chain")
+            if existing is not None and existing is not chain:
+                raise ChatServiceError(
+                    "Target is busy with another automatic message chain"
+                )
+            runner_event.set_extra("_session_message_chain", chain)
+        chain.count += 1
+        chain.sessions.add(session_id)
+        message_id = str(uuid.uuid4())
+        provenance = AgentMessageSource(
+            account, source_id, source.display_name or source_id, chain
+        )
+        # No sender model/profile/project parameters enter the recipient payload.
+        await self.build_chat_stream(
+            account.resource_owner,
+            {"session_id": session_id, "message": text},
+            agent_source=provenance,
+            message_id=message_id,
+        )
+        return {
+            "status": "accepted_follow_up" if runner is not None else "accepted",
+            "session_id": session_id,
+            "message_id": message_id,
+            "run_id": message_id,
+            "detail_path": f"/#/chat/{session_id}",
+        }
+
     async def build_chat_stream(
         self,
         username: str,
         post_data: dict,
+        *,
+        agent_source: AgentMessageSource | None = None,
+        message_id: str | None = None,
     ) -> AsyncIterator[str]:
         if "message" not in post_data and "files" not in post_data:
             raise ChatServiceError("Missing key: message or files")
@@ -3090,6 +3255,13 @@ class ChatService:
 
         if platform_history_id == "webchat":
             platform_session = await self.db.get_platform_session_by_id(webchat_conv_id)
+            if agent_source is not None and (
+                platform_session is None
+                or platform_session.archived
+                or platform_session.is_group
+                or platform_session.platform_id != "webchat"
+            ):
+                raise ChatServiceError("Target session is unavailable")
             if platform_session is not None and platform_session.creator != username:
                 raise ChatServiceError("Permission denied")
             if platform_session is None:
@@ -3139,7 +3311,7 @@ class ChatService:
         if webchat_account_role.get() == "user":
             post_data = {**post_data, "_api_key_allow_admin_role": False}
 
-        message_id = str(uuid.uuid4())
+        message_id = message_id or str(uuid.uuid4())
         llm_checkpoint_id = post_data.get("_llm_checkpoint_id") or str(uuid.uuid4())
         skip_user_history = bool(post_data.get("_skip_user_history"))
         saved_user_record = None
@@ -3175,6 +3347,10 @@ class ChatService:
                 or source.llm_checkpoint_id != post_data.get("_llm_checkpoint_id")
             ):
                 raise ChatServiceError("Invalid edited continuation")
+            if source.content.get("agent_source"):
+                raise ChatServiceError(
+                    "Agent messages cannot be continued as human input"
+                )
             saved_parts = await self.build_user_message_parts(
                 source.content.get("message", [])
             )
@@ -3194,6 +3370,9 @@ class ChatService:
                 "sender_name": username,
                 "llm_checkpoint_id": llm_checkpoint_id,
             }
+            if agent_source is not None:
+                history["content"]["agent_source"] = agent_source.public_data()
+                history["sender_name"] = "Agent: " + agent_source.display_name
             # Serialize the user row with output, preserving database order.
             active_run = next(
                 (
@@ -3238,6 +3417,9 @@ class ChatService:
             llm_checkpoint_id=llm_checkpoint_id,
             platform_history_id=platform_history_id,
             back_queue=back_queue,
+            input_message=serialize_history_entry(saved_user_record)
+            if agent_source is not None and saved_user_record
+            else None,
         )
         self.chat_runs[message_id] = run
         self.chat_runs_by_session.setdefault(webchat_conv_id, set()).add(message_id)
@@ -3246,6 +3428,10 @@ class ChatService:
             include_snapshot=False,
             saved_user_record=saved_user_record,
         )
+        if agent_source is not None:
+            # The recipient has no request-scoped browser subscriber. Its collector
+            # still owns the complete output; open pages attach via run_started.
+            run.subscribers.clear()
         run.task = asyncio.create_task(
             self._consume_chat_run(run),
             name=f"webchat_run_{message_id}",
@@ -3271,9 +3457,19 @@ class ChatService:
                         "llm_checkpoint_id": llm_checkpoint_id,
                         "thread_selected_text": thread_selected_text,
                         "_dashboard_account": dashboard_account_context.get(),
-                        "_api_key_allow_admin_role": post_data.get(
-                            "_api_key_allow_admin_role"
+                        "_agent_message_source": agent_source,
+                        **(
+                            {
+                                "internal_turn": "session_message",
+                                "_dashboard_account": agent_source.account,
+                            }
+                            if agent_source is not None
+                            else {}
                         ),
+                        "_api_key_allow_admin_role": False
+                        if agent_source is not None
+                        and agent_source.account.role == "user"
+                        else post_data.get("_api_key_allow_admin_role"),
                     },
                 ),
             )
@@ -3282,12 +3478,26 @@ class ChatService:
             await asyncio.gather(run.task, return_exceptions=True)
             raise
 
+        if agent_source is not None:
+            await webchat_queue_mgr.put_system_event(
+                webchat_conv_id,
+                {
+                    "type": "run_started",
+                    "data": {"run_id": message_id, "input_message": run.input_message},
+                    "message_id": message_id,
+                    "synthetic": True,
+                },
+            )
+
         return stream
 
     async def stop_session(self, username: str, session_id: str) -> dict:
         session = await self.require_owned_chat_session(username, session_id)
 
         unified_msg_origin = build_webchat_unified_msg_origin(session)
+        for chain in self.session_message_chains:
+            if session_id in chain.sessions:
+                chain.stopped.add(session_id)
         stopped_count = active_event_registry.request_agent_stop_all(unified_msg_origin)
         return {"stopped_count": stopped_count}
 
@@ -4960,6 +5170,10 @@ class ChatService:
             raise ChatServiceError("Message type cannot be changed")
         if content.get("type") != "user":
             raise ChatServiceError("Only user messages can be edited")
+        if record.content.get("agent_source") or content.get("agent_source"):
+            raise ChatServiceError(
+                "Agent provenance cannot be edited or supplied by the client"
+            )
         message_parts = await self.build_user_message_parts(content.get("message", []))
         if not webchat_message_parts_have_content(message_parts):
             raise ChatServiceError(
@@ -5126,6 +5340,10 @@ class ChatService:
         )
         if not source_user_record:
             raise ChatServiceError("Linked user display message not found")
+        if source_user_record.content.get("agent_source"):
+            raise ChatServiceError(
+                "Agent messages cannot be regenerated as human input; send a new user message"
+            )
         latest_user_record = next(
             (
                 item

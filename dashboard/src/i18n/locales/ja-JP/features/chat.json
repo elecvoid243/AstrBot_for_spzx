@@ -105,6 +105,7 @@
     "followUpInterrupt": "強制中断"
   },
   "message": {
+    "agentSource": "エージェントメッセージの送信元",
     "user": "ユーザー",
     "assistant": "アシスタント",
     "system": "システム",

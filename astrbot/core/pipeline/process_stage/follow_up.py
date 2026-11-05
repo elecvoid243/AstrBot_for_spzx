@@ -222,10 +222,16 @@ def try_capture_follow_up(event: AstrMessageEvent) -> FollowUpCapture | None:
     ]
     ticket = runner.follow_up(
         message_text=_event_follow_up_text(event),
+        **({"agent_message": True} if event.get_extra("_agent_message_source") else {}),
         **({"image_urls": image_urls} if image_urls else {}),
     )
     if not ticket:
         return None
+    chain = event.get_extra("_session_message_chain")
+    if chain is not None:
+        # Tools executed by the already-running recipient must retain the same
+        # server counter and stop boundary after consuming an Agent follow-up.
+        runner_event.set_extra("_session_message_chain", chain)
     # Allocate strict order at capture time (arrival order), not at wake time.
     order_seq = _allocate_follow_up_order(event.unified_msg_origin)
     monitor_task = asyncio.create_task(

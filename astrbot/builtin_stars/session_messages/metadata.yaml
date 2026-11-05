@@ -1,0 +1,4 @@
+name: session_messages
+desc: Send text between account-owned ordinary ChatUI sessions.
+version: 1.0.0
+author: AstrBot

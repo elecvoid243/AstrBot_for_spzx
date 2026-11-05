@@ -193,6 +193,7 @@ def create_dashboard_asgi_app(
         dashboard_static_folder=static_folder,
     )
     chat = ChatService(db, core_lifecycle)
+    core_lifecycle.plugin_manager.context.session_message_service = chat
     services = SimpleNamespace(
         config_profiles=ConfigProfileService(core_lifecycle, db, runtime=stats.runtime),
         config_display=ConfigDisplayService(core_lifecycle),

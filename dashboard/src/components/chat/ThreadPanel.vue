@@ -88,7 +88,9 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, reactive, ref, watch } from "vue";
+import {
+  computed, nextTick, onBeforeUnmount, provide, reactive, ref, watch,
+} from "vue";
 import {
   accountSessionRevision,
   assertCurrentAccount,
@@ -116,6 +118,10 @@ import { useModuleI18n } from "@/i18n/composables";
 import ChatMessageList from "@/components/chat/ChatMessageList.vue";
 import ChatInput from "@/components/chat/ChatInput.vue";
 import ProviderModelMenu from "@/components/chat/ProviderModelMenu.vue";
+import {
+  localProviderModelSelectionKey,
+  useProviderModelSelection,
+} from "@/composables/useProviderModelSelection";
 import { useMediaHandling } from "@/composables/useMediaHandling";
 import { useRecording } from "@/composables/useRecording";
 import { useToast } from "@/utils/toast";
@@ -144,6 +150,19 @@ const emit = defineEmits<{
 }>();
 
 const { tm } = useModuleI18n("features/chat");
+const ordinaryModelSelection = useProviderModelSelection();
+const selectedProviderId = ref("");
+const selectedModelName = ref("");
+// The side header and composer share a one-turn choice, never the main
+// session's persistent preference. Opening another side chat starts afresh.
+provide(localProviderModelSelectionKey, {
+  selectedProviderId,
+  selectedModelName,
+  setSelection(providerId: string, modelName = "") {
+    selectedProviderId.value = providerId;
+    selectedModelName.value = modelName;
+  },
+});
 // Keep stream records attached to their thread while its panel is hidden.
 const threadStates = reactive(
   new Map<
@@ -163,6 +182,8 @@ function clearAccountThreads() {
   }
   threadStates.clear();
   draft.value = "";
+  selectedProviderId.value = "";
+  selectedModelName.value = "";
 }
 watch(accountSessionRevision, clearAccountThreads, { flush: "sync" });
 onBeforeUnmount(clearAccountThreads);
@@ -250,6 +271,8 @@ onBeforeUnmount(onMouseUp);
 watch(
   () => props.thread?.thread_id,
   (threadId) => {
+    selectedProviderId.value = ordinaryModelSelection.selectedProviderId.value;
+    selectedModelName.value = ordinaryModelSelection.selectedModelName.value;
     if (threadId) {
       loadThread(threadId);
     }

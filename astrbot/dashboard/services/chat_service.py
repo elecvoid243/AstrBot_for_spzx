@@ -2995,9 +2995,23 @@ class ChatService:
                 selection["thinking_effort"] = normalize_thinking_effort_value(effort)
             except ValueError as exc:
                 raise ChatServiceError(str(exc)) from exc
+        account = None
+        if isinstance(session, PlatformSession):
+            # Background inputs have no request role. Resolve both model access
+            # and effort defaults from the session's immutable resource owner.
+            async with self.db.get_db() as connection:
+                account = (
+                    await connection.execute(
+                        select(DashboardAccount).where(
+                            (DashboardAccount.account_id == owner)
+                            | (DashboardAccount.legacy_owner == owner)
+                        )
+                    )
+                ).scalar_one_or_none()
+        owner_role = account.role if account is not None else webchat_account_role.get()
         provider_id = selection["selected_provider"]
         model = selection["selected_model"]
-        if model and not provider_id and webchat_account_role.get() == "user":
+        if model and not provider_id and owner_role == "user":
             raise ChatServiceError("Chat model is unavailable")
         if provider_id:
             manager = self.core_lifecycle.provider_manager
@@ -3022,25 +3036,10 @@ class ChatService:
                 raise ChatServiceError("Chat model is unavailable")
             # Preserve the existing administrator model-override semantics.
             # Members may only consume the model advertised by this config.
-            if (
-                model
-                and model != provider.get("model")
-                and webchat_account_role.get() == "user"
-            ):
+            if model and model != provider.get("model") and owner_role == "user":
                 raise ChatServiceError("Chat model is unavailable")
         if isinstance(session, PlatformSession):
             defaults = self.get_chatui_thinking_effort()
-            # Background turns have no request principal. Resolve the same
-            # account preference by the session's immutable trusted owner.
-            async with self.db.get_db() as connection:
-                account = (
-                    await connection.execute(
-                        select(DashboardAccount).where(
-                            (DashboardAccount.account_id == owner)
-                            | (DashboardAccount.legacy_owner == owner)
-                        )
-                    )
-                ).scalar_one_or_none()
             if account is not None:
                 preference = await self.db.get_preference(
                     "dashboard_account", account.account_id, "thinking_effort"

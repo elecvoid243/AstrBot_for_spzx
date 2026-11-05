@@ -342,3 +342,71 @@ async def test_unset_sessions_share_account_defaults_with_background_turns(
         assert item[2]["thinking_effort"] == "auto"
     finally:
         webchat_queue_mgr.remove_queues(sid)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("owner_kind", ["user", "legacy_admin"])
+async def test_background_model_access_uses_persisted_owner_role(
+    ordinary_chat, monkeypatch, owner_kind
+):
+    """HTTP and background entry points enforce the same owner's model access.
+
+    Args:
+        ordinary_chat: Production HTTP app backed by a temporary SQLite database.
+        monkeypatch: Replaces run registration to inspect admitted queue payloads.
+        owner_kind: Ordinary member or migrated administrator with a legacy owner.
+    """
+    from astrbot.core.utils.webchat_access import webchat_account_role
+
+    client, server, core, db, admin, users = ordinary_chat
+    account = users[0] if owner_kind == "user" else admin
+    owner = account["resource_owner"]
+    if owner_kind == "legacy_admin":
+        assert owner != account["account_id"]
+    headers = {"Authorization": f"Bearer {account['token']}"}
+    core.provider_manager.inst_map["gpt-mini"] = MagicMock(spec=Provider)
+    sid = (await client.get("/api/v1/chat/sessions/new", headers=headers)).json()[
+        "data"
+    ]["session_id"]
+    path = f"/api/v1/chat/sessions/{sid}/selection"
+    selected_model = (
+        "gpt-4o-mini" if owner_kind == "user" else "administrator-custom-model"
+    )
+    response = await client.put(
+        path,
+        headers=headers,
+        json={"selected_provider": "gpt-mini", "selected_model": selected_model},
+    )
+    assert response.json()["status"] == "ok", response.text
+    provider = next(
+        item
+        for item in core.provider_manager.providers_config
+        if item["id"] == "gpt-mini"
+    )
+    provider["model"] = "new-model"
+    http_result = (await client.get(path, headers=headers)).json()
+    service = server.asgi_app.state.services.chat
+    register = AsyncMock()
+    monkeypatch.setattr(service, "register_synthetic_chat_run", register)
+    token = webchat_account_role.set(None)
+    try:
+        if owner_kind == "user":
+            assert http_result["status"] == "error"
+            assert http_result["message"] == "Chat model is unavailable"
+            with pytest.raises(ChatServiceError, match="Chat model is unavailable"):
+                await service.inject_cron_turn(
+                    cid=sid, username=owner, message_id="owner-role", text="scheduled"
+                )
+            register.assert_not_awaited()
+        else:
+            assert http_result["status"] == "ok"
+            assert http_result["data"]["selected_model"] == selected_model
+            await service.inject_cron_turn(
+                cid=sid, username=owner, message_id="owner-role", text="scheduled"
+            )
+            item = webchat_queue_mgr.get_or_create_queue(sid).get_nowait()
+            assert item[2]["selected_model"] == selected_model
+            register.assert_awaited_once()
+    finally:
+        webchat_account_role.reset(token)
+        webchat_queue_mgr.remove_queues(sid)

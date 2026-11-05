@@ -1,10 +1,25 @@
-import { onScopeDispose, ref, watch, type Ref } from "vue";
+import {
+  hasInjectionContext,
+  inject,
+  onScopeDispose,
+  ref,
+  watch,
+  type InjectionKey,
+  type Ref,
+} from "vue";
 import { chatApi } from "@/api/v1";
 import {
   accountSessionRevision,
   assertCurrentAccount,
 } from "@/utils/accountSession";
 import { useToast } from "@/utils/toast";
+
+// Side-chat descendants share only their panel's local model choice.
+export const localProviderModelSelectionKey: InjectionKey<{
+  selectedProviderId: Ref<string>;
+  selectedModelName: Ref<string>;
+  setSelection: (providerId: string, modelName?: string) => void;
+}> = Symbol("localProviderModelSelection");
 
 // The header and ordinary composer share the active session's server state.
 const selectedProviderId = ref("");
@@ -33,7 +48,9 @@ window.addEventListener?.("astrbot:account-changed", () => {
   defaultEffortPreset.value = "";
 });
 
-/** Share server-owned ordinary-session model choices with both selectors.
+/** Share ordinary-session choices or the enclosing side panel's local model.
+ *
+ * An enclosing side-chat provider supplies local model refs without session writes.
  *
  * Args:
  *   sessionId: Active ordinary session, bound once by Chat.vue.
@@ -42,6 +59,10 @@ window.addEventListener?.("astrbot:account-changed", () => {
  *   Shared choices, explicit setters and a send guard that awaits persistence.
  */
 export function useProviderModelSelection(sessionId?: Ref<string>) {
+  const localSelection =
+    !sessionId && hasInjectionContext()
+      ? inject(localProviderModelSelectionKey, null)
+      : null;
   if (sessionId) {
     watch(
       sessionId,
@@ -175,15 +196,18 @@ export function useProviderModelSelection(sessionId?: Ref<string>) {
   }
 
   return {
-    selectedProviderId,
-    selectedModelName,
+    selectedProviderId:
+      localSelection?.selectedProviderId ?? selectedProviderId,
+    selectedModelName: localSelection?.selectedModelName ?? selectedModelName,
     thinkingEffort,
     effortPreset,
     defaultThinkingEffort,
     defaultEffortPreset,
     loading,
-    setSelection: (providerId: string, modelName = "") =>
-      saveSelection({ providerId, modelName }),
+    setSelection:
+      localSelection?.setSelection ??
+      ((providerId: string, modelName = "") =>
+        saveSelection({ providerId, modelName })),
     setThinkingEffort: (effort: string, preset: string) =>
       saveSelection({ effort, preset }),
     prepareSend,

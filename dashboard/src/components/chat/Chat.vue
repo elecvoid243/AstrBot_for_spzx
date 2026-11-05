@@ -2418,8 +2418,14 @@ const {
     void autoOpenAgentBrowser(sessionId, tool, runId);
   },
   onSessionsChanged: async (projectId) => {
-    await getSessions();
-    if (projectId) await loadProjectSessions(projectId);
+    // A background run may finish after its source system stream was closed.
+    // Refresh cached projects too when no creation notice identified the target.
+    await Promise.all([
+      getSessions(),
+      ...(projectId ? [projectId] : Object.keys(projectSessionsById.value)).map(
+        (id) => loadProjectSessions(id),
+      ),
+    ]);
   },
   onGoalStateChanged,
   onShellSessionsChanged: applyPushedShellSessions,

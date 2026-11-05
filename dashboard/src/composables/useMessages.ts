@@ -2495,6 +2495,20 @@ export function useMessages(options: UseMessagesOptions) {
           const callId = (parsed as any).id;
           const matched = findToolCallById(botRecord, callId);
           const toolName = matched?.name;
+          if (toolName === "create_chat_session") {
+            const created = parseJsonSafe(matched?.result);
+            if (
+              created &&
+              typeof created.session_id === "string" &&
+              ["created", "created_send_failed"].includes(created.status)
+            ) {
+              // The source system stream may be closed while this run stays
+              // active. Publish the new list entry as soon as creation returns.
+              void options.onSessionsChanged?.(
+                typeof created.project_id === "string" ? created.project_id : null,
+              );
+            }
+          }
           if (
             toolName &&
             TODO_TOOL_NAMES.has(toolName) &&

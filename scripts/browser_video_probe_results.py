@@ -59,7 +59,12 @@ def main():
                     0, frame["expectedDisplayTime"] - frame["callbackTime"]
                 )
                 frame["presentation_adjusted"] = True
-        inputs = {item["id"]: item for item in viewer["inputs"]}
+        all_inputs = {item["id"]: item for item in viewer["inputs"]}
+        inputs = {
+            number: item
+            for number, item in all_inputs.items()
+            if not item.get("measurement_case")
+        }
         target_events = {
             item["id"]: item for item in viewer["target"]["target"]["probe"]["events"]
         }
@@ -67,7 +72,11 @@ def main():
         valid_frames = []
         for frame in frames:
             # The optical words are decoded from pixels, not from SSE or ACKs.
-            if not 0 <= frame["words"][0] <= frame["t"]:
+            if (
+                not 0 < frame["words"][0] <= frame["t"]
+                or frame["words"][3] == 0
+                or not frame.get("optical_valid", True)
+            ):
                 continue
             valid_frames.append(frame)
             if frame["words"][1] in inputs and frame["words"][1] in target_events:
@@ -88,7 +97,7 @@ def main():
                     "source_age_ms": distribution(
                         [frame["t"] - frame["words"][0] for frame in selected]
                     ),
-                    "input_to_present_ms": distribution(
+                    "conditional_handler_marker_input_to_present_ms": distribution(
                         [
                             frame["t"] - inputs[number]["t"]
                             for number, frame in seen.items()
@@ -114,6 +123,12 @@ def main():
             "presented": len(frames),
             "presented_fps": (len(frames) - 1) / span,
             "valid_optical_frames": len(valid_frames),
+            "valid_source_fps": (len(valid_frames) - 1)
+            * 1000
+            / (valid_frames[-1]["t"] - valid_frames[0]["t"])
+            if len(valid_frames) > 1
+            else 0,
+            "uninitialized_or_invalid_optical_frames": len(frames) - len(valid_frames),
             "repeated_source_frames": len(valid_frames)
             - len({frame["words"][3] for frame in valid_frames}),
             "present_gap_ms": distribution(
@@ -122,7 +137,7 @@ def main():
             "source_age_ms": distribution(
                 [frame["t"] - frame["words"][0] for frame in valid_frames]
             ),
-            "input_to_present_ms": distribution(
+            "conditional_handler_marker_input_to_present_ms": distribution(
                 [frame["t"] - inputs[number]["t"] for number, frame in seen.items()]
             ),
             "input_to_target_ms": distribution(
@@ -134,11 +149,26 @@ def main():
                     for number, frame in seen.items()
                 ]
             ),
-            "inputs": len(inputs),
+            "inputs": len(all_inputs),
+            "continuous_inputs": len(inputs),
+            "continuous_pointer_moves_requested": sum(
+                item.get("phase") == "move" for item in inputs.values()
+            ),
+            "continuous_pointer_moves_delivered": sum(
+                number in target_events
+                for number, item in inputs.items()
+                if item.get("phase") == "move"
+            ),
+            "continuous_unobserved_input_ids": sorted(set(inputs) - set(seen)),
+            "stale_input_ids": [
+                item["input_id"]
+                for item in viewer["acks"]
+                if item.get("status") == "stale"
+            ],
             "target_events": len(target_events),
             "optically_observed_input_ids": len(seen),
             "applied_but_not_individually_observed": len(
-                set(target_events) - set(seen)
+                (set(target_events) & set(inputs)) - set(seen)
             ),
             "ack_status": dict(Counter(item.get("status") for item in viewer["acks"])),
             "capture_events": len(runtime["capture"]),
@@ -185,8 +215,62 @@ def main():
                 "Inputs without individually observed markers are reported separately",
                 "RSS sums include shared pages",
                 "JPEG presentation uses onload plus rAF; video uses requestVideoFrameCallback",
+                "Headless compositor presentation estimates; not physical monitor latency",
+                "Continuous handler marker latency is conditional on individually visible IDs and does not prove the widget changed",
             ],
         }
+        discrete = viewer.get("discrete", [])
+        if discrete:
+            result["settled_widget_actions"] = {
+                "expected": 12,
+                "completed": len(discrete),
+                "input_to_actual_state_present_ms": distribution(
+                    [item["input_to_actual_state_present_ms"] for item in discrete]
+                ),
+                "by_kind": {
+                    kind: distribution(
+                        [
+                            item["input_to_actual_state_present_ms"]
+                            for item in discrete
+                            if item["kind"] == kind
+                        ]
+                    )
+                    for kind in ("slider", "drag", "scroll")
+                },
+                "all_values_match_target": all(
+                    item["actual"] == item["presented"]["actual"][3:]
+                    for item in discrete
+                ),
+                "pixel_assertions_passed": sum(
+                    item["pixel_check"] is not None for item in discrete
+                ),
+                "cases": [
+                    {
+                        "name": item["name"],
+                        "latency_ms": item["input_to_actual_state_present_ms"],
+                        "input_id": item["input"]["id"],
+                        "actual": item["actual"],
+                    }
+                    for item in discrete
+                ],
+            }
+        if inbound:
+            decoded = sum(item.get("framesDecoded", 0) for item in inbound)
+            keyframes = sum(item.get("keyFramesDecoded", 0) for item in inbound)
+            result["receiver_keyframes"] = {
+                "frames_decoded": decoded,
+                "keyframes_decoded": keyframes,
+                "ratio": keyframes / decoded if decoded else None,
+            }
+            result["encoder_keyframes"] = {
+                "frames": len(runtime["encode"]),
+                "keyframes": sum(
+                    item.get("keyframe", False) for item in runtime["encode"]
+                ),
+                "explicit_requests": sum(
+                    item.get("force_keyframe", False) for item in runtime["encode"]
+                ),
+            }
         if viewer.get("owned_resources"):
             result["all_owned_process_cpu_percent"] = distribution(
                 [
@@ -234,7 +318,7 @@ def main():
             "fps",
             round(result["presented_fps"], 2),
             "e2e",
-            result["input_to_present_ms"],
+            result["conditional_handler_marker_input_to_present_ms"],
             "encode",
             result["encode_ms"],
             flush=True,

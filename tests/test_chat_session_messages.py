@@ -265,6 +265,363 @@ async def wait_until(predicate):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failure_mode", ["provider", "full_queue", "queue_error", "overlapping_failure"]
+)
+async def test_failed_delivery_does_not_claim_a_running_recipient(
+    messaging, monkeypatch, failure_mode
+):
+    """A failed A send must leave B available for an independent C chain.
+
+    Args:
+        messaging: Real SQLite, admission and main Agent execution fixture.
+        monkeypatch: Injects an exception before queue acceptance.
+        failure_mode: Configuration rejection, queue saturation, enqueue failure,
+            or delayed rejection overlapping a different successful chain.
+    """
+    m = messaging
+    a, b = m.ids
+    c = (
+        await m.db.create_platform_session(creator=m.user["resource_owner"])
+    ).session_id
+    m.ids.append(c)
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    expect_c = False
+
+    class HoldRecipient(FunctionTool):
+        async def call(self, context, **kwargs):
+            entered.set()
+            await release.wait()
+            return "recipient released"
+
+    m.context.add_llm_tools(
+        HoldRecipient(
+            name="hold_recipient",
+            description="Hold the real recipient tool round.",
+            parameters={"type": "object", "properties": {}},
+        )
+    )
+
+    async def respond(kwargs):
+        contexts = kwargs.get("contexts", [])
+        if not any(item.get("role") == "tool" for item in contexts):
+            return tool_call("hold_recipient", {})
+        if expect_c:
+            assert "independent C message" in json.dumps(contexts)
+        return LLMResponse(role="assistant", completion_text="C message received")
+
+    provider = ControlledProvider("gpt-mini", respond)
+    m.providers["gpt-mini"] = provider
+    m.core.provider_manager.inst_map["gpt-mini"] = provider
+    selected = await m.client.put(
+        f"/api/v1/chat/sessions/{b}/selection",
+        headers=m.headers,
+        json={"selected_provider": "gpt-mini", "selected_model": "gpt-4o-mini"},
+    )
+    assert selected.json()["status"] == "ok"
+    human = asyncio.create_task(
+        m.client.post(
+            "/api/v1/chat",
+            headers=m.headers,
+            json={"session_id": b, "message": "human starts B"},
+        )
+    )
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        recipient = m.events[0]
+        account = DashboardPrincipal(
+            m.user["account_id"],
+            m.user["resource_owner"],
+            "user",
+            m.user["username"],
+        )
+        contexts = []
+        for sid in (a, c):
+            event = m.adapter.create_event(
+                await m.adapter.convert_message(
+                    (
+                        account.resource_owner,
+                        sid,
+                        {
+                            "message": [{"type": "plain", "text": "source"}],
+                            "message_id": "source-" + sid,
+                            "_dashboard_account": account,
+                        },
+                    )
+                )
+            )
+            contexts.append(
+                SimpleNamespace(context=SimpleNamespace(context=m.context, event=event))
+            )
+        tool = SendChatMessageTool()
+        accepted = None
+        if failure_mode == "provider":
+            m.core.provider_manager.inst_map.pop("gpt-mini")
+            failed = await tool.call(contexts[0], session_id=b, text="failed A message")
+            assert "Chat model is unavailable" in failed
+        elif failure_mode == "full_queue":
+            # Pause only the input listener; B's real model/tool run remains live.
+            listener = webchat_queue_mgr._listener_tasks[b]
+            listener.cancel()
+            await asyncio.gather(listener, return_exceptions=True)
+            queue = webchat_queue_mgr.get_or_create_queue(b)
+            while not queue.full():
+                queue.put_nowait(None)
+            try:
+                assert "queue is full" in await tool.call(
+                    contexts[0], session_id=b, text="failed A message"
+                )
+            finally:
+                while not queue.empty():
+                    queue.get_nowait()
+                webchat_queue_mgr._start_listener_if_needed(b)
+        elif failure_mode == "queue_error":
+            queue = webchat_queue_mgr.get_or_create_queue(b)
+
+            def fail_enqueue(item):
+                raise RuntimeError("injected enqueue failure")
+
+            with monkeypatch.context() as scoped:
+                scoped.setattr(queue, "put_nowait", fail_enqueue)
+                with pytest.raises(RuntimeError, match="injected enqueue failure"):
+                    await tool.call(contexts[0], session_id=b, text="failed A message")
+        else:
+            preparing = asyncio.Event()
+            finish_failure = asyncio.Event()
+            original_selection = m.service.validate_chat_selection
+
+            async def delayed_failure(owner, sid, data, **kwargs):
+                result = await original_selection(owner, sid, data, **kwargs)
+                if data.get("message") == "failed A message":
+                    preparing.set()
+                    await finish_failure.wait()
+                    raise ChatServiceError("delayed settings rejection")
+                return result
+
+            with monkeypatch.context() as scoped:
+                scoped.setattr(m.service, "validate_chat_selection", delayed_failure)
+                pending = asyncio.create_task(
+                    tool.call(contexts[0], session_id=b, text="failed A message")
+                )
+                try:
+                    await asyncio.wait_for(preparing.wait(), 5)
+                    accepted = json.loads(
+                        await tool.call(
+                            contexts[1], session_id=b, text="independent C message"
+                        )
+                    )
+                finally:
+                    finish_failure.set()
+                    failed = await pending
+                assert "delayed settings rejection" in failed
+        failed_chain = contexts[0].context.event.get_extra("_session_message_chain")
+        assert failed_chain.count == 0
+        assert b not in failed_chain.sessions
+        assert recipient.get_extra("_session_message_chain") is (
+            contexts[1].context.event.get_extra("_session_message_chain")
+            if accepted
+            else None
+        )
+
+        m.core.provider_manager.inst_map["gpt-mini"] = provider
+        if accepted is None:
+            accepted = json.loads(
+                await tool.call(
+                    contexts[1],
+                    session_id=b,
+                    text="independent C message",
+                )
+            )
+        assert accepted["status"] == "accepted_follow_up"
+        expect_c = True
+        committed = contexts[1].context.event.get_extra("_session_message_chain")
+        assert committed.count == 1
+        assert recipient.get_extra("_session_message_chain") is committed
+        # A later failure in the same chain cannot undo the accepted C send.
+        m.core.provider_manager.inst_map.pop("gpt-mini")
+        assert "Chat model is unavailable" in await tool.call(
+            contexts[1],
+            session_id=b,
+            text="second C send fails",
+        )
+        assert committed.count == 1
+        assert recipient.get_extra("_session_message_chain") is committed
+        from astrbot.core.pipeline.process_stage.follow_up import _ACTIVE_AGENT_RUNNERS
+
+        runner = _ACTIVE_AGENT_RUNNERS[recipient.unified_msg_origin]
+        await wait_until(lambda: bool(runner._pending_follow_ups))
+        release.set()
+        assert "C message received" in (await asyncio.wait_for(human, 5)).text
+    finally:
+        m.core.provider_manager.inst_map["gpt-mini"] = provider
+        release.set()
+        if not human.done():
+            await asyncio.wait_for(asyncio.shield(human), 5)
+        await asyncio.gather(*m.tasks, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_accepted_chain_survives_announcement_failure(messaging, monkeypatch):
+    """An exception after enqueue cannot turn an accepted delivery into a rollback.
+
+    Args:
+        messaging: Real SQLite and main Agent execution fixture.
+        monkeypatch: Fails the announcement after its normal publication.
+    """
+    m = messaging
+    a, b = m.ids
+
+    async def receive(kwargs):
+        return LLMResponse(role="assistant", completion_text="accepted output saved")
+
+    m.providers["gpt-mini"] = ControlledProvider("gpt-mini", receive)
+    account = DashboardPrincipal(
+        m.user["account_id"], m.user["resource_owner"], "user", m.user["username"]
+    )
+    source = m.adapter.create_event(
+        await m.adapter.convert_message(
+            (
+                account.resource_owner,
+                a,
+                {
+                    "message": [{"type": "plain", "text": "source"}],
+                    "message_id": "source",
+                    "_dashboard_account": account,
+                },
+            )
+        )
+    )
+    original = webchat_queue_mgr.put_system_event
+
+    async def fail_announcement(cid, payload):
+        result = await original(cid, payload)
+        if payload.get("synthetic") and payload.get("type") == "run_started":
+            raise RuntimeError("injected post-acceptance failure")
+        return result
+
+    monkeypatch.setattr(webchat_queue_mgr, "put_system_event", fail_announcement)
+    accepted = await m.service.send_session_message(
+        source, b, "accepted despite announcement failure"
+    )
+    assert accepted["status"] == "accepted"
+    chain = source.get_extra("_session_message_chain")
+    assert chain.count == 1 and b in chain.sessions
+    await wait_until(lambda: not m.service.chat_runs_by_session)
+    assert m.events[0].get_extra("_session_message_chain") is chain
+    history = (
+        await m.client.get(f"/api/v1/chat/sessions/{b}", headers=m.headers)
+    ).json()["data"]["history"]
+    assert "accepted output saved" in json.dumps(history)
+    await m.service.stop_session(account.resource_owner, b)
+    with pytest.raises(ChatServiceError, match="stopped by the user"):
+        await m.service.send_session_message(source, b, "same chain cannot restart")
+    assert chain.count == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stop_during_validation", [False, True])
+async def test_concurrent_admissions_recheck_limit_and_stop(
+    messaging, monkeypatch, stop_during_validation
+):
+    """Overlapping validations still commit one final slot and respect user stop.
+
+    Args:
+        messaging: Real SQLite and main Agent execution fixture.
+        monkeypatch: Pauses both sends inside the ordinary settings resolver.
+        stop_during_validation: Stop a not-yet-accepted recipient while settings wait.
+    """
+    from astrbot.builtin_stars.session_messages.tools import SessionMessageChain
+
+    m = messaging
+    a, b = m.ids
+    c = (
+        await m.db.create_platform_session(creator=m.user["resource_owner"])
+    ).session_id
+    m.ids.append(c)
+
+    async def receive(kwargs):
+        return LLMResponse(role="assistant", completion_text="concurrent input saved")
+
+    m.providers["gpt-mini"] = ControlledProvider("gpt-mini", receive)
+    account = DashboardPrincipal(
+        m.user["account_id"], m.user["resource_owner"], "user", m.user["username"]
+    )
+    source = m.adapter.create_event(
+        await m.adapter.convert_message(
+            (
+                account.resource_owner,
+                a,
+                {
+                    "message": [{"type": "plain", "text": "source"}],
+                    "message_id": "source",
+                    "_dashboard_account": account,
+                },
+            )
+        )
+    )
+    chain = SessionMessageChain(count=7, sessions={a})
+    source.set_extra("_session_message_chain", chain)
+    callback = webchat_queue_mgr._listener_callback
+    await webchat_queue_mgr.clear_listener()
+    prepared = []
+    release = asyncio.Event()
+    original = m.service.validate_chat_selection
+
+    async def pause_selection(owner, sid, data, **kwargs):
+        result = await original(owner, sid, data, **kwargs)
+        prepared.append(sid)
+        await release.wait()
+        return result
+
+    monkeypatch.setattr(m.service, "validate_chat_selection", pause_selection)
+    tasks = [
+        asyncio.create_task(
+            m.service.send_session_message(source, sid, "concurrent input")
+        )
+        for sid in (b, c)
+    ]
+    try:
+        await wait_until(lambda: len(prepared) == 2)
+        if stop_during_validation:
+            await m.service.stop_session(account.resource_owner, b)
+        release.set()
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        accepted = [result for result in results if isinstance(result, dict)]
+        rejected = [
+            result for result in results if isinstance(result, ChatServiceError)
+        ]
+        assert len(accepted) == len(rejected) == 1, results
+        assert chain.count == 8
+        assert (
+            "stopped by the user" in str(rejected[0])
+            if stop_during_validation
+            else "limit reached" in str(rejected[0])
+        )
+        assert chain.sessions == {a, accepted[0]["session_id"]}
+        if stop_during_validation:
+            assert b in chain.stopped
+            with pytest.raises(ChatServiceError, match="stopped by the user"):
+                await m.service.send_session_message(source, b, "same chain retry")
+        assert (
+            sum(webchat_queue_mgr.get_or_create_queue(sid).qsize() for sid in (b, c))
+            == 1
+        )
+        webchat_queue_mgr.set_listener(callback)
+        await wait_until(lambda: not m.service.chat_runs_by_session)
+        history = (
+            await m.client.get(
+                f"/api/v1/chat/sessions/{accepted[0]['session_id']}", headers=m.headers
+            )
+        ).json()["data"]["history"]
+        assert "concurrent input saved" in json.dumps(history)
+    finally:
+        release.set()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        webchat_queue_mgr.set_listener(callback)
+
+
+@pytest.mark.asyncio
 async def test_roundtrip_uses_real_main_tools_target_settings_and_history(messaging):
     """Verify bidirectional tool delivery, recipient choices and saved provenance.
 

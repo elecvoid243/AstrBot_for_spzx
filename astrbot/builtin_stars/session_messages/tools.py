@@ -28,6 +28,8 @@ class AgentMessageSource:
     session_id: str
     display_name: str
     chain: SessionMessageChain
+    # Reject a user stop that occurs while the recipient input is being prepared.
+    target_stop_revision: int = 0
 
     def public_data(self) -> dict:
         """Return credential-free provenance for history and model input.

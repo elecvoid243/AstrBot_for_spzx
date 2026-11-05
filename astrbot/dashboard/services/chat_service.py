@@ -1276,6 +1276,7 @@ class ChatService:
         self.chat_runs: dict[str, ChatRunState] = {}
         self.chat_runs_by_session: dict[str, set[str]] = {}
         self.session_message_chains: WeakSet[SessionMessageChain] = WeakSet()
+        self.session_message_stop_revisions: dict[str, int] = {}
         self.chunked_uploads = ChunkedUploadService(
             Path(get_astrbot_data_path()) / "webchat" / ".chunks"
         )
@@ -3146,6 +3147,7 @@ class ChatService:
             or not text.strip()
         ):
             raise ChatServiceError("A target session ID and nonempty text are required")
+        stop_revision = self.session_message_stop_revisions.get(session_id, 0)
         sessions = await self.list_message_sessions(event)
         if not any(item["session_id"] == session_id for item in sessions):
             raise ChatServiceError(
@@ -3199,20 +3201,27 @@ class ChatService:
                 raise ChatServiceError(
                     "Target is busy with another automatic message chain"
                 )
-            runner_event.set_extra("_session_message_chain", chain)
-        chain.count += 1
-        chain.sessions.add(session_id)
         message_id = str(uuid.uuid4())
         provenance = AgentMessageSource(
-            account, source_id, source.display_name or source_id, chain
+            account,
+            source_id,
+            source.display_name or source_id,
+            chain,
+            target_stop_revision=stop_revision,
         )
         # No sender model/profile/project parameters enter the recipient payload.
-        await self.build_chat_stream(
-            account.resource_owner,
-            {"session_id": session_id, "message": text},
-            agent_source=provenance,
-            message_id=message_id,
-        )
+        try:
+            await self.build_chat_stream(
+                account.resource_owner,
+                {"session_id": session_id, "message": text},
+                agent_source=provenance,
+                message_id=message_id,
+            )
+        finally:
+            # A stop during preparation also forbids this chain's next attempt,
+            # including when preparation itself failed before queue admission.
+            if self.session_message_stop_revisions.get(session_id, 0) != stop_revision:
+                chain.stopped.add(session_id)
         return {
             "status": "accepted_follow_up" if runner is not None else "accepted",
             "session_id": session_id,
@@ -3406,6 +3415,64 @@ class ChatService:
             if saved_user_record is None:
                 saved_user_record = await self.platform_history_mgr.insert(**history)
 
+        recipient_event = None
+        chat_queue = webchat_queue_mgr.get_or_create_queue(webchat_conv_id)
+        if agent_source is not None:
+            from astrbot.core.pipeline.process_stage.follow_up import (
+                _ACTIVE_AGENT_RUNNERS,
+            )
+            from astrbot.core.tools.interactive_choice_registry import registry
+
+            # Recheck after asynchronous preparation. This gate, queue admission
+            # and chain commit below do not yield, so competing sends and stops
+            # cannot change their result between the check and acceptance.
+            chain = agent_source.chain
+            if (
+                agent_source.session_id in chain.stopped
+                or webchat_conv_id in chain.stopped
+                or self.session_message_stop_revisions.get(webchat_conv_id, 0)
+                != agent_source.target_stop_revision
+            ):
+                raise ChatServiceError(
+                    "This automatic message chain was stopped by the user"
+                )
+            if chain.count >= MAX_SESSION_MESSAGE_CHAIN:
+                raise ChatServiceError(
+                    "Automatic message chain limit reached (8 sends)"
+                )
+            if registry.find_pending_by_umo(
+                umo := build_webchat_unified_msg_origin(platform_session)
+            ):
+                raise ChatServiceError(
+                    "Target is waiting for a user answer; Agent messages cannot answer it"
+                )
+            if self.chat_runs_by_session.get(webchat_conv_id):
+                recipient_runner = _ACTIVE_AGENT_RUNNERS.get(umo)
+                recipient_event = getattr(
+                    getattr(
+                        getattr(recipient_runner, "run_context", None), "context", None
+                    ),
+                    "event",
+                    None,
+                )
+                if (
+                    recipient_event is None
+                    or recipient_runner.done()
+                    or recipient_event.get_extra("agent_stop_requested")
+                ):
+                    raise ChatServiceError(
+                        "Target is busy and cannot currently accept a safe follow-up"
+                    )
+                existing = recipient_event.get_extra("_session_message_chain")
+                if existing is not None and existing is not chain:
+                    raise ChatServiceError(
+                        "Target is busy with another automatic message chain"
+                    )
+            if chat_queue.full():
+                raise ChatServiceError(
+                    "Target input queue is full; message was not accepted"
+                )
+
         back_queue = webchat_queue_mgr.get_or_create_back_queue(
             message_id,
             webchat_conv_id,
@@ -3438,56 +3505,80 @@ class ChatService:
         )
 
         try:
-            chat_queue = webchat_queue_mgr.get_or_create_queue(webchat_conv_id)
-            await chat_queue.put(
-                (
-                    username,
-                    webchat_conv_id,
-                    {
-                        "message": message_parts,
-                        "selected_provider": selected_provider,
-                        "selected_model": selected_model,
-                        "thinking_effort": thinking_effort,
-                        "selected_stt_provider": post_data.get("selected_stt_provider"),
-                        "selected_tts_provider": post_data.get("selected_tts_provider"),
-                        "persona_prompt": post_data.get("persona_prompt"),
-                        "show_reasoning": post_data.get("show_reasoning"),
-                        "flags": flags,
-                        "message_id": message_id,
-                        "llm_checkpoint_id": llm_checkpoint_id,
-                        "thread_selected_text": thread_selected_text,
-                        "_dashboard_account": dashboard_account_context.get(),
-                        "_agent_message_source": agent_source,
-                        **(
-                            {
-                                "internal_turn": "session_message",
-                                "_dashboard_account": agent_source.account,
-                            }
-                            if agent_source is not None
-                            else {}
-                        ),
-                        "_api_key_allow_admin_role": False
+            queue_item = (
+                username,
+                webchat_conv_id,
+                {
+                    "message": message_parts,
+                    "selected_provider": selected_provider,
+                    "selected_model": selected_model,
+                    "thinking_effort": thinking_effort,
+                    "selected_stt_provider": post_data.get("selected_stt_provider"),
+                    "selected_tts_provider": post_data.get("selected_tts_provider"),
+                    "persona_prompt": post_data.get("persona_prompt"),
+                    "show_reasoning": post_data.get("show_reasoning"),
+                    "flags": flags,
+                    "message_id": message_id,
+                    "llm_checkpoint_id": llm_checkpoint_id,
+                    "thread_selected_text": thread_selected_text,
+                    "_dashboard_account": dashboard_account_context.get(),
+                    "_agent_message_source": agent_source,
+                    **(
+                        {
+                            "internal_turn": "session_message",
+                            "_dashboard_account": agent_source.account,
+                        }
                         if agent_source is not None
-                        and agent_source.account.role == "user"
-                        else post_data.get("_api_key_allow_admin_role"),
-                    },
-                ),
+                        else {}
+                    ),
+                    "_api_key_allow_admin_role": False
+                    if agent_source is not None and agent_source.account.role == "user"
+                    else post_data.get("_api_key_allow_admin_role"),
+                },
             )
+            if agent_source is not None:
+                chat_queue.put_nowait(queue_item)
+                # Commit only after the real input queue accepts the message.
+                # Later notification failures must never roll this state back.
+                chain.count += 1
+                chain.sessions.add(webchat_conv_id)
+                self.session_message_chains.add(chain)
+                if recipient_event is not None:
+                    recipient_event.set_extra("_session_message_chain", chain)
+            else:
+                await chat_queue.put(queue_item)
         except BaseException:
             run.task.cancel()
             await asyncio.gather(run.task, return_exceptions=True)
+            # A task cancelled before its first step never enters its finally.
+            webchat_queue_mgr.remove_back_queue(message_id)
+            if self.chat_runs.get(message_id) is run:
+                self.chat_runs.pop(message_id)
+            run_ids = self.chat_runs_by_session.get(webchat_conv_id)
+            if run_ids is not None:
+                run_ids.discard(message_id)
+                if not run_ids:
+                    self.chat_runs_by_session.pop(webchat_conv_id, None)
             raise
 
         if agent_source is not None:
-            await webchat_queue_mgr.put_system_event(
-                webchat_conv_id,
-                {
-                    "type": "run_started",
-                    "data": {"run_id": message_id, "input_message": run.input_message},
-                    "message_id": message_id,
-                    "synthetic": True,
-                },
-            )
+            try:
+                await webchat_queue_mgr.put_system_event(
+                    webchat_conv_id,
+                    {
+                        "type": "run_started",
+                        "data": {
+                            "run_id": message_id,
+                            "input_message": run.input_message,
+                        },
+                        "message_id": message_id,
+                        "synthetic": True,
+                    },
+                )
+            except Exception:
+                logger.warning(
+                    "Failed to announce an accepted Agent message run", exc_info=True
+                )
 
         return stream
 
@@ -3495,6 +3586,9 @@ class ChatService:
         session = await self.require_owned_chat_session(username, session_id)
 
         unified_msg_origin = build_webchat_unified_msg_origin(session)
+        self.session_message_stop_revisions[session_id] = (
+            self.session_message_stop_revisions.get(session_id, 0) + 1
+        )
         for chain in self.session_message_chains:
             if session_id in chain.sessions:
                 chain.stopped.add(session_id)

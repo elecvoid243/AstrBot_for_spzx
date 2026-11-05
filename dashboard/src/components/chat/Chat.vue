@@ -198,6 +198,7 @@
         </div>
 
         <ProjectList
+          ref="projectListRef"
           :projects="projects"
           :project-sessions="projectSessionsById"
           :loading-project-ids="loadingProjectSessionIds"
@@ -1076,6 +1077,8 @@
               "
               :session-id="currSessionId || null"
               :current-session="currentSession"
+              :ensure-project-session="ensureProjectSession"
+              @project-changed="syncLoadedProject"
               :reply-to="chatInputReplyTarget"
               :send-shortcut="sendShortcut"
               :show-provider-selector="false"
@@ -1685,6 +1688,7 @@ const messagesContainer = ref<HTMLElement | null>(null);
 const messagesListShell = ref<HTMLElement | null>(null);
 const composerShell = ref<HTMLElement | null>(null);
 const inputRef = ref<InstanceType<typeof ChatInput> | null>(null);
+const projectListRef = ref<InstanceType<typeof ProjectList> | null>(null);
 // Per-session viewport state (2026-09-15, elecvoid243): every conversation
 // renders into the same `.messages-panel` node, so the browser preserves its
 // scrollTop across a session switch and the target silently opens at the
@@ -3434,10 +3438,16 @@ async function startNewChat() {
   await focusChatInput();
 }
 
-function openCreateProjectDialog() {
-  editingProject.value = null;
-  projectDialogError.value = "";
-  projectDialogOpen.value = true;
+async function openCreateProjectDialog() {
+  if (isOrdinaryUser.value) {
+    editingProject.value = null;
+    projectDialogError.value = "";
+    projectDialogOpen.value = true;
+    return;
+  }
+  showChatWorkspace();
+  await nextTick();
+  inputRef.value?.openLoadDialog();
 }
 
 function openEditProjectDialog(project: Project) {
@@ -4260,6 +4270,46 @@ async function deleteProjectSession(
     await loadProjectSessions(projectId);
   } else {
     await loadProjectSessions();
+  }
+}
+
+async function ensureProjectSession() {
+  if (!currSessionId.value) selectedProjectId.value = null;
+  return currSessionId.value || await newSession();
+}
+
+async function syncLoadedProject(sessionId: string, path: string | null, noAgentsmd = false, noCodegraph = false) {
+  const previousId = sessionProjects[sessionId]?.project_id;
+  try {
+    if (!path) {
+      if (!sessionId || currSessionId.value === sessionId) selectedProjectId.value = null;
+      if (sessionId && previousId) {
+        if (!(await removeSessionFromProject(sessionId))) throw new Error("Failed to remove session from project");
+        delete sessionProjects[sessionId];
+      }
+    } else {
+      let project = projects.value.find((item) => {
+        const existingPath = item.workspace_type === "project" ? item.resolved_workspace_path : item.workspace_path;
+        return existingPath && projectRelativePathStrict(existingPath, path) === "";
+      });
+      if (!project) {
+        const title = path.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || path;
+        const created = await createProject(title, "📁", "", "custom", path, noAgentsmd, noCodegraph);
+        project = projects.value.find((item) => item.project_id === created.project_id);
+      }
+      if (!project) throw new Error("Failed to find created project");
+      if (previousId !== project.project_id) {
+        if (!(await addSessionToProject(sessionId, project.project_id))) throw new Error("Failed to add session to project");
+        sessionProjects[sessionId] = { project_id: project.project_id, title: project.title, emoji: project.emoji };
+      }
+      if (currSessionId.value === sessionId) selectedProjectId.value = null;
+      projectListRef.value?.setProjectExpanded(project.project_id, true);
+      await loadProjectSessions(project.project_id);
+    }
+    await Promise.all([getSessions(), ...(previousId ? [loadProjectSessions(previousId)] : [])]);
+  } catch (error) {
+    console.error("Failed to sync project association:", error);
+    toast.error(tm("project.moveFailed"));
   }
 }
 

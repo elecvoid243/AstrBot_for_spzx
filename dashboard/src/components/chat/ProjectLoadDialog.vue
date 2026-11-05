@@ -305,18 +305,6 @@ async function onConfirm(): Promise<void> {
   dialogOpen.value = false;
 }
 
-/**
- * Emit the ``/project unload`` command text and close the dialog.
- *
- * No confirmation prompt by design — spcode's unload is idempotent and
- * the user can simply re-load. Mirrors the no-confirm behavior of the
- * load action above.
- */
-function onUnload(): void {
-  const prefix = props.wakePrefixes[0] || "/";
-  emit("submit", { mode: "unload", legacyText: `${prefix}project unload` });
-  dialogOpen.value = false;
-}
 </script>
 
 <template>
@@ -326,18 +314,6 @@ function onUnload(): void {
         {{ dialogTitle }}
       </v-card-title>
       <v-card-text>
-        <!-- Unload current project (separate from the load form, above a divider) -->
-        <v-btn
-          v-if="props.commandMode === 'project'"
-          block
-          variant="outlined"
-          prepend-icon="mdi-folder-remove-outline"
-          class="mb-2"
-          @click="onUnload"
-        >
-          {{ tm("spcodeProjectLoad.dialog.unloadButton") }}
-        </v-btn>
-        <v-divider v-if="props.commandMode === 'project'" class="my-4" />
         <v-form @submit.prevent="onConfirm">
           <!--
             Codegraph 管理双子页(2026-09-08):"初始化 / 更新" 对指定目录

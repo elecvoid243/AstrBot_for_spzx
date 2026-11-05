@@ -10,8 +10,6 @@
                     @keyup.enter="handleSave" />
                 <v-textarea v-model="form.description" :label="tm('project.description')" variant="outlined" hide-details rows="3" />
                 <v-divider class="my-4" />
-                <v-select v-model="form.workspace_type" :items="workspaceTypeItems" item-title="label" item-value="value"
-                    :label="tm('project.workspace.type')" variant="outlined" hide-details class="mb-3" />
                 <v-text-field
                     v-if="form.workspace_type === 'custom'"
                     v-model="form.workspace_path"
@@ -197,7 +195,7 @@ const form = ref<ProjectFormData>({
     emoji: '📁',
     title: '',
     description: '',
-    workspace_type: 'project',
+    workspace_type: 'custom',
     workspace_path: '',
     spcode_no_agentsmd: false,
     spcode_no_codegraph: false,
@@ -222,11 +220,6 @@ const loadCodegraph = computed({
         form.value.spcode_no_codegraph = !value;
     },
 });
-const workspaceTypeItems = computed(() => [
-    { label: tm('project.workspace.project'), value: 'project' },
-    { label: tm('project.workspace.session'), value: 'session' },
-    { label: tm('project.workspace.custom'), value: 'custom' }
-]);
 const canSave = computed(() => {
     if (!form.value.title.trim()) return false;
     // Only the custom workspace mode takes a user-supplied path; session
@@ -257,7 +250,7 @@ watch(() => props.modelValue, (newVal) => {
                 emoji: '📁',
                 title: '',
                 description: '',
-                workspace_type: 'project',
+                workspace_type: 'custom',
                 workspace_path: '',
                 spcode_no_agentsmd: false,
                 spcode_no_codegraph: false,

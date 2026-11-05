@@ -120,7 +120,6 @@ async function fillAndSave(
 describe("ProjectDialog spcode load steps", () => {
   it("keeps both load steps on by default and maps them to false no_* flags", async () => {
     const wrapper = await mountDialog();
-    await wrapper.get("select").setValue("custom");
 
     expect(chipInputs(wrapper).map((c) => c.element.checked)).toEqual([
       true,
@@ -140,7 +139,6 @@ describe("ProjectDialog spcode load steps", () => {
 
   it("maps an unchecked chip to the corresponding no_* flag", async () => {
     const wrapper = await mountDialog();
-    await wrapper.get("select").setValue("custom");
     await chipInputs(wrapper)[0].setValue(false);
 
     const payload = await fillAndSave(wrapper);
@@ -173,7 +171,6 @@ describe("ProjectDialog spcode load steps", () => {
     addToPathHistory("C:/recent/one");
 
     const wrapper = await mountDialog();
-    await wrapper.get("select").setValue("custom");
     await nextTick();
 
     const recentRow = wrapper

@@ -836,6 +836,7 @@
       "failed": "Load failed",
       "failedDetailTitle": "Failure details",
       "projectMenuTitle": "Project",
+      "workWithoutProject": "Work without a project",
       "manageProject": "Switch or reload project…",
       "loadProject": "Load project…",
       "sendLocked": "Project is loading — sending will unlock when it finishes",

@@ -666,6 +666,8 @@ function setProjectExpanded(projectId: string, expanded: boolean) {
   emit("toggleProject", projectId, expanded);
 }
 
+defineExpose({ setProjectExpanded });
+
 function handleProjectClick(project: Project) {
   const nextExpanded = !isProjectExpanded(project.project_id);
   setProjectExpanded(project.project_id, nextExpanded);

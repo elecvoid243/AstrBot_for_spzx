@@ -46,6 +46,7 @@ const { progress } = useSpcodeOperationProgress();
 const emit = defineEmits<{
   (e: "open-load-dialog"): void;
   (e: "open-codegraph-dialog"): void;
+  (e: "work-without-project"): void;
 }>();
 
 // Only project load/unload operations drive THIS chip. codegraph_set
@@ -606,6 +607,11 @@ function handleManageProject(): void {
                   ? tm("spcodeProjectLoad.indicator.manageProject")
                   : tm("spcodeProjectLoad.indicator.loadProject")
               }}</span>
+            </button>
+
+            <button v-if="!props.consumerOnly" type="button" class="sp-menu-row" @click="menuOpen = false; emit('work-without-project')">
+              <v-icon size="14" class="sp-menu-row__icon">mdi-close</v-icon>
+              <span class="sp-menu-row__label">{{ tm("spcodeProjectLoad.indicator.workWithoutProject") }}</span>
             </button>
 
             <!-- ── LLM 工作树（仅已加载项目时） ── -->

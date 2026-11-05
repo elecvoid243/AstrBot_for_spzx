@@ -836,6 +836,7 @@
       "failed": "加载失败",
       "failedDetailTitle": "失败详情",
       "projectMenuTitle": "项目",
+      "workWithoutProject": "不在项目中工作",
       "manageProject": "切换或重新加载项目…",
       "loadProject": "加载项目…",
       "sendLocked": "项目加载中，完成后可发送",

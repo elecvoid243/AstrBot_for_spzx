@@ -17,6 +17,7 @@
         <SpcodeProjectIndicator
           :consumer-only="isOrdinaryUser"
           @open-load-dialog="openLoadDialog"
+          @work-without-project="handleProjectLoadSubmit({ mode: 'unload', legacyText: `${wakePrefixes[0] || '/'}project unload` })"
           @open-codegraph-dialog="openCodegraphLoadDialog"
         />
       </div>
@@ -976,6 +977,7 @@ interface Props {
    */
   persistConfigSelection?: boolean;
   currentSession?: Session | null;
+  ensureProjectSession?: () => Promise<string>;
   configId?: string | null;
   replyTo?: ReplyInfo | null;
   sendShortcut?: "enter" | "shift_enter";
@@ -1027,6 +1029,7 @@ const emit = defineEmits<{
   // so history shows what was queued.
   send: [skillNames: string[]];
   "send-command": [command: string];
+  "project-changed": [sessionId: string, path: string | null, noAgentsmd?: boolean, noCodegraph?: boolean];
   stop: [];
   toggleStreaming: [];
   removeImage: [index: number];
@@ -2132,7 +2135,11 @@ async function handleProjectLoadSubmit(
   payload: ProjectLoadSubmitPayload,
 ): Promise<void> {
   const session = props.currentSession;
-  if (!session) {
+  if (!session && !props.sessionId && payload.mode === "unload") {
+    emit("project-changed", "", null);
+    return;
+  }
+  if (!session && (!props.ensureProjectSession || payload.mode === "codegraph" || payload.mode === "codegraph-init")) {
     if (payload.mode === "codegraph" || payload.mode === "codegraph-init") {
       applyOptimisticCodegraphStatus(payload.legacyText);
     } else {
@@ -2142,10 +2149,14 @@ async function handleProjectLoadSubmit(
     sendMessage();
     return;
   }
-  const umo = buildWebchatUmoDetails(
-    session.session_id,
-    Boolean(session.is_group),
-  ).umo;
+  let sessionId: string;
+  try {
+    sessionId = session?.session_id ?? props.sessionId ?? await props.ensureProjectSession!();
+  } catch (err) {
+    toastStore.add({ message: String((err as Error)?.message ?? err), color: "error" });
+    return;
+  }
+  const umo = buildWebchatUmoDetails(sessionId, Boolean(session?.is_group)).umo;
   // codegraph init 后端最长 300s + --force 重试 180s,轮询预算单独放大。
   operationProgress.startPolling(
     umo,
@@ -2153,9 +2164,12 @@ async function handleProjectLoadSubmit(
   );
   try {
     if (payload.mode === "unload") {
-      await silentOps.silentUnload(umo);
+      if (spcodeStatus.status.value.umo !== umo || spcodeStatus.status.value.loaded) {
+        await silentOps.silentUnload(umo);
+      }
       // 2026-09-01: manual unload invalidates the "already loaded" tag.
-      clearSessionLoadedTag(session.session_id);
+      clearSessionLoadedTag(sessionId);
+      emit("project-changed", sessionId, null);
     } else if (payload.mode === "codegraph-init") {
       await silentOps.silentCodegraphInit(umo, payload.path!);
       await codegraphStatus.refresh();
@@ -2163,7 +2177,7 @@ async function handleProjectLoadSubmit(
       await silentOps.silentCodegraphSet(umo, payload.path!);
       await codegraphStatus.refresh();
     } else {
-      await silentOps.silentLoadDirectory({
+      const result = await silentOps.silentLoadDirectory({
         umo,
         directory: payload.path!,
         noAgentsmd: payload.noAgentsmd,
@@ -2175,7 +2189,10 @@ async function handleProjectLoadSubmit(
       // 2026-09-01: manual load may point at a directory other than the
       // project binding; drop the tag so the next auto-load re-evaluates
       // against the binding (the backend idempotent check keeps it cheap).
-      clearSessionLoadedTag(session.session_id);
+      clearSessionLoadedTag(sessionId);
+      if (result.loaded) {
+        emit("project-changed", sessionId, result.directory || payload.path!, payload.noAgentsmd, payload.noCodegraph);
+      }
     }
   } catch (err) {
     // The chip's failed state + detail popover come from the progress ref;
@@ -2658,6 +2675,7 @@ defineExpose({
   getThinkingEffort,
   prepareConfig: chatConfigSelection.prepareSend,
   focusInput,
+  openLoadDialog,
 });
 </script>
 

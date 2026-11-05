@@ -876,6 +876,17 @@ export const chatApi = {
   setSessionConfig(sessionId: string, configId: string) {
     return typed<any>(openApiV1.updateChatSessionConfig({ path: { session_id: sessionId }, body: { config_id: configId } }));
   },
+  getSessionSelection(sessionId: string) {
+    return typed<any>(openApiV1.getChatSessionSelection({ path: { session_id: sessionId } }));
+  },
+  setSessionSelection(sessionId: string, selection: {
+    selected_provider: string | null;
+    selected_model: string | null;
+    thinking_effort: string | null;
+    effort_preset: string | null;
+  }) {
+    return typed<any>(openApiV1.updateChatSessionSelection({ path: { session_id: sessionId }, body: selection }));
+  },
   getUiSettings() {
     return typed<any>(openApiV1.getChatUiSettings());
   },

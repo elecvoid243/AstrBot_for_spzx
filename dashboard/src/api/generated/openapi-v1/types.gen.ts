@@ -511,6 +511,13 @@ export type ChatSessionPatchRequest = {
     starred?: boolean;
 };
 
+export type ChatSessionSelectionRequest = {
+    selected_provider?: (string) | null;
+    selected_model?: (string) | null;
+    thinking_effort?: (string) | null;
+    effort_preset?: (string) | null;
+};
+
 export type ChatSubagentFollowUpRequest = {
     session_id: string;
     subagent_run_id: string;
@@ -2833,6 +2840,27 @@ export type UpdateChatSessionConfigData = {
 export type UpdateChatSessionConfigResponse = (SuccessEnvelope);
 
 export type UpdateChatSessionConfigError = unknown;
+
+export type GetChatSessionSelectionData = {
+    path: {
+        session_id: string;
+    };
+};
+
+export type GetChatSessionSelectionResponse = (SuccessEnvelope);
+
+export type GetChatSessionSelectionError = unknown;
+
+export type UpdateChatSessionSelectionData = {
+    body: ChatSessionSelectionRequest;
+    path: {
+        session_id: string;
+    };
+};
+
+export type UpdateChatSessionSelectionResponse = (SuccessEnvelope);
+
+export type UpdateChatSessionSelectionError = unknown;
 
 export type GetChatUiSettingsResponse = (SuccessEnvelope);
 

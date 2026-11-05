@@ -633,8 +633,8 @@
               :slider="effortSlider"
               :preset-name="activeEffortPreset?.name ?? ''"
               :presets="effortSettings.presets"
-              :active-preset="effortSettings.active_preset"
-              @select-preset="effortSettings.active_preset = $event"
+              :active-preset="activeEffortPreset?.id || ''"
+              @select-preset="selectEffortPreset"
               :can-edit="chatUiCanEdit"
               @edit="effortLevelsDialogOpen = true"
             />
@@ -1101,13 +1101,9 @@ const providerSelectorAvailable = ref(true);
 const isReplyClosing = ref(false);
 const isDragging = ref(false);
 
-// Thinking effort (reasoning intensity) for outgoing requests. The presets
-// live in cmd_config.json (`chatui.thinking_effort`, 2026-10-08): one instance
-// shares one definition across browsers instead of every browser keeping its
-// own localStorage copy. The chip renders the active preset — a level list,
-// or a free numeric track for models whose reasoning_effort takes any number —
-// and `thinkingEffort` is the current selection that each chat request
-// carries as `thinking_effort`.
+// Preset definitions remain shared. Ordinary conversations store their own
+// provider-specific value and preset on the server; other composers retain
+// their existing local/account selection behavior.
 const effortSettings = ref<ThinkingEffortSettings>({
   active_preset: "",
   value: DEFAULT_EFFORT_VALUE,
@@ -1124,7 +1120,14 @@ const defaultThinkingEffortLevels = computed<ThinkingEffortLevel[]>(() => [
   { name: tm("input.thinkingEffortOptions.max"), value: "max" },
 ]);
 
-const activeEffortPreset = computed(() => findActivePreset(effortSettings.value));
+const providerModelSelection = useProviderModelSelection();
+const sessionEffortEnabled = computed(() => props.persistConfigSelection !== false);
+const activeEffortPreset = computed(() => findActivePreset({
+  ...effortSettings.value,
+  active_preset: sessionEffortEnabled.value
+    ? providerModelSelection.effortPreset.value ?? providerModelSelection.defaultEffortPreset.value
+    : effortSettings.value.active_preset,
+}));
 
 // An empty preset list is a legitimate state (the user deleted them all):
 // the row falls back to the localized built-in levels.
@@ -1140,7 +1143,17 @@ const effortSlider = computed<ThinkingEffortSliderConfig>(
   () => activeEffortPreset.value?.slider ?? DEFAULT_THINKING_EFFORT_SLIDER,
 );
 
-const thinkingEffort = ref<string>(DEFAULT_EFFORT_VALUE);
+const localThinkingEffort = ref<string>(DEFAULT_EFFORT_VALUE);
+const thinkingEffort = computed({
+  get: () => sessionEffortEnabled.value
+    ? providerModelSelection.thinkingEffort.value ?? providerModelSelection.defaultThinkingEffort.value
+    : localThinkingEffort.value,
+  set: (value: string) => {
+    if (sessionEffortEnabled.value) {
+      void providerModelSelection.setThinkingEffort(value, activeEffortPreset.value?.id || "");
+    } else localThinkingEffort.value = value;
+  },
+});
 const savedEffortPreset = ref("");
 
 /** Load the input-row settings once; a failure keeps the built-in defaults. */
@@ -1150,9 +1163,13 @@ async function loadChatUiSettings() {
     const data = response.data?.data ?? {};
     effortSettings.value = normalizeEffortSettings(data.thinking_effort);
     savedEffortPreset.value = effortSettings.value.active_preset;
+    if (!props.sessionId && sessionEffortEnabled.value) {
+      providerModelSelection.defaultThinkingEffort.value = effortSettings.value.value;
+      providerModelSelection.defaultEffortPreset.value = effortSettings.value.active_preset;
+    }
     quickMessageItems.value = normalizeQuickMessages(data.quick_messages);
     chatUiCanEdit.value = Boolean(data.can_edit);
-    thinkingEffort.value = settleEffortValue(
+    localThinkingEffort.value = settleEffortValue(
       effortSettings.value.value,
       activeEffortPreset.value,
     );
@@ -1183,6 +1200,7 @@ async function persistEffortValue(value: string, activePreset: string) {
 // from a fresh load and from the server-normalized value written back after
 // a save.
 watch([thinkingEffort, () => effortSettings.value.active_preset], ([value, activePreset]) => {
+  if (sessionEffortEnabled.value) return;
   if (value === effortSettings.value.value && activePreset === savedEffortPreset.value) return;
   if (effortValueTimer !== null) window.clearTimeout(effortValueTimer);
   effortValueTimer = window.setTimeout(() => {
@@ -1190,13 +1208,18 @@ watch([thinkingEffort, () => effortSettings.value.active_preset], ([value, activ
   }, 500);
 });
 
-// Keep the selection inside the active preset after a preset switch or a
-// fresh load: a level may have been removed, or a numeric value may not fit
-// the new track.
-watch(activeEffortPreset, (preset) => {
-  const settled = settleEffortValue(thinkingEffort.value, preset);
-  if (settled !== thinkingEffort.value) thinkingEffort.value = settled;
-});
+// Only an explicit preset switch settles the value. Loading a saved free-form
+// provider value must never rewrite it just because a preset has changed.
+function selectEffortPreset(id: string) {
+  const preset = effortSettings.value.presets.find((item) => item.id === id) ?? null;
+  const value = settleEffortValue(thinkingEffort.value, preset);
+  if (sessionEffortEnabled.value) {
+    void providerModelSelection.setThinkingEffort(value, id);
+  } else {
+    effortSettings.value.active_preset = id;
+    localThinkingEffort.value = value;
+  }
+}
 
 const effortLevelsDialogOpen = ref(false);
 const quickMessagesDialogOpen = ref(false);
@@ -2454,13 +2477,11 @@ chatConfigSelection.bindContext(
 );
 onBeforeUnmount(chatConfigSelection.onConfigChanged(handleConfigChange));
 
-const providerModelSelection = useProviderModelSelection();
-
 function getCurrentSelection() {
   if ((!isOrdinaryUser.value && !props.showProviderSelector) || !providerSelectorAvailable.value) {
     return null;
   }
-  // Header and composer selectors share the account's current model choice.
+  // Header and ordinary composer share the active session model choice.
   return {
     providerId: providerModelSelection.selectedProviderId.value,
     modelName: providerModelSelection.selectedModelName.value,
@@ -2673,7 +2694,11 @@ onBeforeUnmount(() => {
 defineExpose({
   getCurrentSelection,
   getThinkingEffort,
-  prepareConfig: chatConfigSelection.prepareSend,
+  prepareConfig: async () => {
+    const configId = await chatConfigSelection.prepareSend();
+    if (sessionEffortEnabled.value) await providerModelSelection.prepareSend();
+    return configId;
+  },
   focusInput,
   openLoadDialog,
 });

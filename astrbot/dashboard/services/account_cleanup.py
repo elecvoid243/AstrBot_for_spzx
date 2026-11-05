@@ -228,6 +228,11 @@ async def delete_account_data(app, account: DashboardAccount) -> None:
             .scalars()
             .all()
         )
+        preference_filter = or_(
+            preference_filter,
+            (Preference.scope == "webchat_session")
+            & col(Preference.scope_id).in_([item.session_id for item in sessions]),
+        )
         preferences = list(
             (
                 await session.execute(

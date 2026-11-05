@@ -33,6 +33,7 @@ def chat_service_instance(monkeypatch, tmp_path):
         conversation_manager=Mock(),
         platform_message_history_manager=platform_history_mgr,
         umop_config_router=Mock(),
+        astrbot_config_mgr=SimpleNamespace(confs={"default": {}}),
     )
     db = Mock()
     db.get_platform_session_by_id = AsyncMock(
@@ -66,7 +67,10 @@ async def test_chat_stream_creates_missing_webchat_platform_session(
 ):
     service = chat_service_instance
     session_id = "missing-platform-session"
-    service.db.get_platform_session_by_id.return_value = None
+    service.db.get_platform_session_by_id.side_effect = [
+        None,
+        SimpleNamespace(session_id=session_id, creator="alice", platform_id="webchat"),
+    ]
 
     stream = await service.build_chat_stream(
         "alice",
@@ -75,7 +79,7 @@ async def test_chat_stream_creates_missing_webchat_platform_session(
     run = next(iter(service.chat_runs.values()))
 
     try:
-        service.db.get_platform_session_by_id.assert_awaited_once_with(session_id)
+        assert service.db.get_platform_session_by_id.await_count == 2
         service.db.create_platform_session.assert_awaited_once_with(
             creator="alice",
             platform_id="webchat",

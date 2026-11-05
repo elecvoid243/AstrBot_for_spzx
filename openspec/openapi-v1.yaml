@@ -2245,6 +2245,43 @@ paths:
         "200":
           $ref: "#/components/responses/Ok"
 
+  /api/v1/chat/sessions/{session_id}/selection:
+    get:
+      tags: [Chat]
+      summary: Read model and thinking preferences for an owned ordinary session
+      operationId: getChatSessionSelection
+      x-astrbot-scope: chat
+      parameters:
+        - in: path
+          name: session_id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          $ref: "#/components/responses/Ok"
+    put:
+      tags: [Chat]
+      summary: Replace model and thinking preferences for an owned ordinary session
+      description: Null values clear overrides and restore existing provider/config defaults. One-turn send parameters never change this preference.
+      operationId: updateChatSessionSelection
+      x-astrbot-scope: chat
+      parameters:
+        - in: path
+          name: session_id
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChatSessionSelectionRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/Ok"
+
   /api/v1/chat/ui-settings:
     get:
       tags: [Chat]
@@ -8933,6 +8970,23 @@ components:
           type: string
           description: Internal WebUI side-thread context.
       additionalProperties: false
+
+    ChatSessionSelectionRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        selected_provider:
+          type: string
+          nullable: true
+        selected_model:
+          type: string
+          nullable: true
+        thinking_effort:
+          type: string
+          nullable: true
+        effort_preset:
+          type: string
+          nullable: true
 
     ChatSessionConfigRequest:
       type: object

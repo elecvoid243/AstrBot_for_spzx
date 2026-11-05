@@ -153,6 +153,8 @@ USER_OPERATIONS = (
         "chat_configs",
         "chat_models",
         "get_chat_session_config",
+        "get_chat_session_selection",
+        "update_chat_session_selection",
         "update_chat_session_config",
         "chat_ui_settings",
         "update_chat_ui_effort_value",

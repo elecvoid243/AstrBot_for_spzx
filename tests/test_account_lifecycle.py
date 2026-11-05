@@ -180,6 +180,12 @@ async def test_delete_cleans_all_owned_chat_data_and_retains_foreign_resources(
                 ),
                 SessionProjectRelation(session_id=sid, project_id=f"project-{index}"),
                 Preference(
+                    scope="webchat_session",
+                    scope_id=sid,
+                    key="model_selection",
+                    value={"val": {"thinking_effort": "xhigh"}},
+                ),
+                Preference(
                     scope="dashboard_account",
                     scope_id=creator,
                     key="quick_messages",
@@ -340,7 +346,9 @@ async def test_delete_cleans_all_owned_chat_data_and_retains_foreign_resources(
         ]:
             assert len((await session.execute(select(model))).scalars().all()) == 2
         preferences = (await session.execute(select(Preference))).scalars().all()
-        assert not any(row.scope_id in [owner, origins[0]] for row in preferences)
+        assert not any(
+            row.scope_id in [owner, origins[0], "lifecycle-0"] for row in preferences
+        )
     assert (
         await client.get(
             "/api/v1/auth/session",

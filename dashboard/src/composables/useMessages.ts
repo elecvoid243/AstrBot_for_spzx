@@ -1168,7 +1168,7 @@ export function useMessages(options: UseMessagesOptions) {
     enableStreaming = true,
     selectedProvider = "",
     selectedModel = "",
-    thinkingEffort = "auto",
+    thinkingEffort,
     botRecord,
     userRecord,
     skipUserHistory = false,
@@ -1253,7 +1253,7 @@ export function useMessages(options: UseMessagesOptions) {
     enableStreaming = true,
     selectedProvider = "",
     selectedModel = "",
-    thinkingEffort = "auto",
+    thinkingEffort,
   }: ContinueEditedMessageOptions) {
     if (!sessionId) return;
     const parts = messageParts(sourceRecord).map(stripUploadOnlyFields);
@@ -1302,7 +1302,7 @@ export function useMessages(options: UseMessagesOptions) {
     selectedProvider = "",
     selectedModel = "",
     enableStreaming = true,
-    thinkingEffort = "auto",
+    thinkingEffort: ThinkingEffort | undefined = undefined,
     configId?: string,
   ) {
     if (!sessionId || botRecord.id == null) return;
@@ -1483,7 +1483,7 @@ export function useMessages(options: UseMessagesOptions) {
     enableStreaming: boolean,
     selectedProvider: string,
     selectedModel: string,
-    thinkingEffort = "auto",
+    thinkingEffort: ThinkingEffort | undefined = undefined,
     skipUserHistory = false,
     llmCheckpointId: string | null = null,
     configId?: string,
@@ -1761,7 +1761,7 @@ export function useMessages(options: UseMessagesOptions) {
     enableStreaming: boolean,
     selectedProvider: string,
     selectedModel: string,
-    thinkingEffort = "auto",
+    thinkingEffort: ThinkingEffort | undefined = undefined,
     configId?: string,
   ) {
     const ws = getOrCreateChatWebSocket(sessionId);

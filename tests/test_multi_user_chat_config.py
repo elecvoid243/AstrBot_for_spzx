@@ -46,6 +46,7 @@ async def test_two_users_consume_profiles_and_effort_without_shared_writes(
     configured_chat,
 ):
     client, server, core, db, admin, users = configured_chat
+    core.provider_manager.inst_map["gpt-mini"] = object()
     config_before = copy.deepcopy(dict(core.astrbot_config))
     sessions = []
     for index, user in enumerate(users):

@@ -1,131 +1,191 @@
-import { ref, watch, type Ref } from "vue";
-import { accountSessionRevision } from "@/utils/accountSession";
+import { onScopeDispose, ref, watch, type Ref } from "vue";
+import { chatApi } from "@/api/v1";
+import {
+  accountSessionRevision,
+  assertCurrentAccount,
+} from "@/utils/accountSession";
+import { useToast } from "@/utils/toast";
 
-function storageKey(key: string): string {
-  const accountId = localStorage.getItem("account_id");
-  return accountId ? `${key}:${accountId}` : key;
-}
-
-const SELECTED_PROVIDER_KEY = "selectedProvider";
-const SELECTED_PROVIDER_MODEL_KEY = "selectedProviderModel";
-const SESSION_PROVIDER_STORAGE_PREFIX = "chat.sessionProvider.";
-
-// Module-level state so every ProviderModelMenu instance (header, input)
-// shares the same selection.
+// The header and ordinary composer share the active session's server state.
 const selectedProviderId = ref("");
 const selectedModelName = ref("");
-let syncedFromStorage = false;
+const thinkingEffort = ref<string | null>(null);
+const effortPreset = ref<string | null>(null);
+const loading = ref(false);
+const defaultThinkingEffort = ref("auto");
+const defaultEffortPreset = ref("");
+let activeSession = "";
+let generation = 0;
+let mutation = 0;
+let ready = true;
+let initialized: Promise<void> = Promise.resolve();
+let writes: Promise<void> = Promise.resolve();
+
 window.addEventListener?.("astrbot:account-changed", () => {
-  syncedFromStorage = false;
+  generation++;
+  activeSession = "";
+  ready = false;
   selectedProviderId.value = "";
   selectedModelName.value = "";
+  thinkingEffort.value = null;
+  effortPreset.value = null;
+  defaultThinkingEffort.value = "auto";
+  defaultEffortPreset.value = "";
 });
 
-function syncFromStorage() {
-  if (syncedFromStorage || typeof window === "undefined") return;
-  syncedFromStorage = true;
-  try {
-    selectedProviderId.value =
-      localStorage.getItem(storageKey(SELECTED_PROVIDER_KEY)) || "";
-    selectedModelName.value =
-      localStorage.getItem(storageKey(SELECTED_PROVIDER_MODEL_KEY)) || "";
-  } catch {
-    // Storage restrictions must not prevent opening the chat.
-  }
-}
-
-/**
- * Share model selection, optionally remembering it for the active chat.
+/** Share server-owned ordinary-session model choices with both selectors.
  *
  * Args:
- *   sessionId: Active session ref owned by Chat.vue. Other consumers omit it.
+ *   sessionId: Active ordinary session, bound once by Chat.vue.
  *
  * Returns:
- *   Shared model refs, selection setter, and explicit session persistence.
+ *   Shared choices, explicit setters and a send guard that awaits persistence.
  */
 export function useProviderModelSelection(sessionId?: Ref<string>) {
-  syncFromStorage();
-  const revision = accountSessionRevision.value;
-
-  function setSelection(providerId: string, modelName = "") {
-    selectedProviderId.value = providerId;
-    selectedModelName.value = modelName;
-    try {
-      localStorage.setItem(storageKey(SELECTED_PROVIDER_KEY), providerId);
-      localStorage.setItem(storageKey(SELECTED_PROVIDER_MODEL_KEY), modelName);
-    } catch {
-      // Selection persistence must not block the UI.
-    }
-  }
-
-  function writeSessionProviderSelection(
-    targetSessionId: string,
-    selection: { providerId?: string; modelName?: string } | null,
-  ) {
-    if (
-      revision !== accountSessionRevision.value ||
-      !targetSessionId ||
-      !selection?.providerId
-    )
-      return;
-    try {
-      localStorage.setItem(
-        storageKey(SESSION_PROVIDER_STORAGE_PREFIX + targetSessionId),
-        JSON.stringify({
-          providerId: selection.providerId,
-          modelName: selection.modelName || "",
-        }),
-      );
-    } catch {
-      // Session model persistence must not block chat flows.
-    }
-  }
-
   if (sessionId) {
     watch(
       sessionId,
       (id) => {
-        if (!id) return;
-        try {
-          const raw = localStorage.getItem(
-            storageKey(SESSION_PROVIDER_STORAGE_PREFIX + id),
-          );
-          if (!raw) return;
-          const parsed = JSON.parse(raw);
-          if (
-            parsed &&
-            typeof parsed.providerId === "string" &&
-            parsed.providerId
-          ) {
-            setSelection(
-              parsed.providerId,
-              typeof parsed.modelName === "string" ? parsed.modelName : "",
-            );
+        const current = ++generation;
+        const revision = accountSessionRevision.value;
+        activeSession = id;
+        ready = !id;
+        loading.value = Boolean(id);
+        selectedProviderId.value = "";
+        selectedModelName.value = "";
+        thinkingEffort.value = null;
+        effortPreset.value = null;
+        defaultThinkingEffort.value = "auto";
+        defaultEffortPreset.value = "";
+        initialized = (async () => {
+          if (!id) return;
+          try {
+            // A quick switch back must read after any captured session write.
+            await writes;
+            assertCurrentAccount(revision);
+            if (current !== generation) return;
+            const response = await chatApi.getSessionSelection(id);
+            assertCurrentAccount(revision);
+            if (current !== generation) return;
+            if (response.data.status !== "ok")
+              throw new Error(
+                response.data.message || "Settings are unavailable",
+              );
+            const selection = response.data.data;
+            selectedProviderId.value = selection.selected_provider || "";
+            selectedModelName.value = selection.selected_model || "";
+            thinkingEffort.value = selection.thinking_effort;
+            effortPreset.value = selection.effort_preset;
+            defaultThinkingEffort.value =
+              selection.default_thinking_effort || "auto";
+            defaultEffortPreset.value = selection.default_effort_preset || "";
+            ready = true;
+          } catch (error: any) {
+            if (
+              current === generation &&
+              revision === accountSessionRevision.value
+            )
+              useToast().error(
+                `Failed to load session model settings: ${error.message}`,
+              );
+          } finally {
+            if (current === generation) loading.value = false;
           }
-        } catch {
-          // Ignore corrupted entries and keep the current selection.
-        }
+        })();
       },
-      // Restore before async message loading or a same-tick send can run.
       { immediate: true, flush: "sync" },
     );
-    watch(
-      [selectedProviderId, selectedModelName],
-      ([providerId, modelName]) => {
-        writeSessionProviderSelection(sessionId.value, {
-          providerId,
-          modelName,
-        });
-      },
-      // Attribute a choice to its session before another switch can occur.
-      { flush: "sync" },
-    );
+    onScopeDispose(() => {
+      generation++;
+      activeSession = "";
+      ready = false;
+    });
+  }
+
+  async function saveSelection(update: {
+    providerId?: string;
+    modelName?: string;
+    effort?: string;
+    preset?: string;
+  }) {
+    const target = activeSession;
+    const current = generation;
+    const revision = accountSessionRevision.value;
+    await initialized;
+    if (current !== generation || revision !== accountSessionRevision.value)
+      return;
+    const previous = {
+      selected_provider: selectedProviderId.value || null,
+      selected_model: selectedModelName.value || null,
+      thinking_effort: thinkingEffort.value,
+      effort_preset: effortPreset.value,
+    };
+    if (update.providerId !== undefined) {
+      selectedProviderId.value = update.providerId;
+      selectedModelName.value = update.modelName || "";
+    }
+    if (update.effort !== undefined) thinkingEffort.value = update.effort;
+    if (update.preset !== undefined) effortPreset.value = update.preset;
+    if (!target) return;
+    const selection = {
+      selected_provider: selectedProviderId.value || null,
+      selected_model: selectedModelName.value || null,
+      thinking_effort: thinkingEffort.value,
+      effort_preset: effortPreset.value,
+    };
+    const change = ++mutation;
+    ready = false;
+    const write = writes.then(async () => {
+      assertCurrentAccount(revision);
+      const response = await chatApi.setSessionSelection(target, selection);
+      assertCurrentAccount(revision);
+      if (response.data.status !== "ok")
+        throw new Error(response.data.message || "Settings are unavailable");
+      if (current === generation && change === mutation) ready = true;
+    });
+    writes = write.catch((error: any) => {
+      if (
+        current === generation &&
+        change === mutation &&
+        revision === accountSessionRevision.value
+      ) {
+        selectedProviderId.value = previous.selected_provider || "";
+        selectedModelName.value = previous.selected_model || "";
+        thinkingEffort.value = previous.thinking_effort;
+        effortPreset.value = previous.effort_preset;
+        ready = false;
+        useToast().error(
+          `Failed to save session model settings: ${error.message}`,
+        );
+      }
+    });
+    await writes;
+  }
+
+  async function prepareSend() {
+    const current = generation;
+    const revision = accountSessionRevision.value;
+    await initialized;
+    // Setters resume after initialization and append their writes first.
+    await Promise.resolve();
+    await writes;
+    assertCurrentAccount(revision);
+    if (current !== generation) throw new Error("Chat session changed");
+    if (!ready) throw new Error("Session model settings are unavailable");
   }
 
   return {
     selectedProviderId,
     selectedModelName,
-    setSelection,
-    writeSessionProviderSelection,
+    thinkingEffort,
+    effortPreset,
+    defaultThinkingEffort,
+    defaultEffortPreset,
+    loading,
+    setSelection: (providerId: string, modelName = "") =>
+      saveSelection({ providerId, modelName }),
+    setThinkingEffort: (effort: string, preset: string) =>
+      saveSelection({ effort, preset }),
+    prepareSend,
   };
 }

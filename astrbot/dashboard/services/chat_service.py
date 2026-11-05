@@ -14,11 +14,18 @@ from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
 from typing import Any
 
+from sqlmodel import select
+
 from astrbot.core import logger, sp
 from astrbot.core.agent.message import get_checkpoint_id, is_checkpoint_message
 from astrbot.core.core_lifecycle import AstrBotCoreLifecycle
 from astrbot.core.db import BaseDatabase
-from astrbot.core.db.po import PlatformMessageHistory, PlatformSession, WebChatThread
+from astrbot.core.db.po import (
+    DashboardAccount,
+    PlatformMessageHistory,
+    PlatformSession,
+    WebChatThread,
+)
 from astrbot.core.platform.message_type import MessageType
 from astrbot.core.platform.sources.webchat.message_parts_helper import (
     build_webchat_message_parts,
@@ -2868,6 +2875,7 @@ class ChatService:
                 f"Conversation {cid} is busy; skipping the scheduled turn"
             )
 
+        selection = await self.validate_chat_selection(username, cid, {})
         llm_checkpoint_id = str(uuid.uuid4())
         await self.register_synthetic_chat_run(
             cid, message_id, username, llm_checkpoint_id
@@ -2880,8 +2888,9 @@ class ChatService:
                 cid,
                 {
                     "message": [{"type": "plain", "text": text}],
-                    "selected_provider": None,
-                    "selected_model": None,
+                    **selection,
+                    "thinking_effort": selection["thinking_effort"]
+                    or selection.get("default_thinking_effort"),
                     "flags": resolve_webchat_request_flags({}),
                     "message_id": message_id,
                     "llm_checkpoint_id": llm_checkpoint_id,
@@ -2893,62 +2902,163 @@ class ChatService:
             )
         )
 
+    async def session_selection(
+        self, owner: str, session_id: str, selection: dict | None = None
+    ) -> dict:
+        """Read or replace the model preferences of an owned ordinary session.
+
+        Args:
+            owner: Trusted account resource identity.
+            session_id: Existing ordinary WebChat session.
+            selection: Complete replacement; None reads the stored preference.
+
+        Returns:
+            Validated nullable provider, model and effort choices.
+
+        Raises:
+            ChatServiceError: The session or selected resource is unavailable.
+        """
+        await self.require_owned_chat_session(owner, session_id)
+        resolved = await self.validate_chat_selection(
+            owner, session_id, selection or {}, use_saved=selection is None
+        )
+        if selection is not None:
+            await self.db.insert_preference_or_update(
+                "webchat_session",
+                session_id,
+                "model_selection",
+                {
+                    "val": {
+                        key: value
+                        for key, value in resolved.items()
+                        if not key.startswith("default_")
+                    }
+                },
+            )
+        return resolved
+
     async def validate_chat_selection(
-        self, owner: str, session_id: str, payload: dict, *, allow_thread: bool = False
-    ) -> str | None:
-        """Validate public choices and apply an explicit owned-session binding.
+        self,
+        owner: str,
+        session_id: str,
+        payload: dict,
+        *,
+        allow_thread: bool = False,
+        use_saved: bool = True,
+    ) -> dict:
+        """Resolve one-turn overrides over persistent session model choices.
 
         Args:
             owner: Trusted account resource identity.
             session_id: Persisted target conversation.
             payload: Public config, model and effort selections.
             allow_thread: Accept a validated thread send as well as a main session.
+            use_saved: Merge stored choices; False validates a replacement only.
 
         Returns:
-            Normalized thinking effort, or None when omitted.
+            Resolved provider, model, effort and effort-preset selections. Omitted
+            values remain None so existing provider/config defaults still apply.
 
         Raises:
             ChatServiceError: A selection or target conversation is unavailable.
         """
-        # Verify ownership before applying any explicit profile selection.
-        if dashboard_account_context.get() is not None:
-            await self.require_owned_chat_session(
-                owner, session_id, allow_thread=allow_thread
+        session = await self.require_owned_chat_session(
+            owner, session_id, allow_thread=allow_thread
+        )
+        saved = {}
+        if use_saved and isinstance(session, PlatformSession):
+            preference = await self.db.get_preference(
+                "webchat_session", session_id, "model_selection"
             )
-        selected_provider = payload.get("selected_provider")
-        selected_model = payload.get("selected_model")
-        thinking_effort = payload.get("thinking_effort")
-        if thinking_effort is not None:
+            if preference is not None:
+                saved = preference.value["val"]
+        selection = {
+            key: saved.get(key)
+            for key in (
+                "selected_provider",
+                "selected_model",
+                "thinking_effort",
+                "effort_preset",
+            )
+        }
+        # Empty/null request fields historically mean no one-turn override.
+        # A different explicit provider must not inherit the saved model name.
+        if payload.get("selected_provider"):
+            selection["selected_provider"] = payload["selected_provider"]
+            selection["selected_model"] = payload.get("selected_model")
+        for key in ("selected_model", "thinking_effort", "effort_preset"):
+            if payload.get(key) is not None and payload[key] != "":
+                selection[key] = payload[key]
+        effort = selection["thinking_effort"]
+        if effort is not None:
             try:
-                thinking_effort = normalize_thinking_effort_value(thinking_effort)
+                selection["thinking_effort"] = normalize_thinking_effort_value(effort)
             except ValueError as exc:
                 raise ChatServiceError(str(exc)) from exc
-        if webchat_account_role.get() == "user" and (
-            selected_provider or selected_model
-        ):
+        provider_id = selection["selected_provider"]
+        model = selection["selected_model"]
+        if model and not provider_id and webchat_account_role.get() == "user":
+            raise ChatServiceError("Chat model is unavailable")
+        if provider_id:
+            manager = self.core_lifecycle.provider_manager
             sources = {
                 source["id"]: source.get("provider_type", "chat_completion")
-                for source in self.core_lifecycle.provider_manager.provider_sources_config
+                for source in manager.provider_sources_config
             }
             provider = next(
                 (
                     config
-                    for config in self.core_lifecycle.provider_manager.providers_config
-                    if config.get("id") == selected_provider
+                    for config in manager.providers_config
+                    if config.get("id") == provider_id
                     and config.get("enable", False)
                     and config.get(
                         "provider_type", sources.get(config.get("provider_source_id"))
                     )
                     == "chat_completion"
-                    and (not selected_model or config.get("model") == selected_model)
                 ),
                 None,
             )
-            if provider is None:
+            if provider is None or provider_id not in manager.inst_map:
                 raise ChatServiceError("Chat model is unavailable")
+            # Preserve the existing administrator model-override semantics.
+            # Members may only consume the model advertised by this config.
+            if (
+                model
+                and model != provider.get("model")
+                and webchat_account_role.get() == "user"
+            ):
+                raise ChatServiceError("Chat model is unavailable")
+        if isinstance(session, PlatformSession):
+            defaults = self.get_chatui_thinking_effort()
+            # Background turns have no request principal. Resolve the same
+            # account preference by the session's immutable trusted owner.
+            async with self.db.get_db() as connection:
+                account = (
+                    await connection.execute(
+                        select(DashboardAccount).where(
+                            (DashboardAccount.account_id == owner)
+                            | (DashboardAccount.legacy_owner == owner)
+                        )
+                    )
+                ).scalar_one_or_none()
+            if account is not None:
+                preference = await self.db.get_preference(
+                    "dashboard_account", account.account_id, "thinking_effort"
+                )
+                if preference is not None:
+                    value = preference.value["val"]
+                    if isinstance(value, str):
+                        defaults["value"] = value
+                    elif isinstance(value, dict):
+                        defaults["value"] = value["value"]
+                        defaults["active_preset"] = value.get(
+                            "active_preset", defaults["active_preset"]
+                        )
+            selection["default_thinking_effort"] = defaults["value"]
+            selection["default_effort_preset"] = defaults["active_preset"]
         if dashboard_account_context.get() is not None:
             await self.session_config(owner, session_id, payload.get("config_id"))
-        return thinking_effort
+        return selection
 
     async def build_chat_stream(
         self,
@@ -3016,11 +3126,16 @@ class ChatService:
                 ):
                     raise ChatServiceError("Message does not belong to the session")
 
-        thinking_effort = await self.validate_chat_selection(
+        selection = await self.validate_chat_selection(
             username,
             webchat_conv_id,
             post_data,
             allow_thread=platform_history_id == "webchat_thread",
+        )
+        selected_provider = selection["selected_provider"]
+        selected_model = selection["selected_model"]
+        thinking_effort = selection["thinking_effort"] or selection.get(
+            "default_thinking_effort"
         )
         if webchat_account_role.get() == "user":
             post_data = {**post_data, "_api_key_allow_admin_role": False}
@@ -3244,6 +3359,9 @@ class ChatService:
         if session.platform_id == "webchat":
             webchat_queue_mgr.remove_queues(session_id)
 
+        await self.db.remove_preference(
+            "webchat_session", session_id, "model_selection"
+        )
         await self.db.delete_platform_session(session_id)
 
     async def delete_webchat_session(self, username: str, session_id: str) -> None:
@@ -4257,6 +4375,7 @@ class ChatService:
             goal_text: User-role text of the synthetic turn.
             goal_id: Goal the turn belongs to.
         """
+        selection = await self.validate_chat_selection(username, session.session_id, {})
         message_id = str(uuid.uuid4().hex)
         checkpoint = str(uuid.uuid4().hex)
         await self.register_synthetic_chat_run(
@@ -4272,8 +4391,9 @@ class ChatService:
                 session.session_id,
                 {
                     "message": [{"type": "plain", "text": goal_text}],
-                    "selected_provider": None,
-                    "selected_model": None,
+                    **selection,
+                    "thinking_effort": selection["thinking_effort"]
+                    or selection.get("default_thinking_effort"),
                     "flags": resolve_webchat_request_flags({}),
                     "message_id": message_id,
                     "llm_checkpoint_id": checkpoint,
@@ -5059,7 +5179,12 @@ class ChatService:
                     )
         selected_provider = data.get("selected_provider")
         selected_model = data.get("selected_model")
-        thinking_effort = await self.validate_chat_selection(username, session_id, data)
+        selection = await self.validate_chat_selection(username, session_id, data)
+        selected_provider = selection["selected_provider"]
+        selected_model = selection["selected_model"]
+        thinking_effort = selection["thinking_effort"] or selection.get(
+            "default_thinking_effort"
+        )
 
         new_checkpoint_id = str(uuid.uuid4())
         new_history = history[:start] + history[end + 1 :]

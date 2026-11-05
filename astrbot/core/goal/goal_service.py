@@ -168,6 +168,7 @@ class GoalService:
         self.goals = GoalManager(_SpKVStorage(), on_change=self._emit_goal_change)
         self._context = None
         self._judged_runs: set[str] = set()
+        self._turn_selection_resolver: Callable[[str], Awaitable[dict]] | None = None
         self._run_registrar: Callable[[str, str, str], Awaitable[None]] | None = None
         self._state_listener = None
         self._migrated = False
@@ -204,6 +205,17 @@ class GoalService:
               that registers the injected turn as a first-class chat run.
         """
         self._run_registrar = registrar
+
+    def set_turn_selection_resolver(
+        self, resolver: Callable[[str], Awaitable[dict]] | None
+    ) -> None:
+        """Bind the ordinary WebChat session selection resolver.
+
+        Args:
+            resolver: Async callback taking the target UMO. It raises when a
+                session or its selected resources are no longer available.
+        """
+        self._turn_selection_resolver = resolver
 
     def _config(self) -> dict:
         if self._context is None:
@@ -454,6 +466,10 @@ class GoalService:
             text: The user-role text for the synthetic turn.
         """
         new_event = build_goal_turn_event(event, text, goal_id)
+        if isinstance(new_event, WebChatMessageEvent) and self._turn_selection_resolver:
+            selection = await self._turn_selection_resolver(event.unified_msg_origin)
+            for key in ("selected_provider", "selected_model", "thinking_effort"):
+                new_event.set_extra(key, selection.get(key))
         message_id = str(new_event.message_obj.message_id)
         registrar = self._run_registrar
         if registrar is not None:

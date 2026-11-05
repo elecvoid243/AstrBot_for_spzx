@@ -344,6 +344,15 @@ class ChatSessionConfigRequest(BaseModel):
     config_id: str
 
 
+class ChatSessionSelectionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    selected_provider: str | None = None
+    selected_model: str | None = None
+    thinking_effort: str | None = None
+    effort_preset: str | None = None
+
+
 class ChatUiThinkingEffortValueRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

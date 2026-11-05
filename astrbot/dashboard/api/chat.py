@@ -41,6 +41,7 @@ from astrbot.dashboard.schemas import (
     ChatSessionBatchDeleteRequest,
     ChatSessionConfigRequest,
     ChatSessionPatchRequest,
+    ChatSessionSelectionRequest,
     ChatSubagentFollowUpRequest,
     ChatThreadCreateRequest,
     ChatThreadMessageRequest,
@@ -1080,6 +1081,29 @@ async def update_chat_session_config(
 ):
     return await _run(
         lambda: service.session_config(auth.username, session_id, payload.config_id)
+    )
+
+
+@router.get("/chat/sessions/{session_id}/selection")
+async def get_chat_session_selection(
+    session_id: str,
+    auth: AuthContext = Depends(require_chat_scope),
+    service: ChatService = Depends(get_service),
+):
+    return await _run(lambda: service.session_selection(auth.username, session_id))
+
+
+@router.put("/chat/sessions/{session_id}/selection")
+async def update_chat_session_selection(
+    session_id: str,
+    payload: ChatSessionSelectionRequest,
+    auth: AuthContext = Depends(require_chat_scope),
+    service: ChatService = Depends(get_service),
+):
+    return await _run(
+        lambda: service.session_selection(
+            auth.username, session_id, payload.model_dump()
+        )
     )
 
 

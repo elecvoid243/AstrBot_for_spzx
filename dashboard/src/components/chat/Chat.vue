@@ -1681,7 +1681,11 @@ const tokenModelMetadata = ref<Record<string, ProviderModelMetadata>>({});
 const {
   selectedProviderId: selectedTokenProviderId,
   selectedModelName: currentModelName,
-  writeSessionProviderSelection,
+  thinkingEffort: sessionThinkingEffort,
+  effortPreset: sessionEffortPreset,
+  setSelection: setSessionModelSelection,
+  setThinkingEffort: setSessionThinkingEffort,
+  prepareSend: prepareModelSelection,
 } = useProviderModelSelection(currSessionId);
 const commandSending = ref(false);
 const messagesContainer = ref<HTMLElement | null>(null);
@@ -4455,7 +4459,16 @@ async function sendCurrentMessage(skillNames: string[] = []) {
     const targetProjectId = selectedProjectId.value;
     const targetProject = selectedProject.value;
     if (!sessionId) {
+      const pendingModel = getSelectedProviderSelection();
+      const pendingEffort = sessionThinkingEffort.value;
+      const pendingPreset = sessionEffortPreset.value;
       sessionId = await newSession();
+      await prepareModelSelection();
+      if (pendingModel?.providerId)
+        await setSessionModelSelection(pendingModel.providerId, pendingModel.modelName);
+      if (pendingEffort !== null)
+        await setSessionThinkingEffort(pendingEffort, pendingPreset || "");
+      await prepareModelSelection();
       // 关联项目后再刷新，否则新会话会短暂出现在"对话"列表
       await getSessions();
       // The text being sent was typed in the no-session state and lives in
@@ -4549,7 +4562,6 @@ async function sendCurrentMessage(skillNames: string[] = []) {
     const messageId = crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`;
     const outgoingParts: MessagePart[] = buildOutgoingParts(text);
     const selection = getSelectedProviderSelection();
-    writeSessionProviderSelection(sessionId, selection);
     const { userRecord, botRecord } = createLocalExchange({
       sessionId,
       messageId,
@@ -4618,6 +4630,7 @@ async function sendSystemCommand(command: string) {
       sessionId = await newSession();
     }
 
+    const configId = await inputRef.value?.prepareConfig?.();
     const messageId = crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`;
 
     const outgoingParts: MessagePart[] = [{ type: "plain", text: command }];
@@ -4634,6 +4647,7 @@ async function sendSystemCommand(command: string) {
 
     sendMessageStream({
       sessionId,
+      configId,
       messageId,
       parts: outgoingParts,
       transport: transportMode.value,
@@ -4677,10 +4691,10 @@ async function sendCommentText(text: string): Promise<void> {
     if (!sessionId) {
       sessionId = await newSession();
     }
+    const configId = await inputRef.value?.prepareConfig?.();
     const messageId = crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`;
     const outgoingParts: MessagePart[] = [{ type: "plain", text }];
     const selection = getSelectedProviderSelection();
-    writeSessionProviderSelection(sessionId, selection);
     const { userRecord, botRecord } = createLocalExchange({
       sessionId,
       messageId,
@@ -4689,6 +4703,7 @@ async function sendCommentText(text: string): Promise<void> {
     scrollToBottom();
     sendMessageStream({
       sessionId,
+      configId,
       messageId,
       parts: outgoingParts,
       transport: transportMode.value,
@@ -5469,8 +5484,6 @@ async function handleRegenerateMessage(
 ) {
   if (!currSessionId.value || isUserMessage(message)) return;
   const effectiveSelection = selection ?? getSelectedProviderSelection();
-  if (!isOrdinaryUser.value)
-    writeSessionProviderSelection(currSessionId.value, effectiveSelection);
   try {
     const configId = await inputRef.value?.prepareConfig?.();
     await regenerateMessage(
@@ -6876,7 +6889,7 @@ async function sendQueuedFollowUp(sessionId: string, text: string) {
     enableStreaming: enableStreaming.value,
     selectedProvider: selection?.providerId || "",
     selectedModel: selection?.modelName || "",
-    thinkingEffort: currentTarget ? getCurrentThinkingEffort() : "auto",
+    thinkingEffort: currentTarget ? getCurrentThinkingEffort() : undefined,
     userRecord,
     botRecord,
   });

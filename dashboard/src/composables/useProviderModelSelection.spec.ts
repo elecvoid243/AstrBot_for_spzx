@@ -1,178 +1,284 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { parse } from "vue/compiler-sfc";
+import ts from "typescript";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { EffectScope } from "vue";
+import { effectScope, ref, type EffectScope } from "vue";
 
+const api = vi.hoisted(() => ({
+  getSessionSelection: vi.fn(),
+  setSessionSelection: vi.fn(),
+}));
+const error = vi.hoisted(() => vi.fn());
+vi.mock("@/api/v1", () => ({ chatApi: api }));
+vi.mock("@/utils/toast", () => ({ useToast: () => ({ error }) }));
 const scopes: EffectScope[] = [];
+const empty = {
+  selected_provider: null,
+  selected_model: null,
+  thinking_effort: null,
+  effort_preset: null,
+};
+const saved = new Map<string, typeof empty | any>();
+const ok = (data: any) => ({ data: { status: "ok", data } });
 
-async function createSessionSelection(initialSessionId = "") {
-  const { effectScope, ref } = await import("vue");
+async function setup(id = "a") {
   const { useProviderModelSelection } = await import(
     "./useProviderModelSelection"
   );
   const scope = effectScope();
   scopes.push(scope);
-  const sessionId = ref(initialSessionId);
+  const sessionId = ref(id);
   const store = scope.run(() => useProviderModelSelection(sessionId))!;
-  return { store, sessionId, scope, useProviderModelSelection };
+  await store.prepareSend();
+  return { store, sessionId, useProviderModelSelection };
 }
 
-describe("session provider model selection", () => {
-  it("resets shared choices and isolates saved models when accounts change", async () => {
-    localStorage.setItem("account_id", "alice");
-    const { store } = await createSessionSelection("a");
-    store.setSelection("alice-provider", "alice-model");
-    const { resetAccountSession } = await import("@/utils/accountSession");
-    resetAccountSession();
-    localStorage.setItem("account_id", "bob");
-    const bob = await createSessionSelection("b");
-    expect(bob.store.selectedProviderId.value).toBe("");
-    bob.store.setSelection("bob-provider", "bob-model");
-    resetAccountSession();
-    localStorage.setItem("account_id", "alice");
-    const alice = await createSessionSelection("a");
-    expect(alice.store.selectedModelName.value).toBe("alice-model");
+beforeEach(() => {
+  vi.resetModules();
+  vi.clearAllMocks();
+  localStorage.clear();
+  saved.clear();
+  api.getSessionSelection.mockImplementation(async (id) =>
+    ok(saved.get(id) || empty),
+  );
+  api.setSessionSelection.mockImplementation(async (id, selection) => {
+    saved.set(id, selection);
+    return ok(selection);
   });
+});
+afterEach(() => scopes.splice(0).forEach((scope) => scope.stop()));
 
-  beforeEach(() => {
-    vi.resetModules();
-    localStorage.clear();
-  });
-
-  afterEach(() => {
-    scopes.splice(0).forEach((scope) => scope.stop());
-    vi.restoreAllMocks();
-  });
-
-  it("shares the header choice with the composer and preserves global keys", async () => {
-    localStorage.setItem("selectedProvider", "provider-old");
-    localStorage.setItem("selectedProviderModel", "model-old");
-    const { store, useProviderModelSelection } = await createSessionSelection();
-    const header = useProviderModelSelection();
-    expect(store.selectedProviderId.value).toBe("provider-old");
-    header.setSelection("provider-new", "model-new");
-    expect(store.selectedProviderId.value).toBe("provider-new");
-    expect(store.selectedModelName.value).toBe("model-new");
-    expect(localStorage.getItem("selectedProviderModel")).toBe("model-new");
-  });
-
-  it("restores both sessions before a same-tick request reads the choice", async () => {
-    const { store, sessionId } = await createSessionSelection("a");
-    store.setSelection("provider-a", "model-a");
-    sessionId.value = "b";
-    store.setSelection("provider-b", "model-b");
-    sessionId.value = "a";
-    expect(store.selectedProviderId.value).toBe("provider-a");
-    expect(store.selectedModelName.value).toBe("model-a");
-    sessionId.value = "b";
-    expect(store.selectedProviderId.value).toBe("provider-b");
-    expect(store.selectedModelName.value).toBe("model-b");
-    expect(JSON.parse(localStorage.getItem("chat.sessionProvider.a")!)).toEqual(
-      {
-        providerId: "provider-a",
-        modelName: "model-a",
-      },
-    );
-  });
-
-  it("does not attribute a queued choice to the next session", async () => {
-    localStorage.setItem(
-      "chat.sessionProvider.b",
-      JSON.stringify({
-        providerId: "provider-b",
-        modelName: "model-b",
-      }),
-    );
-    const { store, sessionId } = await createSessionSelection("a");
-    store.setSelection("provider-a", "model-a");
-    sessionId.value = "b";
-    await (await import("vue")).nextTick();
-    expect(JSON.parse(localStorage.getItem("chat.sessionProvider.a")!)).toEqual(
-      {
-        providerId: "provider-a",
-        modelName: "model-a",
-      },
-    );
-    expect(store.selectedModelName.value).toBe("model-b");
-  });
-
-  it("restores a persisted session on page load instead of the global choice", async () => {
-    localStorage.setItem("selectedProvider", "provider-global");
+describe("server-owned ordinary session choices", () => {
+  it("loads server state despite stale browser choices and survives a new browser", async () => {
+    saved.set("a", {
+      ...empty,
+      selected_provider: "provider-a",
+      selected_model: "model-a",
+      thinking_effort: "32768",
+    });
+    localStorage.setItem("selectedProvider", "stale");
     localStorage.setItem(
       "chat.sessionProvider.a",
-      JSON.stringify({
-        providerId: "provider-a",
-        modelName: "model-a",
-      }),
+      JSON.stringify({ providerId: "wrong" }),
     );
-    const { store } = await createSessionSelection("a");
-    expect(store.selectedProviderId.value).toBe("provider-a");
-    expect(store.selectedModelName.value).toBe("model-a");
+    const { store, useProviderModelSelection } = await setup();
+    const header = useProviderModelSelection();
+    expect(header.selectedProviderId.value).toBe("provider-a");
+    expect(store.thinkingEffort.value).toBe("32768");
+    await header.setSelection("provider-b", "model-b");
+    await store.setThinkingEffort("xhigh", "custom-preset");
+    await store.prepareSend();
+    scopes.splice(0).forEach((scope) => scope.stop());
+    localStorage.clear();
+    const browser = await setup();
+    expect(browser.store.selectedModelName.value).toBe("model-b");
+    expect(browser.store.thinkingEffort.value).toBe("xhigh");
+    expect(browser.store.effortPreset.value).toBe("custom-preset");
   });
 
-  it("keeps the last choice for new sessions and ignores corrupted entries", async () => {
-    const { store, sessionId } = await createSessionSelection("a");
-    store.setSelection("provider-a", "model-a");
-    for (const raw of ["{", '{"providerId":17}', '{"providerId":""}']) {
-      localStorage.setItem("chat.sessionProvider.b", raw);
-      sessionId.value = "b";
-      expect(store.selectedModelName.value).toBe("model-a");
-      sessionId.value = "a";
+  it("keeps a model and effort chosen in the empty composer when the first send creates a session", async () => {
+    const { store, sessionId } = await setup("");
+    await store.setSelection("chosen", "chosen-model");
+    await store.setThinkingEffort("xhigh", "custom");
+    const script = parse(
+      readFileSync(resolve("src/components/chat/Chat.vue"), "utf8"),
+    ).descriptor.scriptSetup!.content;
+    const ast = ts.createSourceFile(
+      "Chat.ts",
+      script,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    let branch: ts.IfStatement | undefined;
+    function visit(node: ts.Node) {
+      if (
+        ts.isIfStatement(node) &&
+        node.expression.getText(ast) === "!sessionId" &&
+        node.thenStatement.getText(ast).includes("const pendingModel")
+      )
+        branch = node;
+      ts.forEachChild(node, visit);
     }
-    sessionId.value = "new";
-    expect(store.selectedProviderId.value).toBe("provider-a");
-    expect(localStorage.getItem("chat.sessionProvider.new")).toBeNull();
+    visit(ast);
+    expect(branch).toBeDefined();
+    const code = ts.transpileModule(branch!.getText(ast), {
+      compilerOptions: { target: ts.ScriptTarget.ES2022 },
+    }).outputText;
+    const dependencies = {
+      getSelectedProviderSelection: () => ({
+        providerId: store.selectedProviderId.value,
+        modelName: store.selectedModelName.value,
+      }),
+      sessionThinkingEffort: store.thinkingEffort,
+      sessionEffortPreset: store.effortPreset,
+      newSession: async () => {
+        sessionId.value = "created";
+        return "created";
+      },
+      prepareModelSelection: store.prepareSend,
+      setSessionModelSelection: store.setSelection,
+      setSessionThinkingEffort: store.setThinkingEffort,
+      getSessions: async () => {},
+      chatDrafts: { clearDraft: vi.fn() },
+      NEW_CHAT_DRAFT_KEY: "draft",
+    };
+    const send = new Function(
+      ...Object.keys(dependencies),
+      `return (async () => { let sessionId = ""; ${code}; return sessionId; })();`,
+    );
+    expect(await send(...Object.values(dependencies))).toBe("created");
+    expect(saved.get("created")).toEqual({
+      selected_provider: "chosen",
+      selected_model: "chosen-model",
+      thinking_effort: "xhigh",
+      effort_preset: "custom",
+    });
   });
 
-  it("records sends and explicit regeneration choices for their target session", async () => {
-    const { store } = await createSessionSelection("active");
-    store.setSelection("provider-main", "model-main");
-    store.writeSessionProviderSelection("sent", {
-      providerId: store.selectedProviderId.value,
-      modelName: store.selectedModelName.value,
+  it("keeps unset overrides separate from the effective account defaults", async () => {
+    saved.set("a", {
+      ...empty,
+      default_thinking_effort: "24576",
+      default_effort_preset: "numeric",
     });
-    store.writeSessionProviderSelection("regenerated", {
-      providerId: "provider-other",
-      modelName: "model-other",
-    });
-    expect(
-      JSON.parse(localStorage.getItem("chat.sessionProvider.sent")!),
-    ).toEqual({
-      providerId: "provider-main",
-      modelName: "model-main",
-    });
-    expect(
-      JSON.parse(localStorage.getItem("chat.sessionProvider.regenerated")!),
-    ).toEqual({
-      providerId: "provider-other",
-      modelName: "model-other",
-    });
-    expect(store.selectedProviderId.value).toBe("provider-main");
+    const { store } = await setup();
+    expect(store.thinkingEffort.value).toBeNull();
+    expect(store.defaultThinkingEffort.value).toBe("24576");
+    await store.setSelection("chosen", "model");
+    expect(saved.get("a").thinking_effort).toBeNull();
   });
 
-  it("ignores empty sessions and stops saving after the chat unmounts", async () => {
-    const { store, sessionId, scope } = await createSessionSelection();
-    store.setSelection("provider-main", "model-main");
-    expect(localStorage.getItem("chat.sessionProvider.")).toBeNull();
-    store.writeSessionProviderSelection("empty", null);
-    expect(localStorage.getItem("chat.sessionProvider.empty")).toBeNull();
-    sessionId.value = "a";
-    scope.stop();
-    store.setSelection("provider-other", "model-other");
-    expect(localStorage.getItem("chat.sessionProvider.a")).toBeNull();
-  });
-
-  it("continues sharing a usable selection when storage is unavailable", async () => {
-    vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
-      throw new Error("Storage blocked");
-    });
-    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
-      throw new Error("Storage full");
-    });
-    const { store, sessionId, useProviderModelSelection } =
-      await createSessionSelection("a");
-    expect(() => store.setSelection("provider-a", "model-a")).not.toThrow();
+  it("isolates two sessions and leaves old sessions on server defaults", async () => {
+    const { store, sessionId } = await setup();
+    await store.setSelection("a", "model-a");
+    await store.setThinkingEffort("0.75", "numeric");
     sessionId.value = "b";
-    const composer = useProviderModelSelection();
-    expect(composer.selectedProviderId.value).toBe("provider-a");
-    expect(composer.selectedModelName.value).toBe("model-a");
+    await store.prepareSend();
+    expect(store.selectedProviderId.value).toBe("");
+    expect(store.thinkingEffort.value).toBeNull();
+    await store.setSelection("b", "model-b");
+    sessionId.value = "a";
+    await store.prepareSend();
+    expect(store.selectedModelName.value).toBe("model-a");
+    expect(store.thinkingEffort.value).toBe("0.75");
+    expect(saved.get("b").thinking_effort).toBeNull();
+  });
+
+  it("attributes a pending save to its captured session and ignores stale loads", async () => {
+    const { store, sessionId } = await setup();
+    let finish!: (result: any) => void;
+    api.setSessionSelection.mockImplementationOnce(
+      (id, selection) =>
+        new Promise((resolve) => {
+          finish = () => {
+            saved.set(id, selection);
+            resolve(ok(selection));
+          };
+        }),
+    );
+    const saving = store.setSelection("a", "model-a");
+    await Promise.resolve();
+    await Promise.resolve();
+    sessionId.value = "b";
+    finish(null);
+    await saving;
+    await store.prepareSend();
+    expect(saved.get("a").selected_model).toBe("model-a");
+    expect(saved.has("b")).toBe(false);
+    expect(store.selectedModelName.value).toBe("");
+    let loadA!: (result: any) => void;
+    api.getSessionSelection.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          loadA = resolve;
+        }),
+    );
+    sessionId.value = "a";
+    await vi.waitFor(() => expect(loadA).toBeTypeOf("function"));
+    sessionId.value = "b";
+    await store.prepareSend();
+    loadA(ok(saved.get("a")));
+    await Promise.resolve();
+    expect(store.selectedModelName.value).toBe("");
+  });
+
+  it("reads the completed write when switching away and back during a save", async () => {
+    const { store, sessionId } = await setup();
+    let finish!: () => void;
+    api.setSessionSelection.mockImplementationOnce(
+      (id, selection) =>
+        new Promise((resolve) => {
+          finish = () => {
+            saved.set(id, selection);
+            resolve(ok(selection));
+          };
+        }),
+    );
+    const saving = store.setSelection("chosen", "latest-model");
+    await Promise.resolve();
+    await Promise.resolve();
+    sessionId.value = "b";
+    sessionId.value = "a";
+    finish();
+    await saving;
+    await store.prepareSend();
+    expect(store.selectedModelName.value).toBe("latest-model");
+  });
+
+  it("waits for an in-flight save before allowing a send", async () => {
+    const { store } = await setup();
+    let finish!: (result: any) => void;
+    api.setSessionSelection.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    void store.setSelection("a", "model-a");
+    let sent = false;
+    const send = store.prepareSend().then(() => {
+      sent = true;
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(sent).toBe(false);
+    finish(ok(empty));
+    await send;
+    expect(sent).toBe(true);
+  });
+
+  it("explains failed saves, rolls back the choice and blocks sends until corrected", async () => {
+    const { store } = await setup();
+    api.setSessionSelection.mockResolvedValueOnce({
+      data: { status: "error", message: "Chat model is unavailable" },
+    });
+    await store.setSelection("removed", "model");
+    expect(store.selectedProviderId.value).toBe("");
+    expect(error).toHaveBeenCalledWith(
+      expect.stringContaining("Chat model is unavailable"),
+    );
+    await expect(store.prepareSend()).rejects.toThrow("unavailable");
+    await store.setSelection("valid", "model");
+    await expect(store.prepareSend()).resolves.toBeUndefined();
+  });
+
+  it("discards a late response after account change", async () => {
+    const { store } = await setup();
+    let finish!: (result: any) => void;
+    api.setSessionSelection.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const saving = store.setSelection("a", "private-model");
+    await Promise.resolve();
+    await Promise.resolve();
+    const { resetAccountSession } = await import("@/utils/accountSession");
+    resetAccountSession();
+    finish(ok(empty));
+    await saving;
+    expect(store.selectedModelName.value).toBe("");
   });
 });

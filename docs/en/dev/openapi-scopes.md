@@ -190,6 +190,8 @@ Use chat capabilities and manage ChatUI sessions and projects.
 | `PATCH` | `/api/v1/chat/sessions/{session_id}/messages/{message_id}` | — |
 | `POST` | `/api/v1/chat/sessions/{session_id}/messages/{message_id}/branch` | — |
 | `POST` | `/api/v1/chat/sessions/{session_id}/messages/{message_id}/regenerate` | — |
+| `GET` | `/api/v1/chat/sessions/{session_id}/selection` | — |
+| `PUT` | `/api/v1/chat/sessions/{session_id}/selection` | — |
 | `GET` | `/api/v1/chat/sessions/{session_id}/shell-sessions` | — |
 | `POST` | `/api/v1/chat/sessions/{session_id}/shell-sessions/{shell_session_id}/discard` | — |
 | `GET` | `/api/v1/chat/sessions/{session_id}/shell-sessions/{shell_session_id}/output` | — |
@@ -198,6 +200,7 @@ Use chat capabilities and manage ChatUI sessions and projects.
 | `POST` | `/api/v1/chat/sessions/{session_id}/stop` | — |
 | `GET` | `/api/v1/chat/sessions/{session_id}/system-stream` | — |
 | `POST` | `/api/v1/chat/sessions/{session_id}/unarchive` | — |
+| `POST` | `/api/v1/chat/sessions/{session_id}/workspace` | — |
 | `POST` | `/api/v1/chat/subagent-follow-up` | — |
 | `POST` | `/api/v1/chat/threads` | — |
 | `GET` | `/api/v1/chat/threads/{thread_id}` | — |

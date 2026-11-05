@@ -236,7 +236,7 @@ describe("queued follow-ups and live mode use the target's prepared configuratio
         configId: undefined,
         selectedProvider: "",
         selectedModel: "",
-        thinkingEffort: "auto",
+        thinkingEffort: undefined,
       }),
     );
   });

@@ -281,6 +281,36 @@ def create_dashboard_asgi_app(
             llm_checkpoint_id=llm_checkpoint_id,
         )
 
+    async def _goal_turn_selection(umo: str) -> dict:
+        """Resolve current preferences before a WebChat goal continuation.
+
+        Args:
+            umo: Stored goal target origin.
+
+        Returns:
+            Current owned-session model and thinking selections.
+
+        Raises:
+            ChatServiceError: The target or its selections are unavailable.
+        """
+        from astrbot.dashboard.services.chat_service import (
+            ChatServiceError,
+            build_webchat_unified_msg_origin,
+        )
+
+        cid = umo.rsplit("!", 1)[-1]
+        session = await db.get_platform_session_by_id(cid)
+        if session is None or build_webchat_unified_msg_origin(session) != umo:
+            raise ChatServiceError("Goal session is unavailable")
+        selection = await app.state.services.chat.validate_chat_selection(
+            session.creator, cid, {}
+        )
+        selection["thinking_effort"] = selection["thinking_effort"] or selection.get(
+            "default_thinking_effort"
+        )
+        return selection
+
+    _goal_service.set_turn_selection_resolver(_goal_turn_selection)
     _goal_service.set_run_registrar(_goal_run_registrar)
 
     async def _goal_state_changed(umo: str, state) -> None:

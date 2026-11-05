@@ -34,6 +34,7 @@ async def test_inject_registers_synthetic_run_before_queueing(monkeypatch):
 
     monkeypatch.setattr(chat_service_module, "webchat_queue_mgr", FakeQueueMgr())
     service = _service()
+    service.validate_chat_selection = AsyncMock(return_value={"thinking_effort": None})
     monkeypatch.setattr(service, "register_synthetic_chat_run", fake_register)
 
     await service.inject_cron_turn(

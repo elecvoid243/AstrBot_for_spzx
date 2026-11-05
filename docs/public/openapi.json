@@ -2378,6 +2378,27 @@
         }
       }
     },
+    "/api/v1/chat/sessions/{session_id}/workspace": {
+      "post": {
+        "tags": [
+          "Chat"
+        ],
+        "summary": "Prepare the session working directory",
+        "operationId": "prepareChatSessionWorkspace",
+        "x-astrbot-scope": "chat",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/SessionId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
+          }
+        },
+        "description": "**Required scope:** `chat`"
+      }
+    },
     "/api/v1/chat/sessions/{session_id}/shell-sessions": {
       "get": {
         "tags": [
@@ -3055,6 +3076,66 @@
           }
         },
         "description": "**Required scope:** `chat`"
+      }
+    },
+    "/api/v1/chat/sessions/{session_id}/selection": {
+      "get": {
+        "tags": [
+          "Chat"
+        ],
+        "summary": "Read model and thinking preferences for an owned ordinary session",
+        "operationId": "getChatSessionSelection",
+        "x-astrbot-scope": "chat",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
+          }
+        },
+        "description": "**Required scope:** `chat`"
+      },
+      "put": {
+        "tags": [
+          "Chat"
+        ],
+        "summary": "Replace model and thinking preferences for an owned ordinary session",
+        "description": "Null values clear overrides and restore existing provider/config defaults. One-turn send parameters never change this preference.\n\n**Required scope:** `chat`",
+        "operationId": "updateChatSessionSelection",
+        "x-astrbot-scope": "chat",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatSessionSelectionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
+          }
+        }
       }
     },
     "/api/v1/chat/ui-settings": {
@@ -8831,6 +8912,28 @@
           }
         },
         "additionalProperties": false
+      },
+      "ChatSessionSelectionRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "selected_provider": {
+            "type": "string",
+            "nullable": true
+          },
+          "selected_model": {
+            "type": "string",
+            "nullable": true
+          },
+          "thinking_effort": {
+            "type": "string",
+            "nullable": true
+          },
+          "effort_preset": {
+            "type": "string",
+            "nullable": true
+          }
+        }
       },
       "ChatSessionConfigRequest": {
         "type": "object",

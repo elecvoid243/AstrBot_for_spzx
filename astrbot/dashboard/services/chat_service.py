@@ -2318,7 +2318,16 @@ class ChatService:
 
                 if result.get("type") == "_user_message_boundary":
                     completion = result["completion"]
+                    admission = result.get("_agent_input_admission")
                     try:
+                        if (
+                            admission is not None
+                            and admission.done()
+                            and not admission.result()
+                        ):
+                            if not completion.done():
+                                completion.set_result(None)
+                            continue
                         saved = await flush_pending_bot_message(
                             freeze_pending_tool_calls=False
                         )
@@ -2339,6 +2348,18 @@ class ChatService:
                         user = await self.platform_history_mgr.insert(
                             **result["history"]
                         )
+                        if admission is not None:
+                            if admission.done() and not admission.result():
+                                await self.platform_history_mgr.delete_by_id(user.id)
+                                if not completion.done():
+                                    completion.set_result(None)
+                                continue
+                            # Transfer the provisional row to the sender, but keep
+                            # the current output segment until input is accepted.
+                            if not completion.done():
+                                completion.set_result(user)
+                            if not await admission:
+                                continue
                         run.history_record = None
                         run.preceding_plain_text += (
                             collect_plain_text_from_message_parts(run.history_parts)
@@ -3326,6 +3347,14 @@ class ChatService:
         saved_user_record = None
 
         message_parts_for_storage = strip_message_parts_path_fields(message_parts)
+        input_admission = (
+            asyncio.get_running_loop().create_future()
+            if agent_source is not None
+            else None
+        )
+        input_accepted = False
+        history_completion = None
+        active_run = None
         if dashboard_account_context.get() is not None and (
             skip_user_history or post_data.get("_llm_checkpoint_id") is not None
         ):
@@ -3370,217 +3399,259 @@ class ChatService:
                 raise ChatServiceError("Invalid edited continuation")
             message_parts = saved_parts
             llm_checkpoint_id = source.llm_checkpoint_id
-        if not skip_user_history:
-            history = {
-                "platform_id": platform_history_id,
-                "user_id": webchat_conv_id,
-                "content": {"type": "user", "message": message_parts_for_storage},
-                "sender_id": username,
-                "sender_name": username,
-                "llm_checkpoint_id": llm_checkpoint_id,
-            }
-            if agent_source is not None:
-                history["content"]["agent_source"] = agent_source.public_data()
-                history["sender_name"] = "Agent: " + agent_source.display_name
-            # Serialize the user row with output, preserving database order.
-            active_run = next(
-                (
-                    candidate
-                    for candidate in self.chat_runs.values()
-                    if candidate.session_id == webchat_conv_id
-                    and candidate.username == username
-                    and candidate.task is not None
-                    and not candidate.task.done()
-                ),
-                None,
-            )
-            if active_run is not None:
-                completion = asyncio.get_running_loop().create_future()
-                active_run.back_queue.put_nowait(
-                    {
-                        "type": "_user_message_boundary",
-                        "history": history,
-                        "client_message_id": post_data.get(
-                            "_client_message_id", post_data.get("message_id")
-                        ),
-                        "completion": completion,
-                    }
-                )
-                await asyncio.wait(
-                    {completion, active_run.task},
-                    return_when=asyncio.FIRST_COMPLETED,
-                )
-                if completion.done():
-                    saved_user_record = completion.result()
-            if saved_user_record is None:
-                saved_user_record = await self.platform_history_mgr.insert(**history)
-
-        recipient_event = None
-        chat_queue = webchat_queue_mgr.get_or_create_queue(webchat_conv_id)
-        if agent_source is not None:
-            from astrbot.core.pipeline.process_stage.follow_up import (
-                _ACTIVE_AGENT_RUNNERS,
-            )
-            from astrbot.core.tools.interactive_choice_registry import registry
-
-            # Recheck after asynchronous preparation. This gate, queue admission
-            # and chain commit below do not yield, so competing sends and stops
-            # cannot change their result between the check and acceptance.
-            chain = agent_source.chain
-            if (
-                agent_source.session_id in chain.stopped
-                or webchat_conv_id in chain.stopped
-                or self.session_message_stop_revisions.get(webchat_conv_id, 0)
-                != agent_source.target_stop_revision
-            ):
-                raise ChatServiceError(
-                    "This automatic message chain was stopped by the user"
-                )
-            if chain.count >= MAX_SESSION_MESSAGE_CHAIN:
-                raise ChatServiceError(
-                    "Automatic message chain limit reached (8 sends)"
-                )
-            if registry.find_pending_by_umo(
-                umo := build_webchat_unified_msg_origin(platform_session)
-            ):
-                raise ChatServiceError(
-                    "Target is waiting for a user answer; Agent messages cannot answer it"
-                )
-            if self.chat_runs_by_session.get(webchat_conv_id):
-                recipient_runner = _ACTIVE_AGENT_RUNNERS.get(umo)
-                recipient_event = getattr(
-                    getattr(
-                        getattr(recipient_runner, "run_context", None), "context", None
+        try:
+            if not skip_user_history:
+                history = {
+                    "platform_id": platform_history_id,
+                    "user_id": webchat_conv_id,
+                    "content": {"type": "user", "message": message_parts_for_storage},
+                    "sender_id": username,
+                    "sender_name": username,
+                    "llm_checkpoint_id": llm_checkpoint_id,
+                }
+                if agent_source is not None:
+                    history["content"]["agent_source"] = agent_source.public_data()
+                    history["sender_name"] = "Agent: " + agent_source.display_name
+                # Serialize the user row with output, preserving database order.
+                active_run = next(
+                    (
+                        candidate
+                        for candidate in self.chat_runs.values()
+                        if candidate.session_id == webchat_conv_id
+                        and candidate.username == username
+                        and candidate.task is not None
+                        and not candidate.task.done()
                     ),
-                    "event",
                     None,
                 )
+                if active_run is not None:
+                    completion = asyncio.get_running_loop().create_future()
+                    try:
+                        active_run.back_queue.put_nowait(
+                            {
+                                "type": "_user_message_boundary",
+                                "history": history,
+                                "client_message_id": post_data.get(
+                                    "_client_message_id", post_data.get("message_id")
+                                ),
+                                "completion": completion,
+                                "_agent_input_admission": input_admission,
+                            }
+                        )
+                    except asyncio.QueueFull as exc:
+                        if agent_source is None:
+                            raise
+                        raise ChatServiceError(
+                            "Target output collector is busy; message was not accepted"
+                        ) from exc
+                    # Only wait for cleanup when the boundary actually entered
+                    # the collector queue; a rejected enqueue has no consumer.
+                    history_completion = completion
+                    await asyncio.wait(
+                        {completion, active_run.task},
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    if completion.done():
+                        saved_user_record = completion.result()
+                if saved_user_record is None:
+                    saved_user_record = await self.platform_history_mgr.insert(
+                        **history
+                    )
+
+            recipient_event = None
+            chat_queue = webchat_queue_mgr.get_or_create_queue(webchat_conv_id)
+            if agent_source is not None:
+                from astrbot.core.pipeline.process_stage.follow_up import (
+                    _ACTIVE_AGENT_RUNNERS,
+                )
+                from astrbot.core.tools.interactive_choice_registry import registry
+
+                # Recheck after asynchronous preparation. This gate, queue admission
+                # and chain commit below do not yield, so competing sends and stops
+                # cannot change their result between the check and acceptance.
+                chain = agent_source.chain
                 if (
-                    recipient_event is None
-                    or recipient_runner.done()
-                    or recipient_event.get_extra("agent_stop_requested")
+                    agent_source.session_id in chain.stopped
+                    or webchat_conv_id in chain.stopped
+                    or self.session_message_stop_revisions.get(webchat_conv_id, 0)
+                    != agent_source.target_stop_revision
                 ):
                     raise ChatServiceError(
-                        "Target is busy and cannot currently accept a safe follow-up"
+                        "This automatic message chain was stopped by the user"
                     )
-                existing = recipient_event.get_extra("_session_message_chain")
-                if existing is not None and existing is not chain:
+                if chain.count >= MAX_SESSION_MESSAGE_CHAIN:
                     raise ChatServiceError(
-                        "Target is busy with another automatic message chain"
+                        "Automatic message chain limit reached (8 sends)"
                     )
-            if chat_queue.full():
-                raise ChatServiceError(
-                    "Target input queue is full; message was not accepted"
-                )
+                if registry.find_pending_by_umo(
+                    umo := build_webchat_unified_msg_origin(platform_session)
+                ):
+                    raise ChatServiceError(
+                        "Target is waiting for a user answer; Agent messages cannot answer it"
+                    )
+                if self.chat_runs_by_session.get(webchat_conv_id):
+                    recipient_runner = _ACTIVE_AGENT_RUNNERS.get(umo)
+                    recipient_event = getattr(
+                        getattr(
+                            getattr(recipient_runner, "run_context", None),
+                            "context",
+                            None,
+                        ),
+                        "event",
+                        None,
+                    )
+                    if (
+                        recipient_event is None
+                        or recipient_runner.done()
+                        or recipient_event.get_extra("agent_stop_requested")
+                    ):
+                        raise ChatServiceError(
+                            "Target is busy and cannot currently accept a safe follow-up"
+                        )
+                    existing = recipient_event.get_extra("_session_message_chain")
+                    if existing is not None and existing is not chain:
+                        raise ChatServiceError(
+                            "Target is busy with another automatic message chain"
+                        )
+                if chat_queue.full():
+                    raise ChatServiceError(
+                        "Target input queue is full; message was not accepted"
+                    )
 
-        back_queue = webchat_queue_mgr.get_or_create_back_queue(
-            message_id,
-            webchat_conv_id,
-        )
-        run = ChatRunState(
-            run_id=message_id,
-            username=username,
-            session_id=webchat_conv_id,
-            llm_checkpoint_id=llm_checkpoint_id,
-            platform_history_id=platform_history_id,
-            back_queue=back_queue,
-            input_message=serialize_history_entry(saved_user_record)
-            if agent_source is not None and saved_user_record
-            else None,
-        )
-        self.chat_runs[message_id] = run
-        self.chat_runs_by_session.setdefault(webchat_conv_id, set()).add(message_id)
-        stream = self._subscribe_chat_run(
-            run,
-            include_snapshot=False,
-            saved_user_record=saved_user_record,
-        )
-        if agent_source is not None:
-            # The recipient has no request-scoped browser subscriber. Its collector
-            # still owns the complete output; open pages attach via run_started.
-            run.subscribers.clear()
-        run.task = asyncio.create_task(
-            self._consume_chat_run(run),
-            name=f"webchat_run_{message_id}",
-        )
-
-        try:
-            queue_item = (
-                username,
+            back_queue = webchat_queue_mgr.get_or_create_back_queue(
+                message_id,
                 webchat_conv_id,
-                {
-                    "message": message_parts,
-                    "selected_provider": selected_provider,
-                    "selected_model": selected_model,
-                    "thinking_effort": thinking_effort,
-                    "selected_stt_provider": post_data.get("selected_stt_provider"),
-                    "selected_tts_provider": post_data.get("selected_tts_provider"),
-                    "persona_prompt": post_data.get("persona_prompt"),
-                    "show_reasoning": post_data.get("show_reasoning"),
-                    "flags": flags,
-                    "message_id": message_id,
-                    "llm_checkpoint_id": llm_checkpoint_id,
-                    "thread_selected_text": thread_selected_text,
-                    "_dashboard_account": dashboard_account_context.get(),
-                    "_agent_message_source": agent_source,
-                    **(
-                        {
-                            "internal_turn": "session_message",
-                            "_dashboard_account": agent_source.account,
-                        }
-                        if agent_source is not None
-                        else {}
-                    ),
-                    "_api_key_allow_admin_role": False
-                    if agent_source is not None and agent_source.account.role == "user"
-                    else post_data.get("_api_key_allow_admin_role"),
-                },
+            )
+            run = ChatRunState(
+                run_id=message_id,
+                username=username,
+                session_id=webchat_conv_id,
+                llm_checkpoint_id=llm_checkpoint_id,
+                platform_history_id=platform_history_id,
+                back_queue=back_queue,
+                input_message=serialize_history_entry(saved_user_record)
+                if agent_source is not None and saved_user_record
+                else None,
+            )
+            self.chat_runs[message_id] = run
+            self.chat_runs_by_session.setdefault(webchat_conv_id, set()).add(message_id)
+            stream = self._subscribe_chat_run(
+                run,
+                include_snapshot=False,
+                saved_user_record=saved_user_record,
             )
             if agent_source is not None:
-                chat_queue.put_nowait(queue_item)
-                # Commit only after the real input queue accepts the message.
-                # Later notification failures must never roll this state back.
-                chain.count += 1
-                chain.sessions.add(webchat_conv_id)
-                self.session_message_chains.add(chain)
-                if recipient_event is not None:
-                    recipient_event.set_extra("_session_message_chain", chain)
-            else:
-                await chat_queue.put(queue_item)
-        except BaseException:
-            run.task.cancel()
-            await asyncio.gather(run.task, return_exceptions=True)
-            # A task cancelled before its first step never enters its finally.
-            webchat_queue_mgr.remove_back_queue(message_id)
-            if self.chat_runs.get(message_id) is run:
-                self.chat_runs.pop(message_id)
-            run_ids = self.chat_runs_by_session.get(webchat_conv_id)
-            if run_ids is not None:
-                run_ids.discard(message_id)
-                if not run_ids:
-                    self.chat_runs_by_session.pop(webchat_conv_id, None)
-            raise
+                # The recipient has no request-scoped browser subscriber. Its collector
+                # still owns the complete output; open pages attach via run_started.
+                run.subscribers.clear()
+            run.task = asyncio.create_task(
+                self._consume_chat_run(run),
+                name=f"webchat_run_{message_id}",
+            )
 
-        if agent_source is not None:
             try:
-                await webchat_queue_mgr.put_system_event(
+                queue_item = (
+                    username,
                     webchat_conv_id,
                     {
-                        "type": "run_started",
-                        "data": {
-                            "run_id": message_id,
-                            "input_message": run.input_message,
-                        },
+                        "message": message_parts,
+                        "selected_provider": selected_provider,
+                        "selected_model": selected_model,
+                        "thinking_effort": thinking_effort,
+                        "selected_stt_provider": post_data.get("selected_stt_provider"),
+                        "selected_tts_provider": post_data.get("selected_tts_provider"),
+                        "persona_prompt": post_data.get("persona_prompt"),
+                        "show_reasoning": post_data.get("show_reasoning"),
+                        "flags": flags,
                         "message_id": message_id,
-                        "synthetic": True,
+                        "llm_checkpoint_id": llm_checkpoint_id,
+                        "thread_selected_text": thread_selected_text,
+                        "_dashboard_account": dashboard_account_context.get(),
+                        "_agent_message_source": agent_source,
+                        **(
+                            {
+                                "internal_turn": "session_message",
+                                "_dashboard_account": agent_source.account,
+                            }
+                            if agent_source is not None
+                            else {}
+                        ),
+                        "_api_key_allow_admin_role": False
+                        if agent_source is not None
+                        and agent_source.account.role == "user"
+                        else post_data.get("_api_key_allow_admin_role"),
                     },
                 )
-            except Exception:
-                logger.warning(
-                    "Failed to announce an accepted Agent message run", exc_info=True
-                )
+                if agent_source is not None:
+                    chat_queue.put_nowait(queue_item)
+                    input_accepted = True
+                    if input_admission is not None and not input_admission.done():
+                        input_admission.set_result(True)
+                    # Commit only after the real input queue accepts the message.
+                    # Later notification failures must never roll this state back.
+                    chain.count += 1
+                    chain.sessions.add(webchat_conv_id)
+                    self.session_message_chains.add(chain)
+                    if recipient_event is not None:
+                        recipient_event.set_extra("_session_message_chain", chain)
+                else:
+                    await chat_queue.put(queue_item)
+            except BaseException:
+                run.task.cancel()
+                await asyncio.gather(run.task, return_exceptions=True)
+                # A task cancelled before its first step never enters its finally.
+                webchat_queue_mgr.remove_back_queue(message_id)
+                if self.chat_runs.get(message_id) is run:
+                    self.chat_runs.pop(message_id)
+                run_ids = self.chat_runs_by_session.get(webchat_conv_id)
+                if run_ids is not None:
+                    run_ids.discard(message_id)
+                    if not run_ids:
+                        self.chat_runs_by_session.pop(webchat_conv_id, None)
+                raise
 
-        return stream
+            if agent_source is not None:
+                try:
+                    await webchat_queue_mgr.put_system_event(
+                        webchat_conv_id,
+                        {
+                            "type": "run_started",
+                            "data": {
+                                "run_id": message_id,
+                                "input_message": run.input_message,
+                            },
+                            "message_id": message_id,
+                            "synthetic": True,
+                        },
+                    )
+                except Exception:
+                    logger.warning(
+                        "Failed to announce an accepted Agent message run",
+                        exc_info=True,
+                    )
+
+            return stream
+        except BaseException:
+            if agent_source is not None and not input_accepted:
+                if input_admission is not None and not input_admission.done():
+                    input_admission.set_result(False)
+                # The ordinary history writer may have saved a provisional row
+                # while the final input gate was still pending. Delete only this
+                # rejected input; earlier accepted messages and output stay intact.
+                if saved_user_record is None and history_completion is not None:
+                    await asyncio.wait(
+                        {history_completion, active_run.task},
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    if (
+                        history_completion.done()
+                        and not history_completion.cancelled()
+                        and history_completion.exception() is None
+                    ):
+                        saved_user_record = history_completion.result()
+                if saved_user_record is not None:
+                    await self.platform_history_mgr.delete_by_id(saved_user_record.id)
+            raise
 
     async def stop_session(self, username: str, session_id: str) -> dict:
         session = await self.require_owned_chat_session(username, session_id)

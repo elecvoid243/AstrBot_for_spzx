@@ -266,7 +266,15 @@ async def wait_until(predicate):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "failure_mode", ["provider", "full_queue", "queue_error", "overlapping_failure"]
+    "failure_mode",
+    [
+        "provider",
+        "full_queue",
+        "queue_error",
+        "overlapping_failure",
+        "cancelled_history",
+        "boundary_queue_full",
+    ],
 )
 async def test_failed_delivery_does_not_claim_a_running_recipient(
     messaging, monkeypatch, failure_mode
@@ -330,6 +338,8 @@ async def test_failed_delivery_does_not_claim_a_running_recipient(
     try:
         await asyncio.wait_for(entered.wait(), 5)
         recipient = m.events[0]
+        observed = asyncio.Queue()
+        m.service.chat_runs[recipient.message_obj.message_id].subscribers.add(observed)
         account = DashboardPrincipal(
             m.user["account_id"],
             m.user["resource_owner"],
@@ -386,7 +396,7 @@ async def test_failed_delivery_does_not_claim_a_running_recipient(
                 scoped.setattr(queue, "put_nowait", fail_enqueue)
                 with pytest.raises(RuntimeError, match="injected enqueue failure"):
                     await tool.call(contexts[0], session_id=b, text="failed A message")
-        else:
+        elif failure_mode == "overlapping_failure":
             preparing = asyncio.Event()
             finish_failure = asyncio.Event()
             original_selection = m.service.validate_chat_selection
@@ -415,6 +425,44 @@ async def test_failed_delivery_does_not_claim_a_running_recipient(
                     finish_failure.set()
                     failed = await pending
                 assert "delayed settings rejection" in failed
+        elif failure_mode == "boundary_queue_full":
+            queue = m.service.chat_runs[recipient.message_obj.message_id].back_queue
+            original_put = queue.put_nowait
+
+            def fail_boundary(item):
+                if item.get("type") == "_user_message_boundary":
+                    raise asyncio.QueueFull
+                original_put(item)
+
+            with monkeypatch.context() as scoped:
+                scoped.setattr(queue, "put_nowait", fail_boundary)
+                assert "collector is busy" in await asyncio.wait_for(
+                    tool.call(contexts[0], session_id=b, text="failed A message"), 5
+                )
+        else:
+            inserted = asyncio.Event()
+            finish_insert = asyncio.Event()
+            original_insert = m.service.platform_history_mgr.insert
+
+            async def pause_insert(**kwargs):
+                row = await original_insert(**kwargs)
+                if kwargs["content"].get("agent_source"):
+                    inserted.set()
+                    await finish_insert.wait()
+                return row
+
+            with monkeypatch.context() as scoped:
+                scoped.setattr(m.service.platform_history_mgr, "insert", pause_insert)
+                pending = asyncio.create_task(
+                    tool.call(contexts[0], session_id=b, text="failed A message")
+                )
+                try:
+                    await asyncio.wait_for(inserted.wait(), 5)
+                    pending.cancel()
+                finally:
+                    finish_insert.set()
+                with pytest.raises(asyncio.CancelledError):
+                    await pending
         failed_chain = contexts[0].context.event.get_extra("_session_message_chain")
         assert failed_chain.count == 0
         assert b not in failed_chain.sessions
@@ -423,6 +471,10 @@ async def test_failed_delivery_does_not_claim_a_running_recipient(
             if accepted
             else None
         )
+        history = (
+            await m.client.get(f"/api/v1/chat/sessions/{b}", headers=m.headers)
+        ).json()["data"]["history"]
+        assert "failed A message" not in json.dumps(history)
 
         m.core.provider_manager.inst_map["gpt-mini"] = provider
         if accepted is None:
@@ -453,6 +505,19 @@ async def test_failed_delivery_does_not_claim_a_running_recipient(
         await wait_until(lambda: bool(runner._pending_follow_ups))
         release.set()
         assert "C message received" in (await asyncio.wait_for(human, 5)).text
+        history = (
+            await m.client.get(f"/api/v1/chat/sessions/{b}", headers=m.headers)
+        ).json()["data"]["history"]
+        incoming = [row for row in history if row["content"].get("agent_source")]
+        assert len(incoming) == 1
+        assert incoming[0]["content"]["agent_source"]["session_id"] == c
+        boundaries = []
+        while not observed.empty():
+            item = observed.get_nowait()
+            if item is not None and item[1].get("type") == "message_segment":
+                boundaries.append(item[1]["data"]["user"])
+        assert len(boundaries) == 1
+        assert boundaries[0]["content"]["agent_source"]["session_id"] == c
     finally:
         m.core.provider_manager.inst_map["gpt-mini"] = provider
         release.set()
@@ -520,16 +585,16 @@ async def test_accepted_chain_survives_announcement_failure(messaging, monkeypat
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("stop_during_validation", [False, True])
+@pytest.mark.parametrize("admission_change", ["limit", "stop", "choice"])
 async def test_concurrent_admissions_recheck_limit_and_stop(
-    messaging, monkeypatch, stop_during_validation
+    messaging, monkeypatch, admission_change
 ):
     """Overlapping validations still commit one final slot and respect user stop.
 
     Args:
         messaging: Real SQLite and main Agent execution fixture.
         monkeypatch: Pauses both sends inside the ordinary settings resolver.
-        stop_during_validation: Stop a not-yet-accepted recipient while settings wait.
+        admission_change: Change the message budget, user-stop or waiting-choice gate.
     """
     from astrbot.builtin_stars.session_messages.tools import SessionMessageChain
 
@@ -581,10 +646,25 @@ async def test_concurrent_admissions_recheck_limit_and_stop(
         )
         for sid in (b, c)
     ]
+    pending_choice = asyncio.get_running_loop().create_future()
     try:
         await wait_until(lambda: len(prepared) == 2)
-        if stop_during_validation:
+        if admission_change == "stop":
             await m.service.stop_session(account.resource_owner, b)
+        elif admission_change == "choice":
+            from astrbot.dashboard.services.chat_service import (
+                build_webchat_unified_msg_origin,
+            )
+
+            target = await m.db.get_platform_session_by_id(b)
+            registry.add(
+                "admission-choice",
+                build_webchat_unified_msg_origin(target),
+                pending_choice,
+                {"prompt": "Human only"},
+                0,
+                99999999999,
+            )
         release.set()
         results = await asyncio.gather(*tasks, return_exceptions=True)
         accepted = [result for result in results if isinstance(result, dict)]
@@ -593,13 +673,24 @@ async def test_concurrent_admissions_recheck_limit_and_stop(
         ]
         assert len(accepted) == len(rejected) == 1, results
         assert chain.count == 8
-        assert (
-            "stopped by the user" in str(rejected[0])
-            if stop_during_validation
-            else "limit reached" in str(rejected[0])
-        )
+        if admission_change == "stop":
+            assert "stopped by the user" in str(rejected[0])
+        elif admission_change == "choice":
+            assert "waiting for a user" in str(rejected[0]) or "limit reached" in str(
+                rejected[0]
+            )
+            assert not pending_choice.done()
+        else:
+            assert "limit reached" in str(rejected[0])
         assert chain.sessions == {a, accepted[0]["session_id"]}
-        if stop_during_validation:
+        rejected_id = next(sid for sid in (b, c) if sid != accepted[0]["session_id"])
+        rejected_history = (
+            await m.client.get(
+                f"/api/v1/chat/sessions/{rejected_id}", headers=m.headers
+            )
+        ).json()["data"]["history"]
+        assert not any(row["content"].get("agent_source") for row in rejected_history)
+        if admission_change == "stop":
             assert b in chain.stopped
             with pytest.raises(ChatServiceError, match="stopped by the user"):
                 await m.service.send_session_message(source, b, "same chain retry")
@@ -616,6 +707,7 @@ async def test_concurrent_admissions_recheck_limit_and_stop(
         ).json()["data"]["history"]
         assert "concurrent input saved" in json.dumps(history)
     finally:
+        registry.remove("admission-choice")
         release.set()
         await asyncio.gather(*tasks, return_exceptions=True)
         webchat_queue_mgr.set_listener(callback)

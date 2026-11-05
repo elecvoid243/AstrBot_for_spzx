@@ -26,6 +26,8 @@ def main():
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--rounds", type=int, default=3, choices=range(1, 7))
     parser.add_argument("--skip-transition-wait", action="store_true")
+    parser.add_argument("--frame-contract", action="store_true")
+    parser.add_argument("--contract-matrix", action="store_true")
     parser.add_argument("--expect-counterexample", action="store_true")
     args = parser.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
@@ -36,7 +38,14 @@ def main():
     command = [
         str(args.python),
         "-B",
-        str(args.plugin / "scripts/video_identity_probe.py"),
+        str(
+            args.plugin
+            / (
+                "scripts/frame_contract_probe.py"
+                if args.contract_matrix
+                else "scripts/video_identity_probe.py"
+            )
+        ),
         "--out",
         str(out.resolve()),
         "--chromium",
@@ -46,13 +55,18 @@ def main():
     ]
     if args.skip_transition_wait:
         command.append("--skip-transition-wait")
+    if args.frame_contract:
+        command.append("--frame-contract")
     files = [
         Path(__file__),
         args.plugin / "scripts/video_capture_barrier_candidate.py",
         args.plugin / "scripts/video_identity_probe.py",
         args.plugin / "scripts/video_identity_fixture.html",
         args.plugin / "observer.py",
+        args.plugin / "frame_coordinates.py",
     ]
+    if args.contract_matrix:
+        files.append(args.plugin / "scripts/frame_contract_probe.py")
     manifest = {
         "command": command,
         "workdir": str(Path.cwd()),

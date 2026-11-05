@@ -31,6 +31,7 @@ def _make_event(
     event = MagicMock()
     event.unified_msg_origin = umo
     event.message_str = message_str
+    event.get_extra.return_value = None
     event.should_call_llm = MagicMock()
     event.stop_event = MagicMock()
     return event

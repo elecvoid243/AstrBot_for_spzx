@@ -28,6 +28,7 @@ def main():
     parser.add_argument("--skip-transition-wait", action="store_true")
     parser.add_argument("--frame-contract", action="store_true")
     parser.add_argument("--contract-matrix", action="store_true")
+    parser.add_argument("--repair-matrix", action="store_true")
     parser.add_argument("--expect-counterexample", action="store_true")
     args = parser.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
@@ -41,7 +42,9 @@ def main():
         str(
             args.plugin
             / (
-                "scripts/frame_contract_probe.py"
+                "scripts/frame_shadow_probe.py"
+                if args.repair_matrix
+                else "scripts/frame_contract_probe.py"
                 if args.contract_matrix
                 else "scripts/video_identity_probe.py"
             )
@@ -64,9 +67,12 @@ def main():
         args.plugin / "scripts/video_identity_fixture.html",
         args.plugin / "observer.py",
         args.plugin / "frame_coordinates.py",
+        args.plugin / "frame_dom.py",
     ]
     if args.contract_matrix:
         files.append(args.plugin / "scripts/frame_contract_probe.py")
+    if args.repair_matrix:
+        files.append(args.plugin / "scripts/frame_shadow_probe.py")
     manifest = {
         "command": command,
         "workdir": str(Path.cwd()),

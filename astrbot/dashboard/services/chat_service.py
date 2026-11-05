@@ -3354,6 +3354,7 @@ class ChatService:
         )
         input_accepted = False
         history_completion = None
+        history_write_task = None
         active_run = None
         if dashboard_account_context.get() is not None and (
             skip_user_history or post_data.get("_llm_checkpoint_id") is not None
@@ -3454,9 +3455,18 @@ class ChatService:
                     if completion.done():
                         saved_user_record = completion.result()
                 if saved_user_record is None:
-                    saved_user_record = await self.platform_history_mgr.insert(
-                        **history
-                    )
+                    if agent_source is not None:
+                        # Keep ownership through transaction commit and session
+                        # close, even if the sender is cancelled before return.
+                        history_write_task = asyncio.create_task(
+                            self.platform_history_mgr.insert(**history),
+                            name=f"webchat_input_history_{message_id}",
+                        )
+                        saved_user_record = await asyncio.shield(history_write_task)
+                    else:
+                        saved_user_record = await self.platform_history_mgr.insert(
+                            **history
+                        )
 
             recipient_event = None
             chat_queue = webchat_queue_mgr.get_or_create_queue(webchat_conv_id)
@@ -3638,6 +3648,12 @@ class ChatService:
                 # The ordinary history writer may have saved a provisional row
                 # while the final input gate was still pending. Delete only this
                 # rejected input; earlier accepted messages and output stay intact.
+                if saved_user_record is None and history_write_task is not None:
+                    (outcome,) = await asyncio.shield(
+                        asyncio.gather(history_write_task, return_exceptions=True)
+                    )
+                    if not isinstance(outcome, BaseException):
+                        saved_user_record = outcome
                 if saved_user_record is None and history_completion is not None:
                     await asyncio.wait(
                         {history_completion, active_run.task},

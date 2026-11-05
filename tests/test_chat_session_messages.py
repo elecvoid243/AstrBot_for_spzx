@@ -527,6 +527,97 @@ async def test_failed_delivery_does_not_claim_a_running_recipient(
 
 
 @pytest.mark.asyncio
+async def test_cancelled_idle_history_write_is_reclaimed(messaging, monkeypatch):
+    """Recover an idle writer's committed row when cancellation hides its result.
+
+    Args:
+        messaging: Real SQLite, input admission and main Agent execution fixture.
+        monkeypatch: Pauses the history writer after its actual database commit.
+    """
+    m = messaging
+    a, b = m.ids
+
+    async def receive(kwargs):
+        return LLMResponse(role="assistant", completion_text="idle output saved")
+
+    m.providers["gpt-mini"] = ControlledProvider("gpt-mini", receive)
+    account = DashboardPrincipal(
+        m.user["account_id"], m.user["resource_owner"], "user", m.user["username"]
+    )
+    source = m.adapter.create_event(
+        await m.adapter.convert_message(
+            (
+                account.resource_owner,
+                a,
+                {
+                    "message": [{"type": "plain", "text": "source"}],
+                    "message_id": "source",
+                    "_dashboard_account": account,
+                },
+            )
+        )
+    )
+    await m.service.send_session_message(source, b, "previous accepted input")
+    await wait_until(lambda: not m.service.chat_runs_by_session)
+    previous = (
+        await m.client.get(f"/api/v1/chat/sessions/{b}", headers=m.headers)
+    ).json()["data"]["history"]
+    assert "idle output saved" in json.dumps(previous)
+    previous_ids = {row["id"] for row in previous}
+    assert len(m.events) == 1
+    committed = asyncio.Event()
+    release = asyncio.Event()
+    inserted_ids = []
+    original_insert = m.service.platform_history_mgr.insert
+
+    async def pause_after_commit(**kwargs):
+        row = await original_insert(**kwargs)
+        if kwargs["content"].get("agent_source"):
+            inserted_ids.append(row.id)
+            committed.set()
+            await release.wait()
+        return row
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(m.service.platform_history_mgr, "insert", pause_after_commit)
+        sender = asyncio.create_task(
+            m.service.send_session_message(source, b, "cancelled idle input")
+        )
+        try:
+            await asyncio.wait_for(committed.wait(), 5)
+            assert (
+                await m.db.get_platform_message_history_by_id(inserted_ids[0])
+                is not None
+            )
+            sender.cancel()
+        finally:
+            release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await sender
+
+    history = (
+        await m.client.get(f"/api/v1/chat/sessions/{b}", headers=m.headers)
+    ).json()["data"]["history"]
+    assert "cancelled idle input" not in json.dumps(history)
+    assert {row["id"] for row in history} == previous_ids
+    assert await m.db.get_platform_message_history_by_id(inserted_ids[0]) is None
+    assert source.get_extra("_session_message_chain").count == 1
+    assert not m.service.chat_runs_by_session
+    assert webchat_queue_mgr.get_or_create_queue(b).empty()
+    assert len(m.events) == 1
+
+    await m.service.send_session_message(source, b, "valid retry after cancellation")
+    await wait_until(lambda: not m.service.chat_runs_by_session)
+    history = (
+        await m.client.get(f"/api/v1/chat/sessions/{b}", headers=m.headers)
+    ).json()["data"]["history"]
+    assert "valid retry after cancellation" in json.dumps(history)
+    assert "cancelled idle input" not in json.dumps(history)
+    assert previous_ids <= {row["id"] for row in history}
+    assert source.get_extra("_session_message_chain").count == 2
+
+
+@pytest.mark.asyncio
 async def test_accepted_chain_survives_announcement_failure(messaging, monkeypatch):
     """An exception after enqueue cannot turn an accepted delivery into a rollback.
 

@@ -26,24 +26,56 @@ class ContextSanitizeStats:
         )
 
 
-def _message_to_dict(message: dict[str, Any] | Message) -> dict[str, Any] | None:
+def _message_to_dict(
+    message: dict[str, Any] | Message, preserve_internal: bool = False
+) -> dict[str, Any] | None:
+    """Copy message fields for internal adaptation or provider delivery.
+
+    Args:
+        message: Message object or serialized fields.
+        preserve_internal: Retain summary and unknown-result markers internally.
+
+    Returns:
+        Copied fields, or None for unsupported input.
+    """
     if isinstance(message, Message):
-        return dict(message.model_dump())
+        return (
+            message.model_dump_for_context()
+            if preserve_internal
+            else dict(message.model_dump())
+        )
     if isinstance(message, dict):
-        return dict(copy.deepcopy(message))
+        result = dict(copy.deepcopy(message))
+        if not preserve_internal:
+            result.pop("_compaction_id", None)
+            result.pop("_tool_result_unknown", None)
+        return result
     return None
 
 
 def sanitize_contexts_by_modalities(
     contexts: Sequence[dict[str, Any] | Message],
     modalities: list[str] | None,
+    *,
+    preserve_internal: bool = False,
 ) -> tuple[list[dict[str, Any]], ContextSanitizeStats]:
+    """Adapt content to supported modalities without changing source records.
+
+    Args:
+        contexts: Messages to adapt.
+        modalities: Effective provider capabilities; absent values allow all.
+        preserve_internal: Keep retention markers during internal round trips.
+            Provider-facing serialization omits these fields.
+
+    Returns:
+        Adapted messages and counts of changed content.
+    """
     if not contexts:
         return [], ContextSanitizeStats()
     if not modalities or not isinstance(modalities, list):
         copied_contexts = []
         for msg in contexts:
-            copied_msg = _message_to_dict(msg)
+            copied_msg = _message_to_dict(msg, preserve_internal)
             if copied_msg:
                 copied_contexts.append(copied_msg)
         return copied_contexts, ContextSanitizeStats()
@@ -54,7 +86,7 @@ def sanitize_contexts_by_modalities(
     if supports_image and supports_audio and supports_tool_use:
         copied_contexts = []
         for msg in contexts:
-            copied_msg = _message_to_dict(msg)
+            copied_msg = _message_to_dict(msg, preserve_internal)
             if copied_msg:
                 copied_contexts.append(copied_msg)
         return copied_contexts, ContextSanitizeStats()
@@ -63,7 +95,7 @@ def sanitize_contexts_by_modalities(
     stats = ContextSanitizeStats()
 
     for raw_msg in contexts:
-        msg = _message_to_dict(raw_msg)
+        msg = _message_to_dict(raw_msg, preserve_internal)
         if not msg:
             continue
         role = msg.get("role")
@@ -77,6 +109,10 @@ def sanitize_contexts_by_modalities(
                     "role": "user",
                     "content": _tool_result_placeholder(msg.get("content")),
                 }
+                if preserve_internal:
+                    for key in ("_compaction_id", "_tool_result_unknown"):
+                        if key in msg:
+                            fixed_msg[key] = msg[key]
                 msg = fixed_msg
             if role == "assistant" and "tool_calls" in msg:
                 stats.removed_tool_calls += 1

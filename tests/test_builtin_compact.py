@@ -137,7 +137,7 @@ def test_refuses_when_no_conversation() -> None:
 
 
 def test_compresses_and_saves() -> None:
-    history = _history("u1", "a1", "u2", "a2", "u3", "a3")
+    history = _history("u1" * 200, "a1" * 200, "u2", "a2", "u3", "a3")
     conv_manager = _make_conv_manager(history=history)
     plugin = Main(
         context=_make_context(
@@ -152,7 +152,9 @@ def test_compresses_and_saves() -> None:
     conv_manager.update_conversation.assert_called_once()
     new_history = conv_manager.last_updated_history
     assert isinstance(new_history, list)
-    assert 0 < len(new_history) < len(history)
+    assert 0 < len(new_history) <= len(history)
+    assert len(json.dumps(new_history)) < len(json.dumps(history))
+    assert new_history[0]["_compaction_id"] == new_history[1]["_compaction_id"]
     texts = _result_texts(event)
     assert any("压缩完成" in t for t in texts)
 
@@ -214,7 +216,7 @@ def test_falls_back_to_session_provider_without_core_provider() -> None:
 
 def test_trailing_text_is_ignored() -> None:
     """Legacy `/compact run keep 0.2 ...` syntax must still compress."""
-    history = _history("u1", "a1", "u2", "a2", "u3", "a3")
+    history = _history("u1" * 200, "a1" * 200, "u2", "a2", "u3", "a3")
     conv_manager = _make_conv_manager(history=history)
     plugin = Main(
         context=_make_context(provider=_make_provider(), conv_manager=conv_manager),

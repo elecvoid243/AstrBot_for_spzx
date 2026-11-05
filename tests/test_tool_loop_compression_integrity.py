@@ -170,7 +170,7 @@ async def test_partial_batch_crosses_budget_with_paired_summary_and_main_request
         assert "orphan execution evidence" not in str(request["contexts"])
     results = {
         m.tool_call_id: m.content
-        for m in bind_checkpoint_messages(summary.requests[0]["contexts"])
+        for m in (Message.model_validate(item) for item in main.requests[1]["contexts"])
         if m.role == "tool"
     }
     assert results["A"] == "a" * 1500
@@ -550,6 +550,7 @@ async def test_direct_kernel_compressor_inherits_pairing_without_mutating_histor
     ]
     if invalid:
         history.append(pairing_result("A", "conflict"))
+    history.append(Message(role="user", content="current request"))
     original = copy.deepcopy(history)
     compressor = LLMSummaryCompressor(summary, keep_recent_ratio=0)
     if invalid:
@@ -617,6 +618,7 @@ async def test_summary_and_final_request_keep_media_only_when_supported(
                 ),
             ],
         ),
+        Message(role="user", content="current request"),
     ]
     runner, executor = await compression_runner(
         main,
@@ -639,5 +641,5 @@ async def test_summary_and_final_request_keep_media_only_when_supported(
         )
         is media_supported
     )
-    assert isinstance(history[-1].content[-1], ImageURLPart)
+    assert isinstance(history[-2].content[-1], ImageURLPart)
     assert executor.calls == []

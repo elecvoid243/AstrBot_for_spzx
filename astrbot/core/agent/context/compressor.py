@@ -1,3 +1,4 @@
+import copy
 import json
 import uuid
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
@@ -302,7 +303,7 @@ class LLMSummaryCompressor:
 
         for idx in range(len(rounds) - 1, -1, -1):
             round_tokens = self.token_counter.count_tokens(rounds[idx])
-            if used > 0 and used + round_tokens > budget:
+            if recent_start < len(rounds) and used + round_tokens > budget:
                 break
             used += round_tokens
             recent_start = idx
@@ -313,6 +314,9 @@ class LLMSummaryCompressor:
         self,
         messages: list[Message],
         func_tool: "ToolSet | None" = None,
+        *,
+        compact_current_round: bool = False,
+        protected_messages: list[Message] | None = None,
     ) -> list[Message]:
         """Use LLM to generate a summary of the conversation history.
 
@@ -329,6 +333,9 @@ class LLMSummaryCompressor:
                 the schema is visible but tools cannot run; if the model
                 still answers with a tool call (empty text), the request is
                 retried once without tools.
+            compact_current_round: Select earlier completed batches in the
+                current round after ordinary history compaction made progress.
+            protected_messages: Inputs awaiting durable delivery confirmation.
 
         Returns:
             Replacement history, or the paired input view when summarization
@@ -356,35 +363,98 @@ class LLMSummaryCompressor:
             [seg for seg in rnd if isinstance(seg, Message)] for rnd in rounds
         ]
         total_tokens = self.token_counter.count_tokens(messages)
+        input_snapshot = copy.deepcopy(messages)
         old_rounds, recent_rounds = self._split_recent_rounds_by_token_ratio(
             message_rounds,
             total_tokens,
         )
 
-        # The latest user message is the active request. Keep its whole round
-        # exact even when the ratio is 0 or the ratio budget would otherwise
-        # summarize every round.
-        if messages and messages[-1].role == "user" and old_rounds:
-            latest_old_round = old_rounds[-1]
-            if latest_old_round and latest_old_round[-1] is messages[-1]:
-                old_rounds = old_rounds[:-1]
-                recent_rounds = [latest_old_round, *recent_rounds]
+        for index, group in enumerate(message_rounds):
+            if (
+                any(msg.role == "system" for msg in group)
+                and any(msg.role != "system" for msg in group)
+            ) or any(msg in (protected_messages or []) for msg in group):
+                old_rounds = old_rounds[:index]
+                recent_rounds = message_rounds[len(old_rounds) :]
+                break
 
-        if not old_rounds:
-            if recent_rounds and messages and messages[-1].role == "user":
-                return messages
-            old_rounds = message_rounds
-            recent_rounds = []
+        # A tool continuation still belongs to the latest real user request.
+        current_round = next(
+            (
+                group
+                for group in reversed(message_rounds)
+                if any(msg.role == "user" and not msg.compaction_id for msg in group)
+            ),
+            None,
+        )
+        if current_round is not None and any(
+            group is current_round for group in old_rounds
+        ):
+            old_rounds = [group for group in old_rounds if group is not current_round]
+            recent_rounds = [current_round, *recent_rounds]
 
+        partial_start = None
+        partial_end = None
         summary_contexts = [msg for rnd in old_rounds for msg in rnd]
-        if not any(msg.role != "system" for msg in summary_contexts):
-            if recent_rounds and messages and messages[-1].role == "user":
+        if compact_current_round or not any(
+            msg.role != "system" for msg in summary_contexts
+        ):
+            user_index = next(
+                (
+                    index
+                    for index in range(len(messages) - 1, -1, -1)
+                    if messages[index].role == "user"
+                    and not messages[index].compaction_id
+                ),
+                None,
+            )
+            if user_index is None:
                 return messages
-            old_rounds = message_rounds
-            recent_rounds = []
-            summary_contexts = [msg for rnd in old_rounds for msg in rnd]
-            if not any(msg.role != "system" for msg in summary_contexts):
+            # Protocol repair supplies missing results; their internal marker
+            # must not be interpreted as evidence of completed execution.
+            units = []
+            index = user_index + 1
+            protected_end = index
+            latest_batch = None
+            while index < len(messages):
+                start = index
+                message = messages[index]
+                index += 1
+                if message.role == "assistant" and message.tool_calls:
+                    latest_batch = start
+                    while index < len(messages) and messages[index].role == "tool":
+                        index += 1
+                group = messages[start:index]
+                if any(
+                    msg.role == "system" or msg.tool_result_unknown for msg in group
+                ):
+                    protected_end = index
+                units.append((start, index))
+            partial_start = max(user_index + 1, protected_end)
+            if latest_batch is None:
+                partial_end = (
+                    len(messages) if messages[-1].role == "assistant" else partial_start
+                )
+            else:
+                budget = max(1, int(total_tokens * self.keep_recent_ratio))
+                kept = 0
+                tail_start = len(messages)
+                for start, end in reversed(units):
+                    cost = self.token_counter.count_tokens(messages[start:end])
+                    if (
+                        start < latest_batch
+                        and tail_start < len(messages)
+                        and kept + cost > budget
+                    ):
+                        break
+                    kept += cost
+                    tail_start = start
+                partial_end = min(tail_start, latest_batch)
+            if partial_end <= partial_start:
                 return messages
+            # Replay the exact prefix for cache reuse; replace only the chosen
+            # earlier execution steps, leaving the request and recent tail exact.
+            summary_contexts = list(messages[:partial_end])
 
         if summary_contexts[-1].role != "assistant":
             summary_contexts.append(
@@ -545,26 +615,47 @@ class LLMSummaryCompressor:
             logger.warning("LLM context compression returned an empty summary.")
             return messages
 
-        # Build result: system messages + summary pair + recent rounds
-        result = _extract_system_messages(messages)
-
-        result.append(
-            Message(
-                role="user",
-                content=f"Our previous history conversation summary: {summary_content}",
+        if messages != input_snapshot:
+            logger.warning(
+                "Summary input changed while generation was running; retaining current history."
             )
-        )
-        result.append(
-            Message(
-                role="assistant",
-                content="Acknowledged the summary of our previous conversation history.",
+            return messages
+
+        compaction_id = uuid.uuid4().hex
+        if partial_start is not None and partial_end is not None:
+            result = (
+                messages[:partial_start]
+                + [
+                    Message(
+                        role="assistant",
+                        content=f"Earlier execution checkpoint (continue the current request): {summary_content}",
+                        _compaction_id=compaction_id,
+                    )
+                ]
+                + messages[partial_end:]
             )
-        )
-
-        # Flatten recent rounds back to message list
-        for rnd in recent_rounds:
-            for seg in rnd:
-                if isinstance(seg, Message):
-                    result.append(seg)
-
+        else:
+            result = (
+                _extract_system_messages(messages)
+                + [
+                    Message(
+                        role="user",
+                        content=f"Our previous history conversation summary: {summary_content}",
+                        _compaction_id=compaction_id,
+                    ),
+                    Message(
+                        role="assistant",
+                        content="Acknowledged the summary of our previous conversation history.",
+                        _compaction_id=compaction_id,
+                    ),
+                ]
+                + [msg for group in recent_rounds for msg in group]
+            )
+        if self.token_counter.count_tokens(result) >= self.token_counter.count_tokens(
+            messages
+        ):
+            logger.warning(
+                "Summary did not reduce the selected context; retaining its input."
+            )
+            return messages
         return result

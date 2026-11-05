@@ -5,6 +5,7 @@ from typing import Any, ClassVar, Literal, TypeVar, cast
 
 from pydantic import (
     BaseModel,
+    Field,
     GetCoreSchemaHandler,
     PrivateAttr,
     ValidationError,
@@ -212,8 +213,30 @@ class Message(BaseModel):
     tool_call_id: str | None = None
     """The ID of the tool call."""
 
+    compaction_id: str | None = Field(
+        default=None, alias="_compaction_id", exclude=True, min_length=1
+    )
+    """Internal identity of a generated summary, excluded from model requests."""
+    tool_result_unknown: bool = Field(
+        default=False, alias="_tool_result_unknown", exclude=True
+    )
+    """Whether this result describes an unconfirmed execution outcome."""
+
     _no_save: bool = PrivateAttr(default=False)
     _checkpoint_after: CheckpointData | None = PrivateAttr(default=None)
+
+    def model_dump_for_context(self) -> dict[str, Any]:
+        """Serialize a message with internal retention and recovery metadata.
+
+        Returns:
+            Message fields and internal markers for storage or adaptation.
+        """
+        data = self.model_dump(mode="json")
+        if self.compaction_id is not None:
+            data["_compaction_id"] = self.compaction_id
+        if self.tool_result_unknown:
+            data["_tool_result_unknown"] = True
+        return data
 
     @model_validator(mode="after")
     def check_content_required(self):
@@ -346,7 +369,7 @@ def dump_messages_with_checkpoints(messages: list[Message]) -> list[dict]:
     """Dump runtime messages and reinsert bound checkpoint segments."""
     dumped: list[dict] = []
     for message in messages:
-        message_data = message.model_dump()
+        message_data = message.model_dump_for_context()
         if isinstance(message.content, list):
             message_data["content"] = [
                 part.model_dump()

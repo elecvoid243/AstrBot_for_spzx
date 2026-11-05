@@ -244,7 +244,8 @@ async def test_long_task_partial_results_compress_cancel_resume_and_finish(
                 plan("read", "missing", usage=30),
                 "pause",
             ],
-            max_context_tokens=1000,
+            max_context_tokens=2000,
+            compress_threshold_tokens=1100,
         )
         summary = PausingProvider(
             ["pause"]
@@ -263,7 +264,7 @@ async def test_long_task_partial_results_compress_cancel_resume_and_finish(
             func_tool=tools,
             llm_params={"max_tokens": 10},
             contexts=[
-                {"role": "user", "content": "old " * 100},
+                {"role": "user", "content": "old " * 200},
                 {"role": "assistant", "content": "old answer"},
             ],
         )
@@ -327,7 +328,8 @@ async def test_long_task_partial_results_compress_cancel_resume_and_finish(
                     usage=TokenUsage(input_other=100, output=3),
                 ),
             ],
-            max_context_tokens=1000,
+            max_context_tokens=2000,
+            compress_threshold_tokens=1100,
         )
         resumed, _ = await recovery_runner(
             restored,
@@ -354,14 +356,20 @@ async def test_long_task_partial_results_compress_cancel_resume_and_finish(
             *restored_summary.requests,
         ]:
             assert_paired(sent["contexts"])
-        summary_input = bind_checkpoint_messages(summary.requests[0]["contexts"])
+        # The unknown current batch remains exact; the summary covers old rounds.
+        summary_input = bind_checkpoint_messages(
+            dump_call_messages(restored.requests[0]["contexts"])
+        )
         results = {
             message.tool_call_id: message.content
             for message in summary_input
             if message.role == "tool"
         }
         assert "evidence " * 300 in results["read"]
-        assert "execution status is unknown" in results["missing"]
+        if cancel_stage == "summary":
+            assert results["missing"] == "The tool returned no content."
+        else:
+            assert "execution status is unknown" in results["missing"]
         assert (
             summary.requests[0]["func_tool"].openai_schema()
             == main.requests[2 if cancel_stage == "main" else 0][

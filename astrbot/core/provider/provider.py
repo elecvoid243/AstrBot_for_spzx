@@ -216,7 +216,13 @@ class Provider(AbstractProvider):
             if isinstance(message, Message):
                 dicts.append(message.model_dump())
             else:
-                dicts.append(message)
+                dicts.append(
+                    {
+                        key: value
+                        for key, value in message.items()
+                        if key not in {"_compaction_id", "_tool_result_unknown"}
+                    }
+                )
 
         return dicts
 

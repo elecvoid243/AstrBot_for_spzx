@@ -8,6 +8,40 @@ from .token_counter import TokenCounter
 class ContextTruncator:
     """Context truncator."""
 
+    def drop_oldest_round(
+        self, messages: list[Message], protected_messages: list[Message] | None = None
+    ) -> list[Message]:
+        """Remove the oldest eligible round without deleting retained context.
+
+        Args:
+            messages: Paired model history, including generated summaries.
+            protected_messages: Inputs awaiting durable delivery confirmation.
+
+        Returns:
+            History without one ordinary old round, or the unchanged list when
+            only summaries, system instructions and the current round remain.
+        """
+        start = next(
+            (i for i, message in enumerate(messages) if message.role != "system"),
+            len(messages),
+        )
+        rounds = split_into_rounds(messages[start:])
+        for index, round_messages in enumerate(rounds[:-1]):
+            if any(
+                message.role == "system"
+                or message.compaction_id
+                or message in (protected_messages or [])
+                for message in round_messages
+            ):
+                continue
+            return messages[:start] + [
+                message
+                for position, group in enumerate(rounds)
+                if position != index
+                for message in group
+            ]
+        return messages
+
     def _has_tool_calls(self, message: Message) -> bool:
         """Check if a message contains tool calls."""
         return (
@@ -127,6 +161,7 @@ class ContextTruncator:
                         Message(
                             role="tool",
                             tool_call_id=call_id,
+                            _tool_result_unknown=True,
                             content=(
                                 "No result was received for this tool call. "
                                 "Its execution status is unknown; do not assume "
@@ -144,6 +179,7 @@ class ContextTruncator:
         messages: list[Message],
         keep_most_recent_turns: int,
         drop_turns: int = 1,
+        protected_messages: list[Message] | None = None,
     ) -> list[Message]:
         """
         Turn-based truncation strategy, which drops the oldest turns while keeping the most recent N turns.
@@ -154,12 +190,33 @@ class ContextTruncator:
             messages: The original list of messages in the context.
             keep_most_recent_turns: The number of most recent turns to keep. If set to -1, it means keeping all turns (no truncation).
             drop_turns: The number of turns to drop from the beginning.
+            protected_messages: Inputs awaiting durable delivery confirmation.
 
         Returns:
             The truncated list of messages.
         """
         if keep_most_recent_turns == -1:
             return messages
+
+        if protected_messages or any(message.compaction_id for message in messages):
+            target = max(1, keep_most_recent_turns - drop_turns + 1)
+            while (
+                sum(
+                    not any(
+                        message.compaction_id
+                        or message.role == "system"
+                        or message in (protected_messages or [])
+                        for message in group
+                    )
+                    for group in split_into_rounds(messages)
+                )
+                > target
+            ):
+                replacement = self.drop_oldest_round(messages, protected_messages)
+                if replacement is messages:
+                    break
+                messages = replacement
+            return self.fix_messages(messages)
 
         system_messages, non_system_messages = self._split_system_rest(messages)
 
@@ -193,6 +250,14 @@ class ContextTruncator:
         """Drop the oldest N turns, regardless of the number of turns to keep."""
         if drop_turns <= 0:
             return messages
+
+        if any(message.compaction_id for message in messages):
+            for _ in range(drop_turns):
+                replacement = self.drop_oldest_round(messages)
+                if replacement is messages:
+                    break
+                messages = replacement
+            return self.fix_messages(messages)
 
         system_messages, non_system_messages = self._split_system_rest(messages)
 
@@ -244,6 +309,19 @@ class ContextTruncator:
         if budget_tokens <= 0 or len(messages) <= 2:
             return messages
 
+        if any(message.compaction_id for message in messages):
+            dropped = 0
+            while (
+                dropped < min_drop_turns
+                or token_counter.count_tokens(messages) > budget_tokens
+            ):
+                replacement = self.drop_oldest_round(messages)
+                if replacement is messages:
+                    break
+                messages = replacement
+                dropped += 1
+            return self.fix_messages(messages)
+
         system_messages, non_system_messages = self._split_system_rest(messages)
 
         if non_system_messages:
@@ -290,6 +368,14 @@ class ContextTruncator:
         """Halve the number of messages, keeping the most recent ones."""
         if len(messages) <= 2:
             return messages
+
+        if any(message.compaction_id for message in messages):
+            for _ in range(max(1, len(split_into_rounds(messages)) // 2)):
+                replacement = self.drop_oldest_round(messages)
+                if replacement is messages:
+                    break
+                messages = replacement
+            return self.fix_messages(messages)
 
         system_messages, non_system_messages = self._split_system_rest(messages)
 

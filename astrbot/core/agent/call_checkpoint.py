@@ -31,7 +31,7 @@ def dump_call_messages(messages: list[Message] | list[dict]) -> list[dict]:
         if isinstance(message, dict):
             result.append(message)
             continue
-        data = message.model_dump(mode="json")
+        data = message.model_dump_for_context()
         if message._no_save:
             data["_no_save"] = True
         if isinstance(message.content, list):

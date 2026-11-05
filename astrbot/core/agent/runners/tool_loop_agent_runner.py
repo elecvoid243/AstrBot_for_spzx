@@ -371,6 +371,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         self.custom_compressor = custom_compressor
         self.request_max_retries = request_max_retries
         self.tool_result_overflow_dir = tool_result_overflow_dir
+        self._context_tool_result_files: dict[str, str] = {}
         self.read_tool = read_tool
         self._tool_result_token_counter = EstimateTokenCounter()
         max_context_tokens = provider.provider_config.get("max_context_tokens", 0)
@@ -715,6 +716,9 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                 "Model request has no saved invocation identity"
             )
         self._call_checkpoint["format_version"] = 2
+        self._call_checkpoint.setdefault("tool_result_files", {}).update(
+            self._context_tool_result_files
+        )
         self._call_checkpoint["phase"] = phase
         if response is not None:
             self._call_checkpoint["response"] = dump_call_response(response)
@@ -1022,6 +1026,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                 if separator and not Path(notice.partition("`")[0]).is_file():
                     raise ValueError("Required saved overflow reference is unavailable")
         saved["tool_result_files"] = files
+        self._context_tool_result_files.update(files)
 
     async def _write_tool_result_overflow_file(
         self,
@@ -1090,6 +1095,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                 tool_call_id=tool_call_id,
                 content=content,
             )
+            self._context_tool_result_files[overflow_path] = content
             if self._checkpoint_enabled and self._call_checkpoint is not None:
                 self._call_checkpoint.setdefault("tool_result_files", {})[
                     overflow_path
@@ -1137,6 +1143,114 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                 break
             preview = preview[:next_len]
         return preview
+
+    async def _prune_tool_results_for_context(
+        self, messages: list[Message]
+    ) -> list[Message]:
+        """Offload over-budget historical results before requesting a summary.
+
+        Args:
+            messages: Paired model view; execution observations remain unchanged.
+
+        Returns:
+            A copied view with bounded head/tail previews and readable originals.
+            Results whose files cannot be written remain unchanged.
+        """
+        if self.tool_result_overflow_dir is None or self.read_tool is None:
+            return messages
+        result = list(messages)
+        limit = self.TOOL_RESULT_PREVIEW_MAX_ESTIMATED_TOKENS
+        for index, message in enumerate(messages):
+            if message.role != "tool" or message.tool_result_unknown:
+                continue
+            if self._tool_result_token_counter.count_tokens([message]) <= limit:
+                continue
+            content = message.content
+            parts = [TextPart(text=content)] if isinstance(content, str) else content
+            if not isinstance(parts, list):
+                continue
+            text = "".join(part.text for part in parts if isinstance(part, TextPart))
+            if not text:
+                continue
+            # A prior spill notice only skips optional pruning; it never grants
+            # authority to reconstruct a file from unverified text.
+            if (
+                self.TOOL_RESULT_OVERFLOW_NOTICE_TEMPLATE.partition("{overflow_path}")[
+                    0
+                ]
+                in text
+            ):
+                continue
+            # Existing references are authoritative only when backed by a file
+            # saved by this runner; never archive a preview as the original.
+            saved_files = {
+                **(self._call_checkpoint or {}).get("tool_result_files", {}),
+                **self._context_tool_result_files,
+            }
+            if any(path in text for path in saved_files):
+                continue
+            path = (
+                Path(self.tool_result_overflow_dir).resolve(strict=False)
+                / f"pruned_{uuid.uuid4().hex}.txt"
+            )
+            notice = self.TOOL_RESULT_OVERFLOW_NOTICE_TEMPLATE.format(
+                overflow_path=path, read_tool_hint=self._read_tool_hint()
+            )
+            marker = f"\n\n[Middle of tool output omitted.]\n{notice}\n\n"
+            retained_chars = len(text) // 2
+            replacement = None
+            while retained_chars > 0:
+                head = (retained_chars * 4) // 5
+                tail_start = len(text) - (retained_chars - head)
+                offset = 0
+                inserted = False
+                preview_parts = []
+                for part in parts:
+                    if not isinstance(part, TextPart):
+                        preview_parts.append(copy.deepcopy(part))
+                        continue
+                    end = offset + len(part.text)
+                    preview = part.text[: max(0, min(len(part.text), head - offset))]
+                    if end > head and offset < tail_start and not inserted:
+                        preview += marker
+                        inserted = True
+                    if end > tail_start:
+                        preview += part.text[max(0, tail_start - offset) :]
+                    if preview:
+                        preview_parts.append(
+                            part.model_copy(update={"text": preview}, deep=True)
+                        )
+                    offset = end
+                candidate = message.model_copy(
+                    update={
+                        "content": "".join(part.text for part in preview_parts)
+                        if isinstance(content, str)
+                        else preview_parts
+                    },
+                    deep=True,
+                )
+                if self._tool_result_token_counter.count_tokens([candidate]) <= limit:
+                    replacement = candidate
+                    break
+                retained_chars //= 2
+            if replacement is None:
+                continue
+            try:
+                await self._write_tool_result_overflow_file(
+                    tool_call_id=message.tool_call_id or "result",
+                    content=text,
+                    overflow_path=path,
+                )
+            except (OSError, ValueError) as exc:
+                logger.warning(
+                    "Could not offload historical tool result %s: %s",
+                    message.tool_call_id,
+                    exc,
+                )
+                continue
+            self._context_tool_result_files[str(path)] = text
+            result[index] = replacement
+        return result
 
     async def _await_or_stop(
         self,
@@ -1394,6 +1508,21 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                     else 0,
                     check_compression_threshold=not unchanged,
                     modalities=self.provider.provider_config.get("modalities"),
+                    prune_tool_results=self._prune_tool_results_for_context
+                    if stage == "main" and self.custom_compressor is None
+                    else None,
+                    protected_messages=[
+                        self.run_context.messages[item["context_position"]]
+                        for item in (
+                            self._member_message_receipts
+                            or (self._call_checkpoint or {}).get("member_messages", [])
+                        )
+                        if 0
+                        <= item["context_position"]
+                        < len(self.run_context.messages)
+                    ]
+                    if stage == "main"
+                    else None,
                 )
             )
         if checked is None:
@@ -1425,7 +1554,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             messages = bind_checkpoint_messages(contexts)
             fixed = self.request_context_manager.truncator.fix_messages(messages)
             if fixed != messages:
-                contexts = [message.model_dump() for message in fixed]
+                contexts = [message.model_dump_for_context() for message in fixed]
         else:
             contexts = self.request_context_manager.truncator.fix_messages(contexts)
         # Persistence callbacks and later history appends cannot mutate this view.
@@ -1530,9 +1659,9 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                 "messages": copy.deepcopy(
                     [
                         message.model_dump(mode="json")
-                        if isinstance(message, Message)
-                        else message
-                        for message in contexts
+                        for message in bind_checkpoint_messages(
+                            dump_call_messages(contexts)
+                        )
                     ]
                 ),
                 "tool_schema": copy.deepcopy(
@@ -1592,9 +1721,9 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                 messages=copy.deepcopy(
                     [
                         message.model_dump(mode="json")
-                        if isinstance(message, Message)
-                        else message
-                        for message in contexts
+                        for message in bind_checkpoint_messages(
+                            dump_call_messages(contexts)
+                        )
                     ]
                 ),
                 tool_schema=copy.deepcopy(
@@ -1938,6 +2067,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         sanitized_contexts, stats = sanitize_contexts_by_modalities(
             contexts,
             self.provider.provider_config.get("modalities", None),
+            preserve_internal=True,
         )
         log_context_sanitize_stats(stats)
         return sanitized_contexts
@@ -3991,7 +4121,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         contexts: list[dict[str, T.Any]] = []
         for msg in self.run_context.messages:
             if hasattr(msg, "model_dump"):
-                contexts.append(msg.model_dump())  # type: ignore[call-arg]
+                contexts.append(msg.model_dump_for_context())
             elif isinstance(msg, dict):
                 contexts.append(copy.deepcopy(msg))
         instruction = self.SKILLS_LIKE_REQUERY_INSTRUCTION_TEMPLATE.format(
@@ -4074,9 +4204,9 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                     "model": prepared.get("model") or self.provider.get_model(),
                     "messages": [
                         message.model_dump(mode="json")
-                        if isinstance(message, Message)
-                        else copy.deepcopy(message)
-                        for message in prepared["contexts"]
+                        for message in bind_checkpoint_messages(
+                            dump_call_messages(prepared["contexts"])
+                        )
                     ],
                     "tool_schema": prepared["func_tool"].openai_schema(),
                 }
@@ -4108,7 +4238,8 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                     # Rebuild from current history when a late injection changes
                     # it, preserving the existing stage's final instruction.
                     final_contexts = [
-                        message.model_dump() for message in self.run_context.messages
+                        message.model_dump_for_context()
+                        for message in self.run_context.messages
                     ] + [copy.deepcopy(contexts[-1])]
                 prepared = await self._prepare_llm_request(
                     contexts=final_contexts,

@@ -229,9 +229,8 @@ class TestContextManager:
 
         assert len(result) == 4
         assert result[0].role == "user"
-        assert isinstance(result[0].content, str)
-        assert result[0].content.strip()
-        assert "Hello" in result[0].content
+        # The canned summary is longer than this small text-part history.
+        assert result == messages
         assert result[-1].content == [TextPart(text="Sure")]
 
     @pytest.mark.asyncio
@@ -268,7 +267,7 @@ class TestContextManager:
         assert result[-1] is messages[-1]
 
     @pytest.mark.asyncio
-    async def test_llm_compressor_summarizes_single_long_round(self):
+    async def test_llm_compressor_preserves_single_latest_tool_batch(self):
         from astrbot.core.agent.context.compressor import LLMSummaryCompressor
 
         provider = MockProvider()
@@ -295,20 +294,8 @@ class TestContextManager:
 
         result = await compressor(messages)
 
-        summary_contexts = provider.last_text_chat_kwargs["contexts"]
-        assert summary_contexts[0] == {"role": "user", "content": "Run the tool."}
-        assert summary_contexts[1]["role"] == "assistant"
-        assert summary_contexts[1]["tool_calls"]
-        assert summary_contexts[2]["role"] == "tool"
-        assert summary_contexts[2]["tool_call_id"] == "call_1"
-        assert summary_contexts[3]["role"] == "assistant"
-        assert summary_contexts[4]["role"] == "user"
-        assert "Summarize the whole trajectory." in summary_contexts[4]["content"]
-        assert (
-            compressor.TASK_CONTINUATION_INSTRUCTION in summary_contexts[4]["content"]
-        )
-        assert all(original not in result for original in messages)
-        assert len(result) == 2
+        assert provider.last_text_chat_kwargs is None
+        assert result == messages
 
     @pytest.mark.asyncio
     async def test_llm_compressor_preserves_active_user_request(self):
@@ -416,6 +403,17 @@ class TestContextManager:
                 ],
             ),
             Message(role="tool", content="tool output", tool_call_id="call_1"),
+            Message(
+                role="assistant",
+                tool_calls=[
+                    {
+                        "id": "call_2",
+                        "type": "function",
+                        "function": {"name": "inspect", "arguments": "{}"},
+                    }
+                ],
+            ),
+            Message(role="tool", content="recent output", tool_call_id="call_2"),
             Message(role="assistant", content="Done"),
         ]
 
@@ -825,7 +823,7 @@ class TestContextManager:
         result = await manager.process(messages)
 
         assert result == [messages[0], messages[-1]]
-        assert "only the latest round left" in caplog.text
+        assert "Protected context still exceeds the compression trigger" in caplog.text
 
     @pytest.mark.asyncio
     async def test_llm_summary_is_requested_once(self):
@@ -1410,7 +1408,7 @@ async def test_llm_compressor_passes_func_tool_to_summary_request():
     compressor = LLMSummaryCompressor(provider=provider, keep_recent_ratio=0.01)  # type: ignore[arg-type]
     messages = [
         Message(role="system", content="sys"),
-        Message(role="user", content="u1"),
+        Message(role="user", content="u1" * 200),
         Message(role="assistant", content="a1"),
         Message(role="user", content="u2"),
     ]
@@ -1442,7 +1440,7 @@ async def test_llm_compressor_retries_without_tools_on_empty_completion():
     compressor = LLMSummaryCompressor(provider=provider, keep_recent_ratio=0.01)  # type: ignore[arg-type]
     messages = [
         Message(role="system", content="sys"),
-        Message(role="user", content="u1"),
+        Message(role="user", content="u1" * 200),
         Message(role="assistant", content="a1"),
         Message(role="user", content="u2"),
     ]

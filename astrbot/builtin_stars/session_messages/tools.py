@@ -1,10 +1,15 @@
-"""Text delivery between existing, account-owned ordinary ChatUI sessions."""
+"""Creation and text delivery for account-owned ordinary ChatUI sessions."""
 
+import asyncio
 import json
 from dataclasses import dataclass, field
 
 from astrbot.core.agent.run_context import ContextWrapper
-from astrbot.core.agent.tool import FunctionTool, ToolExecResult
+from astrbot.core.agent.tool import (
+    FunctionTool,
+    ToolExecResult,
+    current_tool_invocation,
+)
 from astrbot.core.astr_agent_context import AstrAgentContext
 from astrbot.core.utils.webchat_access import DashboardPrincipal
 
@@ -133,6 +138,96 @@ class SendChatMessageTool(FunctionTool[AstrAgentContext]):
             return json.dumps(
                 await service.send_session_message(context.context.event, **kwargs),
                 ensure_ascii=False,
+            )
+        except (ChatServiceError, ValueError) as exc:
+            return f"error: {exc}"
+
+
+@dataclass
+class CreateChatSessionTool(FunctionTool[AstrAgentContext]):
+    name: str = "create_chat_session"
+    description: str = (
+        "Create an independent ordinary ChatUI session with empty history. Omitted "
+        "project and settings inherit this execution's effective values. project_id=null "
+        "explicitly chooses no project; a string must identify an existing owned project. "
+        "Optional text sends the first Agent message through send_chat_message, sharing "
+        "its automatic chain budget. Without text, only create. Returns the created ID "
+        "even if first-message admission fails; reuse it with send_chat_message."
+    )
+    parameters: dict = field(
+        default_factory=lambda: {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "New conversation title."},
+                "project_id": {
+                    "type": ["string", "null"],
+                    "description": "Existing owned project ID, null for no project; omit to inherit.",
+                },
+                "selected_provider": {
+                    "type": "string",
+                    "description": "Available chat provider ID.",
+                },
+                "selected_model": {
+                    "type": "string",
+                    "description": "Model allowed by the provider.",
+                },
+                "thinking_effort": {
+                    "type": "string",
+                    "description": "Thinking effort, budget, or auto.",
+                },
+                "text": {
+                    "type": "string",
+                    "description": "Optional nonempty first Agent message.",
+                },
+            },
+            "required": ["title"],
+            "additionalProperties": False,
+        }
+    )
+
+    async def call(
+        self, context: ContextWrapper[AstrAgentContext], **kwargs
+    ) -> ToolExecResult:
+        """Create once per real invocation, retaining a result through caller retries.
+
+        Args:
+            context: Executing main Agent with server-owned runner and event.
+            **kwargs: Title, optional project, settings and first text.
+
+        Returns:
+            Created session location and optional send outcome, or an explicit error.
+        """
+        from astrbot.dashboard.services.chat_service import ChatServiceError
+
+        event = context.context.event
+        service = getattr(context.context.context, "session_message_service", None)
+        invocation = current_tool_invocation.get()
+        runner = context.context.extra.get("main_agent_runner")
+        if service is None or runner is None or not invocation:
+            return "error: A trusted main Agent tool invocation is required"
+        if set(kwargs) - self.parameters["properties"].keys():
+            return "error: Unsupported creation arguments"
+        # This cache lives only as long as the source execution. Never use a
+        # model-provided key or a mutable shared field for parallel tool calls.
+        pending = event.get_extra("_created_chat_sessions")
+        if pending is None:
+            pending = {}
+            event.set_extra("_created_chat_sessions", pending)
+        if invocation not in pending:
+            effective = {
+                "selected_provider": runner.provider.provider_config["id"],
+                "selected_model": runner.req.model or runner.provider.get_model(),
+                "thinking_effort": runner.req.llm_params.get("thinking_effort")
+                or event.get_extra("thinking_effort")
+                or "auto",
+            }
+            pending[invocation] = asyncio.create_task(
+                service.create_session_from_agent(event, kwargs, effective)
+            )
+        try:
+            # A tool timeout must not abandon a partly configured conversation.
+            return json.dumps(
+                await asyncio.shield(pending[invocation]), ensure_ascii=False
             )
         except (ChatServiceError, ValueError) as exc:
             return f"error: {exc}"

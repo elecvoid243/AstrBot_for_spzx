@@ -344,7 +344,7 @@ interface UseMessagesOptions {
   accountRole?: string;
   onError?: (message: string, sessionId: string) => void;
   currentSessionId: Ref<string>;
-  onSessionsChanged?: () => Promise<void> | void;
+  onSessionsChanged?: (projectId?: string | null) => Promise<void> | void;
   onStreamUpdate?: (sessionId: string) => void;
   /** Live tool calls only; persisted history and result events never fire this hook. */
   onToolCall?: (sessionId: string, tool: ToolCall, runId: string) => void;
@@ -591,6 +591,10 @@ export function useMessages(options: UseMessagesOptions) {
               }
               attachLiveRun(sessionId, String(payload.message_id));
               options.onStreamUpdate?.(sessionId);
+              return;
+            }
+            if (payload?.type === "chat_session_created") {
+              void options.onSessionsChanged?.(payload.data?.project_id ?? null);
               return;
             }
             if (payload?.type === "goal_state_changed") {

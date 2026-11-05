@@ -95,4 +95,17 @@ describe("useMessages shell_sessions_changed dispatch", () => {
     // The payload must not surface as a bot record in the message list.
     expect(composable.messagesBySession["s1"] ?? []).toEqual([]);
   });
+
+  it.each([null, "project-b"])(
+    "refreshes created conversations in project %s without adding chat text",
+    async (projectId) => {
+      fetchMock.mockResolvedValueOnce(sseResponse([
+        { type: "chat_session_created", data: { session_id: "new-b", project_id: projectId } },
+      ])).mockResolvedValue(new Response(null, { status: 503 }));
+      const onSessionsChanged = vi.fn();
+      const composable = useMessages({ currentSessionId: ref("s1"), onSessionsChanged });
+      await vi.waitFor(() => expect(onSessionsChanged).toHaveBeenCalledWith(projectId));
+      expect(composable.messagesBySession["s1"] ?? []).toEqual([]);
+    },
+  );
 });

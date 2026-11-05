@@ -2417,7 +2417,10 @@ const {
   onToolCall: (sessionId, tool, runId) => {
     void autoOpenAgentBrowser(sessionId, tool, runId);
   },
-  onSessionsChanged: getSessions,
+  onSessionsChanged: async (projectId) => {
+    await getSessions();
+    if (projectId) await loadProjectSessions(projectId);
+  },
   onGoalStateChanged,
   onShellSessionsChanged: applyPushedShellSessions,
   onInteractiveChoice: (sessionId) => {

@@ -2764,6 +2764,7 @@ class ChatService:
                     if payload.get("type") in (
                         "goal_state_changed",
                         "shell_sessions_changed",
+                        "chat_session_created",
                     ):
                         yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
                         continue
@@ -3143,6 +3144,121 @@ class ChatService:
             if page * 100 >= total:
                 return result
             page += 1
+
+    async def create_session_from_agent(
+        self, event, payload: dict, effective_selection: dict
+    ) -> dict:
+        """Create and configure an empty ordinary session before optionally sending.
+
+        Args:
+            event: Trusted source main Agent event, including its shared send budget.
+            payload: Public creation arguments, with absence distinct from null project.
+            effective_selection: Server-owned runner's current model and thinking values.
+
+        Returns:
+            Created session descriptor and separate first-message acceptance outcome.
+
+        Raises:
+            ChatServiceError: Source, project, title or configuration is unavailable.
+        """
+        from astrbot.core.cron.webchat_turn import parse_webchat_turn_session
+        from astrbot.dashboard.services.chatui_project_service import (
+            ChatUIProjectService,
+            ChatUIProjectServiceError,
+        )
+
+        # Reuse the ordinary-execution identity and account revalidation boundary.
+        await self.list_message_sessions(event)
+        account = event.get_extra("_dashboard_account")
+        owner = account.resource_owner
+        source_id, _ = parse_webchat_turn_session(event.unified_msg_origin)
+        title = payload.get("title")
+        if not isinstance(title, str) or not title.strip() or len(title) > 255:
+            raise ChatServiceError(
+                "A nonempty title of at most 255 characters is required"
+            )
+        for key in (
+            "selected_provider",
+            "selected_model",
+            "thinking_effort",
+            "text",
+        ):
+            if key in payload and (
+                not isinstance(payload[key], str) or not payload[key].strip()
+            ):
+                raise ChatServiceError(f"{key} must be a nonempty string")
+        projects = ChatUIProjectService(self.db)
+        project_id = payload.get("project_id")
+        if "project_id" not in payload:
+            project = await self.db.get_project_by_session(source_id, owner)
+            project_id = project.project_id if project else None
+        if project_id is not None and (
+            not isinstance(project_id, str) or not project_id
+        ):
+            raise ChatServiceError("project_id must be an existing project ID or null")
+        try:
+            if project_id is not None:
+                await projects.get_project(owner, project_id)
+        except ChatUIProjectServiceError as exc:
+            raise ChatServiceError(str(exc)) from exc
+        config_id = (await self.session_config(owner, source_id))["config_id"]
+        selection = dict(effective_selection)
+        if "selected_provider" in payload:
+            selection["selected_provider"] = payload["selected_provider"]
+            # A changed provider chooses its own model unless explicitly overridden.
+            selection["selected_model"] = payload.get("selected_model")
+        for key in ("selected_model", "thinking_effort"):
+            if key in payload:
+                selection[key] = payload[key]
+        # Validate resources before allocating a session; validate again on write.
+        if config_id not in self.core_lifecycle.astrbot_config_mgr.confs:
+            raise ChatServiceError("Config profile is unavailable")
+        await self.validate_chat_selection(owner, source_id, selection, use_saved=False)
+        created = await self.new_session(owner, "webchat")
+        session_id = created["session_id"]
+        try:
+            await self.update_session_display_name(owner, session_id, title.strip())
+            await self.session_config(owner, session_id, config_id)
+            saved_selection = await self.session_selection(owner, session_id, selection)
+            if project_id is not None:
+                await projects.add_session_to_project(
+                    owner, {"session_id": session_id, "project_id": project_id}
+                )
+        except BaseException as exc:
+            session = await self.db.get_platform_session_by_id(session_id)
+            if session is not None:
+                await self.delete_session_internal(session, owner)
+            if isinstance(exc, ChatUIProjectServiceError):
+                raise ChatServiceError(str(exc)) from exc
+            raise
+        result = {
+            "status": "created",
+            "session_id": session_id,
+            "display_name": title.strip(),
+            "project_id": project_id,
+            "config_id": config_id,
+            "selection": saved_selection,
+            "detail_path": f"/#/chat/{session_id}",
+        }
+        try:
+            await webchat_queue_mgr.put_system_event(
+                source_id,
+                {
+                    "type": "chat_session_created",
+                    "data": {"session_id": session_id, "project_id": project_id},
+                },
+            )
+        except Exception:
+            logger.warning("Failed to publish created ChatUI session", exc_info=True)
+        if "text" in payload:
+            try:
+                result["send"] = await self.send_session_message(
+                    event, session_id, payload["text"]
+                )
+            except Exception as exc:
+                result["status"] = "created_send_failed"
+                result["send_error"] = str(exc)
+        return result
 
     async def send_session_message(self, event, session_id: str, text: str) -> dict:
         """Accept Agent text through the ordinary chat admission and collector.

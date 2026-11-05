@@ -2,6 +2,7 @@
 
 from astrbot.api import star
 from astrbot.builtin_stars.session_messages.tools import (
+    CreateChatSessionTool,
     ListChatSessionsTool,
     SendChatMessageTool,
 )
@@ -10,4 +11,6 @@ from astrbot.builtin_stars.session_messages.tools import (
 class Main(star.Star):
     async def initialize(self) -> None:
         """Register tools with existing activation and permission controls."""
-        self.context.add_llm_tools(ListChatSessionsTool(), SendChatMessageTool())
+        self.context.add_llm_tools(
+            ListChatSessionsTool(), SendChatMessageTool(), CreateChatSessionTool()
+        )

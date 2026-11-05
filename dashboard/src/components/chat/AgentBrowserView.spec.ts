@@ -512,15 +512,27 @@ describe("Agent browser snapshots", () => {
       }
     },
   );
-  it.each(["up", "cancel", "blur", "navigation"])(
-    "captures a scaled drag, coalesces moves and safely ends on %s",
+  it.each([
+    "up",
+    "cancel",
+    "blur",
+    "navigation",
+    "click",
+    "double click",
+    "backlog",
+    "stale",
+    "disconnect",
+  ])(
+    "sends press immediately, preserves scaled moves and safely ends on %s",
     async (ending) => {
       class Socket {
         static OPEN = 1;
         static instance: Socket;
         readyState = 1;
         sent: Record<string, any>[] = [];
+        acknowledged = 0;
         onmessage?: (event: { data: string }) => void;
+        onclose?: () => void;
         constructor() {
           Socket.instance = this;
         }
@@ -530,13 +542,14 @@ describe("Agent browser snapshots", () => {
         close() {
           this.readyState = 3;
         }
-        ack() {
-          const input = this.sent.at(-1);
+        ack(status = "applied") {
+          const input = this.sent[this.acknowledged];
+          if (input) this.acknowledged++;
           this.onmessage?.({
             data: JSON.stringify({
               operation: input?.operation ?? "acquire",
-              input_id: input?.input_id,
-              status: "applied",
+              input_id: input?.input_id ?? null,
+              status,
               control_epoch: 2,
             }),
           });
@@ -593,22 +606,96 @@ describe("Agent browser snapshots", () => {
         await flushPromises();
         await image.trigger("pointerdown", {
           pointerId: 7,
+          pointerType: "mouse",
           button: 0,
           clientX: 110,
           clientY: 70,
         });
+        await image.trigger("mousedown", {
+          button: 0,
+          detail: 1,
+          clientX: 110,
+          clientY: 70,
+        });
+        expect(socket.sent.at(-1)).toMatchObject({
+          operation: "pointer",
+          phase: "down",
+          x: 200,
+          y: 100,
+        });
+        if (ending === "click" || ending === "double click") {
+          await image.trigger("pointerup", {
+            pointerId: 7,
+            clientX: 110,
+            clientY: 70,
+          });
+          await image.trigger("click", {
+            clientX: 110,
+            clientY: 70,
+            detail: 1,
+          });
+          if (ending === "double click") {
+            // The second native press arrives before the first release ACK/frame.
+            await image.trigger("pointerdown", {
+              pointerId: 7,
+              pointerType: "mouse",
+              button: 0,
+              clientX: 110,
+              clientY: 70,
+            });
+            await image.trigger("mousedown", {
+              button: 0,
+              detail: 2,
+              clientX: 110,
+              clientY: 70,
+            });
+            await image.trigger("pointerup", {
+              pointerId: 7,
+              clientX: 110,
+              clientY: 70,
+            });
+            await image.trigger("click", {
+              clientX: 110,
+              clientY: 70,
+              detail: 2,
+            });
+          }
+          expect(socket.sent.map((input) => input.phase)).toEqual([
+            "down",
+            "up",
+          ]);
+          while (socket.acknowledged < socket.sent.length) socket.ack();
+          expect(
+            socket.sent.map((input) => [input.phase, input.click_count]),
+          ).toEqual(
+            ending === "click"
+              ? [
+                  ["down", 1],
+                  ["up", 1],
+                ]
+              : [
+                  ["down", 1],
+                  ["up", 1],
+                  ["down", 2],
+                  ["up", 2],
+                ],
+          );
+          expect(
+            socket.sent.every((input) => input.operation === "pointer"),
+          ).toBe(true);
+          return;
+        }
         await image.trigger("pointermove", {
           pointerId: 7,
           clientX: 111,
           clientY: 70,
         });
-        expect(socket.sent).toHaveLength(0);
         await image.trigger("pointermove", {
           pointerId: 7,
           clientX: 210,
           clientY: 100,
         });
-        expect(socket.sent.at(-1)).toMatchObject({
+        expect(socket.sent[0]).toMatchObject({
           operation: "pointer",
           phase: "down",
           x: 200,
@@ -625,6 +712,23 @@ describe("Agent browser snapshots", () => {
           clientX: 410,
           clientY: 150,
         });
+        if (ending === "stale" || ending === "disconnect") {
+          if (ending === "stale") socket.ack("stale");
+          else socket.onclose?.();
+          await flushPromises();
+          expect(view.attributes("data-human-control")).toBe("false");
+          expect(socket.readyState).toBe(3);
+          const sent = socket.sent.length;
+          while (socket.acknowledged < socket.sent.length) socket.ack();
+          await image.trigger("pointerup", {
+            pointerId: 7,
+            clientX: 410,
+            clientY: 150,
+          });
+          expect(socket.sent).toHaveLength(sent);
+          expect(view.attributes("data-human-control")).toBe("false");
+          return;
+        }
         socket.ack();
         expect(socket.sent.at(-1)).toMatchObject({
           operation: "pointer",
@@ -632,7 +736,48 @@ describe("Agent browser snapshots", () => {
           x: 800,
           y: 260,
         });
-        expect(socket.sent).toHaveLength(2);
+        expect(
+          socket.sent
+            .filter((input) => input.phase === "move")
+            .map((input) => input.x),
+        ).toEqual([202, 400, 600, 800]);
+        if (ending === "backlog") {
+          for (let index = 1; index <= 20; index++)
+            await image.trigger("pointermove", {
+              pointerId: 7,
+              clientX: 410 + index,
+              clientY: 150,
+            });
+          await image.trigger("pointerup", {
+            pointerId: 7,
+            clientX: 440,
+            clientY: 150,
+          });
+          expect(socket.sent.length - socket.acknowledged).toBe(8);
+          expect(socket.sent.some((input) => input.phase === "up")).toBe(false);
+          while (socket.acknowledged < socket.sent.length) {
+            socket.ack();
+            expect(
+              socket.sent.length - socket.acknowledged,
+            ).toBeLessThanOrEqual(8);
+          }
+          expect(
+            socket.sent
+              .filter((input) => input.phase === "move")
+              .map((input) => input.x),
+          ).toEqual([
+            202,
+            400,
+            600,
+            800,
+            ...Array.from({ length: 20 }, (_, index) => 802 + 2 * index),
+            860,
+          ]);
+          expect(socket.sent.at(-2)).toMatchObject({ phase: "move", x: 860 });
+          expect(socket.sent.at(-1)).toMatchObject({ phase: "up", x: 860 });
+          return;
+        }
+        while (socket.acknowledged < socket.sent.length) socket.ack();
         if (ending === "up") {
           // Autoscroll during a held gesture must not erase its release or require a new image.
           stream.enqueue(
@@ -652,7 +797,7 @@ describe("Agent browser snapshots", () => {
             clientX: 1000,
             clientY: -20,
           });
-          socket.ack();
+          while (socket.acknowledged < socket.sent.length) socket.ack();
           expect(socket.sent.at(-1)).toMatchObject({
             operation: "pointer",
             phase: "up",
@@ -1121,6 +1266,8 @@ describe("Agent browser snapshots", () => {
         this.onmessage?.({
           data: JSON.stringify({
             operation,
+            input_id:
+              operation === "acquire" ? undefined : this.sent.at(-1)?.input_id,
             status: "applied",
             control_epoch: 2,
             state: { control_mode: mode },

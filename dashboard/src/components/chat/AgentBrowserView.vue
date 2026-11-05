@@ -150,12 +150,17 @@ const composing = ref(false);
 let committedComposition: string | null = null;
 let compositionTimer: ReturnType<typeof setTimeout> | undefined;
 let inputQueue: Record<string, unknown>[] = [];
-let inputInFlight = false;
+const inFlightInputs = new Map<
+  number,
+  { operation: string; phase: string; started: number }
+>();
 const dragging = ref(false);
 let pointerGesture: {
   id: number;
   x: number;
   y: number;
+  pressed: boolean;
+  clickCount: number;
   target: BrowserState;
 } | null = null;
 let suppressClick = false;
@@ -319,11 +324,8 @@ const awaitingFrame = ref(false);
 const frameLatency = ref<number | null>(null);
 let awaitedInput = 0;
 let awaitedSequence = -1;
-let inputStarted = 0;
 let awaitedStarted = 0;
 let wheelTimer: ReturnType<typeof setTimeout> | undefined;
-let inFlightOperation = "";
-let inFlightPhase = "";
 let releasing = false;
 const localKeys = new Set<string>();
 let controlSocket: WebSocket | null = null;
@@ -342,7 +344,9 @@ function disconnectControl() {
   if (humanControl.value || (manualPending.value && controlSocket))
     manualMessage.value = t(
       `${key}.${
-        inputInFlight && inFlightOperation !== "reset_keys"
+        [...inFlightInputs.values()].some(
+          (input) => input.operation !== "reset_keys",
+        )
           ? "inputUnknown"
           : "manualDisconnected"
       }`,
@@ -352,7 +356,7 @@ function disconnectControl() {
   awaitingFrame.value = false;
   awaitedSequence = -1;
   clearTimeout(wheelTimer);
-  inputInFlight = false;
+  inFlightInputs.clear();
   releasing = false;
   keyboardFocused.value = false;
   composing.value = false;
@@ -410,16 +414,25 @@ async function acquireControl() {
       if (controlSocket !== socket) return;
       const ack = JSON.parse(message.data);
       if (ack.operation === "heartbeat" && ack.status === "applied") return;
-      const unconfirmed = inputInFlight && inFlightOperation !== "reset_keys";
+      const completed = inFlightInputs.get(ack.input_id);
+      if (ack.input_id != null && !completed) return;
+      const unconfirmed = [...inFlightInputs.values()].some(
+        (input) => input.operation !== "reset_keys",
+      );
+      const inFlightOperation = completed?.operation;
+      const inFlightPhase = completed?.phase ?? "";
+      const inputStarted = completed?.started ?? performance.now();
       clearTimeout(acknowledgementTimer);
       manualPending.value = releasing;
-      inputInFlight = false;
-      inputCount.value = inputQueue.length;
+      inFlightInputs.delete(ack.input_id);
+      inputCount.value = inputQueue.length + inFlightInputs.size;
+      if (inFlightInputs.size)
+        acknowledgementTimer = setTimeout(() => disconnectControl(), 25000);
       if (
         ack.operation === "pointer" &&
         ["up", "cancel"].includes(inFlightPhase)
       )
-        dragging.value = false;
+        dragging.value = Boolean(pointerGesture?.pressed);
       if (
         state.value?.pointer_input_version === 1 &&
         ack.input_id &&
@@ -435,6 +448,13 @@ async function acquireControl() {
         awaitingFrame.value = true;
       }
       if (ack.status === "stale") {
+        if (inFlightInputs.size) {
+          // Later ordered inputs have already left the client. Revoke the lease
+          // instead of assuming that they can be withdrawn or safely replayed.
+          disconnectControl();
+          manualMessage.value = t(`${key}.staleInput`);
+          return;
+        }
         const staleOperation = inFlightOperation;
         inputQueue = [];
         inputCount.value = 0;
@@ -453,8 +473,7 @@ async function acquireControl() {
       }
       if (ack.status !== "applied") {
         const message =
-          ack.status === "uncertain" ||
-          (unconfirmed && ack.input_id === undefined)
+          ack.status === "uncertain" || (unconfirmed && ack.input_id == null)
             ? t(`${key}.inputUnknown`)
             : ack.message || t(`${key}.manualFailed`);
         disconnectControl();
@@ -517,31 +536,39 @@ function releaseControl() {
   sendNextInput();
 }
 
-/** Send queued input only after the previous acknowledgement. */
+/** Pipeline a bounded pointer sequence; other operations wait for acknowledgement. */
 function sendNextInput() {
-  if (
-    inputInFlight ||
-    !humanControl.value ||
-    controlSocket?.readyState !== WebSocket.OPEN
-  )
+  if (!humanControl.value || controlSocket?.readyState !== WebSocket.OPEN)
     return;
   if (awaitingFrame.value && inputQueue[0]?.operation === "wheel") return;
-  const command = inputQueue.shift();
-  inputCount.value = inputQueue.length + (command ? 1 : 0);
-  if (!command) return;
-  inFlightOperation = String(command.operation);
-  inFlightPhase = String(command.phase ?? "");
-  const { queuedAt, ...payload } = command;
-  inputStarted = Number(queuedAt) || performance.now();
-  inputInFlight = true;
-  controlSocket.send(
-    JSON.stringify({
-      ...payload,
-      control_epoch: manualEpoch,
-      input_id: ++inputNumber,
-    }),
-  );
-  acknowledgementTimer = setTimeout(() => disconnectControl(), 25000);
+  while (inputQueue.length && inFlightInputs.size < 8) {
+    const next = inputQueue[0];
+    if (
+      inFlightInputs.size &&
+      (next.operation !== "pointer" ||
+        !["move", "up"].includes(String(next.phase)) ||
+        [...inFlightInputs.values()].some(
+          (input) => input.operation !== "pointer",
+        ))
+    )
+      break;
+    const { queuedAt, ...payload } = inputQueue.shift()!;
+    inFlightInputs.set(++inputNumber, {
+      operation: String(payload.operation),
+      phase: String(payload.phase ?? ""),
+      started: Number(queuedAt) || performance.now(),
+    });
+    controlSocket.send(
+      JSON.stringify({
+        ...payload,
+        control_epoch: manualEpoch,
+        input_id: inputNumber,
+      }),
+    );
+    if (inFlightInputs.size === 1)
+      acknowledgementTimer = setTimeout(() => disconnectControl(), 25000);
+  }
+  inputCount.value = inputQueue.length + inFlightInputs.size;
 }
 
 /** Capture the displayed target when the user acts, never at delayed dispatch. */
@@ -570,15 +597,6 @@ function enqueueInput(command: Record<string, unknown>) {
       ].map((name) => [name, current?.[name as keyof BrowserState]]),
     );
   const tail = inputQueue.at(-1);
-  if (
-    command.operation === "pointer" &&
-    command.phase === "move" &&
-    tail?.operation === "pointer" &&
-    tail.phase === "move"
-  ) {
-    Object.assign(tail, command);
-    return;
-  }
   // Only adjacent wheel deltas at the same displayed target are replaceable.
   // Never merge across a click, key, text or reset boundary.
   if (
@@ -598,7 +616,7 @@ function enqueueInput(command: Record<string, unknown>) {
     );
     return;
   }
-  if (inputQueue.length + Number(inputInFlight) >= 128) {
+  if (inputQueue.length + inFlightInputs.size >= 128) {
     disconnectControl();
     return;
   }
@@ -607,7 +625,7 @@ function enqueueInput(command: Record<string, unknown>) {
     queuedAt: performance.now(),
     ...(command.operation === "reset_keys" ? {} : { target }),
   });
-  inputCount.value = inputQueue.length + Number(inputInFlight);
+  inputCount.value = inputQueue.length + inFlightInputs.size;
   if (command.operation === "wheel") {
     clearTimeout(wheelTimer);
     wheelTimer = setTimeout(sendNextInput, 16);
@@ -661,7 +679,7 @@ function frameLoaded(event: Event) {
         ([name, value]) => value === current[name as keyof BrowserState],
       ),
   );
-  inputCount.value = inputQueue.length + Number(inputInFlight);
+  inputCount.value = inputQueue.length + inFlightInputs.size;
   sendNextInput();
 }
 
@@ -683,40 +701,48 @@ function resetKeyboard() {
 }
 
 /** Forward a captured left-button drag, keeping its original page identity. */
-function pointerPage(event: PointerEvent) {
+function pointerPage(event: PointerEvent | MouseEvent) {
   if (state.value?.drag_input_version !== 1 || !humanControl.value) return;
   const image = event.currentTarget as HTMLImageElement;
   if (event.type === "pointerdown") {
     if (
       event.button !== 0 ||
       pointerGesture ||
-      dragging.value ||
       manualPending.value ||
-      inputCount.value ||
-      awaitingFrame.value ||
+      [...inFlightInputs.values()].some(
+        (input) => input.operation !== "pointer",
+      ) ||
       !displayedFrame.value?.image
     )
       return;
-    event.preventDefault();
     keyboardSink.value?.focus({ preventScroll: true });
-    suppressClick = false;
+    suppressClick = true;
+    const pointer = event as PointerEvent;
     pointerGesture = {
-      id: event.pointerId,
-      x: event.clientX,
-      y: event.clientY,
+      id: pointer.pointerId,
+      x: NaN,
+      y: NaN,
+      pressed: false,
+      clickCount: 1,
       target: { ...displayedFrame.value },
     };
-    image.setPointerCapture(event.pointerId);
-    return;
+    image.setPointerCapture(pointer.pointerId);
+    // Mouse compatibility events carry the browser's native multi-click count.
+    // They follow pointerdown immediately, without waiting for any movement.
+    if (pointer.pointerType === "mouse") return;
   }
   const gesture = pointerGesture;
-  if (!gesture || gesture.id !== event.pointerId) return;
+  if (!gesture || ("pointerId" in event && event.pointerId !== gesture.id))
+    return;
   if (event.type === "pointercancel" || event.type === "lostpointercapture") {
-    suppressClick = dragging.value;
+    suppressClick = true;
     resetKeyboard();
     return;
   }
   event.preventDefault();
+  const pressing = event.type === "pointerdown" || event.type === "mousedown";
+  if (pressing && gesture.pressed) return;
+  if (!pressing && !gesture.pressed) return;
   const bounds = image.getBoundingClientRect();
   if (!bounds.width || !bounds.height) {
     resetKeyboard();
@@ -749,45 +775,38 @@ function pointerPage(event: PointerEvent) {
       ((event.clientY - bounds.top) / bounds.height) * height,
     ),
   );
-  if (
-    event.type === "pointermove" &&
-    !dragging.value &&
-    Math.hypot(event.clientX - gesture.x, event.clientY - gesture.y) >= 4
-  ) {
+  if (pressing) {
+    gesture.pressed = true;
+    gesture.clickCount = Math.min(2, Math.max(1, event.detail));
     dragging.value = true;
-    suppressClick = true;
     enqueueInput({
       operation: "pointer",
       phase: "down",
       target,
-      x: Math.max(
-        0,
-        Math.min(
-          width - 0.01,
-          ((gesture.x - bounds.left) / bounds.width) * width,
-        ),
-      ),
-      y: Math.max(
-        0,
-        Math.min(
-          height - 0.01,
-          ((gesture.y - bounds.top) / bounds.height) * height,
-        ),
-      ),
-    });
-  }
-  if (dragging.value)
-    enqueueInput({
-      operation: "pointer",
-      phase: event.type === "pointerup" ? "up" : "move",
       x,
       y,
-      target,
+      click_count: gesture.clickCount,
     });
+  } else {
+    // Preserve movement samples, including the final location before release.
+    if (x !== gesture.x || y !== gesture.y)
+      enqueueInput({ operation: "pointer", phase: "move", x, y, target });
+    if (event.type === "pointerup")
+      enqueueInput({
+        operation: "pointer",
+        phase: "up",
+        x,
+        y,
+        target,
+        click_count: gesture.clickCount,
+      });
+  }
+  gesture.x = x;
+  gesture.y = y;
   if (event.type === "pointerup") {
     pointerGesture = null;
-    if (image.hasPointerCapture(event.pointerId))
-      image.releasePointerCapture(event.pointerId);
+    if (image.hasPointerCapture(gesture.id))
+      image.releasePointerCapture(gesture.id);
   }
 }
 
@@ -1822,12 +1841,15 @@ onBeforeUnmount(() => {
                   ? {
                       cursor:
                         manualPending || !state?.image ? 'wait' : 'crosshair',
+                      touchAction: 'none',
+                      userSelect: 'none',
                     }
                   : undefined
               "
               draggable="false"
               @click="clickPage"
               @pointerdown="pointerPage"
+              @mousedown="pointerPage"
               @pointermove="pointerPage"
               @pointerup="pointerPage"
               @pointercancel="pointerPage"
@@ -2239,6 +2261,8 @@ onBeforeUnmount(() => {
   min-width: 0;
   overflow-x: hidden;
   overflow-y: auto;
+  /* A toggling scrollbar must not feed width changes back into image scaling. */
+  scrollbar-gutter: stable;
   padding: 3px;
   background: rgba(var(--browser-ink), 0.035);
   overscroll-behavior: contain;

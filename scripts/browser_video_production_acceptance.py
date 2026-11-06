@@ -1589,13 +1589,16 @@ async def main(args):
                     "id=>{__videoProof.caseId=id;__videoProof.holdInput=true;__videoProof.holdMetadata=true}",
                     200 + index,
                 )
-                await page.mouse.move(*viewport_point(surface, viewport, x, y))
+                point = viewport_point(surface, viewport, x, y)
+                await page.mouse.move(*(round(value) for value in point))
                 await page.mouse.down()
                 await page.wait_for_function("__videoProof.heldInputs.length===1")
                 held_id = await page.evaluate(
                     "JSON.parse(__videoProof.heldInputs[0][1]).input_id"
                 )
                 if kind == "same-url-reload":
+                    await page.mouse.up()
+                    await page.wait_for_function("__videoProof.heldInputs.length===2")
                     await target.reload()
                 elif kind == "closed-shadow-scroll":
                     await target.evaluate("scrollShadow()")
@@ -1612,7 +1615,22 @@ async def main(args):
                     "id=>__videoProof.acks.some(a=>a.input_id===id && a.status==='stale')",
                     arg=held_id,
                 )
-                await page.mouse.up()
+                if kind == "same-url-reload":
+                    await page.wait_for_function(
+                        "id=>__videoProof.acks.some(a=>a.input_id===id+1 && a.operation==='pointer' && a.status==='applied')",
+                        arg=held_id,
+                    )
+                    assert (
+                        await page.locator(".agent-browser-view").get_attribute(
+                            "data-human-control"
+                        )
+                        == "true"
+                    )
+                    metrics["checks"].append(
+                        "stale native press with its release already in flight drains termination on the same live control lease without replay"
+                    )
+                else:
+                    await page.mouse.up()
                 assert await target.evaluate("hits.length") == (
                     1 if kind == "cross-origin-frame-scroll" else 0
                 )

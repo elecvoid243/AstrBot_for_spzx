@@ -178,6 +178,7 @@ let resizeTimer: ReturnType<typeof setTimeout> | undefined;
 let lastViewportRequest = "";
 let lastViewportSequence = 0;
 let resizingViewport = false;
+let waitingViewportFrame = false;
 
 /** Resize the owned browser after the panel settles, outside in-flight input. */
 async function resizeViewport(attempt = 0) {
@@ -233,7 +234,11 @@ async function resizeViewport(attempt = 0) {
   )
     return;
   if (humanControl.value) {
-    if (!displayedFrame.value) return;
+    if (!displayedFrame.value) {
+      waitingViewportFrame = true;
+      return;
+    }
+    waitingViewportFrame = false;
     lastViewportRequest = signature;
     lastViewportSequence = current.sequence ?? 0;
     enqueueInput({ operation: "resize", ...dimensions });
@@ -754,6 +759,10 @@ function frameLoaded(event: Event | null, presented?: BrowserFrame | null) {
   )
     return;
   displayedFrame.value = { ...current };
+  if (waitingViewportFrame) {
+    waitingViewportFrame = false;
+    void resizeViewport();
+  }
   if (
     awaitingFrame.value &&
     current.control_epoch === manualEpoch &&
@@ -2015,7 +2024,7 @@ onBeforeUnmount(() => {
           >
             <video
               ref="browserVideo"
-              v-show="videoVisible && !frozenPreview"
+              v-show="videoVisible"
               autoplay
               muted
               playsinline
@@ -2023,6 +2032,7 @@ onBeforeUnmount(() => {
             />
             <img
               v-if="frozenPreview && videoVisible"
+              class="agent-browser-frozen-preview"
               :src="frozenPreview"
               :alt="state?.title || t(`${key}.title`)"
               draggable="false"
@@ -2496,6 +2506,10 @@ onBeforeUnmount(() => {
   height: 100%;
   object-fit: contain;
   pointer-events: auto;
+}
+.agent-browser-image .agent-browser-frozen-preview {
+  position: absolute;
+  inset: 0;
 }
 .agent-browser-takeover {
   width: auto;

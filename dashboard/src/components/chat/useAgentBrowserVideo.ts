@@ -96,7 +96,13 @@ export function useAgentBrowserVideo(
     phase.value = "starting";
     const current = new RTCPeerConnection({ iceServers: [] });
     peer = current;
-    current.addTransceiver("video", { direction: "recvonly" });
+    const receiver = current.addTransceiver("video", {
+      direction: "recvonly",
+    }).receiver;
+    if ("jitterBufferTarget" in receiver)
+      (
+        receiver as RTCRtpReceiver & { jitterBufferTarget: number }
+      ).jitterBufferTarget = 0;
     const rendered = () => {
       if (attempt !== revision || !frames) return;
       const record = frames.displayed();

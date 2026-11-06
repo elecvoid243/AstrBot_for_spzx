@@ -177,6 +177,105 @@ describe("Agent browser snapshots", () => {
     }
   });
 
+  it("resumes a pending human viewport resize when matching pixels become available", async () => {
+    vi.useFakeTimers();
+    let resized = () => {};
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        constructor(callback: () => void) {
+          resized = callback;
+        }
+        observe() {}
+        disconnect() {}
+      },
+    );
+    class Socket {
+      static OPEN = 1;
+      static instance: Socket;
+      readyState = 1;
+      sent: Record<string, any>[] = [];
+      onmessage?: (event: { data: string }) => void;
+      constructor() {
+        Socket.instance = this;
+      }
+      send(raw: string) {
+        this.sent.push(JSON.parse(raw));
+      }
+      close() {
+        this.readyState = 3;
+      }
+    }
+    vi.stubGlobal("WebSocket", Socket);
+    const frame = {
+      ...current,
+      manual_control_version: 1,
+      pointer_input_version: 1,
+      viewport_resize_version: 1,
+      viewport_width: 1280,
+      viewport_height: 720,
+      document_id: "doc",
+      scroll_x: 0,
+      scroll_y: 0,
+      position_revision: 0,
+      frame_id: "a".repeat(32),
+      coordinate_token: "b".repeat(64),
+      control_epoch: 2,
+      applied_input_id: 0,
+      sequence: 1,
+      mime_type: "image/jpeg",
+      image: "pixels",
+      width: 1280,
+      height: 720,
+    };
+    get.mockResolvedValue(ok(frame));
+    createSession.mockResolvedValue({
+      data: { ticket: "ticket", websocket_path: "/control" },
+    });
+    const view = mount(AgentBrowserView, {
+      props: { chatId: "chat-1", visible: true },
+      attachTo: document.body,
+    });
+    try {
+      await flushPromises();
+      const display = view.get(".agent-browser-image").element as HTMLElement;
+      display.style.padding = "0";
+      Object.defineProperties(display, {
+        clientWidth: { value: 900 },
+        clientHeight: { value: 600 },
+      });
+      await view.get(".agent-browser-takeover").trigger("click");
+      await flushPromises();
+      const socket = Socket.instance;
+      socket.onmessage?.({
+        data: JSON.stringify({
+          operation: "acquire",
+          status: "applied",
+          control_epoch: 2,
+        }),
+      });
+      await flushPromises();
+      resized();
+      await vi.advanceTimersByTimeAsync(350);
+      expect(socket.sent.filter((c) => c.operation === "resize")).toHaveLength(
+        0,
+      );
+      const image = view.get("img");
+      Object.defineProperty(image.element, "currentSrc", {
+        get: () => image.attributes("src"),
+      });
+      await image.trigger("load");
+      await flushPromises();
+      expect(socket.sent.filter((c) => c.operation === "resize")).toMatchObject(
+        [{ width: 1280, height: 853, target: { frame_id: frame.frame_id } }],
+      );
+      expect(post).not.toHaveBeenCalled();
+    } finally {
+      view.unmount();
+      vi.unstubAllGlobals();
+    }
+  });
+
   it.each([
     [320, 1200, 1280, 1600],
     [900, 50, 1280, 240],

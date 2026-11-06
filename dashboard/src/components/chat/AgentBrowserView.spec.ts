@@ -667,6 +667,7 @@ describe("Agent browser snapshots", () => {
     "double click",
     "backlog",
     "stale",
+    "stale click",
     "disconnect",
   ])(
     "sends press immediately, preserves scaled moves and safely ends on %s",
@@ -777,7 +778,11 @@ describe("Agent browser snapshots", () => {
           x: 200,
           y: 100,
         });
-        if (ending === "click" || ending === "double click") {
+        if (
+          ending === "click" ||
+          ending === "double click" ||
+          ending === "stale click"
+        ) {
           await image.trigger("pointerup", {
             pointerId: 7,
             clientX: 110,
@@ -818,6 +823,19 @@ describe("Agent browser snapshots", () => {
             "down",
             "up",
           ]);
+          if (ending === "stale click") {
+            socket.ack("stale");
+            await flushPromises();
+            expect(view.attributes("data-human-control")).toBe("true");
+            expect(socket.readyState).toBe(1);
+            while (socket.acknowledged < socket.sent.length) socket.ack();
+            await flushPromises();
+            expect(view.attributes("data-pending-input")).toBe("0");
+            expect(
+              socket.sent.filter((input) => input.phase === "down"),
+            ).toHaveLength(1);
+            return;
+          }
           while (socket.acknowledged < socket.sent.length) socket.ack();
           expect(
             socket.sent.map((input) => [input.phase, input.click_count]),

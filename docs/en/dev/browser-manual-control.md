@@ -242,3 +242,8 @@ installed private runtime. The runner owns its process tree and records raw
 pixels, optical feedback latency, per-viewer resources, network audit and cleanup.
 The 300-second four-viewer window includes native animation and scrolling; repeated
 source frames are reported separately from useful presentation rate.
+
+A rejected pointer press may already have its ordered release in flight. The UI
+drains only terminal mouse/key releases and resets in that case, waits for fresh
+pixels, and retains the lease. Any other unconfirmed action still closes control;
+the rejected press is never replayed.

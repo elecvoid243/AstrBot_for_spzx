@@ -483,16 +483,25 @@ async function acquireControl() {
         awaitingFrame.value = true;
       }
       if (ack.status === "stale") {
-        if (inFlightInputs.size) {
-          // Later ordered inputs have already left the client. Revoke the lease
-          // instead of assuming that they can be withdrawn or safely replayed.
+        if (
+          [...inFlightInputs.values()].some(
+            (input) =>
+              input.operation !== "reset_keys" &&
+              !(
+                ["pointer", "key"].includes(input.operation) &&
+                ["up", "cancel"].includes(input.phase ?? "")
+              ),
+          )
+        ) {
+          // Unconfirmed actions cannot be withdrawn. Terminal releases alone
+          // remain safe to drain after a rejected press, without replaying it.
           disconnectControl();
           manualMessage.value = t(`${key}.staleInput`);
           return;
         }
         const staleOperation = inFlightOperation;
         inputQueue = [];
-        inputCount.value = 0;
+        inputCount.value = inFlightInputs.size;
         if (staleOperation === "resize") lastViewportRequest = "";
         awaitedMediaSequence = videoLastFrame.value?.media_sequence ?? -1;
         displayedFrame.value = null;

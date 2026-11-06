@@ -92,38 +92,70 @@ async def exercise_controls(
         case_id = first_case + offset
         await target.evaluate("id=>probe.pending=id", case_id)
         await page.evaluate("id=>__videoProof.caseId=id", case_id)
-        await page.wait_for_function(
-            "document.querySelector('.agent-browser-view')?.dataset.frameId && document.querySelector('.agent-browser-view')?.dataset.pendingInput === '0'"
-        )
-        surface = await page.locator(".agent-browser-viewport").bounding_box()
-        viewport = await target.evaluate("({width:innerWidth,height:innerHeight})")
-
-        if sample_index in {1, 2}:
-            slider = await target.locator("#slider").bounding_box()
-            await page.mouse.click(
-                *viewport_point(
-                    surface,
-                    viewport,
-                    slider["x"]
-                    + slider["width"] * (0.35 if sample_index == 1 else 0.7),
-                    slider["y"] + slider["height"] / 2,
-                )
+        for attempt in range(3):
+            previous_inputs = await page.evaluate("__videoProof.inputs.length")
+            await page.wait_for_function(
+                "document.querySelector('.agent-browser-view')?.dataset.frameId && document.querySelector('.agent-browser-view')?.dataset.pendingInput === '0' && document.querySelector('.agent-browser-view')?.dataset.awaitingFrame==='false'"
             )
-        elif sample_index in {3, 4}:
-            drag = await target.locator("#drag").bounding_box()
-            x, y = drag["x"] + 40, drag["y"] + 30
-            await page.mouse.move(*viewport_point(surface, viewport, x, y))
-            await page.mouse.down()
-            for step in range(1, 22):
-                await page.mouse.move(
-                    *viewport_point(surface, viewport, x + 7 * step, y + 2 * step)
+            surface = await page.locator(".agent-browser-viewport").bounding_box()
+            viewport = await target.evaluate("({width:innerWidth,height:innerHeight})")
+
+            if sample_index in {1, 2}:
+                slider = await target.locator("#slider").bounding_box()
+                await page.mouse.click(
+                    *viewport_point(
+                        surface,
+                        viewport,
+                        slider["x"]
+                        + slider["width"] * (0.35 if sample_index == 1 else 0.7),
+                        slider["y"] + slider["height"] / 2,
+                    )
                 )
-                await asyncio.sleep(0.008)
-            await page.mouse.up()
+            elif sample_index in {3, 4}:
+                drag = await target.locator("#drag").bounding_box()
+                x, y = drag["x"] + 40, drag["y"] + 30
+                await page.mouse.move(*viewport_point(surface, viewport, x, y))
+                await page.mouse.down()
+                for step in range(1, 22):
+                    await page.mouse.move(
+                        *viewport_point(surface, viewport, x + 7 * step, y + 2 * step)
+                    )
+                    await asyncio.sleep(0.008)
+                await page.mouse.up()
+            else:
+                await page.mouse.move(*viewport_point(surface, viewport, 500, 650))
+                await page.mouse.wheel(
+                    0, 320 if sample_index == 5 else (-320 if samples > 6 else -160)
+                )
+            await page.wait_for_function(
+                "n=>__videoProof.inputs.length>n", arg=previous_inputs
+            )
+            await page.wait_for_function(
+                "id=>__videoProof.commands.some(c=>c.caseId===id&&['pointer','wheel'].includes(c.operation))||document.querySelector('.agent-browser-view')?.dataset.pendingInput==='0'",
+                arg=case_id,
+            )
+            if await page.evaluate(
+                "id=>__videoProof.commands.some(c=>c.caseId===id&&['pointer','wheel'].includes(c.operation))",
+                case_id,
+            ):
+                break
+            assert (
+                await page.locator(".agent-browser-view").get_attribute(
+                    "data-human-control"
+                )
+                == "true"
+            )
+            metrics.setdefault("unmapped_input_attempts", []).append(
+                {
+                    "mode": mode,
+                    "case_id": case_id,
+                    "attempt": attempt + 1,
+                    "wire_pointer_or_wheel_commands": 0,
+                }
+            )
         else:
-            await page.mouse.move(*viewport_point(surface, viewport, 500, 650))
-            await page.mouse.wheel(
-                0, 320 if sample_index == 5 else (-320 if samples > 6 else -160)
+            raise AssertionError(
+                f"No mapped input admission after three UI attempts: {mode}/{case_id}"
             )
         await page.wait_for_function(
             "id=>__videoProof.frames.some(f=>f.valid && f.mapped!==false && f.actual[1]===id)",
@@ -230,7 +262,7 @@ async def exercise_controls(
         "presented_fps": (len(actual) - 1)
         / ((actual[-1]["t"] - actual[0]["t"]) / 1000),
         "valid_frames": len(actual),
-        "clock": "receiver input event to optically decoded actual fixture state; performance.timeOrigin+now; "
+        "clock": "first receiver input event to optically decoded actual fixture state, including separately recorded unsent attempts; performance.timeOrigin+now; "
         + (
             "expectedDisplayTime adjusted"
             if mode == "video"

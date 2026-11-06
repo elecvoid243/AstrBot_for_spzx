@@ -108,7 +108,19 @@ describe("Agent browser snapshots", () => {
       });
       resized();
       resized();
-      await vi.advanceTimersByTimeAsync(350);
+      await vi.advanceTimersByTimeAsync(250);
+      stream.enqueue(
+        new TextEncoder().encode(
+          `data: ${JSON.stringify({
+            ...current,
+            type: "state",
+            viewport_resize_version: 1,
+            sequence: 2,
+          })}\n\n`,
+        ),
+      );
+      await flushPromises();
+      await vi.advanceTimersByTimeAsync(100);
       expect(post).toHaveBeenCalledTimes(1);
       expect(post.mock.calls[0]).toMatchObject([
         "browser-use/viewport",
@@ -124,8 +136,8 @@ describe("Agent browser snapshots", () => {
         },
       ]);
       for (const [sequence, width, height] of [
-        [2, 1280, 853],
-        [3, 1280, 720],
+        [3, 1280, 853],
+        [4, 1280, 720],
       ]) {
         stream.enqueue(
           new TextEncoder().encode(
@@ -140,7 +152,7 @@ describe("Agent browser snapshots", () => {
           ),
         );
         await flushPromises();
-        if (sequence === 2) {
+        if (sequence === 3) {
           await vi.advanceTimersByTimeAsync(350);
           expect(post).toHaveBeenCalledTimes(1);
         }

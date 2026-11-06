@@ -1171,7 +1171,9 @@ watch(
     dragging.value,
     awaitingFrame.value,
   ],
-  () => {
+  (next, previous) => {
+    if (previous && next.every((value, index) => value === previous[index]))
+      return;
     clearTimeout(resizeTimer);
     resizeTimer = setTimeout(resizeViewport, 350);
   },

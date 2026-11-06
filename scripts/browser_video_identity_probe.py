@@ -63,6 +63,8 @@ def main():
     files = [
         Path(__file__),
         args.plugin / "scripts/video_capture_barrier_candidate.py",
+        args.plugin / "browser_capture.py",
+        args.plugin / "frame_records.py",
         args.plugin / "scripts/video_identity_probe.py",
         args.plugin / "scripts/video_identity_fixture.html",
         args.plugin / "observer.py",

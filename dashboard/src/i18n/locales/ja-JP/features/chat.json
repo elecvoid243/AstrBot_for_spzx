@@ -8,6 +8,10 @@
     }
   },
   "agentBrowser": {
+    "videoFailed": "動画が停止しました · 再試行または JPEG に切り替え",
+    "retryVideo": "動画を再試行",
+    "useJpeg": "JPEG に切り替え",
+
     "switchMode": "ブラウザーモードを切り替える",
     "waitingUrl": "Agent がページを開くのを待っています",
     "readOnly": "読み取り専用の観測",

@@ -1,0 +1,12 @@
+<!doctype html><meta charset="utf-8"><title>Video coordinate acceptance</title>
+<style>body{margin:0;font:16px system-ui;background:#eef2ff}canvas{position:fixed;left:0;top:0;z-index:10}h1{margin:40px}#shadow{position:absolute;left:80px;top:140px;width:400px;height:240px}iframe{position:absolute;left:600px;top:140px;width:400px;height:240px;border:0}button{border:0}</style>
+<canvas id="documentStamp" width="576" height="12"></canvas><h1>Closed shadow and cross-origin frame coordinates</h1>
+<div id="shadow"></div><iframe id="child" src="CHILD_URL"></iframe>
+<script>
+window.fixtureDocument=crypto.getRandomValues(new Uint32Array(1))[0];
+const context=documentStamp.getContext('2d');for(let bit=0;bit<32;bit++){context.fillStyle=(fixtureDocument>>>bit)&1?'white':'black';context.fillRect(bit*18,0,18,12)}
+window.hits=[];const root=shadow.attachShadow({mode:'closed'});
+root.innerHTML='<style>#scroller{height:240px;overflow:auto}button{display:block;width:100%;height:120px;border:0;font:32px system-ui}#a{background:rgb(220,30,30)}#b{background:rgb(30,200,60)}</style><div id="scroller"><button id="a">Shadow A</button><button id="b">Shadow B</button><div style="height:700px"></div></div>';
+root.querySelector('#a').onclick=()=>hits.push('A');root.querySelector('#b').onclick=()=>hits.push('B');
+window.scrollShadow=()=>{root.querySelector('#scroller').scrollTop=120};
+</script>

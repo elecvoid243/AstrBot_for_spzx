@@ -232,6 +232,7 @@ class OwnedProbeProcess:
             "runtime_exit": self.process.returncode,
             "graceful_timeout": timed_out,
             "forced_job_termination": bool(members),
+            "members_before_forced_termination": members,
             "known_processes": list(self.known.values()),
             "remaining_owned_processes": remaining,
         }

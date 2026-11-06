@@ -119,6 +119,7 @@ PROJECT_THREAD_OPERATIONS = {
 
 CHAT_EXTENSION_OPERATIONS = {
     "create_browser_control_session",
+    "create_browser_media_session",
     "get_plugin_extension_route",
     "post_plugin_extension_route",
     "put_plugin_extension_route",

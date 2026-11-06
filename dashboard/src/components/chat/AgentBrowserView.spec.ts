@@ -1,14 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { flushPromises, mount } from "@vue/test-utils";
-const { get, post, fetchStream, createSession } = vi.hoisted(() => ({
-  get: vi.fn(),
-  post: vi.fn(),
-  fetchStream: vi.fn(),
-  createSession: vi.fn(),
-}));
+const { get, post, fetchStream, createSession, createMediaSession } =
+  vi.hoisted(() => ({
+    get: vi.fn(),
+    post: vi.fn(),
+    fetchStream: vi.fn(),
+    createSession: vi.fn(),
+    createMediaSession: vi.fn(),
+  }));
 vi.mock("@/api/v1", () => ({
   pluginExtensionApi: { get, post },
   browserControlApi: { createSession },
+  browserMediaApi: { createSession: createMediaSession },
 }));
 vi.mock("@/api/http", () => ({ fetchWithAuth: fetchStream }));
 import AgentBrowserView from "./AgentBrowserView.vue";
@@ -26,6 +29,7 @@ beforeEach(() => {
   post.mockReset();
   fetchStream.mockReset();
   createSession.mockReset();
+  createMediaSession.mockReset();
   fetchStream.mockImplementation(async () => ({
     ok: true,
     body: new ReadableStream<Uint8Array>({
@@ -40,6 +44,31 @@ afterEach(() => {
 });
 
 describe("Agent browser snapshots", () => {
+  it("keeps a JPEG subscription when the receiver lacks verified video presentation", async () => {
+    get.mockResolvedValue(
+      ok({
+        ...current,
+        video_stream_version: 1,
+        image: "pixels",
+        mime_type: "image/jpeg",
+        width: 1280,
+        height: 720,
+      }),
+    );
+    const view = mount(AgentBrowserView, {
+      props: { chatId: "chat-1", visible: true },
+    });
+    try {
+      await flushPromises();
+      expect(createMediaSession).not.toHaveBeenCalled();
+      expect(fetchStream).toHaveBeenCalledTimes(1);
+      expect(fetchStream.mock.calls[0][0]).not.toContain("frames=0");
+      expect(view.get("img").attributes("src")).toContain("pixels");
+      expect(view.attributes("data-video-phase")).toBe("idle");
+    } finally {
+      view.unmount();
+    }
+  });
   it("keeps desktop layout width after the resize debounce and recovers when Chromium resets or defers it", async () => {
     vi.useFakeTimers();
     let resized: () => void = () => {};
@@ -309,7 +338,10 @@ describe("Agent browser snapshots", () => {
       });
       await flushPromises();
       const img = view.get("img");
-      vi.spyOn(img.element, "getBoundingClientRect").mockReturnValue({
+      vi.spyOn(
+        img.element.closest(".agent-browser-viewport")!,
+        "getBoundingClientRect",
+      ).mockReturnValue({
         left: 0,
         top: 0,
         width: 1280,
@@ -411,7 +443,10 @@ describe("Agent browser snapshots", () => {
         });
         await flushPromises();
         const image = view.get("img");
-        vi.spyOn(image.element, "getBoundingClientRect").mockReturnValue({
+        vi.spyOn(
+          image.element.closest(".agent-browser-viewport")!,
+          "getBoundingClientRect",
+        ).mockReturnValue({
           left: 0,
           top: 0,
           width: 1280,
@@ -584,13 +619,21 @@ describe("Agent browser snapshots", () => {
       try {
         await flushPromises();
         const image = view.get("img");
-        Object.defineProperties(image.element, {
-          currentSrc: { get: () => image.attributes("src") },
-          setPointerCapture: { value: vi.fn() },
-          hasPointerCapture: { value: () => true },
-          releasePointerCapture: { value: vi.fn() },
+        Object.defineProperty(image.element, "currentSrc", {
+          get: () => image.attributes("src"),
         });
-        vi.spyOn(image.element, "getBoundingClientRect").mockReturnValue({
+        Object.defineProperties(
+          image.element.closest(".agent-browser-viewport")!,
+          {
+            setPointerCapture: { value: vi.fn() },
+            hasPointerCapture: { value: () => true },
+            releasePointerCapture: { value: vi.fn() },
+          },
+        );
+        vi.spyOn(
+          image.element.closest(".agent-browser-viewport")!,
+          "getBoundingClientRect",
+        ).mockReturnValue({
           left: 10,
           top: 20,
           right: 650,
@@ -828,7 +871,10 @@ describe("Agent browser snapshots", () => {
           expect(socket.sent.at(-1)?.operation).toBe("reset_keys");
         }
         socket.ack();
-        expect(image.element.releasePointerCapture).toHaveBeenCalledWith(7);
+        expect(
+          (image.element.closest(".agent-browser-viewport") as HTMLElement)
+            .releasePointerCapture,
+        ).toHaveBeenCalledWith(7);
       } finally {
         view.unmount();
         vi.unstubAllGlobals();
@@ -903,7 +949,10 @@ describe("Agent browser snapshots", () => {
         Object.defineProperty(image.element, "currentSrc", {
           get: () => image.attributes("src"),
         });
-        vi.spyOn(image.element, "getBoundingClientRect").mockReturnValue({
+        vi.spyOn(
+          image.element.closest(".agent-browser-viewport")!,
+          "getBoundingClientRect",
+        ).mockReturnValue({
           left: 0,
           top: 0,
           width: 1280,
@@ -1012,6 +1061,8 @@ describe("Agent browser snapshots", () => {
       scroll_x: 0,
       scroll_y: 0,
       position_revision: 0,
+      frame_id: "a".repeat(32),
+      coordinate_token: "b".repeat(64),
       control_epoch: 2,
       applied_input_id: 0,
       mime_type: "image/jpeg",
@@ -1035,7 +1086,10 @@ describe("Agent browser snapshots", () => {
         complete: { get: () => decoded },
         naturalWidth: { get: () => 1280 },
       });
-      vi.spyOn(image.element, "getBoundingClientRect").mockReturnValue({
+      vi.spyOn(
+        image.element.closest(".agent-browser-viewport")!,
+        "getBoundingClientRect",
+      ).mockReturnValue({
         left: 10,
         top: 20,
         right: 650,
@@ -1132,6 +1186,7 @@ describe("Agent browser snapshots", () => {
             ...frame,
             type: "frame",
             sequence: 5,
+            frame_id: "c".repeat(32),
             applied_input_id: 1,
             width: 1280,
             height: 720,
@@ -1144,6 +1199,7 @@ describe("Agent browser snapshots", () => {
         delta_x: 80,
         delta_y: 80,
         input_id: 2,
+        target: { frame_id: "a".repeat(32) },
       });
       socket.ack("wheel", 2, "stale");
       await flushPromises();

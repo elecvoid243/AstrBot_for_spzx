@@ -1,5 +1,9 @@
 {
   "agentBrowser": {
+    "videoFailed": "Video paused · retry or switch to JPEG",
+    "retryVideo": "Retry video",
+    "useJpeg": "Use JPEG",
+
     "staleInput": "The page moved. This input was not executed; wait for the new image and try again.",
     "staleWheel": "Page moved · old wheel input rejected. Wait for the new image and scroll again.",
     "inputPending": "Sending ordered input…",

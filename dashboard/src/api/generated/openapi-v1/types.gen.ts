@@ -254,6 +254,12 @@ export type BrowserControlTarget = {
     scroll_x: number;
     scroll_y: number;
     position_revision?: (number | null);
+    coordinate_token?: (string | null);
+    frame_id?: (string | null);
+    media_session_id?: (string | null);
+    media_epoch?: (number | null);
+    rtp_timestamp?: (number | null);
+    capture_sequence?: (number | null);
 };
 
 /**
@@ -1698,6 +1704,14 @@ export type CreateBrowserControlSessionData = {
 export type CreateBrowserControlSessionResponse = (BrowserControlSessionResponse);
 
 export type CreateBrowserControlSessionError = (unknown);
+
+export type CreateBrowserMediaSessionData = {
+    body: BrowserControlSessionRequest;
+};
+
+export type CreateBrowserMediaSessionResponse = (BrowserControlSessionResponse);
+
+export type CreateBrowserMediaSessionError = (unknown);
 
 export type CurrentAccountResponse = (AccountResponse);
 

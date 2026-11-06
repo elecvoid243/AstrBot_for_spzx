@@ -40,6 +40,8 @@ import {
 import { useI18n } from "@/i18n/composables";
 import { browserControlApi, pluginExtensionApi } from "@/api/v1";
 import { fetchWithAuth } from "@/api/http";
+import { browserTargetFields, type BrowserFrame } from "./browserMediaFrames";
+import { useAgentBrowserVideo } from "./useAgentBrowserVideo";
 
 const props = defineProps<{ chatId?: string | null; visible: boolean }>();
 const { t } = useI18n();
@@ -86,7 +88,8 @@ const onFullscreenKeyDown = (event: KeyboardEvent) => {
 };
 document.addEventListener("keydown", onFullscreenKeyDown, true);
 
-interface BrowserState {
+interface BrowserState extends BrowserFrame {
+  video_stream_version?: number;
   available: boolean;
   execution_state?: "active" | "stopped" | "closed" | "disabled";
   manual_control_version?: number;
@@ -165,6 +168,9 @@ let pointerGesture: {
 } | null = null;
 let suppressClick = false;
 const browserImage = ref<HTMLImageElement | null>(null);
+const browserSurface = ref<HTMLElement | null>(null);
+const browserVideo = ref<HTMLVideoElement | null>(null);
+const preferVideo = ref(true);
 const browserDisplay = ref<HTMLElement | null>(null);
 const displaySize = ref({ width: 0, height: 0 });
 let resizeObserver: ResizeObserver | undefined;
@@ -172,6 +178,7 @@ let resizeTimer: ReturnType<typeof setTimeout> | undefined;
 let lastViewportRequest = "";
 let lastViewportSequence = 0;
 let resizingViewport = false;
+let waitingViewportFrame = false;
 
 /** Resize the owned browser after the panel settles, outside in-flight input. */
 async function resizeViewport(attempt = 0) {
@@ -227,7 +234,11 @@ async function resizeViewport(attempt = 0) {
   )
     return;
   if (humanControl.value) {
-    if (!displayedFrame.value) return;
+    if (!displayedFrame.value) {
+      waitingViewportFrame = true;
+      return;
+    }
+    waitingViewportFrame = false;
     lastViewportRequest = signature;
     lastViewportSequence = current.sequence ?? 0;
     enqueueInput({ operation: "resize", ...dimensions });
@@ -295,6 +306,27 @@ watch(browserDisplay, (display) => {
 // retain its pixels but cannot advance their input, epoch or capture sequence.
 const imageFrame = ref<BrowserState | null>(null);
 const displayedFrame = ref<BrowserState | null>(null);
+const {
+  phase: videoPhase,
+  visible: videoVisible,
+  lastFrame: videoLastFrame,
+  frozenPreview,
+  start: startVideo,
+  stop: stopVideo,
+  freeze: freezeVideo,
+} = useAgentBrowserVideo(
+  browserVideo,
+  (frame) => frameLoaded(null, frame),
+  () => accountChanged(),
+);
+watch(videoPhase, (phase) => {
+  if (phase === "unsupported" && !videoVisible.value && preferVideo.value) {
+    preferVideo.value = false;
+    stopVideo();
+    void refresh(true);
+  }
+});
+
 // Keep the last frame within the authorized browser lifetime while navigation
 // or input metadata awaits a capture. Retained pixels never authorize input.
 const visibleFrame = computed(() => {
@@ -314,8 +346,9 @@ const visibleFrame = computed(() => {
   return null;
 });
 const fittedFrameSize = computed(() => {
-  const width = visibleFrame.value?.width || 1;
-  const height = visibleFrame.value?.height || 1;
+  const pixels = videoVisible.value ? videoLastFrame.value : visibleFrame.value;
+  const width = pixels?.width || 1;
+  const height = pixels?.height || 1;
   const scale = displaySize.value.width / width;
   return { width: `${width * scale}px`, height: `${height * scale}px` };
 });
@@ -324,6 +357,7 @@ const awaitingFrame = ref(false);
 const frameLatency = ref<number | null>(null);
 let awaitedInput = 0;
 let awaitedSequence = -1;
+let awaitedMediaSequence = -1;
 let awaitedStarted = 0;
 let wheelTimer: ReturnType<typeof setTimeout> | undefined;
 let releasing = false;
@@ -339,8 +373,8 @@ function disconnectControl() {
   const pointer = pointerGesture?.id;
   pointerGesture = null;
   dragging.value = false;
-  if (pointer !== undefined && browserImage.value?.hasPointerCapture(pointer))
-    browserImage.value.releasePointerCapture(pointer);
+  if (pointer !== undefined && browserSurface.value?.hasPointerCapture(pointer))
+    browserSurface.value.releasePointerCapture(pointer);
   if (humanControl.value || (manualPending.value && controlSocket))
     manualMessage.value = t(
       `${key}.${
@@ -355,6 +389,7 @@ function disconnectControl() {
   inputCount.value = 0;
   awaitingFrame.value = false;
   awaitedSequence = -1;
+  awaitedMediaSequence = -1;
   clearTimeout(wheelTimer);
   inFlightInputs.clear();
   releasing = false;
@@ -447,18 +482,42 @@ async function acquireControl() {
         awaitedStarted = inputStarted;
         awaitingFrame.value = true;
       }
-      if (ack.status === "stale") {
-        if (inFlightInputs.size) {
-          // Later ordered inputs have already left the client. Revoke the lease
-          // instead of assuming that they can be withdrawn or safely replayed.
+      if (
+        ack.status === "stale" &&
+        !(
+          releasing &&
+          (["reset_keys", "release"].includes(inFlightOperation ?? "") ||
+            (["pointer", "key"].includes(inFlightOperation ?? "") &&
+              ["up", "cancel"].includes(inFlightPhase)))
+        )
+      ) {
+        if (
+          [...inFlightInputs.values()].some(
+            (input) =>
+              input.operation !== "reset_keys" &&
+              !(
+                ["pointer", "key"].includes(input.operation) &&
+                ["up", "cancel"].includes(input.phase ?? "")
+              ),
+          )
+        ) {
+          // Unconfirmed actions cannot be withdrawn. Terminal releases alone
+          // remain safe to drain after a rejected press, without replaying it.
           disconnectControl();
           manualMessage.value = t(`${key}.staleInput`);
           return;
         }
+        if (releasing) {
+          // Handback already discarded new actions and queued reset/release.
+          // Keep that explicit intent while admitted terminal inputs drain.
+          sendNextInput();
+          return;
+        }
         const staleOperation = inFlightOperation;
         inputQueue = [];
-        inputCount.value = 0;
+        inputCount.value = inFlightInputs.size;
         if (staleOperation === "resize") lastViewportRequest = "";
+        awaitedMediaSequence = videoLastFrame.value?.media_sequence ?? -1;
         displayedFrame.value = null;
         awaitedInput = ack.state?.applied_input_id ?? 0;
         awaitedSequence = ack.state?.sequence ?? -1;
@@ -481,6 +540,11 @@ async function acquireControl() {
         return;
       }
       manualEpoch = ack.control_epoch;
+      if (
+        state.value?.pointer_input_version === 1 &&
+        displayedFrame.value?.control_epoch !== manualEpoch
+      )
+        displayedFrame.value = null;
       if (ack.state?.control_mode === "agent") {
         humanControl.value = false;
         manualPending.value = false;
@@ -507,6 +571,7 @@ async function acquireControl() {
     };
     socket.onclose = () => {
       if (controlSocket !== socket) return;
+      stopVideo();
       disconnectControl();
       // Revoked access must not retain authorized pixels. Refresh is explicit.
       pending?.abort();
@@ -543,6 +608,7 @@ function sendNextInput() {
   if (awaitingFrame.value && inputQueue[0]?.operation === "wheel") return;
   while (inputQueue.length && inFlightInputs.size < 8) {
     const next = inputQueue[0];
+    if (next.waitForFrame && !displayedFrame.value) break;
     if (
       inFlightInputs.size &&
       (next.operation !== "pointer" ||
@@ -552,7 +618,11 @@ function sendNextInput() {
         ))
     )
       break;
-    const { queuedAt, ...payload } = inputQueue.shift()!;
+    const {
+      queuedAt,
+      waitForFrame: _waitForFrame,
+      ...payload
+    } = inputQueue.shift()!;
     inFlightInputs.set(++inputNumber, {
       operation: String(payload.operation),
       phase: String(payload.phase ?? ""),
@@ -573,28 +643,64 @@ function sendNextInput() {
 
 /** Capture the displayed target when the user acts, never at delayed dispatch. */
 function enqueueInput(command: Record<string, unknown>) {
-  const current =
+  let current =
     state.value?.pointer_input_version === 1
       ? displayedFrame.value
       : state.value;
+  const keyboardContinuation =
+    command.operation === "text" ||
+    (command.operation === "key" && command.phase === "down");
+  // A late RTP record can briefly freeze a focused keyboard between characters.
+  // Retain its original checked picture, then wait for mapped pixels to dispatch.
+  const waitForFrame =
+    !current &&
+    keyboardContinuation &&
+    keyboardFocused.value &&
+    videoPhase.value === "frozen" &&
+    Boolean(frozenPreview.value) &&
+    Boolean(videoLastFrame.value) &&
+    state.value?.coordinate_ready === true &&
+    [
+      "generation",
+      "browser_session_id",
+      "tab_id",
+      "document_id",
+      "url",
+      "viewport_width",
+      "viewport_height",
+      "scroll_x",
+      "scroll_y",
+      "position_revision",
+      "coordinate_token",
+      "control_epoch",
+    ].every(
+      (name) =>
+        videoLastFrame.value?.[name as keyof BrowserFrame] ===
+        state.value?.[name as keyof BrowserState],
+    );
+  if (waitForFrame) current = videoLastFrame.value as BrowserState;
+  if (
+    command.operation === "key" &&
+    command.phase === "up" &&
+    !displayedFrame.value
+  ) {
+    // An unsent key must not hold up release of keys already pressed remotely.
+    inputQueue = inputQueue.filter((input) => !input.waitForFrame);
+  }
   if (
     !humanControl.value ||
     manualPending.value ||
-    (command.operation !== "reset_keys" && !command.target && !current?.image)
+    (command.operation !== "reset_keys" &&
+      !(command.operation === "key" && command.phase === "up") &&
+      !command.target &&
+      !current?.image &&
+      !current?.frame_id)
   )
     return;
   const target =
     command.target ??
     Object.fromEntries(
-      [
-        "tab_id",
-        "document_id",
-        "viewport_width",
-        "viewport_height",
-        "scroll_x",
-        "scroll_y",
-        "position_revision",
-      ].map((name) => [name, current?.[name as keyof BrowserState]]),
+      browserTargetFields.map((name) => [name, current?.[name]]),
     );
   const tail = inputQueue.at(-1);
   // Only adjacent wheel deltas at the same displayed target are replaceable.
@@ -622,8 +728,12 @@ function enqueueInput(command: Record<string, unknown>) {
   }
   inputQueue.push({
     ...command,
+    ...(waitForFrame ? { waitForFrame: true } : {}),
     queuedAt: performance.now(),
-    ...(command.operation === "reset_keys" ? {} : { target }),
+    ...(command.operation === "reset_keys" ||
+    (command.operation === "key" && command.phase === "up" && !current)
+      ? {}
+      : { target }),
   });
   inputCount.value = inputQueue.length + inFlightInputs.size;
   if (command.operation === "wheel") {
@@ -633,14 +743,23 @@ function enqueueInput(command: Record<string, unknown>) {
 }
 
 /** Confirm pixels have loaded before reporting feedback or mapping new input. */
-function frameLoaded(event: Event) {
-  const image = event.currentTarget as HTMLImageElement;
-  const current = imageFrame.value;
+function frameLoaded(event: Event | null, presented?: BrowserFrame | null) {
+  if (!event && !presented) {
+    displayedFrame.value = null;
+    return;
+  }
+  if (event && videoVisible.value) return;
+  const image = event?.currentTarget as HTMLImageElement | undefined;
+  const current = event ? imageFrame.value : (presented as BrowserState);
+
   if (
-    !current?.image ||
-    image.currentSrc !== `data:${current.mime_type};base64,${current.image}` ||
+    !current ||
+    (event &&
+      (!current.image ||
+        image?.currentSrc !==
+          `data:${current.mime_type};base64,${current.image}`)) ||
     (humanControl.value &&
-      current.pointer_input_version === 1 &&
+      state.value?.pointer_input_version === 1 &&
       current.control_epoch !== manualEpoch) ||
     [
       "generation",
@@ -653,6 +772,7 @@ function frameLoaded(event: Event) {
       "scroll_x",
       "scroll_y",
       "position_revision",
+      "coordinate_token",
       "control_epoch",
     ].some(
       (name) =>
@@ -662,10 +782,16 @@ function frameLoaded(event: Event) {
   )
     return;
   displayedFrame.value = { ...current };
+  if (waitingViewportFrame) {
+    waitingViewportFrame = false;
+    void resizeViewport();
+  }
   if (
     awaitingFrame.value &&
     current.control_epoch === manualEpoch &&
-    (current.sequence ?? 0) > awaitedSequence &&
+    (current.media_sequence !== undefined
+      ? current.media_sequence > awaitedMediaSequence
+      : (current.sequence ?? 0) > awaitedSequence) &&
     (current.applied_input_id ?? 0) >= awaitedInput
   ) {
     awaitingFrame.value = false;
@@ -676,7 +802,13 @@ function frameLoaded(event: Event) {
     (command) =>
       command.operation !== "wheel" ||
       Object.entries(command.target as Record<string, unknown>).every(
-        ([name, value]) => value === current[name as keyof BrowserState],
+        ([name, value]) =>
+          [
+            "frame_id",
+            "media_epoch",
+            "rtp_timestamp",
+            "capture_sequence",
+          ].includes(name) || value === current[name as keyof BrowserState],
       ),
   );
   inputCount.value = inputQueue.length + inFlightInputs.size;
@@ -687,15 +819,19 @@ function resetKeyboard() {
   const pointer = pointerGesture?.id;
   pointerGesture = null;
   dragging.value = false;
-  if (pointer !== undefined && browserImage.value?.hasPointerCapture(pointer))
-    browserImage.value.releasePointerCapture(pointer);
+  if (pointer !== undefined && browserSurface.value?.hasPointerCapture(pointer))
+    browserSurface.value.releasePointerCapture(pointer);
   keyboardFocused.value = false;
   composing.value = false;
   committedComposition = null;
   clearTimeout(compositionTimer);
   localKeys.clear();
   if (keyboardSink.value) keyboardSink.value.value = "";
-  inputQueue = [];
+  inputQueue = releasing
+    ? inputQueue.filter((input) =>
+        ["reset_keys", "release"].includes(String(input.operation)),
+      )
+    : [];
   if (humanControl.value && state.value?.keyboard_input_version === 1)
     enqueueInput({ operation: "reset_keys" });
 }
@@ -703,7 +839,7 @@ function resetKeyboard() {
 /** Forward a captured left-button drag, keeping its original page identity. */
 function pointerPage(event: PointerEvent | MouseEvent) {
   if (state.value?.drag_input_version !== 1 || !humanControl.value) return;
-  const image = event.currentTarget as HTMLImageElement;
+  const image = event.currentTarget as HTMLElement;
   if (event.type === "pointerdown") {
     if (
       event.button !== 0 ||
@@ -712,7 +848,7 @@ function pointerPage(event: PointerEvent | MouseEvent) {
       [...inFlightInputs.values()].some(
         (input) => input.operation !== "pointer",
       ) ||
-      !displayedFrame.value?.image
+      (!displayedFrame.value?.image && !displayedFrame.value?.frame_id)
     )
       return;
     keyboardSink.value?.focus({ preventScroll: true });
@@ -749,15 +885,7 @@ function pointerPage(event: PointerEvent | MouseEvent) {
     return;
   }
   const target = Object.fromEntries(
-    [
-      "tab_id",
-      "document_id",
-      "viewport_width",
-      "viewport_height",
-      "scroll_x",
-      "scroll_y",
-      "position_revision",
-    ].map((name) => [name, gesture.target[name as keyof BrowserState]]),
+    browserTargetFields.map((name) => [name, gesture.target[name]]),
   );
   const width = gesture.target.viewport_width!;
   const height = gesture.target.viewport_height!;
@@ -832,10 +960,13 @@ function clickPage(event: MouseEvent | WheelEvent) {
     state.value?.pointer_input_version === 1
       ? displayedFrame.value
       : state.value;
-  if (!humanControl.value || manualPending.value || !current?.image) return;
-  const bounds = (
-    event.currentTarget as HTMLImageElement
-  ).getBoundingClientRect();
+  if (
+    !humanControl.value ||
+    manualPending.value ||
+    (!current?.image && !current?.frame_id)
+  )
+    return;
+  const bounds = (event.currentTarget as HTMLElement).getBoundingClientRect();
   if (
     !bounds.width ||
     !bounds.height ||
@@ -1002,9 +1133,20 @@ watch(
       state.value?.scroll_x,
       state.value?.scroll_y,
       state.value?.position_revision,
+      state.value?.coordinate_token,
+      state.value?.frame_tree_token,
     ]),
   (identity, previous) => {
-    if (identity !== previous) displayedFrame.value = null;
+    if (identity !== previous) {
+      if (videoVisible.value) freezeVideo();
+      displayedFrame.value = null;
+      if (
+        videoVisible.value &&
+        videoPhase.value === "live" &&
+        videoLastFrame.value
+      )
+        frameLoaded(null, videoLastFrame.value);
+    }
     const gestureTarget = pointerGesture?.target;
     const changedDocument =
       gestureTarget &&
@@ -1013,6 +1155,7 @@ watch(
         "browser_session_id",
         "tab_id",
         "document_id",
+        "frame_tree_token",
         "viewport_width",
         "viewport_height",
       ].some(
@@ -1064,7 +1207,9 @@ watch(
     dragging.value,
     awaitingFrame.value,
   ],
-  () => {
+  (next, previous) => {
+    if (previous && next.every((value, index) => value === previous[index]))
+      return;
     clearTimeout(resizeTimer);
     resizeTimer = setTimeout(resizeViewport, 350);
   },
@@ -1191,19 +1336,24 @@ const controlNotice = computed(() => {
 const captionMessage = computed(() => {
   if (manualMessage.value === t(`${key}.inputUnknown`))
     return manualMessage.value;
+  if (["failed", "unsupported"].includes(videoPhase.value))
+    return t(`${key}.videoFailed`);
+  if (videoPhase.value === "frozen") return t(`${key}.waitingFrame`);
   if (observationStale.value) return t(`${key}.retainedFrame`);
   if (controlNotice.value) return controlNotice.value;
   if (!humanControl.value)
     return t(
       `${key}.${
-        visibleFrame.value && !state.value?.image ? "syncingFrame" : "readOnly"
+        (visibleFrame.value || videoVisible.value) && !displayedFrame.value
+          ? "syncingFrame"
+          : "readOnly"
       }`,
     );
   return t(
     `${key}.${
       inputCount.value
         ? "inputPending"
-        : awaitingFrame.value || !state.value?.image || !displayedFrame.value
+        : awaitingFrame.value || !displayedFrame.value
         ? "waitingFrame"
         : keyboardFocused.value
         ? "frameReady"
@@ -1224,12 +1374,14 @@ async function follow(
   current: BrowserState,
   controller: AbortController,
   chatId: string,
+  includeFrames = true,
 ): Promise<void> {
   const params = new URLSearchParams({
     chat_id: chatId,
     generation: current.generation!,
     browser_session_id: current.browser_session_id!,
     action_cursor: String(current.action_cursor ?? 0),
+    ...(includeFrames ? {} : { frames: "0" }),
   });
   const response = await fetchWithAuth(
     `/api/v1/plugins/extensions/browser-use/stream?${params}`,
@@ -1379,6 +1531,7 @@ async function follow(
           event.execution_state === "closed" ||
           event.execution_state === "disabled"
         ) {
+          stopVideo();
           state.value = { ...event, image: undefined, highlight: null };
           imageFrame.value = null;
           observationStale.value = false;
@@ -1400,15 +1553,18 @@ async function follow(
 }
 
 /** Reauthorize observation on opening or explicit refresh, without a retry loop. */
-async function refresh(): Promise<void> {
-  disconnectControl();
+async function refresh(preserveControl = false): Promise<void> {
+  if (!preserveControl) {
+    disconnectControl();
+    stopVideo();
+  }
   pending?.abort();
   displayedFrame.value = null;
   const retain = Boolean(
     props.chatId &&
       props.visible &&
       pageVisible.value &&
-      imageFrame.value?.image,
+      (imageFrame.value?.image || videoVisible.value),
   );
   observationStale.value = retain;
   if (retain && state.value) {
@@ -1454,6 +1610,7 @@ async function refresh(): Promise<void> {
       throw new Error(initial.data.message || undefined);
     const current = initial.data.data;
     if (!current.available) {
+      stopVideo();
       state.value = current;
       imageFrame.value = null;
       observationStale.value = false;
@@ -1512,8 +1669,28 @@ async function refresh(): Promise<void> {
     connection.value =
       state.value.execution_state === "stopped" ? "stopped" : "snapshot";
     loading.value = false;
-    await follow(snapshot.data.data, controller, chatId);
-    disconnectControl();
+    await nextTick();
+    const videoEnabled =
+      preferVideo.value &&
+      snapshot.data.data.video_stream_version === 1 &&
+      typeof browserVideo.value?.requestVideoFrameCallback === "function" &&
+      typeof VideoFrame !== "undefined" &&
+      typeof RTCPeerConnection !== "undefined";
+    if (
+      preferVideo.value &&
+      snapshot.data.data.video_stream_version === 1 &&
+      !videoEnabled
+    )
+      preferVideo.value = false;
+    if (videoEnabled)
+      void startVideo({
+        chat_id: chatId,
+        generation: current.generation!,
+        browser_session_id: current.browser_session_id!,
+      });
+    await follow(snapshot.data.data, controller, chatId, !videoEnabled);
+    if (!controller.signal.aborted && pending === controller)
+      disconnectControl();
   } catch (err: any) {
     if (!controller.signal.aborted && pending === controller) {
       disconnectControl();
@@ -1535,6 +1712,7 @@ async function refresh(): Promise<void> {
         ["denied", "disabled", "busy"].includes(connection.value) ||
         status === 409
       ) {
+        stopVideo();
         state.value = null;
         imageFrame.value = null;
         observationStale.value = false;
@@ -1574,6 +1752,9 @@ async function control(operation: "stop" | "close"): Promise<void> {
   if (!current?.available || !chatId || controlling.value) return;
   controlling.value = true;
   controlError.value = false;
+  // Closing the browser revokes media before its HTTP acknowledgement arrives.
+  // Retire this attempt first so that expected revocation cannot replace Close.
+  if (operation === "close") stopVideo();
   try {
     const response = await pluginExtensionApi.post<BrowserState>(
       `browser-use/${operation}`,
@@ -1594,6 +1775,7 @@ async function control(operation: "stop" | "close"): Promise<void> {
       return;
     if (response.data.status !== "ok") throw new Error("Control failed.");
     if (operation === "close") {
+      stopVideo();
       pending?.abort();
       state.value = {
         ...response.data.data,
@@ -1629,6 +1811,8 @@ watch(
   () => [props.chatId, props.visible, pageVisible.value, online.value] as const,
   (next, previous) => {
     if (next[0] !== previous?.[0]) {
+      stopVideo();
+      preferVideo.value = true;
       lastIdentity = "";
       state.value = null;
       imageFrame.value = null;
@@ -1639,6 +1823,7 @@ watch(
       // Opening a chat subscribes once. Time, visibility and connectivity never retry.
       void refresh();
     } else if (!next[1] || !next[2] || !next[3]) {
+      stopVideo(!next[1]);
       disconnectControl();
       pending?.abort();
       displayedFrame.value = null;
@@ -1652,6 +1837,7 @@ watch(
           current_action: null,
         };
       if (!next[1]) {
+        stopVideo();
         state.value = null;
         imageFrame.value = null;
         observationStale.value = false;
@@ -1673,6 +1859,7 @@ window.addEventListener("online", networkChanged);
 window.addEventListener("offline", networkChanged);
 window.addEventListener("pagehide", disconnectControl);
 const accountChanged = () => {
+  stopVideo();
   disconnectControl();
   pending?.abort();
   state.value = null;
@@ -1685,6 +1872,7 @@ const accountChanged = () => {
 };
 window.addEventListener("astrbot:account-changed", accountChanged);
 onBeforeUnmount(() => {
+  stopVideo();
   resizeObserver?.disconnect();
   clearTimeout(resizeTimer);
   disconnectControl();
@@ -1716,6 +1904,11 @@ onBeforeUnmount(() => {
     :data-awaiting-frame="awaitingFrame"
     :data-frame-input="displayedFrame?.applied_input_id"
     :data-frame-latency="frameLatency"
+    :data-video-phase="videoPhase"
+    :data-frame-id="displayedFrame?.frame_id"
+    :data-frame-document-id="displayedFrame?.document_id"
+    :data-media-session-id="displayedFrame?.media_session_id"
+    :data-rtp-timestamp="displayedFrame?.rtp_timestamp"
   >
     <header class="agent-browser-toolbar">
       <div class="agent-browser-address" :title="state?.title">
@@ -1806,7 +1999,7 @@ onBeforeUnmount(() => {
         :aria-label="fullscreen ? t(`${key}.title`) : undefined"
       >
         <div
-          v-if="!visibleFrame?.image"
+          v-if="!visibleFrame?.image && !videoVisible"
           role="status"
           class="agent-browser-empty"
         >
@@ -1828,33 +2021,62 @@ onBeforeUnmount(() => {
             }}
           </p>
         </div>
-        <div v-else ref="browserDisplay" class="agent-browser-image">
-          <div class="agent-browser-viewport" :style="fittedFrameSize">
+        <div
+          v-show="visibleFrame?.image || videoVisible"
+          ref="browserDisplay"
+          class="agent-browser-image"
+        >
+          <div
+            ref="browserSurface"
+            class="agent-browser-viewport"
+            :style="{
+              ...fittedFrameSize,
+              ...(humanControl
+                ? {
+                    cursor:
+                      manualPending || !displayedFrame ? 'wait' : 'crosshair',
+                    touchAction: 'none',
+                    userSelect: 'none',
+                  }
+                : {}),
+            }"
+            @click="clickPage"
+            @pointerdown="pointerPage"
+            @mousedown="pointerPage"
+            @pointermove="pointerPage"
+            @pointerup="pointerPage"
+            @pointercancel="pointerPage"
+            @lostpointercapture="pointerPage"
+            @wheel="clickPage"
+          >
+            <video
+              ref="browserVideo"
+              v-show="videoVisible"
+              autoplay
+              muted
+              playsinline
+              :aria-label="state?.title || t(`${key}.title`)"
+            />
             <img
-              ref="browserImage"
-              :src="`data:${visibleFrame.mime_type};base64,${visibleFrame.image}`"
-              :width="visibleFrame.width"
-              :height="visibleFrame.height"
+              v-if="frozenPreview && videoVisible"
+              class="agent-browser-frozen-preview"
+              :src="frozenPreview"
               :alt="state?.title || t(`${key}.title`)"
-              :style="
-                humanControl
-                  ? {
-                      cursor:
-                        manualPending || !state?.image ? 'wait' : 'crosshair',
-                      touchAction: 'none',
-                      userSelect: 'none',
-                    }
+              draggable="false"
+            />
+            <img
+              v-if="visibleFrame?.image"
+              ref="browserImage"
+              v-show="!videoVisible"
+              :src="
+                visibleFrame?.image
+                  ? `data:${visibleFrame.mime_type};base64,${visibleFrame.image}`
                   : undefined
               "
+              :width="visibleFrame?.width"
+              :height="visibleFrame?.height"
+              :alt="state?.title || t(`${key}.title`)"
               draggable="false"
-              @click="clickPage"
-              @pointerdown="pointerPage"
-              @mousedown="pointerPage"
-              @pointermove="pointerPage"
-              @pointerup="pointerPage"
-              @pointercancel="pointerPage"
-              @lostpointercapture="pointerPage"
-              @wheel="clickPage"
               @load="frameLoaded"
             />
             <textarea
@@ -1866,6 +2088,9 @@ onBeforeUnmount(() => {
               autocomplete="off"
               autocapitalize="off"
               spellcheck="false"
+              @click.stop
+              @pointerdown.stop
+              @mousedown.stop
               @focus="keyboardFocused = true"
               @blur="resetKeyboard"
               @keydown="keyboardEvent($event, 'down')"
@@ -1915,6 +2140,37 @@ onBeforeUnmount(() => {
             />
             <span class="agent-browser-caption-text">{{ captionMessage }}</span>
           </span>
+          <template
+            v-if="
+              state?.video_stream_version === 1 && !dragging && !manualPending
+            "
+          >
+            <button
+              v-if="
+                ['failed', 'unsupported'].includes(videoPhase) || !preferVideo
+              "
+              type="button"
+              class="agent-browser-button agent-browser-media-action"
+              @click="
+                preferVideo = true;
+                refresh(true);
+              "
+            >
+              {{ t(`${key}.retryVideo`) }}
+            </button>
+            <button
+              v-if="preferVideo && videoPhase !== 'idle'"
+              type="button"
+              class="agent-browser-button agent-browser-media-action"
+              @click="
+                preferVideo = false;
+                stopVideo();
+                refresh(true);
+              "
+            >
+              {{ t(`${key}.useJpeg`) }}
+            </button>
+          </template>
           <button
             v-if="humanControl && state?.keyboard_input_version === 1"
             type="button"
@@ -2270,12 +2526,17 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: flex-start;
 }
-.agent-browser-image img {
+.agent-browser-image img,
+.agent-browser-image video {
   display: block;
   width: 100%;
   height: 100%;
   object-fit: contain;
   pointer-events: auto;
+}
+.agent-browser-image .agent-browser-frozen-preview {
+  position: absolute;
+  inset: 0;
 }
 .agent-browser-takeover {
   width: auto;
@@ -2322,7 +2583,8 @@ onBeforeUnmount(() => {
   color: rgba(var(--browser-ink), 0.46);
   font-size: 10.5px;
 }
-.agent-browser-handback {
+.agent-browser-handback,
+.agent-browser-media-action {
   width: auto;
   padding: 0 10px;
   white-space: nowrap;

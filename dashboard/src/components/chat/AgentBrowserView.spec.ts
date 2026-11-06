@@ -1,14 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { flushPromises, mount } from "@vue/test-utils";
-const { get, post, fetchStream, createSession } = vi.hoisted(() => ({
-  get: vi.fn(),
-  post: vi.fn(),
-  fetchStream: vi.fn(),
-  createSession: vi.fn(),
-}));
+const { get, post, fetchStream, createSession, createMediaSession } =
+  vi.hoisted(() => ({
+    get: vi.fn(),
+    post: vi.fn(),
+    fetchStream: vi.fn(),
+    createSession: vi.fn(),
+    createMediaSession: vi.fn(),
+  }));
 vi.mock("@/api/v1", () => ({
   pluginExtensionApi: { get, post },
   browserControlApi: { createSession },
+  browserMediaApi: { createSession: createMediaSession },
 }));
 vi.mock("@/api/http", () => ({ fetchWithAuth: fetchStream }));
 import AgentBrowserView from "./AgentBrowserView.vue";
@@ -26,6 +29,7 @@ beforeEach(() => {
   post.mockReset();
   fetchStream.mockReset();
   createSession.mockReset();
+  createMediaSession.mockReset();
   fetchStream.mockImplementation(async () => ({
     ok: true,
     body: new ReadableStream<Uint8Array>({
@@ -40,6 +44,31 @@ afterEach(() => {
 });
 
 describe("Agent browser snapshots", () => {
+  it("keeps a JPEG subscription when the receiver lacks verified video presentation", async () => {
+    get.mockResolvedValue(
+      ok({
+        ...current,
+        video_stream_version: 1,
+        image: "pixels",
+        mime_type: "image/jpeg",
+        width: 1280,
+        height: 720,
+      }),
+    );
+    const view = mount(AgentBrowserView, {
+      props: { chatId: "chat-1", visible: true },
+    });
+    try {
+      await flushPromises();
+      expect(createMediaSession).not.toHaveBeenCalled();
+      expect(fetchStream).toHaveBeenCalledTimes(1);
+      expect(fetchStream.mock.calls[0][0]).not.toContain("frames=0");
+      expect(view.get("img").attributes("src")).toContain("pixels");
+      expect(view.attributes("data-video-phase")).toBe("idle");
+    } finally {
+      view.unmount();
+    }
+  });
   it("keeps desktop layout width after the resize debounce and recovers when Chromium resets or defers it", async () => {
     vi.useFakeTimers();
     let resized: () => void = () => {};
@@ -79,7 +108,19 @@ describe("Agent browser snapshots", () => {
       });
       resized();
       resized();
-      await vi.advanceTimersByTimeAsync(350);
+      await vi.advanceTimersByTimeAsync(250);
+      stream.enqueue(
+        new TextEncoder().encode(
+          `data: ${JSON.stringify({
+            ...current,
+            type: "state",
+            viewport_resize_version: 1,
+            sequence: 2,
+          })}\n\n`,
+        ),
+      );
+      await flushPromises();
+      await vi.advanceTimersByTimeAsync(100);
       expect(post).toHaveBeenCalledTimes(1);
       expect(post.mock.calls[0]).toMatchObject([
         "browser-use/viewport",
@@ -95,8 +136,8 @@ describe("Agent browser snapshots", () => {
         },
       ]);
       for (const [sequence, width, height] of [
-        [2, 1280, 853],
-        [3, 1280, 720],
+        [3, 1280, 853],
+        [4, 1280, 720],
       ]) {
         stream.enqueue(
           new TextEncoder().encode(
@@ -111,7 +152,7 @@ describe("Agent browser snapshots", () => {
           ),
         );
         await flushPromises();
-        if (sequence === 2) {
+        if (sequence === 3) {
           await vi.advanceTimersByTimeAsync(350);
           expect(post).toHaveBeenCalledTimes(1);
         }
@@ -130,6 +171,105 @@ describe("Agent browser snapshots", () => {
       await view.setProps({ visible: false });
       await vi.advanceTimersByTimeAsync(1000);
       expect(post).toHaveBeenCalledTimes(3);
+    } finally {
+      view.unmount();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("resumes a pending human viewport resize when matching pixels become available", async () => {
+    vi.useFakeTimers();
+    let resized = () => {};
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        constructor(callback: () => void) {
+          resized = callback;
+        }
+        observe() {}
+        disconnect() {}
+      },
+    );
+    class Socket {
+      static OPEN = 1;
+      static instance: Socket;
+      readyState = 1;
+      sent: Record<string, any>[] = [];
+      onmessage?: (event: { data: string }) => void;
+      constructor() {
+        Socket.instance = this;
+      }
+      send(raw: string) {
+        this.sent.push(JSON.parse(raw));
+      }
+      close() {
+        this.readyState = 3;
+      }
+    }
+    vi.stubGlobal("WebSocket", Socket);
+    const frame = {
+      ...current,
+      manual_control_version: 1,
+      pointer_input_version: 1,
+      viewport_resize_version: 1,
+      viewport_width: 1280,
+      viewport_height: 720,
+      document_id: "doc",
+      scroll_x: 0,
+      scroll_y: 0,
+      position_revision: 0,
+      frame_id: "a".repeat(32),
+      coordinate_token: "b".repeat(64),
+      control_epoch: 2,
+      applied_input_id: 0,
+      sequence: 1,
+      mime_type: "image/jpeg",
+      image: "pixels",
+      width: 1280,
+      height: 720,
+    };
+    get.mockResolvedValue(ok(frame));
+    createSession.mockResolvedValue({
+      data: { ticket: "ticket", websocket_path: "/control" },
+    });
+    const view = mount(AgentBrowserView, {
+      props: { chatId: "chat-1", visible: true },
+      attachTo: document.body,
+    });
+    try {
+      await flushPromises();
+      const display = view.get(".agent-browser-image").element as HTMLElement;
+      display.style.padding = "0";
+      Object.defineProperties(display, {
+        clientWidth: { value: 900 },
+        clientHeight: { value: 600 },
+      });
+      await view.get(".agent-browser-takeover").trigger("click");
+      await flushPromises();
+      const socket = Socket.instance;
+      socket.onmessage?.({
+        data: JSON.stringify({
+          operation: "acquire",
+          status: "applied",
+          control_epoch: 2,
+        }),
+      });
+      await flushPromises();
+      resized();
+      await vi.advanceTimersByTimeAsync(350);
+      expect(socket.sent.filter((c) => c.operation === "resize")).toHaveLength(
+        0,
+      );
+      const image = view.get("img");
+      Object.defineProperty(image.element, "currentSrc", {
+        get: () => image.attributes("src"),
+      });
+      await image.trigger("load");
+      await flushPromises();
+      expect(socket.sent.filter((c) => c.operation === "resize")).toMatchObject(
+        [{ width: 1280, height: 853, target: { frame_id: frame.frame_id } }],
+      );
+      expect(post).not.toHaveBeenCalled();
     } finally {
       view.unmount();
       vi.unstubAllGlobals();
@@ -309,7 +449,10 @@ describe("Agent browser snapshots", () => {
       });
       await flushPromises();
       const img = view.get("img");
-      vi.spyOn(img.element, "getBoundingClientRect").mockReturnValue({
+      vi.spyOn(
+        img.element.closest(".agent-browser-viewport")!,
+        "getBoundingClientRect",
+      ).mockReturnValue({
         left: 0,
         top: 0,
         width: 1280,
@@ -411,7 +554,10 @@ describe("Agent browser snapshots", () => {
         });
         await flushPromises();
         const image = view.get("img");
-        vi.spyOn(image.element, "getBoundingClientRect").mockReturnValue({
+        vi.spyOn(
+          image.element.closest(".agent-browser-viewport")!,
+          "getBoundingClientRect",
+        ).mockReturnValue({
           left: 0,
           top: 0,
           width: 1280,
@@ -521,10 +667,19 @@ describe("Agent browser snapshots", () => {
     "double click",
     "backlog",
     "stale",
+    "stale click",
+    "stale handback",
+    "stale handback blur",
+    "stale handback timeout",
+    "stale handback uncertain up",
+    "stale handback stale up",
+    "stale handback rejected reset",
+    "stale handback stale release",
     "disconnect",
   ])(
     "sends press immediately, preserves scaled moves and safely ends on %s",
     async (ending) => {
+      if (ending.endsWith("timeout")) vi.useFakeTimers();
       class Socket {
         static OPEN = 1;
         static instance: Socket;
@@ -551,6 +706,9 @@ describe("Agent browser snapshots", () => {
               input_id: input?.input_id ?? null,
               status,
               control_epoch: 2,
+              ...(input?.operation === "release" && status === "applied"
+                ? { state: { control_mode: "agent" } }
+                : {}),
             }),
           });
         }
@@ -584,13 +742,21 @@ describe("Agent browser snapshots", () => {
       try {
         await flushPromises();
         const image = view.get("img");
-        Object.defineProperties(image.element, {
-          currentSrc: { get: () => image.attributes("src") },
-          setPointerCapture: { value: vi.fn() },
-          hasPointerCapture: { value: () => true },
-          releasePointerCapture: { value: vi.fn() },
+        Object.defineProperty(image.element, "currentSrc", {
+          get: () => image.attributes("src"),
         });
-        vi.spyOn(image.element, "getBoundingClientRect").mockReturnValue({
+        Object.defineProperties(
+          image.element.closest(".agent-browser-viewport")!,
+          {
+            setPointerCapture: { value: vi.fn() },
+            hasPointerCapture: { value: () => true },
+            releasePointerCapture: { value: vi.fn() },
+          },
+        );
+        vi.spyOn(
+          image.element.closest(".agent-browser-viewport")!,
+          "getBoundingClientRect",
+        ).mockReturnValue({
           left: 10,
           top: 20,
           right: 650,
@@ -623,7 +789,12 @@ describe("Agent browser snapshots", () => {
           x: 200,
           y: 100,
         });
-        if (ending === "click" || ending === "double click") {
+        if (
+          ending === "click" ||
+          ending === "double click" ||
+          ending === "stale click" ||
+          ending.startsWith("stale handback")
+        ) {
           await image.trigger("pointerup", {
             pointerId: 7,
             clientX: 110,
@@ -664,6 +835,76 @@ describe("Agent browser snapshots", () => {
             "down",
             "up",
           ]);
+          if (ending.startsWith("stale handback")) {
+            await view.get(".agent-browser-takeover").trigger("click");
+            if (ending.endsWith("blur"))
+              await view.get(".agent-browser-keyboard").trigger("blur");
+            socket.ack("stale");
+            await flushPromises();
+            expect(view.attributes("data-human-control")).toBe("true");
+            expect(socket.readyState).toBe(1);
+            if (ending.endsWith("timeout")) {
+              await vi.advanceTimersByTimeAsync(25001);
+            } else {
+              socket.ack(
+                ending.endsWith("uncertain up")
+                  ? "uncertain"
+                  : ending.endsWith("stale up")
+                  ? "stale"
+                  : "applied",
+              );
+              if (!ending.endsWith("up")) {
+                expect(socket.sent.map((input) => input.operation)).toEqual([
+                  "pointer",
+                  "pointer",
+                  "reset_keys",
+                ]);
+                socket.ack(
+                  ending.endsWith("rejected reset") ? "rejected" : "applied",
+                );
+                if (!ending.endsWith("rejected reset")) {
+                  expect(socket.sent.map((input) => input.operation)).toEqual([
+                    "pointer",
+                    "pointer",
+                    "reset_keys",
+                    "release",
+                  ]);
+                  socket.ack(
+                    ending.endsWith("stale release") ? "stale" : "applied",
+                  );
+                  expect(
+                    socket.sent.filter(
+                      (input) => input.operation === "release",
+                    ),
+                  ).toHaveLength(1);
+                }
+              }
+            }
+            await flushPromises();
+            expect(view.attributes("data-human-control")).toBe("false");
+            expect(view.attributes("data-pending-input")).toBe("0");
+            expect(
+              view.get(".agent-browser-takeover").attributes("disabled"),
+            ).toBeUndefined();
+            expect(socket.readyState).toBe(3);
+            expect(
+              socket.sent.filter((input) => input.phase === "down"),
+            ).toHaveLength(1);
+            return;
+          }
+          if (ending === "stale click") {
+            socket.ack("stale");
+            await flushPromises();
+            expect(view.attributes("data-human-control")).toBe("true");
+            expect(socket.readyState).toBe(1);
+            while (socket.acknowledged < socket.sent.length) socket.ack();
+            await flushPromises();
+            expect(view.attributes("data-pending-input")).toBe("0");
+            expect(
+              socket.sent.filter((input) => input.phase === "down"),
+            ).toHaveLength(1);
+            return;
+          }
           while (socket.acknowledged < socket.sent.length) socket.ack();
           expect(
             socket.sent.map((input) => [input.phase, input.click_count]),
@@ -828,7 +1069,10 @@ describe("Agent browser snapshots", () => {
           expect(socket.sent.at(-1)?.operation).toBe("reset_keys");
         }
         socket.ack();
-        expect(image.element.releasePointerCapture).toHaveBeenCalledWith(7);
+        expect(
+          (image.element.closest(".agent-browser-viewport") as HTMLElement)
+            .releasePointerCapture,
+        ).toHaveBeenCalledWith(7);
       } finally {
         view.unmount();
         vi.unstubAllGlobals();
@@ -903,7 +1147,10 @@ describe("Agent browser snapshots", () => {
         Object.defineProperty(image.element, "currentSrc", {
           get: () => image.attributes("src"),
         });
-        vi.spyOn(image.element, "getBoundingClientRect").mockReturnValue({
+        vi.spyOn(
+          image.element.closest(".agent-browser-viewport")!,
+          "getBoundingClientRect",
+        ).mockReturnValue({
           left: 0,
           top: 0,
           width: 1280,
@@ -1012,6 +1259,8 @@ describe("Agent browser snapshots", () => {
       scroll_x: 0,
       scroll_y: 0,
       position_revision: 0,
+      frame_id: "a".repeat(32),
+      coordinate_token: "b".repeat(64),
       control_epoch: 2,
       applied_input_id: 0,
       mime_type: "image/jpeg",
@@ -1035,7 +1284,10 @@ describe("Agent browser snapshots", () => {
         complete: { get: () => decoded },
         naturalWidth: { get: () => 1280 },
       });
-      vi.spyOn(image.element, "getBoundingClientRect").mockReturnValue({
+      vi.spyOn(
+        image.element.closest(".agent-browser-viewport")!,
+        "getBoundingClientRect",
+      ).mockReturnValue({
         left: 10,
         top: 20,
         right: 650,
@@ -1132,6 +1384,7 @@ describe("Agent browser snapshots", () => {
             ...frame,
             type: "frame",
             sequence: 5,
+            frame_id: "c".repeat(32),
             applied_input_id: 1,
             width: 1280,
             height: 720,
@@ -1144,6 +1397,7 @@ describe("Agent browser snapshots", () => {
         delta_x: 80,
         delta_y: 80,
         input_id: 2,
+        target: { frame_id: "a".repeat(32) },
       });
       socket.ack("wheel", 2, "stale");
       await flushPromises();

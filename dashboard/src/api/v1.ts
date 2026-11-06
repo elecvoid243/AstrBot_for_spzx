@@ -2276,6 +2276,12 @@ export const browserControlApi = {
   },
 };
 
+export const browserMediaApi = {
+  createSession(body: openApiV1.BrowserControlSessionRequest) {
+    return openApiV1.createBrowserMediaSession({ body, throwOnError: true });
+  },
+};
+
 export const accountApi = {
   current() { return typed<openApiV1.AccountInfo>(openApiV1.currentAccount()); },
   list() { return typed<openApiV1.AccountInfo[]>(openApiV1.listAccounts()); },

@@ -482,7 +482,15 @@ async function acquireControl() {
         awaitedStarted = inputStarted;
         awaitingFrame.value = true;
       }
-      if (ack.status === "stale") {
+      if (
+        ack.status === "stale" &&
+        !(
+          releasing &&
+          (["reset_keys", "release"].includes(inFlightOperation ?? "") ||
+            (["pointer", "key"].includes(inFlightOperation ?? "") &&
+              ["up", "cancel"].includes(inFlightPhase)))
+        )
+      ) {
         if (
           [...inFlightInputs.values()].some(
             (input) =>
@@ -497,6 +505,12 @@ async function acquireControl() {
           // remain safe to drain after a rejected press, without replaying it.
           disconnectControl();
           manualMessage.value = t(`${key}.staleInput`);
+          return;
+        }
+        if (releasing) {
+          // Handback already discarded new actions and queued reset/release.
+          // Keep that explicit intent while admitted terminal inputs drain.
+          sendNextInput();
           return;
         }
         const staleOperation = inFlightOperation;
@@ -813,7 +827,11 @@ function resetKeyboard() {
   clearTimeout(compositionTimer);
   localKeys.clear();
   if (keyboardSink.value) keyboardSink.value.value = "";
-  inputQueue = [];
+  inputQueue = releasing
+    ? inputQueue.filter((input) =>
+        ["reset_keys", "release"].includes(String(input.operation)),
+      )
+    : [];
   if (humanControl.value && state.value?.keyboard_input_version === 1)
     enqueueInput({ operation: "reset_keys" });
 }

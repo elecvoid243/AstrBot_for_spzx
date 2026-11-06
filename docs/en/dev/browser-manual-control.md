@@ -136,6 +136,12 @@ action may have happened, and never replays it. Old socket replies cannot enable
 input. During explicit handback, SSE may precede the socket acknowledgement; input
 stays disabled while waiting for that confirmation.
 
+If a press becomes stale after explicit handback was queued, the UI drains only
+already-sent terminal inputs, then sends `reset_keys` before one `release`.
+It never replays the press. An unsuccessful terminal acknowledgement or a
+25-second confirmation timeout disconnects control and leaves the Agent paused;
+the user must explicitly recover control before trying handback again.
+
 Every revocation and terminal path releases keys and any possibly held mouse on
 their original CDP sessions within a shared bounded deadline. Mouse cleanup releases
 outside the document so it cannot complete an uncertain click on a submit target.

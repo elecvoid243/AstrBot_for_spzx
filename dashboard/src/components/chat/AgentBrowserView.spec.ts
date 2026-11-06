@@ -668,10 +668,18 @@ describe("Agent browser snapshots", () => {
     "backlog",
     "stale",
     "stale click",
+    "stale handback",
+    "stale handback blur",
+    "stale handback timeout",
+    "stale handback uncertain up",
+    "stale handback stale up",
+    "stale handback rejected reset",
+    "stale handback stale release",
     "disconnect",
   ])(
     "sends press immediately, preserves scaled moves and safely ends on %s",
     async (ending) => {
+      if (ending.endsWith("timeout")) vi.useFakeTimers();
       class Socket {
         static OPEN = 1;
         static instance: Socket;
@@ -698,6 +706,9 @@ describe("Agent browser snapshots", () => {
               input_id: input?.input_id ?? null,
               status,
               control_epoch: 2,
+              ...(input?.operation === "release" && status === "applied"
+                ? { state: { control_mode: "agent" } }
+                : {}),
             }),
           });
         }
@@ -781,7 +792,8 @@ describe("Agent browser snapshots", () => {
         if (
           ending === "click" ||
           ending === "double click" ||
-          ending === "stale click"
+          ending === "stale click" ||
+          ending.startsWith("stale handback")
         ) {
           await image.trigger("pointerup", {
             pointerId: 7,
@@ -823,6 +835,63 @@ describe("Agent browser snapshots", () => {
             "down",
             "up",
           ]);
+          if (ending.startsWith("stale handback")) {
+            await view.get(".agent-browser-takeover").trigger("click");
+            if (ending.endsWith("blur"))
+              await view.get(".agent-browser-keyboard").trigger("blur");
+            socket.ack("stale");
+            await flushPromises();
+            expect(view.attributes("data-human-control")).toBe("true");
+            expect(socket.readyState).toBe(1);
+            if (ending.endsWith("timeout")) {
+              await vi.advanceTimersByTimeAsync(25001);
+            } else {
+              socket.ack(
+                ending.endsWith("uncertain up")
+                  ? "uncertain"
+                  : ending.endsWith("stale up")
+                  ? "stale"
+                  : "applied",
+              );
+              if (!ending.endsWith("up")) {
+                expect(socket.sent.map((input) => input.operation)).toEqual([
+                  "pointer",
+                  "pointer",
+                  "reset_keys",
+                ]);
+                socket.ack(
+                  ending.endsWith("rejected reset") ? "rejected" : "applied",
+                );
+                if (!ending.endsWith("rejected reset")) {
+                  expect(socket.sent.map((input) => input.operation)).toEqual([
+                    "pointer",
+                    "pointer",
+                    "reset_keys",
+                    "release",
+                  ]);
+                  socket.ack(
+                    ending.endsWith("stale release") ? "stale" : "applied",
+                  );
+                  expect(
+                    socket.sent.filter(
+                      (input) => input.operation === "release",
+                    ),
+                  ).toHaveLength(1);
+                }
+              }
+            }
+            await flushPromises();
+            expect(view.attributes("data-human-control")).toBe("false");
+            expect(view.attributes("data-pending-input")).toBe("0");
+            expect(
+              view.get(".agent-browser-takeover").attributes("disabled"),
+            ).toBeUndefined();
+            expect(socket.readyState).toBe(3);
+            expect(
+              socket.sent.filter((input) => input.phase === "down"),
+            ).toHaveLength(1);
+            return;
+          }
           if (ending === "stale click") {
             socket.ack("stale");
             await flushPromises();

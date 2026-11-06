@@ -945,6 +945,7 @@ async def main(args):
     website_password = secrets.token_urlsafe(18)
     website_cookie = secrets.token_urlsafe(18)
     website_login = {"submitted": 0, "continued": 0, "stale": 0}
+    handback_marker = secrets.token_hex(8) if args.stale_handback else ""
     target_html = (plugin / "scripts/video_probe_target.html").read_text(
         encoding="utf-8"
     )
@@ -988,7 +989,7 @@ async def main(args):
                 website_login["continued"] += 1
             return web.Response(
                 content_type="text/html",
-                text="""<!doctype html><meta charset="utf-8"><title>Signed in local account</title><h1>Signed in: Offline 用户</h1><form action="/continued"><button>Continue signed-in task</button></form>""",
+                text="""<!doctype html><meta charset="utf-8"><title>Signed in local account</title><style>body{min-height:2000px}</style><h1>Signed in: Offline 用户</h1><form action="/continued"><button>Continue signed-in task</button></form><script>addEventListener('click',()=>sessionStorage.setItem('authenticatedClicks',String(Number(sessionStorage.getItem('authenticatedClicks')||0)+1)))</script>""",
             )
         if request.path == "/stale-login-action":
             website_login["stale"] += 1
@@ -1054,8 +1055,10 @@ async def main(args):
                 element = next(
                     element
                     for element in observation["interactive_elements"]
-                    if element.get("text") == "Continue signed-in task"
+                    if element.get("text", "").startswith("Continue signed-in task")
                 )
+                if args.stale_handback:
+                    assert handback_marker in element["text"]
                 calls = (
                     []
                     if any(
@@ -1349,9 +1352,13 @@ async def main(args):
                 timeout=60000
             )
             await page.locator(".session-item.active").wait_for(timeout=60000)
+            # The admin notice loads asynchronously one second after mount.
+            await page.wait_for_function(
+                "localStorage.getItem('astrbot:first_notice_seen:v1')==='1'||Array.from(document.querySelectorAll('.v-overlay--active button')).some(button=>button.textContent.trim()==='关闭')"
+            )
             popup = page.get_by_role("button", name="关闭", exact=True)
             if await popup.count():
-                await popup.first.evaluate("button=>button.click()")
+                await popup.first.click()
             await page.locator(".chat-text-input, .chat-textarea").fill("V02_OPEN")
             await page.locator(".send-btn[aria-label]").click()
             await page.get_by_text("V02_BROWSER_READY", exact=False).first.wait_for(
@@ -2151,11 +2158,112 @@ async def main(args):
                 await ordinary_page.screenshot(
                     path=str(out / "handoff-local-login.png")
                 )
-                await ordinary_page.locator(".agent-browser-takeover").click()
+                if args.stale_handback:
+                    await ordinary_page.wait_for_function(
+                        "document.querySelector('.agent-browser-view')?.dataset.frameId && document.querySelector('.agent-browser-view')?.dataset.pendingInput==='0' && document.querySelector('.agent-browser-view')?.dataset.awaitingFrame==='false'"
+                    )
+                    surface = await ordinary_page.locator(
+                        ".agent-browser-viewport"
+                    ).bounding_box()
+                    viewport = await login_target.evaluate(
+                        "({width:innerWidth,height:innerHeight})"
+                    )
+                    heading = await login_target.locator("h1").bounding_box()
+                    point = viewport_point(
+                        surface, viewport, heading["x"] + 50, heading["y"] + 15
+                    )
+                    await ordinary_page.evaluate(
+                        "__videoProof.caseId=400;__videoProof.holdInput=true"
+                    )
+                    await ordinary_page.mouse.move(*(round(value) for value in point))
+                    await ordinary_page.mouse.down()
+                    await ordinary_page.mouse.up()
+                    await ordinary_page.wait_for_function(
+                        "__videoProof.heldInputs.length===2"
+                    )
+                    held_id = await ordinary_page.evaluate(
+                        "JSON.parse(__videoProof.heldInputs[0][1]).input_id"
+                    )
+                    await ordinary_page.locator(".agent-browser-takeover").click()
+                    assert await ordinary_page.locator(
+                        ".agent-browser-takeover"
+                    ).is_disabled()
+                    await login_target.evaluate(
+                        "marker=>{document.querySelector('button').textContent+=' '+marker;scrollTo(0,30)}",
+                        handback_marker,
+                    )
+                    assert await login_target.evaluate("scrollY") == 30
+                    assert (
+                        await login_target.evaluate(
+                            "Number(sessionStorage.getItem('authenticatedClicks')||0)"
+                        )
+                        == 0
+                    )
+                    await ordinary_page.screenshot(
+                        path=str(out / "handoff-stale-pending.png")
+                    )
+                    await ordinary_page.evaluate("__videoProof.flushInput()")
+                    await ordinary_page.wait_for_function(
+                        "id=>__videoProof.acks.some(a=>a.input_id===id&&a.status==='stale')&&__videoProof.acks.some(a=>a.input_id===id+1&&a.status==='applied')",
+                        arg=held_id,
+                    )
+                else:
+                    await ordinary_page.locator(".agent-browser-takeover").click()
                 await ordinary_page.get_by_text(
                     "V03_LOGIN_DONE", exact=False
                 ).first.wait_for(timeout=45000)
                 assert website_login == {"submitted": 1, "continued": 1, "stale": 0}
+                if args.stale_handback:
+                    proof = await ordinary_page.evaluate(
+                        "({commands:__videoProof.commands.filter(c=>c.caseId===400),acks:__videoProof.acks.filter(a=>a.input_id)})"
+                    )
+                    (out / "stale-handback-transport.json").write_text(
+                        json.dumps(proof, indent=2), encoding="utf-8"
+                    )
+                    commands = proof["commands"]
+                    assert (
+                        len(
+                            [
+                                c
+                                for c in commands
+                                if c["operation"] == "pointer"
+                                and c.get("phase") == "down"
+                            ]
+                        )
+                        == 1
+                    )
+                    assert [
+                        c["operation"]
+                        for c in commands
+                        if c["operation"] in {"reset_keys", "release"}
+                    ] == ["reset_keys", "release"]
+                    assert (
+                        len(
+                            [
+                                a
+                                for a in proof["acks"]
+                                if a["operation"] == "release"
+                                and a["status"] == "applied"
+                            ]
+                        )
+                        == 1
+                    )
+                    assert (
+                        await login_target.evaluate(
+                            "Number(sessionStorage.getItem('authenticatedClicks')||0)"
+                        )
+                        == 1
+                    )
+                    metrics["stale_handback"] = {
+                        "fault": "Outgoing UI down/up held by test transport before real source scroll; actual runtime returns stale/applied after explicit handback queues.",
+                        "original_press_count": 1,
+                        "reset_then_release_once": True,
+                        "fresh_button_marker": handback_marker,
+                        "native_authenticated_clicks": 1,
+                    }
+                    metrics["checks"].append(
+                        "injected stale down with already-in-flight up preserves queued explicit handback; reset precedes one release; Agent observes the new marker and continues once without replay"
+                    )
                 assert website_password not in json.dumps(
                     model_requests, ensure_ascii=False
                 )
@@ -2361,11 +2469,14 @@ if __name__ == "__main__":
     parser.add_argument("--hd", action="store_true")
     parser.add_argument("--samples", type=int, choices=(6, 30), default=6)
     parser.add_argument("--login-handoff", action="store_true")
+    parser.add_argument("--stale-handback", action="store_true")
     parser.add_argument("--terminal-faults", action="store_true")
     parser.add_argument(
         "--four-viewer-seconds", type=int, choices=(0, 15, 300), default=0
     )
     args = parser.parse_args()
+    if args.stale_handback and not args.login_handoff:
+        parser.error("--stale-handback requires --login-handoff")
     if not args.start_gate:
         from browser_video_probe_process import OwnedProbeProcess
 

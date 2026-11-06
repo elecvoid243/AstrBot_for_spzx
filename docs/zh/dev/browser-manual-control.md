@@ -19,6 +19,10 @@ shadow 滚动状态在输入前再次核对；未知 frame、活跃 View Transit
 宿主选择 owner/viewer，并持续核对账号凭证版本、聊天、插件与真实浏览器；
 普通公开扩展请求不能伪造媒体上下文。凭证和私有 CDP/loopback 地址不进入媒体消息或 URL。
 
+每 60 个实际发送帧可附带 `media-stats`：有界累计的共享采集/解码、每端编码耗时与调用线程 CPU、
+队列替换等计数，不包含网页或输入内容，也不能授权画面。调用线程 CPU 不含原生编码器工作线程，
+完整进程 CPU 测量才包含这些线程。
+
 双方 `iceServers: []`。私有 aiortc 1.14.0 适配器只挂接所属 sender/transport，
 按实际协商 VP8 payload 与最后发送的 RTP 包建立映射，关闭时还原。
 最多四个观看者共享有界 CDP JPEG 采集/解码，各自离线程 VP8 编码；缺少已验证依赖时
@@ -136,3 +140,10 @@ shadow 滚动状态在输入前再次核对；未知 frame、活跃 View Transit
 `drag_input_version: 1` 声明有序 `pointer` 输入，`phase` 为 `down`、`move`、`up` 或 `cancel`。按下按当前截图完整校验目标；后续移动和松开绑定原标签页、文档与视口，允许拖动导致滚动。完整保留每个移动采样，最多 8 条在途输入，松开不丢弃、不等待截图。目标切换、失焦、取消及断线在原 CDP 会话释放鼠标；不重放未知输入。`cancel` 和 `reset_keys` 不依赖旧画面坐标。
 
 观测首次打开连接一次，断流和空闲不自动重试；刷新按钮显式重新授权、获取快照并订阅推送。租约心跳保留，和截图刷新无关。
+
+验证配套视频离线包时，使用新的较短输出路径，执行
+`python scripts/browser_video_production_acceptance.py --out <新路径> --plugin-source <插件检出> --plugin-zip <完整插件.zip> --dashboard-zip <配套前端.zip> --hd --samples 30 --four-viewer-seconds 300 --login-handoff --terminal-faults`。
+配套后端源码 ZIP 应放在前端 ZIP 旁。该模式核对产物和提交哈希，运行解压后的后端、
+前端及实际安装的私有运行时，拥有并清理测试进程树，记录原始像素、光学反馈延迟、
+每个观看端的资源、网络审计及清理。四观看端持续窗口为 300 秒，包含原生动画和滚动；
+重复源帧与有效呈现帧率分别统计。这是阻断外网验收，不是实体断网机器验证。

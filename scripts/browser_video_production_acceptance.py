@@ -1,6 +1,7 @@
 """Exercise production ChatUI media with the actual isolated Browser Use plugin.
 
-This source-checkout acceptance does not validate a final offline installation.
+The package mode runs the shipped installer and can verify matched Dashboard
+and backend archives. Network guards simulate blocked egress, not an airgap.
 The parent launcher owns the entire test/host/runtime/viewer tree in a Job Object.
 """
 
@@ -10,6 +11,7 @@ import argparse
 import asyncio
 import contextlib
 import hashlib
+import ipaddress
 import json
 import os
 import platform
@@ -17,9 +19,11 @@ import re
 import secrets
 import shutil
 import socket
+import statistics
 import subprocess
 import sys
 import time
+import zipfile
 from pathlib import Path
 
 import aiohttp
@@ -50,7 +54,7 @@ def viewport_point(surface, viewport, x, y):
 
 
 async def exercise_controls(
-    page, target, mode, first_case, out, metrics, fixture_origin
+    page, target, mode, first_case, out, metrics, fixture_origin, samples=6
 ):
     """Measure the same six native interactions in each production display mode.
 
@@ -62,8 +66,11 @@ async def exercise_controls(
         out: Isolated evidence directory.
         metrics: Machine-readable acceptance results.
         fixture_origin: Epoch origin encoded by the unchanged V01 fixture.
+        samples: Matched native actions, in groups of six.
     """
     await page.evaluate("mode=>__videoProof.mode=mode", mode)
+    traffic_before = await page.evaluate("({...__videoProof.traffic})")
+    await page.evaluate("__videoProof.resetPresentation()")
     measurement_started = await page.evaluate(
         "performance.timeOrigin+performance.now()"
     )
@@ -75,9 +82,14 @@ async def exercise_controls(
             )
     cpu_started = time.monotonic()
     stats_before = await page.evaluate("__videoProof.statistics()")
+    service_before = await page.evaluate("__videoProof.serviceStats.slice(-1)")
     actions = []
-    for sample_index in range(1, 7):
-        case_id = first_case + sample_index - 1
+    await page.evaluate(
+        "width=>__videoProof.cssWidth=width", await target.evaluate("innerWidth")
+    )
+    for offset in range(samples):
+        sample_index = offset % 6 + 1
+        case_id = first_case + offset
         await target.evaluate("id=>probe.pending=id", case_id)
         await page.evaluate("id=>__videoProof.caseId=id", case_id)
         await page.wait_for_function(
@@ -110,9 +122,11 @@ async def exercise_controls(
             await page.mouse.up()
         else:
             await page.mouse.move(*viewport_point(surface, viewport, 500, 650))
-            await page.mouse.wheel(0, 320 if sample_index == 5 else -160)
+            await page.mouse.wheel(
+                0, 320 if sample_index == 5 else (-320 if samples > 6 else -160)
+            )
         await page.wait_for_function(
-            "id=>__videoProof.frames.some(f=>f.valid && f.actual[1]===id)",
+            "id=>__videoProof.frames.some(f=>f.valid && f.mapped!==false && f.actual[1]===id)",
             arg=case_id,
             timeout=12000,
         )
@@ -133,16 +147,23 @@ async def exercise_controls(
         json.dumps(proof, indent=2), encoding="utf-8"
     )
     latencies = []
-    for case_id in range(first_case, first_case + 6):
+    feedback = {}
+    for case_id in range(first_case, first_case + samples):
         sent = next(i for i in proof["inputs"] if i["caseId"] == case_id)
         presented = next(
-            f for f in proof["frames"] if f["valid"] and f["actual"][1] == case_id
+            f
+            for f in proof["frames"]
+            if f["valid"] and f.get("mapped", True) and f["actual"][1] == case_id
         )
         latencies.append(presented["t"] - sent["t"])
+        feedback[case_id] = presented
     actual = [
         f
         for f in proof["frames"]
-        if f["valid"] and f["mode"] == mode and f["t"] >= measurement_started
+        if f["valid"]
+        and f.get("mapped", True)
+        and f["mode"] == mode
+        and f["t"] >= measurement_started
     ]
     cpu_seconds = 0
     rss_bytes = 0
@@ -161,11 +182,19 @@ async def exercise_controls(
     ordered = sorted(latencies)
     metrics[f"guarded_{mode}_measurement"] = {
         "latencies_ms": latencies,
+        "p50_ms": statistics.median(latencies),
         "p95_ms": ordered[index]
         + (ordered[min(index + 1, len(ordered) - 1)] - ordered[index])
         * (position - index),
         "max_ms": max(latencies),
-        "p95_method": "linear quantile; six samples, not a stability guarantee",
+        "p95_method": f"linear quantile; {samples} matched samples, not a stability guarantee",
+        "sample_window_ms": await page.evaluate(
+            "performance.timeOrigin+performance.now()"
+        )
+        - measurement_started,
+        "presented_frames": len(actual),
+        "unique_source_frames": len({f["words"][3] for f in actual}),
+        "repeated_source_frames": len(actual) - len({f["words"][3] for f in actual}),
         "dimensions": sorted({(f["width"], f["height"]) for f in actual}),
         "css_viewport": await target.evaluate(
             "({width:innerWidth,height:innerHeight,dpr:devicePixelRatio})"
@@ -175,24 +204,28 @@ async def exercise_controls(
         "resource_scope": "owned acceptance/host/private browser/receiver tree, including optical sampling; one logical core is 100 percent",
         "rtp_stats_before": stats_before,
         "rtp_stats_after": await page.evaluate("__videoProof.statistics()"),
+        "service_stats_before": service_before,
+        "service_stats_after": await page.evaluate(
+            "__videoProof.serviceStats.slice(-1)"
+        ),
+        "receiver_presentation": await page.evaluate("__videoProof.presentation"),
+        "application_bytes": {
+            name: value - traffic_before[name]
+            for name, value in (await page.evaluate("__videoProof.traffic")).items()
+        },
         "source_paint_to_present_ms": [
-            next(f for f in proof["frames"] if f["valid"] and f["actual"][1] == case)[
-                "t"
-            ]
-            - fixture_origin
-            - next(f for f in proof["frames"] if f["valid"] and f["actual"][1] == case)[
-                "words"
-            ][0]
-            for case in range(first_case, first_case + 6)
+            feedback[case]["t"] - fixture_origin - feedback[case]["words"][0]
+            for case in range(first_case, first_case + samples)
         ],
         "source_change_to_captured_paint_ms": [
-            next(f for f in proof["frames"] if f["valid"] and f["actual"][1] == case)[
-                "words"
-            ][0]
-            - next(f for f in proof["frames"] if f["valid"] and f["actual"][1] == case)[
-                "actual"
-            ][2]
-            for case in range(first_case, first_case + 6)
+            feedback[case]["words"][0] - feedback[case]["actual"][2]
+            for case in range(first_case, first_case + samples)
+        ],
+        "input_to_native_event_ms": [
+            fixture_origin
+            + feedback[case]["actual"][2]
+            - next(i["t"] for i in proof["inputs"] if i["caseId"] == case)
+            for case in range(first_case, first_case + samples)
         ],
         "presented_fps": (len(actual) - 1)
         / ((actual[-1]["t"] - actual[0]["t"]) / 1000),
@@ -247,6 +280,457 @@ async def open_agent_panel(page):
     await page.locator(".agent-browser-view").wait_for()
 
 
+async def fit_native_hd(page, target):
+    """Use real fullscreen/container resize to request a native 1080p viewport.
+
+    Args:
+        page: Actual production receiver with an acquired human control lease.
+        target: Read-only inspection of the private website's native dimensions.
+    """
+    await page.set_viewport_size({"width": 1943, "height": 1116})
+    if (
+        await page.locator(".agent-browser-fullscreen").get_attribute("aria-pressed")
+        != "true"
+    ):
+        await page.locator(".agent-browser-fullscreen").click()
+    for _ in range(3):
+        dimensions = await page.locator(".agent-browser-image").evaluate(
+            "el=>{const s=getComputedStyle(el);return {width:el.clientWidth-parseFloat(s.paddingLeft)-parseFloat(s.paddingRight),height:el.clientHeight-parseFloat(s.paddingTop)-parseFloat(s.paddingBottom)}}"
+        )
+        size = page.viewport_size
+        await page.set_viewport_size(
+            {
+                "width": round(size["width"] + 1920 - dimensions["width"]),
+                "height": round(size["height"] + 1080 - dimensions["height"]),
+            }
+        )
+        await asyncio.sleep(0.6)
+    await target.wait_for_function(
+        "innerWidth===1920 && innerHeight===1080", timeout=15000
+    )
+    # Container adjustments and their ordered resize ACK must settle before
+    # measuring the new pixels, especially after explicit JPEG selection.
+    await asyncio.sleep(1)
+    await page.wait_for_function(
+        """()=>{const r=document.querySelector('.agent-browser-view');
+        if(!r?.dataset.frameId||r.dataset.pendingInput!=='0'||r.dataset.awaitingFrame!=='false')return false;
+        const v=document.querySelector('.agent-browser-viewport video'),i=document.querySelector('.agent-browser-viewport img');
+        return r.dataset.mediaSessionId?v?.videoWidth===1920&&v.videoHeight===1080:i?.naturalWidth===1920&&i.naturalHeight===1080}""",
+        timeout=15000,
+    )
+
+
+async def exercise_four_viewers(
+    playwright,
+    chromium,
+    origin,
+    chat_id,
+    context,
+    page,
+    second_page,
+    target,
+    host,
+    seconds,
+    out,
+    metrics,
+):
+    """Measure four independent real receivers while the original lease stays held.
+
+    Args:
+        playwright: Owned browser driver.
+        chromium: Installed private browser executable.
+        origin: Isolated production host URL.
+        chat_id: Current owned ChatUI session.
+        context: Original authenticated receiver context.
+        page: Original human controller.
+        second_page: Already connected read-only receiver.
+        target: Actual private website.
+        host: Owned host process.
+        seconds: Full four-viewer measurement duration.
+        out: Isolated evidence directory.
+        metrics: Acceptance results.
+    """
+    extra = []
+    pages = [page, second_page]
+    try:
+        for _ in range(2):
+            browser = await playwright.chromium.launch(
+                executable_path=str(chromium),
+                headless=True,
+                ignore_default_args=["--hide-scrollbars"],
+            )
+            extra.append(browser)
+            receiver = await browser.new_context(
+                storage_state=await context.storage_state(),
+                viewport={"width": 1600, "height": 1000},
+            )
+            await receiver.add_init_script(
+                path=str(ROOT / "scripts/browser_video_production_instrument.js")
+            )
+            await receiver.route(
+                re.compile(r"^https?://(?!127\.0\.0\.1[:/]|localhost[:/])"),
+                lambda route: route.abort(),
+            )
+            receiver_page = await receiver.new_page()
+            await receiver_page.goto(origin + f"/#/chat/{chat_id}")
+            await receiver_page.locator(".chat-text-input, .chat-textarea").wait_for(
+                timeout=60000
+            )
+            await open_agent_panel(receiver_page)
+            await receiver_page.locator(
+                '.agent-browser-view[data-video-phase="live"]'
+            ).wait_for(timeout=30000)
+            pages.append(receiver_page)
+        identities = [
+            await p.locator(".agent-browser-view").get_attribute(
+                "data-media-session-id"
+            )
+            for p in pages
+        ]
+        assert len(set(identities)) == 4 and all(identities)
+        for p in pages[1:]:
+            assert await p.locator(".agent-browser-takeover").is_disabled()
+        await fit_native_hd(page, target)
+        for p in pages:
+            await p.evaluate(
+                "__videoProof.attach();__videoProof.optical=false;__videoProof.resetPresentation()"
+            )
+        await target.evaluate(
+            """() => {const c=document.createElement('canvas');c.width=180;c.height=80;c.style='position:fixed;left:1050px;top:400px';document.body.append(c);const ctx=c.getContext('2d');let n=0;function paint(){ctx.fillStyle=n%2?'#ffb000':'#00b0ff';ctx.fillRect(0,0,180,80);ctx.fillStyle='#000';ctx.font='24px sans-serif';ctx.fillText(String(n++),10,50);window.v03Animation=requestAnimationFrame(paint)}paint()}"""
+        )
+        child = next(frame for frame in target.frames if "/contract-child" in frame.url)
+        await child.evaluate(
+            "window.v03Scroll=setInterval(()=>scroller.scrollTop=scroller.scrollTop?0:120,4500)"
+        )
+        source = next(
+            p
+            for p in psutil.Process(host.pid).children(recursive=True)
+            if any("mcp_entry.py" in arg for arg in p.cmdline())
+        )
+        cpu_before = {}
+        for process in [source, *source.children(recursive=True)]:
+            with contextlib.suppress(psutil.Error):
+                cpu_before[(process.pid, process.create_time())] = sum(
+                    process.cpu_times()[:2]
+                )
+        snapshots = []
+        receiver_systems = [
+            await p.context.browser.new_browser_cdp_session() for p in pages
+        ]
+        receiver_cpu = []
+        for system in receiver_systems:
+            receiver_cpu.append(
+                {
+                    item["id"]: item["cpuTime"]
+                    for item in (await system.send("SystemInfo.getProcessInfo"))[
+                        "processInfo"
+                    ]
+                }
+            )
+        started = time.monotonic()
+        next_action = started + 5
+        next_sample = started
+        clicks = []
+        while time.monotonic() - started < seconds:
+            if time.monotonic() >= next_action:
+                await page.wait_for_function(
+                    "document.querySelector('.agent-browser-view')?.dataset.frameId && document.querySelector('.agent-browser-view')?.dataset.pendingInput==='0'",
+                    timeout=15000,
+                )
+                before = await target.evaluate("hits.length")
+                surface = await page.locator(".agent-browser-viewport").bounding_box()
+                viewport = await target.evaluate(
+                    "({width:innerWidth,height:innerHeight})"
+                )
+                await page.mouse.click(*viewport_point(surface, viewport, 160, 200))
+                await page.wait_for_function(
+                    "document.querySelector('.agent-browser-view')?.dataset.pendingInput==='0'",
+                    timeout=15000,
+                )
+                native = await target.evaluate("hits.slice()")
+                assert len(native) in {before, before + 1}
+                if len(native) > before:
+                    assert native[-1] == "B"
+                clicks.append(
+                    {
+                        "elapsed_s": time.monotonic() - started,
+                        "hit": len(native) > before,
+                    }
+                )
+                next_action = time.monotonic() + 5
+            if time.monotonic() >= next_sample:
+                receivers = []
+                for index, p in enumerate(pages):
+                    receivers.append(
+                        await p.evaluate(
+                            "({presentation:__videoProof.presentation,peerStates:__videoProof.peers.map(p=>p.connectionState),lastRecords:__videoProof.metadata.slice(-4),serviceStats:__videoProof.serviceStats.slice(-1),visibility:document.visibilityState})"
+                        )
+                    )
+                    receivers[-1]["rtp"] = await p.evaluate("__videoProof.statistics()")
+                    native = (
+                        await receiver_systems[index].send("SystemInfo.getProcessInfo")
+                    )["processInfo"]
+                    receivers[-1]["cpu_seconds"] = sum(
+                        max(
+                            0,
+                            item["cpuTime"]
+                            - receiver_cpu[index].get(item["id"], item["cpuTime"]),
+                        )
+                        for item in native
+                    )
+                    receivers[-1]["rss_bytes"] = 0
+                    for item in native:
+                        with contextlib.suppress(psutil.Error):
+                            receivers[-1]["rss_bytes"] += (
+                                psutil.Process(item["id"]).memory_info().rss
+                            )
+                rss = cpu = 0
+                non_loopback_tcp = []
+                for process in [source, *source.children(recursive=True)]:
+                    with contextlib.suppress(psutil.Error):
+                        rss += process.memory_info().rss
+                        cpu += max(
+                            0,
+                            sum(process.cpu_times()[:2])
+                            - cpu_before.get(
+                                (process.pid, process.create_time()),
+                                sum(process.cpu_times()[:2]),
+                            ),
+                        )
+                        for connection in process.net_connections(kind="tcp"):
+                            if (
+                                connection.raddr
+                                and connection.status == "ESTABLISHED"
+                                and not ipaddress.ip_address(
+                                    connection.raddr.ip
+                                ).is_loopback
+                            ):
+                                non_loopback_tcp.append(
+                                    {
+                                        "pid": process.pid,
+                                        "peer": connection.raddr.ip,
+                                        "port": connection.raddr.port,
+                                    }
+                                )
+                assert not non_loopback_tcp, non_loopback_tcp
+                snapshots.append(
+                    {
+                        "elapsed_s": time.monotonic() - started,
+                        "source_tree_cpu_seconds": cpu,
+                        "source_tree_rss": rss,
+                        "non_loopback_established_tcp": non_loopback_tcp,
+                        "receivers": receivers,
+                    }
+                )
+                (out / "four-viewers-progress.json").write_text(
+                    json.dumps(
+                        {
+                            "identities": identities,
+                            "clicks": clicks,
+                            "snapshots": snapshots,
+                        },
+                        indent=2,
+                    ),
+                    encoding="utf-8",
+                )
+                next_sample = time.monotonic() + 5
+            assert (
+                await page.locator(".agent-browser-view").get_attribute(
+                    "data-human-control"
+                )
+                == "true"
+            )
+            await asyncio.sleep(0.25)
+        measurement_duration = time.monotonic() - started
+        for system in receiver_systems:
+            await system.detach()
+        for p in pages:
+            presentation = await p.evaluate("__videoProof.presentation")
+            assert (
+                presentation["callbacks"] > seconds * 2
+                and presentation["repeatedRtp"] == 0
+                and presentation["mapped"] > seconds * 2
+                and presentation["uniqueSource"] > seconds * 2
+                and presentation["repeatedSource"] == 0
+            ), presentation
+        await child.evaluate("clearInterval(window.v03Scroll)")
+        await target.evaluate("cancelAnimationFrame(window.v03Animation)")
+        for _ in range(3):
+            old = (
+                await pages[2]
+                .locator(".agent-browser-view")
+                .get_attribute("data-media-session-id")
+            )
+            await (
+                pages[2]
+                .locator(".git-diff-sidebar-header button[aria-label]")
+                .last.click()
+            )
+            await pages[2].wait_for_function(
+                "__videoProof.peers.every(p=>p.connectionState==='closed')"
+            )
+            await open_agent_panel(pages[2])
+            await (
+                pages[2]
+                .locator('.agent-browser-view[data-video-phase="live"]')
+                .wait_for(timeout=30000)
+            )
+            assert (
+                await pages[2]
+                .locator(".agent-browser-view")
+                .get_attribute("data-media-session-id")
+                != old
+            )
+        metrics["four_viewers"] = {
+            "duration_s": time.monotonic() - started,
+            "required_window_s": seconds,
+            "measurement_window_s": measurement_duration,
+            "identities": identities,
+            "clicks": clicks,
+            "snapshots": snapshots,
+            "reopen_cycles": 3,
+        }
+        metrics["checks"].append(
+            "four independent real video receivers sustain animation/scrolling for the required window; one controller, native hits, separate RTP records and three explicit reopen cycles"
+        )
+        await page.locator(".agent-browser-fullscreen").click()
+        await page.set_viewport_size({"width": 1600, "height": 1000})
+    finally:
+        for browser in extra:
+            await browser.close()
+
+
+async def exercise_terminal_faults(page, target, child, out, metrics):
+    """Release original native sessions across explicit UI lifetime interruptions.
+
+    Args:
+        page: Actual ChatUI human controller.
+        target: Owned private top-level website, inspected without injecting input.
+        child: Actual cross-origin frame receiving the native input.
+        out: Isolated evidence output.
+        metrics: Machine-readable acceptance results.
+    """
+    await child.evaluate(
+        "window.v03Keys=[];addEventListener('keydown',e=>v03Keys.push([e.type,e.code]));addEventListener('keyup',e=>v03Keys.push([e.type,e.code]))"
+    )
+    for fault, held_kind in (
+        ("control-disconnect", "pointer"),
+        ("sidebar-close", "pointer"),
+        ("control-disconnect", "key"),
+        ("sidebar-close", "key"),
+    ):
+        await page.wait_for_function(
+            "document.querySelector('.agent-browser-view')?.dataset.frameId && document.querySelector('.agent-browser-view')?.dataset.pendingInput==='0'"
+        )
+        surface = await page.locator(".agent-browser-viewport").bounding_box()
+        viewport = await target.evaluate("({width:innerWidth,height:innerHeight})")
+        await page.mouse.move(*viewport_point(surface, viewport, 800, 190))
+        if held_kind == "pointer":
+            await page.mouse.down()
+            await child.wait_for_function(
+                "a.matches(':active')||b.matches(':active')", timeout=10000
+            )
+        else:
+            await page.mouse.click(*viewport_point(surface, viewport, 800, 190))
+        await page.wait_for_function(
+            "document.querySelector('.agent-browser-view')?.dataset.pendingInput==='0'"
+        )
+        before = await child.evaluate("hits.length")
+        if held_kind == "key":
+            await page.keyboard.down("Control")
+            await child.wait_for_function(
+                "v03Keys.filter(e=>e[0]==='keydown'&&e[1]==='ControlLeft').length>v03Keys.filter(e=>e[0]==='keyup'&&e[1]==='ControlLeft').length"
+            )
+        if fault == "sidebar-close":
+            await page.locator(
+                ".git-diff-sidebar-header button[aria-label]"
+            ).last.evaluate("button=>button.click()")
+        else:
+            await page.evaluate(
+                "__videoProof.sockets.findLast(s=>s.url.includes('browser-control')).close(4001,'acceptance held pointer disconnect')"
+            )
+        if held_kind == "pointer":
+            await child.wait_for_function(
+                "!a.matches(':active')&&!b.matches(':active')", timeout=10000
+            )
+            await page.mouse.up()
+        assert await child.evaluate("hits.length") == before
+        if held_kind == "key":
+            await page.keyboard.up("Control")
+            await child.wait_for_function(
+                "v03Keys.filter(e=>e[0]==='keyup'&&e[1]==='ControlLeft').length>=v03Keys.filter(e=>e[0]==='keydown'&&e[1]==='ControlLeft').length"
+            )
+        if fault == "sidebar-close":
+            await open_agent_panel(page)
+        await page.locator(".agent-browser-refresh").click()
+        await page.wait_for_function(
+            "document.querySelector('.agent-browser-view')?.dataset.frameId && document.querySelector('.agent-browser-view')?.dataset.humanControl==='false'"
+        )
+        await page.locator(".agent-browser-takeover").click()
+        await page.wait_for_function(
+            "document.querySelector('.agent-browser-view')?.dataset.frameId && document.querySelector('.agent-browser-view')?.dataset.humanControl==='true'"
+        )
+        metrics["checks"].append(
+            f"held native iframe {held_kind} releases without extra click on {fault}; explicit refresh/takeover recovers"
+        )
+    for held_kind in ("pointer", "key"):
+        await asyncio.sleep(1)
+        await page.wait_for_function(
+            "document.querySelector('.agent-browser-view')?.dataset.frameId && document.querySelector('.agent-browser-view')?.dataset.pendingInput==='0' && document.querySelector('.agent-browser-view')?.dataset.awaitingFrame==='false'"
+        )
+        surface = await page.locator(".agent-browser-viewport").bounding_box()
+        viewport = await target.evaluate("({width:innerWidth,height:innerHeight})")
+        point = viewport_point(surface, viewport, 800, 190)
+        if held_kind == "pointer":
+            await page.mouse.move(*point)
+            await page.mouse.down()
+            await child.wait_for_function("a.matches(':active')||b.matches(':active')")
+        else:
+            await page.mouse.click(*point)
+            await page.wait_for_function(
+                "document.querySelector('.agent-browser-view')?.dataset.pendingInput==='0' && document.querySelector('.agent-browser-view')?.dataset.awaitingFrame==='false' && document.querySelector('.agent-browser-view')?.dataset.frameId"
+            )
+            await page.keyboard.down("Control")
+            await child.wait_for_function(
+                "v03Keys.filter(e=>e[0]==='keydown'&&e[1]==='ControlLeft').length>v03Keys.filter(e=>e[0]==='keyup'&&e[1]==='ControlLeft').length"
+            )
+        before = await child.evaluate("hits.length")
+        original_url = page.url
+        await page.get_by_text("创建对话", exact=True).first.evaluate(
+            "button=>button.click()"
+        )
+        await page.wait_for_url(lambda url: str(url) != original_url)
+        if held_kind == "pointer":
+            await page.mouse.up()
+            await child.wait_for_function(
+                "!a.matches(':active')&&!b.matches(':active')"
+            )
+        else:
+            await page.keyboard.up("Control")
+            await child.wait_for_function(
+                "v03Keys.filter(e=>e[0]==='keyup'&&e[1]==='ControlLeft').length>=v03Keys.filter(e=>e[0]==='keydown'&&e[1]==='ControlLeft').length"
+            )
+        assert await child.evaluate("hits.length") == before
+        await (
+            page.locator(".session-item")
+            .filter(has_text="V02_BROWSER_READY")
+            .first.click()
+        )
+        await page.wait_for_url(original_url)
+        await open_agent_panel(page)
+        await page.wait_for_function(
+            "document.querySelector('.agent-browser-view')?.dataset.frameId && document.querySelector('.agent-browser-view')?.dataset.humanControl==='false'"
+        )
+        await page.locator(".agent-browser-takeover").click()
+        await page.wait_for_function(
+            "document.querySelector('.agent-browser-view')?.dataset.frameId && document.querySelector('.agent-browser-view')?.dataset.humanControl==='true'"
+        )
+        metrics["checks"].append(
+            f"switching chats while a native iframe {held_kind} is held releases its original session; explicit return/takeover recovers without replay"
+        )
+    await page.screenshot(path=str(out / "terminal-faults-recovered.png"))
+
+
 async def main(args):
     """Run owned production services and save source/transport/pixel evidence.
 
@@ -254,18 +738,154 @@ async def main(args):
         args: Explicit isolated output and startup gate arguments.
     """
     plugin = args.plugin_source.resolve()
-    private_python = args.private_python.resolve()
-    chromium = args.chromium.resolve()
+    private_python = args.private_python.resolve() if args.private_python else None
+    chromium = args.chromium.resolve() if args.chromium else None
     out = args.out.resolve()
     out.mkdir(parents=True, exist_ok=True)
-    runroot = out / "isolated-host"
+    runroot = out / ("安装后的 AstrBot" if args.plugin_zip else "isolated-host")
     data = runroot / "data"
     installed = data / "plugins/astrbot_plugin_browser_use"
-    installed.mkdir(parents=True)
-    for source in plugin.iterdir():
-        if source.is_file() and source.suffix in {".py", ".json", ".yaml", ".txt"}:
-            shutil.copy2(source, installed / source.name)
+    host_source = ROOT
+    dashboard_dist = ROOT / "dashboard/dist"
+    if args.plugin_zip:
+        if private_python or chromium:
+            raise ValueError(
+                "Final package acceptance cannot borrow a runtime override."
+            )
+        distribution = out / "离线 安装包"
+        with zipfile.ZipFile(args.plugin_zip) as archive:
+            archive.extractall(distribution)
+        installed.parent.mkdir(parents=True)
+        persistent = (
+            data / "plugin_data/astrbot_plugin_browser_use/existing-user-data.txt"
+        )
+        persistent.parent.mkdir(parents=True)
+        persistent.write_text("preserve", encoding="utf-8")
+        command = [
+            "powershell.exe",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(distribution / "install.ps1"),
+            "-AstrBotDataDir",
+            str(data),
+        ]
+        first = await asyncio.to_thread(
+            subprocess.run,
+            command,
+            capture_output=True,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        assert first.returncode == 0, first.stderr.decode(errors="replace")
+        refused = await asyncio.to_thread(
+            subprocess.run,
+            command,
+            capture_output=True,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        assert refused.returncode != 0
+        installed.rename(out / "旧插件备份")
+        reinstalled = await asyncio.to_thread(
+            subprocess.run,
+            command,
+            capture_output=True,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        assert reinstalled.returncode == 0, reinstalled.stderr.decode(errors="replace")
+        assert persistent.read_text(encoding="utf-8") == "preserve"
+        private_python = installed / "runtime/python/python.exe"
+        chromium = installed / "runtime/chromium/chrome.exe"
+        manifest = json.loads(
+            (installed / "runtime/manifest.json").read_text(encoding="utf-8")
+        )
+        for name, digest in manifest["source_sha256"].items():
+            assert (
+                hashlib.sha256((installed / name).read_bytes()).hexdigest() == digest
+            ), name
+        for name, digest in manifest["installer_sha256"].items():
+            assert (
+                hashlib.sha256((distribution / name).read_bytes()).hexdigest() == digest
+            )
+        if args.dashboard_zip:
+            assert (
+                hashlib.sha256(args.dashboard_zip.read_bytes()).hexdigest()
+                == manifest["dashboard_sha256"]
+            )
+            dashboard_root = out / "dashboard-package"
+            with zipfile.ZipFile(args.dashboard_zip) as archive:
+                archive.extractall(dashboard_root)
+            dashboard_dist = dashboard_root / "dist"
+            build = json.loads(
+                (dashboard_dist / "assets/browser-observer-build.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            assert build["astrbot_revision"] == manifest["astrbot_revision"]
+            assert build["plugin_revision"] == manifest["plugin_revision"]
+            assert build["plugin_version"] == manifest["plugin_version"]
+            backend_archive = args.dashboard_zip.parent / build["backend_source_file"]
+            assert (
+                hashlib.sha256(backend_archive.read_bytes()).hexdigest()
+                == build["backend_source_sha256"]
+            )
+            host_source = out / "backend"
+            with zipfile.ZipFile(backend_archive) as archive:
+                archive.extractall(host_source)
+            assert (
+                await asyncio.to_thread(
+                    subprocess.check_output,
+                    ["git", "rev-parse", "HEAD"],
+                    cwd=ROOT,
+                    text=True,
+                )
+            ).strip() == build["astrbot_revision"]
+        runtime_check = await asyncio.to_thread(
+            subprocess.run,
+            [
+                str(private_python),
+                "-X",
+                "utf8",
+                "-B",
+                str(installed / "scripts/check_runtime.py"),
+                "--report",
+                str(out / "installed-runtime-check.json"),
+            ],
+            capture_output=True,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        assert runtime_check.returncode == 0, runtime_check.stderr.decode(
+            errors="replace"
+        )
+        check = json.loads(
+            (out / "installed-runtime-check.json").read_text(encoding="utf-8")
+        )
+        assert all(
+            Path(path).resolve().is_relative_to(installed)
+            for path in check["sys_path"]
+            if path
+        )
+    else:
+        if private_python is None or chromium is None:
+            raise ValueError(
+                "Source acceptance requires explicit private Python and Chromium."
+            )
+        installed.mkdir(parents=True)
+        for source in plugin.iterdir():
+            if source.is_file() and source.suffix in {".py", ".json", ".yaml", ".txt"}:
+                shutil.copy2(source, installed / source.name)
     metrics = {"passed": False, "stage": "V02 production source checkout", "checks": []}
+    if args.plugin_zip:
+        metrics.update(
+            stage="V03 matched final packages"
+            if args.dashboard_zip
+            else "V03 candidate plugin package with source host",
+            plugin_zip_sha256=hashlib.sha256(args.plugin_zip.read_bytes()).hexdigest(),
+            manifest=manifest,
+        )
+        metrics["checks"].append(
+            "shipped installer installs through Chinese/space paths, refuses overwrite and reinstalls after moving old source; private imports, source hashes and persistent data verified"
+        )
     metrics["environment"] = {
         "os": platform.platform(),
         "architecture": platform.machine(),
@@ -289,6 +909,10 @@ async def main(args):
         for p in installed.glob("*.py")
     }
     model_requests = []
+    model_waiting, model_release = asyncio.Event(), asyncio.Event()
+    website_password = secrets.token_urlsafe(18)
+    website_cookie = secrets.token_urlsafe(18)
+    website_login = {"submitted": 0, "continued": 0, "stale": 0}
     target_html = (plugin / "scripts/video_probe_target.html").read_text(
         encoding="utf-8"
     )
@@ -303,6 +927,39 @@ async def main(args):
         Returns:
             HTML from the tracked real-browser fixture.
         """
+        if request.path == "/login":
+            if request.method == "POST":
+                form = await request.post()
+                if (
+                    form.get("username") != "Offline 用户"
+                    or form.get("password") != website_password
+                    or int(form.get("slider", "0")) < 70
+                ):
+                    return web.Response(
+                        status=401,
+                        text="Local fixture credentials or slider were incorrect.",
+                    )
+                website_login["submitted"] += 1
+                response = web.HTTPSeeOther("/authenticated")
+                response.set_cookie(
+                    "v03_login", website_cookie, httponly=True, samesite="Lax"
+                )
+                return response
+            return web.Response(
+                content_type="text/html",
+                text="""<!doctype html><meta charset="utf-8"><title>Local manual login</title><style>body{font:20px system-ui;margin:40px}input{display:block;width:320px;height:36px;margin:18px 0}button{height:40px;padding:0 24px}</style><h1>Ordinary local test account</h1><form method="post" action="/login"><input name="username" autocomplete="off" placeholder="Local test username"><input name="password" type="password" placeholder="Local test password"><input name="slider" type="range" min="0" max="100" value="10"><button type="submit">Sign in locally</button></form>""",
+            )
+        if request.path in {"/authenticated", "/continued"}:
+            if request.cookies.get("v03_login") != website_cookie:
+                return web.Response(status=403, text="Sign in first")
+            if request.path == "/continued":
+                website_login["continued"] += 1
+            return web.Response(
+                content_type="text/html",
+                text="""<!doctype html><meta charset="utf-8"><title>Signed in local account</title><h1>Signed in: Offline 用户</h1><form action="/continued"><button>Continue signed-in task</button></form>""",
+            )
+        if request.path == "/stale-login-action":
+            website_login["stale"] += 1
         if request.path == "/contract":
             html = (ROOT / "scripts/browser_video_contract_target.html").read_text(
                 encoding="utf-8"
@@ -339,7 +996,77 @@ async def main(args):
         results = [item for item in messages[start:] if item["role"] == "tool"]
         message = {"role": "assistant", "content": "V02_BROWSER_READY"}
         finish = "stop"
-        if body.get("tools") and not results:
+        login_start = next(
+            (
+                i
+                for i in range(len(messages) - 1, -1, -1)
+                if messages[i]["role"] == "user"
+                and "V03_LOGIN" in str(messages[i].get("content"))
+                and "SYSTEM NOTICE" not in str(messages[i].get("content"))
+            ),
+            None,
+        )
+        if login_start is not None and body.get("tools"):
+            login_results = [
+                item for item in messages[login_start:] if item["role"] == "tool"
+            ]
+            returned = [
+                item
+                for item in messages[login_start:]
+                if item["role"] == "user"
+                and "Human browser handback" in str(item.get("content"))
+            ]
+            if returned:
+                observation = json.loads(returned[-1]["content"].split("\n", 1)[1])
+                assert observation["url"].endswith("/authenticated")
+                element = next(
+                    element
+                    for element in observation["interactive_elements"]
+                    if element.get("text") == "Continue signed-in task"
+                )
+                calls = (
+                    []
+                    if any(
+                        item.get("tool_call_id") == "v03_continue"
+                        for item in login_results
+                    )
+                    else [
+                        ("v03_continue", "browser_click", {"index": element["index"]})
+                    ]
+                )
+            elif not login_results:
+                calls = [
+                    (
+                        "v03_login_open",
+                        "browser_navigate",
+                        {"url": fixture_url + "/login"},
+                    )
+                ]
+            else:
+                model_waiting.set()
+                await model_release.wait()
+                calls = [
+                    (
+                        "v03_stale",
+                        "browser_navigate",
+                        {"url": fixture_url + "/stale-login-action"},
+                    )
+                ]
+            message = {
+                "role": "assistant",
+                "content": None if calls else "V03_LOGIN_DONE",
+            }
+            if calls:
+                message["tool_calls"] = [
+                    {
+                        "id": call_id,
+                        "type": "function",
+                        "function": {"name": name, "arguments": json.dumps(arguments)},
+                    }
+                    for call_id, name, arguments in calls
+                ]
+            finish = "tool_calls" if calls else "stop"
+        elif body.get("tools") and not results:
             message = {
                 "role": "assistant",
                 "content": None,
@@ -392,6 +1119,7 @@ async def main(args):
         ),
     )
     app.router.add_get("/{path:.*}", website)
+    app.router.add_post("/login", website)
     runner = web.AppRunner(app, access_log=None)
     await runner.setup()
     site = web.TCPSite(runner, "127.0.0.1", 0)
@@ -437,8 +1165,8 @@ async def main(args):
         json.dumps(
             {
                 "allowed_domains": ["http://127.0.0.1", "http://localhost"],
-                "python_path": str(private_python),
-                "browser_path": str(chromium),
+                "python_path": "" if args.plugin_zip else str(private_python),
+                "browser_path": "" if args.plugin_zip else str(chromium),
             }
         ),
         encoding="utf-8",
@@ -446,7 +1174,7 @@ async def main(args):
     environment = {
         **os.environ,
         "ASTRBOT_ROOT": str(runroot),
-        "PYTHONPATH": str(ROOT),
+        "PYTHONPATH": str(host_source),
         "PYTHONUTF8": "1",
         "PYTHONDONTWRITEBYTECODE": "1",
         "HTTP_PROXY": "http://127.0.0.1:9",
@@ -470,7 +1198,38 @@ async def main(args):
         "socket.socket.connect=connect\nsocket.getaddrinfo=resolve\n",
         encoding="utf-8",
     )
-    environment["PYTHONPATH"] = os.pathsep.join((str(guard), str(ROOT)))
+    environment["PYTHONPATH"] = os.pathsep.join((str(guard), str(host_source)))
+    if args.plugin_zip:
+        environment["BROWSER_OFFLINE_AUDIT"] = str(out / "offline-audit")
+        for destination in (guard, private_python.parent / "Lib/site-packages"):
+            shutil.copy2(
+                ROOT / "scripts/browser_offline_guard.py",
+                destination / "browser_offline_guard.py",
+            )
+            (destination / "sitecustomize.py").write_text(
+                "import browser_offline_guard\n", encoding="utf-8"
+            )
+        metrics["offline_guard"] = (
+            "Test-only Python audit/install guard plus native Chromium loopback proxy/DNS rules; injected after package verification; no physical airgap claim"
+        )
+        negative = await asyncio.to_thread(
+            subprocess.run,
+            [
+                str(private_python),
+                "-X",
+                "utf8",
+                "-B",
+                "-c",
+                "import json,subprocess,sys; r=subprocess.run([sys.argv[1],'--headless','--no-first-run','--disable-background-networking','--dump-dom','--user-data-dir='+sys.argv[2],'https://example.com'],capture_output=True,text=True,encoding='utf-8',errors='replace',timeout=30); blocked=any(s in r.stdout+r.stderr for s in ['ERR_PROXY_CONNECTION_FAILED','ERR_NAME_NOT_RESOLVED','ERR_SOCKS_CONNECTION_FAILED']); print(json.dumps({'returncode':r.returncode,'external_browser_navigation_blocked':blocked})); assert blocked",
+                str(chromium),
+                str(out / "egress-probe"),
+            ],
+            env=environment,
+            capture_output=True,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        assert negative.returncode == 0, negative.stderr.decode(errors="replace")
+        metrics["offline_negative_probe"] = json.loads(negative.stdout)
     host = viewer = second_viewer = playwright = page = private_browser = None
     auth = {}
     errors = []
@@ -480,9 +1239,9 @@ async def main(args):
                 subprocess.Popen,
                 [
                     sys.executable,
-                    str(ROOT / "main.py"),
+                    str(host_source / "main.py"),
                     "--webui-dir",
-                    str(ROOT / "dashboard/dist"),
+                    str(dashboard_dist),
                 ],
                 cwd=runroot,
                 env=environment,
@@ -532,6 +1291,7 @@ async def main(args):
                 lambda message: (
                     print("UI:", message.text, flush=True)
                     if message.type == "error"
+                    or message.text.startswith("Browser viewport probe")
                     else None
                 ),
             )
@@ -645,8 +1405,17 @@ async def main(args):
             await page.wait_for_function(
                 "document.querySelector('.agent-browser-view')?.dataset.mediaSessionId && document.querySelector('.agent-browser-view')?.dataset.frameId"
             )
+            if args.hd:
+                await fit_native_hd(page, target)
+                await page.wait_for_function(
+                    "document.querySelector('.agent-browser-view')?.dataset.frameId && document.querySelector('.agent-browser-viewport video')?.videoWidth===1920 && document.querySelector('.agent-browser-viewport video')?.videoHeight===1080"
+                )
+                await page.screenshot(path=str(out / "native-1080-video.png"))
+                metrics["checks"].append(
+                    "actual production fullscreen layout requests native CSS 1920x1080 and decodes 1920x1080 video; no bitmap upscaling"
+                )
             await exercise_controls(
-                page, target, "video", 1, out, metrics, fixture_origin
+                page, target, "video", 1, out, metrics, fixture_origin, args.samples
             )
             await target.evaluate("""() => {
               const input=document.createElement('input');input.id='keyboard';
@@ -712,6 +1481,32 @@ async def main(args):
             metrics["checks"].append(
                 "held key releases its original native input session while media is failed and no frame is mapped"
             )
+            if args.terminal_faults:
+                await page.get_by_role("button", name="重试视频", exact=True).click()
+                await page.wait_for_function(
+                    "document.querySelector('.agent-browser-view')?.dataset.frameId && document.querySelector('.agent-browser-view')?.dataset.videoPhase==='live'"
+                )
+                surface = await page.locator(".agent-browser-viewport").bounding_box()
+                viewport = await target.evaluate(
+                    "({width:innerWidth,height:innerHeight})"
+                )
+                drag = await target.locator("#drag").bounding_box()
+                await page.mouse.move(
+                    *viewport_point(surface, viewport, drag["x"] + 40, drag["y"] + 30)
+                )
+                await page.mouse.down()
+                await target.wait_for_function("held!==null")
+                await page.evaluate(
+                    "__videoProof.sockets.findLast(s=>s.url.includes('browser-media')).close(4001,'acceptance held drag media fault')"
+                )
+                await page.locator(
+                    '.agent-browser-view[data-video-phase="failed"][data-human-control="true"]'
+                ).wait_for()
+                await page.mouse.up()
+                await target.wait_for_function("held===null", timeout=10000)
+                metrics["checks"].append(
+                    "held native drag releases while media is failed and no frame is mapped"
+                )
             await page.get_by_role("button", name="切换 JPEG", exact=True).click()
             await page.wait_for_function(
                 "document.querySelector('.agent-browser-view')?.dataset.videoPhase==='idle' && document.querySelector('.agent-browser-view')?.dataset.frameId && !document.querySelector('.agent-browser-view')?.dataset.mediaSessionId"
@@ -739,18 +1534,25 @@ async def main(args):
                 "doc=>document.querySelector('.agent-browser-view')?.dataset.frameId && document.querySelector('.agent-browser-view')?.dataset.frameDocumentId===doc && !document.querySelector('.agent-browser-view')?.dataset.mediaSessionId",
                 arg=await target.evaluate("String(performance.timeOrigin)"),
             )
+            if args.hd:
+                await fit_native_hd(page, target)
             await exercise_controls(
                 page,
                 target,
                 "jpeg",
-                7,
+                args.samples + 1,
                 out,
                 metrics,
                 await target.evaluate(
                     "Number(new URL(location.href).searchParams.get('origin'))"
                 ),
+                args.samples,
             )
             await page.evaluate("__videoProof.mode='video'")
+            if args.hd:
+                await page.locator(".agent-browser-fullscreen").click()
+                await page.set_viewport_size({"width": 1600, "height": 1000})
+                await asyncio.sleep(1)
             await page.get_by_role("button", name="重试视频", exact=True).click()
             await page.locator(
                 '.agent-browser-view[data-video-phase="live"][data-human-control="true"]'
@@ -769,8 +1571,11 @@ async def main(args):
             for index, kind in enumerate(
                 ("same-url-reload", "closed-shadow-scroll", "cross-origin-frame-scroll")
             ):
+                # Navigation can schedule a legitimate 350 ms viewport update.
+                # Finish it before intentionally withholding all frame metadata.
+                await asyncio.sleep(1)
                 await page.wait_for_function(
-                    "document.querySelector('.agent-browser-view')?.dataset.frameId && document.querySelector('.agent-browser-view')?.dataset.pendingInput==='0'"
+                    "document.querySelector('.agent-browser-view')?.dataset.frameId && document.querySelector('.agent-browser-view')?.dataset.pendingInput==='0' && document.querySelector('.agent-browser-view')?.dataset.awaitingFrame==='false'"
                 )
                 surface = await page.locator(".agent-browser-viewport").bounding_box()
                 viewport = await target.evaluate(
@@ -925,6 +1730,21 @@ async def main(args):
                 != first_media
             )
             assert await second_page.locator(".agent-browser-takeover").is_disabled()
+            if args.four_viewer_seconds:
+                await exercise_four_viewers(
+                    playwright,
+                    chromium,
+                    origin,
+                    chat_id,
+                    context,
+                    page,
+                    second_page,
+                    target,
+                    host,
+                    args.four_viewer_seconds,
+                    out,
+                    metrics,
+                )
             await second_page.screenshot(path=str(out / "video-live-en.png"))
             assert (
                 await second_page.locator(".agent-browser-view video").evaluate(
@@ -942,7 +1762,7 @@ async def main(args):
             child = next(
                 frame for frame in target.frames if "/contract-child" in frame.url
             )
-            await child.evaluate("scroller.scrollTop=0")
+            await child.evaluate("scroller.scrollTop=scroller.scrollTop?0:120")
             await page.wait_for_function(
                 "old=>document.querySelector('.agent-browser-view')?.dataset.frameId && document.querySelector('.agent-browser-view').dataset.frameId!==old",
                 arg=before_mixed,
@@ -958,6 +1778,8 @@ async def main(args):
             metrics["checks"].append(
                 "second actual ChatUI viewer decodes a static source and cannot steal control; mixed JPEG/video viewers retain current coordinate state after automatic child scrolling"
             )
+            if args.terminal_faults:
+                await exercise_terminal_faults(page, target, child, out, metrics)
             ticket_body = {
                 "chat_id": chat_id,
                 **{
@@ -1054,6 +1876,25 @@ async def main(args):
                 await asyncio.sleep(0.1)
             assert not udp, "Media UDP sockets survived the last viewer"
             metrics["last_viewer_udp_sockets"] = len(udp)
+            idle_processes = [
+                private_process,
+                *private_process.children(recursive=True),
+            ]
+            idle_cpu = {
+                (p.pid, p.create_time()): sum(p.cpu_times()[:2]) for p in idle_processes
+            }
+            idle_started = time.monotonic()
+            await asyncio.sleep(4)
+            metrics["last_viewer_idle"] = {
+                "window_s": time.monotonic() - idle_started,
+                "private_mcp_rss": private_process.memory_info().rss,
+                "private_mcp_cpu_seconds": sum(private_process.cpu_times()[:2])
+                - idle_cpu[(private_process.pid, private_process.create_time())],
+                "source_tree_rss": sum(
+                    p.memory_info().rss for p in idle_processes if p.is_running()
+                ),
+                "note": "Browser and its test-page animation remain alive; capture/encoder transport has stopped (zero media UDP sockets).",
+            }
             await open_agent_panel(page)
             await page.locator('.agent-browser-view[data-video-phase="live"]').wait_for(
                 timeout=20000
@@ -1123,6 +1964,169 @@ async def main(args):
             await ordinary_page.locator(
                 '.agent-browser-view[data-video-phase="live"]'
             ).wait_for(timeout=20000)
+            if args.login_handoff:
+                model_waiting.clear()
+                model_release.clear()
+                await ordinary_page.locator(".chat-text-input, .chat-textarea").fill(
+                    "V03_LOGIN"
+                )
+                await ordinary_page.locator(".send-btn[aria-label]").click()
+                await asyncio.wait_for(model_waiting.wait(), 45)
+                await ordinary_page.locator(".agent-browser-takeover").click()
+                await ordinary_page.locator(
+                    '.agent-browser-view[data-human-control="true"]'
+                ).wait_for(timeout=30000)
+                login_identity = await ordinary_page.locator(
+                    ".agent-browser-view"
+                ).evaluate("el=>({...el.dataset})")
+                count_before = len(model_requests)
+                model_release.set()
+                await asyncio.sleep(1)
+                assert len(model_requests) == count_before
+                native_port = next(
+                    int(arg.split("=", 1)[1])
+                    for process in psutil.Process(host.pid).children(recursive=True)
+                    for arg in process.cmdline()
+                    if arg.startswith("--remote-debugging-port=")
+                    and arg.split("=", 1)[1] != "0"
+                )
+                private_browser = await playwright.chromium.connect_over_cdp(
+                    f"http://127.0.0.1:{native_port}"
+                )
+                login_target = next(
+                    p
+                    for c in private_browser.contexts
+                    for p in c.pages
+                    if p.url.endswith("/login")
+                )
+                await ordinary_page.wait_for_function(
+                    "doc=>document.querySelector('.agent-browser-view')?.dataset.frameId && document.querySelector('.agent-browser-view')?.dataset.frameDocumentId===doc",
+                    arg=await login_target.evaluate("String(performance.timeOrigin)"),
+                )
+                for name, text in (
+                    ("username", "Offline 用户"),
+                    ("password", website_password),
+                ):
+                    bounds = await login_target.locator(
+                        f'input[name="{name}"]'
+                    ).bounding_box()
+                    surface = await ordinary_page.locator(
+                        ".agent-browser-viewport"
+                    ).bounding_box()
+                    viewport = await login_target.evaluate(
+                        "({width:innerWidth,height:innerHeight})"
+                    )
+                    await ordinary_page.mouse.click(
+                        *viewport_point(
+                            surface,
+                            viewport,
+                            bounds["x"] + bounds["width"] / 2,
+                            bounds["y"] + bounds["height"] / 2,
+                        )
+                    )
+                    await ordinary_page.wait_for_function(
+                        "document.querySelector('.agent-browser-view')?.dataset.pendingInput==='0' && document.querySelector('.agent-browser-view')?.dataset.awaitingFrame==='false' && document.querySelector('.agent-browser-view')?.dataset.frameId"
+                    )
+                    await ordinary_page.keyboard.insert_text(text)
+                    for _ in range(100):
+                        if (
+                            await login_target.locator(
+                                f'input[name="{name}"]'
+                            ).input_value()
+                            == text
+                        ):
+                            break
+                        await asyncio.sleep(0.1)
+                    else:
+                        metrics["login_field_diagnostic"] = await login_target.evaluate(
+                            "({url:location.href,username:document.querySelector('[name=username]').value,password_length:document.querySelector('[name=password]').value.length,focus:document.activeElement?.name})"
+                        )
+                        raise AssertionError(
+                            f"Native login field did not match: {name}"
+                        )
+                    print(f"Native login field confirmed: {name}", flush=True)
+                    await ordinary_page.wait_for_function(
+                        "document.querySelector('.agent-browser-view')?.dataset.pendingInput==='0' && document.querySelector('.agent-browser-view')?.dataset.awaitingFrame==='false' && document.querySelector('.agent-browser-view')?.dataset.frameId"
+                    )
+                slider = await login_target.locator(
+                    'input[name="slider"]'
+                ).bounding_box()
+                surface = await ordinary_page.locator(
+                    ".agent-browser-viewport"
+                ).bounding_box()
+                await ordinary_page.wait_for_function(
+                    "document.querySelector('.agent-browser-view')?.dataset.frameId"
+                )
+                await ordinary_page.mouse.move(
+                    *viewport_point(
+                        surface,
+                        viewport,
+                        slider["x"] + slider["width"] * 0.1,
+                        slider["y"] + slider["height"] / 2,
+                    )
+                )
+                await ordinary_page.mouse.down()
+                for step in range(1, 22):
+                    await ordinary_page.mouse.move(
+                        *viewport_point(
+                            surface,
+                            viewport,
+                            slider["x"] + slider["width"] * (0.1 + 0.7 * step / 21),
+                            slider["y"] + slider["height"] / 2,
+                        )
+                    )
+                    await asyncio.sleep(0.01)
+                await ordinary_page.mouse.up()
+                await login_target.wait_for_function(
+                    "+document.querySelector('input[name=slider]').value>=70",
+                    polling=100,
+                )
+                await ordinary_page.wait_for_function(
+                    "document.querySelector('.agent-browser-view')?.dataset.pendingInput==='0' && document.querySelector('.agent-browser-view')?.dataset.awaitingFrame==='false' && document.querySelector('.agent-browser-view')?.dataset.frameId"
+                )
+                button = await login_target.locator(
+                    'button[type="submit"]'
+                ).bounding_box()
+                await ordinary_page.mouse.click(
+                    *viewport_point(
+                        surface,
+                        viewport,
+                        button["x"] + button["width"] / 2,
+                        button["y"] + button["height"] / 2,
+                    )
+                )
+                await login_target.wait_for_url("**/authenticated", timeout=30000)
+                assert len(model_requests) == count_before
+                assert website_login == {"submitted": 1, "continued": 0, "stale": 0}
+                await ordinary_page.screenshot(
+                    path=str(out / "handoff-local-login.png")
+                )
+                await ordinary_page.locator(".agent-browser-takeover").click()
+                await ordinary_page.get_by_text(
+                    "V03_LOGIN_DONE", exact=False
+                ).first.wait_for(timeout=45000)
+                assert website_login == {"submitted": 1, "continued": 1, "stale": 0}
+                assert website_password not in json.dumps(
+                    model_requests, ensure_ascii=False
+                )
+                assert (
+                    await ordinary_page.locator(".agent-browser-view").get_attribute(
+                        "data-browser-session-id"
+                    )
+                    == login_identity["browserSessionId"]
+                )
+                metrics["login_handoff"] = {
+                    "site_effects": website_login,
+                    "browser_session_id": login_identity["browserSessionId"],
+                    "model_requests_during_human": 0,
+                    "password_excluded_from_model": True,
+                }
+                metrics["checks"].append(
+                    "ordinary-account real ChatUI Agent waits; human types local credentials and drags slider; real form/cookie succeeds; explicit handback supplies fresh authenticated DOM and Agent continues exactly once without stale navigation"
+                )
+                await ordinary_page.screenshot(
+                    path=str(out / "handoff-agent-continued.png")
+                )
             await ordinary_page.locator(".agent-browser-takeover").click()
             await ordinary_page.locator(
                 '.agent-browser-view[data-human-control="true"]'
@@ -1274,6 +2278,17 @@ async def main(args):
             host.terminate()
             await asyncio.to_thread(host.wait, 15)
         await runner.cleanup()
+        if args.plugin_zip:
+            audit_counts = {}
+            for audit_path in (out / "offline-audit").glob("*.jsonl"):
+                for line in audit_path.read_text(encoding="utf-8").splitlines():
+                    event = json.loads(line)
+                    label = event["event"] + (
+                        ":" + str(event["allowed"]) if "allowed" in event else ""
+                    )
+                    audit_counts[label] = audit_counts.get(label, 0) + 1
+            metrics["offline_audit_counts"] = audit_counts
+            assert audit_counts.get("socket.connect:False", 0) > 0
         (out / "result.json").write_text(
             json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8"
         )
@@ -1289,9 +2304,42 @@ if __name__ == "__main__":
     parser.add_argument("--start-gate", type=Path)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--plugin-source", type=Path, required=True)
-    parser.add_argument("--private-python", type=Path, required=True)
-    parser.add_argument("--chromium", type=Path, required=True)
+    parser.add_argument("--private-python", type=Path)
+    parser.add_argument("--chromium", type=Path)
+    parser.add_argument("--plugin-zip", type=Path)
+    parser.add_argument("--dashboard-zip", type=Path)
+    parser.add_argument("--hd", action="store_true")
+    parser.add_argument("--samples", type=int, choices=(6, 30), default=6)
+    parser.add_argument("--login-handoff", action="store_true")
+    parser.add_argument("--terminal-faults", action="store_true")
+    parser.add_argument(
+        "--four-viewer-seconds", type=int, choices=(0, 15, 300), default=0
+    )
     args = parser.parse_args()
+    if not args.start_gate:
+        from browser_video_probe_process import OwnedProbeProcess
+
+        args.out.mkdir(parents=True, exist_ok=True)
+        owned = OwnedProbeProcess(
+            [
+                sys.executable,
+                "-X",
+                "utf8",
+                "-B",
+                str(Path(__file__).resolve()),
+                *sys.argv[1:],
+            ],
+            args.out,
+            dict(os.environ),
+        )
+        try:
+            owned.process.wait(timeout=1800)
+        finally:
+            ownership = owned.close(graceful_timeout=1)
+            (args.out / "ownership.json").write_text(
+                json.dumps(ownership, indent=2), encoding="utf-8"
+            )
+        raise SystemExit(owned.process.returncode)
     deadline = time.monotonic() + 20
     while args.start_gate and not args.start_gate.exists():
         if time.monotonic() > deadline:

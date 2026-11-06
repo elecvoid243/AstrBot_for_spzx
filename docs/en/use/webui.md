@@ -558,7 +558,7 @@ Admin panel files are located in the data/dist directory. If you need to manuall
 
 When the current main chat calls a Browser Use browser tool while the workspace sidebar is closed, it opens directly to **Web Preview → Agent Browser**. An already open workspace keeps its current view. Automatic opening happens at most once per reply, so closing the panel keeps it hidden for the rest of that reply. Changing chats or manually opening another panel while the check is pending cancels the old request. History, plain mentions of tool names and other chats do not trigger it. The manual entry remains available when the plugin is unavailable or another chat owns the browser.
 
-Windows offline deployment requires the Browser Use `0.3.0` complete plugin ZIP, the AstrBot backend containing this feature, and its matching Dashboard build. The plugin ZIP does not upgrade the host or frontend. AstrBot's `4.28.1` version alone does not identify these changes: compare `astrbot_revision` and `dashboard_sha256` in the plugin's `runtime/manifest.json` with `dist/assets/browser-observer-build.json`. Stop AstrBot before installing each component and select the matching `dist` with `--webui-dir`. The packaging command below also emits a backend source ZIP and its SHA256 beside the Dashboard ZIP; the source ZIP requires an existing compatible AstrBot Python environment. Keep the existing data directory separate from the new code. The installer refuses to overwrite an existing plugin; persistent data stays under the separate `plugin_data` directory.
+Windows offline deployment requires the Browser Use `0.4.0` complete plugin ZIP, the AstrBot backend containing this feature, and its matching Dashboard build. The plugin ZIP does not upgrade the host or frontend. AstrBot's `4.28.1` version alone does not identify these changes: compare `astrbot_revision` and `dashboard_sha256` in the plugin's `runtime/manifest.json` with `dist/assets/browser-observer-build.json`. Stop AstrBot before installing each component and select the matching `dist` with `--webui-dir`. The packaging command below also emits a backend source ZIP and its SHA256 beside the Dashboard ZIP; the source ZIP requires an existing compatible AstrBot Python environment. Keep the existing data directory separate from the new code. The installer refuses to overwrite an existing plugin; persistent data stays under the separate `plugin_data` directory.
 
 After a production Dashboard build, maintainers can run `python scripts/package_browser_observer_dashboard.py --plugin-revision <plugin-commit> --output <dashboard.zip>` to include version/revision metadata and a SHA256 sidecar. Run `python scripts/browser_observer_acceptance.py --plugin-zip <complete-plugin.zip> --dashboard-dir <dist> --evidence-dir <new-temporary-directory>` with AstrBot development dependencies and `aiohttp playwright psutil` to test final-ZIP installation, real login, the complete chat interface, a deterministic local model, real plugin management and Chromium. Local proxy isolation does not replace a physically offline target or real vLLM verification. For a missing entry, check matching builds and cached assets; for `runtime_unavailable`, inspect plugin startup logs and the private interpreter; for `busy`, close the browser in its owning chat; for 401/403, sign in and use a chat you own.
 
@@ -575,6 +575,20 @@ When the private runtime and receiving browser support verified video frame meta
 If video pauses, the last valid picture remains visible and new clicks wait for a verified frame. Use **Retry video** or **Use JPEG** in the caption; these explicit media changes preserve an existing manual control lease. JPEG fallback obtains fresh, checked pixels before accepting new input. Missing video dependencies or receiver capability keeps ordinary JPEG observation available. Neither mode reconnects periodically. Switching chats/accounts, closing the sidebar, revoked access and browser/plugin shutdown close the media connection; access revocation also clears retained pixels.
 
 ![Actual video in a second read-only window, with explicit JPEG fallback](./images/agent-browser-video.png)
+
+The 0.4.0 Windows x64 package includes pinned private video dependencies and native
+library/license inventories in `runtime/runtime-check.json`. Installation uses
+local files, including paths with spaces or Chinese characters. Choose a short
+data path: the installer rejects native DLL paths beyond the Windows loader limit.
+
+Fullscreen can request a native 1920×1080 CSS viewport and video raster. A narrow
+panel retains a desktop layout and fits its pixels to the panel; increasing device
+pixel ratio alone does not make the native screencast sharper. Video stays within
+1920×1080 while retaining the page's aspect ratio. Frame rate and interaction
+latency depend on the page, CPU and number of viewers; four viewers share capture
+but each has its own software encoder. No fixed frame rate or latency is promised.
+
+![Native 1080p fullscreen and small text](./images/agent-browser-video-hd.png)
 
 Opening Agent browser checks its status and subscribes once. There is no automatic polling, timed refresh, or reconnection after a lost connection, network recovery or returning to the browser tab. Click **Refresh** beside the address to check again or reconnect. Healthy connections continue receiving live frames. Interruptions retain the last frame with **Showing the last frame · click refresh to reconnect**; cached pixels cannot authorize input. Confirmed closure, disabled plugins, access or ownership changes, and switching accounts, chats or browser identities clear the old image. Manual control still sends lease heartbeats; these do not refresh the page.
 
@@ -696,7 +710,7 @@ The mobile header also provides the model selector and account controls:
 
 ### Offline manual-login acceptance
 
-Browser Use 0.3.0 requires matching host and Dashboard commits, not just AstrBot's version number. Commit both repositories before packaging. Pass the plugin's exact Git SHA through `--plugin-revision` to the Dashboard packager; its metadata must match `plugin_revision` and `astrbot_revision` in the plugin manifest. Check the Dashboard ZIP SHA256 recorded by the plugin and each delivered `.zip.sha256`. The backend source ZIP requires an existing compatible AstrBot Python environment. The plugin contains private Windows x64 Python/Chromium only.
+Browser Use 0.4.0 requires matching host and Dashboard commits, not just AstrBot's version number. Commit both repositories before packaging. Pass the plugin's exact Git SHA through `--plugin-revision` to the Dashboard packager; its metadata must match `plugin_revision` and `astrbot_revision` in the plugin manifest. Check the Dashboard ZIP SHA256 recorded by the plugin and each delivered `.zip.sha256`. The backend source ZIP requires an existing compatible AstrBot Python environment. The plugin contains private Windows x64 Python/Chromium only.
 
 Stop the host before upgrading. Back up the matched components and data, move the old plugin out of `data/plugins`, then use the shipped installer; never load both copies. Keep `plugin_data` separate. Roll back all three components together while stopped. A host restart ends the current browser session; takeover within a running task retains it.
 

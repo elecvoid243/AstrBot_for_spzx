@@ -28,6 +28,11 @@ returns an SDP answer, capture epoch events, immutable sent-frame records and
 heartbeats. It accepts `{operation:"heartbeat"}` every five seconds. Credentials
 and private CDP/loopback addresses never reach media payloads or URLs.
 
+An optional `media-stats` message every 60 sent frames contains bounded cumulative
+capture/decode, encoder wall/calling-thread CPU and queue counters. It carries no
+page content or input data and cannot authorize a frame. Calling-thread CPU excludes
+native codec worker threads; process CPU measurements include those threads.
+
 Each peer uses `iceServers: []`. The pinned aiortc 1.14.0 adapter hooks only that
 sender/transport, observes its negotiated VP8 payload type and actual final sent
 RTP packet, and restores its hooks on close. The source is shared bounded CDP JPEG
@@ -228,3 +233,12 @@ Stale wheel samples receive a consumed-ID `status: stale` acknowledgement, witho
 `drag_input_version: 1` advertises ordered `pointer` input with `phase: down|move|up|cancel`. A press validates the complete displayed target. Moves and release stay bound to the original tab, document and viewport while allowing drag-induced scrolling. Every queued move is retained in order; release is never dropped or gated on a new frame. Target changes, focus loss, cancellation and disconnect release the mouse on its original CDP session, without replaying uncertain input. `cancel` and `reset_keys` do not depend on stale frame coordinates.
 
 Observation subscribes once on opening. Idle or disconnected clients never retry automatically; Refresh explicitly reauthorizes, captures and subscribes again. Lease heartbeats remain independent of observation refresh.
+
+For matched video-package acceptance, use a fresh short output path and run
+`python scripts/browser_video_production_acceptance.py --out <new-path> --plugin-source <plugin-checkout> --plugin-zip <complete-plugin.zip> --dashboard-zip <matching-dashboard.zip> --hd --samples 30 --four-viewer-seconds 300 --login-handoff --terminal-faults`.
+Keep the matching backend source ZIP beside the Dashboard ZIP. This mode verifies
+package/revision hashes and runs the extracted backend and frontend with the
+installed private runtime. The runner owns its process tree and records raw
+pixels, optical feedback latency, per-viewer resources, network audit and cleanup.
+The 300-second four-viewer window includes native animation and scrolling; repeated
+source frames are reported separately from useful presentation rate.

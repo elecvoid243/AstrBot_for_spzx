@@ -518,7 +518,7 @@ WebChat 未显式选择人格时，仍使用聊天页的默认系统提示词开
 
 当前主聊天执行 Browser Use 浏览器工具时，如果工作区侧栏处于关闭状态，会自动展开并进入 **Web 预览 → Agent 浏览器**，无需逐级点击。已打开的工作区侧栏保留当前页面。每轮回复最多自动展开一次；主动关闭后，该轮后续操作不会反复弹出。切换聊天或在等待期间手动打开其他面板会取消旧的自动展开。历史消息、普通回复中的工具名称和其他聊天的操作不会触发此行为；插件不可用或浏览器被其他聊天占用时保留手动入口。
 
-Windows 离线部署需同时携带 Browser Use `0.3.0` 完整插件包、包含本功能的 AstrBot 后端以及匹配的 Dashboard 构建。插件 ZIP 不升级宿主或前端；仅有 AstrBot `4.28.1` 版本号不足以判断是否包含这些改动。对照插件 `runtime/manifest.json` 的 `astrbot_revision`、`dashboard_sha256` 和前端 `dist/assets/browser-observer-build.json`。停止 AstrBot 后分别安装，并通过 `--webui-dir` 指向匹配的 `dist`。下方打包命令还会在前端 ZIP 旁输出匹配后端源码 ZIP 和 SHA256；后端源码包需要已有的兼容 AstrBot Python 环境，现有 data 目录应与新代码分开保留。插件安装器拒绝覆盖现有插件，持久数据保存在独立的 `plugin_data` 中。
+Windows 离线部署需同时携带 Browser Use `0.4.0` 完整插件包、包含本功能的 AstrBot 后端以及匹配的 Dashboard 构建。插件 ZIP 不升级宿主或前端；仅有 AstrBot `4.28.1` 版本号不足以判断是否包含这些改动。对照插件 `runtime/manifest.json` 的 `astrbot_revision`、`dashboard_sha256` 和前端 `dist/assets/browser-observer-build.json`。停止 AstrBot 后分别安装，并通过 `--webui-dir` 指向匹配的 `dist`。下方打包命令还会在前端 ZIP 旁输出匹配后端源码 ZIP 和 SHA256；后端源码包需要已有的兼容 AstrBot Python 环境，现有 data 目录应与新代码分开保留。插件安装器拒绝覆盖现有插件，持久数据保存在独立的 `plugin_data` 中。
 
 维护者先执行 Dashboard 生产构建，再用 `python scripts/package_browser_observer_dashboard.py --plugin-revision <plugin-commit> --output <dashboard.zip>` 生成含版本和提交信息的前端包及 SHA256。完整链路可用 `python scripts/browser_observer_acceptance.py --plugin-zip <完整插件.zip> --dashboard-dir <dist> --evidence-dir <尚不存在的临时目录>` 验证：从最终 ZIP 安装、真实登录、完整聊天界面、确定性本地模型、真实插件管理与 Chromium。需要 AstrBot 开发依赖及 `aiohttp playwright psutil`。该本机代理隔离验证不替代实际断网目标机和真实 vLLM 联调。入口缺失时先核对配套版本和缓存；`runtime_unavailable` 查看插件加载日志与独立解释器路径；`busy` 在占用聊天关闭浏览器；401/403 需登录并使用自己拥有的聊天。
 
@@ -535,6 +535,17 @@ Windows 离线部署需同时携带 Browser Use `0.3.0` 完整插件包、包含
 视频暂停时保留最后有效画面，新的点击等待可验证的帧。可在底部状态栏明确选择 **重试视频** 或 **切换 JPEG**，已有人工接管租约会保留。JPEG 回退取得新的有效像素后才恢复输入。缺少视频依赖或接收能力时，仍可使用普通 JPEG 观测；两种模式都不会定时重连。切换聊天或账号、关闭侧栏、权限撤销以及浏览器或插件关闭都会清理媒体连接；权限撤销还会清除保留的画面。
 
 ![实际视频故障后的合法画面保留、明确重试与 JPEG 回退](./images/agent-browser-video.png)
+
+0.4.0 Windows x64 完整包包含固定的私有视频依赖，`runtime/runtime-check.json`
+记录原生库哈希与许可证清单。安装仅复制本地文件，支持中文和空格路径；请选用较短的
+data 路径，安装器会拒绝超过 Windows 原生 DLL 加载长度限制的路径。
+
+全屏可请求实际 1920×1080 CSS 视口并显示原生 1080p 视频。窄侧栏保留桌面布局，
+按面板宽度显示像素；仅提高设备像素比不会使原生 screencast 更清晰。视频保持页面
+比例且不超过 1920×1080。帧率和输入延迟取决于页面、CPU 与观看人数；四个观看者
+共享采集，各自使用软件编码器，不承诺固定帧率或延迟。
+
+![原生 1080p 全屏与小字](./images/agent-browser-video-hd.png)
 
 首次打开 Agent 浏览器时查询状态并建立一次观测连接，之后不自动轮询、不定时刷新，也不在断线、恢复网络或切回浏览器标签页时自动重连。需要更新状态或重连时，点击地址栏右侧的 **刷新**。正常连接继续接收实时画面推送；断流保留上一帧，底部显示 **显示上一帧 · 点击刷新重新连接**，旧画面不可操作。确认关闭、禁用、权限或所有者变化，以及切换账号、聊天或浏览器身份时清除旧画面。人工控制租约仍使用心跳，这不会刷新网页。
 
@@ -650,7 +661,7 @@ Agent 操作。运行中的本地 Agent 会暂停，不占工具超时或持续�
 
 ### 离线人工登录验收
 
-Browser Use 0.3.0 需配套宿主和 Dashboard 提交，不能仅核对 AstrBot 版本号。两仓库先提交最终源码；Dashboard 打包传入 `--plugin-revision <插件精确提交>`，核对前端元数据与插件 manifest 的 `plugin_revision`、`astrbot_revision` 一致，核对插件所记 Dashboard ZIP SHA256 和各交付包 `.zip.sha256`。后端源码包需要已有兼容的 AstrBot Python 环境；完整插件只携带 Windows x64 私有 Python/Chromium。
+Browser Use 0.4.0 需配套宿主和 Dashboard 提交，不能仅核对 AstrBot 版本号。两仓库先提交最终源码；Dashboard 打包传入 `--plugin-revision <插件精确提交>`，核对前端元数据与插件 manifest 的 `plugin_revision`、`astrbot_revision` 一致，核对插件所记 Dashboard ZIP SHA256 和各交付包 `.zip.sha256`。后端源码包需要已有兼容的 AstrBot Python 环境；完整插件只携带 Windows x64 私有 Python/Chromium。
 
 升级先停宿主，备份配套三组件与 data，将旧插件移出 `data/plugins` 后使用原安装器；不可同时加载两份插件，保留独立 `plugin_data`。回退也需停宿主并整体恢复配套组件。重启宿主会结束当前浏览器会话；运行中接管同一任务则保留原会话。
 

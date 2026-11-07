@@ -1,42 +1,55 @@
 <template>
   <section class="remote-connections">
-    <div class="d-flex flex-wrap align-center justify-space-between">
-      <strong>{{ tm("remoteConnections.title") }}</strong>
-      <v-btn variant="text" size="small" @click="manage = true">{{
-        tm("remoteConnections.manage")
-      }}</v-btn>
-    </div>
-    <p v-if="!enabled" class="text-caption">
+    <header class="remote-connections__header">
+      <span class="remote-connections__title">{{
+        tm("remoteConnections.title")
+      }}</span>
+      <button
+        type="button"
+        class="remote-manage-link"
+        @click="manage = true"
+      >
+        {{ tm("remoteConnections.manage") }}
+      </button>
+    </header>
+    <p v-if="!enabled" class="remote-disabled-hint">
       {{ tm("remoteConnections.disabled") }}
     </p>
     <details
       v-for="connection in connections"
       :key="connection.connection_id"
+      class="remote-conn"
       open
     >
-      <summary>
-        {{ connection.name }}
-        <small>{{
-          tm(
-            `remoteConnections.status.${
-              enabled
-                ? status[connection.connection_id] || "loading"
-                : "disabled"
-            }`,
-          )
-        }}</small>
+      <summary class="remote-conn__summary">
+        <v-icon class="remote-conn__chevron" size="14"
+          >mdi-chevron-right</v-icon
+        >
+        <span class="remote-conn__body">
+          <span class="remote-conn__name">{{ connection.name }}</span>
+          <span
+            class="remote-conn__status"
+            :class="`is-${statusTone(connection.connection_id)}`"
+            >{{ statusLabel(connection.connection_id) }}</span
+          >
+        </span>
       </summary>
       <template v-if="enabled && status[connection.connection_id] === 'ready'">
-        <v-btn variant="text" size="small" @click="openCreate(connection)">{{
-          tm("remoteConnections.newSession")
-        }}</v-btn>
+        <button
+          type="button"
+          class="remote-new-session"
+          @click="openCreate(connection)"
+        >
+          <v-icon size="14">mdi-plus</v-icon>
+          {{ tm("remoteConnections.newSession") }}
+        </button>
         <details
           v-for="[projectId, rows] in groups(connection.connection_id)"
           :key="projectId"
           open
           class="remote-project"
         >
-          <summary>
+          <summary class="remote-project__summary">
             {{
               projectId
                 ? `${rows[0].project_emoji || "📁"} ${rows[0].project_name}`
@@ -120,45 +133,76 @@
         <v-card-title class="text-h3 pa-4 pb-0 pl-6">{{
           tm("remoteConnections.manage")
         }}</v-card-title>
-        <v-card-text>
-          <v-alert v-if="!enabled" type="info" variant="tonal">{{
-            tm("remoteConnections.disabled")
-          }}</v-alert>
-          <div
-            v-for="connection in connections"
-            :key="connection.connection_id"
-            class="d-flex align-center my-2"
-          >
-            <div class="flex-grow-1">
-              {{ connection.name }}
-              <div class="text-caption">{{ connection.base_url }}</div>
-            </div>
-            <v-btn
-              variant="text"
-              :disabled="!enabled || saving"
-              @click="edit(connection)"
-              >{{ t("core.common.edit") }}</v-btn
-            >
-            <v-btn
-              variant="text"
-              :disabled="!enabled || saving"
-              @click="remove(connection.connection_id)"
-              >{{ t("core.common.delete") }}</v-btn
-            >
+        <v-card-text class="pa-6 pt-4">
+          <div v-if="!enabled" class="rc-banner">
+            {{ tm("remoteConnections.disabled") }}
           </div>
-          <v-divider class="my-4" />
+
+          <div v-if="connections.length" class="rc-list">
+            <div
+              v-for="connection in connections"
+              :key="connection.connection_id"
+              class="rc-row"
+              :class="{
+                'is-editing': editing === connection.connection_id,
+              }"
+            >
+              <div class="rc-row__meta">
+                <span class="rc-row__name">{{ connection.name }}</span>
+                <span class="rc-row__url">{{ connection.base_url }}</span>
+              </div>
+              <div class="rc-row__actions">
+                <v-btn
+                  icon
+                  size="small"
+                  variant="text"
+                  :title="t('core.common.edit')"
+                  :aria-label="t('core.common.edit')"
+                  :disabled="!enabled || saving"
+                  @click="edit(connection)"
+                >
+                  <v-icon size="16">mdi-pencil-outline</v-icon>
+                </v-btn>
+                <v-btn
+                  icon
+                  size="small"
+                  variant="text"
+                  color="error"
+                  :title="t('core.common.delete')"
+                  :aria-label="t('core.common.delete')"
+                  :disabled="!enabled || saving"
+                  @click="remove(connection.connection_id)"
+                >
+                  <v-icon size="16">mdi-trash-can-outline</v-icon>
+                </v-btn>
+              </div>
+            </div>
+          </div>
+
+          <div class="rc-rule"></div>
+
           <v-form @submit.prevent="save">
             <v-text-field
               v-model="form.name"
               :label="tm('remoteConnections.name')"
               maxlength="128"
               :disabled="!enabled"
+              variant="outlined"
+              density="comfortable"
+              rounded="lg"
+              hide-details
+              class="mb-3"
             />
             <v-text-field
               v-model="form.base_url"
               :label="tm('remoteConnections.address')"
               placeholder="http://192.168.1.20:6185"
               :disabled="!enabled"
+              variant="outlined"
+              density="comfortable"
+              rounded="lg"
+              hide-details
+              class="mb-3"
             />
             <v-text-field
               v-model="form.key"
@@ -172,35 +216,49 @@
               type="password"
               autocomplete="new-password"
               :disabled="!enabled"
+              variant="outlined"
+              density="comfortable"
+              rounded="lg"
+              hide-details
+              class="mb-4"
             />
-            <v-alert v-if="error" type="error" variant="tonal" class="mb-3">{{
-              error
-            }}</v-alert>
-            <v-btn
-              type="submit"
-              variant="tonal"
-              :loading="saving"
-              :disabled="
-                !enabled ||
-                !form.name.trim() ||
-                !form.base_url.trim() ||
-                (!editing && !form.key)
-              "
-              >{{ t("core.common.save") }}</v-btn
-            >
-            <v-btn v-if="editing" variant="text" @click="reset">{{
-              t("core.common.cancel")
-            }}</v-btn>
+            <div v-if="error" class="rc-banner rc-banner--error" role="alert">
+              {{ error }}
+            </div>
+            <div class="rc-form__actions">
+              <v-btn
+                type="submit"
+                color="primary"
+                variant="flat"
+                rounded="lg"
+                :loading="saving"
+                :disabled="
+                  !enabled ||
+                  !form.name.trim() ||
+                  !form.base_url.trim() ||
+                  (!editing && !form.key)
+                "
+                >{{ t("core.common.save") }}</v-btn
+              >
+              <v-btn v-if="editing" variant="text" rounded="lg" @click="reset">{{
+                t("core.common.cancel")
+              }}</v-btn>
+            </div>
           </v-form>
         </v-card-text>
-        <v-card-actions
-          ><v-btn variant="text" @click="$emit('refresh')">{{
-            tm("remoteConnections.refresh")
-          }}</v-btn
-          ><v-spacer /><v-btn variant="text" @click="manage = false">{{
+        <v-card-actions class="px-6 pb-4">
+          <v-btn
+            variant="text"
+            rounded="lg"
+            prepend-icon="mdi-refresh"
+            @click="$emit('refresh')"
+            >{{ tm("remoteConnections.refresh") }}</v-btn
+          >
+          <v-spacer />
+          <v-btn variant="text" rounded="lg" @click="manage = false">{{
             t("core.common.close")
-          }}</v-btn></v-card-actions
-        >
+          }}</v-btn>
+        </v-card-actions>
       </v-card>
     </v-dialog>
   </section>
@@ -228,6 +286,18 @@ const emit = defineEmits<{
 }>();
 const { tm } = useModuleI18n("features/chat");
 const { t } = useI18n();
+function statusKey(connectionId: string) {
+  return props.enabled ? props.status[connectionId] || "loading" : "disabled";
+}
+function statusLabel(connectionId: string) {
+  return tm(`remoteConnections.status.${statusKey(connectionId)}`);
+}
+function statusTone(connectionId: string) {
+  const key = statusKey(connectionId);
+  if (key === "ready") return "success";
+  if (key === "loading" || key === "disabled") return "muted";
+  return "warning";
+}
 const manage = ref(false),
   saving = ref(false),
   editing = ref(""),
@@ -412,31 +482,276 @@ watch(
 </script>
 <style scoped>
 .remote-connections {
-  padding: 12px;
+  padding: 10px 12px 12px;
   border-bottom: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
 }
-summary {
+
+/* The section title shares the sidebar group scale with the "本机" header in
+   Chat.vue (CSS vars set on .sidebar-content) so the two read as peers. */
+.remote-connections__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-bottom: 8px;
+}
+
+.remote-connections__title {
+  font-size: var(--sidebar-group-size, 14px);
+  font-weight: var(--sidebar-group-weight, 600);
+  letter-spacing: 0.01em;
+  color: var(
+    --sidebar-group-color,
+    rgba(var(--v-theme-on-surface), 0.86)
+  );
+}
+
+.remote-manage-link {
+  flex: 0 0 auto;
+  margin-right: -6px;
+  padding: 2px 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: rgba(var(--v-theme-on-surface), 0.55);
+  font: inherit;
+  font-size: 12px;
   cursor: pointer;
-  padding: 6px 0;
-  overflow-wrap: anywhere;
 }
-small {
-  display: block;
-  opacity: 0.65;
+
+.remote-manage-link:hover {
+  color: rgb(var(--v-theme-primary));
+  background: rgba(var(--v-theme-on-surface), 0.05);
 }
+
+.remote-disabled-hint {
+  margin: 0 0 8px;
+  font-size: 12px;
+  line-height: 1.55;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+}
+
+.remote-conn {
+  padding: 2px 0;
+}
+
+.remote-conn + .remote-conn {
+  border-top: 1px solid rgba(var(--v-theme-on-surface), 0.06);
+}
+
+.remote-conn__summary {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 0 -4px;
+  padding: 6px 4px;
+  border-radius: 8px;
+  list-style: none;
+  cursor: pointer;
+}
+
+.remote-conn__summary::-webkit-details-marker,
+.remote-project__summary::-webkit-details-marker {
+  display: none;
+}
+
+.remote-conn__summary:hover {
+  background: rgba(var(--v-theme-on-surface), 0.05);
+}
+
+.remote-conn__chevron {
+  flex: 0 0 auto;
+  margin-top: 2px;
+  color: rgba(var(--v-theme-on-surface), 0.4);
+  transition: transform 0.15s ease;
+}
+
+.remote-conn[open] > .remote-conn__summary .remote-conn__chevron {
+  transform: rotate(90deg);
+}
+
+.remote-conn__body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.remote-conn__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.88);
+}
+
+.remote-conn__status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+}
+
+.remote-conn__status::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.7;
+}
+
+.remote-conn__status.is-success {
+  color: rgb(var(--v-theme-success));
+}
+
+.remote-conn__status.is-warning {
+  color: rgb(var(--v-theme-warning));
+}
+
+.remote-new-session {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 2px 0 4px 20px;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: rgb(var(--v-theme-primary));
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.remote-new-session:hover {
+  background: rgba(var(--v-theme-primary), 0.09);
+}
+
 .remote-project {
-  margin-left: 12px;
+  margin-left: 20px;
 }
+
+.remote-project__summary {
+  padding: 4px 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+  color: rgba(var(--v-theme-on-surface), 0.45);
+  cursor: pointer;
+  list-style: none;
+}
+
 .remote-session {
   display: block;
-  text-align: left;
   width: 100%;
-  padding: 8px;
-  border-radius: 8px;
+  margin: 1px 0;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: rgba(var(--v-theme-on-surface), 0.8);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
   overflow-wrap: anywhere;
 }
-.remote-session:hover,
+
+.remote-session:hover {
+  background: rgba(var(--v-theme-on-surface), 0.05);
+}
+
 .remote-session.selected {
   background: rgba(var(--v-theme-primary), 0.12);
+  color: rgb(var(--v-theme-primary));
+  font-weight: 500;
+}
+
+/* ── Manage dialog ─────────────────────────────────────────────── */
+.rc-banner {
+  margin-bottom: 14px;
+  padding: 10px 12px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.1);
+  border-radius: 10px;
+  background: rgba(var(--v-theme-on-surface), 0.04);
+  color: rgba(var(--v-theme-on-surface), 0.68);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.rc-banner--error {
+  border-color: rgba(var(--v-theme-error), 0.22);
+  background: rgba(var(--v-theme-error), 0.07);
+  color: rgb(var(--v-theme-error));
+}
+
+.rc-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 16px;
+}
+
+.rc-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.1);
+  border-radius: 10px;
+  background: rgba(var(--v-theme-on-surface), 0.02);
+}
+
+.rc-row.is-editing {
+  border-color: rgba(var(--v-theme-primary), 0.4);
+  background: rgba(var(--v-theme-primary), 0.05);
+}
+
+.rc-row__meta {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.rc-row__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.rc-row__url {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+}
+
+.rc-row__actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 2px;
+}
+
+.rc-rule {
+  height: 1px;
+  margin: 4px 0 18px;
+  background: rgba(var(--v-theme-on-surface), 0.08);
+}
+
+.rc-form__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 </style>

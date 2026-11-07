@@ -152,7 +152,11 @@
 
       <div v-if="!isSidebarCollapsed" class="sidebar-content">
         <RemoteConnectionsPanel :enabled="remote.enabled.value" :connections="remote.connections.value" :sessions="remote.sessions" :status="remote.status" :selected-connection="remoteConnectionId" :selected-session="remoteSessionId" @select="selectRemoteSession" @refresh="refreshRemoteConnections" />
-        <div class="pa-3 text-caption">{{ tm('remoteConnections.local') }}</div>
+        <div class="sidebar-group-header">
+          <span class="sidebar-group-title">{{
+            tm("remoteConnections.local")
+          }}</span>
+        </div>
         <!-- 2026-08-09 sidebar batch delete (elecvoid243): batch action
              bar shown while selection mode is active. -->
         <div v-if="selectionMode" class="batch-select-bar">
@@ -6976,6 +6980,24 @@ function toggleTheme() {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  /* 2026-11-08 (elecvoid243): one scale for sidebar group titles, shared with
+     RemoteConnectionsPanel so "远端连接" and "本机" cannot drift apart. */
+  --sidebar-group-size: 14px;
+  --sidebar-group-weight: 600;
+  --sidebar-group-color: rgba(var(--v-theme-on-surface), 0.86);
+}
+
+.sidebar-group-header {
+  display: flex;
+  align-items: center;
+  padding: 4px 12px 2px;
+}
+
+.sidebar-group-title {
+  font-size: var(--sidebar-group-size);
+  font-weight: var(--sidebar-group-weight);
+  letter-spacing: 0.01em;
+  color: var(--sidebar-group-color);
 }
 
 .sidebar-section {

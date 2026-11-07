@@ -124,6 +124,10 @@
   content: "\F19B3";
 }
 
+.mdi-arrow-expand::before {
+  content: "\F0616";
+}
+
 .mdi-arrow-left::before {
   content: "\F004D";
 }
@@ -556,10 +560,6 @@
   content: "\F0B8F";
 }
 
-.mdi-drag-horizontal-variant::before {
-  content: "\F12F0";
-}
-
 .mdi-emoticon::before {
   content: "\F0C68";
 }
@@ -630,6 +630,10 @@
 
 .mdi-file-document::before {
   content: "\F0219";
+}
+
+.mdi-file-document-check-outline::before {
+  content: "\F1A9A";
 }
 
 .mdi-file-document-edit-outline::before {
@@ -758,10 +762,6 @@
 
 .mdi-folder-plus-outline::before {
   content: "\F0B9D";
-}
-
-.mdi-folder-remove-outline::before {
-  content: "\F0B9E";
 }
 
 .mdi-folder-search-outline::before {

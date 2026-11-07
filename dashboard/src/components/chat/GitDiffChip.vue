@@ -88,7 +88,9 @@ function toggle(): void {
   padding: 0 9px;
   border: 1px solid var(--sp-chip-border);
   border-radius: 8px;
-  background: transparent;
+  /* Solid chip surface so the workspace entry does not vanish into the page
+     background in dark mode. */
+  background: var(--sp-chip-bg);
   color: var(--sp-text-muted);
   font-size: 12.5px;
   font-weight: 500;

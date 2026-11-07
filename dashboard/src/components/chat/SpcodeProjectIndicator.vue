@@ -520,6 +520,12 @@ function handleManageProject(): void {
                 class="sp-capsule__icon"
                 >{{ icon }}</v-icon
               >
+              <!-- Narrow-screen face: the label is hidden by the composer's
+                   380px container query, so the state icon has to carry the
+                   project meaning on its own. -->
+              <v-icon size="14" class="sp-capsule__compact-icon">{{
+                icon
+              }}</v-icon>
               <span class="sp-capsule__label">{{ capsuleLabel }}</span>
               <template v-if="activeWorktreeLabel && !isLoading && !isFailed">
                 <span class="sp-capsule__wt-sep" aria-hidden="true">·</span>
@@ -816,7 +822,9 @@ function handleManageProject(): void {
   padding: 0 9px;
   border: 1px solid var(--sp-chip-border);
   border-radius: 8px;
-  background: transparent;
+  /* Solid chip surface so the capsule stays legible on the page background
+     in dark mode (the ghost look used to be indistinguishable from it). */
+  background: var(--sp-chip-bg);
   color: var(--sp-text-muted);
   font-size: 12.5px;
   font-weight: 500;
@@ -877,8 +885,15 @@ function handleManageProject(): void {
   color: rgb(var(--v-theme-primary));
 }
 
+.sp-capsule__compact-icon {
+  display: none;
+  flex: 0 0 14px;
+  color: rgb(var(--v-theme-primary));
+}
+
 .sp-capsule--failed,
-.sp-capsule--failed .sp-capsule__icon {
+.sp-capsule--failed .sp-capsule__icon,
+.sp-capsule--failed .sp-capsule__compact-icon {
   color: rgb(var(--v-theme-error));
 }
 

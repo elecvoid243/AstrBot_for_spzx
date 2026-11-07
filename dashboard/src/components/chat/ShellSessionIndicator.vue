@@ -327,6 +327,25 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
+/* 2026-11-07 (elecvoid243): match the status-row capsule family — the plain
+   text button used to blend into the page background in dark mode. */
+.shell-session-trigger.chat-action-btn {
+  height: 28px;
+  min-width: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--sp-chip-border);
+  border-radius: 8px;
+  background: var(--sp-chip-bg);
+  color: var(--sp-text-muted);
+  box-shadow: none;
+}
+
+.shell-session-trigger.chat-action-btn:hover {
+  background: var(--sp-ghost-hover-bg, rgba(var(--v-theme-on-surface), 0.055));
+  border-color: var(--sp-chip-border-strong);
+  color: var(--sp-text-primary);
+}
+
 .shell-trigger-count {
   margin-left: 4px;
   font-size: 12px;

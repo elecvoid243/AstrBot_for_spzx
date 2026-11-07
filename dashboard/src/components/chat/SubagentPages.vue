@@ -10,9 +10,14 @@
           type="button"
           class="session-main-trigger"
           :class="{ 'is-active': !selectedRunId }"
+          :title="tm('subagentPages.main')"
           @click="showMain"
         >
-          {{ tm("subagentPages.main") }}
+          <!-- Icon-only face on phones; the label stays for the toolbar row. -->
+          <v-icon class="session-nav-icon" size="16"
+            >mdi-message-text-outline</v-icon
+          >
+          <span class="session-nav-label">{{ tm("subagentPages.main") }}</span>
         </button>
         <v-menu
           v-model="menuOpen"
@@ -27,7 +32,11 @@
               class="subagent-picker-trigger"
               :class="{ 'is-active': selectedRunId }"
               :aria-expanded="menuOpen"
+              :title="selectedPart?.agent_name || tm('subagentPages.agents')"
             >
+              <v-icon class="session-nav-icon" size="16"
+                >mdi-robot-outline</v-icon
+              >
               <span class="subagent-picker-label">{{
                 selectedPart?.agent_name || tm("subagentPages.agents")
               }}</span>
@@ -835,6 +844,11 @@ defineExpose({ openRun, getRun: (runId: string) => entries.value[runId] });
 }
 .session-pages-nav.in-toolbar {
   margin: 0;
+  /* 2026-11-07 (elecvoid243): the 3.5% tint disappeared into the app-bar
+     background in dark mode; use the same solid chip surface as the composer
+     capsules so the segmented control reads as one control. */
+  background: var(--sp-chip-bg);
+  border-color: var(--sp-chip-border);
 }
 .session-pages-nav button {
   color: inherit;
@@ -874,6 +888,14 @@ defineExpose({ openRun, getRun: (runId: string) => entries.value[runId] });
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* Only rendered below the phone breakpoint (see the media query at the end):
+   the labels are what squeeze the toolbar title at that width. */
+.session-nav-icon {
+  display: none;
+  flex: 0 0 auto;
+}
+
 .subagent-picker-menu {
   width: min(430px, calc(100vw - 24px));
   max-height: 60vh;
@@ -1070,6 +1092,24 @@ defineExpose({ openRun, getRun: (runId: string) => entries.value[runId] });
   }
   .subagent-message-shell {
     width: calc(100% - 20px);
+  }
+}
+
+/* Phone width: the toolbar title needs the room, so both tabs fall back to
+   their icons. Titles carry the meaning for pointer + screen readers. */
+@media (max-width: 600px) {
+  .session-nav-icon {
+    display: inline-flex;
+  }
+
+  .session-nav-label,
+  .subagent-picker-label {
+    display: none;
+  }
+
+  .session-main-trigger {
+    display: inline-flex;
+    max-width: none;
   }
 }
 </style>

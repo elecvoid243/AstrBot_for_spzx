@@ -3206,12 +3206,31 @@ defineExpose({
 }
 
 @container (max-width: 380px) {
+  /* 2026-11-07 (elecvoid243): below this width the four status capsules can no
+     longer share a row with their labels, so each falls back to its icon. The
+     components keep their full text in the DOM for tooltips/tests. */
+  .input-area__status-row :deep(.sp-capsule__label),
+  .input-area__status-row :deep(.sp-capsule__wt-sep),
+  .input-area__status-row :deep(.sp-capsule__wt),
+  .input-area__status-row :deep(.sp-capsule__wt-icon),
+  .input-area__status-row :deep(.sp-capsule__chevron),
+  .input-area__status-row :deep(.sp-capsule__icon),
+  .input-area__status-row :deep(.fa-chip-btn__label),
+  .input-area__status-row :deep(.fa-chip-btn__chevron),
   .input-area__status-row :deep(.sp-ghost-btn__label) {
     display: none;
   }
 
+  .input-area__status-row :deep(.sp-capsule__compact-icon) {
+    display: inline-flex;
+  }
+
+  .input-area__status-row :deep(.sp-capsule),
+  .input-area__status-row :deep(.fa-chip-btn),
   .input-area__status-row :deep(.sp-ghost-btn) {
-    min-width: 36px;
+    width: 30px;
+    min-width: 30px;
+    padding: 0;
     justify-content: center;
   }
 

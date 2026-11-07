@@ -18,7 +18,10 @@ from astrbot.core.db.po import DashboardAccount, PlatformMessageHistory
 from astrbot.core.provider.entities import LLMResponse
 from astrbot.core.tools.interactive_choice_registry import registry
 from astrbot.core.utils.webchat_access import DashboardPrincipal
-from astrbot.dashboard.services.chat_service import build_webchat_unified_msg_origin
+from astrbot.dashboard.services.chat_service import (
+    BotMessageAccumulator,
+    build_webchat_unified_msg_origin,
+)
 from tests.test_chat_session_messages import (
     ControlledProvider,
     tool_call,
@@ -434,6 +437,75 @@ async def test_long_public_names_are_marked_and_bounded_even_on_empty_pages(read
         == 512
     )
     assert len(json.dumps(page, ensure_ascii=False, separators=(",", ":"))) <= 40000
+
+
+@pytest.mark.asyncio
+async def test_saved_choice_option_descriptions_share_the_message_budget(reader):
+    """Keep visible option descriptions after real accumulation and persistence.
+
+    Args:
+        reader: Real SQLite history and the registered read tool.
+    """
+    m, _, read = reader
+    b = m.ids[1]
+    prompt = "Choose a plan"
+    introduction = "Saved introduction"
+    for description in ("Costs less but takes longer", "Detailed trade-off " * 1000):
+        accumulator = BotMessageAccumulator()
+        accumulator.add_plain(introduction, chain_type=None, streaming=False)
+        accumulator.add_plain(
+            json.dumps(
+                {
+                    "request_id": "described-options",
+                    "spec": {
+                        "prompt": prompt,
+                        "options": [
+                            {"id": "a", "label": "Plan A", "description": description},
+                            {
+                                "id": "b",
+                                "label": "Plan B",
+                                "description": "Keeps rollback available",
+                            },
+                        ],
+                    },
+                }
+            ),
+            chain_type="interactive_choice",
+            streaming=False,
+        )
+        row = await save_message(
+            m, b, {"type": "bot", "message": accumulator.build_message_parts()}
+        )
+        stored = await m.db.get_platform_message_history_by_id(row.id)
+        assert stored.content["message"][1]["options"][0]["description"] == description
+        full = (await read(session_id=b, limit=1))["messages"][0]
+        choice = full["parts"][1]
+        assert choice["options"][0].startswith("Plan A\n" + description[:20])
+        if len(description) < 100:
+            assert choice["options"] == [
+                "Plan A\n" + description,
+                "Plan B\nKeeps rollback available",
+            ]
+            assert not full["truncated"] and full["omitted"] == {}
+        else:
+            assert full["truncated"]
+            assert full["omitted"]["choice_options"] == 1
+        budget = len(introduction) + len(prompt) + len("Plan A\n") + 5
+        short = (await read(session_id=b, limit=1, max_chars_per_message=budget))[
+            "messages"
+        ][0]
+        assert short["parts"][0]["text"] == introduction
+        assert short["parts"][1]["options"] == ["Plan A\n" + description[:5]]
+        assert short["truncated"] and short["omitted"]["choice_options"] == 1
+        assert (
+            sum(
+                len(part.get("text", ""))
+                + len(part.get("prompt", ""))
+                + sum(len(option) for option in part.get("options", []))
+                for part in short["parts"]
+            )
+            == budget
+        )
 
 
 @pytest.mark.asyncio

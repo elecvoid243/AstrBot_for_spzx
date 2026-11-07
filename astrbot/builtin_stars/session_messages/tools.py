@@ -144,6 +144,9 @@ def _project_read_message(
                     if not isinstance(label, str):
                         omitted["choice_options"] += 1
                         continue
+                    description = option.get("description")
+                    if isinstance(description, str) and description:
+                        label += "\n" + description
                     projected["options"].append(label[:remaining])
                     result["truncated"] |= len(label) > remaining
                     remaining -= min(len(label), remaining)

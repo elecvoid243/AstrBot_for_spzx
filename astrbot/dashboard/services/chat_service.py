@@ -2334,23 +2334,44 @@ class ChatService:
                             if not completion.done():
                                 completion.set_result(None)
                             continue
-                        saved = await flush_pending_bot_message(
-                            freeze_pending_tool_calls=False
-                        )
-                        saved = saved or run.history_record
-                        previous = serialize_history_entry(saved) if saved else None
-                        if previous is not None:
-                            # Updates persist through a separate DB session; the
-                            # original row object still contains its first save.
-                            previous["content"] = build_bot_history_content(
-                                deepcopy(run.history_parts),
-                                agent_stats=deepcopy(run.agent_stats),
-                                file_changes=deepcopy(run.file_changes),
-                                llm_request_injections=deepcopy(
-                                    run.llm_request_injections
-                                ),
-                                refs=deepcopy(run.refs),
+                        # 2026-11-08 (elecvoid243): only a segment that already
+                        # carries a visible reply is closed by a user boundary.
+                        # Work-only output (thinking / tool calls) is carried
+                        # into the turn's final record instead of becoming a
+                        # bot row of its own — otherwise a follow-up leaves an
+                        # empty or work-only bubble that is not an answer.
+                        # A segment that was already saved mid-turn (e.g. an
+                        # interactive choice) is a reply too, even when the
+                        # pending accumulator has been reset since.
+                        segment_has_reply = run.history_record is not None or any(
+                            part.get("type") not in ("think", "tool_call")
+                            for part in pending_accumulator.build_message_parts(
+                                include_pending_tool_calls=False
                             )
+                        )
+                        saved = None
+                        previous = None
+                        if segment_has_reply:
+                            saved = await flush_pending_bot_message(
+                                freeze_pending_tool_calls=False
+                            )
+                            saved = saved or run.history_record
+                            previous = (
+                                serialize_history_entry(saved) if saved else None
+                            )
+                            if previous is not None:
+                                # Updates persist through a separate DB session;
+                                # the original row object still contains its
+                                # first save.
+                                previous["content"] = build_bot_history_content(
+                                    deepcopy(run.history_parts),
+                                    agent_stats=deepcopy(run.agent_stats),
+                                    file_changes=deepcopy(run.file_changes),
+                                    llm_request_injections=deepcopy(
+                                        run.llm_request_injections
+                                    ),
+                                    refs=deepcopy(run.refs),
+                                )
                         user = await self.platform_history_mgr.insert(
                             **result["history"]
                         )
@@ -2366,6 +2387,14 @@ class ChatService:
                                 completion.set_result(user)
                             if not await admission:
                                 continue
+                        if not segment_has_reply:
+                            # Keep accumulating: the pending parts, stats and
+                            # injections roll into the next segment, and the
+                            # live client keeps its single bot record (it moves
+                            # that record below this user message).
+                            if not completion.done():
+                                completion.set_result(user)
+                            continue
                         run.history_record = None
                         run.preceding_plain_text += (
                             collect_plain_text_from_message_parts(run.history_parts)

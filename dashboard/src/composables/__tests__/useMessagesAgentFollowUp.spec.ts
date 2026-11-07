@@ -392,6 +392,27 @@ it("settles a captured human send without refreshing or interrupting the origina
   );
 });
 
+it("moves the streaming bot bubble below a dispatched follow-up", async () => {
+  await mountConversation();
+  const before = core.activeMessages.value.map((record) => record.id);
+  expect(before).toEqual(["local-user-human-run", "local-bot-human-run"]);
+
+  core.createLocalExchange({
+    sessionId: "recipient",
+    messageId: "human-follow-up",
+    parts: [{ type: "plain", text: "continue" }],
+  });
+  await flushPromises();
+
+  // The turn is still streaming: its single bot bubble now sits after the
+  // appended question, matching the order a reload derives from history.
+  expect(core.activeMessages.value.map((record) => record.id)).toEqual([
+    "local-user-human-run",
+    "local-user-human-follow-up",
+    "local-bot-human-run",
+  ]);
+});
+
 it("renders an independent Agent reply after an idle-session announcement", async () => {
   await mountConversation(false);
   push("/system", {

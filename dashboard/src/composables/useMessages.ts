@@ -1184,6 +1184,32 @@ export function useMessages(options: UseMessagesOptions) {
 
     const sessionMessages = messagesBySession[sessionId];
     sessionMessages.push(userRecord);
+    // 2026-11-08 (elecvoid243): a dispatched follow-up lands while the
+    // previous turn is still streaming. That bot record was created before
+    // this question, but the rest of its output belongs after it — move it
+    // below the user row so the live list reads question → answer, the same
+    // order a reload derives from history (the backend now folds work-only
+    // segments into the turn's final row). Completed replies never move.
+    const userIndex = sessionMessages.indexOf(userRecord);
+    for (let index = 0; index < userIndex; index += 1) {
+      const candidate = sessionMessages[index];
+      // "still streaming" is the live connection, not `isLoading` — the latter
+      // clears on the first token, long before the turn ends.
+      const streaming = Object.values(activeConnections).some(
+        (connection) =>
+          connection.botRecord === candidate && !connection.completed,
+      );
+      if (isUserMessage(candidate) || !streaming) {
+        continue;
+      }
+      sessionMessages.splice(index, 1);
+      sessionMessages.splice(
+        sessionMessages.indexOf(userRecord) + 1,
+        0,
+        candidate,
+      );
+      break;
+    }
     if (!isSessionRunning(sessionId)) sessionMessages.push(botRecord);
 
     return {

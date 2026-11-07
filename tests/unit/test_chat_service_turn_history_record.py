@@ -221,7 +221,12 @@ async def test_boundary_preserves_a_previously_saved_choice_segment() -> None:
 async def test_pending_tool_survives_followups_in_stream_snapshot_and_history(
     followup_count: int,
 ) -> None:
-    """Keep tool identity while boundaries arrive before its result."""
+    """Keep tool identity while boundaries arrive before its result.
+
+    Work-only boundaries no longer close the segment: the pending call stays
+    in the live snapshot and lands in the turn's single final record (the
+    client moves its one bot bubble below each appended question).
+    """
     service = ChatService.__new__(ChatService)
     manager = _FakeHistoryManager()
     service.platform_history_mgr = manager
@@ -249,8 +254,13 @@ async def test_pending_tool_survives_followups_in_stream_snapshot_and_history(
         **_text(json.dumps(tool)), "chain_type": "tool_call",
     })
     run.task = asyncio.create_task(service._consume_chat_run(run))
-    segments = []
     try:
+        # The work-only segment is never split, so the live snapshot keeps the
+        # reasoning block next to the pending call.
+        expected = [
+            {"type": "think", "think": "Run the first program."},
+            {"type": "tool_call", "tool_calls": [tool]},
+        ]
         for index in range(followup_count):
             completion = asyncio.get_running_loop().create_future()
             run.back_queue.put_nowait({
@@ -261,15 +271,14 @@ async def test_pending_tool_survives_followups_in_stream_snapshot_and_history(
                 },
             })
             await asyncio.wait_for(completion, timeout=1)
-            while True:
-                _, payload = await asyncio.wait_for(subscriber.get(), timeout=1)
-                if payload["type"] == "message_segment":
-                    break
-            segments.append(payload)
-            expected = [{"type": "tool_call", "tool_calls": [tool]}]
-            assert payload["data"]["content"]["message"] == expected
             [snapshot] = service.get_active_chat_runs("user", "session-1")
             assert snapshot["content"]["message"] == expected
+            # Only the user rows are persisted here: a work-only segment must
+            # not become a bot record of its own.
+            assert manager.inserts == index + 1
+            assert all(
+                row["type"] == "user" for row in manager.rows.values()
+            )
 
         run.back_queue.put_nowait({
             **_text(json.dumps({"id": "python-1", "result": "slept", "ts": 2})),
@@ -291,7 +300,8 @@ async def test_pending_tool_survives_followups_in_stream_snapshot_and_history(
             {**tool, "result": "slept", "finished_ts": 2},
             {**second, "result": "Hello world", "finished_ts": 4},
         ]
-        assert all("result" not in segment["data"]["content"]["message"][0]["tool_calls"][0] for segment in segments)
+        bot_rows = [row for row in manager.rows.values() if row["type"] == "bot"]
+        assert len(bot_rows) == 1
     finally:
         if not run.task.done():
             run.task.cancel()

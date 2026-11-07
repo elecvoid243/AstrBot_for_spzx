@@ -844,11 +844,10 @@ defineExpose({ openRun, getRun: (runId: string) => entries.value[runId] });
 }
 .session-pages-nav.in-toolbar {
   margin: 0;
-  /* 2026-11-07 (elecvoid243): the 3.5% tint disappeared into the app-bar
-     background in dark mode; use the same solid chip surface as the composer
-     capsules so the segmented control reads as one control. */
-  background: var(--sp-chip-bg-on-page);
-  border-color: var(--sp-chip-border);
+  /* 2026-11-07 (elecvoid243): theme tokens keep the light look identical to the
+     pre-change nav (3.5% tint) while dark steps up to a real gray surface. */
+  background: var(--sp-nav-group-bg);
+  border-color: var(--sp-nav-group-border);
 }
 .session-pages-nav button {
   color: inherit;
@@ -879,12 +878,12 @@ defineExpose({ openRun, getRun: (runId: string) => entries.value[runId] });
   font-weight: 600;
 }
 
-/* On the app-bar chip the resting surface is already gray, so the active tab
-   has to step up from it (surface #242424 would read as a hole in #333).
-   The neutral overlay brightens in dark and darkens in light by design. */
+/* On the app-bar chip the resting surface is already gray in dark, so the
+   active tab has to step up from it (surface #242424 would read as a hole in
+   #333). The light values are the untouched pre-change pill. */
 .session-pages-nav.in-toolbar .is-active {
-  background: rgba(var(--v-theme-on-surface), 0.1);
-  box-shadow: none;
+  background: var(--sp-nav-active-bg);
+  box-shadow: var(--sp-nav-active-shadow);
 }
 .session-main-trigger {
   flex-shrink: 0;

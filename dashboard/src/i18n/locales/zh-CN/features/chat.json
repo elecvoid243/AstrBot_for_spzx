@@ -584,8 +584,8 @@
     "userMessageRelayed": "未送达子代理 · 已转达主 Agent"
   },
   "agentWork": {
-    "worked": "已工作",
-    "workedFor": "已工作 {duration}"
+    "worked": "已完成",
+    "workedFor": "已完成 {duration}"
   },
   "reply": {
     "replyTo": "引用",

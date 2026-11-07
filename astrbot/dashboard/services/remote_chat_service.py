@@ -7,6 +7,7 @@ import json
 import secrets
 import time
 from collections.abc import AsyncIterator
+from pathlib import Path
 from urllib.parse import urlsplit
 from uuid import uuid4
 from weakref import WeakValueDictionary
@@ -21,6 +22,7 @@ from astrbot.core.config.astrbot_config import AstrBotConfig
 from astrbot.core.db import BaseDatabase
 from astrbot.core.db.po import (
     DashboardAccount,
+    RemoteChatAttachment,
     RemoteChatConnection,
     RemoteChatCredential,
     RemoteChatExposure,
@@ -741,6 +743,86 @@ class RemoteChatService:
         ):
             raise ApiError("Session is unavailable", status_code=404)
 
+    async def check_grant(
+        self, account: DashboardAccount, raw_key: str, session_id: str
+    ) -> None:
+        """Recheck a grant after preparation without yielding after invalidation checks.
+
+        Args:
+            account: Account authenticated at the start of the operation.
+            raw_key: Dedicated credential from the trusted transport.
+            session_id: Exposed ordinary session being accessed.
+
+        Raises:
+            ApiError: The credential, account, exposure or switch changed.
+        """
+        revision = self.grant_revisions.get(account.account_id, 0)
+        current = await self.authenticate(raw_key)
+        await self.require_session(current, session_id)
+        self.require_enabled()
+        if self.grant_revisions.get(account.account_id, 0) != revision:
+            raise ApiError("Remote grant changed during request", status_code=403)
+
+    async def require_attachment(
+        self,
+        account: DashboardAccount,
+        session_id: str,
+        attachment_id: str,
+        raw_key: str,
+    ):
+        """Resolve only uploads or ordinary history attachments in this session.
+
+        Args:
+            account: Authenticated remote account.
+            session_id: Currently exposed session.
+            attachment_id: Opaque attachment identity, never a path or URL.
+            raw_key: Credential owning a pending upload.
+
+        Returns:
+            Ordinary attachment metadata and its original display filename.
+
+        Raises:
+            ApiError: The attachment is unknown or outside the granted session.
+        """
+        async with self.db.get_db() as connection:
+            scope = await connection.get(RemoteChatAttachment, attachment_id)
+        allowed = scope is not None and (
+            scope.account_id == account.account_id
+            and scope.session_id == session_id
+            and scope.credential_hash == hashlib.sha256(raw_key.encode()).hexdigest()
+        )
+        page = 1
+        while not allowed:
+            records = await self.chat.platform_history_mgr.get(
+                platform_id="webchat", user_id=session_id, page=page, page_size=200
+            )
+            for record in records:
+                content = record.content if isinstance(record.content, dict) else {}
+                if any(
+                    isinstance(part, dict)
+                    and part.get("attachment_id") == attachment_id
+                    for part in content.get("message", [])
+                ):
+                    allowed = True
+                    break
+            if len(records) < 200:
+                break
+            page += 1
+        if not allowed:
+            allowed = any(
+                isinstance(part, dict) and part.get("attachment_id") == attachment_id
+                for run in self.chat.get_active_chat_runs(
+                    account.resource_owner, session_id
+                )
+                for part in run.get("content", {}).get("message", [])
+            )
+        attachment = (
+            await self.db.get_attachment_by_id(attachment_id) if allowed else None
+        )
+        if attachment is None:
+            raise ApiError("Attachment is unavailable", status_code=404)
+        return attachment, scope.filename if scope else Path(attachment.path).name
+
     async def access(self, account: DashboardAccount) -> dict:
         """Read the signed-in account's policy and non-secret credential metadata.
 
@@ -1023,6 +1105,8 @@ class RemoteChatService:
         payload: dict | None = None,
         revision: str | None = None,
         stream: bool = False,
+        files: dict | None = None,
+        binary: bool = False,
     ):
         """Exchange a fixed protocol resource with bounded, nonredirecting I/O.
 
@@ -1035,6 +1119,8 @@ class RemoteChatService:
             payload: Validated text message, never arbitrary execution options.
             revision: Binding revision shown to the caller when submitting input.
             stream: Return a continuously authorized result subscription.
+            files: Multipart upload built by the trusted local route.
+            binary: Return bounded attachment bytes and a safe media type.
 
         Returns:
             Remote success data, without HTTP headers or credential metadata.
@@ -1083,6 +1169,7 @@ class RemoteChatService:
                         row.base_url + "/api/v1/remote-chat/" + path,
                         params=params,
                         json=payload,
+                        files=files,
                         headers={
                             "Authorization": "RemoteSession " + key,
                             "Accept": "application/json",
@@ -1103,15 +1190,30 @@ class RemoteChatService:
                             )
                             raise ApiError(
                                 "Remote connection request failed",
-                                status_code=502,
-                                data={"code": code},
+                                status_code=response.status_code
+                                if "/human-choices/" in path
+                                and response.status_code in {404, 409}
+                                else 502,
+                                data={
+                                    "code": "remote_rejected"
+                                    if "/human-choices/" in path
+                                    and response.status_code in {404, 409}
+                                    else code
+                                },
                             )
                         body = bytearray()
                         async for chunk in response.aiter_bytes():
                             body.extend(chunk)
-                            if len(body) > 32 * 1024 * 1024:
+                            if len(body) > (512 if binary else 32) * 1024 * 1024:
                                 raise ValueError
-                        payload = json.loads(body)
+                        media_type = response.headers.get("content-type", "").split(
+                            ";"
+                        )[0]
+                        payload = (
+                            {"status": "ok", "data": (bytes(body), media_type)}
+                            if binary
+                            else json.loads(body)
+                        )
                         if (
                             not isinstance(payload, dict)
                             or payload.get("status") != "ok"
@@ -1213,7 +1315,8 @@ class RemoteChatService:
                         with anyio.CancelScope(shield=True):
                             async with self.db.get_db() as connection:
                                 current = await connection.get(
-                                    RemoteChatConnection, row.connection_id
+                                    RemoteChatConnection,
+                                    row.connection_id,
                                 )
                                 current_account = await connection.get(
                                     DashboardAccount, account.account_id

@@ -21,6 +21,8 @@
         :messages="[...messages, ...liveMessages]"
         :is-dark="isDark"
         remote-history
+        :remote-scope="resourceScope"
+        :remote-ready="ready"
         :history-has-more="hasMore"
         :history-loading-older="loading"
         @load-older="load(true)"
@@ -49,11 +51,46 @@
         hide-details
         :disabled="sending || uncertain"
       />
+      <input
+        ref="fileInput"
+        type="file"
+        multiple
+        class="remote-file-input"
+        :disabled="!ready || sending || uncertain || uploading"
+        @change="uploadFiles"
+      />
+      <div
+        v-for="(file, index) in attachments"
+        :key="file.attachment_id"
+        class="d-flex align-center ga-2"
+      >
+        <span>{{ file.filename }}</span>
+        <v-btn
+          variant="text"
+          size="small"
+          :disabled="sending || uncertain"
+          @click="attachments.splice(index, 1)"
+          >{{ tm("remoteConnections.removeAttachment") }}</v-btn
+        >
+      </div>
       <div class="d-flex ga-2 mt-2">
+        <v-btn
+          variant="text"
+          :loading="uploading"
+          :disabled="!ready || sending || uncertain || uploading"
+          @click="fileInput?.click()"
+          >{{ tm("remoteConnections.attach") }}</v-btn
+        >
         <v-btn
           type="submit"
           variant="tonal"
-          :disabled="!ready || sending || uncertain || !draft.trim()"
+          :disabled="
+            !ready ||
+            sending ||
+            uncertain ||
+            uploading ||
+            (!draft.trim() && !attachments.length)
+          "
           >{{
             tm(
               running ? "remoteConnections.followUp" : "remoteConnections.send",
@@ -72,12 +109,13 @@
   </section>
 </template>
 <script setup lang="ts">
-import { nextTick, onBeforeUnmount, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import ChatMessageList from "./ChatMessageList.vue";
 import {
   remoteConnectionsApi,
   type RemoteConnection,
   type RemoteSession,
+  type RemoteUpload,
 } from "@/api/remoteConnections";
 import { normalizeMessageParts } from "@/composables/normalizeMessageParts";
 import type { ChatRecord, MessagePart } from "@/composables/useMessages";
@@ -104,6 +142,43 @@ const liveMessages = ref<ChatRecord[]>([]),
   ready = ref(false),
   requestId = ref("");
 const historyEl = ref<HTMLElement>();
+const fileInput = ref<HTMLInputElement>();
+const attachments = ref<RemoteUpload[]>([]);
+const uploading = ref(false);
+const resourceScope = computed(() => ({
+  connectionId: props.connection.connection_id,
+  revision: props.connection.revision,
+  sessionId: props.session.session_id,
+}));
+async function uploadFiles(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const files = Array.from(input.files || []);
+  const target = identity(),
+    current = generation;
+  if (attachments.value.length + files.length > 20) {
+    error.value = "remote_attachment_limit";
+    input.value = "";
+    return;
+  }
+  uploading.value = true;
+  try {
+    for (const file of files) {
+      const result = await remoteConnectionsApi.upload(
+        resourceScope.value,
+        file,
+      );
+      if (identity() !== target || generation !== current) return;
+      attachments.value.push(result.data.data);
+    }
+  } catch (err: any) {
+    if (identity() === target && generation === current)
+      error.value = err.response?.data?.data?.code || "remote_rejected";
+  } finally {
+    if (identity() === target && generation === current)
+      uploading.value = false;
+    input.value = "";
+  }
+}
 watch(
   [messages, liveMessages],
   () => {
@@ -131,19 +206,20 @@ const draftKey = () =>
     props.session.session_id,
   ]);
 watch(
-  [draft, uncertain, requestId],
+  [draft, uncertain, requestId, attachments],
   () => {
     if (!restoring)
       localStorage.setItem(
         draftKey(),
         JSON.stringify({
           text: draft.value,
+          attachments: attachments.value,
           uncertain: uncertain.value,
           requestId: requestId.value,
         }),
       );
   },
-  { flush: "sync" },
+  { flush: "sync", deep: true },
 );
 let cursor: number | undefined,
   generation = 0;
@@ -325,7 +401,13 @@ async function refresh() {
     throwAccess("remote_offline");
 }
 async function send() {
-  if (!ready.value || sending.value || uncertain.value || !draft.value.trim())
+  if (
+    !ready.value ||
+    sending.value ||
+    uncertain.value ||
+    uploading.value ||
+    (!draft.value.trim() && !attachments.value.length)
+  )
     return;
   if (navigator.onLine === false) {
     error.value = "remote_offline";
@@ -355,11 +437,13 @@ async function send() {
       text,
       props.connection.revision,
       requestId.value,
+      attachments.value.map((file) => file.attachment_id),
     );
     if (identity() !== target || generation !== current) return;
     const status = response.data.data.status;
     if (status === "accepted") {
       draft.value = "";
+      attachments.value = [];
       uncertain.value = false;
     } else if (status === "rejected") {
       uncertain.value = false;
@@ -394,6 +478,7 @@ async function checkReceipt() {
     const status = response.data.data.status;
     if (status === "accepted") {
       draft.value = "";
+      attachments.value = [];
       uncertain.value = false;
     } else if (status === "rejected") {
       uncertain.value = false;
@@ -435,6 +520,10 @@ watch(
     }
     restoring = true;
     draft.value = value.text || "";
+    attachments.value = Array.isArray(value.attachments)
+      ? value.attachments
+      : [];
+    uploading.value = false;
     uncertain.value = value.uncertain === true;
     requestId.value = value.requestId || "";
     restoring = false;
@@ -463,6 +552,9 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   width: 100%;
+}
+.remote-file-input {
+  display: none;
 }
 .remote-history {
   flex: 1;

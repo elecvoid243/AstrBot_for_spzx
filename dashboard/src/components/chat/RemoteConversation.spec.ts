@@ -14,6 +14,7 @@ vi.mock("@/api/remoteConnections", () => ({
     send: vi.fn(),
     stop: vi.fn(),
     receipt: vi.fn(),
+    upload: vi.fn(),
   },
 }));
 const connection = (id: string) => ({
@@ -276,6 +277,9 @@ it("keeps uncertain input locked until an authoritative accepted receipt", async
   const vm = wrapper.vm as any;
   // Drive the same composer actions without mounting unrelated local ChatInput services.
   vm.draft = "Do not duplicate";
+  vm.attachments = [
+    { attachment_id: "uploaded", filename: "notes.txt", type: "file" },
+  ];
   await wrapper.find("form").trigger("submit");
   await settle();
   expect(remoteConnectionsApi.send).toHaveBeenCalledTimes(1);
@@ -286,6 +290,7 @@ it("keeps uncertain input locked until an authoritative accepted receipt", async
   } as any);
   await vm.checkReceipt();
   expect(vm.uncertain).toBe(true);
+  expect(vm.attachments).toHaveLength(1);
   await wrapper.find("form").trigger("submit");
   expect(remoteConnectionsApi.send).toHaveBeenCalledTimes(1);
   vi.mocked(remoteConnectionsApi.receipt).mockResolvedValueOnce({
@@ -294,5 +299,37 @@ it("keeps uncertain input locked until an authoritative accepted receipt", async
   await vm.checkReceipt();
   expect(vm.uncertain).toBe(false);
   expect(vm.draft).toBe("");
+  expect(vm.attachments).toHaveLength(0);
+  wrapper.unmount();
+});
+
+it("limits cumulative uploads and keeps definitely rejected input editable", async () => {
+  vi.mocked(remoteConnectionsApi.history).mockResolvedValue(
+    page("history") as any,
+  );
+  vi.mocked(remoteConnectionsApi.send).mockRejectedValue({
+    response: { status: 422, data: { data: { code: "remote_rejected" } } },
+  });
+  const wrapper = make();
+  await settle();
+  const vm = wrapper.vm as any;
+  vm.ready = true;
+  vm.attachments = Array.from({ length: 20 }, (_, i) => ({
+    attachment_id: String(i),
+    filename: String(i),
+    type: "file",
+  }));
+  await vm.uploadFiles({
+    target: { files: [new File(["x"], "extra.txt")], value: "x" },
+  });
+  expect(remoteConnectionsApi.upload).not.toHaveBeenCalled();
+  expect(vm.error).toBe("remote_attachment_limit");
+  expect(vm.attachments).toHaveLength(20);
+  vm.draft = "Keep the draft";
+  await wrapper.find("form").trigger("submit");
+  await settle();
+  expect(vm.uncertain).toBe(false);
+  expect(vm.draft).toBe("Keep the draft");
+  expect(vm.attachments).toHaveLength(20);
   wrapper.unmount();
 });

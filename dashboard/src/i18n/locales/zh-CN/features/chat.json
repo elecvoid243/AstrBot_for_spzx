@@ -2402,6 +2402,11 @@
     "creationHint": "主机级权限，默认关闭。关闭新建仍可访问和通信已暴露的会话。Agent 操作还需两端均开启 Agent 跨会话访问。"
   },
   "remoteConnections": {
+    "attach": "添加图片或文件",
+    "removeAttachment": "移除",
+    "attachment": "远端附件",
+    "download": "下载",
+
     "title": "远端连接",
     "manage": "管理连接",
     "local": "本机",
@@ -2414,6 +2419,7 @@
     "disabled": "本实例已关闭远端连接，保存的连接配置会保留。",
     "saveFailed": "无法保存连接，请检查地址、专用密钥与本机总开关。",
     "status": {
+      "remote_attachment_limit": "每条消息最多添加 20 个附件，请移除部分附件后再试。",
       "ready": "已连接",
       "loading": "正在检查授权…",
       "disabled": "连接已关闭",

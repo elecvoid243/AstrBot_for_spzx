@@ -19,6 +19,7 @@ from astrbot.core.db.po import (
     PlatformSession,
     Preference,
     ProviderStat,
+    RemoteChatAttachment,
     RemoteChatConnection,
     RemoteChatCredential,
     RemoteChatExposure,
@@ -551,6 +552,10 @@ async def delete_account_data(app, account: DashboardAccount) -> None:
                 RemoteChatCredential.account_id == account.account_id,
             ),
             (RemoteChatExposure, RemoteChatExposure.account_id == account.account_id),
+            (
+                RemoteChatAttachment,
+                RemoteChatAttachment.account_id == account.account_id,
+            ),
             (
                 RemoteChatConnection,
                 RemoteChatConnection.account_id == account.account_id,

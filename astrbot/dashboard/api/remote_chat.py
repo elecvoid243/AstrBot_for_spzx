@@ -5,13 +5,14 @@ import hashlib
 import json
 import secrets
 import time
+from pathlib import Path
 from typing import Literal
 from urllib.parse import quote
 from uuid import UUID, uuid4
 
 import anyio
 from fastapi import APIRouter, Depends, Query, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 from sqlmodel import select
 
@@ -19,7 +20,9 @@ from astrbot.builtin_stars.session_messages.tools import (
     AgentMessageSource,
     SessionMessageChain,
 )
-from astrbot.core.db.po import DashboardAccount, RemoteChatCredential
+from astrbot.core.db.po import DashboardAccount, RemoteChatAttachment, RemoteChatCredential
+from astrbot.core.platform.sources.webchat.webchat_queue_mgr import webchat_queue_mgr
+from astrbot.core.tools.interactive_choice_registry import registry
 from astrbot.core.utils.webchat_access import (
     DashboardPrincipal,
     dashboard_account_context,
@@ -27,17 +30,22 @@ from astrbot.core.utils.webchat_access import (
     webchat_resource_owner,
 )
 from astrbot.dashboard.responses import ApiError, ok
-from astrbot.dashboard.services.chat_service import ChatServiceError
+from astrbot.dashboard.services.chat_service import (
+    ChatServiceError,
+    build_webchat_unified_msg_origin,
+)
 from astrbot.dashboard.services.remote_chat_control import RemoteChainControl
 
 from .auth import require_dashboard_user
+from .multipart import single_upload
 
 router = APIRouter(tags=["Remote Chat"])
 
 
 class RemoteTextRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
-    text: str = Field(min_length=1, max_length=1000000)
+    text: str = Field(default="", max_length=1000000)
+    attachment_ids: list[str] = Field(default_factory=list, max_length=20)
     request_id: UUID = Field(strict=False)
 
 
@@ -80,14 +88,14 @@ class RemoteEnabledRequest(BaseModel):
     enabled: bool
 
 
-async def require_remote_account(request: Request) -> DashboardAccount:
+async def require_remote_account(request: Request):
     """Require a dedicated connection key without accepting ambient login state.
 
     Args:
         request: Remote request with an explicit RemoteSession authorization header.
 
-    Returns:
-        The key's currently enabled account, never a caller-selected owner.
+    Yields:
+        The key's enabled account within its trusted ownership context.
 
     Raises:
         ApiError: The dedicated credential is absent, revoked, or unavailable.
@@ -95,7 +103,21 @@ async def require_remote_account(request: Request) -> DashboardAccount:
     scheme, _, raw_key = request.headers.get("Authorization", "").partition(" ")
     if scheme.lower() != "remotesession" or not raw_key.strip():
         raise ApiError("Dedicated remote credential required", status_code=401)
-    return await request.app.state.services.remote_chat.authenticate(raw_key.strip())
+    account = await request.app.state.services.remote_chat.authenticate(raw_key.strip())
+    principal = DashboardPrincipal(
+        account.account_id, account.resource_owner, account.role, account.username
+    )
+    tokens = (
+        dashboard_account_context.set(principal),
+        webchat_resource_owner.set(account.resource_owner),
+        webchat_account_role.set(account.role),
+    )
+    try:
+        yield account
+    finally:
+        dashboard_account_context.reset(tokens[0])
+        webchat_resource_owner.reset(tokens[1])
+        webchat_account_role.reset(tokens[2])
 
 
 class AgentChannelRequest(BaseModel):
@@ -716,6 +738,254 @@ class RemoteConnectionRequest(BaseModel):
     key: SecretStr | None = Field(default=None, max_length=512)
 
 
+class RemoteChoiceRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    choice_id: str = Field(min_length=1, max_length=256)
+    free_text: str = Field(default="", max_length=100000)
+
+
+class ConnectionChoiceRequest(RemoteChoiceRequest):
+    revision: str
+
+
+@router.post("/remote-chat/sessions/{session_id}/attachments")
+async def upload_remote_attachment(
+    session_id: str,
+    request: Request,
+    account: DashboardAccount = Depends(require_remote_account),
+):
+    """Save an ordinary upload under a dedicated account and exposed session.
+
+    Args:
+        session_id: Target ordinary session, never a caller-selected owner.
+        request: Multipart request authenticated by the dedicated transport.
+        account: Trusted remote account with request-local ownership context.
+
+    Returns:
+        Ordinary attachment metadata after a final live grant check.
+
+    Raises:
+        ApiError: File validation or live account/session authorization fails.
+    """
+    service = request.app.state.services.remote_chat
+    await service.require_session(account, session_id)
+    upload = await single_upload(request)
+    if upload is None:
+        raise ApiError("Missing file", status_code=400)
+    try:
+        data = await service.chat.save_uploaded_file(upload)
+    except ChatServiceError as exc:
+        raise ApiError(str(exc), status_code=400) from None
+    raw_key = request.headers["Authorization"].partition(" ")[2].strip()
+    async with service.db.get_db() as connection:
+        connection.add(
+            RemoteChatAttachment(
+                filename=data["filename"],
+                attachment_id=data["attachment_id"],
+                account_id=account.account_id,
+                session_id=session_id,
+                credential_hash=hashlib.sha256(raw_key.encode()).hexdigest(),
+            )
+        )
+        await connection.commit()
+    await service.check_grant(account, raw_key, session_id)
+    return JSONResponse(ok(data), headers={"Cache-Control": "no-store"})
+
+
+@router.get("/remote-chat/sessions/{session_id}/attachments/{attachment_id}")
+async def download_remote_attachment(
+    session_id: str,
+    attachment_id: str,
+    request: Request,
+    account: DashboardAccount = Depends(require_remote_account),
+):
+    """Read bytes only after verifying attachment membership and live exposure.
+
+    Args:
+        session_id: Exposed session containing the attachment.
+        attachment_id: Opaque ordinary attachment ID, never a path or URL.
+        request: Dedicated authenticated request.
+        account: Trusted remote account and ownership context.
+
+    Returns:
+        Uncached attachment bytes after reauthorization following file I/O.
+
+    Raises:
+        ApiError: The file or its account/session grant is unavailable.
+    """
+    service = request.app.state.services.remote_chat
+    await service.require_session(account, session_id)
+    raw_key = request.headers["Authorization"].partition(" ")[2].strip()
+    await service.require_attachment(account, session_id, attachment_id, raw_key)
+    try:
+        path, mime = await service.chat.resolve_attachment_file(attachment_id)
+        data = await asyncio.to_thread(Path(path).read_bytes)
+    except (ChatServiceError, OSError):
+        raise ApiError("Attachment is unavailable", status_code=404) from None
+    await service.check_grant(account, raw_key, session_id)
+    return Response(
+        data,
+        media_type=mime or "application/octet-stream",
+        headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+    )
+
+
+@router.post("/remote-chat/sessions/{session_id}/human-choices/{request_id}")
+async def answer_remote_human_choice(
+    session_id: str,
+    request_id: str,
+    payload: RemoteChoiceRequest,
+    request: Request,
+    account: DashboardAccount = Depends(require_remote_account),
+):
+    """Resolve a human answer on the explicit WebUI transport path.
+
+    Args:
+        session_id: Currently exposed ordinary session.
+        request_id: Choice whose server-recorded origin must match the session.
+        payload: Answer fields only; caller-supplied provenance is forbidden.
+        request: Dedicated authenticated WebUI protocol request.
+        account: Account resolved by the dedicated credential.
+
+    Returns:
+        Resolution metadata; the ordinary collector persists the answer.
+
+    Raises:
+        ApiError: Authorization changed, the origin differs, or the choice is
+            missing, expired or already resolved. Agent delivery cannot use a
+            message field to select this human path.
+    """
+    service = request.app.state.services.remote_chat
+    await service.require_session(account, session_id)
+    pending = registry._pending.get(request_id)
+    if pending is None:
+        raise ApiError("Interactive choice not found or expired", status_code=404)
+    session = await service.db.get_platform_session_by_id(session_id)
+    if pending.umo != build_webchat_unified_msg_origin(session):
+        raise ApiError("Interactive choice is unavailable", status_code=404)
+    raw_key = request.headers["Authorization"].partition(" ")[2].strip()
+    await service.check_grant(account, raw_key, session_id)
+    # Only this human WebUI protocol route resolves a choice. Ordinary message
+    # and future Agent delivery routes cannot select their provenance via JSON.
+    if pending.timeout_at < time.time() or not registry.resolve(
+        request_id, payload.model_dump()
+    ):
+        raise ApiError("Already resolved or expired", status_code=409)
+    if pending.sse_message_id:
+        # Record the answer through the ordinary collector before the tool wakes.
+        # Its legacy resolution broadcast carries only the reason, not the answer.
+        webchat_queue_mgr.get_or_create_back_queue(
+            pending.sse_message_id, session_id
+        ).put_nowait(
+            {
+                "type": "interactive_choice_resolved",
+                "data": {
+                    "request_id": request_id,
+                    "reason": "submitted",
+                    "umo": pending.umo,
+                    **payload.model_dump(),
+                },
+                "message_id": pending.sse_message_id,
+            }
+        )
+    return ok({"request_id": request_id, "resolved_at": time.time()})
+
+
+@router.post(
+    "/chat/remote-connections/{connection_id}/sessions/{session_id}/attachments"
+)
+async def upload_connection_attachment(
+    connection_id: str,
+    session_id: str,
+    request: Request,
+    revision: str = Query(),
+    _owner: str = Depends(require_dashboard_user),
+):
+    if session_id in {".", ".."} or "/" in session_id or "\\" in session_id:
+        raise ApiError("Session is unavailable", status_code=404)
+    async with request.form() as form:
+        upload = form.get("file")
+        if not hasattr(upload, "file") or upload.size > 512 * 1024 * 1024:
+            raise ApiError(
+                "Invalid upload or file too large (limit 512 MB)", status_code=400
+            )
+        data = await request.app.state.services.remote_chat.read_connection(
+            request.state.dashboard_account,
+            connection_id,
+            "sessions/" + quote(session_id, safe="") + "/attachments",
+            method="POST",
+            revision=revision,
+            files={"file": (upload.filename, upload.file, upload.content_type)},
+        )
+    return JSONResponse(ok(data), headers={"Cache-Control": "no-store"})
+
+
+@router.get(
+    "/chat/remote-connections/{connection_id}/sessions/{session_id}/attachments/{attachment_id}"
+)
+async def download_connection_attachment(
+    connection_id: str,
+    session_id: str,
+    attachment_id: str,
+    request: Request,
+    revision: str = Query(),
+    _owner: str = Depends(require_dashboard_user),
+):
+    for value in (session_id, attachment_id):
+        if value in {".", ".."} or "/" in value or "\\" in value:
+            raise ApiError("Attachment is unavailable", status_code=404)
+    data, mime = await request.app.state.services.remote_chat.read_connection(
+        request.state.dashboard_account,
+        connection_id,
+        "sessions/"
+        + quote(session_id, safe="")
+        + "/attachments/"
+        + quote(attachment_id, safe=""),
+        revision=revision,
+        binary=True,
+    )
+    # Never relay remote headers or render active content from attachment origins.
+    safe_mime = (
+        mime
+        if mime in {"image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp"}
+        else "application/octet-stream"
+    )
+    return Response(
+        data,
+        media_type=safe_mime,
+        headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+    )
+
+
+@router.post(
+    "/chat/remote-connections/{connection_id}/sessions/{session_id}/human-choices/{request_id}"
+)
+async def answer_connection_human_choice(
+    connection_id: str,
+    session_id: str,
+    request_id: str,
+    payload: ConnectionChoiceRequest,
+    request: Request,
+    _owner: str = Depends(require_dashboard_user),
+):
+    for value in (session_id, request_id):
+        if value in {".", ".."} or "/" in value or "\\" in value:
+            raise ApiError("Interactive choice is unavailable", status_code=404)
+    return ok(
+        await request.app.state.services.remote_chat.read_connection(
+            request.state.dashboard_account,
+            connection_id,
+            "sessions/"
+            + quote(session_id, safe="")
+            + "/human-choices/"
+            + quote(request_id, safe=""),
+            method="POST",
+            revision=payload.revision,
+            payload=payload.model_dump(exclude={"revision"}),
+        )
+    )
+
+
 @router.post("/remote-chat/sessions/{session_id}/messages")
 async def send_remote_text(
     session_id: str,
@@ -725,10 +995,12 @@ async def send_remote_text(
 ):
     service = request.app.state.services.remote_chat
     await service.require_session(account, session_id)
-    if not payload.text.strip():
+    if not payload.text.strip() and not payload.attachment_ids:
         raise ApiError("Text is empty", status_code=400)
     identity = (account.account_id, session_id, str(payload.request_id))
-    digest = hashlib.sha256(payload.text.encode()).hexdigest()
+    digest = hashlib.sha256(
+        json.dumps([payload.text, payload.attachment_ids]).encode()
+    ).hexdigest()
     receipt = service.receipts.get(identity)
     if receipt is not None and receipt["digest"] != digest:
         raise ApiError("Request identity already used", status_code=409)
@@ -755,13 +1027,7 @@ async def send_remote_text(
 
         async def check_admission():
             """Recheck the dedicated grant immediately before queue admission."""
-            revision = service.grant_revisions.get(account.account_id, 0)
-            current = await service.authenticate(raw_key)
-            await service.require_session(current, session_id)
-            # No await may separate these final invalidation checks from enqueue.
-            service.require_enabled()
-            if service.grant_revisions.get(account.account_id, 0) != revision:
-                raise ApiError("Remote grant changed during admission", status_code=403)
+            await service.check_grant(account, raw_key, session_id)
 
         async def admit():
             """Finish one ordinary admission even if its HTTP response is lost."""
@@ -777,9 +1043,23 @@ async def send_remote_text(
                 webchat_account_role.set(account.role),
             )
             try:
+                parts = (
+                    [{"type": "plain", "text": payload.text}] if payload.text else []
+                )
+                for attachment_id in payload.attachment_ids:
+                    attachment, filename = await service.require_attachment(
+                        account, session_id, attachment_id, raw_key
+                    )
+                    parts.append(
+                        {
+                            "type": attachment.type,
+                            "attachment_id": attachment_id,
+                            "filename": filename,
+                        }
+                    )
                 stream = await service.chat.build_chat_stream(
                     account.resource_owner,
-                    {"session_id": session_id, "message": payload.text},
+                    {"session_id": session_id, "message": parts},
                     message_id=receipt["run_id"],
                     admission_check=check_admission,
                 )
@@ -873,7 +1153,7 @@ async def remote_session_events(
                     field: state[field]
                     for field in ("history", "has_more", "active_runs", "is_running")
                 }
-                # Never relay local thread, project or interactive capabilities.
+                # Only explicitly scoped remote resources may become interactive locally.
                 encoded = json.dumps(
                     {"type": "snapshot", "data": data}, ensure_ascii=False
                 )
@@ -971,7 +1251,11 @@ async def send_connection_text(
         connection_id,
         "sessions/" + quote(session_id, safe="") + "/messages",
         method="POST",
-        payload={"text": payload.text, "request_id": str(payload.request_id)},
+        payload={
+            "text": payload.text,
+            "request_id": str(payload.request_id),
+            "attachment_ids": payload.attachment_ids,
+        },
         revision=payload.revision,
     )
     if (

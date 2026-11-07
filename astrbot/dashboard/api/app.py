@@ -6,6 +6,8 @@ from types import SimpleNamespace
 
 import jwt
 from fastapi import FastAPI, Request
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
@@ -354,6 +356,26 @@ def create_dashboard_asgi_app(
         _booter.shell.add_change_listener(
             lambda owner_id: asyncio.create_task(_shell_sessions_changed(owner_id))
         )
+
+    @app.exception_handler(RequestValidationError)
+    async def handle_request_validation_error(
+        request: Request, exc: RequestValidationError
+    ):
+        """Classify local remote-message validation before any outbound request.
+
+        Args:
+            request: Request whose body failed local validation.
+            exc: Framework validation failure, never a remote response.
+
+        Returns:
+            A definitive rejection for remote sends, or the default response.
+        """
+        if getattr(request.scope.get("route"), "name", None) == "send_connection_text":
+            return JSONResponse(
+                error("Invalid remote message", {"code": "remote_rejected"}),
+                status_code=422,
+            )
+        return await request_validation_exception_handler(request, exc)
 
     @app.exception_handler(ApiError)
     async def api_error_handler(_request: Request, exc: ApiError):

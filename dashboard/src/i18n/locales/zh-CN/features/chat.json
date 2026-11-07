@@ -2427,6 +2427,9 @@
     "hide": "隐藏密钥",
     "revoke": "撤销",
     "revoked": "已撤销",
+    "active": "有效",
+    "copied": "已复制",
+    "emptyKeys": "还没有密钥，创建一个用于远端连接。",
     "allowCreation": "允许通过连接新建会话",
     "creationHint": "主机级权限，默认关闭。关闭新建仍可访问和通信已暴露的会话。Agent 操作还需两端均开启 Agent 跨会话访问。"
   },

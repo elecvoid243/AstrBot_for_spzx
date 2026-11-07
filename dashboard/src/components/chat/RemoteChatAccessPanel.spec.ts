@@ -62,6 +62,7 @@ const stubs = {
   "v-select": container,
   "v-autocomplete": container,
   "v-alert": container,
+  "v-icon": container,
   "v-list": container,
   "v-list-item": defineComponent({
     setup:

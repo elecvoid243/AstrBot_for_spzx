@@ -2394,6 +2394,9 @@
     "hide": "Hide key",
     "revoke": "Revoke",
     "revoked": "Revoked",
+    "active": "Active",
+    "copied": "Copied",
+    "emptyKeys": "No keys yet. Create one for a remote connection.",
     "allowCreation": "Allow creating sessions through connections",
     "creationHint": "Host permission, off by default. Disabling creation keeps access and communication with exposed sessions. Agent operations also require Agent cross-session access on both instances."
   },

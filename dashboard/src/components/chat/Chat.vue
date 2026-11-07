@@ -699,11 +699,11 @@
             </v-list-item>
           </div>
         </StyledMenu>
-        <v-dialog v-model="showRemoteAccess" max-width="640" scrollable>
+        <v-dialog v-model="showRemoteAccess" max-width="660" scrollable>
           <v-card v-if="showRemoteAccess">
             <v-card-title class="text-h3 pa-4 pb-0 pl-6">{{ tm('remoteAccess.title') }}</v-card-title>
-            <v-card-text><RemoteChatAccessPanel /></v-card-text>
-            <v-card-actions>
+            <v-card-text class="pa-6 pt-4"><RemoteChatAccessPanel /></v-card-text>
+            <v-card-actions class="px-6 pb-4">
               <v-spacer />
               <v-btn variant="text" @click="showRemoteAccess = false">{{ t('core.common.close') }}</v-btn>
             </v-card-actions>

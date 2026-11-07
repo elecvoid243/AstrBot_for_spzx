@@ -2796,6 +2796,17 @@ export type ListChatSubagentRunsResponse = (SuccessEnvelope);
 
 export type ListChatSubagentRunsError = unknown;
 
+export type GetChatSubagentConfigurationData = {
+    path: {
+        run_id: string;
+        session_id: string;
+    };
+};
+
+export type GetChatSubagentConfigurationResponse = (SuccessEnvelope);
+
+export type GetChatSubagentConfigurationError = (ErrorEnvelope);
+
 export type StreamChatSubagentRunsData = {
     path: {
         session_id: string;

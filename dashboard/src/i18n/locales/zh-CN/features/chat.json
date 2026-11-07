@@ -422,9 +422,24 @@
       "polling": "长轮询中"
     }
   },
+  "subagentConfig": {
+    "title": "子代理配置",
+    "view": "查看 {name} 的配置",
+    "systemPrompt": "系统提示词",
+    "tools": "工具",
+    "blockedTools": "继承但禁止调用的工具",
+    "contextMode": "上下文继承模式",
+    "timeout": "运行超时",
+    "workdir": "工作目录",
+    "none": "无",
+    "snapshot": "调用时的配置快照",
+    "legacy": "此历史调用未保存配置快照。",
+    "loadFailed": "无法加载子代理配置，请重新打开后重试。",
+    "close": "关闭"
+  },
   "subagentPages": {
     "navigation": "会话子页面",
-    "main": "主对话",
+    "main": "主会话",
     "agents": "子代理",
     "background": "后台",
     "cleaned": "已清理",

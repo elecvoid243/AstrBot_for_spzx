@@ -44,6 +44,52 @@ async def progress(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_configuration_snapshot_survives_completion_and_cleanup(
+    progress, monkeypatch
+):
+    registry, config = progress
+    queues = WebChatQueueMgr()
+    queues.get_or_create_back_queue("request", "parent")
+    monkeypatch.setattr("astrbot.core.subagent_event_sink.webchat_queue_mgr", queues)
+    configuration = {
+        "system_prompt": "Original instructions",
+        "tools": ["read_file"],
+        "skills": ["grilling"],
+        "provider_id": "provider-original",
+    }
+    sink = SubAgentEventSink(
+        "request",
+        "worker",
+        umo=UMO,
+        instance_id=config.instance_id,
+        configuration=configuration,
+    )
+    await sink.start()
+    card = queues.back_queues["request"].get_nowait()
+    assert "configuration" not in card["data"]["payload"]
+    configuration["system_prompt"] = "Changed after start"
+    first = await registry.get_configuration("parent", sink.subagent_run_id)
+    assert first["system_prompt"] == "Original instructions"
+    first["tools"].append("modified-copy")
+    assert (await registry.get_configuration("parent", sink.subagent_run_id))[
+        "tools"
+    ] == ["read_file"]
+    await sink.complete("done", 1)
+    registry.schedule_cleaned(UMO, [config.instance_id])
+    await asyncio.gather(*list(registry.tasks))
+    SubAgentManager.get_session(UMO).subagents["worker"] = SubAgentConfig(
+        name="worker", system_prompt="Replacement"
+    )
+    stored = await registry.get_configuration("parent", sink.subagent_run_id)
+    assert stored["system_prompt"] == "Original instructions"
+    assert stored["provider_id"] == "provider-original"
+    assert await registry.get_configuration("other-owner", sink.subagent_run_id) is None
+    assert all(
+        "configuration" not in entry for entry in await registry.list_runs("parent")
+    )
+
+
+@pytest.mark.asyncio
 async def test_background_trace_survives_parent_queue_completion(progress, monkeypatch):
     registry, config = progress
     queues = WebChatQueueMgr()
@@ -198,6 +244,7 @@ async def test_legacy_traces_are_indexed_as_cleaned_and_reopenable(progress):
     entries = await registry.list_runs("parent")
     assert entries[0]["cleaned"] is True
     assert (await registry.get_run("parent", "legacy"))["text"] == "saved result"
+    assert await registry.get_configuration("parent", "legacy") == {}
     assert len(await registry.list_runs("parent")) == 1
 
 
@@ -346,6 +393,7 @@ async def test_same_run_id_in_an_imported_session_cannot_receive_foreign_events(
 @pytest.mark.asyncio
 async def test_routes_check_session_ownership_before_storage_access(monkeypatch):
     from astrbot.dashboard.api.chat import (
+        get_chat_subagent_configuration,
         list_chat_subagent_runs,
         stream_chat_subagent_runs,
     )
@@ -361,4 +409,8 @@ async def test_routes_check_session_ownership_before_storage_access(monkeypatch)
     for route in (list_chat_subagent_runs, stream_chat_subagent_runs):
         with pytest.raises(ApiError):
             await route("foreign", auth=auth, service=service)
+    with pytest.raises(ApiError):
+        await get_chat_subagent_configuration(
+            "foreign", "run", auth=auth, service=service
+        )
     storage.list_runs.assert_not_awaited()

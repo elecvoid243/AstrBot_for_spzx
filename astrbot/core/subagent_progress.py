@@ -129,6 +129,10 @@ class SubagentProgress:
         row, accumulator = self.active[run_id]
         accumulator.add_subagent_event(data)
         row.data = accumulator.subagent_runs[run_id]
+        if kind == "started" and isinstance(
+            data.get("payload", {}).get("configuration"), dict
+        ):
+            row.data["configuration"] = deepcopy(data["payload"]["configuration"])
         row.revision += 1
         row.status = row.data.get("status", "running")
         row.data.update(self.metadata(row))
@@ -284,6 +288,30 @@ class SubagentProgress:
         if row is None:
             return None
         return {**deepcopy(row.data), **self.metadata(row)}
+
+    async def get_configuration(self, session_id: str, run_id: str) -> dict | None:
+        """Read an invocation's configuration without loading its execution trace.
+
+        Args:
+            session_id: Owned WebChat session or thread.
+            run_id: Invocation within the authorized session.
+
+        Returns:
+            Frozen configuration, an empty dict for legacy runs, or None if missing.
+        """
+        live = self.active.get(run_id)
+        if live and live[0].session_id == session_id:
+            return deepcopy(live[0].data.get("configuration") or {})
+        async with self.database().get_db() as session:
+            row = (
+                await session.execute(
+                    select(WebChatSubagentRun.data["configuration"]).where(
+                        WebChatSubagentRun.session_id == session_id,
+                        WebChatSubagentRun.run_id == run_id,
+                    )
+                )
+            ).one_or_none()
+        return deepcopy(row[0] or {}) if row is not None else None
 
     def schedule_cleaned(self, umo: str, instance_ids: list[str]) -> None:
         """Record actual removal of agent instances without delaying synchronous tools.

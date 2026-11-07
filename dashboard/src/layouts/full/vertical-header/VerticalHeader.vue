@@ -1170,6 +1170,12 @@ onMounted(async () => {
       </div>
     </div>
 
+    <div
+      v-show="isChatPath"
+      id="chat-session-navigation"
+      class="chat-session-navigation"
+    />
+
     <v-spacer />
 
     <!-- 版本提示信息 - 在手机上隐藏；点击直接打开更新对话框。
@@ -2258,6 +2264,12 @@ onMounted(async () => {
   overflow: hidden;
 }
 
+.chat-session-navigation {
+  flex: 0 1 auto;
+  min-width: 0;
+  margin-right: 12px;
+}
+
 .chat-header-context .provider-trigger--header {
   max-width: 100%;
 }
@@ -2721,8 +2733,15 @@ onMounted(async () => {
   }
 
   .chat-header-context {
+    flex: 1 1 0;
     max-width: calc(100vw - 92px);
     padding-right: 8px;
+  }
+
+  .chat-session-navigation {
+    flex: 0 1 auto;
+    max-width: 58%;
+    margin-right: 4px;
   }
 
   .update-summary,

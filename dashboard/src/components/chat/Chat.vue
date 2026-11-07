@@ -738,7 +738,8 @@
           v-if="currSessionId"
           ref="subagentPagesRef"
           :session-id="currSessionId"
-          :title="currentSessionTitle"
+          :toolbar-target="props.active ? '#chat-session-navigation' : undefined"
+          :before-navigate="confirmFileNavigation"
           :is-dark="isDark"
           @view-change="onSubagentViewChange"
         />
@@ -2821,27 +2822,28 @@ provide("isDark", isDark);
 // centre it (see centerInMessagesPanel) instead of writing scrollTop itself,
 // so stick-to-bottom and the reading anchor stay in one owner.
 provide("centerInMessagesPanel", centerInMessagesPanel);
-provide("openSubagentRun", async (part: Record<string, any>, sessionId?: string) => {
-  if (!(await confirmFileNavigation())) return;
-  viewportInteractionToken += 1;
-  endJumpLanding();
-  endJumpScrollLock();
-  jumpInProgress.value = false;
-  closeThreadPanel();
-  reasoningPanelOpen.value = false;
-  activeReasoningTarget.value = null;
-  refsSidebarOpen.value = false;
-  gitDiffSidebarOpen.value = false;
-  closeTodoMenu();
-  chatHeader.SET_WORKSPACE_FILES_OPEN(false);
-  chatHeader.SET_GOAL_SIDEBAR_OPEN(false);
+provide("openSubagentRun", (part: Record<string, any>, sessionId?: string) => {
   subagentPagesRef.value?.openRun(part, sessionId || currSessionId.value);
 });
 provide("subagentRunMetadata", (runId: string) => subagentPagesRef.value?.getRun(runId));
 
 async function onSubagentViewChange(open: boolean) {
   if (open === subagentPageOpen.value) return;
-  if (open) recordViewportAnchor(currSessionId.value);
+  if (open) {
+    recordViewportAnchor(currSessionId.value);
+    viewportInteractionToken += 1;
+    endJumpLanding();
+    endJumpScrollLock();
+    jumpInProgress.value = false;
+    closeThreadPanel();
+    reasoningPanelOpen.value = false;
+    activeReasoningTarget.value = null;
+    refsSidebarOpen.value = false;
+    gitDiffSidebarOpen.value = false;
+    closeTodoMenu();
+    chatHeader.SET_WORKSPACE_FILES_OPEN(false);
+    chatHeader.SET_GOAL_SIDEBAR_OPEN(false);
+  }
   subagentPageOpen.value = open;
   if (open) return;
   await nextTick();

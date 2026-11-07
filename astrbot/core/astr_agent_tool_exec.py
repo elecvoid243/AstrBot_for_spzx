@@ -550,6 +550,21 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
         agent_config = (
             agent_session.subagents.get(agent_name) if agent_session else None
         )
+        skills = []
+        if agent_config:
+            from astrbot.core.skills import SkillManager
+
+            available = SubAgentManager._filter_skills_for_current_config(
+                SkillManager().list_skills(
+                    active_only=True,
+                    runtime=prov_settings.get("computer_use_runtime", "local"),
+                )
+            )
+            skills = sorted(
+                skill.name
+                for skill in available
+                if agent_config.skills is None or skill.name in agent_config.skills
+            )
         return SubAgentEventSink(
             message_id=str(message_id),
             agent_name=agent_name,
@@ -559,6 +574,11 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
             umo=umo,
             instance_id=getattr(agent_config, "instance_id", ""),
             background=background,
+            configuration={
+                "description": getattr(agent_config, "description", ""),
+                "workdir": getattr(agent_config, "workdir", None),
+                "skills": skills,
+            },
         )
 
     @classmethod
@@ -970,6 +990,22 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
         # 添加执行超时控制
         try:
             if sink:
+                sink.configuration.update(
+                    system_prompt=subagent_system_prompt,
+                    provider_id=prov_id,
+                    context_inherit_mode=inherit_mode,
+                    execution_timeout=execution_timeout,
+                    tools=sorted(
+                        t.name
+                        for t in (toolset.tools if toolset else [])
+                        if t.name not in denied_subagent_tools
+                    ),
+                    blocked_tools=sorted(
+                        t.name
+                        for t in (toolset.tools if toolset else [])
+                        if t.name in denied_subagent_tools
+                    ),
+                )
                 await sink.start()
             if execution_timeout > 0:
                 llm_resp = await asyncio.wait_for(

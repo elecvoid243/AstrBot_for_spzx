@@ -104,6 +104,21 @@
     "followUpSend": "送信",
     "followUpInterrupt": "強制中断"
   },
+  "subagentConfig": {
+    "title": "サブエージェント設定",
+    "view": "{name} の設定を表示",
+    "systemPrompt": "システムプロンプト",
+    "tools": "ツール",
+    "blockedTools": "継承されているが実行できないツール",
+    "contextMode": "コンテキスト継承",
+    "timeout": "実行タイムアウト",
+    "workdir": "作業ディレクトリ",
+    "none": "なし",
+    "snapshot": "呼び出し時の設定スナップショット",
+    "legacy": "この過去の呼び出しには設定スナップショットがありません。",
+    "loadFailed": "設定を読み込めません。閉じてから再度開いてください。",
+    "close": "閉じる"
+  },
   "subagentPages": {
     "navigation": "会話ページ",
     "main": "メイン会話",

@@ -1,45 +1,55 @@
 <template>
   <div class="subagent-pages" :class="{ 'is-open': selectedRunId }">
-    <header class="session-pages-header">
-      <h1 class="session-pages-title">{{ title }}</h1>
+    <Teleport :to="navigationHost || 'body'" :disabled="!navigationHost">
       <nav
         class="session-pages-nav"
+        :class="{ 'in-toolbar': navigationHost }"
         :aria-label="tm('subagentPages.navigation')"
       >
         <button
           type="button"
+          class="session-main-trigger"
           :class="{ 'is-active': !selectedRunId }"
           @click="showMain"
         >
           {{ tm("subagentPages.main") }}
         </button>
-        <div class="subagent-picker" @keydown.esc="menuOpen = false">
-          <button
-            type="button"
-            :class="{ 'is-active': selectedRunId }"
-            :aria-expanded="menuOpen"
-            @click="menuOpen = !menuOpen"
-          >
-            <span class="subagent-picker-label">{{
-              selectedPart?.agent_name || tm("subagentPages.agents")
-            }}</span>
-            <span
-              v-if="
-                selectedPart?.status === 'running' ||
-                (!selectedRunId && runs.some((run) => run.status === 'running'))
-              "
-              class="run-dot running"
-              :title="tm('subagentStatus.running')"
-            />
-            <span v-if="selectedPart?.background" class="run-badge">{{
-              tm("subagentPages.background")
-            }}</span>
-            <span v-if="selectedPart?.cleaned" class="run-badge">{{
-              tm("subagentPages.cleaned")
-            }}</span>
-            <v-icon size="16">mdi-chevron-down</v-icon>
-          </button>
-          <div v-if="menuOpen" class="subagent-picker-menu">
+        <v-menu
+          v-model="menuOpen"
+          :close-on-content-click="false"
+          location="bottom start"
+          :offset="8"
+        >
+          <template #activator="{ props: activatorProps }">
+            <button
+              v-bind="activatorProps"
+              type="button"
+              class="subagent-picker-trigger"
+              :class="{ 'is-active': selectedRunId }"
+              :aria-expanded="menuOpen"
+            >
+              <span class="subagent-picker-label">{{
+                selectedPart?.agent_name || tm("subagentPages.agents")
+              }}</span>
+              <span
+                v-if="
+                  selectedPart?.status === 'running' ||
+                  (!selectedRunId &&
+                    runs.some((run) => run.status === 'running'))
+                "
+                class="run-dot running"
+                :title="tm('subagentStatus.running')"
+              />
+              <span v-if="selectedPart?.background" class="run-badge">{{
+                tm("subagentPages.background")
+              }}</span>
+              <span v-if="selectedPart?.cleaned" class="run-badge">{{
+                tm("subagentPages.cleaned")
+              }}</span>
+              <v-icon size="16">mdi-chevron-down</v-icon>
+            </button>
+          </template>
+          <div class="subagent-picker-menu">
             <div v-if="!runs.length" class="picker-empty">
               {{ tm("subagentPages.empty") }}
             </div>
@@ -60,84 +70,115 @@
                 {{ tm("subagentPages.cleaned") }} · {{ group.items.length }}
               </button>
               <template v-if="!group.cleaned || cleanedOpen">
-                <button
+                <div
                   v-for="run in group.items"
                   :key="run.subagent_run_id"
-                  type="button"
-                  class="subagent-picker-item"
+                  class="subagent-picker-row"
                   :class="{
                     'is-selected': selectedRunId === run.subagent_run_id,
                   }"
-                  @click="openRun(run)"
                 >
-                  <span
-                    class="run-dot"
-                    :class="{
-                      running: run.status === 'running',
-                    }"
-                  />
-                  <span class="run-name"
-                    >{{ run.agent_name
-                    }}<small
-                      >{{ tm("subagentPages.invocation") }}
-                      {{ run.subagent_run_id.slice(-6) }}</small
-                    ></span
+                  <button
+                    type="button"
+                    class="subagent-picker-item"
+                    @click="openRun(run)"
                   >
-                  <span v-if="run.background" class="run-badge">{{
-                    tm("subagentPages.background")
-                  }}</span>
-                  <span class="run-state">{{
-                    tm(`subagentStatus.${run.status}`)
-                  }}</span>
-                </button>
+                    <span
+                      class="run-dot"
+                      :class="{
+                        running: run.status === 'running',
+                      }"
+                    />
+                    <span class="run-name"
+                      >{{ run.agent_name
+                      }}<small
+                        >{{ tm("subagentPages.invocation") }}
+                        {{ run.subagent_run_id.slice(-6) }}</small
+                      ></span
+                    >
+                    <span v-if="run.background" class="run-badge">{{
+                      tm("subagentPages.background")
+                    }}</span>
+                    <span class="run-state">{{
+                      tm(`subagentStatus.${run.status}`)
+                    }}</span>
+                  </button>
+                  <button
+                    type="button"
+                    class="subagent-info-button"
+                    :title="tm('subagentConfig.title')"
+                    :aria-label="
+                      tm('subagentConfig.view', { name: run.agent_name })
+                    "
+                    @click.stop="
+                      configurationRun = run;
+                      menuOpen = false;
+                    "
+                  >
+                    <v-icon size="17">mdi-information-outline</v-icon>
+                  </button>
+                </div>
               </template>
             </template>
           </div>
-        </div>
+        </v-menu>
       </nav>
-    </header>
-    <section
-      v-if="selectedRunId"
-      ref="panel"
-      class="subagent-messages"
-      tabindex="0"
-      @scroll="handleScroll"
-      @wheel.passive="handleIntent"
-      @keydown="handleIntent"
-      @pointerdown="handleIntent"
-      @touchstart.passive="handleIntent"
-    >
-      <div ref="content" class="subagent-message-shell">
-        <div v-if="error" role="alert" class="subagent-page-notice">
-          {{ error }}
+    </Teleport>
+    <div v-if="selectedRunId" class="subagent-page-body">
+      <section
+        ref="panel"
+        class="subagent-messages"
+        tabindex="0"
+        @scroll="handleScroll"
+        @wheel.passive="handleIntent"
+        @keydown="handleIntent"
+        @pointerdown="handleIntent"
+        @touchstart.passive="handleIntent"
+      >
+        <div ref="content" class="subagent-message-shell">
+          <div v-if="error" role="alert" class="subagent-page-notice">
+            {{ error }}
+          </div>
+          <div v-if="loading" role="status" class="subagent-page-notice">
+            {{ tm("subagentPages.loading") }}
+          </div>
+          <ChatMessageList
+            v-if="selectedPart"
+            :messages="messages"
+            :is-dark="isDark"
+            :is-streaming="selectedPart.status === 'running'"
+            :session-id="detailSessionId"
+            @open-reasoning="reasoningTarget = $event"
+          />
         </div>
-        <div v-if="loading" role="status" class="subagent-page-notice">
-          {{ tm("subagentPages.loading") }}
-        </div>
-        <ChatMessageList
-          v-if="selectedPart"
-          :messages="messages"
-          :is-dark="isDark"
-          :is-streaming="selectedPart.status === 'running'"
-          :session-id="detailSessionId"
-          @open-reasoning="reasoningTarget = $event"
-        />
-      </div>
-    </section>
-    <ReasoningSidebar
-      v-if="selectedRunId"
-      :model-value="Boolean(reasoningTarget)"
-      :parts="reasoningParts"
-      :is-dark="isDark"
-      :is-streaming="selectedPart?.status === 'running'"
-      :focus-call-id="reasoningTarget?.callId"
-      @update:model-value="!$event && (reasoningTarget = null)"
+      </section>
+      <ReasoningSidebar
+        :model-value="Boolean(reasoningTarget)"
+        :parts="reasoningParts"
+        :is-dark="isDark"
+        :is-streaming="selectedPart?.status === 'running'"
+        :focus-call-id="reasoningTarget?.callId"
+        @update:model-value="!$event && (reasoningTarget = null)"
+      />
+    </div>
+    <SubagentConfigurationDialog
+      v-if="configurationRun"
+      :session-id="sessionId"
+      :run="configurationRun"
+      @close="configurationRun = null"
     />
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
+import {
+  computed,
+  nextTick,
+  onBeforeUnmount,
+  ref,
+  shallowRef,
+  watch,
+} from "vue";
 import { chatApi } from "@/api/v1";
 import { fetchWithAuth } from "@/api/http";
 import { accountSessionRevision } from "@/utils/accountSession";
@@ -154,6 +195,7 @@ import {
 import { useModuleI18n } from "@/i18n/composables";
 import ChatMessageList from "./ChatMessageList.vue";
 import ReasoningSidebar from "./ReasoningSidebar.vue";
+import SubagentConfigurationDialog from "./SubagentConfigurationDialog.vue";
 
 type RunEntry = Pick<
   SubAgentRunPart,
@@ -165,7 +207,8 @@ type RunEntry = Pick<
 };
 const props = defineProps<{
   sessionId: string;
-  title: string;
+  toolbarTarget?: string;
+  beforeNavigate?: () => Promise<boolean>;
   isDark?: boolean;
 }>();
 const emit = defineEmits<{ viewChange: [open: boolean] }>();
@@ -174,7 +217,19 @@ const entries = ref<Record<string, RunEntry>>({});
 const selectedRunId = ref("");
 const detailSessionId = ref("");
 const selectedPart = ref<SubAgentRunPart | null>(null);
+const navigationHost = shallowRef<HTMLElement | null>(null);
+const configurationRun = ref<RunEntry | null>(null);
 const menuOpen = ref(false);
+watch(
+  () => props.toolbarTarget,
+  async (target) => {
+    menuOpen.value = false;
+    configurationRun.value = null;
+    await nextTick();
+    navigationHost.value = target ? document.querySelector(target) : null;
+  },
+  { immediate: true, flush: "post" },
+);
 const cleanedOpen = ref(false);
 const loading = ref(false);
 const error = ref("");
@@ -281,7 +336,7 @@ const reasoningParts = computed(() => {
   return block?.kind === "thinking" ? block.parts : [];
 });
 
-function openRun(
+async function openRun(
   run: RunEntry | Record<string, any>,
   sourceSessionId = props.sessionId,
 ) {
@@ -292,6 +347,7 @@ function openRun(
     !error.value
   )
     return;
+  if (props.beforeNavigate && !(await props.beforeNavigate())) return;
   detailAbort?.abort();
   selectedRunId.value = run.subagent_run_id;
   detailSessionId.value = sourceSessionId;
@@ -514,6 +570,7 @@ watch(
     listAbort?.abort();
     showMain();
     entries.value = {};
+    configurationRun.value = null;
     cleanedOpen.value = false;
     menuOpen.value = false;
     if (props.sessionId) {
@@ -564,22 +621,20 @@ defineExpose({ openRun, getRun: (runId: string) => entries.value[runId] });
 .subagent-pages.is-open {
   flex: 1 1 0;
 }
-.session-pages-header {
-  padding: 16px
-    max(20px, calc((100% - var(--chat-content-max-width, 960px)) / 2)) 0;
-  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.1);
-}
-.session-pages-title {
-  margin: 0 0 8px;
-  font-size: 15px;
-  font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 .session-pages-nav {
   display: flex;
-  gap: 16px;
+  align-items: center;
+  gap: 3px;
+  width: fit-content;
+  max-width: 100%;
+  margin: 10px 16px;
+  padding: 3px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.06);
+  border-radius: 10px;
+  background: rgba(var(--v-theme-on-surface), 0.035);
+}
+.session-pages-nav.in-toolbar {
+  margin: 0;
 }
 .session-pages-nav button {
   color: inherit;
@@ -587,40 +642,40 @@ defineExpose({ openRun, getRun: (runId: string) => entries.value[runId] });
   font-size: 13px;
 }
 .session-pages-nav > button,
-.subagent-picker > button {
-  min-height: 36px;
+.subagent-picker-trigger {
+  min-height: 30px;
+  min-width: 0;
   display: flex;
   align-items: center;
-  gap: 7px;
-  border-bottom: 2px solid transparent;
+  gap: 6px;
+  padding: 0 10px;
+  border-radius: 7px;
+  white-space: nowrap;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease;
+}
+.session-pages-nav button:hover {
+  background: rgba(var(--v-theme-on-surface), 0.05);
 }
 .session-pages-nav .is-active {
   color: rgb(var(--v-theme-primary));
-  border-bottom-color: currentColor;
+  background: rgb(var(--v-theme-surface));
+  box-shadow: 0 1px 3px #0000000d;
+  font-weight: 600;
 }
-.subagent-picker {
-  position: relative;
-  min-width: 0;
-  flex: 0 1 auto;
-}
-.subagent-picker > button {
-  max-width: 100%;
-}
-.session-pages-nav > button {
+.session-main-trigger {
   flex-shrink: 0;
 }
 .subagent-picker-label {
   min-width: 0;
+  max-width: 160px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .subagent-picker-menu {
-  position: absolute;
-  top: 100%;
-  left: 0;
-  z-index: 50;
-  width: min(430px, calc(100vw - 60px));
+  width: min(430px, calc(100vw - 24px));
   max-height: 60vh;
   overflow-y: auto;
   padding: 8px;
@@ -629,8 +684,15 @@ defineExpose({ openRun, getRun: (runId: string) => entries.value[runId] });
   border-radius: 10px;
   box-shadow: 0 8px 24px #0002;
 }
-.subagent-picker-item {
+.subagent-picker-row {
   width: 100%;
+  display: flex;
+  align-items: center;
+  border-radius: 8px;
+}
+.subagent-picker-item {
+  flex: 1;
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -638,9 +700,22 @@ defineExpose({ openRun, getRun: (runId: string) => entries.value[runId] });
   border-radius: 7px;
   text-align: left;
 }
-.subagent-picker-item:hover,
-.subagent-picker-item.is-selected {
+.subagent-picker-row:hover,
+.subagent-picker-row.is-selected {
   background: rgba(var(--v-theme-primary), 0.08);
+}
+.subagent-info-button {
+  display: grid;
+  place-items: center;
+  flex: 0 0 30px;
+  height: 30px;
+  margin-right: 4px;
+  border-radius: 7px;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+}
+.subagent-info-button:hover {
+  color: rgb(var(--v-theme-primary));
+  background: rgba(var(--v-theme-primary), 0.1);
 }
 .run-name {
   flex: 1;
@@ -691,11 +766,20 @@ defineExpose({ openRun, getRun: (runId: string) => entries.value[runId] });
 }
 .subagent-messages {
   flex: 1;
+  min-width: 0;
   min-height: 0;
   overflow-y: auto;
   overflow-anchor: none;
   scrollbar-gutter: stable;
   padding-top: 24px;
+}
+.subagent-page-body {
+  --chat-panel-top-offset: 0px;
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
 }
 .subagent-message-shell {
   width: var(--chat-content-width, 80%);
@@ -704,17 +788,16 @@ defineExpose({ openRun, getRun: (runId: string) => entries.value[runId] });
   padding-bottom: 24px;
 }
 @media (max-width: 760px) {
-  .subagent-picker {
-    flex: 1 1 0;
+  .session-pages-nav > button,
+  .subagent-picker-trigger {
+    padding: 0 7px;
+    font-size: 12px;
   }
-  .subagent-picker-menu {
-    left: auto;
-    right: 0;
-    width: calc(100vw - 40px);
-    max-width: 430px;
+  .subagent-picker-label {
+    max-width: 90px;
   }
-  .session-pages-header {
-    padding: 12px 20px 0;
+  .session-pages-nav .run-badge {
+    display: none;
   }
   .subagent-message-shell {
     width: calc(100% - 20px);

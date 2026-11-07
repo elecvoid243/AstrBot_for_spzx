@@ -2090,6 +2090,32 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/SuccessEnvelope' }
+  /api/v1/chat/sessions/{session_id}/subagent-runs/{run_id}/configuration:
+    get:
+      operationId: getChatSubagentConfiguration
+      summary: Read a subagent invocation configuration snapshot
+      description: Requires ownership of the WebChat session or thread. Returns the configuration captured at invocation time, without provider credentials or execution traces.
+      security: [{ BearerAuth: [] }]
+      tags: [Chat]
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          schema: { type: string }
+        - name: run_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Configuration snapshot; empty for legacy invocations without a snapshot
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SuccessEnvelope' }
+        '403':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
   /api/v1/chat/sessions/{session_id}/subagent-runs/stream:
     get:
       operationId: streamChatSubagentRuns

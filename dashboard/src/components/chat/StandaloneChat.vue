@@ -12,7 +12,6 @@
       v-if="currSessionId"
       ref="subagentPagesRef"
       :session-id="currSessionId"
-      :title="currentSession?.display_name || tm('subagentPages.main')"
       :is-dark="isDark"
       @view-change="onSubagentViewChange"
     />

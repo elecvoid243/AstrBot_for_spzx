@@ -38,6 +38,7 @@ class SubAgentEventSink:
         umo: str = "",
         instance_id: str = "",
         background: bool = False,
+        configuration: dict | None = None,
     ):
         """Create an independent trace sink with parent navigation cards.
 
@@ -49,6 +50,7 @@ class SubAgentEventSink:
             umo: Trusted WebChat origin for independent persistence and streams.
             instance_id: Agent lifetime identity, distinct from its display name.
             background: Whether the invocation runs in the background.
+            configuration: Non-secret configuration frozen for this invocation.
         """
         self.subagent_run_id = f"sa_{uuid.uuid4().hex[:12]}"
         self._message_id = message_id
@@ -59,6 +61,7 @@ class SubAgentEventSink:
         self._umo = umo
         self._instance_id = instance_id
         self._background = background
+        self.configuration = configuration or {}
 
     async def _emit(self, kind: str, payload: dict) -> None:
         if self._closed:
@@ -96,7 +99,7 @@ class SubAgentEventSink:
                 "payload": {
                     key: value
                     for key, value in payload.items()
-                    if key not in {"result_text", "input_full"}
+                    if key not in {"result_text", "input_full", "configuration"}
                 },
             }
             await webchat_queue_mgr.put_back_queue(self._message_id, event)
@@ -110,7 +113,11 @@ class SubAgentEventSink:
         """Emit the ``started`` event (run header)."""
         await self._emit(
             "started",
-            {"input_preview": self._input_preview, "input_full": self._input_full},
+            {
+                "input_preview": self._input_preview,
+                "input_full": self._input_full,
+                **({"configuration": self.configuration} if self.configuration else {}),
+            },
         )
 
     async def __call__(self, resp: AgentResponse) -> None:

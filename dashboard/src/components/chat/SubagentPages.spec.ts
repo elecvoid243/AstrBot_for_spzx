@@ -1,10 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { flushPromises, mount } from "@vue/test-utils";
-import { ref } from "vue";
+import { defineComponent, h, ref } from "vue";
 import { fetchWithAuth } from "@/api/http";
 import SubagentPages from "./SubagentPages.vue";
 import ChatMessageList from "./ChatMessageList.vue";
 import SubAgentRunBlock from "./message_list_comps/SubAgentRunBlock.vue";
+import SubagentConfigurationDialog from "./SubagentConfigurationDialog.vue";
+
+vi.mock("./SubagentConfigurationDialog.vue", () => ({
+  default: {
+    props: ["run", "sessionId"],
+    template: '<div class="config-dialog" />',
+  },
+}));
 
 vi.mock("@/api/http", () => ({ fetchWithAuth: vi.fn() }));
 vi.mock("@/api/v1", () => ({
@@ -54,6 +62,21 @@ const snapshot = {
   text: "",
   tool_calls: [],
 };
+const menuStub = defineComponent({
+  props: { modelValue: Boolean },
+  emits: ["update:modelValue"],
+  setup(props, { slots, emit }) {
+    return () =>
+      h("div", [
+        slots.activator?.({
+          props: {
+            onClick: () => emit("update:modelValue", !props.modelValue),
+          },
+        }),
+        props.modelValue ? slots.default?.() : null,
+      ]);
+  },
+});
 
 function push(url: string, payload: unknown) {
   controllers
@@ -63,8 +86,8 @@ function push(url: string, payload: unknown) {
 
 async function page() {
   const wrapper = mount(SubagentPages, {
-    props: { sessionId: "session-1", title: "Parent conversation" },
-    global: { stubs: { "v-icon": true } },
+    props: { sessionId: "session-1" },
+    global: { stubs: { "v-icon": true, "v-menu": menuStub } },
   });
   wrappers.push(wrapper);
   await flushPromises();
@@ -106,10 +129,60 @@ afterEach(async () => {
 });
 
 describe("Subagent conversation pages", () => {
+  it("places navigation in the existing toolbar without rendering a duplicate title", async () => {
+    const host = document.createElement("div");
+    host.id = "test-session-toolbar";
+    document.body.append(host);
+    const wrapper = mount(SubagentPages, {
+      props: { sessionId: "session-1", toolbarTarget: "#test-session-toolbar" },
+      global: { stubs: { "v-icon": true, "v-menu": menuStub } },
+    });
+    wrappers.push(wrapper);
+    await flushPromises();
+    expect(host.querySelector(".session-pages-nav")).not.toBeNull();
+    expect(wrapper.find(".session-pages-header, h1").exists()).toBe(false);
+    await wrapper.setProps({ toolbarTarget: undefined });
+    await flushPromises();
+    expect(host.children).toHaveLength(0);
+    expect(wrapper.find(".session-pages-nav").exists()).toBe(true);
+    await wrapper.setProps({ toolbarTarget: "#test-session-toolbar" });
+    await flushPromises();
+    expect(host.querySelector(".session-pages-nav")).not.toBeNull();
+    wrapper.unmount();
+    expect(host.children).toHaveLength(0);
+    host.remove();
+  });
+
+  it("honors unsaved-file navigation cancellation from the toolbar", async () => {
+    const wrapper = await page();
+    const confirm = vi.fn().mockResolvedValue(false);
+    await wrapper.setProps({ beforeNavigate: confirm });
+    await wrapper.find(".subagent-picker-trigger").trigger("click");
+    await wrapper.find(".subagent-picker-item").trigger("click");
+    await flushPromises();
+    expect(confirm).toHaveBeenCalledOnce();
+    expect(wrapper.findComponent(ChatMessageList).exists()).toBe(false);
+    expect(vi.mocked(fetchWithAuth).mock.calls).toHaveLength(1);
+  });
+
+  it("opens configuration on demand without changing the selected conversation", async () => {
+    const wrapper = await page();
+    expect(wrapper.findComponent(SubagentConfigurationDialog).exists()).toBe(
+      false,
+    );
+    await wrapper.find(".subagent-picker-trigger").trigger("click");
+    await wrapper.find(".subagent-info-button").trigger("click");
+    const dialog = wrapper.findComponent(SubagentConfigurationDialog);
+    expect(dialog.props("run")).toMatchObject({ subagent_run_id: "run-1" });
+    expect(dialog.props("sessionId")).toBe("session-1");
+    expect(wrapper.findComponent(ChatMessageList).exists()).toBe(false);
+    expect(vi.mocked(fetchWithAuth).mock.calls).toHaveLength(1);
+  });
+
   it("updates running/background entries without automatically opening a child renderer", async () => {
     const wrapper = await page();
     expect(wrapper.findComponent(ChatMessageList).exists()).toBe(false);
-    await wrapper.find(".subagent-picker > button").trigger("click");
+    await wrapper.find(".subagent-picker-trigger").trigger("click");
     expect(wrapper.find(".subagent-picker-item").text()).toContain(
       "researcher",
     );
@@ -227,7 +300,7 @@ describe("Subagent conversation pages", () => {
         .message[0].text,
     ).toBe("Final report");
     expect(wrapper.emitted("viewChange")?.at(-1)).toEqual([true]);
-    await wrapper.find(".subagent-picker > button").trigger("click");
+    await wrapper.find(".subagent-picker-trigger").trigger("click");
     expect(wrapper.findAll(".subagent-picker-item")).toHaveLength(0);
     await wrapper.find(".cleaned-toggle").trigger("click");
     expect(wrapper.findAll(".subagent-picker-item")).toHaveLength(1);
@@ -265,7 +338,7 @@ describe("Subagent conversation pages", () => {
       wrapper.findComponent(ChatMessageList).props("messages")[1].content
         .message,
     ).toEqual([{ type: "plain", text: "Final report" }]);
-    expect(wrapper.find(".subagent-picker > button").text()).toContain(
+    expect(wrapper.find(".subagent-picker-trigger").text()).toContain(
       "subagentPages.cleaned",
     );
   });
@@ -279,15 +352,12 @@ describe("Subagent conversation pages", () => {
       .mock.calls.find(([url]) => String(url).endsWith("/run-1"))!;
     await wrapper.setProps({
       sessionId: "session-2",
-      title: "Other conversation",
     });
     await flushPromises();
     expect(detailRequest[1]?.signal?.aborted).toBe(true);
     expect(wrapper.findComponent(ChatMessageList).exists()).toBe(false);
     expect(wrapper.emitted("viewChange")?.at(-1)).toEqual([false]);
-    expect(wrapper.find(".session-pages-title").text()).toBe(
-      "Other conversation",
-    );
+    expect(wrapper.find(".session-pages-title").exists()).toBe(false);
     expect(controllers.has("/runs/session-2")).toBe(true);
   });
 
@@ -297,7 +367,7 @@ describe("Subagent conversation pages", () => {
     await flushPromises();
     push("/runs/session-1/run-1", { type: "snapshot", data: snapshot });
     await flushPromises();
-    await wrapper.find(".session-pages-nav > button").trigger("click");
+    await wrapper.find(".session-main-trigger").trigger("click");
     expect(wrapper.findComponent(ChatMessageList).exists()).toBe(false);
     expect(wrapper.emitted("viewChange")?.at(-1)).toEqual([false]);
   });
@@ -399,7 +469,7 @@ describe("Subagent conversation pages", () => {
     expect(wrapper.find(".subagent-run-body").exists()).toBe(false);
     expect(wrapper.text()).not.toContain("long hidden trace");
     expect(wrapper.text()).toContain("subagentPages.cleaned");
-    await wrapper.trigger("click");
+    await wrapper.find(".subagent-run-header").trigger("click");
     expect(open).toHaveBeenCalledWith(
       expect.objectContaining({ subagent_run_id: "run-1" }),
       "session-1",

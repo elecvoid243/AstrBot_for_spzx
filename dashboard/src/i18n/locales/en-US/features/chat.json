@@ -422,6 +422,21 @@
       "polling": "Polling"
     }
   },
+  "subagentConfig": {
+    "title": "Subagent configuration",
+    "view": "View configuration for {name}",
+    "systemPrompt": "System prompt",
+    "tools": "Tools",
+    "blockedTools": "Inherited tools blocked from execution",
+    "contextMode": "Context inheritance",
+    "timeout": "Execution timeout",
+    "workdir": "Working directory",
+    "none": "None",
+    "snapshot": "Configuration captured at invocation time",
+    "legacy": "No configuration snapshot was saved for this historical invocation.",
+    "loadFailed": "Unable to load configuration. Close and reopen to try again.",
+    "close": "Close"
+  },
   "subagentPages": {
     "navigation": "Conversation pages",
     "main": "Main conversation",

@@ -36,7 +36,6 @@ from ..process_sandbox import create_process_sandbox
 from ..process_sandbox.base import (
     SandboxProcess,
     SandboxSpec,
-    SandboxTimeoutError,
 )
 from .base import ComputerBooter
 from .shipyard_search_file_util import _truncate_long_lines
@@ -1687,6 +1686,12 @@ class LocalShellComponent(ShellComponent):
 
 @dataclass
 class LocalPythonComponent(PythonComponent):
+    _active_sandbox_processes: dict[str, set[SandboxProcess]] = field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+    )
+
     async def exec(
         self,
         code: str,
@@ -1695,6 +1700,7 @@ class LocalPythonComponent(PythonComponent):
         silent: bool = False,
         cwd: str | None = None,
         sandbox_spec: SandboxSpec | None = None,
+        owner_id: str | None = None,
     ) -> dict[str, Any]:
         # The child interpreter must be the console-subsystem ``python.exe``:
         # together with ``CREATE_NO_WINDOW`` below it gets a windowless
@@ -1709,13 +1715,13 @@ class LocalPythonComponent(PythonComponent):
                 python_exe = str(sibling_console_exe)
 
         if sandbox_spec is not None:
-            return await asyncio.to_thread(
-                self._exec_sandboxed_python,
+            return await self._exec_sandboxed_python(
                 code,
                 python_exe,
                 timeout,
                 silent,
                 sandbox_spec,
+                owner_id,
             )
 
         def _run() -> dict[str, Any]:
@@ -1752,37 +1758,110 @@ class LocalPythonComponent(PythonComponent):
 
         return await asyncio.to_thread(_run)
 
-    @staticmethod
-    def _exec_sandboxed_python(
+    async def _exec_sandboxed_python(
+        self,
         code: str,
         python_exe: str,
         timeout: int,
         silent: bool,
         sandbox_spec: SandboxSpec,
+        owner_id: str | None,
     ) -> dict[str, Any]:
-        """Run one Python snippet through the platform process sandbox."""
+        """Run one Python snippet through the platform process sandbox.
+
+        The process is tracked by owner so a file-access tightening can kill
+        it before its old writable policy expires.
+        """
         sandbox = create_process_sandbox()
+        process = await sandbox.spawn_argv([python_exe, "-c", code], sandbox_spec)
+        if owner_id:
+            self._active_sandbox_processes.setdefault(owner_id, set()).add(process)
+
+        chunks: list[bytes] = []
+
+        async def _drain() -> None:
+            stream = process.stdout
+            if stream is None:
+                return
+            while chunk := await stream.read(65536):
+                chunks.append(chunk)
+
+        reader = asyncio.create_task(_drain())
+        timed_out = False
         try:
-            result = sandbox.run(
-                [python_exe, "-c", code],
-                sandbox_spec,
-                timeout=timeout,
-            )
-        except SandboxTimeoutError:
+            try:
+                returncode = await asyncio.wait_for(process.wait(), timeout=timeout)
+            except asyncio.TimeoutError:
+                timed_out = True
+                process.kill()
+                try:
+                    await process.wait()
+                except Exception:
+                    pass
+            except asyncio.CancelledError:
+                process.kill()
+                try:
+                    await process.wait()
+                except Exception:
+                    pass
+                raise
+            except Exception:
+                process.kill()
+                try:
+                    await process.wait()
+                except Exception:
+                    pass
+                raise
+            else:
+                try:
+                    await reader
+                except Exception:
+                    pass
+        finally:
+            if owner_id:
+                active = self._active_sandbox_processes.get(owner_id)
+                if active is not None:
+                    active.discard(process)
+                    if not active:
+                        self._active_sandbox_processes.pop(owner_id, None)
+            if not reader.done():
+                reader.cancel()
+                try:
+                    await reader
+                except Exception:
+                    pass
+        if timed_out:
             return {
                 "data": {
                     "output": {"text": "", "images": []},
                     "error": "Execution timed out.",
                 }
             }
-        stdout = "" if silent else _decode_shell_output(result.stdout)
-        stderr = _decode_shell_output(result.stderr) if result.returncode != 0 else ""
+        text = _decode_shell_output(b"".join(chunks))
+        stdout = "" if silent else text
+        stderr = text if returncode != 0 else ""
         return {
             "data": {
                 "output": {"text": stdout, "images": []},
                 "error": stderr,
             }
         }
+
+    async def terminate_owner_processes(self, owner_id: str) -> None:
+        """Kill in-flight sandboxed Python executions owned by one conversation.
+
+        Args:
+            owner_id: Unified message origin whose executions must stop.
+        """
+        processes = list(self._active_sandbox_processes.get(owner_id, ()))
+        for process in processes:
+            process.kill()
+        for process in processes:
+            try:
+                await process.wait()
+            except Exception:
+                pass
+        self._active_sandbox_processes.pop(owner_id, None)
 
 
 @dataclass

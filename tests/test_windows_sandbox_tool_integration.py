@@ -159,3 +159,32 @@ def _workspace_returner(workspace: Path):
         return workspace
 
     return fake_workspace_root
+
+
+@pytest.mark.asyncio
+async def test_terminate_owner_kills_inflight_sandboxed_python(tree):
+    """A mode tightening must stop Python code that is still running."""
+    import asyncio
+
+    from astrbot.core.computer.booters.local import LocalPythonComponent
+    from astrbot.core.computer.process_sandbox.base import SandboxSpec
+
+    workspace, _outside = tree
+    target = workspace / "late.txt"
+    code = f"import time\ntime.sleep(30)\nopen(r'{target}', 'w').write('late')\n"
+    component = LocalPythonComponent()
+    task = asyncio.create_task(
+        component.exec(
+            code,
+            timeout=60,
+            sandbox_spec=SandboxSpec(workspace=workspace, workspace_writable=True),
+            owner_id="owner-x",
+        )
+    )
+    await asyncio.sleep(0.5)
+
+    await component.terminate_owner_processes("owner-x")
+    result = await asyncio.wait_for(task, timeout=10)
+
+    assert result["data"]["output"]["text"] == ""
+    assert not target.exists()

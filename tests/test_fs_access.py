@@ -234,6 +234,17 @@ async def test_clear_mode_removes_persisted_value():
 
 
 @pytest.mark.asyncio
+async def test_assert_writable_hydrates_persisted_readonly(tmp_path):
+    await fs_access.set_mode_for_umo_persisted(UMO, FileAccessMode.READONLY)
+    fs_access.reset()
+
+    with pytest.raises(PermissionError):
+        await fs_access.assert_writable(
+            str(tmp_path / "a.txt"), _make_context(), current_workspace_root=tmp_path
+        )
+
+
+@pytest.mark.asyncio
 async def test_sandbox_spec_windows_workspace_grants_workspace_and_extra_roots(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,

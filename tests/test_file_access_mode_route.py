@@ -100,7 +100,7 @@ def test_post_sets_and_reads_back(client):
 
 def test_post_tightening_terminates_owner_shell_sessions(client, monkeypatch):
     terminate = AsyncMock()
-    monkeypatch.setattr(chat_api, "shutdown_local_shell_sessions_for_owner", terminate)
+    monkeypatch.setattr(chat_api, "shutdown_local_execution_for_owner", terminate)
     fs_access.set_mode_for_umo("u1", fs_access.FileAccessMode.WORKSPACE)
 
     res = client.post("/chat/file-access-mode", json={"umo": "u1", "mode": "readonly"})
@@ -111,7 +111,7 @@ def test_post_tightening_terminates_owner_shell_sessions(client, monkeypatch):
 
 def test_post_loosening_keeps_owner_shell_sessions(client, monkeypatch):
     terminate = AsyncMock()
-    monkeypatch.setattr(chat_api, "shutdown_local_shell_sessions_for_owner", terminate)
+    monkeypatch.setattr(chat_api, "shutdown_local_execution_for_owner", terminate)
     fs_access.set_mode_for_umo("u1", fs_access.FileAccessMode.READONLY)
 
     res = client.post("/chat/file-access-mode", json={"umo": "u1", "mode": "workspace"})

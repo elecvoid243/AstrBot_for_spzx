@@ -7,6 +7,12 @@ kill-on-close Job before spawning the wrapped argv inside a DACL allowlist.
 Only file writes and deletes are confined. Reads and network are unrestricted
 by design (the current product requirement); filesystem_scope, readable_roots
 and allow_network are therefore ignored here.
+
+Known boundaries inherited from the native runner: a hard link is the same
+file object, so an external hard link can become writable through a granted
+tree (the boundary is partial, never "full"); the DACL grants are standing
+for the workspace/explicit roots and revoked only for the per-execution temp
+directory.
 """
 
 from __future__ import annotations

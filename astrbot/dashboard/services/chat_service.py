@@ -5137,9 +5137,7 @@ class ChatService:
             try:
                 from astrbot.core.computer import computer_client
 
-                await computer_client.shutdown_local_shell_sessions_for_owner(
-                    thread_umo
-                )
+                await computer_client.shutdown_local_execution_for_owner(thread_umo)
             except Exception as exc:
                 logger.warning(
                     "Failed to terminate side-thread shell sessions after "

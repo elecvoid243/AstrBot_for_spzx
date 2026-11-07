@@ -95,6 +95,43 @@ def test_workspace_mode_allows_inside_and_denies_outside():
         shutil.rmtree(base, ignore_errors=True)
 
 
+def test_workspace_mode_grants_extra_writable_roots_only():
+    base, workspace, outside = _make_tree()
+    extra = base / "extra"
+    extra.mkdir()
+    try:
+        sandbox = WindowsAclProcessSandbox()
+        spec = SandboxSpec(
+            workspace=workspace,
+            workspace_writable=True,
+            writable_roots=(extra,),
+        )
+        target = extra / "extra.txt"
+        result = sandbox.run(
+            [
+                PYTHON,
+                "-c",
+                "import sys; open(sys.argv[1], 'w').write('ok')",
+                str(target),
+            ],
+            spec,
+            timeout=60,
+        )
+        assert result.returncode == 0, result.stderr
+        assert target.read_text(encoding="utf-8") == "ok"
+
+        outside_target = outside / "evil.txt"
+        result = sandbox.run(
+            [PYTHON, "-c", DENIED_WRITER, str(outside_target)],
+            spec,
+            timeout=60,
+        )
+        assert b"DENIED" in result.stdout
+        assert not outside_target.exists()
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
 def test_readonly_mode_denies_workspace_writes():
     base, workspace, outside = _make_tree()
     try:

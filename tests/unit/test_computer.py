@@ -290,6 +290,32 @@ class TestLocalPythonComponent:
         assert result["data"]["output"]["text"] == ""
 
     @pytest.mark.asyncio
+    async def test_terminate_owner_processes_kills_registered_process(self):
+        """Mode tightening must kill in-flight sandboxed Python executions."""
+
+        class FakeProcess:
+            def __init__(self):
+                self.killed = False
+                self.waited = False
+
+            def kill(self):
+                self.killed = True
+
+            async def wait(self):
+                self.waited = True
+                return 1
+
+        python = LocalPythonComponent()
+        process = FakeProcess()
+        python._active_sandbox_processes["umo"] = {process}  # type: ignore[assignment]
+
+        await python.terminate_owner_processes("umo")
+
+        assert process.killed is True
+        assert process.waited is True
+        assert "umo" not in python._active_sandbox_processes
+
+    @pytest.mark.asyncio
     async def test_exec_return_value(self):
         """Test Python execution returns value correctly."""
         python = LocalPythonComponent()

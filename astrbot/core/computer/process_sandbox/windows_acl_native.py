@@ -86,6 +86,8 @@ CREATE_UNICODE_ENVIRONMENT = 0x400
 INFINITE = 0xFFFFFFFF
 JobObjectExtendedLimitInformation = 9
 JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
+JOB_OBJECT_LIMIT_ACTIVE_PROCESS = 0x00000008
+JOB_OBJECT_LIMIT_PROCESS_MEMORY = 0x00000100
 ERROR_SUCCESS = 0
 
 k32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -819,11 +821,13 @@ class Sandbox:
         if not job:
             raise Win32Error("CreateJobObjectW", ctypes.get_last_error())
         info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
-        # Only the kill-on-close lifetime guarantee is applied here. Optional
-        # process/memory ceilings need a layout-verified struct first; keeping
-        # this minimal also avoids rejecting normal Python workloads.
         info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-        del max_processes, max_memory_bytes
+        if max_processes and max_processes > 0:
+            info.BasicLimitInformation.ActiveProcessLimit = max_processes
+            info.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_ACTIVE_PROCESS
+        if max_memory_bytes and max_memory_bytes > 0:
+            info.ProcessMemoryLimit = max_memory_bytes
+            info.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_PROCESS_MEMORY
         if not SetInformationJobObject(
             job,
             JobObjectExtendedLimitInformation,

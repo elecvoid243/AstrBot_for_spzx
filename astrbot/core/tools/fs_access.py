@@ -75,6 +75,7 @@ def is_tightening(previous: FileAccessMode | None, new: FileAccessMode) -> bool:
 
 
 _mode_overrides: dict[str, FileAccessMode] = {}
+_mode_hydration_attempted: set[str] = set()
 _last_writable: dict[str, FileAccessMode] = {}
 _dynamic_roots: dict[str, tuple[Path, ...]] = {}
 _custom_roots_cache: dict[str, tuple[Path, ...]] = {}
@@ -133,6 +134,9 @@ async def load_mode_for_umo(umo: str) -> FileAccessMode | None:
     cached = _mode_overrides.get(umo)
     if cached is not None:
         return cached
+    if umo in _mode_hydration_attempted:
+        return None
+    _mode_hydration_attempted.add(umo)
     try:
         raw = await sp.session_get(umo, _MODE_KEY, None)
     except Exception as exc:
@@ -158,6 +162,7 @@ async def set_mode_for_umo_persisted(umo: str, mode: FileAccessMode) -> None:
         mode: New explicit mode.
     """
     set_mode_for_umo(umo, mode)
+    _mode_hydration_attempted.add(umo)
     try:
         await sp.session_put(umo, _MODE_KEY, mode.value)
     except Exception as exc:
@@ -171,6 +176,7 @@ async def clear_mode_persisted_for_umo(umo: str) -> None:
         umo: Unified message origin.
     """
     clear_mode_for_umo(umo)
+    _mode_hydration_attempted.discard(umo)
     try:
         await sp.session_remove(umo, _MODE_KEY)
     except Exception as exc:
@@ -204,6 +210,7 @@ def count_readonly_overrides() -> int:
 def reset() -> None:
     """Clear all state (test fixture / shutdown)."""
     _mode_overrides.clear()
+    _mode_hydration_attempted.clear()
     _last_writable.clear()
     _dynamic_roots.clear()
     _custom_roots_cache.clear()
@@ -373,6 +380,7 @@ async def sandbox_spec_for_context(
     Returns:
         The sandbox policy, or None when the call should keep host execution.
     """
+    await load_mode_for_umo(context.context.event.unified_msg_origin)
     if sys.platform != "win32":
         return None
     mode = get_mode(context)
@@ -420,6 +428,7 @@ async def assert_writable(
         PermissionError: In readonly mode, or in workspace mode when the
             path is outside all writable roots.
     """
+    await load_mode_for_umo(context.context.event.unified_msg_origin)
     mode = get_mode(context)
     if mode is FileAccessMode.FULL:
         return

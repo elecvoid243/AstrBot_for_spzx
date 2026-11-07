@@ -166,6 +166,7 @@ class LocalPythonTool(FunctionTool):
                 silent=silent,
                 cwd=str(current_workspace_root),
                 sandbox_spec=sandbox_spec,
+                owner_id=context.context.event.unified_msg_origin,
             )
             return await handle_result(result, context.context.event)
         except Exception as e:

@@ -14,7 +14,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from astrbot import logger
 from astrbot.core.computer.computer_client import (
-    shutdown_local_shell_sessions_for_owner,
+    shutdown_local_execution_for_owner,
 )
 from astrbot.core.subagent_manager import SubAgentManager
 from astrbot.core.subagent_progress import subagent_progress
@@ -237,7 +237,7 @@ async def set_file_access_mode(
         try:
             # Tightening must not leave workspace-write shells running with
             # their old authority; the new mode only protects future calls.
-            await shutdown_local_shell_sessions_for_owner(payload.umo)
+            await shutdown_local_execution_for_owner(payload.umo)
         except Exception as exc:
             logger.warning(
                 "Failed to terminate local shell sessions after tightening %s: %s",

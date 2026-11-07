@@ -1,5 +1,6 @@
 import { defineStore } from "pinia";
 import type { ShellSessionListItem } from "@/components/chat/message_list_comps/shell_session_tools/format";
+import type { TodoSnapshot } from "@/composables/useMessages";
 
 /** Summary shown on the app-bar goal entry button; null = no goal record. */
 export interface GoalBadge {
@@ -23,6 +24,13 @@ export const useChatHeaderStore = defineStore("chatHeader", {
     // the goal state per session) and syncs it in.
     goalSidebarOpen: false,
     goalBadge: null as GoalBadge | null,
+    // 2026-11-07 (elecvoid243): the todo summary moved out of the message
+    // panel into the app bar, so both the snapshot and the menu's open state
+    // have to be reachable from VerticalHeader. Same push-based pattern as
+    // goalBadge: Chat.vue owns the per-session snapshot (useMessages parses
+    // it from the todo tools) and mirrors the active session's copy here.
+    todoSnapshot: null as TodoSnapshot | null,
+    todoMenuOpen: false,
     // 2026-10-05: managed shell session indicator. Same push pattern as the
     // goal badge: Chat.vue owns the per-session cache (useShellSessions) and
     // mirrors the active session's list here so the VerticalHeader button
@@ -68,6 +76,17 @@ export const useChatHeaderStore = defineStore("chatHeader", {
     SET_GOAL_BADGE(badge: GoalBadge | null) {
       this.goalBadge = badge;
     },
+    SET_TODO_SNAPSHOT(snapshot: TodoSnapshot | null) {
+      this.todoSnapshot = snapshot;
+      // A cleared list must not leave an open menu showing an empty state.
+      if (!snapshot) this.todoMenuOpen = false;
+    },
+    SET_TODO_MENU_OPEN(open: boolean) {
+      this.todoMenuOpen = Boolean(open && this.todoSnapshot);
+    },
+    TOGGLE_TODO_MENU() {
+      this.SET_TODO_MENU_OPEN(!this.todoMenuOpen);
+    },
     SET_SHELL_SESSIONS(sessions: ShellSessionListItem[] | null) {
       this.shellSessions = sessions;
     },
@@ -94,6 +113,8 @@ export const useChatHeaderStore = defineStore("chatHeader", {
       this.workspaceFilesOpen = false;
       this.goalSidebarOpen = false;
       this.goalBadge = null;
+      this.todoSnapshot = null;
+      this.todoMenuOpen = false;
       this.shellSessions = null;
       this.openShellWindows = [];
     },

@@ -145,11 +145,15 @@ function setup() {
     chatHeader: reactive({
       workspaceFilesOpen: false,
       goalSidebarOpen: false,
+      todoMenuOpen: false,
       SET_WORKSPACE_FILES_OPEN(open: boolean) {
         this.workspaceFilesOpen = open;
       },
       SET_GOAL_SIDEBAR_OPEN(open: boolean) {
         this.goalSidebarOpen = open;
+      },
+      SET_TODO_MENU_OPEN(open: boolean) {
+        this.todoMenuOpen = Boolean(open);
       },
       CLEAR_CONTEXT: vi.fn(),
     }),

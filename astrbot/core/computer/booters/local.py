@@ -32,6 +32,12 @@ from astrbot.core.utils.astrbot_path import (
 )
 
 from ..olayer import FileSystemComponent, PythonComponent, ShellComponent
+from ..process_sandbox import create_process_sandbox
+from ..process_sandbox.base import (
+    SandboxProcess,
+    SandboxSpec,
+    SandboxTimeoutError,
+)
 from .base import ComputerBooter
 from .shipyard_search_file_util import _truncate_long_lines
 
@@ -496,7 +502,7 @@ class _LocalShellSession:
     creator_id: str
     creator_is_admin: bool
     sandboxed: bool
-    process: asyncio.subprocess.Process
+    process: SandboxProcess | asyncio.subprocess.Process
     output_path: Path
     started_at: float
     output_event: asyncio.Event
@@ -527,6 +533,11 @@ class LocalShellComponent(ShellComponent):
         init=False,
         repr=False,
     )
+    _background_reapers: set[asyncio.Task[None]] = field(
+        default_factory=set,
+        init=False,
+        repr=False,
+    )
 
     def add_change_listener(self, listener: Callable[[str], None]) -> None:
         """Register a sync listener fired with the owner_id on session changes.
@@ -552,6 +563,85 @@ class LocalShellComponent(ShellComponent):
                     exc,
                 )
 
+    @staticmethod
+    def _sandboxed_argv(
+        command: str,
+        shell_spec: ShellSpec | None,
+        *,
+        shell: bool = True,
+    ) -> list[str]:
+        """Build the executable argv handed to the process sandbox.
+
+        Git Bash (MSYS2) cannot start under the restricted token, so the
+        sandboxed path rejects it instead of silently leaking an unsandboxed
+        shell. Callers that let users pick a shell fall back before this point.
+        """
+        if sys.platform == "win32" and shell:
+            spec = shell_spec or resolve_local_shell()
+            if spec.family == "git_bash":
+                raise PermissionError(
+                    "Git Bash is not supported by the Windows process sandbox; "
+                    "use PowerShell or cmd."
+                )
+            return [spec.executable, *spec.prefix_args, command]
+        if shell:
+            return ["/bin/sh", "-c", command]
+        return [command]
+
+    @staticmethod
+    def _sandboxed_env(env: dict[str, str] | None) -> dict[str, str]:
+        """Keep only model-supplied environment overrides for the sandbox.
+
+        The host environment is reconstructed by the sandbox backend from a
+        safe whitelist; copying os.environ here would leak host credentials.
+        """
+        return {str(key): str(value) for key, value in (env or {}).items()}
+
+    async def _exec_sandboxed(
+        self,
+        command: str,
+        *,
+        env: dict[str, str] | None,
+        timeout: int | None,
+        background: bool,
+        shell: bool,
+        shell_spec: ShellSpec | None,
+        sandbox_spec: SandboxSpec,
+    ) -> dict[str, Any]:
+        """Run one non-managed command through the platform process sandbox."""
+        sandbox = create_process_sandbox()
+        argv = self._sandboxed_argv(command, shell_spec, shell=shell)
+        sandbox_env = self._sandboxed_env(env)
+        if background:
+            process = await sandbox.spawn_argv(argv, sandbox_spec, env=sandbox_env)
+            reaper = asyncio.create_task(
+                self._reap_sandbox_process(process),
+                name=f"local_sandbox_reap_{process.pid}",
+            )
+            self._background_reapers.add(reaper)
+            reaper.add_done_callback(self._background_reapers.discard)
+            return {"pid": process.pid, "stdout": "", "stderr": "", "exit_code": None}
+        result = await asyncio.to_thread(
+            sandbox.run,
+            argv,
+            sandbox_spec,
+            env=sandbox_env,
+            timeout=timeout or 300,
+        )
+        return {
+            "stdout": _decode_shell_output(result.stdout),
+            "stderr": _decode_shell_output(result.stderr),
+            "exit_code": result.returncode,
+        }
+
+    @staticmethod
+    async def _reap_sandbox_process(process: SandboxProcess) -> None:
+        """Wait for a detached sandboxed command so its temp root is cleaned."""
+        try:
+            await process.wait()
+        except Exception:  # pragma: no cover - lifecycle fallback
+            pass
+
     async def exec(
         self,
         command: str,
@@ -561,11 +651,23 @@ class LocalShellComponent(ShellComponent):
         shell: bool = True,
         background: bool = False,
         shell_spec: ShellSpec | None = None,
+        sandbox_spec: SandboxSpec | None = None,
     ) -> dict[str, Any]:
         if not _is_safe_command(command):
             raise PermissionError("Blocked unsafe shell command.")
         if refusal := _would_kill_self(command):
             raise PermissionError(refusal)
+
+        if sandbox_spec is not None:
+            return await self._exec_sandboxed(
+                command,
+                env=env,
+                timeout=timeout,
+                background=background,
+                shell=shell,
+                shell_spec=shell_spec,
+                sandbox_spec=sandbox_spec,
+            )
 
         def _run() -> dict[str, Any]:
             run_env = os.environ.copy()
@@ -671,6 +773,7 @@ class LocalShellComponent(ShellComponent):
         yield_time_ms: int = 10_000,
         max_output_chars: int = 10_000,
         shell_spec: ShellSpec | None = None,
+        sandbox_spec: SandboxSpec | None = None,
     ) -> dict[str, Any]:
         """Start a locally managed shell process and briefly wait for it.
 
@@ -685,6 +788,8 @@ class LocalShellComponent(ShellComponent):
             timeout: Hard process lifetime in seconds. None disables it.
             yield_time_ms: Maximum time to wait before returning a session ID.
             max_output_chars: Maximum output bytes returned in this call.
+            shell_spec: Shell dialect to launch, when the caller selected one.
+            sandbox_spec: Process-sandbox policy; None keeps host execution.
 
         Returns:
             Process result with output, status, and session metadata.
@@ -717,7 +822,7 @@ class LocalShellComponent(ShellComponent):
         output_path.touch()
 
         process_kwargs: dict[str, Any] = {}
-        if sys.platform == "win32":
+        if sandbox_spec is None and sys.platform == "win32":
             # CREATE_NEW_PROCESS_GROUP keeps CTRL_BREAK_EVENT interrupt
             # (see interrupt_session) working by giving the child its own
             # process group attached to a console. CREATE_NO_WINDOW cannot be
@@ -734,27 +839,41 @@ class LocalShellComponent(ShellComponent):
             startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
             startupinfo.wShowWindow = 0  # SW_HIDE
             process_kwargs["startupinfo"] = startupinfo
-        else:
+        elif sandbox_spec is None:
             process_kwargs["start_new_session"] = True
 
         spec = shell_spec or resolve_local_shell()
 
         try:
-            if sys.platform == "win32":
-                process_factory = asyncio.create_subprocess_exec
-                process_args = (spec.executable, *spec.prefix_args, command)
+            if sandbox_spec is not None:
+                sandbox = create_process_sandbox()
+                process = await sandbox.spawn_argv(
+                    self._sandboxed_argv(command, spec),
+                    sandbox_spec,
+                    env=self._sandboxed_env(env),
+                )
+            elif sys.platform == "win32":
+                process = await asyncio.create_subprocess_exec(
+                    spec.executable,
+                    *spec.prefix_args,
+                    command,
+                    cwd=working_dir,
+                    env=run_env,
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.STDOUT,
+                    **process_kwargs,
+                )
             else:
-                process_factory = asyncio.create_subprocess_shell
-                process_args = (command,)
-            process = await process_factory(
-                *process_args,
-                cwd=working_dir,
-                env=run_env,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-                **process_kwargs,
-            )
+                process = await asyncio.create_subprocess_shell(
+                    command,
+                    cwd=working_dir,
+                    env=run_env,
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.STDOUT,
+                    **process_kwargs,
+                )
         except Exception:
             output_path.unlink(missing_ok=True)
             raise
@@ -1567,6 +1686,7 @@ class LocalPythonComponent(PythonComponent):
         timeout: int = 30,
         silent: bool = False,
         cwd: str | None = None,
+        sandbox_spec: SandboxSpec | None = None,
     ) -> dict[str, Any]:
         # The child interpreter must be the console-subsystem ``python.exe``:
         # together with ``CREATE_NO_WINDOW`` below it gets a windowless
@@ -1579,6 +1699,16 @@ class LocalPythonComponent(PythonComponent):
             sibling_console_exe = Path(python_exe).with_name("python.exe")
             if sibling_console_exe.exists():
                 python_exe = str(sibling_console_exe)
+
+        if sandbox_spec is not None:
+            return await asyncio.to_thread(
+                self._exec_sandboxed_python,
+                code,
+                python_exe,
+                timeout,
+                silent,
+                sandbox_spec,
+            )
 
         def _run() -> dict[str, Any]:
             try:
@@ -1613,6 +1743,38 @@ class LocalPythonComponent(PythonComponent):
                 }
 
         return await asyncio.to_thread(_run)
+
+    @staticmethod
+    def _exec_sandboxed_python(
+        code: str,
+        python_exe: str,
+        timeout: int,
+        silent: bool,
+        sandbox_spec: SandboxSpec,
+    ) -> dict[str, Any]:
+        """Run one Python snippet through the platform process sandbox."""
+        sandbox = create_process_sandbox()
+        try:
+            result = sandbox.run(
+                [python_exe, "-c", code],
+                sandbox_spec,
+                timeout=timeout,
+            )
+        except SandboxTimeoutError:
+            return {
+                "data": {
+                    "output": {"text": "", "images": []},
+                    "error": "Execution timed out.",
+                }
+            }
+        stdout = "" if silent else _decode_shell_output(result.stdout)
+        stderr = _decode_shell_output(result.stderr) if result.returncode != 0 else ""
+        return {
+            "data": {
+                "output": {"text": stdout, "images": []},
+                "error": stderr,
+            }
+        }
 
 
 @dataclass

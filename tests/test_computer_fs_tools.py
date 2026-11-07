@@ -1110,9 +1110,11 @@ async def test_grep_tool_workspace_mode_includes_dynamic_roots_for_restricted_us
 
 
 @pytest.mark.asyncio
-async def test_execute_shell_blocked_in_readonly_mode(
+async def test_execute_shell_uses_sandbox_spec_in_restricted_mode(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ):
+    from astrbot.core.computer.booters.local import LocalShellComponent
     from astrbot.core.tools import fs_access
     from astrbot.core.tools.computer_tools import shell as shell_tools
 
@@ -1120,19 +1122,54 @@ async def test_execute_shell_blocked_in_readonly_mode(
     fs_access.set_mode_for_umo(umo, fs_access.FileAccessMode.READONLY)
     try:
         context = _make_context(umo=umo)
-        monkeypatch.setattr(shell_tools, "get_booter", AsyncMock())
+        sentinel = object()
+
+        async def fake_spec(ctx, *, current_workspace_root=None):
+            assert current_workspace_root == tmp_path
+            return sentinel
+
+        async def fake_root(ctx):
+            return tmp_path
+
+        captured: dict[str, Any] = {}
+
+        async def fake_exec_managed(self, command, **kwargs):
+            captured["command"] = command
+            captured.update(kwargs)
+            return {
+                "session_closed": True,
+                "status": "completed",
+                "exit_code": 0,
+                "stdout": "ok",
+                "stderr": "",
+            }
+
+        async def fake_get_booter(*args, **kwargs):
+            return SimpleNamespace(shell=LocalShellComponent())
+
+        monkeypatch.setattr(shell_tools.os, "name", "nt")
+        monkeypatch.setattr(fs_access, "sandbox_spec_for_context", fake_spec)
+        monkeypatch.setattr(shell_tools, "is_local_runtime", lambda ctx: True)
+        monkeypatch.setattr(shell_tools, "workspace_root_for_context", fake_root)
+        monkeypatch.setattr(LocalShellComponent, "exec_managed", fake_exec_managed)
+        monkeypatch.setattr(shell_tools, "get_booter", fake_get_booter)
+
         result = await shell_tools.ExecuteShellTool().call(context, command="echo hi")
+
+        assert captured["command"] == "echo hi"
+        assert captured["sandbox_spec"] is sentinel
+        assert captured["sandboxed"] is True
         assert isinstance(result, str)
-        assert result.startswith("Error:")
-        assert "readonly" in result
+        assert not result.startswith("Error")
     finally:
         fs_access.reset()
 
 
 @pytest.mark.asyncio
-async def test_shell_session_blocked_in_readonly_mode(
+async def test_shell_session_allowed_in_readonly_mode(
     monkeypatch: pytest.MonkeyPatch,
 ):
+    from astrbot.core.computer.booters.local import LocalShellComponent
     from astrbot.core.tools import fs_access
     from astrbot.core.tools.computer_tools import shell as shell_tools
 
@@ -1140,11 +1177,24 @@ async def test_shell_session_blocked_in_readonly_mode(
     fs_access.set_mode_for_umo(umo, fs_access.FileAccessMode.READONLY)
     try:
         context = _make_context(umo=umo)
-        monkeypatch.setattr(shell_tools, "get_booter", AsyncMock())
+        shell = LocalShellComponent()
+
+        async def fake_list_sessions(self, **kwargs):
+            return {"sessions": []}
+
+        async def fake_get_booter(*args, **kwargs):
+            return SimpleNamespace(shell=shell)
+
+        monkeypatch.setattr(LocalShellComponent, "list_sessions", fake_list_sessions)
+        monkeypatch.setattr(shell_tools.os, "name", "nt")
+        monkeypatch.setattr(shell_tools, "is_local_runtime", lambda ctx: True)
+        monkeypatch.setattr(shell_tools, "get_booter", fake_get_booter)
+
         result = await shell_tools.ShellSessionTool().call(context, action="list")
+
         assert isinstance(result, str)
-        assert result.startswith("Error:")
-        assert "readonly" in result
+        assert not result.startswith("Error")
+        assert "sessions" in result
     finally:
         fs_access.reset()
 

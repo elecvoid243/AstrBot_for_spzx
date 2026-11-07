@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -195,6 +196,71 @@ async def test_assert_writable_workspace_allows_dynamic_roots(tmp_path):
     wt.mkdir()
     fs_access.set_dynamic_roots(UMO, [wt])
     await fs_access.assert_writable(str(wt / "main.py"), _make_context())
+
+
+@pytest.mark.asyncio
+async def test_sandbox_spec_windows_workspace_grants_workspace_and_extra_roots(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+):
+    monkeypatch.setattr(sys, "platform", "win32")
+    fs_access.set_mode_for_umo(UMO, FileAccessMode.WORKSPACE)
+    extra = tmp_path / "extra"
+    extra.mkdir()
+    fs_access.set_dynamic_roots(UMO, [extra])
+
+    spec = await fs_access.sandbox_spec_for_context(
+        _make_context(), current_workspace_root=tmp_path
+    )
+
+    assert spec is not None
+    assert spec.workspace == tmp_path.resolve()
+    assert spec.workspace_writable is True
+    assert spec.allow_network is False
+    assert extra.resolve() in spec.writable_roots
+    assert tmp_path.resolve() not in spec.writable_roots
+
+
+@pytest.mark.asyncio
+async def test_sandbox_spec_windows_readonly_has_no_writable_roots(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+):
+    monkeypatch.setattr(sys, "platform", "win32")
+    fs_access.set_mode_for_umo(UMO, FileAccessMode.READONLY)
+    fs_access.set_dynamic_roots(UMO, [tmp_path / "extra"])
+
+    spec = await fs_access.sandbox_spec_for_context(
+        _make_context(), current_workspace_root=tmp_path
+    )
+
+    assert spec is not None
+    assert spec.workspace_writable is False
+    assert spec.writable_roots == ()
+
+
+@pytest.mark.asyncio
+async def test_sandbox_spec_is_none_in_full_mode(monkeypatch, tmp_path):
+    monkeypatch.setattr(sys, "platform", "win32")
+    fs_access.set_mode_for_umo(UMO, FileAccessMode.FULL)
+
+    spec = await fs_access.sandbox_spec_for_context(
+        _make_context(), current_workspace_root=tmp_path
+    )
+
+    assert spec is None
+
+
+@pytest.mark.asyncio
+async def test_sandbox_spec_is_none_on_non_windows(monkeypatch, tmp_path):
+    monkeypatch.setattr(sys, "platform", "linux")
+    fs_access.set_mode_for_umo(UMO, FileAccessMode.WORKSPACE)
+
+    spec = await fs_access.sandbox_spec_for_context(
+        _make_context(), current_workspace_root=tmp_path
+    )
+
+    assert spec is None
 
 
 @pytest.mark.asyncio

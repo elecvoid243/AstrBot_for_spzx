@@ -19,6 +19,7 @@ active worktree), and per-umo custom roots edited from the dashboard
 from __future__ import annotations
 
 import os
+import sys
 from collections.abc import Sequence
 from enum import Enum
 from pathlib import Path
@@ -33,6 +34,7 @@ from astrbot.core.utils.astrbot_path import (
 if TYPE_CHECKING:
     from astrbot.core.agent.run_context import ContextWrapper
     from astrbot.core.astr_agent_context import AstrAgentContext
+    from astrbot.core.computer.process_sandbox.base import SandboxSpec
 
     ToolContext = ContextWrapper[AstrAgentContext]
 
@@ -256,6 +258,57 @@ def _is_within(path: Path, roots: tuple[Path, ...]) -> bool:
         if candidate == normalized or candidate.is_relative_to(normalized):
             return True
     return False
+
+
+async def sandbox_spec_for_context(
+    context: ToolContext,
+    *,
+    current_workspace_root: Path | None = None,
+) -> SandboxSpec | None:
+    """Build the process-sandbox policy for a local shell or Python call.
+
+    Windows-only for now: other platforms keep their existing host execution.
+    FULL mode stays unsandboxed for backward compatibility, so this returns
+    None for FULL and for non-Windows hosts. WORKSPACE grants write access to
+    the session workspace plus the configured/plugin/custom extra roots;
+    READONLY grants no writable root (the backend still allows a private temp
+    directory owned by that single execution).
+
+    Args:
+        context: Tool-call context used to resolve the mode and roots.
+        current_workspace_root: Pre-resolved workspace root, if known.
+
+    Returns:
+        The sandbox policy, or None when the call should keep host execution.
+    """
+    if sys.platform != "win32":
+        return None
+    mode = get_mode(context)
+    if mode is FileAccessMode.FULL:
+        return None
+
+    from astrbot.core.computer.process_sandbox.base import SandboxSpec
+
+    from .computer_tools.util import workspace_root_for_context
+
+    workspace = Path(
+        current_workspace_root or await workspace_root_for_context(context)
+    ).resolve(strict=False)
+    writable_roots: tuple[Path, ...] = ()
+    if mode is FileAccessMode.WORKSPACE:
+        writable_roots = tuple(
+            Path(root).resolve(strict=False)
+            for root in await extra_write_roots(context)
+            if Path(root).resolve(strict=False) != workspace
+        )
+    return SandboxSpec(
+        workspace=workspace,
+        workspace_writable=mode is FileAccessMode.WORKSPACE,
+        filesystem_scope="host",
+        writable_roots=writable_roots,
+        readable_roots=(),
+        allow_network=False,
+    )
 
 
 async def assert_writable(

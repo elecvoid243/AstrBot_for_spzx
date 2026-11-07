@@ -7,7 +7,7 @@ from pathlib import Path
 from time import monotonic
 from typing import Any
 
-from astrbot.api import FunctionTool
+from astrbot.api import FunctionTool, logger
 from astrbot.core.agent.run_context import ContextWrapper
 from astrbot.core.agent.tool import ToolExecResult
 from astrbot.core.astr_agent_context import AstrAgentContext
@@ -105,8 +105,13 @@ class ExecuteShellTool(FunctionTool):
     ) -> ToolExecResult:
         if permission_error := check_admin_permission(context, "Shell execution"):
             return permission_error
-
-        if fs_access.get_mode(context) is fs_access.FileAccessMode.READONLY:
+        # Windows local execution keeps working in readonly by running inside
+        # the process sandbox; every other combination preserves the previous
+        # "readonly disables shell" behaviour until those platforms have a
+        # verified sandbox wired the same way.
+        if fs_access.get_mode(context) is fs_access.FileAccessMode.READONLY and (
+            os.name != "nt" or not is_local_runtime(context)
+        ):
             return (
                 "Error: Shell execution is disabled — this conversation is "
                 "in readonly (plan) file access mode."
@@ -119,10 +124,15 @@ class ExecuteShellTool(FunctionTool):
         try:
             cwd: str | None = None
             local_runtime = is_local_runtime(context)
+            sandbox_spec = None
             if local_runtime:
                 current_workspace_root = await workspace_root_for_context(context)
                 current_workspace_root.mkdir(parents=True, exist_ok=True)
                 cwd = str(current_workspace_root)
+                sandbox_spec = await fs_access.sandbox_spec_for_context(
+                    context,
+                    current_workspace_root=current_workspace_root,
+                )
 
             env = dict(env or {})
             if local_runtime:
@@ -142,17 +152,29 @@ class ExecuteShellTool(FunctionTool):
                         "computer_use_local_shell", "auto"
                     )
                 )
+                shell_spec = resolve_local_shell(shell_type)
+                if sandbox_spec is not None and shell_spec.family == "git_bash":
+                    # MSYS2 cannot start under the restricted token used by the
+                    # Windows process sandbox (BaseNamedObjects access denied).
+                    # Fall back to the always-present Windows PowerShell rather
+                    # than dropping confinement for this call.
+                    logger.warning(
+                        "Git Bash cannot run inside the Windows process sandbox; "
+                        "using Windows PowerShell for this command."
+                    )
+                    shell_spec = resolve_local_shell("powershell")
                 result = await sb.shell.exec_managed(
                     command,
                     owner_id=context.context.event.unified_msg_origin,
                     creator_id=creator_id,
                     creator_is_admin=context.context.event.role == "admin",
-                    sandboxed=False,
+                    sandboxed=sandbox_spec is not None,
                     cwd=cwd,
                     env=env,
                     timeout=timeout,
                     yield_time_ms=0 if background else yield_time_ms,
-                    shell_spec=resolve_local_shell(shell_type),
+                    shell_spec=shell_spec,
+                    sandbox_spec=sandbox_spec,
                 )
                 elapsed_seconds = monotonic() - started_at
                 if result.get("session_closed") and result.get("status") in {
@@ -360,7 +382,9 @@ class ShellSessionTool(FunctionTool):
             "Shell session management",
         ):
             return permission_error
-        if fs_access.get_mode(context) is fs_access.FileAccessMode.READONLY:
+        if fs_access.get_mode(context) is fs_access.FileAccessMode.READONLY and (
+            os.name != "nt" or not is_local_runtime(context)
+        ):
             return (
                 "Error: Shell sessions are disabled — this conversation is "
                 "in readonly (plan) file access mode."

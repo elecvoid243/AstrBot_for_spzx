@@ -9,6 +9,7 @@ from astrbot.core.agent.tool import ToolExecResult
 from astrbot.core.astr_agent_context import AstrAgentContext, AstrMessageEvent
 from astrbot.core.computer.computer_client import get_booter, get_local_booter
 from astrbot.core.message.message_event_result import MessageChain
+from astrbot.core.tools import fs_access
 
 from ..registry import builtin_tool
 from .util import (
@@ -155,11 +156,16 @@ class LocalPythonTool(FunctionTool):
         try:
             current_workspace_root = await workspace_root_for_context(context)
             current_workspace_root.mkdir(parents=True, exist_ok=True)
+            sandbox_spec = await fs_access.sandbox_spec_for_context(
+                context,
+                current_workspace_root=current_workspace_root,
+            )
             result = await sb.python.exec(
                 code,
                 timeout=effective_timeout,
                 silent=silent,
                 cwd=str(current_workspace_root),
+                sandbox_spec=sandbox_spec,
             )
             return await handle_result(result, context.context.event)
         except Exception as e:

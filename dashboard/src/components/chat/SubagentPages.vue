@@ -31,6 +31,9 @@
               <span class="subagent-picker-label">{{
                 selectedPart?.agent_name || tm("subagentPages.agents")
               }}</span>
+              <span v-if="selectedAgent?.marker" class="instance-marker">{{
+                selectedAgent.marker
+              }}</span>
               <span
                 v-if="
                   selectedPart?.status === 'running' ||
@@ -71,52 +74,163 @@
               </button>
               <template v-if="!group.cleaned || cleanedOpen">
                 <div
-                  v-for="run in group.items"
-                  :key="run.subagent_run_id"
-                  class="subagent-picker-row"
-                  :class="{
-                    'is-selected': selectedRunId === run.subagent_run_id,
-                  }"
+                  v-for="agent in group.items"
+                  :key="agent.id"
+                  class="subagent-instance"
                 >
-                  <button
-                    type="button"
-                    class="subagent-picker-item"
-                    @click="openRun(run)"
+                  <div
+                    class="subagent-picker-row"
+                    :class="{ 'is-selected': selectedAgent?.id === agent.id }"
                   >
-                    <span
-                      class="run-dot"
-                      :class="{
-                        running: run.status === 'running',
-                      }"
-                    />
-                    <span class="run-name"
-                      >{{ run.agent_name
-                      }}<small
-                        >{{ tm("subagentPages.invocation") }}
-                        {{ run.subagent_run_id.slice(-6) }}</small
-                      ></span
+                    <button
+                      type="button"
+                      class="subagent-picker-item subagent-agent-toggle"
+                      :aria-expanded="
+                        agent.runs.length > 1
+                          ? Boolean(expandedAgents[agent.id])
+                          : undefined
+                      "
+                      @click="
+                        agent.runs.length > 1
+                          ? (expandedAgents[agent.id] =
+                              !expandedAgents[agent.id])
+                          : openRun(agent.runs[0])
+                      "
                     >
-                    <span v-if="run.background" class="run-badge">{{
-                      tm("subagentPages.background")
-                    }}</span>
-                    <span class="run-state">{{
-                      tm(`subagentStatus.${run.status}`)
-                    }}</span>
-                  </button>
-                  <button
-                    type="button"
-                    class="subagent-info-button"
-                    :title="tm('subagentConfig.title')"
-                    :aria-label="
-                      tm('subagentConfig.view', { name: run.agent_name })
-                    "
-                    @click.stop="
-                      configurationRun = run;
-                      menuOpen = false;
-                    "
+                      <v-icon
+                        v-if="agent.runs.length > 1"
+                        size="14"
+                        class="instance-chevron"
+                        >{{
+                          expandedAgents[agent.id]
+                            ? "mdi-chevron-down"
+                            : "mdi-chevron-right"
+                        }}</v-icon
+                      >
+                      <span
+                        class="run-dot"
+                        :class="{ running: agent.running }"
+                      />
+                      <span class="run-name">
+                        <span class="agent-name-line"
+                          ><span class="agent-display-name">{{
+                            agent.name
+                          }}</span
+                          ><span
+                            v-if="agent.marker"
+                            class="instance-marker"
+                            :title="
+                              tm('subagentPages.instance', { id: agent.id })
+                            "
+                            >{{ agent.marker }}</span
+                          ></span
+                        >
+                        <small>{{
+                          tm("subagentPages.invocationCount", {
+                            count: agent.runs.length,
+                          })
+                        }}</small>
+                      </span>
+                      <span v-if="agent.background" class="run-badge">{{
+                        tm("subagentPages.background")
+                      }}</span>
+                      <span class="run-state">{{
+                        tm(
+                          `subagentStatus.${
+                            agent.running ? "running" : agent.runs[0].status
+                          }`,
+                        )
+                      }}</span>
+                    </button>
+                    <button
+                      type="button"
+                      class="subagent-info-button"
+                      :title="tm('subagentConfig.latest')"
+                      :aria-label="
+                        tm('subagentConfig.view', {
+                          name:
+                            agent.name +
+                            (agent.marker ? ` ${agent.marker}` : ''),
+                        })
+                      "
+                      @click.stop="
+                        configurationRun = agent.runs[0];
+                        menuOpen = false;
+                      "
+                    >
+                      <v-icon size="17">mdi-information-outline</v-icon>
+                    </button>
+                  </div>
+                  <div
+                    v-if="agent.runs.length > 1 && expandedAgents[agent.id]"
+                    class="subagent-invocations"
                   >
-                    <v-icon size="17">mdi-information-outline</v-icon>
-                  </button>
+                    <div
+                      v-for="run in agent.runs"
+                      :key="run.subagent_run_id"
+                      class="subagent-picker-row"
+                      :class="{
+                        'is-selected': selectedRunId === run.subagent_run_id,
+                      }"
+                    >
+                      <button
+                        type="button"
+                        class="subagent-picker-item invocation-item"
+                        @click="openRun(run)"
+                      >
+                        <span
+                          class="run-dot"
+                          :class="{ running: run.status === 'running' }"
+                        />
+                        <span class="invocation-details">
+                          <span class="invocation-meta">
+                            <code>{{ run.subagent_run_id }}</code>
+                            <time
+                              :datetime="
+                                invocationTimes[run.subagent_run_id]?.iso
+                              "
+                              >{{
+                                invocationTimes[run.subagent_run_id]?.text
+                              }}</time
+                            >
+                          </span>
+                          <span
+                            class="invocation-preview"
+                            :title="
+                              run.input_preview || tm('subagentPages.noPreview')
+                            "
+                            >{{
+                              run.input_preview || tm("subagentPages.noPreview")
+                            }}</span
+                          >
+                          <span class="invocation-status">
+                            <span v-if="run.background" class="run-badge">{{
+                              tm("subagentPages.background")
+                            }}</span>
+                            <span class="run-state">{{
+                              tm(`subagentStatus.${run.status}`)
+                            }}</span>
+                          </span>
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        class="subagent-info-button"
+                        :title="tm('subagentConfig.title')"
+                        :aria-label="
+                          tm('subagentConfig.view', {
+                            name: run.subagent_run_id,
+                          })
+                        "
+                        @click.stop="
+                          configurationRun = run;
+                          menuOpen = false;
+                        "
+                      >
+                        <v-icon size="17">mdi-information-outline</v-icon>
+                      </button>
+                    </div>
+                  </div>
                 </div>
               </template>
             </template>
@@ -192,7 +306,7 @@ import {
   type ChatRecord,
   type MessagePart,
 } from "@/composables/useMessages";
-import { useModuleI18n } from "@/i18n/composables";
+import { useI18n, useModuleI18n } from "@/i18n/composables";
 import ChatMessageList from "./ChatMessageList.vue";
 import ReasoningSidebar from "./ReasoningSidebar.vue";
 import SubagentConfigurationDialog from "./SubagentConfigurationDialog.vue";
@@ -204,6 +318,17 @@ type RunEntry = Pick<
   background?: boolean;
   cleaned?: boolean;
   revision?: number;
+  agent_instance_id?: string;
+  input_preview?: string;
+};
+type AgentEntry = {
+  id: string;
+  name: string;
+  runs: RunEntry[];
+  marker: string;
+  cleaned: boolean;
+  running: boolean;
+  background: boolean;
 };
 const props = defineProps<{
   sessionId: string;
@@ -213,6 +338,7 @@ const props = defineProps<{
 }>();
 const emit = defineEmits<{ viewChange: [open: boolean] }>();
 const { tm } = useModuleI18n("features/chat");
+const { locale } = useI18n();
 const entries = ref<Record<string, RunEntry>>({});
 const selectedRunId = ref("");
 const detailSessionId = ref("");
@@ -231,6 +357,7 @@ watch(
   { immediate: true, flush: "post" },
 );
 const cleanedOpen = ref(false);
+const expandedAgents = ref<Record<string, boolean>>({});
 const loading = ref(false);
 const error = ref("");
 const panel = ref<HTMLElement | null>(null);
@@ -255,10 +382,82 @@ const runs = computed(() =>
     (a, b) => (b.started_ts || 0) - (a.started_ts || 0),
   ),
 );
+const agents = computed(() => {
+  const instances = new Map<string, AgentEntry>();
+  const names = new Map<string, AgentEntry[]>();
+  for (const run of runs.value) {
+    // Unknown historical lifetimes stay separate instead of merging by name.
+    const id = run.agent_instance_id || `legacy:${run.subagent_run_id}`;
+    let agent = instances.get(id);
+    if (!agent) {
+      agent = {
+        id,
+        name: run.agent_name,
+        runs: [],
+        marker: "",
+        cleaned: true,
+        running: false,
+        background: Boolean(run.background),
+      };
+      instances.set(id, agent);
+      const sameName = names.get(agent.name) || [];
+      sameName.push(agent);
+      names.set(agent.name, sameName);
+    }
+    agent.runs.push(run);
+    agent.cleaned &&= Boolean(run.cleaned);
+    agent.running ||= run.status === "running";
+    agent.background ||= run.status === "running" && Boolean(run.background);
+  }
+  for (const sameName of names.values()) {
+    if (sameName.length < 2) continue;
+    for (const agent of sameName) {
+      let length = 6;
+      while (
+        sameName.some(
+          (other) =>
+            other.id !== agent.id &&
+            other.id.slice(-length) === agent.id.slice(-length),
+        )
+      )
+        length += 2;
+      agent.marker = `#${agent.id.slice(-length)}`;
+    }
+  }
+  return [...instances.values()];
+});
+const selectedAgent = computed(() =>
+  detailSessionId.value === props.sessionId
+    ? agents.value.find((agent) =>
+        agent.runs.some((run) => run.subagent_run_id === selectedRunId.value),
+      )
+    : undefined,
+);
 const groups = computed(() => [
-  { cleaned: false, items: runs.value.filter((run) => !run.cleaned) },
-  { cleaned: true, items: runs.value.filter((run) => run.cleaned) },
+  { cleaned: false, items: agents.value.filter((agent) => !agent.cleaned) },
+  { cleaned: true, items: agents.value.filter((agent) => agent.cleaned) },
 ]);
+const invocationTimes = computed(() => {
+  const formatter = new Intl.DateTimeFormat(locale.value, {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+  return Object.fromEntries(
+    runs.value.map((run) => {
+      const date = new Date(Number(run.started_ts) * 1000);
+      return [
+        run.subagent_run_id,
+        run.started_ts && Number.isFinite(date.getTime())
+          ? { text: formatter.format(date), iso: date.toISOString() }
+          : { text: tm("subagentPages.unknownTime"), iso: undefined },
+      ];
+    }),
+  );
+});
 
 // Reuse the main renderer while retaining chronological thought/tool/text blocks.
 const messages = computed<ChatRecord[]>(() => {
@@ -572,6 +771,7 @@ watch(
     entries.value = {};
     configurationRun.value = null;
     cleanedOpen.value = false;
+    expandedAgents.value = {};
     menuOpen.value = false;
     if (props.sessionId) {
       listAbort = new AbortController();
@@ -690,6 +890,69 @@ defineExpose({ openRun, getRun: (runId: string) => entries.value[runId] });
   align-items: center;
   border-radius: 8px;
 }
+.subagent-instance + .subagent-instance {
+  margin-top: 3px;
+}
+.agent-name-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.agent-display-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.instance-marker {
+  flex-shrink: 0;
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: rgba(var(--v-theme-primary), 0.09);
+  color: rgb(var(--v-theme-primary));
+  font-size: 10px;
+  font-weight: 500;
+}
+.instance-chevron {
+  opacity: 0.55;
+}
+.subagent-invocations {
+  margin: 2px 0 8px 16px;
+  padding-left: 5px;
+  border-left: 1px solid rgba(var(--v-theme-on-surface), 0.1);
+}
+.invocation-details {
+  flex: 1;
+  min-width: 0;
+}
+.invocation-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px 10px;
+  font-size: 11px;
+  color: rgba(var(--v-theme-on-surface), 0.55);
+}
+.invocation-meta code {
+  color: rgb(var(--v-theme-on-surface));
+  overflow-wrap: anywhere;
+}
+.invocation-preview {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow-wrap: anywhere;
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.invocation-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+}
 .subagent-picker-item {
   flex: 1;
   min-width: 0;
@@ -788,6 +1051,12 @@ defineExpose({ openRun, getRun: (runId: string) => entries.value[runId] });
   padding-bottom: 24px;
 }
 @media (max-width: 760px) {
+  .session-main-trigger {
+    max-width: 105px;
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
   .session-pages-nav > button,
   .subagent-picker-trigger {
     padding: 0 7px;

@@ -183,6 +183,23 @@ async def test_metadata_has_no_trace_and_same_name_lifetimes_are_distinct(progre
         {**data, "kind": "completed", "payload": {"result_text": "old result"}},
     )
     SubAgentManager.set_subagent_status(UMO, "worker", SubAgentStatus.COMPLETED)
+    await registry.record(
+        UMO,
+        config.instance_id,
+        False,
+        {**data, "subagent_run_id": "old-second", "ts": 1.5},
+    )
+    await registry.record(
+        UMO,
+        config.instance_id,
+        False,
+        {
+            **data,
+            "subagent_run_id": "old-second",
+            "kind": "completed",
+            "payload": {"result_text": "second answer"},
+        },
+    )
     SubAgentManager.remove_subagent(UMO, "worker")
     replacement = SubAgentConfig(name="worker")
     SubAgentManager.get_session(UMO).subagents["worker"] = replacement
@@ -191,9 +208,16 @@ async def test_metadata_has_no_trace_and_same_name_lifetimes_are_distinct(progre
     )
     await asyncio.gather(*list(registry.tasks))
     entries = await registry.list_runs("parent")
-    assert [item["subagent_run_id"] for item in entries] == ["new", "old"]
+    assert [item["subagent_run_id"] for item in entries] == ["new", "old-second", "old"]
     assert entries[0]["cleaned"] is False
     assert entries[1]["cleaned"] is True
+    assert entries[0]["agent_instance_id"] == replacement.instance_id
+    assert (
+        entries[1]["agent_instance_id"]
+        == entries[2]["agent_instance_id"]
+        == config.instance_id
+    )
+    assert all(item["input_preview"] == "full task" for item in entries)
     assert all("activity" not in item and "data" not in item for item in entries)
     assert (await registry.get_run("parent", "old"))["text"] == "old result"
     assert (await registry.get_run("parent", "new"))["input_full"] == "full task"
@@ -219,7 +243,10 @@ async def test_live_agent_kept_during_turn_cleanup_is_not_archived(progress):
 
 
 @pytest.mark.asyncio
-async def test_legacy_traces_are_indexed_as_cleaned_and_reopenable(progress):
+@pytest.mark.parametrize("instance_id", ["", "imported-instance"])
+async def test_legacy_traces_are_indexed_as_cleaned_and_reopenable(
+    progress, instance_id
+):
     registry, _ = progress
     async with registry.database().get_db() as session:
         session.add(
@@ -232,6 +259,7 @@ async def test_legacy_traces_are_indexed_as_cleaned_and_reopenable(progress):
                         {
                             "type": "subagent_run",
                             "subagent_run_id": "legacy",
+                            "agent_instance_id": instance_id,
                             "agent_name": "old worker",
                             "status": "completed",
                             "text": "saved result",
@@ -243,6 +271,7 @@ async def test_legacy_traces_are_indexed_as_cleaned_and_reopenable(progress):
         await session.commit()
     entries = await registry.list_runs("parent")
     assert entries[0]["cleaned"] is True
+    assert entries[0]["agent_instance_id"] == instance_id
     assert (await registry.get_run("parent", "legacy"))["text"] == "saved result"
     assert await registry.get_configuration("parent", "legacy") == {}
     assert len(await registry.list_runs("parent")) == 1

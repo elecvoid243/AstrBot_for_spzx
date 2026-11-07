@@ -2086,7 +2086,7 @@ paths:
           schema: { type: string }
       responses:
         '200':
-          description: Compact invocation metadata without execution traces
+          description: Compact invocation metadata with agent instance IDs, start times and task previews, without execution traces
           content:
             application/json:
               schema: { $ref: '#/components/schemas/SuccessEnvelope' }

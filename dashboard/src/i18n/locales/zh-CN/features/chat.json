@@ -423,6 +423,7 @@
     }
   },
   "subagentConfig": {
+    "latest": "查看最近一次调用的配置",
     "title": "子代理配置",
     "view": "查看 {name} 的配置",
     "systemPrompt": "系统提示词",
@@ -438,6 +439,10 @@
     "close": "关闭"
   },
   "subagentPages": {
+    "invocationCount": "{count} 次调用",
+    "instance": "子代理实例：{id}",
+    "unknownTime": "时间未知",
+    "noPreview": "无消息摘要",
     "navigation": "会话子页面",
     "main": "主会话",
     "agents": "子代理",

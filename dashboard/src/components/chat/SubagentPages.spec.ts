@@ -22,6 +22,7 @@ vi.mock("@/api/v1", () => ({
   },
 }));
 vi.mock("@/i18n/composables", () => ({
+  useI18n: () => ({ locale: ref("en-US") }),
   useModuleI18n: () => ({ tm: (key: string) => key }),
 }));
 vi.mock("./ChatMessageList.vue", async () => {
@@ -44,6 +45,8 @@ const controllers = new Map<
 >();
 const wrappers: Array<ReturnType<typeof mount>> = [];
 const run = {
+  agent_instance_id: "instance-researcher-original",
+  input_preview: "Inspect the first file",
   subagent_run_id: "run-1",
   agent_name: "researcher",
   status: "running",
@@ -195,6 +198,7 @@ describe("Subagent conversation pages", () => {
       data: {
         ...run,
         subagent_run_id: "run-2",
+        agent_instance_id: "instance-second",
         agent_name: "second",
         started_ts: 2,
       },
@@ -217,6 +221,141 @@ describe("Subagent conversation pages", () => {
         .text(),
     ).toContain("subagentStatus.completed");
     expect(wrapper.findComponent(ChatMessageList).exists()).toBe(false);
+  });
+
+  it("folds repeated invocations and exposes each call's ID, time, preview and conversation", async () => {
+    const wrapper = await page();
+    const second = {
+      ...run,
+      subagent_run_id: "run-2",
+      started_ts: 1500000000,
+      input_preview: "Inspect the second file",
+      status: "completed",
+      background: false,
+    };
+    push("/runs/session-1", { type: "changed", data: second });
+    await flushPromises();
+    await wrapper.find(".subagent-picker-trigger").trigger("click");
+    expect(wrapper.findAll(".subagent-agent-toggle")).toHaveLength(1);
+    expect(
+      wrapper.find(".subagent-agent-toggle").attributes("aria-expanded"),
+    ).toBe("false");
+    expect(wrapper.find(".subagent-invocations").exists()).toBe(false);
+    expect(vi.mocked(fetchWithAuth).mock.calls).toHaveLength(1);
+    await wrapper.find(".subagent-agent-toggle").trigger("click");
+    const calls = wrapper.findAll(".invocation-item");
+    expect(calls).toHaveLength(2);
+    expect(calls[0].text()).toContain("run-2");
+    expect(calls[0].text()).toContain("Inspect the second file");
+    expect(calls[0].find("time").attributes("datetime")).toBe(
+      "2017-07-14T02:40:00.000Z",
+    );
+    expect(calls[0].find("time").text()).toContain("2017");
+    expect(calls[1].text()).toContain("Inspect the first file");
+    await calls[0].trigger("click");
+    await flushPromises();
+    expect(controllers.has("/runs/session-1/run-2")).toBe(true);
+    expect(controllers.has("/runs/session-1/run-1")).toBe(false);
+    push("/runs/session-1", {
+      type: "changed",
+      data: { ...run, cleaned: true, status: "completed", revision: 2 },
+    });
+    push("/runs/session-1", {
+      type: "changed",
+      data: { ...second, cleaned: true, revision: 2 },
+    });
+    await flushPromises();
+    expect(wrapper.find(".subagent-messages").exists()).toBe(true);
+    await wrapper.find(".subagent-picker-trigger").trigger("click");
+    expect(wrapper.find(".subagent-agent-toggle").exists()).toBe(false);
+    await wrapper.find(".cleaned-toggle").trigger("click");
+    expect(wrapper.findAll(".subagent-agent-toggle")).toHaveLength(1);
+    expect(wrapper.findAll(".invocation-item")).toHaveLength(2);
+    await wrapper.find(".subagent-agent-toggle").trigger("click");
+    push("/runs/session-1", {
+      type: "changed",
+      data: {
+        ...second,
+        subagent_run_id: "run-3",
+        started_ts: 1500000010,
+        cleaned: true,
+      },
+    });
+    await flushPromises();
+    expect(wrapper.find(".subagent-invocations").exists()).toBe(false);
+  });
+
+  it("distinguishes recreated same-name agents across current and cleaned sections, including short ID collisions", async () => {
+    const wrapper = await page();
+    const current = { ...run, agent_instance_id: "instance-a-112233" };
+    const previous = {
+      ...run,
+      subagent_run_id: "previous",
+      agent_instance_id: "instance-b-112233",
+      status: "completed",
+      cleaned: true,
+    };
+    push("/runs/session-1", { type: "snapshot", data: [current, previous] });
+    await flushPromises();
+    await wrapper.find(".subagent-picker-trigger").trigger("click");
+    await wrapper.find(".cleaned-toggle").trigger("click");
+    const groups = wrapper.findAll(".subagent-agent-toggle");
+    expect(groups).toHaveLength(2);
+    const markers = groups.map((group) =>
+      group.find(".instance-marker").text(),
+    );
+    expect(new Set(markers).size).toBe(2);
+    await groups[1].trigger("click");
+    await flushPromises();
+    push("/runs/session-1/previous", {
+      type: "snapshot",
+      data: { ...snapshot, ...previous },
+    });
+    await flushPromises();
+    expect(wrapper.find(".session-pages-nav .instance-marker").text()).toBe(
+      markers[1],
+    );
+  });
+
+  it("keeps legacy same-name calls separate and displays missing call details explicitly", async () => {
+    const wrapper = await page();
+    push("/runs/session-1", {
+      type: "snapshot",
+      data: [
+        { ...run, agent_instance_id: "", subagent_run_id: "legacy-1" },
+        { ...run, agent_instance_id: "", subagent_run_id: "legacy-2" },
+        {
+          ...run,
+          agent_instance_id: "known",
+          subagent_run_id: "known-1",
+          input_preview: "",
+          started_ts: 0,
+        },
+        {
+          ...run,
+          agent_instance_id: "known",
+          subagent_run_id: "known-2",
+          input_preview: "",
+          started_ts: 0,
+        },
+      ],
+    });
+    await flushPromises();
+    await wrapper.find(".subagent-picker-trigger").trigger("click");
+    expect(wrapper.findAll(".subagent-agent-toggle")).toHaveLength(3);
+    const repeated = wrapper
+      .findAll(".subagent-agent-toggle")
+      .find((group) => group.attributes("aria-expanded") === "false")!;
+    await repeated.trigger("click");
+    expect(wrapper.find(".invocation-item").text()).toContain(
+      "subagentPages.noPreview",
+    );
+    expect(wrapper.find(".invocation-item time").text()).toContain(
+      "subagentPages.unknownTime",
+    );
+    expect(
+      wrapper.find(".invocation-item time").attributes("datetime"),
+    ).toBeUndefined();
   });
 
   it("renders one readonly invocation with the main message renderer and ordered live updates", async () => {

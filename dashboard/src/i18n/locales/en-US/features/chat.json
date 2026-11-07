@@ -423,6 +423,7 @@
     }
   },
   "subagentConfig": {
+    "latest": "View the latest invocation configuration",
     "title": "Subagent configuration",
     "view": "View configuration for {name}",
     "systemPrompt": "System prompt",
@@ -438,6 +439,10 @@
     "close": "Close"
   },
   "subagentPages": {
+    "invocationCount": "{count} calls",
+    "instance": "Subagent instance: {id}",
+    "unknownTime": "Unknown time",
+    "noPreview": "No message preview",
     "navigation": "Conversation pages",
     "main": "Main conversation",
     "agents": "Subagents",

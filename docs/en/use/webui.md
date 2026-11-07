@@ -439,9 +439,11 @@ The existing top toolbar contains **Main conversation** and the **Subagents** me
 
 **Running** identifies an active invocation; **Background** identifies how it was launched, so both can appear together. Finishing a task does not itself mean the agent was cleaned up. Actual removal or automatic cleanup moves its invocations into the collapsed **Cleaned up** group. Older records without lifecycle metadata also appear there and retain their saved content. Cleaning up the agent does not close a page you are reading.
 
+Repeated calls to the same subagent instance share one initially collapsed entry with a call count. Expand it to see each invocation's full ID, start time in the browser's local timezone, and task message preview, then select a call to open its conversation. Instances with one call remain directly selectable. Removing and recreating an agent with the same name produces separate entries with distinct, stable `#…` markers across the current and cleaned sections. Historical calls without an instance identity remain separate instead of being merged by name.
+
 ![Read-only subagent page with live output and the reasoning drawer on the right](./images/subagent-pages-detail.png)
 
-Use the **Information** button beside each menu entry to inspect the invocation's system prompt, effective tools and Skills, Provider ID, context inheritance, timeout and working directory. Configuration snapshots load on demand and remain available after cleanup. Older invocations without a saved snapshot show an explicit notice. On desktop, thoughts open in a drawer beside the transcript on the right; narrow screens retain the full-screen drawer.
+Use the **Information** button beside a subagent entry to inspect its latest invocation's system prompt, effective tools and Skills, Provider ID, context inheritance, timeout and working directory. Expanded calls retain their own Information buttons. Configuration snapshots load on demand and remain available after cleanup. Older invocations without a saved snapshot show an explicit notice. On desktop, thoughts open in a drawer beside the transcript on the right; narrow screens retain the full-screen drawer.
 
 ![Configuration captured for a subagent invocation](./images/subagent-configuration.png)
 
@@ -450,6 +452,7 @@ New calls update the menu without switching your page. Use **Main conversation**
 | Previous entry | Current entry |
 | --- | --- |
 | Main conversation / Subagents below a repeated message-area title | Main conversation / Subagents in the existing top toolbar |
+| Every repeated invocation shown at the top level | Group by instance → expand IDs, times and message previews → select a call |
 | Expand a subagent card inside a main reply | Click the card → that invocation's read-only page |
 | Follow-up input inside the expanded card | Removed; subagent pages are read-only |
 | Old subagent execution cards | Subagents → Cleaned up → the saved invocation |

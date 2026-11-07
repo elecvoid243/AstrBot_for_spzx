@@ -112,6 +112,7 @@
     "followUpInterrupt": "強制中断"
   },
   "subagentConfig": {
+    "latest": "最新の呼び出しの設定を表示",
     "title": "サブエージェント設定",
     "view": "{name} の設定を表示",
     "systemPrompt": "システムプロンプト",
@@ -127,6 +128,10 @@
     "close": "閉じる"
   },
   "subagentPages": {
+    "invocationCount": "{count} 回の呼び出し",
+    "instance": "サブエージェントのインスタンス：{id}",
+    "unknownTime": "時刻不明",
+    "noPreview": "メッセージの要約なし",
     "navigation": "会話ページ",
     "main": "メイン会話",
     "agents": "サブエージェント",

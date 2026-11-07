@@ -335,7 +335,7 @@ onUnmounted(() => {
   padding: 0 8px;
   border: 1px solid var(--sp-chip-border);
   border-radius: 8px;
-  background: var(--sp-chip-bg);
+  background: var(--sp-chip-bg-on-page);
   color: var(--sp-text-muted);
   box-shadow: none;
 }

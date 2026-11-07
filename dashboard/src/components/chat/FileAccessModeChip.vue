@@ -338,7 +338,7 @@ async function saveRoots(): Promise<void> {
   border-radius: 8px;
   /* Solid chip surface: transparent matched the page background in dark mode
      and left the chip visible only through its text. */
-  background: var(--sp-chip-bg);
+  background: var(--sp-chip-bg-on-page);
   color: var(--sp-text-muted);
   font-size: 12.5px;
   font-weight: 500;

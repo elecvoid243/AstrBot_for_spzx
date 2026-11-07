@@ -824,7 +824,7 @@ function handleManageProject(): void {
   border-radius: 8px;
   /* Solid chip surface so the capsule stays legible on the page background
      in dark mode (the ghost look used to be indistinguishable from it). */
-  background: var(--sp-chip-bg);
+  background: var(--sp-chip-bg-on-page);
   color: var(--sp-text-muted);
   font-size: 12.5px;
   font-weight: 500;

@@ -847,7 +847,7 @@ defineExpose({ openRun, getRun: (runId: string) => entries.value[runId] });
   /* 2026-11-07 (elecvoid243): the 3.5% tint disappeared into the app-bar
      background in dark mode; use the same solid chip surface as the composer
      capsules so the segmented control reads as one control. */
-  background: var(--sp-chip-bg);
+  background: var(--sp-chip-bg-on-page);
   border-color: var(--sp-chip-border);
 }
 .session-pages-nav button {
@@ -877,6 +877,14 @@ defineExpose({ openRun, getRun: (runId: string) => entries.value[runId] });
   background: rgb(var(--v-theme-surface));
   box-shadow: 0 1px 3px #0000000d;
   font-weight: 600;
+}
+
+/* On the app-bar chip the resting surface is already gray, so the active tab
+   has to step up from it (surface #242424 would read as a hole in #333).
+   The neutral overlay brightens in dark and darkens in light by design. */
+.session-pages-nav.in-toolbar .is-active {
+  background: rgba(var(--v-theme-on-surface), 0.1);
+  box-shadow: none;
 }
 .session-main-trigger {
   flex-shrink: 0;

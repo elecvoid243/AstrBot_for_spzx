@@ -90,7 +90,7 @@ function toggle(): void {
   border-radius: 8px;
   /* Solid chip surface so the workspace entry does not vanish into the page
      background in dark mode. */
-  background: var(--sp-chip-bg);
+  background: var(--sp-chip-bg-on-page);
   color: var(--sp-text-muted);
   font-size: 12.5px;
   font-weight: 500;

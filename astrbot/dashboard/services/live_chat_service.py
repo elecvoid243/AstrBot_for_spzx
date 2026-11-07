@@ -142,9 +142,19 @@ class LiveChatService:
         core_lifecycle: AstrBotCoreLifecycle,
         *,
         chat_service: ChatService,
+        account_service: AccountService,
     ) -> None:
+        """Use application-owned execution and account services for live sessions.
+
+        Args:
+            db: Persistent account and chat storage.
+            core_lifecycle: Current instance runtime.
+            chat_service: Ordinary ChatUI execution service.
+            account_service: Shared account resolver and invalidation revisions.
+        """
         self.db = db
         self.chat_service = chat_service
+        self.accounts = account_service
         self.core_lifecycle = core_lifecycle
         self.config = core_lifecycle.astrbot_config
         self.plugin_manager = core_lifecycle.plugin_manager
@@ -178,7 +188,7 @@ class LiveChatService:
             payload = jwt.decode(token, jwt_secret, algorithms=["HS256"])
             if payload.get("token_type") is not None:
                 raise LiveChatAuthError("Invalid token")
-            account = await AccountService(self.db, self.config).resolve(payload)
+            account = await self.accounts.resolve(payload)
             if account is None:
                 raise LiveChatAuthError("Invalid token")
             return account.resource_owner

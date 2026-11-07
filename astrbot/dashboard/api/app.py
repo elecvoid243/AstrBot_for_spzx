@@ -204,7 +204,7 @@ def create_dashboard_asgi_app(
         agent_collab=AgentCollabService(),
         api_keys=ApiKeyService(db),
         auth=auth,
-        backups=BackupService(db, core_lifecycle),
+        backups=BackupService(db, core_lifecycle, account_service=auth.accounts),
         chat=chat,
         remote_chat=RemoteChatService(
             db, core_lifecycle.astrbot_config, chat, auth.accounts.access_revisions
@@ -215,7 +215,9 @@ def create_dashboard_asgi_app(
         cron=CronService(core_lifecycle),
         files=FileService(),
         knowledge_bases=KnowledgeBaseService(core_lifecycle),
-        live_chat=LiveChatService(db, core_lifecycle, chat_service=chat),
+        live_chat=LiveChatService(
+            db, core_lifecycle, chat_service=chat, account_service=auth.accounts
+        ),
         logs=LogService(log_broker, core_lifecycle.astrbot_config),
         bots=BotConfigService(core_lifecycle),
         platforms=PlatformService(core_lifecycle),

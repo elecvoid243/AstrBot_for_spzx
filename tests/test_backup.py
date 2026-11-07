@@ -1124,7 +1124,9 @@ class TestBackupUploadLimits:
     @pytest.fixture
     def backup_service(self, tmp_path):
         """Create an isolated backup service for each test."""
-        service = BackupService(db=MagicMock(), core_lifecycle=MagicMock())
+        service = BackupService(
+            db=MagicMock(), core_lifecycle=MagicMock(), account_service=MagicMock()
+        )
         service.backup_dir = str(tmp_path / "backups")
         service.chunks_dir = str(tmp_path / "backups" / ".chunks")
         service.chunked_uploads.chunks_root = Path(service.chunks_dir)

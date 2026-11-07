@@ -247,7 +247,16 @@ async def test_unknown_receipt_and_no_credential_forwarding(connected_instances)
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "revoke", ["key", "exposure", "switch", "disable", "reset-password"]
+    "revoke",
+    [
+        "key",
+        "exposure",
+        "switch",
+        "disable",
+        "reset-password",
+        "live-bootstrap",
+        "backup-bootstrap",
+    ],
 )
 async def test_grant_change_during_final_session_read_rejects_input(
     connected_instances, monkeypatch, revoke
@@ -331,7 +340,7 @@ async def test_grant_change_during_final_session_read_rejects_input(
             headers=headers,
             json={"enabled": False},
         )
-    else:
+    elif revoke in {"disable", "reset-password"}:
         revoked = await remote.post(
             f"/api/v1/accounts/{target['account_id']}/{revoke}",
             headers=headers,
@@ -339,7 +348,31 @@ async def test_grant_change_during_final_session_read_rejects_input(
             if revoke == "reset-password"
             else None,
         )
-    assert revoked.status_code == 200
+    else:
+        from astrbot.core.utils.auth_password import hash_dashboard_password
+        from astrbot.dashboard.services.backup_service import BackupServiceError
+        from astrbot.dashboard.services.live_chat_service import LiveChatAuthError
+
+        # An already-open live socket revalidates each message, and a backup
+        # download may resolve its query token directly. Either can be the first
+        # caller to synchronize changed bootstrap credentials into the database.
+        core.astrbot_config["dashboard"]["pbkdf2_password"] = hash_dashboard_password(
+            "UpdatedBootstrapPassword123!"
+        )
+        if revoke == "live-bootstrap":
+            with pytest.raises(LiveChatAuthError):
+                await server.asgi_app.state.services.live_chat.authenticate_token(
+                    admin["token"]
+                )
+        else:
+            with pytest.raises(BackupServiceError):
+                await server.asgi_app.state.services.backups.prepare_download(
+                    filename="test.zip",
+                    token=admin["token"],
+                    jwt_secret=core.astrbot_config["dashboard"]["jwt_secret"],
+                )
+    if revoke not in {"live-bootstrap", "backup-bootstrap"}:
+        assert revoked.status_code == 200
     release.set()
     response = await asyncio.wait_for(request, 2)
     assert response.json()["data"]["status"] == "rejected"

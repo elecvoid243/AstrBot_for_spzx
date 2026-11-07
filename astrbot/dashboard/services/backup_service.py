@@ -25,6 +25,7 @@ from astrbot.core.utils.astrbot_path import (
     get_astrbot_data_path,
 )
 from astrbot.core.utils.upload import UploadTooLargeError
+from astrbot.dashboard.services.account_service import AccountService
 from astrbot.dashboard.services.chunked_upload_service import (
     ChunkedUploadError,
     ChunkedUploadService,
@@ -71,8 +72,18 @@ class BackupService:
         self,
         db: BaseDatabase,
         core_lifecycle: AstrBotCoreLifecycle,
+        *,
+        account_service: AccountService,
     ) -> None:
+        """Keep backup authorization on the application's shared account resolver.
+
+        Args:
+            db: Persistent account and backup storage.
+            core_lifecycle: Current instance runtime.
+            account_service: Shared account resolver and invalidation revisions.
+        """
         self.db = db
+        self.accounts = account_service
         self.core_lifecycle = core_lifecycle
         self.config = core_lifecycle.astrbot_config
         self.backup_dir = get_astrbot_backups_path()
@@ -815,9 +826,7 @@ class BackupService:
         except jwt.InvalidTokenError as exc:
             raise BackupServiceError("Token 无效") from exc
 
-        from astrbot.dashboard.services.account_service import AccountService
-
-        account = await AccountService(self.db, self.config).resolve(payload)
+        account = await self.accounts.resolve(payload)
         if account is None or account.role != "admin" or payload.get("token_type"):
             raise BackupServiceError("Token 无效")
         filename = self._validate_backup_filename(filename, missing="缺少参数 filename")

@@ -17,7 +17,10 @@ def _service() -> LiveChatService:
         platform_message_history_manager=SimpleNamespace(),
     )
     return LiveChatService(
-        SimpleNamespace(), core_lifecycle, chat_service=SimpleNamespace()
+        SimpleNamespace(),
+        core_lifecycle,
+        chat_service=SimpleNamespace(),
+        account_service=SimpleNamespace(),
     )
 
 

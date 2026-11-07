@@ -19,6 +19,9 @@ export interface SpcodeProjectStatus {
    * plugin load. Used to invalidate the "session already loaded" dirty
    * tag after a backend restart. */
   bootId: string | null;
+  /** Whether the project's AGENTS.md is currently injected into the
+   * system prompt (2026-11-07). */
+  agentsMd: boolean;
 }
 
 export const EMPTY_STATUS: SpcodeProjectStatus = {
@@ -29,4 +32,5 @@ export const EMPTY_STATUS: SpcodeProjectStatus = {
   allLoadedCount: 0,
   fetchedAt: null,
   bootId: null,
+  agentsMd: false,
 };

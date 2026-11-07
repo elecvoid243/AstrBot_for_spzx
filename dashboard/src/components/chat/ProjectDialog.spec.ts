@@ -1,8 +1,9 @@
-// ProjectDialog spec — covers the spcode load-step chips (2026-09-09).
+// ProjectDialog spec — covers workspace-path handling after the
+// 2026-11-07 project-load redesign.
 //
-// Focus: the chips speak in positive terms ("load AGENTS.md") while the
-// API stores the inverse (spcode_no_agentsmd / spcode_no_codegraph), and
-// the recent-path list is shared with the ChatInput project-load dialog.
+// Focus: project-level load-step chips are gone (AGENTS.md is injected
+// whenever it exists; codegraph is manual), and the recent-path list is
+// shared with the ChatInput project-load dialog.
 //
 // Author: elecvoid243
 
@@ -97,11 +98,6 @@ async function mountDialog(project: Project | null = null) {
   return wrapper;
 }
 
-/** Chip checkboxes, in template order: AGENTS.md then Codegraph. */
-function chipInputs(wrapper: VueWrapper) {
-  return wrapper.findAll<HTMLInputElement>('input[type="checkbox"]');
-}
-
 async function fillAndSave(
   wrapper: VueWrapper,
   path = "C:/projects/demo",
@@ -117,38 +113,22 @@ async function fillAndSave(
   return wrapper.emitted("save")!.at(-1)![0] as Record<string, unknown>;
 }
 
-describe("ProjectDialog spcode load steps", () => {
-  it("keeps both load steps on by default and maps them to false no_* flags", async () => {
+describe("ProjectDialog workspace path", () => {
+  it("submits only the workspace fields (no legacy load-step flags)", async () => {
     const wrapper = await mountDialog();
 
-    expect(chipInputs(wrapper).map((c) => c.element.checked)).toEqual([
-      true,
-      true,
-    ]);
-
+    expect(wrapper.findAll('input[type="checkbox"]')).toHaveLength(0);
     const payload = await fillAndSave(wrapper);
     expect(payload).toMatchObject({
       workspace_type: "custom",
       workspace_path: "C:/projects/demo",
-      spcode_no_agentsmd: false,
-      spcode_no_codegraph: false,
     });
-    // The legacy silent-load switch is gone from the form entirely.
+    expect(payload.spcode_no_agentsmd).toBeUndefined();
+    expect(payload.spcode_no_codegraph).toBeUndefined();
     expect(payload.spcode_auto_load).toBeUndefined();
   });
 
-  it("maps an unchecked chip to the corresponding no_* flag", async () => {
-    const wrapper = await mountDialog();
-    await chipInputs(wrapper)[0].setValue(false);
-
-    const payload = await fillAndSave(wrapper);
-    expect(payload).toMatchObject({
-      spcode_no_agentsmd: true,
-      spcode_no_codegraph: false,
-    });
-  });
-
-  it("reflects a stored no_agentsmd flag as an unchecked chip", async () => {
+  it("opens an existing custom project without resurrecting legacy flags", async () => {
     const wrapper = await mountDialog({
       project_id: "p-1",
       title: "demo",
@@ -160,10 +140,10 @@ describe("ProjectDialog spcode load steps", () => {
       updated_at: "",
     });
 
-    expect(chipInputs(wrapper).map((c) => c.element.checked)).toEqual([
-      false,
-      true,
-    ]);
+    expect(wrapper.findAll('input[type="checkbox"]')).toHaveLength(0);
+    const payload = await fillAndSave(wrapper);
+    expect(payload.spcode_no_agentsmd).toBeUndefined();
+    expect(payload.spcode_no_codegraph).toBeUndefined();
   });
 
   it("fills the path from the shared recent list and records saved paths", async () => {

@@ -7,10 +7,10 @@
 // Behavior contract (mirrors spcode endpoint spec):
 //   - custom path or server-resolved project workspace -> load that directory
 //   - missing resolved directory -> return null (no-op)
-//   - the AGENTS.md / Codegraph load steps follow the project's
-//     spcode_no_agentsmd / spcode_no_codegraph flags (same chips the
-//     project dialog shows). Silent loading itself is always on since
-//     2026-09-09 — the legacy spcode_auto_load switch is no longer read.
+//   - the backend injects AGENTS.md only when the directory already has
+//     one; it never generates AGENTS.md and never initializes codegraph.
+//     Silent loading itself is always on since 2026-09-09 — the legacy
+//     spcode_auto_load switch is no longer read.
 //   - same (project, umo) concurrent calls share one in-flight promise
 //   - response success -> return data
 //   - response reason "no_project_loaded" + previous_directory matches
@@ -35,6 +35,7 @@ export type ProjectLoadReason =
   | "invalid_param"
   | "feature_disabled"
   | "no_project_loaded"
+  | "directory_missing"
   | "path_unsafe"
   | "git_error"
   | "network_timeout"
@@ -186,8 +187,6 @@ async function postLoad(
         directory: req.project.workspace_path!,
         umo: req.umo,
         force,
-        no_agentsmd: req.project.spcode_no_agentsmd || undefined,
-        no_codegraph: req.project.spcode_no_codegraph || undefined,
       },
       { signal: controller.signal },
     );
@@ -309,11 +308,7 @@ export function useSpcodeProjectAutoLoad() {
 export interface SilentLoadDirectoryRequest {
   umo: string;
   directory: string;
-  noAgentsmd?: boolean;
-  noCodegraph?: boolean;
   force?: boolean;
-  create?: boolean;
-  gitInit?: boolean;
   timeoutMs?: number;
 }
 
@@ -383,10 +378,6 @@ export function useSpcodeSilentOps() {
       umo: req.umo,
       force: req.force === true,
     };
-    if (req.noAgentsmd) body.no_agentsmd = true;
-    if (req.noCodegraph) body.no_codegraph = true;
-    if (req.create) body.create = true;
-    if (req.gitInit) body.git_init = true;
     const raw = await postSilent(
       "spcode/project-load",
       body,

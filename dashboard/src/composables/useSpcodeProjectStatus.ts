@@ -102,6 +102,7 @@ export function useSpcodeProjectStatus() {
           umo: string | null;
           all_loaded_count: number;
           boot_id?: string | null;
+          agents_md?: boolean;
         }>("spcode/project-status", {
           params: { umo },
         });
@@ -123,6 +124,7 @@ export function useSpcodeProjectStatus() {
           fetchedAt: Date.now(),
           // 2026-09-01: backend boot id, drives dirty-tag invalidation.
           bootId: data.boot_id ?? null,
+          agentsMd: Boolean(data.agents_md),
         };
         entries.set(umo, next);
         // Only the ACTIVE session may drive the shared ref; a response that
@@ -164,6 +166,9 @@ export function useSpcodeProjectStatus() {
       loadedAt,
       umo,
       fetchedAt: Date.now(),
+      // A different directory means any previous AGENTS.md answer is
+      // stale; the next refresh supplies the authoritative value.
+      agentsMd: base.directory === directory ? base.agentsMd : false,
     };
     entries.set(umo, next);
     // Mirror a copy: the shared ref must never alias a cache entry, or a

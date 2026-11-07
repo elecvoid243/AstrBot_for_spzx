@@ -920,9 +920,11 @@ class ChatUIProject(TimestampMixin, SQLModel, table=True):
     spcode_force: bool = Field(default=False, nullable=False)
     """静默 load 时若 umo 已加载其他项目,是否强制覆盖。"""
     spcode_no_agentsmd: bool = Field(default=False, nullable=False)
-    """挂载时跳过 AGENTS.md 子步骤(不注入项目说明文件)。"""
+    """Legacy: 挂载时跳过 AGENTS.md 注入。2026-11-07 起项目加载固定按
+    “AGENTS.md 存在则注入”执行,该字段仅为兼容旧数据保留,不再被消费。"""
     spcode_no_codegraph: bool = Field(default=False, nullable=False)
-    """挂载时跳过 codegraph(只 load AGENTS.md,适合轻量场景)。"""
+    """Legacy: 挂载时跳过 codegraph。项目加载自 2026-11-07 起不再自动
+    codegraph init,该字段仅为兼容旧数据保留,不再被消费。"""
 
     __table_args__ = (
         UniqueConstraint(

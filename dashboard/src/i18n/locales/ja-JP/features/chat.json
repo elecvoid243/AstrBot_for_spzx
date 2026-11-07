@@ -1,5 +1,12 @@
 {
   "spcodeProjectLoad": {
+    "dialog": {
+      "loadHint": "プロジェクト内に AGENTS.md がある場合のみシステムプロンプトへ注入します。存在しない場合は生成しません。codegraph インデックスはサービスメニューから手動で初期化してください。"
+    },
+    "indicator": {
+      "agentsMdInjected": "AGENTS.md をシステムプロンプトへ注入済み",
+      "agentsMdNotInjected": "AGENTS.md は未注入（ファイルなし、または機能無効）"
+    },
     "fileBrowser": {
       "host": {
         "back": "前に開いたフォルダーに戻る",

@@ -1236,7 +1236,6 @@ import {
   markSessionLoadedTag,
   clearSessionLoadedTag,
 } from "@/composables/useSpcodeProjectAutoLoad";
-import { useSpcodeOperationProgress } from "@/composables/useSpcodeOperationProgress";
 import { useSpcodeCodegraphStatus } from "@/composables/useSpcodeCodegraphStatus";
 import { useSpcodeVivadoStatus } from "@/composables/useSpcodeVivadoStatus";
 import { useSpcodePlanMode } from "@/composables/useSpcodePlanMode";
@@ -1362,9 +1361,6 @@ const { tm } = useModuleI18n("features/chat");
 // the plugin's HTTP API.
 const spcodeStatus = useSpcodeProjectStatus();
 const { silentLoad } = useSpcodeProjectAutoLoad();
-// Operation-progress poller: started around silentLoad so the input-area
-// chip shows live step progress during auto-load too (2026-08-06).
-const operationProgress = useSpcodeOperationProgress();
 const codegraphStatus = useSpcodeCodegraphStatus();
 const vivadoStatus = useSpcodeVivadoStatus();
 // Plan/build mode singleton. Mirrors the spcodeStatus lifecycle so
@@ -2874,7 +2870,6 @@ async function tryAutoLoadSpcodeForSession(
   }
 
   try {
-    operationProgress.startPolling(umo);
     const data = await silentLoad({ project, umo });
     assertCurrentAccount(chatAccountRevision);
     if (data?.loaded) {
@@ -3929,7 +3924,7 @@ async function ensureProjectSession() {
   return currSessionId.value || await newSession();
 }
 
-async function syncLoadedProject(sessionId: string, path: string | null, noAgentsmd = false, noCodegraph = false) {
+async function syncLoadedProject(sessionId: string, path: string | null) {
   const previousId = sessionProjects[sessionId]?.project_id;
   try {
     if (!path) {
@@ -3945,7 +3940,7 @@ async function syncLoadedProject(sessionId: string, path: string | null, noAgent
       });
       if (!project) {
         const title = path.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || path;
-        const created = await createProject(title, "📁", "", "custom", path, noAgentsmd, noCodegraph);
+        const created = await createProject(title, "📁", "", "custom", path);
         project = projects.value.find((item) => item.project_id === created.project_id);
       }
       if (!project) throw new Error("Failed to find created project");
@@ -3976,8 +3971,6 @@ async function saveProject(formData: ProjectFormData, projectId?: string) {
         formData.description,
         formData.workspace_type,
         formData.workspace_path,
-        formData.spcode_no_agentsmd,
-        formData.spcode_no_codegraph,
       );
     } else {
       await createProject(
@@ -3986,8 +3979,6 @@ async function saveProject(formData: ProjectFormData, projectId?: string) {
         formData.description,
         formData.workspace_type,
         formData.workspace_path,
-        formData.spcode_no_agentsmd,
-        formData.spcode_no_codegraph,
       );
     }
     projectDialogOpen.value = false;

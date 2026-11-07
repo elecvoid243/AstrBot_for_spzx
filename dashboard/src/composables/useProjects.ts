@@ -52,8 +52,6 @@ export function useProjects() {
     description?: string,
     workspaceType: WorkspaceType = "project",
     workspacePath?: string,
-    spcodeNoAgentsmd?: boolean,
-    spcodeNoCodegraph?: boolean,
   ) {
     try {
       assertCurrentAccount(revision);
@@ -67,8 +65,6 @@ export function useProjects() {
         ...(workspaceType === "custom" && workspacePath
           ? { workspace_path: workspacePath }
           : {}),
-        spcode_no_agentsmd: spcodeNoAgentsmd,
-        spcode_no_codegraph: spcodeNoCodegraph,
       });
       assertCurrentAccount(revision);
       if (res.data.status === "ok") {
@@ -90,8 +86,6 @@ export function useProjects() {
     description?: string,
     workspaceType?: WorkspaceType,
     workspacePath?: string,
-    spcodeNoAgentsmd?: boolean,
-    spcodeNoCodegraph?: boolean,
   ) {
     try {
       assertCurrentAccount(revision);
@@ -105,8 +99,6 @@ export function useProjects() {
         ...(workspaceType === "custom" && workspacePath
           ? { workspace_path: workspacePath }
           : {}),
-        spcode_no_agentsmd: spcodeNoAgentsmd,
-        spcode_no_codegraph: spcodeNoCodegraph,
       });
       assertCurrentAccount(revision);
       if (res.data.status === "ok") {

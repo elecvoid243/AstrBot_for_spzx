@@ -255,8 +255,13 @@ async def send_remote_text(
 
         async def check_admission():
             """Recheck the dedicated grant immediately before queue admission."""
+            revision = service.grant_revisions.get(account.account_id, 0)
             current = await service.authenticate(raw_key)
             await service.require_session(current, session_id)
+            # No await may separate these final invalidation checks from enqueue.
+            service.require_enabled()
+            if service.grant_revisions.get(account.account_id, 0) != revision:
+                raise ApiError("Remote grant changed during admission", status_code=403)
 
         async def admit():
             """Finish one ordinary admission even if its HTTP response is lost."""
@@ -391,7 +396,7 @@ async def remote_session_events(
                 # by the remote browser or another direct binding as well.
                 try:
                     await asyncio.wait_for(dirty.wait(), timeout=0.25)
-                except TimeoutError:
+                except asyncio.TimeoutError:
                     pass
                 await asyncio.sleep(0.05)
         except (ApiError, ChatServiceError) as exc:

@@ -1,6 +1,7 @@
 """Remote text admission uses ordinary ChatService runs and isolated databases."""
 
 import asyncio
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -155,12 +156,48 @@ async def test_revocation_during_preparation_rejects_without_queued_input(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("revoke", ["key", "exposure", "switch"])
+@pytest.mark.parametrize("legacy_timeout", [False, True])
 async def test_idle_remote_stream_closes_on_live_grant_change(
-    connected_instances, revoke
+    connected_instances, revoke, legacy_timeout, monkeypatch
 ):
     from starlette.requests import Request
 
-    from astrbot.dashboard.api.remote_chat import remote_session_events
+    from astrbot.dashboard.api import remote_chat as remote_chat_api
+
+    if legacy_timeout:
+
+        class LegacyAsyncioTimeoutError(Exception):
+            """Model Python 3.10's asyncio exception independently of the builtin."""
+
+        async def legacy_wait_for(awaitable, timeout):
+            """Translate a real idle timeout into the pre-3.11 exception type.
+
+            Args:
+                awaitable: The original stream's idle notification wait.
+                timeout: The stream's unchanged idle-check interval.
+
+            Returns:
+                The result if the notification arrives before the timeout.
+
+            Raises:
+                LegacyAsyncioTimeoutError: The real wait reaches its deadline.
+            """
+            try:
+                return await asyncio.wait_for(awaitable, timeout)
+            except asyncio.TimeoutError as exc:
+                raise LegacyAsyncioTimeoutError from exc
+
+        monkeypatch.setattr(
+            remote_chat_api,
+            "asyncio",
+            SimpleNamespace(
+                **{
+                    **vars(asyncio),
+                    "TimeoutError": LegacyAsyncioTimeoutError,
+                    "wait_for": legacy_wait_for,
+                }
+            ),
+        )
 
     local, instance, _ = connected_instances
     remote, server, core, db, admin, credential = instance
@@ -176,9 +213,14 @@ async def test_idle_remote_stream_closes_on_live_grant_change(
             ],
         }
     )
-    response = await remote_session_events(session.session_id, request, account)
+    response = await remote_chat_api.remote_session_events(
+        session.session_id, request, account
+    )
     events = response.body_iterator
     assert '"snapshot"' in await anext(events)
+    # The observer must survive several idle deadlines before access changes.
+    for _ in range(3):
+        assert await asyncio.wait_for(anext(events), 2) == ": heartbeat\n\n"
     if revoke == "key":
         await service.revoke_credential(account, credential["credential_id"])
     elif revoke == "exposure":
@@ -201,6 +243,73 @@ async def test_unknown_receipt_and_no_credential_forwarding(connected_instances)
     )
     assert response.json()["data"]["status"] == "unknown"
     assert credential["key"] not in response.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("revoke", ["key", "exposure", "switch"])
+async def test_grant_change_during_final_session_read_rejects_input(
+    connected_instances, monkeypatch, revoke
+):
+    _, instance, _ = connected_instances
+    remote, server, core, db, admin, credential = instance
+    service = server.asgi_app.state.services.remote_chat
+    session = await db.create_platform_session(creator=admin["resource_owner"])
+    request_id = str(uuid4())
+    identity = (admin["account_id"], session.session_id, request_id)
+    entered, release = asyncio.Event(), asyncio.Event()
+    final_auth = False
+    original_authenticate = service.authenticate
+    original_session = db.get_platform_session_by_id
+
+    async def track_final_authentication(raw_key):
+        nonlocal final_auth
+        account = await original_authenticate(raw_key)
+        if asyncio.current_task() is service.receipts.get(identity, {}).get("task"):
+            final_auth = True
+        return account
+
+    async def pause_final_session_read(session_id):
+        result = await original_session(session_id)
+        if final_auth and session_id == session.session_id and not entered.is_set():
+            entered.set()
+            await release.wait()
+        return result
+
+    monkeypatch.setattr(service, "authenticate", track_final_authentication)
+    monkeypatch.setattr(db, "get_platform_session_by_id", pause_final_session_read)
+    request = asyncio.create_task(
+        remote.post(
+            f"/api/v1/remote-chat/sessions/{session.session_id}/messages",
+            headers={"Authorization": "RemoteSession " + credential["key"]},
+            json={"text": "Do not admit after revocation", "request_id": request_id},
+        )
+    )
+    await asyncio.wait_for(entered.wait(), 2)
+    headers = {"Authorization": "Bearer " + admin["token"]}
+    if revoke == "key":
+        revoked = await remote.delete(
+            "/api/v1/chat/remote-access/credentials/" + credential["credential_id"],
+            headers=headers,
+        )
+    elif revoke == "exposure":
+        revoked = await remote.put(
+            "/api/v1/chat/remote-access/exposure",
+            headers=headers,
+            json={"mode": "selected", "session_ids": []},
+        )
+    else:
+        revoked = await remote.put(
+            "/api/v1/chat/remote-access/enabled",
+            headers=headers,
+            json={"enabled": False},
+        )
+    assert revoked.status_code == 200
+    release.set()
+    response = await asyncio.wait_for(request, 2)
+    assert response.json()["data"]["status"] == "rejected"
+    assert webchat_queue_mgr.get_or_create_queue(session.session_id).empty()
+    assert not service.chat.chat_runs
+    assert await db.count_platform_message_history("webchat", session.session_id) == 0
 
 
 @pytest.mark.asyncio

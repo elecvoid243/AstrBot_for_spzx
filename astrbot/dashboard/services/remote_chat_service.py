@@ -36,6 +36,8 @@ class RemoteChatService:
         self.chat = chat
         # Bounded, process-local admission receipts. These never schedule delivery.
         self.receipts: dict[tuple[str, str, str], dict] = {}
+        # Invalidate admissions whose asynchronous reads overlap a grant change.
+        self.grant_revisions: dict[str, int] = {}
 
     def require_enabled(self) -> None:
         """Gate new inbound and outbound remote operations using live config.
@@ -224,6 +226,9 @@ class RemoteChatService:
             )
             connection.add(policy)
             await connection.commit()
+            self.grant_revisions[account.account_id] = (
+                self.grant_revisions.get(account.account_id, 0) + 1
+            )
 
     async def create_credential(self, account: DashboardAccount, name: str) -> dict:
         """Issue one independently revocable secret for a direct binding.
@@ -266,6 +271,9 @@ class RemoteChatService:
             credential.revoked = True
             connection.add(credential)
             await connection.commit()
+            self.grant_revisions[account.account_id] = (
+                self.grant_revisions.get(account.account_id, 0) + 1
+            )
 
     async def connections(self, account: DashboardAccount) -> dict:
         """List only the current local account's non-secret binding metadata.

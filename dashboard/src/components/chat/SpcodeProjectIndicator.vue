@@ -393,7 +393,11 @@ interface BubbleSnapshot {
 
 /**
  * 由 (codegraph 状态, 操作进度) 推导气泡文案;无值得展示的变化返回 null。
- * 优先级: project_load 阶段 > 进行中的 codegraph 操作 > MCP 状态转变。
+ * 优先级: 进行中的 codegraph 操作 > MCP 状态转变。
+ *
+ * 2026-11-07: project_load 不再产生任何气泡。项目加载现在只登记目录并
+ * 读取已存在的 AGENTS.md,耗时在毫秒级;"正在加载/加载完成"的即时反馈
+ * 改由胶囊本身与下拉中的 AGENTS.md 状态承担。
  */
 function deriveBubbleMessage(now: BubbleSnapshot, prev: BubbleSnapshot): string | null {
   // Polling replaces the progress object even when nothing changed. Only a
@@ -407,34 +411,6 @@ function deriveBubbleMessage(now: BubbleSnapshot, prev: BubbleSnapshot): string 
     now.step === prev.step;
   if (unchanged) return null;
 
-  if (now.op === "project_load") {
-    // MCP status may catch up while project_load is running or while its
-    // completion bubble is visible. Those refreshes must not replace the
-    // stage/completion bubble, but later MCP transitions still surface.
-    const stageChanged =
-      now.op !== prev.op || now.st !== prev.st || now.step !== prev.step;
-    if (!stageChanged) {
-      if (now.st === "running" || bubbleVisible.value) return null;
-    } else if (now.st === "done" && prev.st === "running") {
-      return tm("spcodeProjectLoad.indicator.projectLoadComplete");
-    } else if (now.st === "running") {
-      // agentsmd.init reports the long LLM generation through its own 🔄
-      // message, which replaces the outer [1/3] step in current_step.
-      if (
-        /AGENTS\.md\s*不存在[，,]\s*正在\s*init/i.test(now.step) ||
-        /生成\s*AGENTS\.md/i.test(now.step)
-      ) {
-        return tm("spcodeProjectLoad.indicator.agentsMdInitializing");
-      }
-      if (/codegraph/i.test(now.step)) {
-        return tm("spcodeProjectLoad.indicator.codegraphInitializing");
-      }
-      return null;
-    } else {
-      return null;
-    }
-  }
-
   if (now.st === "running") {
     const stageChanged =
       now.op !== prev.op || now.st !== prev.st || now.step !== prev.step;
@@ -446,8 +422,7 @@ function deriveBubbleMessage(now: BubbleSnapshot, prev: BubbleSnapshot): string 
       return tm("spcodeProjectLoad.indicator.codegraphIndexing");
     }
   }
-  // MCP state transitions; project_load only suppresses them while a stage
-  // is running or its completion bubble is visible.
+  // MCP state transitions.
   if (now.mcp && !prev.mcp) {
     return tm("spcodeProjectLoad.indicator.codegraphConnected");
   }
@@ -545,6 +520,12 @@ function handleManageProject(): void {
                 class="sp-capsule__icon"
                 >{{ icon }}</v-icon
               >
+              <!-- Narrow-screen face: the label is hidden by the composer's
+                   380px container query, so the state icon has to carry the
+                   project meaning on its own. -->
+              <v-icon size="14" class="sp-capsule__compact-icon">{{
+                icon
+              }}</v-icon>
               <span class="sp-capsule__label">{{ capsuleLabel }}</span>
               <template v-if="activeWorktreeLabel && !isLoading && !isFailed">
                 <span class="sp-capsule__wt-sep" aria-hidden="true">·</span>
@@ -597,6 +578,32 @@ function handleManageProject(): void {
                 :title="status.directory"
                 >{{ status.directory }}</span
               >
+            </div>
+            <!--
+              Silent load feedback (2026-11-07): no popup bubble any more.
+              The dropdown states whether the project's AGENTS.md was
+              injected, which is the only user-visible side effect of a
+              project load besides the working directory itself.
+            -->
+            <div
+              v-if="status.loaded"
+              class="sp-menu-detail"
+              :title="status.directory ?? ''"
+            >
+              <v-icon size="12" class="sp-menu-detail__icon">
+                {{
+                  status.agentsMd
+                    ? "mdi-file-document-check-outline"
+                    : "mdi-file-document-outline"
+                }}
+              </v-icon>
+              <span>
+                {{
+                  status.agentsMd
+                    ? tm("spcodeProjectLoad.indicator.agentsMdInjected")
+                    : tm("spcodeProjectLoad.indicator.agentsMdNotInjected")
+                }}
+              </span>
             </div>
             <button v-if="!props.consumerOnly" type="button" class="sp-menu-row" @click="handleManageProject">
               <v-icon size="14" class="sp-menu-row__icon">
@@ -815,7 +822,9 @@ function handleManageProject(): void {
   padding: 0 9px;
   border: 1px solid var(--sp-chip-border);
   border-radius: 8px;
-  background: transparent;
+  /* Solid chip surface so the capsule stays legible on the page background
+     in dark mode (the ghost look used to be indistinguishable from it). */
+  background: var(--sp-chip-bg);
   color: var(--sp-text-muted);
   font-size: 12.5px;
   font-weight: 500;
@@ -876,8 +885,15 @@ function handleManageProject(): void {
   color: rgb(var(--v-theme-primary));
 }
 
+.sp-capsule__compact-icon {
+  display: none;
+  flex: 0 0 14px;
+  color: rgb(var(--v-theme-primary));
+}
+
 .sp-capsule--failed,
-.sp-capsule--failed .sp-capsule__icon {
+.sp-capsule--failed .sp-capsule__icon,
+.sp-capsule--failed .sp-capsule__compact-icon {
   color: rgb(var(--v-theme-error));
 }
 
@@ -989,6 +1005,20 @@ function handleManageProject(): void {
   font-size: 11px;
   color: var(--sp-text-path);
   direction: ltr;
+}
+
+.sp-menu-detail {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin: 2px 0 4px 20px;
+  font-size: 11px;
+  color: var(--sp-text-path);
+}
+
+.sp-menu-detail__icon {
+  flex: 0 0 12px;
+  opacity: 0.75;
 }
 
 .sp-chip-popover-messages {

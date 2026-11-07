@@ -469,8 +469,6 @@ async def test_workspace_binding_fields_and_corrupt_parent_relations(
             "umo": umo,
             "directory": str(root.resolve()),
             "force": True,
-            "no_agentsmd": False,
-            "no_codegraph": True,
         }
         for operation in ("project-status", "project-unload"):
             assert await service.validate_project_operation(
@@ -485,7 +483,7 @@ async def test_workspace_binding_fields_and_corrupt_parent_relations(
             {"directory": str(root), "create": True},
             {"directory": str(root), "git_init": True},
             {"directory": str(root), "_owner": "forged"},
-            {"directory": str(root), "no_codegraph": False},
+            {"directory": str(root), "no_codegraph": "true"},
             {"directory": str(root), "force": "true"},
         ]:
             with pytest.raises(ChatUIProjectServiceError):

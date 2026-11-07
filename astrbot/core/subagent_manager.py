@@ -138,13 +138,14 @@ class SubAgentManager:
         "remove_subagent",
         "list_subagents",
         "wait_for_subagent",
-        "orchestrate_tasks",
         "view_shared_context",
     }
     _tools_inherent: set[str] = {
         "astrbot_execute_shell",
         "astrbot_execute_python",
     }
+    _mcp_blacklist: set[str] = set()
+    _mcp_inherent: set[str] = set()
     _dag_enabled: bool = False  # 是否启用 DAG 编排
     _default_provider_id: str = ""  # 默认 Chat Provider ID
     _context_inherit_mode: str = (
@@ -216,6 +217,8 @@ DAG Orchestration automatically delegate subagents. When you have 2+ independent
         shared_context_maxlen: int = 300,
         tools_blacklist: list[str] = None,
         tools_inherent: list[str] = None,
+        mcp_blacklist: list[str] | None = None,
+        mcp_inherent: list[str] | None = None,
         execution_timeout: float = 1200.0,
         history_enabled: bool = True,
         rule_prompt: str = "",
@@ -227,6 +230,8 @@ DAG Orchestration automatically delegate subagents. When you have 2+ independent
         **kwargs,
     ) -> None:
         """Configure SubAgentManager settings"""
+        cls._mcp_blacklist = set(mcp_blacklist or [])
+        cls._mcp_inherent = set(mcp_inherent or [])
         cls._max_subagent_count = max_subagent_count
         cls._auto_cleanup_per_turn = auto_cleanup_per_turn
         cls._shared_context_enabled = shared_context_enabled
@@ -236,7 +241,8 @@ DAG Orchestration automatically delegate subagents. When you have 2+ independent
         cls._rule_prompt = rule_prompt
         cls._time_prompt_enabled = time_prompt_enabled
         cls._timezone = timezone
-        cls._dag_enabled = dag_enabled
+        # Keep accepting the legacy setting while DAG orchestration is disabled.
+        cls._dag_enabled = False
         cls._default_provider_id = default_provider_id
         cls._context_inherit_mode = (
             context_inherit_mode
@@ -257,7 +263,6 @@ DAG Orchestration automatically delegate subagents. When you have 2+ independent
                 "remove_subagent",
                 "list_subagents",
                 "wait_for_subagent",
-                "orchestrate_tasks",
                 "view_shared_context",
             }
         else:
@@ -990,7 +995,8 @@ DAG Orchestration automatically delegate subagents. When you have 2+ independent
 
         # add tools in inherent list
         for tool_ih in cls._tools_inherent:
-            config.tools.add(tool_ih)
+            if tool_ih not in cls._tools_blacklist:
+                config.tools.add(tool_ih)
 
         session.subagents[config.name] = config
         agent = Agent(

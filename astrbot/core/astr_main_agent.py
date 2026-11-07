@@ -1407,7 +1407,6 @@ async def _apply_subagent_manager_tools(
             BROADCAST_SHARED_CONTEXT_TOOL,
             CREATE_SUBAGENT_TOOL,
             LIST_SUBAGENTS_TOOL,
-            ORCHESTRATE_TASKS_TOOL,
             REMOVE_SUBAGENT_TOOL,
             VIEW_SHARED_CONTEXT_TOOL,
             WAIT_FOR_SUBAGENT_TOOL,
@@ -1425,6 +1424,8 @@ async def _apply_subagent_manager_tools(
             shared_context_maxlen=orch_cfg.get("shared_context_maxlen", 300),
             tools_blacklist=dynamic_cfg.get("tools_blacklist", None),
             tools_inherent=dynamic_cfg.get("tools_inherent", None),
+            mcp_blacklist=dynamic_cfg.get("mcp_blacklist"),
+            mcp_inherent=dynamic_cfg.get("mcp_inherent"),
             execution_timeout=orch_cfg.get("execution_timeout", 1200),
             history_enabled=history_enabled,
             rule_prompt=dynamic_cfg.get("rule_prompt", ""),
@@ -1448,10 +1449,8 @@ async def _apply_subagent_manager_tools(
         # Register dynamic subagent management tools (only when dynamic creation is enabled)
         # Always register `wait_for_subagent` for better background task running
         req.func_tool.add_tool(WAIT_FOR_SUBAGENT_TOOL)
-        # Register DAG orchestration tool if enabled
-        dag_cfg = orch_cfg.get("dag_enabled", True)
-        if dag_cfg:
-            req.func_tool.add_tool(ORCHESTRATE_TASKS_TOOL)
+        # Discard a previously registered DAG tool, including for old configs.
+        req.func_tool.remove_tool("orchestrate_tasks")
         if enable_dynamic:
             from astrbot.core.subagent_tools import TRANSFER_TO_SUBAGENT_TOOL
 

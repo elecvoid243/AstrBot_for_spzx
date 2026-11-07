@@ -3,12 +3,7 @@
     <v-container fluid class="dashboard-shell pa-4 pa-md-6">
       <div class="dashboard-header">
         <div class="dashboard-header-main">
-          <div class="d-flex align-center flex-wrap" style="gap: 8px;">
-            <h1 class="dashboard-title">{{ tm('page.title') }}</h1>
-            <v-chip size="x-small" color="orange-darken-2" variant="tonal" label>
-              {{ tm('page.beta') }}
-            </v-chip>
-          </div>
+          <h1 class="dashboard-title">{{ tm('page.title') }}</h1>
           <p class="dashboard-subtitle">{{ tm('page.subtitle') }}</p>
         </div>
 
@@ -57,24 +52,6 @@
             </div>
           </div>
 
-          <!-- 编排方式 -->
-          <div class="setting-card">
-            <div class="setting-card-head">
-              <div>
-                <div class="setting-title">{{ tm('dag.orchestrationMode') }}</div>
-                <div class="setting-subtitle">{{ tm('dag.orchestrationModeHint') }}</div>
-              </div>
-              <v-select
-                v-model="orchestrationMode"
-                :items="orchestrationModeOptions"
-                density="compact"
-                variant="outlined"
-                style="width: 160px;"
-                hide-details
-              />
-            </div>
-          </div>
-
           <!-- 上下文继承模式 -->
           <div class="setting-card">
             <div class="setting-card-head">
@@ -92,63 +69,6 @@
               />
             </div>
           </div>
-
-          <!-- DAG 编排设置 (条件展开) -->
-          <template v-if="dagCfg.dag_enabled">
-            <div class="setting-card">
-              <div class="setting-card-head">
-                <div>
-                  <div class="setting-title">{{ tm('dag.maxNodes') }}</div>
-                  <div class="setting-subtitle">{{ tm('dag.maxNodesHint') }}</div>
-                </div>
-                <v-text-field
-                  v-model.number="dagCfg.dag_max_nodes"
-                  type="number"
-                  density="compact"
-                  variant="outlined"
-                  style="width: 120px;"
-                  hide-details
-                  :rules="[v => v >= 1 || 'Min 1']"
-                />
-              </div>
-            </div>
-
-            <div class="setting-card">
-              <div class="setting-card-head">
-                <div>
-                  <div class="setting-title">{{ tm('dag.maxParallel') }}</div>
-                  <div class="setting-subtitle">{{ tm('dag.maxParallelHint') }}</div>
-                </div>
-                <v-text-field
-                  v-model.number="dagCfg.dag_max_parallel"
-                  type="number"
-                  density="compact"
-                  variant="outlined"
-                  style="width: 120px;"
-                  hide-details
-                  :rules="[v => v >= 1 || 'Min 1']"
-                />
-              </div>
-            </div>
-
-            <div class="setting-card">
-              <div class="setting-card-head">
-                <div>
-                  <div class="setting-title">{{ tm('dag.maxInjectLength') }}</div>
-                  <div class="setting-subtitle">{{ tm('dag.maxInjectLengthHint') }}</div>
-                </div>
-                <v-text-field
-                  v-model.number="dagCfg.dag_max_inject_length"
-                  type="number"
-                  density="compact"
-                  variant="outlined"
-                  style="width: 120px;"
-                  hide-details
-                  :rules="[v => v >= 100 || 'Min 100']"
-                />
-              </div>
-            </div>
-          </template>
 
           <!-- 启用历史记忆 -->
           <div class="setting-card">
@@ -595,6 +515,20 @@
               </div>
             </div>
 
+            <div class="dashboard-card dashboard-card--padded mb-4">
+              <div class="dashboard-section-title section-mini-title">{{ tm('enhancedTools.mcpBlacklist') }}</div>
+              <div class="dashboard-section-subtitle mb-3">{{ tm('enhancedTools.mcpBlacklistHint') }}</div>
+              <v-select v-model="dynamicCfg.mcp_blacklist" :items="availableMcpServers" :label="tm('enhancedTools.mcpSelect')" multiple chips closable-chips clearable variant="outlined" density="comfortable" hide-details />
+            </div>
+            <div class="dashboard-card dashboard-card--padded mb-4">
+              <div class="dashboard-section-title section-mini-title">{{ tm('enhancedTools.mcpInherent') }}</div>
+              <div class="dashboard-section-subtitle mb-3">{{ tm('enhancedTools.mcpInherentHint') }}</div>
+              <v-alert v-if="conflictingMcpPolicies.length" type="warning" variant="tonal" class="mb-3">
+                {{ tm('enhancedTools.mcpPolicyConflict', { names: conflictingMcpPolicies.join(', ') }) }}
+              </v-alert>
+              <v-select v-model="dynamicCfg.mcp_inherent" :items="inherentMcpServers" :label="tm('enhancedTools.mcpSelect')" multiple chips closable-chips clearable variant="outlined" density="comfortable" hide-details />
+            </div>
+
             <!-- 工具黑名单 -->
             <div class="dashboard-card dashboard-card--padded mb-4">
               <div class="dashboard-section-title section-mini-title">{{ tm('enhancedTools.blacklist') }}</div>
@@ -758,7 +692,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { onBeforeRouteLeave } from 'vue-router'
 import { useTheme } from 'vuetify'
-import { subagentApi } from '@/api/v1'
+import { mcpApi, subagentApi } from '@/api/v1'
 import PersonaQuickPreview from '@/components/shared/PersonaQuickPreview.vue'
 import PersonaSelector from '@/components/shared/PersonaSelector.vue'
 import ProviderSelector from '@/components/shared/ProviderSelector.vue'
@@ -789,6 +723,8 @@ type DynamicAgentsConfig = {
   rule_prompt: string
   tools_blacklist: string[]
   tools_inherent: string[]
+  mcp_blacklist: string[]
+  mcp_inherent: string[]
 }
 
 type SubAgentOrchestratorConfig = {
@@ -802,13 +738,6 @@ type SubAgentOrchestratorConfig = {
   shared_context_maxlen: number
   execution_timeout: number
   time_prompt_enabled: boolean
-}
-
-type DAGConfig = {
-  dag_enabled: boolean
-  dag_max_nodes: number
-  dag_max_parallel: number
-  dag_max_inject_length: number
 }
 
 type AvailableTool = {
@@ -878,7 +807,6 @@ const DEFAULT_BLACKLIST = [
   'remove_subagent',
   'list_subagents',
   'wait_for_subagent',
-  'orchestrate_tasks',
   'broadcast_shared_context',
   'view_shared_context'
 ]
@@ -908,7 +836,9 @@ const dynamicCfg = ref<DynamicAgentsConfig>({
   default_provider_id: '',
   rule_prompt: '',
   tools_blacklist: [...DEFAULT_BLACKLIST],
-  tools_inherent: [...DEFAULT_INHERENT]
+  tools_inherent: [...DEFAULT_INHERENT],
+  mcp_blacklist: [],
+  mcp_inherent: []
 })
 
 const rootCfg = ref({
@@ -920,24 +850,6 @@ const rootCfg = ref({
   context_inherit_mode: 'normal'
 })
 
-const dagCfg = ref<DAGConfig>({
-  dag_enabled: false,
-  dag_max_nodes: 10,
-  dag_max_parallel: 5,
-  dag_max_inject_length: 4000
-})
-
-const orchestrationModeOptions = [
-  { title: '默认', value: 'default' },
-  { title: 'DAG 编排', value: 'dag' }
-]
-
-const orchestrationMode = computed({
-  get: () => dagCfg.value.dag_enabled ? 'dag' : 'default',
-  set: (val: string) => {
-    dagCfg.value.dag_enabled = val === 'dag'
-  }
-})
 
 const CONTEXT_INHERIT_MODES = ['normal', 'fork', 'auto']
 
@@ -953,7 +865,7 @@ const mainStateDescription = computed(() =>
 
 const hasUnsavedChanges = computed(() => {
   if (!hasLoaded.value) return false
-  const currentSnapshot = serializeFullConfig(cfg.value, dynamicCfg.value, rootCfg.value, dagCfg.value)
+  const currentSnapshot = serializeFullConfig(cfg.value, dynamicCfg.value, rootCfg.value)
   return currentSnapshot !== initialSnapshot.value
 })
 
@@ -990,7 +902,9 @@ function normalizeDynamicAgents(raw: any): DynamicAgentsConfig {
     default_provider_id: (src?.default_provider_id ?? '').toString(),
     rule_prompt: (src?.rule_prompt ?? '').toString(),
     tools_blacklist: blacklist !== null ? blacklist : [...DEFAULT_BLACKLIST],
-    tools_inherent: inherent !== null ? inherent : [...DEFAULT_INHERENT]
+    tools_inherent: inherent !== null ? inherent : [...DEFAULT_INHERENT],
+    mcp_blacklist: Array.isArray(src?.mcp_blacklist) ? src.mcp_blacklist : [],
+    mcp_inherent: Array.isArray(src?.mcp_inherent) ? src.mcp_inherent : []
   }
 }
 
@@ -1008,17 +922,7 @@ function normalizeRootConfig(raw: any) {
   }
 }
 
-function normalizeDagConfig(raw: any): DAGConfig {
-  const orchData = raw?.subagent_orchestrator || raw || {}
-  return {
-    dag_enabled: orchData?.dag_enabled === true,
-    dag_max_nodes: Number(orchData?.dag_max_nodes) || 10,
-    dag_max_parallel: Number(orchData?.dag_max_parallel) || 5,
-    dag_max_inject_length: Number(orchData?.dag_max_inject_length) || 4000
-  }
-}
-
-function serializeFullConfig(config: SubAgentConfig, dynamic: DynamicAgentsConfig, root: any, dag: DAGConfig): string {
+function serializeFullConfig(config: SubAgentConfig, dynamic: DynamicAgentsConfig, root: any): string {
   return JSON.stringify({
     main_enable: config.main_enable,
     remove_main_duplicate_tools: config.remove_main_duplicate_tools,
@@ -1037,24 +941,56 @@ function serializeFullConfig(config: SubAgentConfig, dynamic: DynamicAgentsConfi
       default_provider_id: dynamic.default_provider_id,
       rule_prompt: dynamic.rule_prompt,
       tools_blacklist: dynamic.tools_blacklist,
-      tools_inherent: dynamic.tools_inherent
+      tools_inherent: dynamic.tools_inherent,
+      mcp_blacklist: dynamic.mcp_blacklist,
+      mcp_inherent: dynamic.mcp_inherent
     },
     history_enabled: root.history_enabled,
     shared_context_enabled: root.shared_context_enabled,
     shared_context_maxlen: root.shared_context_maxlen,
     execution_timeout: root.execution_timeout,
     time_prompt_enabled: root.time_prompt_enabled,
-    context_inherit_mode: root.context_inherit_mode,
-    dag_enabled: dag.dag_enabled,
-    dag_max_nodes: dag.dag_max_nodes,
-    dag_max_parallel: dag.dag_max_parallel,
-    dag_max_inject_length: dag.dag_max_inject_length
+    context_inherit_mode: root.context_inherit_mode
   })
 }
 
 function addToolFromCombobox() {
   if (!toolSelectorSearch.value) return
   addToolToList(toolSelectorSearch.value)
+}
+
+const mcpServerOptions = ref<{ title: string; value: string; conflict: boolean }[]>([])
+const conflictingMcpPolicies = computed(() => [...new Set(mcpServerOptions.value.filter(option => option.conflict).map(option => option.value))])
+const availableMcpServers = computed(() => {
+  const options = [...mcpServerOptions.value]
+  for (const value of [...dynamicCfg.value.mcp_blacklist, ...dynamicCfg.value.mcp_inherent]) {
+    if (!options.some(option => option.value === value)) options.push({ title: value, value, conflict: false })
+  }
+  return options
+})
+const inherentMcpServers = computed(() => availableMcpServers.value.map(option => ({
+  ...option,
+  props: { disabled: conflictingMcpPolicies.value.includes(option.value) }
+})))
+
+async function loadMcpServers() {
+  try {
+    const res = await mcpApi.list()
+    if (res.data.status === 'ok') {
+      mcpServerOptions.value = (res.data.data || [])
+        .filter((server: any) => server.active)
+        .map((server: any) => ({
+          title: server.source === 'runtime' ? `${server.name} (${tm('enhancedTools.runtimeMcp')})` : server.name,
+          value: server.policy_name || server.name,
+          conflict: server.policy_conflict === true
+        }))
+    } else {
+      toast(res.data.message || tm('enhancedTools.mcpLoadFailed'), 'error')
+    }
+  } catch (e) {
+    console.error('Failed to load MCP servers:', e)
+    toast(tm('enhancedTools.mcpLoadFailed'), 'error')
+  }
 }
 
 async function loadAvailableTools() {
@@ -1078,9 +1014,8 @@ async function loadConfig() {
       cfg.value = normalizeConfig(data.subagent_orchestrator || data)
       dynamicCfg.value = normalizeDynamicAgents(data.subagent_orchestrator || data)
       rootCfg.value = normalizeRootConfig(data.subagent_orchestrator || data)
-      dagCfg.value = normalizeDagConfig(data.subagent_orchestrator || data)
       expandedAgents.value = Object.fromEntries(cfg.value.agents.map((agent) => [agent.__key, false]))
-      initialSnapshot.value = serializeFullConfig(cfg.value, dynamicCfg.value, rootCfg.value, dagCfg.value)
+      initialSnapshot.value = serializeFullConfig(cfg.value, dynamicCfg.value, rootCfg.value)
       hasLoaded.value = true
     } else {
       toast(res.data.message || tm('messages.loadConfigFailed'), 'error')
@@ -1170,23 +1105,21 @@ async function save() {
         default_provider_id: dynamicCfg.value.default_provider_id,
         rule_prompt: dynamicCfg.value.rule_prompt,
         tools_blacklist: dynamicCfg.value.tools_blacklist,
-        tools_inherent: dynamicCfg.value.tools_inherent
+        tools_inherent: dynamicCfg.value.tools_inherent,
+        mcp_blacklist: dynamicCfg.value.mcp_blacklist,
+        mcp_inherent: dynamicCfg.value.mcp_inherent
       },
       history_enabled: rootCfg.value.history_enabled,
       shared_context_enabled: rootCfg.value.shared_context_enabled,
       shared_context_maxlen: rootCfg.value.shared_context_maxlen,
       execution_timeout: rootCfg.value.execution_timeout,
       time_prompt_enabled: rootCfg.value.time_prompt_enabled,
-      context_inherit_mode: rootCfg.value.context_inherit_mode,
-      dag_enabled: dagCfg.value.dag_enabled,
-      dag_max_nodes: dagCfg.value.dag_max_nodes,
-      dag_max_parallel: dagCfg.value.dag_max_parallel,
-      dag_max_inject_length: dagCfg.value.dag_max_inject_length
+      context_inherit_mode: rootCfg.value.context_inherit_mode
     }
 
     const res = await subagentApi.updateConfig(payload)
     if (res.data.status === 'ok') {
-      initialSnapshot.value = serializeFullConfig(cfg.value, dynamicCfg.value, rootCfg.value, dagCfg.value)
+      initialSnapshot.value = serializeFullConfig(cfg.value, dynamicCfg.value, rootCfg.value)
       toast(res.data.message || tm('messages.saveSuccess'), 'success')
     } else {
       toast(res.data.message || tm('messages.saveFailed'), 'error')
@@ -1208,7 +1141,7 @@ async function reload() {
       return
     }
   }
-  await loadConfig()
+  await Promise.all([loadConfig(), loadMcpServers()])
 }
 
 async function confirmLeaveIfNeeded(): Promise<boolean> {
@@ -1284,6 +1217,7 @@ onMounted(() => {
   window.addEventListener('beforeunload', handleBeforeUnload)
   loadConfig()
   loadAvailableTools()
+  loadMcpServers()
 })
 
 onBeforeUnmount(() => {

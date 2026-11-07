@@ -158,6 +158,7 @@ beforeEach(() => {
     allLoadedCount: 1,
     fetchedAt: 1,
     bootId: null,
+    agentsMd: false,
   };
 });
 

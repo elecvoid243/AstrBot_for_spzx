@@ -3423,10 +3423,36 @@ paths:
           schema: { type: string }
       responses:
         '200':
-          description: Compact invocation metadata without execution traces
+          description: Compact invocation metadata with agent instance IDs, start times and task previews, without execution traces
           content:
             application/json:
               schema: { $ref: '#/components/schemas/SuccessEnvelope' }
+  /api/v1/chat/sessions/{session_id}/subagent-runs/{run_id}/configuration:
+    get:
+      operationId: getChatSubagentConfiguration
+      summary: Read a subagent invocation configuration snapshot
+      description: Requires ownership of the WebChat session or thread. Returns the configuration captured at invocation time, without provider credentials or execution traces.
+      security: [{ BearerAuth: [] }]
+      tags: [Chat]
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          schema: { type: string }
+        - name: run_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Configuration snapshot; empty for legacy invocations without a snapshot
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SuccessEnvelope' }
+        '403':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
   /api/v1/chat/sessions/{session_id}/subagent-runs/stream:
     get:
       operationId: streamChatSubagentRuns
@@ -5467,7 +5493,32 @@ paths:
       x-astrbot-scope: mcp
       responses:
         "200":
-          $ref: "#/components/responses/Ok"
+          description: Configured and runtime MCP servers
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, data]
+                properties:
+                  status: { type: string, const: ok }
+                  message: { type: string }
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      required: [name, policy_name, policy_conflict, source, readonly, active, connected, tools]
+                      properties:
+                        name: { type: string }
+                        policy_name: { type: string }
+                        policy_conflict: { type: boolean }
+                        source: { type: string, enum: [config, runtime] }
+                        readonly: { type: boolean }
+                        active: { type: boolean }
+                        connected: { type: boolean }
+                        tools:
+                          type: array
+                          items: { type: string }
+                      additionalProperties: true
     post:
       tags: [MCP]
       summary: Add an MCP server

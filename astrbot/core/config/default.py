@@ -293,12 +293,13 @@ DEFAULT_CONFIG = {
                 "You are in Safe Mode. Refuse any request for harmful, illegal, or explicit content. "
                 "Offer safe alternatives when possible.\n"
             ),
+            "mcp_blacklist": [],
+            "mcp_inherent": [],
             "tools_blacklist": [
                 "create_subagent",
                 "remove_subagent",
                 "list_subagents",
                 "wait_for_subagent",
-                "orchestrate_tasks",
                 "broadcast_shared_context",
                 "view_shared_context",
             ],
@@ -336,10 +337,6 @@ DEFAULT_CONFIG = {
         #   inherited prefix, so only a prefix with ample run headroom
         #   keeps the fork beneficial; otherwise fall back to normal mode.
         "context_inherit_mode": "normal",
-        "dag_enabled": False,
-        "dag_max_nodes": 10,
-        "dag_max_parallel": 5,
-        "dag_max_inject_length": 4000,
     },
     "provider_stt_settings": {
         "enable": False,

@@ -758,7 +758,8 @@
           v-if="currSessionId"
           ref="subagentPagesRef"
           :session-id="currSessionId"
-          :title="currentSessionTitle"
+          :toolbar-target="props.active ? '#chat-session-navigation' : undefined"
+          :before-navigate="confirmFileNavigation"
           :is-dark="isDark"
           @view-change="onSubagentViewChange"
         />
@@ -854,126 +855,6 @@
           @pointerdown="handleMessagesScrollIntent"
           @keydown="handleMessagesScrollIntent"
         >
-          <!-- 可拖动的 todo summary 浮窗 + 可展开悬浮菜单:
-               初始位置: 页面顶部正中;
-               拖动范围: 不得超出 .chat-main 边界,不得进入 .composer-shell 区域;
-               位置持久化: localStorage。
-               键盘 a11y: tabindex=0 让 button 可被 Tab 聚焦;Enter/Space 自动触发 click
-               (浏览器对 <button> 的默认行为,会调用 onTodoBarClick → toggleTodoMenu);
-               方向键移动位置 (8px/次),复用 clampBarPos + 同一个 localStorage key。
-               点击胶囊展开悬浮菜单 (TodoListPanel);菜单由 placeTodoMenu 做
-               锚定 + 双向翻转 + 边界夹取,胶囊贴边时菜单向内侧展开,永不越界。-->
-          <transition name="todo-bar-fade">
-            <button
-              v-if="currentTodoSnapshot"
-              type="button"
-              class="todo-summary-bar"
-              :class="{
-                'todo-summary-bar--active': todoMenuOpen,
-                'todo-summary-bar--dragging': isDraggingTodoBar,
-                'todo-summary-bar--centered': todoBarPos === null,
-                'todo-summary-bar--gitdiff-fullscreen':
-                  gitDiffSidebarOpen && gitDiffFullscreen,
-              }"
-              :style="todoBarStyle"
-              tabindex="0"
-              :aria-label="tm('todo.summary')"
-              :aria-expanded="todoMenuOpen"
-              :aria-keyshortcuts="todoBarKeyShortcuts"
-              @mousedown="startDragTodoBar"
-              @click="onTodoBarClick"
-              @keydown="onTodoBarKeydown"
-            >
-              <v-icon size="16" class="todo-summary-icon"
-                >mdi-format-list-checks</v-icon
-              >
-              <v-icon size="14" class="todo-summary-drag-handle"
-                >mdi-drag-horizontal-variant</v-icon
-              >
-              <span class="todo-summary-text">
-                {{ currentTodoSnapshot.stats?.done || 0 }}/{{
-                  currentTodoSnapshot.stats?.effective_total || 0
-                }}
-                <template v-if="currentTodoSnapshot.stats?.in_progress">
-                  ·
-                  <span class="todo-summary-progress"
-                    >{{ currentTodoSnapshot.stats.in_progress }} in
-                    progress</span
-                  >
-                </template>
-              </span>
-              <v-progress-circular
-                v-if="
-                  currentTodoSnapshot.stats?.progress_pct > 0 &&
-                  currentTodoSnapshot.stats?.progress_pct < 100
-                "
-                :model-value="currentTodoSnapshot.stats.progress_pct"
-                :size="16"
-                :width="2"
-                class="todo-summary-circular"
-              >
-                {{ currentTodoSnapshot.stats.progress_pct }}%
-              </v-progress-circular>
-              <v-icon
-                v-if="currentTodoSnapshot.attentionItems?.length"
-                size="10"
-                color="warning"
-                class="todo-summary-attention"
-                :title="
-                  tm('todo.attentionHint', {
-                    count: currentTodoSnapshot.attentionItems.length,
-                  })
-                "
-                >mdi-circle-medium</v-icon
-              >
-            </button>
-          </transition>
-
-          <!-- todo summary 悬浮菜单: 与胶囊同层 (position: fixed) 的兄弟
-               面板, 位置完全由 placeTodoMenu 计算的 todoMenuStyle 决定。
-               z-index 略低于胶囊, 随 gitdiff 全屏一起降级。 -->
-          <transition name="todo-menu-pop">
-            <div
-              v-if="todoMenuOpen && currentTodoSnapshot"
-              ref="todoMenuRef"
-              class="todo-summary-menu"
-              :class="{
-                'todo-summary-menu--gitdiff-fullscreen':
-                  gitDiffSidebarOpen && gitDiffFullscreen,
-                'todo-summary-menu--above':
-                  todoMenuPlacement?.anchor === 'bottom',
-              }"
-              :style="todoMenuStyle"
-              @click.stop
-              @keydown.esc.stop="closeTodoMenu"
-            >
-              <div class="todo-menu-body">
-                <TodoListPanel
-                  :list="currentTodoSnapshot.list"
-                  :stats="currentTodoSnapshot.stats"
-                  :attention-items="currentTodoSnapshot.attentionItems || []"
-                  collapsible
-                  :show-header="false"
-                />
-              </div>
-              <div
-                v-if="currentTodoSnapshot.list?.updated_at"
-                class="todo-menu-footer"
-              >
-                <v-icon size="12" class="todo-menu-footer-icon"
-                  >mdi-clock-outline</v-icon
-                >
-                {{
-                  tm("todo.updatedAt", {
-                    time: formatTodoUpdatedAt(
-                      currentTodoSnapshot.list.updated_at,
-                    ),
-                  })
-                }}
-              </div>
-            </div>
-          </transition>
-
           <!-- 加载中 / 消息流 / 欢迎区 主体内容 -->
           <v-alert v-if="chatError" type="error" variant="tonal" class="ma-4">{{
             chatError
@@ -1069,16 +950,21 @@
             <button
               type="button"
               class="jump-to-bottom"
+              :class="{ 'jump-to-bottom--live': streamingWhileAway }"
               :title="tm('actions.scrollToBottom')"
               :aria-label="tm('actions.scrollToBottom')"
               @click="jumpToBottom"
             >
-              <v-icon size="20">mdi-chevron-down</v-icon>
+              <v-icon class="jump-to-bottom-arrow" size="20"
+                >mdi-chevron-down</v-icon
+              >
               <span
                 v-if="streamingWhileAway"
-                class="jump-to-bottom-live"
+                class="jump-to-bottom-typing"
                 aria-hidden="true"
-              />
+              >
+                <span></span><span></span><span></span>
+              </span>
             </button>
           </div>
         </transition>
@@ -1274,7 +1160,6 @@
       :file-reference="fileReferenceNavigation"
       :is-dark="isDark"
       :chat-id="currSessionId"
-      @fullscreen-change="gitDiffFullscreen = $event"
     />
     <WorkspaceFilesPanel
       :model-value="chatHeader.workspaceFilesOpen"
@@ -1371,7 +1256,6 @@ import {
   markSessionLoadedTag,
   clearSessionLoadedTag,
 } from "@/composables/useSpcodeProjectAutoLoad";
-import { useSpcodeOperationProgress } from "@/composables/useSpcodeOperationProgress";
 import { useSpcodeCodegraphStatus } from "@/composables/useSpcodeCodegraphStatus";
 import { useSpcodeVivadoStatus } from "@/composables/useSpcodeVivadoStatus";
 import { useSpcodePlanMode } from "@/composables/useSpcodePlanMode";
@@ -1413,7 +1297,6 @@ import ThreadPanel from "@/components/chat/ThreadPanel.vue";
 import WorkspaceFilesPanel from "@/components/chat/WorkspaceFilesPanel.vue";
 import RefsSidebar from "@/components/chat/message_list_comps/RefsSidebar.vue";
 import GoalSidebar from "@/components/chat/message_list_comps/GoalSidebar.vue";
-import TodoListPanel from "@/components/chat/message_list_comps/spcode_tools/TodoListPanel.vue";
 import GitDiffSidebar from "@/components/chat/GitDiffSidebar.vue";
 import {
   OPEN_FILE_REFERENCE,
@@ -1540,9 +1423,6 @@ const { tm } = useModuleI18n("features/chat");
 // the plugin's HTTP API.
 const spcodeStatus = useSpcodeProjectStatus();
 const { silentLoad } = useSpcodeProjectAutoLoad();
-// Operation-progress poller: started around silentLoad so the input-area
-// chip shows live step progress during auto-load too (2026-08-06).
-const operationProgress = useSpcodeOperationProgress();
 const codegraphStatus = useSpcodeCodegraphStatus();
 const vivadoStatus = useSpcodeVivadoStatus();
 // Plan/build mode singleton. Mirrors the spcodeStatus lifecycle so
@@ -1873,155 +1753,19 @@ const activeReasoningTarget = ref<{
 } | null>(null);
 const deletingThread = ref(false);
 const refsSidebarOpen = ref(false);
-// 2026-09-09: TodoSidebar removed. The floating summary bar now expands
-// in place into a floating menu; the open state is local (the app-bar
-// button no longer opens the todo view — it became the Goal entry).
-const todoMenuOpen = ref(false);
-const todoMenuRef = ref<HTMLElement | null>(null);
-
-/** 悬浮菜单定位结果 (viewport 坐标, 面板为 position: fixed)。
- *  anchor "top"    = 挂在胶囊下方 (edge = 距视口顶部的 px);
- *  anchor "bottom" = 向上翻开 (edge = 距视口底部的 px)。 */
-const todoMenuPlacement = ref<{
-  left: number;
-  edge: number;
-  anchor: "top" | "bottom";
-  maxHeight: number;
-} | null>(null);
-
-const TODO_MENU_WIDTH = 340;
-const TODO_MENU_GAP = 8;
-const TODO_MENU_MIN_HEIGHT = 160;
-const TODO_MENU_EDGE_MARGIN = 8;
-
-const todoMenuStyle = computed(() => {
-  if (!todoMenuPlacement.value) {
-    // v-if 刚翻转的第一帧: 先隐藏渲染, 等 placeTodoMenu 量完再显示,
-    // 避免菜单在 (0,0) 闪一下。
-    return { visibility: "hidden" as const };
-  }
-  const p = todoMenuPlacement.value;
-  return {
-    left: `${p.left}px`,
-    maxHeight: `${p.maxHeight}px`,
-    ...(p.anchor === "top"
-      ? { top: `${p.edge}px` }
-      : { bottom: `${p.edge}px` }),
-  };
+// 2026-11-07 (elecvoid243): the todo summary lives in the app bar now, next
+// to the goal entry. The snapshot and the menu's open state are shared through
+// the chatHeader store (same push-based pattern as goalBadge); Chat.vue keeps a
+// writable alias because opening any right-hand panel must close the menu.
+const todoMenuOpen = computed({
+  get: () => chatHeader.todoMenuOpen,
+  set: (open: boolean) => chatHeader.SET_TODO_MENU_OPEN(open),
 });
-
-/**
- * 悬浮菜单定位: 锚定 + 双向翻转 + 边界夹取。
- *
- * 水平: 默认与胶囊左缘对齐; 右侧放不下 → 改为右缘与胶囊右缘对齐
- * (左翻); 最后整体夹取进 .chat-main, 胶囊贴任何边都不会越界。
- * 垂直: 默认挂在胶囊下方; 下方空间不足 (会压到 composer 区) → 向上
- * 翻开 (bottom 锚定); 两侧都不够 → 选空间大的一侧并压缩 max-height
- * (菜单内部滚动兜底)。
- *
- * 位置读 todoBarPos (拖动中的响应式值, 无 DOM 渲染滞后), 尺寸读胶囊
- * rect; 居中态 (CSS translateX(-50%)) 的 rect 已含 transform, 直接可用。
- */
-function placeTodoMenu() {
-  if (!todoMenuOpen.value) return;
-  const bar = document.querySelector(".todo-summary-bar") as HTMLElement | null;
-  const main = document.querySelector(".chat-main") as HTMLElement | null;
-  if (!bar || !main) return;
-  const barRect = bar.getBoundingClientRect();
-  const mainRect = main.getBoundingClientRect();
-  const composer = document.querySelector(
-    ".chat-main .composer-shell",
-  ) as HTMLElement | null;
-  const bottomBound = composer
-    ? composer.getBoundingClientRect().top - 4
-    : mainRect.bottom;
-  // 窄屏下 CSS 会把菜单收缩到视口内, 用实测宽度而不是常量
-  const menuWidth = todoMenuRef.value?.offsetWidth || TODO_MENU_WIDTH;
-
-  const pillLeft = todoBarPos.value ? todoBarPos.value.left : barRect.left;
-  const pillTop = todoBarPos.value ? todoBarPos.value.top : barRect.top;
-  const pillRight = pillLeft + barRect.width;
-  const pillBottom = pillTop + barRect.height;
-
-  // 水平: 左对齐 → 右对齐翻转 → 夹取
-  let left = pillLeft;
-  if (left + menuWidth > mainRect.right - TODO_MENU_EDGE_MARGIN) {
-    left = pillRight - menuWidth;
-  }
-  left = Math.max(
-    mainRect.left + TODO_MENU_EDGE_MARGIN,
-    Math.min(left, mainRect.right - TODO_MENU_EDGE_MARGIN - menuWidth),
-  );
-
-  // 垂直: 先下方, 空间不足上翻, 两侧都不够取大者并压缩高度
-  const spaceBelow = bottomBound - (pillBottom + TODO_MENU_GAP);
-  const spaceAbove = pillTop - TODO_MENU_GAP - mainRect.top;
-  let anchor: "top" | "bottom";
-  let edge: number;
-  let maxHeight: number;
-  if (spaceBelow >= TODO_MENU_MIN_HEIGHT || spaceBelow >= spaceAbove) {
-    anchor = "top";
-    edge = pillBottom + TODO_MENU_GAP;
-    maxHeight = Math.max(TODO_MENU_MIN_HEIGHT, spaceBelow);
-  } else {
-    anchor = "bottom";
-    edge = window.innerHeight - pillTop + TODO_MENU_GAP;
-    maxHeight = Math.max(TODO_MENU_MIN_HEIGHT, spaceAbove);
-  }
-  todoMenuPlacement.value = { left, edge, anchor, maxHeight };
-}
-
-function toggleTodoMenu() {
-  if (todoMenuOpen.value) {
-    closeTodoMenu();
-    return;
-  }
-  todoMenuOpen.value = true;
-  // 等菜单渲染出来再测量定位 (真实盒高/宽度)
-  nextTick(placeTodoMenu);
-}
 
 function closeTodoMenu() {
-  todoMenuOpen.value = false;
-  todoMenuPlacement.value = null;
+  chatHeader.SET_TODO_MENU_OPEN(false);
 }
 
-/** 点击胶囊和菜单以外的区域时关闭 (capture 阶段, 抢在其它 handler 前)。 */
-function onDocMouseDownForTodoMenu(e: MouseEvent) {
-  const target = e.target as Node;
-  const menu = todoMenuRef.value;
-  const bar = document.querySelector(".todo-summary-bar");
-  if (menu && (menu.contains(target) || bar?.contains(target))) return;
-  closeTodoMenu();
-}
-
-watch(todoMenuOpen, (open) => {
-  if (open) {
-    document.addEventListener("mousedown", onDocMouseDownForTodoMenu, true);
-    window.addEventListener("resize", placeTodoMenu);
-  } else {
-    document.removeEventListener("mousedown", onDocMouseDownForTodoMenu, true);
-    window.removeEventListener("resize", placeTodoMenu);
-    todoMenuPlacement.value = null;
-  }
-});
-
-/** Render list.updated_at ISO string as a compact time label
- *  ("HH:MM" same day, "MM-DD HH:MM" otherwise) for the menu footer. */
-function formatTodoUpdatedAt(value: string | undefined): string {
-  if (!value) return "";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  const pad = (n: number) => String(n).padStart(2, "0");
-  const now = new Date();
-  const sameDay =
-    date.getFullYear() === now.getFullYear() &&
-    date.getMonth() === now.getMonth() &&
-    date.getDate() === now.getDate();
-  const hm = `${pad(date.getHours())}:${pad(date.getMinutes())}`;
-  if (sameDay) return hm;
-  return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${hm}`;
-}
 const gitDiffSidebarRef = ref<{
   confirmLeaveEditing: () => Promise<boolean>;
   prepareAgentBrowser: () => Promise<boolean>;
@@ -2115,165 +1859,6 @@ async function autoOpenAgentBrowser(
     // Optional observation must not interrupt the agent or show missing-plugin errors.
   }
 }
-const gitDiffFullscreen = ref(false);
-
-/* ── todo summary bar 拖动 ───────────────────────────
- * 浮窗可拖动,位置持久化到 localStorage。
- * 边界:不得超出 .chat-main 矩形,不得进入 .composer-shell 区域(按 max 高度算)。
- */
-type BarPos = { left: number; top: number };
-const TODO_BAR_POS_KEY = "chatui.todoBarPos.v1";
-const todoBarPos = ref<BarPos | null>(null);
-const isDraggingTodoBar = ref(false);
-let dragState: {
-  mouseStartX: number;
-  mouseStartY: number;
-  barStartLeft: number;
-  barStartTop: number;
-  didMove: boolean;
-} | null = null;
-let suppressNextClick = false;
-
-/** 把 (left, top) 限制在 chat-main 内, 不与 composer-shell 重叠。 */
-function clampBarPos(
-  desiredLeft: number,
-  desiredTop: number,
-  barRect: DOMRect,
-  mainRect: DOMRect,
-): BarPos {
-  // 边界: 不得超出 main 矩形
-  const minLeft = mainRect.left;
-  const maxLeft = Math.max(minLeft, mainRect.right - barRect.width);
-  const minTop = mainRect.top;
-  // 输入框区域: chat-main 内 .composer-shell 的顶部。
-  // composer 在多行内容时会增高, 这里直接以"main 底部减 bar 高度"作为最底,
-  // 避免压到任何状态下的输入框 (单行/多行均不会越界)。
-  const composer = document.querySelector(
-    ".chat-main .composer-shell",
-  ) as HTMLElement | null;
-  let maxTop: number;
-  if (composer) {
-    const composerRect = composer.getBoundingClientRect();
-    // composer 区域可能因为多行内容上下扩张, 取其 top 减 bar 高度
-    maxTop = composerRect.top - barRect.height - 4;
-  } else {
-    maxTop = mainRect.bottom - barRect.height;
-  }
-  maxTop = Math.max(minTop, maxTop);
-
-  return {
-    left: Math.max(minLeft, Math.min(desiredLeft, maxLeft)),
-    top: Math.max(minTop, Math.min(desiredTop, maxTop)),
-  };
-}
-
-/** 记录当前 CSS 居中渲染出的视觉位置,作为首次 mousedown 的拖动起点。
- *  直接复用 .todo-summary-bar--centered (left: 50% / top: 60px + translateX(-50%))
- *  此刻的 getBoundingClientRect —— 它已经包含了 transform,
- *  因此后续切到内联 left/top 像素值时,坐标完全一致,不会瞬移。
- *  仅在 todoBarPos === null 时调用。
- */
-function initTodoBarPos() {
-  nextTick(() => {
-    const bar = document.querySelector(
-      ".todo-summary-bar",
-    ) as HTMLElement | null;
-    if (!bar) return;
-    const rect = bar.getBoundingClientRect();
-    todoBarPos.value = { left: rect.left, top: rect.top };
-  });
-}
-
-/** 计算最终应用的 inline style: 初始居中 / 拖动后 absolute。 */
-const todoBarStyle = computed(() => {
-  if (todoBarPos.value === null) {
-    return {}; // 由 CSS .todo-summary-bar--centered 居中
-  }
-  return {
-    left: `${todoBarPos.value.left}px`,
-    top: `${todoBarPos.value.top}px`,
-  };
-});
-
-function startDragTodoBar(e: MouseEvent) {
-  if (!todoBarPos.value) {
-    // 第一次出现: 同步初始化位置,然后进入拖动
-    initTodoBarPos();
-    // 等下一帧位置就绪后再开始 drag,否则 mouseStart 基准是错的
-    nextTick(() => {
-      if (todoBarPos.value) actuallyStartDrag(e);
-    });
-    return;
-  }
-  actuallyStartDrag(e);
-}
-
-function actuallyStartDrag(e: MouseEvent) {
-  if (!todoBarPos.value) return;
-  isDraggingTodoBar.value = true;
-  dragState = {
-    mouseStartX: e.clientX,
-    mouseStartY: e.clientY,
-    barStartLeft: todoBarPos.value.left,
-    barStartTop: todoBarPos.value.top,
-    didMove: false,
-  };
-  document.addEventListener("mousemove", onDragTodoBarMove);
-  document.addEventListener("mouseup", endDragTodoBar);
-  // 阻止默认文本选择
-  e.preventDefault();
-}
-
-function onDragTodoBarMove(e: MouseEvent) {
-  if (!dragState || !todoBarPos.value) return;
-  const deltaX = e.clientX - dragState.mouseStartX;
-  const deltaY = e.clientY - dragState.mouseStartY;
-  // 超过阈值才算"拖动",否则视为准备 click
-  if (!dragState.didMove && (Math.abs(deltaX) > 3 || Math.abs(deltaY) > 3)) {
-    dragState.didMove = true;
-    suppressNextClick = true; // 一旦真拖动, 屏蔽紧随其后的 click
-  }
-  if (!dragState.didMove) return;
-
-  const bar = document.querySelector(".todo-summary-bar") as HTMLElement | null;
-  const main = document.querySelector(".chat-main") as HTMLElement | null;
-  if (!bar || !main) return;
-  const mainRect = main.getBoundingClientRect();
-  const barRect = bar.getBoundingClientRect();
-  const desiredLeft = dragState.barStartLeft + deltaX;
-  const desiredTop = dragState.barStartTop + deltaY;
-  todoBarPos.value = clampBarPos(desiredLeft, desiredTop, barRect, mainRect);
-  // 菜单跟随胶囊 (placeTodoMenu 读的是响应式 todoBarPos, 无渲染滞后)
-  placeTodoMenu();
-}
-
-function endDragTodoBar() {
-  isDraggingTodoBar.value = false;
-  if (dragState?.didMove && todoBarPos.value) {
-    // 持久化拖动后的位置
-    try {
-      localStorage.setItem(TODO_BAR_POS_KEY, JSON.stringify(todoBarPos.value));
-    } catch {
-      /* 忽略 localStorage 写入失败 (隐私模式等) */
-    }
-  }
-  dragState = null;
-  document.removeEventListener("mousemove", onDragTodoBarMove);
-  document.removeEventListener("mouseup", endDragTodoBar);
-}
-
-/** 区分 click 和 drag 结束: 仅当未发生实际拖动时触发 toggle。 */
-function onTodoBarClick(e: MouseEvent) {
-  if (suppressNextClick) {
-    e.preventDefault();
-    e.stopPropagation();
-    suppressNextClick = false;
-    return;
-  }
-  toggleTodoMenu();
-}
-
-// localStorage 恢复已禁用: 每次居中,避免缓存污染。
 const selectedRefs = ref<Record<string, unknown> | null>(null);
 const threadSelection = reactive<{
   visible: boolean;
@@ -2321,7 +1906,7 @@ function toggleChatSidebar() {
  * 桌面端通过拖拽 right edge 调整 sidebar 宽度; 宽度持久化在
  * customizer.chatSidebarWidth (见 stores/customizer.ts)。移动端
  * sidebar 是 fixed 抽屉, 不参与拖拽。
- * 模式与同文件 todoBarPos 拖拽一致: dragState 单例 + 模块级 flag,
+ * 模式沿用 sidebar 拖拽: dragState 单例 + 模块级 flag,
  * mousemove/mouseup 注册在 window 而不是 document.body (避免被
  * 拖出页面外丢失事件)。 */
 const CHAT_SIDEBAR_RAIL_WIDTH = 56;
@@ -2356,6 +1941,7 @@ function startSidebarResize(e: MouseEvent) {
     didMove: false,
   };
   isResizingSidebar.value = true;
+  customizer.SET_CHAT_SIDEBAR_RESIZING(true);
   window.addEventListener("mousemove", onSidebarResizeMove);
   window.addEventListener("mouseup", onSidebarResizeEnd);
 }
@@ -2382,6 +1968,7 @@ function onSidebarResizeEnd() {
     sidebarDragState = null;
   }
   isResizingSidebar.value = false;
+  customizer.SET_CHAT_SIDEBAR_RESIZING(false);
   window.removeEventListener("mousemove", onSidebarResizeMove);
   window.removeEventListener("mouseup", onSidebarResizeEnd);
 }
@@ -2737,7 +2324,8 @@ const showJumpToBottom = computed(
   () => !followActive.value && distanceToBottom.value > 24,
 );
 // A reply is being written while the reader is parked in history — the case
-// the button exists for, so the pip tells them output is still arriving below.
+// the button exists for, so its face switches to the still-writing dots and
+// tells them output is still arriving below.
 const streamingWhileAway = computed(
   () =>
     showJumpToBottom.value &&
@@ -2883,27 +2471,28 @@ provide("isDark", isDark);
 // centre it (see centerInMessagesPanel) instead of writing scrollTop itself,
 // so stick-to-bottom and the reading anchor stay in one owner.
 provide("centerInMessagesPanel", centerInMessagesPanel);
-provide("openSubagentRun", async (part: Record<string, any>, sessionId?: string) => {
-  if (!(await confirmFileNavigation())) return;
-  viewportInteractionToken += 1;
-  endJumpLanding();
-  endJumpScrollLock();
-  jumpInProgress.value = false;
-  closeThreadPanel();
-  reasoningPanelOpen.value = false;
-  activeReasoningTarget.value = null;
-  refsSidebarOpen.value = false;
-  gitDiffSidebarOpen.value = false;
-  closeTodoMenu();
-  chatHeader.SET_WORKSPACE_FILES_OPEN(false);
-  chatHeader.SET_GOAL_SIDEBAR_OPEN(false);
+provide("openSubagentRun", (part: Record<string, any>, sessionId?: string) => {
   subagentPagesRef.value?.openRun(part, sessionId || currSessionId.value);
 });
 provide("subagentRunMetadata", (runId: string) => subagentPagesRef.value?.getRun(runId));
 
 async function onSubagentViewChange(open: boolean) {
   if (open === subagentPageOpen.value) return;
-  if (open) recordViewportAnchor(currSessionId.value);
+  if (open) {
+    recordViewportAnchor(currSessionId.value);
+    viewportInteractionToken += 1;
+    endJumpLanding();
+    endJumpScrollLock();
+    jumpInProgress.value = false;
+    closeThreadPanel();
+    reasoningPanelOpen.value = false;
+    activeReasoningTarget.value = null;
+    refsSidebarOpen.value = false;
+    gitDiffSidebarOpen.value = false;
+    closeTodoMenu();
+    chatHeader.SET_WORKSPACE_FILES_OPEN(false);
+    chatHeader.SET_GOAL_SIDEBAR_OPEN(false);
+  }
   subagentPageOpen.value = open;
   if (open) return;
   await nextTick();
@@ -3345,7 +2934,6 @@ async function tryAutoLoadSpcodeForSession(
   }
 
   try {
-    operationProgress.startPolling(umo);
     const data = await silentLoad({ project, umo });
     assertCurrentAccount(chatAccountRevision);
     if (data?.loaded) {
@@ -3562,15 +3150,14 @@ async function startNewChat() {
 }
 
 async function openCreateProjectDialog() {
-  if (isOrdinaryUser.value) {
-    editingProject.value = null;
-    projectDialogError.value = "";
-    projectDialogOpen.value = true;
-    return;
-  }
-  showChatWorkspace();
-  await nextTick();
-  inputRef.value?.openLoadDialog();
+  // The sidebar "+" is a project-creation entry for every role. It must not
+  // open the spcode directory-load dialog: that flow links the currently open
+  // conversation to the loaded directory, which is the opposite of what a
+  // project-creation entry should do. Loading a directory into the current
+  // session stays available from the composer's project chip / "+" menu.
+  editingProject.value = null;
+  projectDialogError.value = "";
+  projectDialogOpen.value = true;
 }
 
 function openEditProjectDialog(project: Project) {
@@ -4401,7 +3988,7 @@ async function ensureProjectSession() {
   return currSessionId.value || await newSession();
 }
 
-async function syncLoadedProject(sessionId: string, path: string | null, noAgentsmd = false, noCodegraph = false) {
+async function syncLoadedProject(sessionId: string, path: string | null) {
   const previousId = sessionProjects[sessionId]?.project_id;
   try {
     if (!path) {
@@ -4417,7 +4004,7 @@ async function syncLoadedProject(sessionId: string, path: string | null, noAgent
       });
       if (!project) {
         const title = path.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || path;
-        const created = await createProject(title, "📁", "", "custom", path, noAgentsmd, noCodegraph);
+        const created = await createProject(title, "📁", "", "custom", path);
         project = projects.value.find((item) => item.project_id === created.project_id);
       }
       if (!project) throw new Error("Failed to find created project");
@@ -4448,19 +4035,24 @@ async function saveProject(formData: ProjectFormData, projectId?: string) {
         formData.description,
         formData.workspace_type,
         formData.workspace_path,
-        formData.spcode_no_agentsmd,
-        formData.spcode_no_codegraph,
       );
     } else {
-      await createProject(
+      const created = await createProject(
         formData.title,
         formData.emoji,
         formData.description,
         formData.workspace_type,
         formData.workspace_path,
-        formData.spcode_no_agentsmd,
-        formData.spcode_no_codegraph,
       );
+      projectDialogOpen.value = false;
+      editingProject.value = null;
+      // Creation is a navigation action (2026-11-07): open the new project
+      // page so the user creates its first session there instead of silently
+      // attaching the conversation that happened to be open.
+      if (created?.project_id) {
+        await selectProject(created.project_id);
+      }
+      return;
     }
     projectDialogOpen.value = false;
     editingProject.value = null;
@@ -5943,41 +5535,12 @@ const currentTodoSnapshot = computed(() => {
   return latestTodoSnapshotBySession.value[sid] ?? null;
 });
 
-/** summary bar 出现时,如果持久化的位置已超出当前窗口, 则重置居中。
- *  同时: 快照被清空(todo_clear / 全删光)时同步关闭悬浮菜单,
- *  避免出现"bar 没了但菜单还开着显示空状态"的尴尬。
- */
+// Push the active session's todo snapshot into the app-bar store. The trigger
+// and the expandable menu are header concerns now; the store closes the menu
+// by itself when the snapshot disappears (todo_clear / every item removed).
 watch(
   currentTodoSnapshot,
-  (snap) => {
-    // 1) 快照为 null → 关菜单 (清空/全删空场景)
-    if (snap === null && todoMenuOpen.value) {
-      closeTodoMenu();
-    }
-    // 2) 快照非空且 bar 位置已确定 → 位置越界时回弹
-    if (!snap || todoBarPos.value === null) return;
-    nextTick(() => {
-      const main = document.querySelector(".chat-main") as HTMLElement | null;
-      const bar = document.querySelector(
-        ".todo-summary-bar",
-      ) as HTMLElement | null;
-      if (!main || !bar) return;
-      const mainRect = main.getBoundingClientRect();
-      const barRect = bar.getBoundingClientRect();
-      const clamped = clampBarPos(
-        todoBarPos.value!.left,
-        todoBarPos.value!.top,
-        barRect,
-        mainRect,
-      );
-      if (
-        clamped.left !== todoBarPos.value!.left ||
-        clamped.top !== todoBarPos.value!.top
-      ) {
-        todoBarPos.value = clamped;
-      }
-    });
-  },
+  (snap) => chatHeader.SET_TODO_SNAPSHOT(snap),
   { immediate: true },
 );
 
@@ -6034,87 +5597,6 @@ watch(
   },
   { immediate: true },
 );
-
-/** 键盘焦点落在 bar 上时的快捷键声明(用于 a11y 屏幕阅读器)。
- *
- * 实际行为:
- * - Enter / Space  → 浏览器对 <button> 的默认行为 → 触发 @click → toggleTodoMenu()
- * - Arrow 方向键  → onTodoBarKeydown → 移动位置 8px
- */
-const todoBarKeyShortcuts =
-  "Enter Space ArrowLeft ArrowRight ArrowUp ArrowDown";
-
-/** 键盘移动 bar 位置。Shift 加速为 32px/次;Home 复位到居中。 */
-const TODO_BAR_KEY_STEP = 8;
-function onTodoBarKeydown(e: KeyboardEvent) {
-  // 防御:只有 bar 可见且有快照时才进入(理论上 v-if 已 guard,但 keydown 仍要防)
-  if (!currentTodoSnapshot.value) return;
-
-  // 方向键移动
-  let dx = 0;
-  let dy = 0;
-  if (e.key === "ArrowLeft") dx = -1;
-  else if (e.key === "ArrowRight") dx = 1;
-  else if (e.key === "ArrowUp") dy = -1;
-  else if (e.key === "ArrowDown") dy = 1;
-  else if (e.key === "Home") {
-    // 复位:清空位置让 CSS centered 样式接管
-    todoBarPos.value = null;
-    try {
-      localStorage.removeItem(TODO_BAR_POS_KEY);
-    } catch {
-      /* ignore */
-    }
-    // 菜单跟随胶囊回居中位 (等 centered 样式应用后再量)
-    nextTick(placeTodoMenu);
-    e.preventDefault();
-    return;
-  } else {
-    // 其它键不拦(让 Enter/Space 等透传给 button 默认行为)
-    return;
-  }
-
-  // 阻止页面方向键滚动
-  e.preventDefault();
-  e.stopPropagation();
-  const step = (e.shiftKey ? 4 : 1) * TODO_BAR_KEY_STEP;
-
-  // 第一次方向键按下:如果位置未初始化,先按当前 CSS centered 位置算一个起点
-  if (todoBarPos.value === null) {
-    const bar = document.querySelector(
-      ".todo-summary-bar",
-    ) as HTMLElement | null;
-    const main = document.querySelector(".chat-main") as HTMLElement | null;
-    if (!bar || !main) return;
-    const mainRect = main.getBoundingClientRect();
-    const barRect = bar.getBoundingClientRect();
-    const startLeft =
-      mainRect.left + Math.max(16, (mainRect.width - barRect.width) / 2);
-    const startTop = mainRect.top + 16;
-    todoBarPos.value = clampBarPos(startLeft, startTop, barRect, mainRect);
-  }
-
-  const current = todoBarPos.value!;
-  const bar = document.querySelector(".todo-summary-bar") as HTMLElement | null;
-  const main = document.querySelector(".chat-main") as HTMLElement | null;
-  if (!bar || !main) return;
-  const mainRect = main.getBoundingClientRect();
-  const barRect = bar.getBoundingClientRect();
-  todoBarPos.value = clampBarPos(
-    current.left + dx * step,
-    current.top + dy * step,
-    barRect,
-    mainRect,
-  );
-  // 菜单跟随胶囊
-  placeTodoMenu();
-  // 持久化(与鼠标拖动 endDragTodoBar 共用同一 key,策略一致)
-  try {
-    localStorage.setItem(TODO_BAR_POS_KEY, JSON.stringify(todoBarPos.value));
-  } catch {
-    /* ignore quota / private mode */
-  }
-}
 
 /** RefsSidebar 的 modelValue 变化回调:关闭时由用户主动操作,无需特别处理;
  *  开启时由于 watch 已自动收起 todo,这里只作为占位以保持事件链可读。
@@ -7145,8 +6627,11 @@ function toggleTheme() {
   top: 0;
   right: 0;
   bottom: 0;
+  /* 2026-11-07 (elecvoid243): the hit area stays fully inside the sidebar.
+     The old `margin-right: -3px` straddled the seam, so half of the hover tint
+     landed in the chat column, where the 50px app bar clipped it. That 2px
+     step at the bar's lower edge read as the toolbar's left edge jutting out. */
   width: 6px;
-  margin-right: -3px;
   cursor: ew-resize;
   z-index: 10;
   background: transparent;
@@ -7786,207 +7271,6 @@ function toggleTheme() {
   font-size: 13px;
 }
 
-/* Todo summary bar — 浮窗式 (position: fixed)
-   初始位置: 顶部工具栏下方 64px 处的页面正中 (避开 50px v-app-bar + 14px buffer)
-   拖动后: 改用 inline style (left/top px), 通过 clampBarPos 限制在 chat-main 内
-   z-index 分层契约 (2026-07-26, elecvoid243):
-   - 高于侧栏 fullscreen 层 (ReasoningSidebar / GitDiffSidebar: 1300)
-   - 低于 Vuetify v-dialog (VDialog 默认 zIndex 2400, 每多一层 overlay +10),
-     使对话框弹出时 scrim 盖住气泡, 气泡不可点击 */
-.todo-summary-bar {
-  position: fixed;
-  z-index: 1400;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 5px 12px;
-  border: 1px solid rgba(var(--v-border-color), 0.18);
-  border-radius: 999px;
-  background: rgba(var(--v-theme-surface), 0.78);
-  color: rgba(var(--v-theme-on-surface), 0.82);
-  font-size: 12.5px;
-  font-weight: 500;
-  line-height: 1;
-  cursor: grab;
-  user-select: none;
-  -webkit-user-select: none;
-  transition:
-    background 0.18s ease,
-    border-color 0.18s ease,
-    color 0.18s ease,
-    box-shadow 0.18s ease;
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
-  max-width: calc(100vw - 24px);
-}
-.todo-summary-bar:hover {
-  background: rgba(var(--v-theme-primary), 0.1);
-  border-color: rgba(var(--v-theme-primary), 0.35);
-  color: rgb(var(--v-theme-on-surface));
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
-}
-.todo-summary-bar--active {
-  background: rgba(var(--v-theme-primary), 0.14);
-  border-color: rgba(var(--v-theme-primary), 0.5);
-  color: rgb(var(--v-theme-on-surface));
-  box-shadow: 0 0 0 2px rgba(var(--v-theme-primary), 0.15);
-}
-.todo-summary-bar--dragging {
-  cursor: grabbing;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-  transition: none; /* 拖动中不要 transition 跟手 */
-}
-/* 初始居中状态: 拖动后会被 inline left/top 覆盖
-   注意: top 必须大于 v-app-bar 的 50px,否则会被顶部工具栏遮挡;
-   z-index 抬高到 1201 略高于 .v-toolbar 的 1200,作为防御。*/
-.todo-summary-bar--centered {
-  left: 50% !important;
-  top: 60px !important;
-  z-index: 1201;
-  transform: translateX(-50%);
-  animation: todo-bar-fade-in 0.2s ease;
-}
-.todo-summary-bar--gitdiff-fullscreen {
-  z-index: 1200;
-}
-
-@keyframes todo-bar-fade-in {
-  from {
-    opacity: 0;
-    transform: translateX(-50%) translateY(-4px);
-  }
-  to {
-    opacity: 1;
-    transform: translateX(-50%) translateY(0);
-  }
-}
-
-/* 整体淡入/淡出: 跟随 currentTodoSnapshot 的 v-if 切换。
-   故意只动 opacity,不碰 transform — 避免和 --centered 的
-   translateX(-50%) 互相覆盖造成"漂"的感觉。
-   leave 时短暂禁用 pointer-events,防止用户在淡出过程中误点。 */
-.todo-bar-fade-enter-active,
-.todo-bar-fade-leave-active {
-  transition: opacity 0.2s ease;
-}
-.todo-bar-fade-enter-from,
-.todo-bar-fade-leave-to {
-  opacity: 0;
-}
-.todo-bar-fade-leave-to {
-  pointer-events: none;
-}
-.todo-summary-icon {
-  color: rgba(var(--v-theme-primary), 0.85);
-  flex-shrink: 0;
-}
-.todo-summary-drag-handle {
-  color: rgba(var(--v-theme-on-surface), 0.35);
-  flex-shrink: 0;
-  margin-right: 2px;
-}
-.todo-summary-text {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  white-space: nowrap;
-}
-.todo-summary-progress {
-  color: #b58400;
-  font-weight: 500;
-}
-.todo-summary-circular {
-  flex-shrink: 0;
-  font-size: 9px;
-  font-weight: 600;
-}
-.todo-summary-attention {
-  flex-shrink: 0;
-  margin-left: 2px;
-}
-
-@media (max-width: 760px) {
-  .todo-summary-text {
-    /* 移动端隐藏冗长文字, 只留进度环 + 图标 */
-    display: none;
-  }
-  .todo-summary-drag-handle {
-    display: none;
-  }
-  .todo-summary-menu {
-    /* 窄屏收缩菜单宽度, placeTodoMenu 会按实测宽度夹取定位 */
-    width: min(340px, calc(100vw - 24px));
-  }
-}
-
-/* 悬浮菜单: position: fixed 的兄弟面板, 位置/最大高度由 placeTodoMenu
-   的 inline style 决定。z-index 分层契约与胶囊一致:
-   - 低于胶囊 (1400) 让胶囊保持可点;
-   - 高于侧栏 fullscreen 层 (1300);
-   - gitdiff 全屏时随胶囊一起降到 1200 档 (1190 < 1200)。 */
-.todo-summary-menu {
-  position: fixed;
-  z-index: 1390;
-  width: 340px;
-  display: flex;
-  flex-direction: column;
-  padding: 12px 14px 8px;
-  border: 1px solid rgba(var(--v-border-color), 0.18);
-  border-radius: 12px;
-  background: rgba(var(--v-theme-surface), 0.96);
-  color: rgba(var(--v-theme-on-surface), 0.87);
-  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.16);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
-  overscroll-behavior: contain;
-  /* 展开动画默认从胶囊方向 (下挂) 缩放 */
-  transform-origin: top left;
-}
-.todo-summary-menu--gitdiff-fullscreen {
-  z-index: 1190;
-}
-.todo-summary-menu--above {
-  /* 上翻时动画锚点换到左下角 */
-  transform-origin: bottom left;
-}
-.todo-menu-body {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-}
-.todo-menu-footer {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  flex-shrink: 0;
-  margin-top: 8px;
-  padding-top: 8px;
-  border-top: 1px solid var(--chat-border, rgba(var(--v-border-color), 0.08));
-  font-size: 11px;
-  color: rgba(var(--v-theme-on-surface), 0.45);
-}
-.todo-menu-footer-icon {
-  color: rgba(var(--v-theme-on-surface), 0.35);
-}
-
-/* 展开动画: 缩放 + 淡入; 上翻 (--above) 时位移方向反向 */
-.todo-menu-pop-enter-active,
-.todo-menu-pop-leave-active {
-  transition:
-    opacity 0.16s ease,
-    transform 0.16s ease;
-}
-.todo-menu-pop-enter-from,
-.todo-menu-pop-leave-to {
-  opacity: 0;
-  transform: scale(0.96) translateY(-4px);
-}
-.todo-summary-menu--above.todo-menu-pop-enter-from,
-.todo-summary-menu--above.todo-menu-pop-leave-to {
-  transform: scale(0.96) translateY(4px);
-}
-
 .sidebar-footer {
   margin-top: auto;
   padding: 10px 16px 14px;
@@ -8394,25 +7678,64 @@ function toggleTheme() {
   }
 }
 
-/* Live-output pip: the reader is away from the tail while a reply is written. */
-.jump-to-bottom-live {
-  position: absolute;
-  top: 3px;
-  right: 3px;
-  width: 8px;
-  height: 8px;
-  border-radius: 999px;
-  background: rgb(var(--v-theme-primary));
-  box-shadow: 0 0 0 2px rgb(var(--v-theme-surface));
-  animation: jump-to-bottom-pulse 1.6s ease-in-out infinite;
+/* 2026-11-07 (elecvoid243): output is still arriving while the reader is away,
+   so the button face becomes the "still writing" dots. The arrow stays in the
+   DOM and returns on hover/focus, so the control's meaning and hit target never
+   change — only its face does, which is what the corner pip used to tell. */
+.jump-to-bottom-arrow {
+  transition: opacity 0.12s ease;
 }
 
-@keyframes jump-to-bottom-pulse {
+.jump-to-bottom--live .jump-to-bottom-arrow {
+  opacity: 0;
+}
+
+.jump-to-bottom--live:hover .jump-to-bottom-arrow,
+.jump-to-bottom--live:focus-visible .jump-to-bottom-arrow {
+  opacity: 1;
+}
+
+.jump-to-bottom-typing {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+}
+
+.jump-to-bottom--live:hover .jump-to-bottom-typing,
+.jump-to-bottom--live:focus-visible .jump-to-bottom-typing {
+  opacity: 0;
+}
+
+.jump-to-bottom-typing span {
+  width: 4px;
+  height: 4px;
+  border-radius: 999px;
+  background: rgb(var(--v-theme-primary));
+  animation: jump-to-bottom-bounce 1.1s ease-in-out infinite;
+}
+
+.jump-to-bottom-typing span:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.jump-to-bottom-typing span:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+@keyframes jump-to-bottom-bounce {
   0%,
+  80%,
   100% {
+    transform: translateY(0);
     opacity: 0.45;
   }
-  50% {
+  40% {
+    transform: translateY(-3px);
     opacity: 1;
   }
 }
@@ -8436,7 +7759,7 @@ function toggleTheme() {
     transition: none;
   }
 
-  .jump-to-bottom-live {
+  .jump-to-bottom-typing span {
     animation: none;
     opacity: 1;
   }

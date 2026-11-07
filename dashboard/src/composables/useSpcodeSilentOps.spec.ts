@@ -45,17 +45,13 @@ describe("useSpcodeSilentOps", () => {
     ).rejects.toMatchObject({ reason: "unknown", serverMessage: message, message });
   });
 
-  it("silentLoadDirectory posts full flag set", async () => {
+  it("silentLoadDirectory posts directory, umo and force only", async () => {
     mockPostOk({ loaded: true, directory: "C:/p", umo: "u1" });
     const { silentLoadDirectory } = useSpcodeSilentOps();
     const data = await silentLoadDirectory({
       umo: "u1",
       directory: "C:/p",
-      noAgentsmd: true,
-      noCodegraph: true,
       force: true,
-      create: true,
-      gitInit: true,
     });
     expect(data.loaded).toBe(true);
     expect(postMock()).toHaveBeenCalledWith(
@@ -64,10 +60,6 @@ describe("useSpcodeSilentOps", () => {
         directory: "C:/p",
         umo: "u1",
         force: true,
-        no_agentsmd: true,
-        no_codegraph: true,
-        create: true,
-        git_init: true,
       },
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );

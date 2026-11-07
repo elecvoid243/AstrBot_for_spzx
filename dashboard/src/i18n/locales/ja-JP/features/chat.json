@@ -1,5 +1,12 @@
 {
   "spcodeProjectLoad": {
+    "dialog": {
+      "loadHint": "プロジェクト内に AGENTS.md がある場合のみシステムプロンプトへ注入します。存在しない場合は生成しません。codegraph インデックスはサービスメニューから手動で初期化してください。"
+    },
+    "indicator": {
+      "agentsMdInjected": "AGENTS.md をシステムプロンプトへ注入済み",
+      "agentsMdNotInjected": "AGENTS.md は未注入（ファイルなし、または機能無効）"
+    },
     "fileBrowser": {
       "host": {
         "back": "前に開いたフォルダーに戻る",
@@ -104,7 +111,27 @@
     "followUpSend": "送信",
     "followUpInterrupt": "強制中断"
   },
+  "subagentConfig": {
+    "latest": "最新の呼び出しの設定を表示",
+    "title": "サブエージェント設定",
+    "view": "{name} の設定を表示",
+    "systemPrompt": "システムプロンプト",
+    "tools": "ツール",
+    "blockedTools": "継承されているが実行できないツール",
+    "contextMode": "コンテキスト継承",
+    "timeout": "実行タイムアウト",
+    "workdir": "作業ディレクトリ",
+    "none": "なし",
+    "snapshot": "呼び出し時の設定スナップショット",
+    "legacy": "この過去の呼び出しには設定スナップショットがありません。",
+    "loadFailed": "設定を読み込めません。閉じてから再度開いてください。",
+    "close": "閉じる"
+  },
   "subagentPages": {
+    "invocationCount": "{count} 回の呼び出し",
+    "instance": "サブエージェントのインスタンス：{id}",
+    "unknownTime": "時刻不明",
+    "noPreview": "メッセージの要約なし",
     "navigation": "会話ページ",
     "main": "メイン会話",
     "agents": "サブエージェント",

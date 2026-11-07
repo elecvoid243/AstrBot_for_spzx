@@ -422,7 +422,27 @@
       "polling": "Polling"
     }
   },
+  "subagentConfig": {
+    "latest": "View the latest invocation configuration",
+    "title": "Subagent configuration",
+    "view": "View configuration for {name}",
+    "systemPrompt": "System prompt",
+    "tools": "Tools",
+    "blockedTools": "Inherited tools blocked from execution",
+    "contextMode": "Context inheritance",
+    "timeout": "Execution timeout",
+    "workdir": "Working directory",
+    "none": "None",
+    "snapshot": "Configuration captured at invocation time",
+    "legacy": "No configuration snapshot was saved for this historical invocation.",
+    "loadFailed": "Unable to load configuration. Close and reopen to try again.",
+    "close": "Close"
+  },
   "subagentPages": {
+    "invocationCount": "{count} calls",
+    "instance": "Subagent instance: {id}",
+    "unknownTime": "Unknown time",
+    "noPreview": "No message preview",
     "navigation": "Conversation pages",
     "main": "Main conversation",
     "agents": "Subagents",
@@ -603,7 +623,7 @@
     "spcode": {
       "sectionTitle": "Code project integration (spcode)",
       "path": "Code project root directory (absolute path)",
-      "pathHint": "Must be an absolute path to an existing directory. spcode will inject AGENTS.md and load codegraph in that directory.",
+      "pathHint": "Must be an absolute path to an existing directory. Loading injects the directory's AGENTS.md when present; it never generates one and never initializes the codegraph index.",
       "chipLoaded": "Loaded: {directory}",
       "chipLoading": "Loading...",
       "chipFailed": "Load failed",
@@ -798,6 +818,7 @@
       "codegraphSetSubmit": "Set as default",
       "pathLabel": "Project Path",
       "pathPlaceholder": "e.g. /Users/me/projects/my-app",
+      "loadHint": "Injects the project's AGENTS.md when it exists; nothing is generated when it is missing. Initialize the codegraph index manually from the services menu.",
       "browse": "Browse…",
       "loadStepsLabel": "Load steps",
       "advancedSettings": "Advanced settings",
@@ -859,6 +880,8 @@
       "agentsMdInitializing": "Initializing AGENTS.md",
       "codegraphInitializing": "Initializing Codegraph",
       "projectLoadComplete": "Load complete",
+      "agentsMdInjected": "AGENTS.md injected into the system prompt",
+      "agentsMdNotInjected": "AGENTS.md not injected (missing or feature disabled)",
       "codegraphRestarting": "Restarting codegraph",
       "codegraphIndexing": "Indexing codegraph",
       "codegraphConnected": "Codegraph connected",

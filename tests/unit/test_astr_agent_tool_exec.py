@@ -8,6 +8,7 @@ import pytest
 
 from astrbot.core.agent.agent import Agent
 from astrbot.core.agent.handoff import HandoffTool
+from astrbot.core.agent.mcp_client import MCPTool
 from astrbot.core.agent.run_context import ContextWrapper
 from astrbot.core.agent.runners.tool_loop_agent_runner import ToolLoopAgentRunner
 from astrbot.core.agent.tool import FunctionTool
@@ -144,6 +145,106 @@ def test_build_handoff_toolset_keeps_permission_guards_for_default_tools(runtime
     )
     assert (toolset.get_tool("astrbot_execute_shell") is not None) == (
         runtime in {"local", "sandbox"}
+    )
+
+
+@pytest.mark.parametrize("selected", [None, [], ["blocked_tool"]])
+def test_handoff_mcp_policy_applies_to_active_tools_and_blacklist(
+    monkeypatch, selected
+):
+    mgr = FunctionToolManager()
+    monkeypatch.setattr(mgr, "load_mcp_config", lambda: {"mcpServers": {}})
+    mgr.func_list = [
+        MCPTool(
+            mcp.Tool(name=name, description="test", inputSchema={}), MagicMock(), server
+        )
+        for name, server in [
+            ("inherent_tool", "inherent"),
+            ("blocked_tool", "blocked"),
+            ("denied_name", "inherent"),
+        ]
+    ]
+    monkeypatch.setattr(
+        SubAgentManager, "_mcp_inherent", {"runtime:inherent", "runtime:blocked"}
+    )
+    monkeypatch.setattr(SubAgentManager, "_mcp_blacklist", {"runtime:blocked"})
+    monkeypatch.setattr(SubAgentManager, "_tools_blacklist", {"denied_name"})
+    event = _DummyEvent()
+    context = SimpleNamespace(
+        get_config=lambda **_kwargs: {"provider_settings": {}},
+        get_llm_tool_manager=lambda: mgr,
+    )
+    run_context = ContextWrapper(context=SimpleNamespace(event=event, context=context))
+
+    toolset = FunctionToolExecutor._build_handoff_toolset(
+        run_context, selected, mcp_policy=True
+    )
+
+    assert toolset is not None
+    assert isinstance(toolset.get_tool("inherent_tool"), _PermissionGuardedTool)
+    assert toolset.get_tool("blocked_tool") is None
+    assert toolset.get_tool("denied_name") is None
+
+
+def test_fork_fallback_applies_dynamic_mcp_policy(monkeypatch):
+    mgr = FunctionToolManager()
+    monkeypatch.setattr(mgr, "load_mcp_config", lambda: {"mcpServers": {}})
+    mgr.func_list = [
+        MCPTool(mcp.Tool(name="one", inputSchema={}), MagicMock(), "server")
+    ]
+    monkeypatch.setattr(SubAgentManager, "_mcp_inherent", {"runtime:server"})
+    monkeypatch.setattr(SubAgentManager, "_mcp_blacklist", set())
+    monkeypatch.setattr(SubAgentManager, "_tools_blacklist", set())
+    context = SimpleNamespace(
+        get_config=lambda **_kwargs: {"provider_settings": {}},
+        get_llm_tool_manager=lambda: mgr,
+    )
+    run_context = ContextWrapper(
+        context=SimpleNamespace(event=_DummyEvent(), context=context, extra={})
+    )
+    tool = SimpleNamespace(agent=SimpleNamespace(tools=[]))
+
+    dynamic, _ = FunctionToolExecutor._build_fork_toolset(
+        run_context, tool, mcp_policy=True
+    )
+    static, _ = FunctionToolExecutor._build_fork_toolset(run_context, tool)
+
+    assert dynamic is not None and dynamic.get_tool("one") is not None
+    assert static is None
+
+
+def test_mcp_policy_preserves_unambiguous_legacy_names():
+    spec = mcp.Tool(name="one", inputSchema={})
+    plugin_tool = MCPTool(spec, SimpleNamespace(), "server")
+    config_tool = MCPTool(spec, SimpleNamespace(_astrbot_mcp_source="config"), "server")
+    manager = SimpleNamespace(load_mcp_config=lambda: {"mcpServers": {}})
+
+    assert FunctionToolExecutor._matches_mcp_policy(plugin_tool, {"server"}, manager)
+    assert FunctionToolExecutor._matches_mcp_policy(config_tool, {"server"}, manager)
+    manager.load_mcp_config = lambda: {"mcpServers": {"server": {}}}
+    assert not FunctionToolExecutor._matches_mcp_policy(
+        plugin_tool, {"server"}, manager
+    )
+    assert FunctionToolExecutor._matches_mcp_policy(config_tool, {"server"}, manager)
+    assert FunctionToolExecutor._matches_mcp_policy(
+        plugin_tool, {"runtime:server"}, manager
+    )
+    config_collision = MCPTool(
+        spec, SimpleNamespace(_astrbot_mcp_source="config"), "runtime:server"
+    )
+    manager.func_list = [plugin_tool, config_collision]
+    manager.load_mcp_config = lambda: {"mcpServers": {"runtime:server": {}}}
+    assert not FunctionToolExecutor._matches_mcp_policy(
+        plugin_tool, {"runtime:server"}, manager, inherent=True
+    )
+    assert FunctionToolExecutor._matches_mcp_policy(
+        plugin_tool, {"runtime:server"}, manager
+    )
+    assert not FunctionToolExecutor._matches_mcp_policy(
+        config_collision, {"runtime:server"}, manager, inherent=True
+    )
+    assert FunctionToolExecutor._matches_mcp_policy(
+        config_collision, {"runtime:server"}, manager
     )
 
 
@@ -1272,6 +1373,46 @@ async def test_handoff_follow_up_injected_in_fork_mode(handoff_env):
     # The inherited prefix is not mutated by the injection.
     assert "original request" in str(messages[0].content)
     assert "fork note" not in str(messages[0].content)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("static", [False, True])
+async def test_fork_mcp_blacklist_rejects_only_dynamic_agents(
+    handoff_env, monkeypatch, static
+):
+    SubAgentManager._context_inherit_mode = "fork"
+    monkeypatch.setattr(SubAgentManager, "_mcp_inherent", set())
+    monkeypatch.setattr(SubAgentManager, "_mcp_blacklist", {"runtime:server"})
+    mcp_tool = MCPTool(mcp.Tool(name="one", inputSchema={}), MagicMock(), "server")
+    toolset = ToolSet()
+    toolset.add_tool(mcp_tool)
+    main_runner = SimpleNamespace(
+        provider=SimpleNamespace(provider_config={"id": "provider-id"}),
+        req=SimpleNamespace(model=None, llm_params={}),
+        tool_schema_mode="full",
+        effective_raw_tool_set=toolset,
+    )
+    seen = {}
+
+    def on_call():
+        seen["handle"] = _first_live_handle()
+
+    tool, run_context = _live_handoff_args(
+        _HookedFinalProvider(on_call=on_call),
+        extra={"main_agent_runner": main_runner},
+        messages=[Message(role="user", content="original request")],
+    )
+    session = SubAgentManager._get_or_create_session(_HANDOFF_UMO)
+    if static:
+        session.protected_agents.add("subagent")
+
+    async for _ in FunctionToolExecutor._execute_handoff(
+        tool, run_context, input="task"
+    ):
+        pass
+
+    denied = seen["handle"].runner.run_context.context.extra["denied_tools"]
+    assert ("one" in denied) is not static
 
 
 @pytest.mark.asyncio

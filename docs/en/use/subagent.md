@@ -32,6 +32,8 @@ In the AstrBot WebUI, expand **More Features** in the left navigation bar and cl
 
 Toggle "Enable SubAgent Orchestration" at the top of the page.
 
+The former **Orchestration mode → DAG orchestration** option has been removed. Existing DAG settings no longer enable DAG; subagents use the default delegation mode.
+
 ### 2. Create a SubAgent
 
 Click the "Add SubAgent" button:
@@ -43,6 +45,12 @@ Click the "Add SubAgent" button:
 - **Provider Override (Optional)**: You can specify different model providers for specific SubAgents. For example, the Main Agent could use GPT-4o, while a simple query SubAgent uses GPT-4o-mini to save costs.
 
 After configuring the agents, click `Save` on the page.
+
+### MCP tool policy for dynamic subagents
+
+Under **Dynamic Subagent Settings**, use **Tool Strategy** to configure MCP servers in the blacklist or inherent list. Tools from a blacklisted server are not assigned to dynamic subagents. Tools from an inherent server are automatically assigned, even if the main Agent does not specify them. The tool and MCP blacklists take precedence over inherent lists.
+
+Enabled MCP servers and running plugin-provided MCP servers appear among the choices. Disabling a server or temporarily disconnecting it does not remove its saved policy; the policy applies to its tools again when the server becomes available. Click `Save` after making changes.
 
 ## Best Practices
 

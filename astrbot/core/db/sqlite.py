@@ -3063,8 +3063,8 @@ class SQLiteDatabase(BaseDatabase):
             spcode_auto_load: Legacy 静默加载开关(2026-09-09 起前端不再读写,
                 custom 工作区项目一律静默加载)。
             spcode_force: 静默 load 时若 umo 已加载其他项目,是否强制覆盖。
-            spcode_no_agentsmd: 挂载时跳过 AGENTS.md 子步骤。
-            spcode_no_codegraph: 挂载时跳过 codegraph(只 load AGENTS.md)。
+            spcode_no_agentsmd: Legacy 字段(2026-11-07 起不再被消费)。
+            spcode_no_codegraph: Legacy 字段(2026-11-07 起不再被消费)。
         """
         async with self.get_db() as session:
             session: AsyncSession
@@ -3144,8 +3144,9 @@ class SQLiteDatabase(BaseDatabase):
                 None 表示不变。
             spcode_force: 静默 load 时若 umo 已加载其他项目,是否强制覆盖。
                 None 表示不变。
-            spcode_no_agentsmd: 挂载时跳过 AGENTS.md 子步骤。None 表示不变。
-            spcode_no_codegraph: 挂载时跳过 codegraph(只 load AGENTS.md)。
+            spcode_no_agentsmd: Legacy 字段(2026-11-07 起不再被消费)。
+                None 表示不变。
+            spcode_no_codegraph: Legacy 字段(2026-11-07 起不再被消费)。
                 None 表示不变。
         """
         async with self.get_db() as session:

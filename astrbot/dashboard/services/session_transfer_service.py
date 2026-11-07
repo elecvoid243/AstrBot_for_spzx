@@ -412,7 +412,10 @@ class SessionTransferService:
                     part.clear()
                     part.update(deepcopy(trace.data))
                     part.update(
-                        status=trace.status, background=trace.background, cleaned=True
+                        status=trace.status,
+                        background=trace.background,
+                        cleaned=True,
+                        agent_instance_id=trace.agent_instance_id,
                     )
                     part.pop("detached", None)
 

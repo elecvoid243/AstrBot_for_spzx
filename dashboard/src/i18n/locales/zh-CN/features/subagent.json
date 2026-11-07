@@ -4,7 +4,6 @@
   },
   "page": {
     "title": "子代理编排",
-    "beta": "实验性",
     "subtitle": "主代理可直接使用自身工具，也可将部分任务委派给各个子代理，完成更复杂的任务，避免主代理上下文过长。"
   },
   "actions": {
@@ -145,6 +144,14 @@
     "toolStrategyHint": "控制动态子代理可使用哪些工具"
   },
   "enhancedTools": {
+    "mcpPolicyConflict": "MCP 策略标识冲突：{names}。请重命名同名的普通 MCP；解决冲突前，双方均无法作为固有 MCP 使用。",
+    "runtimeMcp": "运行时",
+    "mcpBlacklist": "MCP 黑名单",
+    "mcpBlacklistHint": "禁止动态子代理使用所选 MCP 服务器提供的所有工具。黑名单优先于固有配置和单个工具选择。",
+    "mcpInherent": "固有 MCP 名单",
+    "mcpInherentHint": "所选 MCP 服务器提供的工具会分配给动态子代理，但黑名单中的工具或 MCP 除外。",
+    "mcpSelect": "选择已启用的 MCP 服务器",
+    "mcpLoadFailed": "获取 MCP 服务器列表失败",
     "blacklist": "工具黑名单",
     "blacklistHint": "动态子代理禁止使用的工具列表。被加入黑名单的工具将不会分配给动态子代理，即使主Agent试图分配。（注：插件注入的工具不会出现在编辑列表，请手动输入）",
     "inherent": "固有工具名单",

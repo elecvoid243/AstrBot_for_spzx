@@ -572,19 +572,16 @@ class ChatUIProjectService:
                 raise ChatUIProjectServiceError("Invalid project flag")
         if payload.get("create") or payload.get("git_init"):
             raise ChatUIProjectServiceError("Project directory must already exist")
-        for key in ("no_agentsmd", "no_codegraph"):
-            if key in payload and payload[key] != bool(
-                getattr(project, f"spcode_{key}", False)
-            ):
-                raise ChatUIProjectServiceError(
-                    "Project flags do not match the session"
-                )
+        # 2026-11-07: project load now follows one rule on the plugin side —
+        # inject AGENTS.md when the directory already contains one, never
+        # generate it, never initialize codegraph. Legacy spcode_no_* project
+        # columns are therefore ignored instead of being replayed as load
+        # flags; keeping them here would let stale per-project settings
+        # override the new contract.
         return {
             "umo": umo,
             "directory": str(root),
             "force": payload.get("force", False),
-            "no_agentsmd": bool(project.spcode_no_agentsmd),
-            "no_codegraph": bool(project.spcode_no_codegraph),
         }
 
     async def _get_owned_project(self, username: str, project_id: str):

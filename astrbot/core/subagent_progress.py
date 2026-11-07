@@ -6,6 +6,7 @@ import asyncio
 from collections import defaultdict
 from copy import deepcopy
 
+from sqlalchemy import func
 from sqlalchemy.orm import defer
 from sqlmodel import col, delete, select
 
@@ -44,11 +45,12 @@ class SubagentProgress:
         return db_helper
 
     @staticmethod
-    def metadata(row: WebChatSubagentRun) -> dict:
+    def metadata(row: WebChatSubagentRun, input_preview: str | None = None) -> dict:
         """Serialize the small navigation entry without its execution trace.
 
         Args:
             row: Stored invocation or its current in-memory snapshot.
+            input_preview: Projected task preview when the trace is deferred.
 
         Returns:
             Navigation fields shared by lists, cards and terminal updates.
@@ -56,6 +58,12 @@ class SubagentProgress:
         return {
             "subagent_run_id": row.run_id,
             "agent_name": row.agent_name,
+            "agent_instance_id": row.agent_instance_id,
+            "input_preview": str(
+                input_preview
+                if input_preview is not None
+                else row.data.get("input_preview") or row.data.get("input_full") or ""
+            )[:200],
             "background": row.background,
             "status": row.status,
             "cleaned": row.cleaned,
@@ -129,6 +137,10 @@ class SubagentProgress:
         row, accumulator = self.active[run_id]
         accumulator.add_subagent_event(data)
         row.data = accumulator.subagent_runs[run_id]
+        if kind == "started" and isinstance(
+            data.get("payload", {}).get("configuration"), dict
+        ):
+            row.data["configuration"] = deepcopy(data["payload"]["configuration"])
         row.revision += 1
         row.status = row.data.get("status", "running")
         row.data.update(self.metadata(row))
@@ -176,17 +188,31 @@ class SubagentProgress:
             Compact invocation entries, newest first.
         """
         async with self.write_lock, self.database().get_db() as session:
-            rows = (
-                (
-                    await session.execute(
-                        select(WebChatSubagentRun)
-                        .options(defer(WebChatSubagentRun.data))
-                        .where(WebChatSubagentRun.session_id == session_id)
+            stored = (
+                await session.execute(
+                    select(
+                        WebChatSubagentRun,
+                        func.substr(
+                            func.coalesce(
+                                func.nullif(
+                                    WebChatSubagentRun.data[
+                                        "input_preview"
+                                    ].as_string(),
+                                    "",
+                                ),
+                                WebChatSubagentRun.data["input_full"].as_string(),
+                                "",
+                            ),
+                            1,
+                            200,
+                        ),
                     )
+                    .options(defer(WebChatSubagentRun.data))
+                    .where(WebChatSubagentRun.session_id == session_id)
                 )
-                .scalars()
-                .all()
-            )
+            ).all()
+            rows = [row for row, _ in stored]
+            previews = {row.run_id: preview or "" for row, preview in stored}
             known = {row.run_id for row in rows}
             history = []
             if session_id not in self.legacy_indexed:
@@ -217,7 +243,7 @@ class SubagentProgress:
                         run_id=run_id,
                         session_id=session_id,
                         umo="",
-                        agent_instance_id="",
+                        agent_instance_id=part.get("agent_instance_id") or "",
                         agent_name=part.get("agent_name", "subagent"),
                         status=part.get("status", "completed")
                         if part.get("status") != "running"
@@ -250,7 +276,9 @@ class SubagentProgress:
                         row.status = "failed"
                     session.add(row)
             await session.commit()
-        entries = {row.run_id: self.metadata(row) for row in rows}
+        entries = {
+            row.run_id: self.metadata(row, previews.get(row.run_id)) for row in rows
+        }
         for row, _ in self.active.values():
             if row.session_id == session_id:
                 entries[row.run_id] = self.metadata(row)
@@ -285,6 +313,30 @@ class SubagentProgress:
             return None
         return {**deepcopy(row.data), **self.metadata(row)}
 
+    async def get_configuration(self, session_id: str, run_id: str) -> dict | None:
+        """Read an invocation's configuration without loading its execution trace.
+
+        Args:
+            session_id: Owned WebChat session or thread.
+            run_id: Invocation within the authorized session.
+
+        Returns:
+            Frozen configuration, an empty dict for legacy runs, or None if missing.
+        """
+        live = self.active.get(run_id)
+        if live and live[0].session_id == session_id:
+            return deepcopy(live[0].data.get("configuration") or {})
+        async with self.database().get_db() as session:
+            row = (
+                await session.execute(
+                    select(WebChatSubagentRun.data["configuration"]).where(
+                        WebChatSubagentRun.session_id == session_id,
+                        WebChatSubagentRun.run_id == run_id,
+                    )
+                )
+            ).one_or_none()
+        return deepcopy(row[0] or {}) if row is not None else None
+
     def schedule_cleaned(self, umo: str, instance_ids: list[str]) -> None:
         """Record actual removal of agent instances without delaying synchronous tools.
 
@@ -303,22 +355,40 @@ class SubagentProgress:
             try:
                 async with self.write_lock:
                     async with self.database().get_db() as session:
-                        rows = (
-                            (
-                                await session.execute(
-                                    select(WebChatSubagentRun)
-                                    .options(defer(WebChatSubagentRun.data))
-                                    .where(
-                                        WebChatSubagentRun.umo == umo,
-                                        col(WebChatSubagentRun.agent_instance_id).in_(
-                                            instance_ids
+                        stored = (
+                            await session.execute(
+                                select(
+                                    WebChatSubagentRun,
+                                    func.substr(
+                                        func.coalesce(
+                                            func.nullif(
+                                                WebChatSubagentRun.data[
+                                                    "input_preview"
+                                                ].as_string(),
+                                                "",
+                                            ),
+                                            WebChatSubagentRun.data[
+                                                "input_full"
+                                            ].as_string(),
+                                            "",
                                         ),
-                                    )
+                                        1,
+                                        200,
+                                    ),
+                                )
+                                .options(defer(WebChatSubagentRun.data))
+                                .where(
+                                    WebChatSubagentRun.umo == umo,
+                                    col(WebChatSubagentRun.agent_instance_id).in_(
+                                        instance_ids
+                                    ),
                                 )
                             )
-                            .scalars()
-                            .all()
-                        )
+                        ).all()
+                        rows = [row for row, _ in stored]
+                        previews = {
+                            row.run_id: preview or "" for row, preview in stored
+                        }
                         for row in rows:
                             row.cleaned = True
                             row.revision += 1
@@ -332,7 +402,11 @@ class SubagentProgress:
                         await session.commit()
                         for row in rows:
                             live = self.active.get(row.run_id)
-                            metadata = self.metadata(live[0] if live else row)
+                            metadata = (
+                                self.metadata(live[0])
+                                if live
+                                else self.metadata(row, previews[row.run_id])
+                            )
                             self.publish(
                                 f"session:{row.session_id}",
                                 {"type": "changed", "data": metadata},

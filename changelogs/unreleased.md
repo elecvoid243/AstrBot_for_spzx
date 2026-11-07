@@ -1,5 +1,19 @@
 # Unreleased
 
+- Sidebar **+** now always opens the project-creation dialog and navigates to the new project page; it no longer opens the spcode directory-load flow that attached the currently open conversation to the new project. / 侧边栏「+」改为始终打开新建项目对话框，并在创建后跳转到新项目页；不再打开会把当前对话挂到新项目下的 spcode 目录加载流程。
+
+- Project load in ChatUI now only registers the directory and injects an existing `AGENTS.md`; it never generates `AGENTS.md` or initializes codegraph. The load dialog is path-only, the loading/completed bubbles are gone, and the project chip reports whether `AGENTS.md` was injected. / ChatUI 项目加载改为“选路径即加载”：仅登记目录并在 `AGENTS.md` 存在时注入，不自动生成、不自动初始化 codegraph；加载对话框只保留路径，移除加载/完成气泡，项目胶囊显示 `AGENTS.md` 注入状态。
+
+- Keep the ChatUI activity ring attached to the active reply when another Agent sends a follow-up. Hide pending receipt placeholders, clear captured or empty completed receipts, and reconnect to the original run when needed. / 修复跨会话 Agent 追加消息导致思考转圈落在底部空白行的问题；待接收及已追加的请求占位不再抢占回复状态，必要时重新订阅原运行。
+
+- Show running plugin-provided MCP servers in the MCP list and subagent tool policies; manage their lifecycle on the plugin page. / MCP 列表和子代理工具策略显示运行中的插件自带 MCP，启停及配置请在插件页面操作。
+
+- Remove **Subagent orchestration mode → DAG orchestration**; existing DAG settings no longer enable DAG. Restore-default tool lists no longer include the retired `orchestrate_tasks` tool. / 移除 **子代理编排方式 → DAG 编排**，旧配置不再启用 DAG；工具恢复默认名单移除已停用的 `orchestrate_tasks`。
+
+- Group repeated subagent calls into initially collapsed instance entries. Expanded calls show their IDs, local start times and message previews; recreated same-name agents have distinct stable markers, including in Cleaned up. Preserve instance identity in session archives. / 子代理菜单由逐次平铺改为按实例折叠；展开显示调用 ID、本地开始时间及消息摘要，点击进入对应对话；删除后重建的同名实例使用不同的稳定标记，已清理条目和会话归档也保留实例区分。
+
+- Move **message-area title and subagent navigation → existing Chat toolbar**, restore compact subagent card styling, and place subagent reasoning beside the transcript on the right. Add per-invocation **Information** buttons with durable configuration snapshots (system prompt, tools, Skills and Provider ID). / 将 **消息区标题与子代理导航 → 现有 Chat 工具栏**，移除重复标题，恢复紧凑卡片样式，修复子代理思考抽屉的位置；下拉菜单新增信息按钮，按需显示调用时保存的系统提示词、工具、Skills 和 Provider ID 等配置。
+
 - **Expand subagent card → read-only invocation page** under the session's Main conversation / Subagents navigation. Show independent Running and Background markers, group removed and legacy invocations under Cleaned up, and mount only the selected transcript. Remove the card's follow-up input. Persist and resume background progress beyond the parent reply's lifetime, and deliver an awakened WebChat agent's final answer even without an explicit send-message tool call. / **展开子代理卡片 → 只读调用子页面**，从会话顶部的主对话／子代理入口切换；独立显示运行中与后台标志，已移除及旧调用归入已清理分组，只挂载当前轨迹，移除追加消息入口；后台进度可在主回复结束后继续保存和恢复，唤醒后的普通最终回复也会送达 ChatUI。
 
 - Unify **Ask in thread → Ask in side chat** with the saved side-chat panel, full composer and menu. Quoted chats keep their excerpt and checkpoint context; existing quoted threads remain available. / 将 **在新分支中询问 → 在侧边聊天中询问**，统一使用侧边聊天面板、完整输入框和保存菜单，保留选中文字及检查点上下文，兼容已有引用分支。

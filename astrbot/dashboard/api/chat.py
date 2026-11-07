@@ -975,6 +975,39 @@ async def list_chat_subagent_runs(
     return ok(await subagent_progress.list_runs(session_id))
 
 
+@router.get("/chat/sessions/{session_id}/subagent-runs/{run_id}/configuration")
+async def get_chat_subagent_configuration(
+    session_id: str,
+    run_id: str,
+    auth: AuthContext = Depends(require_chat_scope),
+    service: ChatService = Depends(get_service),
+):
+    """Read configuration captured when an owned invocation started.
+
+    Args:
+        session_id: Parent WebChat session or thread.
+        run_id: Invocation within that session.
+        auth: Authenticated dashboard owner.
+        service: Session ownership authority.
+
+    Returns:
+        Configuration snapshot, excluding execution traces and provider credentials.
+
+    Raises:
+        ApiError: The session is not owned or the invocation is missing.
+    """
+    try:
+        await service.require_owned_chat_session(
+            auth.username, session_id, allow_thread=True
+        )
+    except ChatServiceError as exc:
+        raise ApiError("Resource is unavailable", status_code=403) from exc
+    configuration = await subagent_progress.get_configuration(session_id, run_id)
+    if configuration is None:
+        raise ApiError("Resource is unavailable", status_code=404)
+    return ok(configuration)
+
+
 @router.get("/chat/sessions/{session_id}/subagent-runs/stream")
 async def stream_chat_subagent_runs(
     session_id: str,

@@ -70,15 +70,15 @@
         <div v-else class="mcp-server-list">
           <OutlinedActionListItem
           v-for="server in filteredMcpServers"
-          :key="server.name"
+          :key="`${server.source || 'config'}:${server.policy_name || server.name}`"
           :title="server.name"
           :class="{ 'mcp-server-list-item--selected': batchSelectionEnabled && selectedMcpServerNames.includes(server.name) }"
-          :clickable="!batchSelectionEnabled"
+          :clickable="!batchSelectionEnabled && !server.readonly"
           @click="editServer(server)"
         >
           <template #title-prepend>
             <v-checkbox-btn
-              v-if="batchSelectionEnabled"
+              v-if="batchSelectionEnabled && !server.readonly"
               v-model="selectedMcpServerNames"
               :value="server.name"
               density="compact"
@@ -89,6 +89,9 @@
             />
           </template>
           <template #title-extra>
+            <v-chip v-if="server.readonly" size="x-small" variant="tonal">
+              {{ tm('mcpServers.pluginManaged') }}
+            </v-chip>
             <v-chip
               :color="server.connected ? 'success' : 'default'"
               :prepend-icon="
@@ -115,6 +118,10 @@
               class="me-1"
             />
             <span>{{ getServerConfigSummary(server) }}</span>
+          </div>
+
+          <div v-if="server.policy_conflict" class="text-warning text-caption mt-1">
+            {{ tm('mcpServers.policyConflict', { name: server.policy_name }) }}
           </div>
 
           <div class="mcp-server-tools text-caption text-medium-emphasis">
@@ -173,7 +180,7 @@
             </template>
           </div>
 
-          <template v-if="!batchSelectionEnabled" #actions>
+          <template v-if="!batchSelectionEnabled && !server.readonly" #actions>
             <v-tooltip :text="t('core.common.itemCard.delete')" location="top">
               <template #activator="{ props }">
                 <v-btn
@@ -188,7 +195,7 @@
             </v-tooltip>
           </template>
 
-          <template v-if="!batchSelectionEnabled" #control>
+          <template v-if="!batchSelectionEnabled && !server.readonly" #control>
             <v-progress-circular
               v-if="mcpServerUpdateLoaders[server.name]"
               indeterminate
@@ -500,12 +507,14 @@ export default {
       });
     },
     allMcpServersSelected() {
-      return this.filteredMcpServers.length > 0 && this.filteredMcpServers.every(
+      const selectable = this.filteredMcpServers.filter(server => !server.readonly);
+      return selectable.length > 0 && selectable.every(
         server => this.selectedMcpServerNames.includes(server.name)
       );
     },
     getServerConfigSummary() {
       return (server) => {
+        if (server.readonly) return this.tm('mcpServers.pluginManaged');
         if (server.transport) {
           return String(server.transport).trim();
         }
@@ -513,7 +522,7 @@ export default {
           return `${server.command} ${(server.args || []).join(' ')}`;
         }
         const configKeys = Object.keys(server).filter(key =>
-          !['name', 'active', 'connected', 'tools', 'errlogs'].includes(key)
+          !['name', 'active', 'connected', 'tools', 'errlogs', 'source', 'readonly', 'policy_name', 'policy_conflict'].includes(key)
         );
         if (configKeys.length > 0) {
           return this.tm('mcpServers.status.configSummary', { keys: configKeys.join(', ') });
@@ -552,7 +561,7 @@ export default {
   watch: {
     filteredMcpServers(visibleServers) {
       if (!this.batchSelectionEnabled) return;
-      const visibleNames = new Set(visibleServers.map(server => server.name));
+      const visibleNames = new Set(visibleServers.filter(server => !server.readonly).map(server => server.name));
       this.selectedMcpServerNames = this.selectedMcpServerNames.filter(name => visibleNames.has(name));
     }
   },
@@ -569,7 +578,7 @@ export default {
             return;
           }
           this.mcpServers = response.data.data || [];
-          const availableNames = new Set(this.mcpServers.map(server => server.name));
+          const availableNames = new Set(this.mcpServers.filter(server => !server.readonly).map(server => server.name));
           this.selectedMcpServerNames = this.selectedMcpServerNames.filter(name => availableNames.has(name));
           if (this.batchSelectionEnabled && availableNames.size === 0) {
             this.cancelBatchSelection();
@@ -699,11 +708,11 @@ export default {
         this.selectedMcpServerNames = [];
         return;
       }
-      this.selectedMcpServerNames = this.filteredMcpServers.map(server => server.name);
+      this.selectedMcpServerNames = this.filteredMcpServers.filter(server => !server.readonly).map(server => server.name);
     },
     confirmBatchDelete() {
       this.batchDeleteTargets = this.selectedMcpServerNames.filter(name =>
-        this.filteredMcpServers.some(server => server.name === name)
+        this.filteredMcpServers.some(server => server.name === name && !server.readonly)
       );
       if (this.batchDeleteTargets.length === 0) return;
       this.batchDeleteDialog = true;
@@ -750,12 +759,17 @@ export default {
       }
     },
     editServer(server) {
+      if (server.readonly) return;
       const configCopy = { ...server };
       delete configCopy.name;
       delete configCopy.active;
       delete configCopy.connected;
       delete configCopy.tools;
       delete configCopy.errlogs;
+      delete configCopy.readonly;
+      delete configCopy.source;
+      delete configCopy.policy_name;
+      delete configCopy.policy_conflict;
       this.currentServer = {
         name: server.name,
         active: server.active,
@@ -767,6 +781,7 @@ export default {
       this.showMcpServerDialog = true;
     },
     updateServerStatus(server) {
+      if (server.readonly) return;
       this.mcpServerUpdateLoaders[server.name] = true;
       const previousActive = server.active;
       server.active = !server.connected;

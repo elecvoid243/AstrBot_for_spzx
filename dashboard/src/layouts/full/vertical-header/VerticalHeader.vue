@@ -23,6 +23,7 @@ import AboutPage from "@/views/AboutPage.vue";
 import { authApi, isLegacyFallbackError, statsApi, updatesApi } from "@/api/v1";
 import { getDesktopRuntimeInfo } from "@/utils/desktopRuntime";
 import ProviderModelMenu from "@/components/chat/ProviderModelMenu.vue";
+import TodoListPanel from "@/components/chat/message_list_comps/spcode_tools/TodoListPanel.vue";
 
 enableKatex();
 enableMermaid();
@@ -171,6 +172,51 @@ const goalStatusColor = computed(() => {
   if (status === "done") return "success";
   return "primary";
 });
+
+// Todo entry: Chat.vue mirrors the active session's snapshot into the store,
+// so the toolbar only formats what is already there. The list itself belongs
+// to the menu — the button stays a compact count, like the goal badge.
+const todoMenuOpen = computed({
+  get: () => chatHeader.todoMenuOpen,
+  set: (open: boolean) => chatHeader.SET_TODO_MENU_OPEN(open),
+});
+const todoDone = computed(() => chatHeader.todoSnapshot?.stats?.done ?? 0);
+const todoTotal = computed(
+  () => chatHeader.todoSnapshot?.stats?.effective_total ?? 0,
+);
+const todoAttentionCount = computed(
+  () => chatHeader.todoSnapshot?.attentionItems?.length ?? 0,
+);
+const todoSummaryLabel = computed(() => {
+  const stats = chatHeader.todoSnapshot?.stats;
+  if (!stats) return tm("todo.summary");
+  const line = tm("todo.statsLine", {
+    done: stats.done ?? 0,
+    total: stats.effective_total ?? 0,
+    pct: stats.progress_pct ?? 0,
+  });
+  const progress = stats.in_progress
+    ? ` ${tm("todo.statsInProgress", { count: stats.in_progress })}`
+    : "";
+  return `${tm("todo.summary")} · ${line}${progress}`;
+});
+
+/** Render list.updated_at ISO string as a compact time label
+ *  ("HH:MM" same day, "MM-DD HH:MM" otherwise) for the menu footer. */
+function formatTodoUpdatedAt(value: string | undefined): string {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const now = new Date();
+  const sameDay =
+    date.getFullYear() === now.getFullYear() &&
+    date.getMonth() === now.getMonth() &&
+    date.getDate() === now.getDate();
+  const hm = `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  if (sameDay) return hm;
+  return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${hm}`;
+}
 
 function toggleChatSidebarFromHeader() {
   customizer.TOGGLE_CHAT_SIDEBAR();
@@ -1096,6 +1142,7 @@ onMounted(async () => {
     :class="{
       'chat-mode-header': isChatPath,
       'chat-mode-header--dark': isChatPath && isDarkTheme,
+      'chat-header--resizing': isChatPath && customizer.chatSidebarResizing,
     }"
     :absolute="isChatPath"
     :style="chatHeaderStyle"
@@ -1170,6 +1217,12 @@ onMounted(async () => {
       </div>
     </div>
 
+    <div
+      v-show="isChatPath"
+      id="chat-session-navigation"
+      class="chat-session-navigation"
+    />
+
     <v-spacer />
 
     <!-- 版本提示信息 - 在手机上隐藏；点击直接打开更新对话框。
@@ -1223,6 +1276,74 @@ onMounted(async () => {
           {{ chatHeader.goalBadge.turnsUsed }}/{{ chatHeader.goalBadge.maxTurns }}
         </span>
       </v-btn>
+
+      <!-- 2026-11-07 (elecvoid243): todo progress entry. The old floating pill
+           lived inside the message panel; it now sits next to the goal entry so
+           the work trail has one home in the toolbar. Same push pattern as the
+           goal badge: Chat.vue mirrors the active session's snapshot into the
+           chatHeader store, and the expandable list hangs off this button. -->
+      <v-menu
+        v-if="isChatPath"
+        v-model="todoMenuOpen"
+        :close-on-content-click="false"
+        location="bottom end"
+        offset="8"
+      >
+        <template #activator="{ props: menuProps }">
+          <v-btn
+            v-if="chatHeader.todoSnapshot"
+            v-bind="menuProps"
+            class="chat-action-btn todo-summary-trigger"
+            :class="{ 'todo-summary-trigger--active': chatHeader.todoMenuOpen }"
+            variant="text"
+            size="small"
+            rounded="sm"
+            :title="todoSummaryLabel"
+            :aria-label="todoSummaryLabel"
+            :aria-expanded="chatHeader.todoMenuOpen"
+          >
+            <v-icon size="18" class="todo-trigger-icon"
+              >mdi-format-list-checks</v-icon
+            >
+            <span class="todo-trigger-count">{{ todoDone }}/{{ todoTotal }}</span>
+            <v-icon
+              v-if="todoAttentionCount"
+              size="10"
+              color="warning"
+              class="todo-trigger-attention"
+              >mdi-circle-medium</v-icon
+            >
+          </v-btn>
+        </template>
+
+        <v-card class="todo-menu-card" elevation="8">
+          <div class="todo-menu-body">
+            <TodoListPanel
+              v-if="chatHeader.todoSnapshot"
+              :list="chatHeader.todoSnapshot.list"
+              :stats="chatHeader.todoSnapshot.stats"
+              :attention-items="chatHeader.todoSnapshot.attentionItems || []"
+              collapsible
+              :show-header="false"
+            />
+          </div>
+          <div
+            v-if="chatHeader.todoSnapshot?.list?.updated_at"
+            class="todo-menu-footer"
+          >
+            <v-icon size="12" class="todo-menu-footer-icon"
+              >mdi-clock-outline</v-icon
+            >
+            {{
+              tm("todo.updatedAt", {
+                time: formatTodoUpdatedAt(
+                  chatHeader.todoSnapshot.list.updated_at,
+                ),
+              })
+            }}
+          </div>
+        </v-card>
+      </v-menu>
 
       <!--
         Workspace files panel toggle button - HIDDEN on this branch.
@@ -2215,10 +2336,23 @@ onMounted(async () => {
   background: #fdfcfc !important;
   border-bottom: 0;
   box-shadow: none !important;
+  /* Vuetify's .v-toolbar eases left/width over .2s with its own curve; the
+     sidebar's width transition is .18s ease. Match them so collapse/expand
+     move both edges in step instead of one arriving first. */
+  transition-duration: 0.18s;
+  transition-timing-function: ease;
 }
 
 .top-header.chat-mode-header.chat-mode-header--dark {
   background: rgb(var(--v-theme-background)) !important;
+}
+
+/* 2026-11-07 (elecvoid243): while the sidebar splitter is dragged it drops its
+   own width transition (.chat-sidebar.is-resizing). The header must drop its
+   left/width transition in the same gesture, otherwise it trails the sidebar
+   by up to one transition duration and briefly overlaps its edge. */
+.top-header.chat-header--resizing {
+  transition: none;
 }
 
 .top-header.chat-mode-header .v-toolbar__content {
@@ -2256,6 +2390,12 @@ onMounted(async () => {
   justify-content: center;
   padding: 5px 18px 5px 0;
   overflow: hidden;
+}
+
+.chat-session-navigation {
+  flex: 0 1 auto;
+  min-width: 0;
+  margin-right: 12px;
 }
 
 .chat-header-context .provider-trigger--header {
@@ -2343,6 +2483,73 @@ onMounted(async () => {
   line-height: 1;
   margin-left: 2px;
   letter-spacing: 0;
+}
+
+/* 2026-11-07: todo progress entry (see template comment). Counts mirror the
+   goal badge's density so the two toolbar entries read as one group. */
+.todo-summary-trigger {
+  color: rgb(var(--v-theme-on-surface));
+}
+
+.todo-summary-trigger--active {
+  background: rgba(var(--v-theme-on-surface), 0.08) !important;
+}
+
+.todo-trigger-icon {
+  color: rgba(var(--v-theme-primary), 0.85);
+}
+
+.todo-trigger-count {
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  margin-left: 2px;
+  letter-spacing: 0;
+}
+
+.todo-trigger-attention {
+  margin-left: 1px;
+}
+
+/* The menu is teleported to the overlay layer, so its box is styled here while
+   the panel inside keeps its own scoped styles. */
+.todo-menu-card {
+  width: 340px;
+  max-width: calc(100vw - 24px);
+  max-height: min(62vh, 520px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: 12px;
+}
+
+.todo-menu-body {
+  padding: 10px 12px 4px;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.todo-menu-footer {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+  padding: 6px 12px 8px;
+  border-top: 1px solid rgba(var(--v-border-color), 0.12);
+  font-size: 11px;
+  color: rgba(var(--v-theme-on-surface), 0.45);
+}
+
+.todo-menu-footer-icon {
+  color: rgba(var(--v-theme-on-surface), 0.35);
+}
+
+@media (max-width: 760px) {
+  /* Toolbar space is scarce on phones: the icon and the warning dot still
+     carry the state, and the exact counts live inside the menu. */
+  .todo-trigger-count {
+    display: none;
+  }
 }
 
 .mode-switch-btn {
@@ -2721,8 +2928,15 @@ onMounted(async () => {
   }
 
   .chat-header-context {
+    flex: 1 1 0;
     max-width: calc(100vw - 92px);
     padding-right: 8px;
+  }
+
+  .chat-session-navigation {
+    flex: 0 1 auto;
+    max-width: 58%;
+    margin-right: 4px;
   }
 
   .update-summary,

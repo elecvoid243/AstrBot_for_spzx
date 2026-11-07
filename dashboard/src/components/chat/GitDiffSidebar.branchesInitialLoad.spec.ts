@@ -188,6 +188,7 @@ function seedStatus(loaded: boolean, directory: string | null): void {
     allLoadedCount: loaded ? 1 : 0,
     fetchedAt: Date.now(),
     bootId: null,
+    agentsMd: false,
   };
 }
 

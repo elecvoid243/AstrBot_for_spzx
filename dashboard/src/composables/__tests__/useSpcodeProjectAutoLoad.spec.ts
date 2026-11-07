@@ -109,7 +109,7 @@ describe("useSpcodeProjectAutoLoad", () => {
     expect(pluginExtensionApi.post).toHaveBeenCalledTimes(1);
   });
 
-  it("FT-2b: forwards no_agentsmd / no_codegraph from the project config", async () => {
+  it("FT-2b: ignores legacy no_agentsmd / no_codegraph project flags", async () => {
     mockPost(successPayload());
     const { silentLoad } = useSpcodeProjectAutoLoad();
     await silentLoad({
@@ -126,8 +126,6 @@ describe("useSpcodeProjectAutoLoad", () => {
         directory: "/abs/repo",
         umo: "u1",
         force: false,
-        no_agentsmd: true,
-        no_codegraph: true,
       },
       expect.anything(),
     );

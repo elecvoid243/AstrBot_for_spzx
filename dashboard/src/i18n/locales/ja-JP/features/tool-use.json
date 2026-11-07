@@ -11,6 +11,8 @@
     "marketplace": "MCP マーケット"
   },
   "mcpServers": {
+    "policyConflict": "ポリシー識別子 {name} が設定済み MCP サーバー名と競合しています。名前を変更するまで、どちらも固有 MCP として使用できません。",
+    "pluginManaged": "プラグインが提供しています。プラグインページで設定してください",
     "title": "MCP サーバー",
     "description": "MCP サーバーを管理します",
     "buttons": {

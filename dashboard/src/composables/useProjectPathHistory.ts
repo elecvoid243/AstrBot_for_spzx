@@ -12,7 +12,8 @@ import {
 
 const HISTORY_KEY = "chatui.spcode.projectPathHistory";
 const HISTORY_CAP = 10;
-const RECENT_DROPDOWN_COUNT = 5;
+// The load dialog shows the full stored history (2026-11-07: 5 → 10).
+const RECENT_DROPDOWN_COUNT = 10;
 
 function historyKey(): string {
   const owner =

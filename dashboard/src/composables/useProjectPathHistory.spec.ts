@@ -6,6 +6,18 @@ afterEach(() => {
 });
 
 describe("project path history belongs to the account", () => {
+  it("exposes the 10 most recent paths", () => {
+    localStorage.setItem("role", "admin");
+    const history = useProjectPathHistory();
+    for (let i = 1; i <= 12; i += 1) {
+      history.addToPathHistory(`/project/${i}`);
+    }
+
+    expect(history.recentPaths.value).toHaveLength(10);
+    expect(history.recentPaths.value[0]).toBe("/project/12");
+    expect(history.recentPaths.value[9]).toBe("/project/3");
+  });
+
   it("keeps recent paths separate when switching accounts in the same browser", () => {
     localStorage.setItem("role", "user");
     localStorage.setItem("account_id", "first");

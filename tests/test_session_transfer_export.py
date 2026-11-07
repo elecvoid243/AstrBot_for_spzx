@@ -54,7 +54,7 @@ async def test_export_hydrates_only_owned_independent_subagent_snapshots(tmp_pat
                         run_id="same-run",
                         session_id=owner,
                         umo="",
-                        agent_instance_id="",
+                        agent_instance_id=f"instance-{owner}",
                         agent_name="worker",
                         background=True,
                         status="completed",
@@ -90,6 +90,7 @@ async def test_export_hydrates_only_owned_independent_subagent_snapshots(tmp_pat
         assert part["text"] == "owned full trace"
         assert part["background"] is True
         assert part["cleaned"] is True
+        assert part["agent_instance_id"] == f"instance-{SESSION_ID}"
         assert "detached" not in part
         assert "private foreign trace" not in json.dumps(data)
         assert history.content["message"][0]["detached"] is True

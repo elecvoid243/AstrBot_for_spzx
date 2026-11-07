@@ -4,7 +4,6 @@
     },
     "page": {
         "title": "Оркестрация SubAgent",
-        "beta": "Экспериментально",
         "subtitle": "Основной LLM может напрямую использовать свои инструменты или делегировать задачи SubAgent через handoff."
     },
     "actions": {
@@ -144,6 +143,14 @@
         "toolStrategyHint": "Управление доступными субагентам инструментами"
     },
     "enhancedTools": {
+        "mcpPolicyConflict": "MCP policy identifiers conflict: {names}. Rename the matching configured MCP server; neither server can be used as inherent until the conflict is resolved.",
+        "runtimeMcp": "runtime",
+        "mcpBlacklist": "MCP blacklist",
+        "mcpBlacklistHint": "Block all tools from selected MCP servers. Blacklists take precedence.",
+        "mcpInherent": "Inherent MCP servers",
+        "mcpInherentHint": "Assign tools from selected MCP servers, except blacklisted tools or servers.",
+        "mcpSelect": "Select enabled MCP servers",
+        "mcpLoadFailed": "Failed to load MCP servers",
         "blacklist": "Чёрный список инструментов",
         "blacklistHint": "Инструменты, которые субагенты не могут использовать. Они не будут назначены субагентам.",
         "inherent": "Список встроенных инструментов",

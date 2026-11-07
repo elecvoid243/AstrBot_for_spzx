@@ -54,6 +54,9 @@ class ToolsService:
             config = self.tool_mgr.load_mcp_config()
             servers = []
             mcp_servers = config.get("mcpServers", {})
+            registered_tools = [
+                tool for tool in self.tool_mgr.func_list if isinstance(tool, MCPTool)
+            ]
 
             if not isinstance(mcp_servers, dict):
                 logger.warning(
@@ -77,15 +80,111 @@ class ToolsService:
                         server_info[key] = value
 
                 runtime = self.tool_mgr.mcp_server_runtime_view.get(name)
-                server_info["connected"] = runtime is not None
-                if runtime is None:
-                    server_info["tools"] = []
-                else:
-                    mcp_client = runtime.client
-                    server_info["tools"] = [tool.name for tool in mcp_client.tools]
-                    server_info["errlogs"] = mcp_client.server_errlogs
+                configured_runtime = (
+                    runtime is not None
+                    and getattr(runtime.client, "_astrbot_mcp_source", "runtime")
+                    == "config"
+                )
+                external_tools = [
+                    tool
+                    for tool in registered_tools
+                    if tool.mcp_server_name == name
+                    and (
+                        not configured_runtime or tool.mcp_client is not runtime.client
+                    )
+                ]
+                server_info["source"] = "config"
+                server_info["policy_name"] = name
+                server_info["policy_conflict"] = any(
+                    tool.mcp_policy_name == name
+                    and tool.mcp_policy_name != tool.mcp_server_name
+                    for tool in registered_tools
+                ) or any(
+                    f"runtime:{runtime_name}" == name
+                    and getattr(other_runtime.client, "_astrbot_mcp_source", "runtime")
+                    != "config"
+                    for runtime_name, other_runtime in self.tool_mgr.mcp_server_runtime_view.items()
+                )
+                server_info["readonly"] = bool(external_tools) or (
+                    runtime is not None and not configured_runtime
+                )
+                server_info["connected"] = configured_runtime
+                server_info["tools"] = [
+                    tool.name
+                    for tool in registered_tools
+                    if configured_runtime
+                    and tool.mcp_client is runtime.client
+                    and tool.mcp_server_name == name
+                ]
+                if configured_runtime:
+                    server_info["errlogs"] = runtime.client.server_errlogs
 
                 servers.append(server_info)
+
+            known_names = set()
+            for name, runtime in self.tool_mgr.mcp_server_runtime_view.items():
+                if (
+                    getattr(runtime.client, "_astrbot_mcp_source", "runtime")
+                    != "config"
+                ):
+                    servers.append(
+                        {
+                            "name": name,
+                            "source": "runtime",
+                            "policy_name": f"runtime:{name}",
+                            "policy_conflict": f"runtime:{name}" in mcp_servers,
+                            "readonly": True,
+                            "active": True,
+                            "connected": True,
+                            "tools": [
+                                tool.name
+                                for tool in registered_tools
+                                if tool.mcp_server_name == name
+                                and tool.mcp_client is runtime.client
+                            ],
+                            "errlogs": runtime.client.server_errlogs,
+                        }
+                    )
+                    known_names.add(name)
+
+            for tool in registered_tools:
+                if (
+                    getattr(tool.mcp_client, "_astrbot_mcp_source", "runtime")
+                    == "config"
+                ):
+                    continue
+                if tool.mcp_server_name not in known_names:
+                    servers.append(
+                        {
+                            "name": tool.mcp_server_name,
+                            "source": "runtime",
+                            "policy_name": f"runtime:{tool.mcp_server_name}",
+                            "policy_conflict": f"runtime:{tool.mcp_server_name}"
+                            in mcp_servers,
+                            "readonly": True,
+                            "active": True,
+                            "connected": True,
+                            "tools": [
+                                item.name
+                                for item in registered_tools
+                                if item.mcp_server_name == tool.mcp_server_name
+                                and getattr(
+                                    item.mcp_client, "_astrbot_mcp_source", "runtime"
+                                )
+                                != "config"
+                            ],
+                        }
+                    )
+                    known_names.add(tool.mcp_server_name)
+                else:
+                    for server in servers:
+                        if (
+                            server["source"] == "runtime"
+                            and server["name"] == tool.mcp_server_name
+                        ):
+                            if tool.name not in server["tools"]:
+                                server["tools"].append(tool.name)
+                            break
 
             return servers
         except Exception as exc:
@@ -103,12 +202,34 @@ class ToolsService:
             return None
         return dict(server_config)
 
+    def _assert_mcp_server_manageable(self, name: str) -> None:
+        """Reject mutations that could affect a separately owned MCP client.
+
+        Args:
+            name: Server name to check.
+
+        Raises:
+            ToolsServiceError: A runtime-owned server uses the name.
+        """
+        runtime = self.tool_mgr.mcp_server_runtime_view.get(name)
+        if (
+            runtime is not None
+            and getattr(runtime.client, "_astrbot_mcp_source", "runtime") != "config"
+        ) or any(
+            isinstance(tool, MCPTool)
+            and tool.mcp_server_name == name
+            and getattr(tool.mcp_client, "_astrbot_mcp_source", "runtime") != "config"
+            for tool in self.tool_mgr.func_list
+        ):
+            raise ToolsServiceError(f"MCP server {name} is managed by runtime code")
+
     async def add_mcp_server(self, server_data: Any) -> str:
         try:
             name = server_data.get("name", "")
             if not name:
                 raise ToolsServiceError("Server name cannot be empty")
 
+            self._assert_mcp_server_manageable(name)
             has_valid_config, server_config = self._build_server_config(server_data)
             if not has_valid_config:
                 raise ToolsServiceError("A valid server configuration is required")
@@ -145,6 +266,9 @@ class ToolsService:
             if not name:
                 raise ToolsServiceError("Server name cannot be empty")
 
+            self._assert_mcp_server_manageable(old_name)
+            if name != old_name:
+                self._assert_mcp_server_manageable(name)
             config = self.tool_mgr.load_mcp_config()
 
             if old_name not in config["mcpServers"]:
@@ -197,6 +321,7 @@ class ToolsService:
             if not name:
                 raise ToolsServiceError("Server name cannot be empty")
 
+            self._assert_mcp_server_manageable(name)
             config = self.tool_mgr.load_mcp_config()
 
             if name not in config["mcpServers"]:
@@ -448,7 +573,9 @@ class ToolsService:
 
     async def _enable_added_server(self, name: str, server_config: dict) -> None:
         try:
-            await self.tool_mgr.enable_mcp_server(name, server_config, timeout=30)
+            await self.tool_mgr.enable_mcp_server(
+                name, server_config, timeout=30, source="config"
+            )
         except TimeoutError as exc:
             rollback_ok = self.rollback_mcp_server(name)
             err_msg = f"Timed out while enabling MCP server {name}."
@@ -503,7 +630,9 @@ class ToolsService:
 
     async def _enable_updated_server(self, name: str, server_config: dict) -> None:
         try:
-            await self.tool_mgr.enable_mcp_server(name, server_config, timeout=30)
+            await self.tool_mgr.enable_mcp_server(
+                name, server_config, timeout=30, source="config"
+            )
         except TimeoutError as exc:
             raise ToolsServiceError(
                 f"Timed out while enabling MCP server {name}."

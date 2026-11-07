@@ -933,6 +933,12 @@ export const chatApi = {
     const base = `/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/subagent-runs/stream`;
     return runId ? `${base}?run_id=${encodeURIComponent(runId)}` : base;
   },
+  getSubagentConfiguration(sessionId: string, runId: string, config?: { signal?: AbortSignal }) {
+    return typed<any>(openApiV1.getChatSubagentConfiguration({
+      ...config,
+      path: { session_id: sessionId, run_id: runId },
+    }));
+  },
   liveWebSocketUrl(token: string, host = window.location.host) {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     return `${protocol}//${host}/api/v1/live-chat/ws?token=${encodeURIComponent(token)}`;

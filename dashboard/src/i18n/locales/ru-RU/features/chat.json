@@ -386,7 +386,27 @@
       "polling": "Опрос"
     }
   },
+  "subagentConfig": {
+    "latest": "Показать конфигурацию последнего вызова",
+    "title": "Конфигурация субагента",
+    "view": "Показать конфигурацию {name}",
+    "systemPrompt": "Системная инструкция",
+    "tools": "Инструменты",
+    "blockedTools": "Унаследованные инструменты без права выполнения",
+    "contextMode": "Наследование контекста",
+    "timeout": "Тайм-аут выполнения",
+    "workdir": "Рабочая папка",
+    "none": "Нет",
+    "snapshot": "Конфигурация на момент вызова",
+    "legacy": "Для этого исторического вызова конфигурация не сохранена.",
+    "loadFailed": "Не удалось загрузить конфигурацию. Закройте и откройте окно снова.",
+    "close": "Закрыть"
+  },
   "subagentPages": {
+    "invocationCount": "Вызовов: {count}",
+    "instance": "Экземпляр субагента: {id}",
+    "unknownTime": "Время неизвестно",
+    "noPreview": "Нет описания сообщения",
     "navigation": "Страницы диалога",
     "main": "Основной диалог",
     "agents": "Субагенты",
@@ -567,7 +587,7 @@
     "spcode": {
       "sectionTitle": "Интеграция кодового проекта (spcode)",
       "path": "Корень кодового проекта (абсолютный путь)",
-      "pathHint": "Должен быть абсолютным путём к существующей директории. spcode внедрит AGENTS.md и загрузит codegraph в этой директории.",
+      "pathHint": "Должен быть абсолютным путём к существующей директории. При загрузке AGENTS.md внедряется, только если он уже есть; файл не создаётся автоматически, индекс codegraph не инициализируется.",
       "chipLoaded": "Загружено: {directory}",
       "chipLoading": "Загрузка...",
       "chipFailed": "Ошибка загрузки",
@@ -755,6 +775,7 @@
       "title": "Загрузить каталог проекта",
       "pathLabel": "Путь к проекту",
       "pathPlaceholder": "напр. /Users/me/projects/my-app",
+      "loadHint": "AGENTS.md внедряется, если он есть в проекте; при отсутствии файл не создаётся. Индекс codegraph инициализируется вручную в меню сервисов.",
       "browse": "Обзор…",
       "loadStepsLabel": "Этапы загрузки",
       "advancedSettings": "Расширенные настройки",
@@ -823,6 +844,8 @@
       "agentsMdInitializing": "Инициализация AGENTS.md",
       "codegraphInitializing": "Инициализация Codegraph",
       "projectLoadComplete": "Загрузка завершена",
+      "agentsMdInjected": "AGENTS.md внедрён в системный промпт",
+      "agentsMdNotInjected": "AGENTS.md не внедрён (файл отсутствует или функция отключена)",
       "codegraphRestarting": "Перезапуск codegraph",
       "codegraphIndexing": "Индексация codegraph",
       "codegraphConnected": "Codegraph подключен",

@@ -99,6 +99,7 @@ beforeEach(() => {
     allLoadedCount: 1,
     fetchedAt: 1,
     bootId: null,
+    agentsMd: false,
   };
   getMock.mockImplementation(async (path: string) => {
     if (path === "spcode/git-worktrees") {

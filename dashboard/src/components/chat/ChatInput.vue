@@ -1029,7 +1029,7 @@ const emit = defineEmits<{
   // so history shows what was queued.
   send: [skillNames: string[]];
   "send-command": [command: string];
-  "project-changed": [sessionId: string, path: string | null, noAgentsmd?: boolean, noCodegraph?: boolean];
+  "project-changed": [sessionId: string, path: string | null];
   stop: [];
   toggleStreaming: [];
   removeImage: [index: number];
@@ -2146,8 +2146,12 @@ function applyOptimisticCodegraphStatus(text: string): void {
 
 /**
  * Handle a spcode project-load dialog submission: dispatch the silent
- * webapi call (no chat-history pollution) and drive the chip's live
- * progress via the operation-progress poller.
+ * webapi call (no chat-history pollution).
+ *
+ * Project load no longer runs multi-minute codegraph / AGENTS.md
+ * generation steps, so it does not start the operation-progress poller
+ * and produces no chip bubble. A local busy flag still locks sending
+ * while the system prompt is being rewritten.
  *
  * Fallback: without a current session there is no umo to address the
  * silent POST at, so we keep the previous behavior — write the legacy
@@ -2180,13 +2184,11 @@ async function handleProjectLoadSubmit(
     return;
   }
   const umo = buildWebchatUmoDetails(sessionId, Boolean(session?.is_group)).umo;
-  // codegraph init 后端最长 300s + --force 重试 180s,轮询预算单独放大。
-  operationProgress.startPolling(
-    umo,
-    payload.mode === "codegraph-init" ? 600_000 : undefined,
-  );
+  const locksSend = payload.mode === "project" || payload.mode === "unload";
+  if (locksSend) projectOpBusy.value = true;
   try {
     if (payload.mode === "unload") {
+      operationProgress.startPolling(umo);
       if (spcodeStatus.status.value.umo !== umo || spcodeStatus.status.value.loaded) {
         await silentOps.silentUnload(umo);
       }
@@ -2194,27 +2196,26 @@ async function handleProjectLoadSubmit(
       clearSessionLoadedTag(sessionId);
       emit("project-changed", sessionId, null);
     } else if (payload.mode === "codegraph-init") {
+      // codegraph init 后端最长 300s + --force 重试 180s,轮询预算单独放大。
+      operationProgress.startPolling(umo, 600_000);
       await silentOps.silentCodegraphInit(umo, payload.path!);
       await codegraphStatus.refresh();
     } else if (payload.mode === "codegraph") {
+      operationProgress.startPolling(umo);
       await silentOps.silentCodegraphSet(umo, payload.path!);
       await codegraphStatus.refresh();
     } else {
       const result = await silentOps.silentLoadDirectory({
         umo,
         directory: payload.path!,
-        noAgentsmd: payload.noAgentsmd,
-        noCodegraph: payload.noCodegraph,
         force: payload.force,
-        create: payload.create,
-        gitInit: payload.gitInit,
       });
       // 2026-09-01: manual load may point at a directory other than the
       // project binding; drop the tag so the next auto-load re-evaluates
       // against the binding (the backend idempotent check keeps it cheap).
       clearSessionLoadedTag(sessionId);
       if (result.loaded) {
-        emit("project-changed", sessionId, result.directory || payload.path!, payload.noAgentsmd, payload.noCodegraph);
+        emit("project-changed", sessionId, result.directory || payload.path!);
       }
     }
   } catch (err) {
@@ -2232,6 +2233,7 @@ async function handleProjectLoadSubmit(
       timeout: 6000,
     });
   } finally {
+    if (locksSend) projectOpBusy.value = false;
     // Authoritative chip state, whatever the outcome.
     await spcodeStatus.refresh(umo);
   }
@@ -2547,8 +2549,15 @@ const spcodeStatus = useSpcodeProjectStatus();
 // Silent-operation driver + clients for the project-load dialog (2026-08-06).
 const operationProgress = useSpcodeOperationProgress();
 // Send lock (2026-08-07): block sending while a project load/unload is
-// rewriting the system prompt, to keep prompt-cache continuity.
-const sendLocked = computed(() => !isOrdinaryUser.value && operationProgress.isProjectOpRunning.value);
+// rewriting the system prompt, to keep prompt-cache continuity. The local
+// flag covers the manual dialog path, which no longer polls progress
+// (project load is a single fast AGENTS.md read).
+const projectOpBusy = ref(false);
+const sendLocked = computed(
+  () =>
+    !isOrdinaryUser.value &&
+    (projectOpBusy.value || operationProgress.isProjectOpRunning.value),
+);
 const silentOps = useSpcodeSilentOps();
 const toastStore = useToastStore();
 watch(
@@ -3197,12 +3206,31 @@ defineExpose({
 }
 
 @container (max-width: 380px) {
+  /* 2026-11-07 (elecvoid243): below this width the four status capsules can no
+     longer share a row with their labels, so each falls back to its icon. The
+     components keep their full text in the DOM for tooltips/tests. */
+  .input-area__status-row :deep(.sp-capsule__label),
+  .input-area__status-row :deep(.sp-capsule__wt-sep),
+  .input-area__status-row :deep(.sp-capsule__wt),
+  .input-area__status-row :deep(.sp-capsule__wt-icon),
+  .input-area__status-row :deep(.sp-capsule__chevron),
+  .input-area__status-row :deep(.sp-capsule__icon),
+  .input-area__status-row :deep(.fa-chip-btn__label),
+  .input-area__status-row :deep(.fa-chip-btn__chevron),
   .input-area__status-row :deep(.sp-ghost-btn__label) {
     display: none;
   }
 
+  .input-area__status-row :deep(.sp-capsule__compact-icon) {
+    display: inline-flex;
+  }
+
+  .input-area__status-row :deep(.sp-capsule),
+  .input-area__status-row :deep(.fa-chip-btn),
   .input-area__status-row :deep(.sp-ghost-btn) {
-    min-width: 36px;
+    width: 30px;
+    min-width: 30px;
+    padding: 0;
     justify-content: center;
   }
 

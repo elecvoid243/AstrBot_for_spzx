@@ -130,6 +130,7 @@ describe("GitDiffSidebar repo-init prompt", () => {
       allLoadedCount: 1,
       fetchedAt: 1,
       bootId: null,
+      agentsMd: false,
     };
   });
 

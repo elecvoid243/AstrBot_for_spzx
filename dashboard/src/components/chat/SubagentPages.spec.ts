@@ -1,10 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { flushPromises, mount } from "@vue/test-utils";
-import { ref } from "vue";
+import { defineComponent, h, ref } from "vue";
 import { fetchWithAuth } from "@/api/http";
 import SubagentPages from "./SubagentPages.vue";
 import ChatMessageList from "./ChatMessageList.vue";
 import SubAgentRunBlock from "./message_list_comps/SubAgentRunBlock.vue";
+import SubagentConfigurationDialog from "./SubagentConfigurationDialog.vue";
+
+vi.mock("./SubagentConfigurationDialog.vue", () => ({
+  default: {
+    props: ["run", "sessionId"],
+    template: '<div class="config-dialog" />',
+  },
+}));
 
 vi.mock("@/api/http", () => ({ fetchWithAuth: vi.fn() }));
 vi.mock("@/api/v1", () => ({
@@ -14,6 +22,7 @@ vi.mock("@/api/v1", () => ({
   },
 }));
 vi.mock("@/i18n/composables", () => ({
+  useI18n: () => ({ locale: ref("en-US") }),
   useModuleI18n: () => ({ tm: (key: string) => key }),
 }));
 vi.mock("./ChatMessageList.vue", async () => {
@@ -36,6 +45,8 @@ const controllers = new Map<
 >();
 const wrappers: Array<ReturnType<typeof mount>> = [];
 const run = {
+  agent_instance_id: "instance-researcher-original",
+  input_preview: "Inspect the first file",
   subagent_run_id: "run-1",
   agent_name: "researcher",
   status: "running",
@@ -54,6 +65,21 @@ const snapshot = {
   text: "",
   tool_calls: [],
 };
+const menuStub = defineComponent({
+  props: { modelValue: Boolean },
+  emits: ["update:modelValue"],
+  setup(props, { slots, emit }) {
+    return () =>
+      h("div", [
+        slots.activator?.({
+          props: {
+            onClick: () => emit("update:modelValue", !props.modelValue),
+          },
+        }),
+        props.modelValue ? slots.default?.() : null,
+      ]);
+  },
+});
 
 function push(url: string, payload: unknown) {
   controllers
@@ -63,8 +89,8 @@ function push(url: string, payload: unknown) {
 
 async function page() {
   const wrapper = mount(SubagentPages, {
-    props: { sessionId: "session-1", title: "Parent conversation" },
-    global: { stubs: { "v-icon": true } },
+    props: { sessionId: "session-1" },
+    global: { stubs: { "v-icon": true, "v-menu": menuStub } },
   });
   wrappers.push(wrapper);
   await flushPromises();
@@ -106,10 +132,60 @@ afterEach(async () => {
 });
 
 describe("Subagent conversation pages", () => {
+  it("places navigation in the existing toolbar without rendering a duplicate title", async () => {
+    const host = document.createElement("div");
+    host.id = "test-session-toolbar";
+    document.body.append(host);
+    const wrapper = mount(SubagentPages, {
+      props: { sessionId: "session-1", toolbarTarget: "#test-session-toolbar" },
+      global: { stubs: { "v-icon": true, "v-menu": menuStub } },
+    });
+    wrappers.push(wrapper);
+    await flushPromises();
+    expect(host.querySelector(".session-pages-nav")).not.toBeNull();
+    expect(wrapper.find(".session-pages-header, h1").exists()).toBe(false);
+    await wrapper.setProps({ toolbarTarget: undefined });
+    await flushPromises();
+    expect(host.children).toHaveLength(0);
+    expect(wrapper.find(".session-pages-nav").exists()).toBe(true);
+    await wrapper.setProps({ toolbarTarget: "#test-session-toolbar" });
+    await flushPromises();
+    expect(host.querySelector(".session-pages-nav")).not.toBeNull();
+    wrapper.unmount();
+    expect(host.children).toHaveLength(0);
+    host.remove();
+  });
+
+  it("honors unsaved-file navigation cancellation from the toolbar", async () => {
+    const wrapper = await page();
+    const confirm = vi.fn().mockResolvedValue(false);
+    await wrapper.setProps({ beforeNavigate: confirm });
+    await wrapper.find(".subagent-picker-trigger").trigger("click");
+    await wrapper.find(".subagent-picker-item").trigger("click");
+    await flushPromises();
+    expect(confirm).toHaveBeenCalledOnce();
+    expect(wrapper.findComponent(ChatMessageList).exists()).toBe(false);
+    expect(vi.mocked(fetchWithAuth).mock.calls).toHaveLength(1);
+  });
+
+  it("opens configuration on demand without changing the selected conversation", async () => {
+    const wrapper = await page();
+    expect(wrapper.findComponent(SubagentConfigurationDialog).exists()).toBe(
+      false,
+    );
+    await wrapper.find(".subagent-picker-trigger").trigger("click");
+    await wrapper.find(".subagent-info-button").trigger("click");
+    const dialog = wrapper.findComponent(SubagentConfigurationDialog);
+    expect(dialog.props("run")).toMatchObject({ subagent_run_id: "run-1" });
+    expect(dialog.props("sessionId")).toBe("session-1");
+    expect(wrapper.findComponent(ChatMessageList).exists()).toBe(false);
+    expect(vi.mocked(fetchWithAuth).mock.calls).toHaveLength(1);
+  });
+
   it("updates running/background entries without automatically opening a child renderer", async () => {
     const wrapper = await page();
     expect(wrapper.findComponent(ChatMessageList).exists()).toBe(false);
-    await wrapper.find(".subagent-picker > button").trigger("click");
+    await wrapper.find(".subagent-picker-trigger").trigger("click");
     expect(wrapper.find(".subagent-picker-item").text()).toContain(
       "researcher",
     );
@@ -122,6 +198,7 @@ describe("Subagent conversation pages", () => {
       data: {
         ...run,
         subagent_run_id: "run-2",
+        agent_instance_id: "instance-second",
         agent_name: "second",
         started_ts: 2,
       },
@@ -144,6 +221,141 @@ describe("Subagent conversation pages", () => {
         .text(),
     ).toContain("subagentStatus.completed");
     expect(wrapper.findComponent(ChatMessageList).exists()).toBe(false);
+  });
+
+  it("folds repeated invocations and exposes each call's ID, time, preview and conversation", async () => {
+    const wrapper = await page();
+    const second = {
+      ...run,
+      subagent_run_id: "run-2",
+      started_ts: 1500000000,
+      input_preview: "Inspect the second file",
+      status: "completed",
+      background: false,
+    };
+    push("/runs/session-1", { type: "changed", data: second });
+    await flushPromises();
+    await wrapper.find(".subagent-picker-trigger").trigger("click");
+    expect(wrapper.findAll(".subagent-agent-toggle")).toHaveLength(1);
+    expect(
+      wrapper.find(".subagent-agent-toggle").attributes("aria-expanded"),
+    ).toBe("false");
+    expect(wrapper.find(".subagent-invocations").exists()).toBe(false);
+    expect(vi.mocked(fetchWithAuth).mock.calls).toHaveLength(1);
+    await wrapper.find(".subagent-agent-toggle").trigger("click");
+    const calls = wrapper.findAll(".invocation-item");
+    expect(calls).toHaveLength(2);
+    expect(calls[0].text()).toContain("run-2");
+    expect(calls[0].text()).toContain("Inspect the second file");
+    expect(calls[0].find("time").attributes("datetime")).toBe(
+      "2017-07-14T02:40:00.000Z",
+    );
+    expect(calls[0].find("time").text()).toContain("2017");
+    expect(calls[1].text()).toContain("Inspect the first file");
+    await calls[0].trigger("click");
+    await flushPromises();
+    expect(controllers.has("/runs/session-1/run-2")).toBe(true);
+    expect(controllers.has("/runs/session-1/run-1")).toBe(false);
+    push("/runs/session-1", {
+      type: "changed",
+      data: { ...run, cleaned: true, status: "completed", revision: 2 },
+    });
+    push("/runs/session-1", {
+      type: "changed",
+      data: { ...second, cleaned: true, revision: 2 },
+    });
+    await flushPromises();
+    expect(wrapper.find(".subagent-messages").exists()).toBe(true);
+    await wrapper.find(".subagent-picker-trigger").trigger("click");
+    expect(wrapper.find(".subagent-agent-toggle").exists()).toBe(false);
+    await wrapper.find(".cleaned-toggle").trigger("click");
+    expect(wrapper.findAll(".subagent-agent-toggle")).toHaveLength(1);
+    expect(wrapper.findAll(".invocation-item")).toHaveLength(2);
+    await wrapper.find(".subagent-agent-toggle").trigger("click");
+    push("/runs/session-1", {
+      type: "changed",
+      data: {
+        ...second,
+        subagent_run_id: "run-3",
+        started_ts: 1500000010,
+        cleaned: true,
+      },
+    });
+    await flushPromises();
+    expect(wrapper.find(".subagent-invocations").exists()).toBe(false);
+  });
+
+  it("distinguishes recreated same-name agents across current and cleaned sections, including short ID collisions", async () => {
+    const wrapper = await page();
+    const current = { ...run, agent_instance_id: "instance-a-112233" };
+    const previous = {
+      ...run,
+      subagent_run_id: "previous",
+      agent_instance_id: "instance-b-112233",
+      status: "completed",
+      cleaned: true,
+    };
+    push("/runs/session-1", { type: "snapshot", data: [current, previous] });
+    await flushPromises();
+    await wrapper.find(".subagent-picker-trigger").trigger("click");
+    await wrapper.find(".cleaned-toggle").trigger("click");
+    const groups = wrapper.findAll(".subagent-agent-toggle");
+    expect(groups).toHaveLength(2);
+    const markers = groups.map((group) =>
+      group.find(".instance-marker").text(),
+    );
+    expect(new Set(markers).size).toBe(2);
+    await groups[1].trigger("click");
+    await flushPromises();
+    push("/runs/session-1/previous", {
+      type: "snapshot",
+      data: { ...snapshot, ...previous },
+    });
+    await flushPromises();
+    expect(wrapper.find(".session-pages-nav .instance-marker").text()).toBe(
+      markers[1],
+    );
+  });
+
+  it("keeps legacy same-name calls separate and displays missing call details explicitly", async () => {
+    const wrapper = await page();
+    push("/runs/session-1", {
+      type: "snapshot",
+      data: [
+        { ...run, agent_instance_id: "", subagent_run_id: "legacy-1" },
+        { ...run, agent_instance_id: "", subagent_run_id: "legacy-2" },
+        {
+          ...run,
+          agent_instance_id: "known",
+          subagent_run_id: "known-1",
+          input_preview: "",
+          started_ts: 0,
+        },
+        {
+          ...run,
+          agent_instance_id: "known",
+          subagent_run_id: "known-2",
+          input_preview: "",
+          started_ts: 0,
+        },
+      ],
+    });
+    await flushPromises();
+    await wrapper.find(".subagent-picker-trigger").trigger("click");
+    expect(wrapper.findAll(".subagent-agent-toggle")).toHaveLength(3);
+    const repeated = wrapper
+      .findAll(".subagent-agent-toggle")
+      .find((group) => group.attributes("aria-expanded") === "false")!;
+    await repeated.trigger("click");
+    expect(wrapper.find(".invocation-item").text()).toContain(
+      "subagentPages.noPreview",
+    );
+    expect(wrapper.find(".invocation-item time").text()).toContain(
+      "subagentPages.unknownTime",
+    );
+    expect(
+      wrapper.find(".invocation-item time").attributes("datetime"),
+    ).toBeUndefined();
   });
 
   it("renders one readonly invocation with the main message renderer and ordered live updates", async () => {
@@ -227,7 +439,7 @@ describe("Subagent conversation pages", () => {
         .message[0].text,
     ).toBe("Final report");
     expect(wrapper.emitted("viewChange")?.at(-1)).toEqual([true]);
-    await wrapper.find(".subagent-picker > button").trigger("click");
+    await wrapper.find(".subagent-picker-trigger").trigger("click");
     expect(wrapper.findAll(".subagent-picker-item")).toHaveLength(0);
     await wrapper.find(".cleaned-toggle").trigger("click");
     expect(wrapper.findAll(".subagent-picker-item")).toHaveLength(1);
@@ -265,7 +477,7 @@ describe("Subagent conversation pages", () => {
       wrapper.findComponent(ChatMessageList).props("messages")[1].content
         .message,
     ).toEqual([{ type: "plain", text: "Final report" }]);
-    expect(wrapper.find(".subagent-picker > button").text()).toContain(
+    expect(wrapper.find(".subagent-picker-trigger").text()).toContain(
       "subagentPages.cleaned",
     );
   });
@@ -279,15 +491,12 @@ describe("Subagent conversation pages", () => {
       .mock.calls.find(([url]) => String(url).endsWith("/run-1"))!;
     await wrapper.setProps({
       sessionId: "session-2",
-      title: "Other conversation",
     });
     await flushPromises();
     expect(detailRequest[1]?.signal?.aborted).toBe(true);
     expect(wrapper.findComponent(ChatMessageList).exists()).toBe(false);
     expect(wrapper.emitted("viewChange")?.at(-1)).toEqual([false]);
-    expect(wrapper.find(".session-pages-title").text()).toBe(
-      "Other conversation",
-    );
+    expect(wrapper.find(".session-pages-title").exists()).toBe(false);
     expect(controllers.has("/runs/session-2")).toBe(true);
   });
 
@@ -297,7 +506,7 @@ describe("Subagent conversation pages", () => {
     await flushPromises();
     push("/runs/session-1/run-1", { type: "snapshot", data: snapshot });
     await flushPromises();
-    await wrapper.find(".session-pages-nav > button").trigger("click");
+    await wrapper.find(".session-main-trigger").trigger("click");
     expect(wrapper.findComponent(ChatMessageList).exists()).toBe(false);
     expect(wrapper.emitted("viewChange")?.at(-1)).toEqual([false]);
   });
@@ -399,7 +608,7 @@ describe("Subagent conversation pages", () => {
     expect(wrapper.find(".subagent-run-body").exists()).toBe(false);
     expect(wrapper.text()).not.toContain("long hidden trace");
     expect(wrapper.text()).toContain("subagentPages.cleaned");
-    await wrapper.trigger("click");
+    await wrapper.find(".subagent-run-header").trigger("click");
     expect(open).toHaveBeenCalledWith(
       expect.objectContaining({ subagent_run_id: "run-1" }),
       "session-1",

@@ -14,6 +14,7 @@ from astrbot.core.agent.runners.tool_loop_agent_runner import ToolLoopAgentRunne
 from astrbot.core.agent.tool import FunctionTool, ToolSet
 from astrbot.core.astr_agent_context import AstrAgentContext
 from astrbot.core.astr_agent_tool_exec import FunctionToolExecutor
+from astrbot.core.config.default import DEFAULT_CONFIG
 from astrbot.core.platform.astr_message_event import AstrMessageEvent
 from astrbot.core.provider.entities import (
     LLMResponse,
@@ -735,7 +736,14 @@ def test_configure_validates_inherit_mode():
     assert SubAgentManager.get_context_inherit_mode() == "normal"
 
 
-def test_main_agent_only_tools_set():
+def test_main_agent_only_tools_set(monkeypatch):
+    monkeypatch.setattr(
+        SubAgentManager,
+        "_tools_blacklist",
+        set(
+            DEFAULT_CONFIG["subagent_orchestrator"]["dynamic_agents"]["tools_blacklist"]
+        ),
+    )
     tools = SubAgentManager.get_main_agent_only_tools()
     assert "transfer_to_subagent" in tools
     for blacklisted in (
@@ -743,14 +751,16 @@ def test_main_agent_only_tools_set():
         "remove_subagent",
         "list_subagents",
         "wait_for_subagent",
-        "orchestrate_tasks",
         "broadcast_shared_context",
         "view_shared_context",
     ):
         assert blacklisted in tools
+    assert "orchestrate_tasks" not in tools
     # Dynamic subagents can no longer be protected from per-turn cleanup, so
     # the tool that managed that state must not be exposed to the LLM.
     assert "manage_subagent_protection" not in tools
+
+
 # --- LLM-summary compression wiring for subagents ---
 
 
@@ -879,5 +889,3 @@ async def test_llm_compress_strategy_applies_in_fork_mode(mock_ctx, mock_event):
     kwargs = get_tool_loop_agent_kwargs(mock_ctx)
     assert kwargs["prompt"].startswith("[SUBAGENT MODE: FORK]")
     assert kwargs["llm_compress_provider"] is compress_provider
-
-

@@ -422,9 +422,29 @@
       "polling": "长轮询中"
     }
   },
+  "subagentConfig": {
+    "latest": "查看最近一次调用的配置",
+    "title": "子代理配置",
+    "view": "查看 {name} 的配置",
+    "systemPrompt": "系统提示词",
+    "tools": "工具",
+    "blockedTools": "继承但禁止调用的工具",
+    "contextMode": "上下文继承模式",
+    "timeout": "运行超时",
+    "workdir": "工作目录",
+    "none": "无",
+    "snapshot": "调用时的配置快照",
+    "legacy": "此历史调用未保存配置快照。",
+    "loadFailed": "无法加载子代理配置，请重新打开后重试。",
+    "close": "关闭"
+  },
   "subagentPages": {
+    "invocationCount": "{count} 次调用",
+    "instance": "子代理实例：{id}",
+    "unknownTime": "时间未知",
+    "noPreview": "无消息摘要",
     "navigation": "会话子页面",
-    "main": "主对话",
+    "main": "主会话",
     "agents": "子代理",
     "background": "后台",
     "cleaned": "已清理",
@@ -569,8 +589,8 @@
     "userMessageRelayed": "未送达子代理 · 已转达主 Agent"
   },
   "agentWork": {
-    "worked": "已工作",
-    "workedFor": "已工作 {duration}"
+    "worked": "已完成",
+    "workedFor": "已完成 {duration}"
   },
   "reply": {
     "replyTo": "引用",
@@ -603,7 +623,7 @@
     "spcode": {
       "sectionTitle": "代码项目集成（spcode）",
       "path": "代码项目根目录（绝对路径）",
-      "pathHint": "必须是绝对路径,且目录存在。spcode 会在该目录下注入 AGENTS.md 并加载 codegraph。",
+      "pathHint": "必须是已存在的绝对路径。加载时会注入目录内的 AGENTS.md（若存在）；不会自动生成，也不会自动初始化 codegraph 索引。",
       "chipLoaded": "已加载: {directory}",
       "chipLoading": "正在加载...",
       "chipFailed": "加载失败",
@@ -798,6 +818,7 @@
       "codegraphSetSubmit": "设置默认目录",
       "pathLabel": "项目路径",
       "pathPlaceholder": "例如 /Users/me/projects/my-app",
+      "loadHint": "会自动注入项目内的 AGENTS.md（若存在）；未找到时不会生成。Codegraph 索引请在服务菜单中手动初始化。",
       "browse": "浏览目录…",
       "loadStepsLabel": "加载步骤",
       "advancedSettings": "高级设置",
@@ -859,6 +880,8 @@
       "agentsMdInitializing": "正在初始化 AGENTS.md",
       "codegraphInitializing": "正在初始化 Codegraph",
       "projectLoadComplete": "加载完成",
+      "agentsMdInjected": "AGENTS.md 已注入到系统提示词",
+      "agentsMdNotInjected": "未注入 AGENTS.md（文件不存在或功能未启用）",
       "codegraphRestarting": "正在重启 codegraph",
       "codegraphIndexing": "正在初始化 codegraph 索引",
       "codegraphConnected": "Codegraph 已连接",

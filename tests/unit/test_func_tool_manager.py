@@ -952,7 +952,8 @@ async def test_modelscope_sync_enables_only_synced_servers(monkeypatch):
     default_config = {"mcpServers": {}}
     manager = FunctionToolManager()
 
-    async def fake_enable_mcp_server(name, config):
+    async def fake_enable_mcp_server(name, config, *, source):
+        assert source == "config"
         enabled_servers.append((name, config))
 
     monkeypatch.setattr(ftm.aiohttp, "ClientSession", lambda: FakeSession())

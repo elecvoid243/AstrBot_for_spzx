@@ -3,6 +3,7 @@
     v-if="props.active"
     class="chat-ui"
     :class="{ 'is-dark': isDark, 'sidebar-collapsed': isSidebarCollapsed }"
+    :style="{ '--chat-sidebar-width': `${chatSidebarLayoutWidth}px` }"
   >
     <!-- 2026-07-21 chatui sidebar resize (elecvoid243): replaced the
          Vuetify v-navigation-drawer with a custom <aside> so the user
@@ -1869,6 +1870,18 @@ const chatSidebarStyle = computed(() => {
   }
   return { width: `${customizer.chatSidebarWidth}px` };
 });
+
+// Width the desktop sidebar actually occupies inside the chat row. 0 on
+// mobile, where it is a fixed overlay drawer and consumes no flex space.
+// Sibling panels (GitDiffSidebar) read the CSS variable to split the remaining
+// row 50/50 with the conversation instead of hard-coding a default width.
+const chatSidebarLayoutWidth = computed(() =>
+  !lgAndUp.value
+    ? 0
+    : isSidebarCollapsed.value
+      ? CHAT_SIDEBAR_RAIL_WIDTH
+      : customizer.chatSidebarWidth,
+);
 
 function startSidebarResize(e: MouseEvent) {
   if (!lgAndUp.value || isSidebarCollapsed.value) return;

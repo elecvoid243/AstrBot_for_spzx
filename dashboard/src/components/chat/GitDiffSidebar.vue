@@ -4897,9 +4897,21 @@ watch(expandedSet, (next, prev) => {
 
 const MIN_WIDTH = 320;
 const MAX_WIDTH = 1800;
-const DEFAULT_WIDTH = 800;
 
-const sidebarWidth = ref(DEFAULT_WIDTH);
+// 2026-11-07 (elecvoid243): no fixed default width. Until the user drags, the
+// panel takes half of the space beside the chat sidebar, so the conversation
+// and the preview split that row 50/50 — and keep doing so when the chat
+// sidebar is resized or collapsed, because the value stays a CSS expression.
+// The first drag switches to px: onMouseMove measures the real right edge, so
+// there is no jump at the hand-off.
+const sidebarWidth = ref<number | null>(null);
+const sidebarStyle = computed(() =>
+  sidebarWidth.value == null
+    ? {
+        width: `clamp(${MIN_WIDTH}px, calc((100% - var(--chat-sidebar-width, 0px)) / 2), ${MAX_WIDTH}px)`,
+      }
+    : { width: `${sidebarWidth.value}px` },
+);
 const sidebarRef = ref<HTMLElement | null>(null);
 let isResizing = false;
 
@@ -5008,7 +5020,7 @@ watch(
         ref="sidebarRef"
         class="git-diff-sidebar"
         :class="{ resizing: isResizing, 'is-fullscreen': globalFullscreen }"
-        :style="{ width: sidebarWidth + 'px' }"
+        :style="sidebarStyle"
       >
         <div class="git-diff-sidebar-resizer" @mousedown="startResize" />
         <div class="git-diff-sidebar-header">

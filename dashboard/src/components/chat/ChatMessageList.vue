@@ -30,7 +30,9 @@
       <div
         v-for="(msg, msgIndex) in messages"
         :key="msg.id || `${msgIndex}-${msg.created_at || ''}`"
-        v-show="!isCollapsedInherited(msgIndex)"
+        v-show="
+          !isCollapsedInherited(msgIndex) && !foldedRowIndexes.has(msgIndex)
+        "
         class="message-row"
         :data-message-index="historyOffset + msgIndex"
         :data-message-id="msg.id"
@@ -1647,6 +1649,75 @@ function agentWorkPillVisible(message: ChatRecord, messageIndex: number) {
 function agentWorkExpanded(message: ChatRecord, messageIndex: number) {
   return expandedAgentWork.value.has(agentWorkKey(message, messageIndex));
 }
+
+/**
+ * Rows folded into a completed turn's "worked for ..." capsule.
+ *
+ * A follow-up boundary splits one agent turn into several rows: work segment
+ * / appended user message / work segment / ... / final reply. Once the final
+ * reply exists and its capsule is collapsed, those intermediate rows are the
+ * turn's work trail, not separate answers: hiding them makes the conversation
+ * read as question(s) → answer, and the user's appended messages fold in with
+ * the work. Expanding the capsule brings the whole chain back.
+ *
+ * Telemetry-only bot rows (a captured follow-up leaves `message: []` with
+ * stats/injections) are hidden unconditionally — they are never a reply.
+ */
+const foldedRowIndexes = computed(() => {
+  const rows = props.messages;
+  const hidden = new Set<number>();
+
+  for (let index = 0; index < rows.length; index += 1) {
+    const row = rows[index];
+    if (isUserMessage(row) || isBranchDivider(row)) continue;
+    if (messageContent(row).isLoading) continue;
+    if (isMessageStreaming(row, index)) continue;
+    const hasChoice = messageParts(row).some((part) =>
+      isInteractiveChoicePayload(part),
+    );
+    if (!hasChoice && renderBlocks(row).length === 0) hidden.add(index);
+  }
+
+  for (let index = 0; index < rows.length; index += 1) {
+    const row = rows[index];
+    if (isUserMessage(row) || !agentWorkPillVisible(row, index)) continue;
+    if (agentWorkExpanded(row, index)) continue;
+
+    let from = index;
+    let cursor = index - 1;
+    while (cursor >= 0) {
+      const candidate = rows[cursor];
+      if (isUserMessage(candidate)) {
+        // An appended message is preceded by a work-only bot row of this
+        // turn; anything else (a finished turn, the start) ends the fold.
+        const before = cursor > 0 ? rows[cursor - 1] : null;
+        const appended =
+          before !== null &&
+          !isUserMessage(before) &&
+          !agentWorkPillVisible(before, cursor - 1) &&
+          !messageContent(before).isLoading &&
+          !isMessageStreaming(before, cursor - 1);
+        if (!appended) break;
+        from = cursor;
+        cursor -= 1;
+        continue;
+      }
+      const workOnly =
+        !agentWorkPillVisible(candidate, cursor) &&
+        !messageContent(candidate).isLoading &&
+        !isMessageStreaming(candidate, cursor);
+      if (!workOnly) break;
+      from = cursor;
+      cursor -= 1;
+    }
+
+    for (let rowIndex = from; rowIndex < index; rowIndex += 1) {
+      hidden.add(rowIndex);
+    }
+  }
+
+  return hidden;
+});
 
 /**
  * One block as this list renders it, tagged with its index in the message's

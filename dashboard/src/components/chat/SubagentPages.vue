@@ -885,6 +885,18 @@ defineExpose({ openRun, getRun: (runId: string) => entries.value[runId] });
   background: var(--sp-nav-active-bg);
   box-shadow: var(--sp-nav-active-shadow);
 }
+
+/* Light paints the tabs themselves; the group box stays transparent. Dark
+   keeps transparent tabs on its #333 group, so the token resolves to nothing. */
+.session-pages-nav.in-toolbar button {
+  background: var(--sp-nav-btn-bg);
+}
+
+/* Skip the active tab: in dark its selected overlay (10%) is stronger than the
+   hover one, so a hover must not dim it. */
+.session-pages-nav.in-toolbar button:not(.is-active):hover {
+  background: var(--sp-nav-btn-hover-bg);
+}
 .session-main-trigger {
   flex-shrink: 0;
 }

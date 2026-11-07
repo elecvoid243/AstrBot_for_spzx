@@ -16,12 +16,14 @@
   // Light intentionally stays ghost — the transparent, border-only look that
   // predates 4d3e435e4; only the dark theme needs a surface to lift off #1a1a1a.
   --sp-chip-bg-on-page: transparent;
-  // App-bar session tabs: fully ghost in light, matching the status chips.
-  // The active tab is told apart by primary colour + weight only, so no
-  // container or pill is painted on the bar.
+  // App-bar session tabs: the container outline stays invisible, but each tab
+  // itself gets the light-gray pill that selection/hover used to paint. The
+  // active tab keeps the same surface and is told apart by primary colour.
   --sp-nav-group-bg: transparent;
   --sp-nav-group-border: transparent;
-  --sp-nav-active-bg: transparent;
+  --sp-nav-btn-bg: rgba(var(--v-theme-on-surface), 0.05);
+  --sp-nav-btn-hover-bg: rgba(var(--v-theme-on-surface), 0.08);
+  --sp-nav-active-bg: rgba(var(--v-theme-on-surface), 0.05);
   --sp-nav-active-shadow: none;
   --sp-chip-border: rgba(var(--v-theme-on-surface), 0.12);
   --sp-chip-border-strong: rgba(var(--v-theme-on-surface), 0.16);
@@ -69,6 +71,8 @@
   --sp-chip-bg-on-page: #333333;
   --sp-nav-group-bg: #333333;
   --sp-nav-group-border: var(--sp-chip-border);
+  --sp-nav-btn-bg: transparent;
+  --sp-nav-btn-hover-bg: rgba(var(--v-theme-on-surface), 0.05);
   --sp-nav-active-bg: rgba(var(--v-theme-on-surface), 0.1);
   --sp-nav-active-shadow: none;
   --sp-chip-border: rgba(var(--v-theme-on-surface), 0.16);

@@ -4,7 +4,7 @@ import type { SessionGoalState } from "@/api/v1";
 
 /**
  * useSessionGoal — per-session cache of the kernel standing-goal state,
- * rendered by the app-bar Goal button and the GoalSidebar drawer.
+ * rendered by the app-bar goal badge and the composer GoalBar.
  *
  * State flows push-first: the backend emits `goal_state_changed` over the
  * webchat system stream on every mutation, and useMessages dispatches it to

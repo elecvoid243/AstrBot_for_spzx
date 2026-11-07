@@ -68,7 +68,6 @@ const variables = new Set([
   "sideChats",
   "sideChatMenuOpen",
   "loadingSideChats",
-  "goalSidebarOpen",
   "todoMenuOpen",
   "todoMenuPlacement",
   "fileReferenceNavigation",
@@ -93,7 +92,7 @@ const declarations = ast.statements.filter((node) => {
         call.arguments[0].getText(ast),
       ) &&
         node.getText(ast).includes("closeThreadPanel()")) ||
-        (["goalSidebarOpen", "todoMenuOpen"].includes(
+        (["todoMenuOpen"].includes(
           call.arguments[0].getText(ast),
         ) &&
           node.getText(ast).includes("refsSidebarOpen.value"))))
@@ -144,13 +143,9 @@ function setup() {
     currSessionId: ref("session-a"),
     chatHeader: reactive({
       workspaceFilesOpen: false,
-      goalSidebarOpen: false,
       todoMenuOpen: false,
       SET_WORKSPACE_FILES_OPEN(open: boolean) {
         this.workspaceFilesOpen = open;
-      },
-      SET_GOAL_SIDEBAR_OPEN(open: boolean) {
-        this.goalSidebarOpen = open;
       },
       SET_TODO_MENU_OPEN(open: boolean) {
         this.todoMenuOpen = Boolean(open);
@@ -217,7 +212,7 @@ function setup() {
     `${code}
     return { threadPanelOpen, activeThread, sideChatThreadId, creatingSideChat,
       sideChats, sideChatMenuOpen, loadingSideChats,
-      goalSidebarOpen, todoMenuOpen, fileReferenceNavigation,
+      todoMenuOpen, fileReferenceNavigation,
       ${[...wanted].join(", ")} };`,
   );
   let api!: {
@@ -228,7 +223,6 @@ function setup() {
     sideChats: Ref<Array<{ thread_id: string; title?: string }>>;
     sideChatMenuOpen: Ref<boolean>;
     loadingSideChats: Ref<boolean>;
-    goalSidebarOpen: Ref<boolean>;
     todoMenuOpen: Ref<boolean>;
     fileReferenceNavigation: Ref<FileReferenceNavigation | null>;
     openFileReference: (target: FileReferenceTarget) => Promise<void>;
@@ -273,90 +267,6 @@ const cleanups: Array<() => void> = [];
 afterEach(() => {
   cleanups.splice(0).forEach((cleanup) => cleanup());
   vi.restoreAllMocks();
-});
-
-const activeGoal: SessionGoalState = {
-  goal_id: "goal-a",
-  goal: "Finish the task",
-  status: "active",
-  turns_used: 0,
-  max_turns: 20,
-  subgoals: [],
-  last_verdict: null,
-  last_reason: null,
-  paused_reason: null,
-  created_at: null,
-};
-
-describe("goal activation sidebars", () => {
-  it("opens the goal sidebar for a new active goal", () => {
-    const ctx = setup();
-    ctx.onGoalStateChanged("session-a", activeGoal);
-    expect(ctx.goalSidebarOpen.value).toBe(true);
-    expect(ctx.currentGoal.value).toEqual(activeGoal);
-  });
-
-  it("does not reopen a dismissed sidebar on later turns", () => {
-    const ctx = setup();
-    ctx.onGoalStateChanged("session-a", activeGoal);
-    ctx.goalSidebarOpen.value = false;
-    ctx.onGoalStateChanged("session-a", { ...activeGoal, turns_used: 1 });
-    expect(ctx.goalSidebarOpen.value).toBe(false);
-  });
-
-  it("opens for a replacement goal and for a resumed goal", () => {
-    const ctx = setup();
-    ctx.currentGoal.value = activeGoal;
-    ctx.onGoalStateChanged("session-a", { ...activeGoal, goal_id: "goal-b" });
-    expect(ctx.goalSidebarOpen.value).toBe(true);
-    ctx.goalSidebarOpen.value = false;
-    ctx.onGoalStateChanged("session-a", { ...activeGoal, status: "paused" });
-    ctx.onGoalStateChanged("session-a", activeGoal);
-    expect(ctx.goalSidebarOpen.value).toBe(true);
-  });
-
-  it.each([
-    "reasoning",
-    "workbench",
-    "workspace",
-    "refs",
-    "thread",
-    "pending-thread",
-  ])("preserves the existing %s sidebar selection", (panel) => {
-    const ctx = setup();
-    if (panel === "reasoning") ctx.reasoningPanelOpen.value = true;
-    if (panel === "workbench") ctx.gitDiffSidebarOpen.value = true;
-    if (panel === "workspace") ctx.chatHeader.workspaceFilesOpen = true;
-    if (panel === "refs") ctx.refsSidebarOpen.value = true;
-    if (panel === "thread") ctx.threadPanelOpen.value = true;
-    if (panel === "pending-thread") ctx.creatingSideChat.value = true;
-    ctx.onGoalStateChanged("session-a", activeGoal);
-    expect(ctx.goalSidebarOpen.value).toBe(false);
-    expect(ctx.currentGoal.value).toEqual(activeGoal);
-  });
-
-  it("keeps background session pushes from opening the current sidebar", () => {
-    const ctx = setup();
-    ctx.onGoalStateChanged("session-b", activeGoal);
-    expect(ctx.goalSidebarOpen.value).toBe(false);
-    expect(ctx.applyPushedGoal).toHaveBeenCalledWith("session-b", activeGoal);
-    expect(ctx.currentGoal.value).toBeNull();
-  });
-
-  it("does not reveal a sidebar while Chat is hidden", () => {
-    const ctx = setup();
-    ctx.props.active = false;
-    ctx.onGoalStateChanged("session-a", activeGoal);
-    expect(ctx.goalSidebarOpen.value).toBe(false);
-  });
-
-  it("updates a completed goal without reopening the sidebar", () => {
-    const ctx = setup();
-    ctx.currentGoal.value = activeGoal;
-    ctx.onGoalStateChanged("session-a", { ...activeGoal, status: "done" });
-    expect(ctx.goalSidebarOpen.value).toBe(false);
-    expect(ctx.currentGoal.value?.status).toBe("done");
-  });
 });
 
 describe("Chat side-chat lifecycle", () => {
@@ -566,7 +476,6 @@ describe("Chat side-chat lifecycle", () => {
 
   it("opens a same-session side chat with isolated context", async () => {
     const ctx = setup();
-    ctx.goalSidebarOpen.value = true;
     ctx.todoMenuOpen.value = true;
     await nextTick();
     const pending = ctx.openSideChat();
@@ -585,7 +494,6 @@ describe("Chat side-chat lifecycle", () => {
     expect(ctx.sideChatThreadId.value).toBe("side-a");
     expect(ctx.threadPanelOpen.value).toBe(true);
     expect(ctx.creatingSideChat.value).toBe(false);
-    expect(ctx.goalSidebarOpen.value).toBe(false);
     expect(ctx.todoMenuOpen.value).toBe(false);
     expect(ctx.chatApi.deleteThread).not.toHaveBeenCalled();
   });
@@ -718,7 +626,7 @@ describe("Chat side-chat lifecycle", () => {
     expect(ctx.toast.error).not.toHaveBeenCalled();
   });
 
-  it.each(["refs", "reasoning", "git", "workspace", "goal", "todo"])(
+  it.each(["refs", "reasoning", "git", "workspace", "todo"])(
     "preserves the newer %s selection",
     async (sidebar) => {
       const ctx = setup();
@@ -728,7 +636,6 @@ describe("Chat side-chat lifecycle", () => {
         await ctx.openReasoningPanel({ blockIndex: 1 });
       if (sidebar === "git") await ctx.toggleGitDiffSidebar();
       if (sidebar === "workspace") ctx.chatHeader.workspaceFilesOpen = true;
-      if (sidebar === "goal") ctx.goalSidebarOpen.value = true;
       if (sidebar === "todo") ctx.todoMenuOpen.value = true;
       await nextTick();
 
@@ -751,18 +658,16 @@ describe("Chat side-chat lifecycle", () => {
       if (sidebar === "git") expect(ctx.gitDiffSidebarOpen.value).toBe(true);
       if (sidebar === "workspace")
         expect(ctx.chatHeader.workspaceFilesOpen).toBe(true);
-      if (sidebar === "goal") expect(ctx.goalSidebarOpen.value).toBe(true);
       if (sidebar === "todo") expect(ctx.todoMenuOpen.value).toBe(true);
     },
   );
 
-  it.each(["goal", "todo"])(
+  it.each(["todo"])(
     "retains an existing branch when opening %s without a pending create",
     async (panel) => {
       const ctx = setup();
       await ctx.openThreadPanel({ thread_id: "retained-branch" });
-      if (panel === "goal") ctx.goalSidebarOpen.value = true;
-      else ctx.todoMenuOpen.value = true;
+      ctx.todoMenuOpen.value = true;
       await nextTick();
 
       expect(ctx.threadPanelOpen.value).toBe(true);

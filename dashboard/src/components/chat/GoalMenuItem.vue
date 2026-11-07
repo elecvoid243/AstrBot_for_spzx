@@ -3,12 +3,11 @@
   GoalMenuItem — "设定目标" entry inside the chat input's "+" menu.
 
   Discovers the kernel goal loop (/goal): without a standing goal the item
-  opens the set-goal card (goal text + turn budget); with one active it
-  opens the GoalSidebar drawer instead — the single home for status,
-  budget, pause/clear. Setting a goal hits POST /chat/sessions/{id}/goal;
-  the resulting state reaches the header badge and this item through the
-  goal_state_changed system-stream push (useSessionGoal), so no local
-  state is kept here.
+  opens the set-goal card (goal text + turn budget); with one active it asks
+  the composer GoalBar to open its edit dialog. Setting a goal hits
+  POST /chat/sessions/{id}/goal; the resulting state reaches the header badge
+  and this item through the goal_state_changed system-stream push
+  (useSessionGoal), so no local state is kept here.
 -->
 <template>
   <v-menu
@@ -173,8 +172,8 @@ function stepBudget(delta: number) {
 }
 
 /**
- * Activator click: with a standing goal open the GoalSidebar (status,
- * budget, pause/clear live there); without one open the set-goal card.
+ * Activator click: with a standing goal hand off to the composer bar's edit
+ * dialog (the goal's new home); without one open the set-goal card here.
  *
  * Overrides the v-menu activator's own onClick via the props spread in
  * the template, so the popover only opens for the no-goal case.
@@ -182,7 +181,7 @@ function stepBudget(delta: number) {
 function handleActivatorClick() {
   if (badge.value) {
     menuOpen.value = false;
-    chatHeader.SET_GOAL_SIDEBAR_OPEN(true);
+    chatHeader.SET_GOAL_EDIT_OPEN(true);
     return;
   }
   menuOpen.value = true;

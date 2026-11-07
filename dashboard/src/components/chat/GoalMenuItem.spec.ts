@@ -5,7 +5,7 @@
 // (kernel /goal discovery). Covers: compact no-goal label, active-goal
 // label + count trail, open-card flow, start-disabled validation,
 // budget stepper clamping + dirty flag, API error surfacing, and the
-// active-goal click routing to the GoalSidebar instead of the card.
+// active-goal click routing to the composer bar's edit dialog.
 import { flushPromises, mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -190,15 +190,15 @@ describe("GoalMenuItem — set flow (no goal)", () => {
 });
 
 describe("GoalMenuItem — active goal routing", () => {
-  it("opens the GoalSidebar instead of the card when a goal exists", async () => {
+  it("opens the composer bar's edit dialog instead of the card when a goal exists", async () => {
     const chatHeader = useChatHeaderStore();
     chatHeader.goalBadge = { status: "active", turnsUsed: 3, maxTurns: 20 };
-    const toggleSpy = vi.spyOn(chatHeader, "SET_GOAL_SIDEBAR_OPEN");
+    const editSpy = vi.spyOn(chatHeader, "SET_GOAL_EDIT_OPEN");
 
     const wrapper = mountItem();
     await wrapper.find(".v-list-item-stub").trigger("click");
 
-    expect(toggleSpy).toHaveBeenCalledWith(true);
+    expect(editSpy).toHaveBeenCalledWith(true);
     expect(wrapper.find('[data-test="goal-menu-card"]').exists()).toBe(false);
   });
 });

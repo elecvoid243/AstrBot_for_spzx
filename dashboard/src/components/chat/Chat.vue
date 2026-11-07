@@ -1026,7 +1026,16 @@
               @file-reference-drop="handleSidebarFileDrop"
               @clear-reply="replyTarget = null"
               @toggle-diff-sidebar="toggleGitDiffSidebar"
-            />
+            >
+              <template #above-status>
+                <GoalBar
+                  v-if="currentGoal && !isReadonlySession && currSessionId"
+                  :goal="currentGoal"
+                  :session-id="currSessionId"
+                  :is-dark="isDark"
+                />
+              </template>
+            </ChatInput>
           </template>
           <!-- 2026-08-13 (elecvoid243): archived sessions open read-only. -->
           <div v-else class="readonly-session-bar">
@@ -1150,11 +1159,7 @@
         "
       />
     </v-dialog>
-    <GoalSidebar
-      v-model="goalSidebarOpen"
-      :goal="currentGoal"
-      :session-id="currSessionId"
-    />
+
     <GitDiffSidebar
       ref="gitDiffSidebarRef"
       v-model="gitDiffSidebarOpen"
@@ -1297,7 +1302,7 @@ import ReasoningSidebar from "@/components/chat/ReasoningSidebar.vue";
 import ThreadPanel from "@/components/chat/ThreadPanel.vue";
 import WorkspaceFilesPanel from "@/components/chat/WorkspaceFilesPanel.vue";
 import RefsSidebar from "@/components/chat/message_list_comps/RefsSidebar.vue";
-import GoalSidebar from "@/components/chat/message_list_comps/GoalSidebar.vue";
+import GoalBar from "@/components/chat/GoalBar.vue";
 import GitDiffSidebar from "@/components/chat/GitDiffSidebar.vue";
 import {
   OPEN_FILE_REFERENCE,
@@ -1383,7 +1388,6 @@ onMounted(() => {
     gitDiffSidebarOpen.value = false;
     fileReferenceNavigation.value = null;
     closeTodoMenu();
-    chatHeader.SET_GOAL_SIDEBAR_OPEN(false);
   });
   watch(selectedProjectId, (id) => {
     if (id && remoteConnectionId.value) void router.replace({ path: basePath(), query: {} });
@@ -1400,7 +1404,6 @@ async function selectRemoteSession(connection: string, session: string) {
   gitDiffSidebarOpen.value = false;
   fileReferenceNavigation.value = null;
   closeTodoMenu();
-  chatHeader.SET_GOAL_SIDEBAR_OPEN(false);
   selectedProjectId.value = null;
   currSessionId.value = '';
   await router.push({ path: basePath(), query: { remoteConnection: connection, remoteSession: session } });
@@ -1510,7 +1513,7 @@ const {
   updateSessionTitle,
 } = useSessions(props.chatboxMode);
 
-// ── goal 循环状态 (右上角 Goal 按钮 + GoalSidebar) ─────────────
+// ── goal 循环状态 (顶栏徽标 + composer 上方的 GoalBar) ────────
 // Push-first: the backend emits goal_state_changed over the system stream
 // on every mutation; GET /goal is only the cold-start path on session switch.
 const { currentGoal, applyPushedGoal } = useSessionGoal(currSessionId);
@@ -1521,10 +1524,6 @@ const { currentGoal, applyPushedGoal } = useSessionGoal(currSessionId);
 // the cold-start path on session switch.
 const { currentSessions: shellSessions, applyPushedShellSessions } =
   useShellSessions(currSessionId);
-const goalSidebarOpen = computed({
-  get: () => chatHeader.goalSidebarOpen,
-  set: (open: boolean) => chatHeader.SET_GOAL_SIDEBAR_OPEN(open),
-});
 
 const {
   projects,
@@ -1802,7 +1801,6 @@ async function openFileReference(target: FileReferenceTarget): Promise<void> {
   refsSidebarOpen.value = false;
   selectedRefs.value = null;
   closeTodoMenu();
-  chatHeader.SET_GOAL_SIDEBAR_OPEN(false);
   fileReferenceNavigation.value = { ...target, requestId };
   gitDiffSidebarOpen.value = true;
 }
@@ -1854,7 +1852,6 @@ async function autoOpenAgentBrowser(
     refsSidebarOpen.value = false;
     selectedRefs.value = null;
     closeTodoMenu();
-    chatHeader.SET_GOAL_SIDEBAR_OPEN(false);
     gitDiffSidebarOpen.value = true;
   } catch {
     // Optional observation must not interrupt the agent or show missing-plugin errors.
@@ -2035,30 +2032,15 @@ watch(reasoningPanelOpen, (open) => {
 });
 
 /**
- * Apply live goal state and reveal a new activation when no sidebar is open.
+ * Apply live goal state. The composer bar renders straight from currentGoal,
+ * so there is no drawer to reveal or dismiss anymore.
  *
  * Args:
  *   sessionId: Session owning the pushed goal state.
  *   goal: Current goal, or null after it has been cleared.
  */
 function onGoalStateChanged(sessionId: string, goal: SessionGoalState | null) {
-  const previous = currentGoal.value;
   applyPushedGoal(sessionId, goal);
-  if (
-    sessionId !== currSessionId.value ||
-    !props.active ||
-    goal?.status !== "active" ||
-    (previous?.goal_id === goal.goal_id && previous.status === "active") ||
-    goalSidebarOpen.value ||
-    reasoningPanelOpen.value ||
-    gitDiffSidebarOpen.value ||
-    chatHeader.workspaceFilesOpen ||
-    refsSidebarOpen.value ||
-    threadPanelOpen.value ||
-    creatingSideChat.value
-  )
-    return;
-  chatHeader.SET_GOAL_SIDEBAR_OPEN(true);
 }
 
 const {
@@ -2085,6 +2067,7 @@ const {
   regenerateMessage,
   stopSession,
   latestTodoSnapshotBySession,
+  latestTodoCreateTickBySession,
 } = useMessages({
   currentSessionId: currSessionId,
   accountRole: auth.role,
@@ -2234,6 +2217,8 @@ watch(currSessionId, (newId, oldId) => {
     inlineAnnotations.resetForSession();
     // The compression chip belongs to the conversation that produced it.
     compressionNoticeEntry.value = null;
+    // A goal-edit draft belongs to the session that opened it.
+    chatHeader.SET_GOAL_EDIT_OPEN(false);
   }
 });
 
@@ -2504,7 +2489,6 @@ async function onSubagentViewChange(open: boolean) {
     gitDiffSidebarOpen.value = false;
     closeTodoMenu();
     chatHeader.SET_WORKSPACE_FILES_OPEN(false);
-    chatHeader.SET_GOAL_SIDEBAR_OPEN(false);
   }
   subagentPageOpen.value = open;
   if (open) return;
@@ -2577,7 +2561,6 @@ watch(
     refsSidebarOpen.value = false;
     selectedRefs.value = null;
     closeTodoMenu();
-    chatHeader.SET_GOAL_SIDEBAR_OPEN(false);
     gitDiffSidebarOpen.value = false;
   },
 );
@@ -5338,7 +5321,6 @@ async function openSideChatPanel(thread: ChatThread) {
   refsSidebarOpen.value = false;
   selectedRefs.value = null;
   closeTodoMenu();
-  chatHeader.SET_GOAL_SIDEBAR_OPEN(false);
   gitDiffSidebarOpen.value = false;
   sideChatThreadId.value = thread.thread_id;
   activeThread.value = thread;
@@ -5501,7 +5483,6 @@ async function openReasoningPanel(payload: {
   refsSidebarOpen.value = false;
   selectedRefs.value = null;
   closeTodoMenu();
-  chatHeader.SET_GOAL_SIDEBAR_OPEN(false);
   gitDiffSidebarOpen.value = false;
   activeReasoningTarget.value = payload;
   reasoningPanelOpen.value = true;
@@ -5523,7 +5504,6 @@ async function toggleGitDiffSidebar(): Promise<void> {
   refsSidebarOpen.value = false;
   selectedRefs.value = null;
   closeTodoMenu();
-  chatHeader.SET_GOAL_SIDEBAR_OPEN(false);
   const sessionId = currSessionId.value;
   gitDiffSidebarOpen.value = true;
   await nextTick();
@@ -5557,15 +5537,31 @@ watch(
   { immediate: true },
 );
 
-// 与 RefsSidebar 互斥: 展开 todo 菜单 / 打开 Goal 抽屉时收起 refs;
-// 反向亦然。todo 菜单与 Goal 抽屉互不相干 (浮层 vs 侧栏), 不互斥。
-watch(todoMenuOpen, (open) => {
-  if (open) {
-    if (creatingSideChat.value) closeThreadPanel();
-    refsSidebarOpen.value = false;
-  }
+/** 当前会话的 todo_create 成功计数（更新类工具不递增）。 */
+const currentTodoCreateTick = computed(() => {
+  const sid = currSessionId.value;
+  return sid ? latestTodoCreateTickBySession.value[sid] ?? 0 : 0;
 });
-watch(goalSidebarOpen, (open) => {
+
+// 2026-11-07 (elecvoid243): the agent just created a todo list — reveal the
+// header menu once so the plan is visible without a click. Later updates must
+// not pop it again, so the trigger is the todo_create tick, not the snapshot.
+// Watching both sources (not a baseline variable) keeps session switches
+// inert even when the tick happens to be unchanged: an older creation from
+// another session must not open the menu when the user comes back.
+watch(
+  [currSessionId, currentTodoCreateTick],
+  ([sessionId, tick], [previousSessionId, previousTick]) => {
+    if (!sessionId || sessionId !== previousSessionId) return;
+    if (tick <= (previousTick ?? 0)) return;
+    // The snapshot watcher above mirrors the list into the store in this same
+    // flush; opening on the next tick guarantees the menu has content.
+    nextTick(() => chatHeader.SET_TODO_MENU_OPEN(true));
+  },
+);
+
+// 与 RefsSidebar 互斥: 展开 todo 菜单时收起 refs; 反向亦然。
+watch(todoMenuOpen, (open) => {
   if (open) {
     if (creatingSideChat.value) closeThreadPanel();
     refsSidebarOpen.value = false;
@@ -5574,15 +5570,13 @@ watch(goalSidebarOpen, (open) => {
 watch(refsSidebarOpen, (open) => {
   if (open) {
     closeTodoMenu();
-    chatHeader.SET_GOAL_SIDEBAR_OPEN(false);
   }
 });
 
 // Push the current session's goal state into the header store so the
-// app-bar entry button shows a live turns badge while the sidebar is
-// closed. The badge disappears when the goal record is gone (never set,
-// session switch to a goal-less session, or a live /goal clear), and an
-// open sidebar is closed with it — it would only show an empty panel.
+// app-bar entry shows a live turns badge. The badge disappears when the goal
+// record is gone (never set, session switch to a goal-less session, or a
+// live /goal clear).
 watch(
   currentGoal,
   (goal) => {
@@ -5595,7 +5589,7 @@ watch(
           }
         : null,
     );
-    if (!goal) chatHeader.SET_GOAL_SIDEBAR_OPEN(false);
+    if (!goal) chatHeader.SET_GOAL_EDIT_OPEN(false);
   },
   { immediate: true },
 );

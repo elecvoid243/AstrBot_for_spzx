@@ -53,4 +53,20 @@ describe("todo summary entry lives in the app bar", () => {
     expect(storeSource).toMatch(/SET_TODO_MENU_OPEN\(open: boolean\)/);
     expect(storeSource).toMatch(/if \(!snapshot\) this\.todoMenuOpen = false;/);
   });
+
+  it("auto-opens the menu for todo_create only, never for updates", () => {
+    const messagesSource = readSource("../../composables/useMessages.ts");
+    // The tick is bumped at the write site, gated on the create tool.
+    expect(messagesSource).toMatch(/toolName === "todo_create" && snapshot/);
+    expect(messagesSource).toMatch(
+      /latestTodoCreateTickBySession: todoCreateTickBySession/,
+    );
+    // Chat.vue opens the header menu from that tick, not from the snapshot.
+    expect(chatSource).toMatch(
+      /watch\(\s*\[currSessionId, currentTodoCreateTick\],[\s\S]*?SET_TODO_MENU_OPEN\(true\)/,
+    );
+    expect(chatSource).toMatch(
+      /const currentTodoCreateTick = computed\(\(\) => \{[\s\S]*?latestTodoCreateTickBySession\.value\[sid\]/,
+    );
+  });
 });

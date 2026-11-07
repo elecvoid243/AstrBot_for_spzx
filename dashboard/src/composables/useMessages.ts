@@ -2022,6 +2022,15 @@ export function useMessages(options: UseMessagesOptions) {
   );
 
   /**
+   * 每个 session 的 todo_create 成功计数（2026-11-07, elecvoid243）。
+   *
+   * 只有 todo_create 成功写入快照时才 +1；todo_add / update / delete /
+   * query 不递增。Chat.vue 监听当前会话的计数变化，在“创建列表”那一刻
+   * 展开顶栏的 todo 菜单；后续更新不再弹出，避免打断阅读。
+   */
+  const todoCreateTickBySession = ref<Record<string, number>>({});
+
+  /**
    * 从 tool.result(JSON 字符串)中解析出 TodoSnapshot。
    *
    * 返回值语义:
@@ -2590,6 +2599,13 @@ export function useMessages(options: UseMessagesOptions) {
             // undefined → 保持现状;null → 清空;对象 → 写入。
             if (snapshot !== undefined) {
               writeTodoSnapshot(sessionId, snapshot);
+              if (toolName === "todo_create" && snapshot) {
+                todoCreateTickBySession.value = {
+                  ...todoCreateTickBySession.value,
+                  [sessionId]:
+                    (todoCreateTickBySession.value[sessionId] ?? 0) + 1,
+                };
+              }
             }
           }
         }
@@ -2673,6 +2689,10 @@ export function useMessages(options: UseMessagesOptions) {
      * 详见 `parseTodoToolResult` 注释。
      */
     latestTodoSnapshotBySession,
+    /**
+     * 每个 session 的 todo_create 成功计数；用于“创建时自动展开菜单”。
+     */
+    latestTodoCreateTickBySession: todoCreateTickBySession,
   };
 }
 

@@ -1247,25 +1247,22 @@ onMounted(async () => {
     </div>
 
     <div class="header-actions" :class="{ 'chat-header-actions': isChatPath }">
-      <!-- 2026-09-09: persistent GoalSidebar entry. Shown only when the
-           active session has a standing-goal record (/goal set, until
-           /goal clear). Badge mirrors the goal status + turn budget;
-           content is pushed from Chat.vue (which fetches the goal state
-           via useSessionGoal) through the chatHeader store. -->
+      <!-- 2026-11-07: goal entry. The goal itself now lives in the composer
+           bar; this badge keeps the live status + turn budget visible and
+           opens the bar's edit dialog through the shared store flag. -->
       <v-btn
         v-if="isChatPath && chatHeader.goalBadge"
         class="chat-action-btn goal-sidebar-trigger"
         :class="{
-          'goal-sidebar-trigger--active': chatHeader.goalSidebarOpen,
+          'goal-sidebar-trigger--active': chatHeader.goalEditOpen,
           'goal-sidebar-trigger--done': chatHeader.goalBadge.status === 'done',
         }"
         variant="text"
         size="small"
         rounded="sm"
-        :title="`${tm('goal.summary')} · ${tm(`goal.status_${chatHeader.goalBadge.status}`)}`"
-        :aria-label="`${tm('goal.summary')} · ${tm(`goal.status_${chatHeader.goalBadge.status}`)}`"
-        :aria-pressed="chatHeader.goalSidebarOpen"
-        @click="chatHeader.TOGGLE_GOAL_SIDEBAR"
+        :title="`${tm('goal.editTitle')} · ${tm(`goal.status_${chatHeader.goalBadge.status}`)}`"
+        :aria-label="`${tm('goal.editTitle')} · ${tm(`goal.status_${chatHeader.goalBadge.status}`)}`"
+        @click="chatHeader.SET_GOAL_EDIT_OPEN(true)"
       >
         <v-icon size="18" :color="goalStatusColor">{{
           chatHeader.goalBadge.status === 'done'
@@ -2463,7 +2460,7 @@ onMounted(async () => {
   background: rgba(var(--v-theme-on-surface), 0.08) !important;
 }
 
-/* 2026-09-09: persistent GoalSidebar entry (see template comment). */
+/* 2026-11-07: goal badge entry (see template comment). */
 .goal-sidebar-trigger {
   color: rgb(var(--v-theme-on-surface));
 }

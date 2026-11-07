@@ -6,6 +6,11 @@
     @dragleave.prevent="handleDragLeave"
     @drop.prevent="handleDrop"
   >
+    <!-- Host slot (2026-11-07): lets the chat page pin status strips (the
+         standing-goal bar) above the composer while inheriting the exact
+         content width and padding the input uses. -->
+    <slot name="above-status" />
+
     <!--
       Status row above the composer (2026-10-03 redesign, elecvoid243):
       right cluster = file-access-mode capsule + standalone workspace entry
@@ -577,8 +582,8 @@
               <!--
                 2026-10-25 goal entry: "设定目标" menu item (kernel /goal
                 discovery). Without a standing goal it opens the set-goal
-                card (text + turn budget); with one it opens the GoalSidebar
-                drawer. State lives in the chatHeader store (pushed by
+                card (text + turn budget); with one it opens the GoalBar's
+                edit dialog. State lives in the chatHeader store (pushed by
                 useSessionGoal), never here.
               -->
               <GoalMenuItem :session-id="sessionId || null" :disabled="disabled" />

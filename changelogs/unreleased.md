@@ -34,3 +34,10 @@
 
 - Extend the former remote read-only history view with human text, ordinary busy follow-up, live snapshots and session-wide stop. Reconnect without resending; execution and history stay remote.
 - Retain offline drafts; query bounded remote admission receipts after uncertain sends. Revoke result access live without cancelling accepted work; preserve inert rendering and local account isolation.
+
+
+### Remote Chat RC05 (#157)
+
+- Extend the existing remote composer with **Attach images or files**, scoped image previews/downloads, and human choice answers. No navigation entry moves. Keep files and execution on the directly bound remote instance; retain RC04 receipt and reconnect semantics.
+- Add live account/session exposure checks for pending uploads, historical and active attachments, and human answers. Rebinding discards stale previews and replies; remote failures preserve local login. Agent/tool messages cannot claim human provenance through request fields.
+- 扩展原远端输入框，增加**添加图片或文件**、受限图片预览／下载及真人选择回答；导航入口不变，附件与执行保留远端，继续沿用 RC04 回执及重连语义。撤权、账号与连接隔离同样适用于附件和交互。

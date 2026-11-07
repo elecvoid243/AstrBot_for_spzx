@@ -98,6 +98,270 @@ tags:
   - name: Webhooks
 
 paths:
+  /api/v1/remote-chat/sessions/{session_id}/attachments:
+    post:
+      tags:
+      - Remote Chat
+      summary: Upload Remote Attachment
+      operationId: upload_remote_attachment_api_v1_remote_chat_sessions__session_id__attachments_post
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Session Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - RemoteSessionAuth: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+              - file
+              properties:
+                file:
+                  type: string
+                  format: binary
+  /api/v1/remote-chat/sessions/{session_id}/attachments/{attachment_id}:
+    get:
+      tags:
+      - Remote Chat
+      summary: Download Remote Attachment
+      operationId: download_remote_attachment_api_v1_remote_chat_sessions__session_id__attachments__attachment_id__get
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Session Id
+      - name: attachment_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Attachment Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - RemoteSessionAuth: []
+  /api/v1/remote-chat/sessions/{session_id}/human-choices/{request_id}:
+    post:
+      tags:
+      - Remote Chat
+      summary: Answer Remote Human Choice
+      operationId: answer_remote_human_choice_api_v1_remote_chat_sessions__session_id__human_choices__request_id__post
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Session Id
+      - name: request_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Request Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RemoteChoiceRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '404':
+          description: Choice not found in the exposed session
+        '409':
+          description: Choice already resolved or expired
+      security:
+      - RemoteSessionAuth: []
+  /api/v1/chat/remote-connections/{connection_id}/sessions/{session_id}/attachments:
+    post:
+      tags:
+      - Remote Chat
+      summary: Upload Connection Attachment
+      operationId: upload_connection_attachment_api_v1_chat_remote_connections__connection_id__sessions__session_id__attachments_post
+      parameters:
+      - name: connection_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Connection Id
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Session Id
+      - name: revision
+        in: query
+        required: true
+        schema:
+          type: string
+          title: Revision
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+              - file
+              properties:
+                file:
+                  type: string
+                  format: binary
+  /api/v1/chat/remote-connections/{connection_id}/sessions/{session_id}/attachments/{attachment_id}:
+    get:
+      tags:
+      - Remote Chat
+      summary: Download Connection Attachment
+      operationId: download_connection_attachment_api_v1_chat_remote_connections__connection_id__sessions__session_id__attachments__attachment_id__get
+      parameters:
+      - name: connection_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Connection Id
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Session Id
+      - name: attachment_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Attachment Id
+      - name: revision
+        in: query
+        required: true
+        schema:
+          type: string
+          title: Revision
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - BearerAuth: []
+  /api/v1/chat/remote-connections/{connection_id}/sessions/{session_id}/human-choices/{request_id}:
+    post:
+      tags:
+      - Remote Chat
+      summary: Answer Connection Human Choice
+      operationId: answer_connection_human_choice_api_v1_chat_remote_connections__connection_id__sessions__session_id__human_choices__request_id__post
+      parameters:
+      - name: connection_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Connection Id
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Session Id
+      - name: request_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Request Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConnectionChoiceRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '404':
+          description: Choice not found in the exposed session
+        '409':
+          description: Choice already resolved or expired
+      security:
+      - BearerAuth: []
   /api/v1/remote-chat/sessions/{session_id}/messages:
     post:
       tags:
@@ -8942,6 +9206,44 @@ components:
       schema: { type: string }
 
   schemas:
+    ConnectionChoiceRequest:
+      properties:
+        choice_id:
+          type: string
+          maxLength: 256
+          minLength: 1
+          title: Choice Id
+        free_text:
+          type: string
+          maxLength: 100000
+          title: Free Text
+          default: ''
+        revision:
+          type: string
+          title: Revision
+      additionalProperties: false
+      type: object
+      required:
+      - choice_id
+      - revision
+      title: ConnectionChoiceRequest
+    RemoteChoiceRequest:
+      properties:
+        choice_id:
+          type: string
+          maxLength: 256
+          minLength: 1
+          title: Choice Id
+        free_text:
+          type: string
+          maxLength: 100000
+          title: Free Text
+          default: ''
+      additionalProperties: false
+      type: object
+      required:
+      - choice_id
+      title: RemoteChoiceRequest
     ConnectionStopRequest:
       properties:
         revision:
@@ -8957,8 +9259,14 @@ components:
         text:
           type: string
           maxLength: 1000000
-          minLength: 1
           title: Text
+          default: ''
+        attachment_ids:
+          items:
+            type: string
+          type: array
+          maxItems: 20
+          title: Attachment Ids
         request_id:
           type: string
           format: uuid
@@ -8969,7 +9277,6 @@ components:
       additionalProperties: false
       type: object
       required:
-      - text
       - request_id
       - revision
       title: ConnectionTextRequest
@@ -8978,8 +9285,14 @@ components:
         text:
           type: string
           maxLength: 1000000
-          minLength: 1
           title: Text
+          default: ''
+        attachment_ids:
+          items:
+            type: string
+          type: array
+          maxItems: 20
+          title: Attachment Ids
         request_id:
           type: string
           format: uuid
@@ -8987,7 +9300,6 @@ components:
       additionalProperties: false
       type: object
       required:
-      - text
       - request_id
       title: RemoteTextRequest
     RemoteConnectionRequest:

@@ -89,6 +89,18 @@ class RemoteChatConnection(TimestampMixin, SQLModel, table=True):
     revision: str = Field(default_factory=lambda: uuid.uuid4().hex, nullable=False)
 
 
+class RemoteChatAttachment(TimestampMixin, SQLModel, table=True):
+    """Scope pending remote uploads before they appear in ordinary history."""
+
+    __tablename__: str = "remote_chat_attachments"
+
+    attachment_id: str = Field(primary_key=True)
+    account_id: str = Field(index=True)
+    session_id: str = Field(index=True)
+    credential_hash: str = Field(repr=False)
+    filename: str
+
+
 class PlatformStat(SQLModel, table=True):
     """This class represents the statistics of bot usage across different platforms.
 

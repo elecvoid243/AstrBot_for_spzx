@@ -2367,6 +2367,11 @@
     "revoked": "Revoked"
   },
   "remoteConnections": {
+    "attach": "Attach images or files",
+    "removeAttachment": "Remove",
+    "attachment": "Remote attachment",
+    "download": "Download",
+
     "title": "Remote connections",
     "manage": "Manage connections",
     "local": "This instance",
@@ -2379,6 +2384,7 @@
     "disabled": "Remote connections are disabled by this instance. Saved connections are retained.",
     "saveFailed": "Could not save the connection. Check the address, dedicated key and local switch.",
     "status": {
+      "remote_attachment_limit": "Attach up to 20 files per message. Remove some attachments and try again.",
       "ready": "Connected",
       "loading": "Checking access…",
       "disabled": "Connections disabled",

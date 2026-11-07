@@ -63,6 +63,11 @@
             <pre v-if="messageContent(msg).reasoning" class="plain-content">{{ messageContent(msg).reasoning }}</pre>
             <template v-for="(part, index) in messageParts(msg)" :key="index">
               <MarkdownMessagePart v-if="part.type === 'plain'" :content="part.text || ''" :refs="null" :is-dark="isDark" :custom-html-tags="[]" inert />
+              <RemoteMessageResource
+                v-else-if="remoteScope && ((['image', 'file', 'record', 'audio', 'video'].includes(part.type) && part.attachment_id) || validateInteractiveChoice(part))"
+                :key="JSON.stringify(remoteScope) + index"
+                :scope="remoteScope" :part="part" :enabled="remoteReady === true"
+              />
               <pre v-else class="plain-content">{{ formatJson(part) }}</pre>
             </template>
           </div>
@@ -774,9 +779,12 @@ import RefsSidebar from "@/components/chat/message_list_comps/RefsSidebar.vue";
 import ActionRef from "@/components/chat/message_list_comps/ActionRef.vue";
 import MarkdownMessagePart from "@/components/chat/message_list_comps/MarkdownMessagePart.vue";
 import UserPlainMessagePart from "@/components/chat/message_list_comps/UserPlainMessagePart.vue";
+import RemoteMessageResource from "./RemoteMessageResource.vue";
+import type { RemoteResourceScope } from "@/api/remoteConnections";
 import InteractiveChoiceBox from "@/components/chat/message_list_comps/InteractiveChoiceBox.vue";
 import LlmRequestInjectionsPanel from "@/components/chat/LlmRequestInjectionsPanel.vue";
 import {
+  validateInteractiveChoice,
   isInteractiveChoicePayload,
   truncateInteractiveChoice,
   tryRecoverInteractiveChoiceFromPlainText,
@@ -813,6 +821,8 @@ const props = withDefaults(
     messages: ChatRecord[];
     /** Remote transcript: render content without local resource capabilities. */
     remoteHistory?: boolean;
+    remoteScope?: RemoteResourceScope;
+    remoteReady?: boolean;
     isDark?: boolean;
     isStreaming?: boolean;
     variant?: "main" | "thread";

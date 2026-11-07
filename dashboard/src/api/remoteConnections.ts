@@ -16,6 +16,16 @@ export interface RemoteSession {
   project_emoji: string | null;
   archived: boolean;
 }
+export interface RemoteResourceScope {
+  connectionId: string;
+  revision: string;
+  sessionId: string;
+}
+export interface RemoteUpload {
+  attachment_id: string;
+  filename: string;
+  type: string;
+}
 export interface RemoteHistory {
   history: ChatRecord[];
   has_more: boolean;
@@ -42,10 +52,11 @@ export const remoteConnectionsApi = {
     text: string,
     revision: string,
     request_id: string,
+    attachment_ids: string[] = [],
   ) =>
     apiV1Client.post(
       `${path(id)}/sessions/${encodeURIComponent(session)}/messages`,
-      { text, revision, request_id },
+      { text, revision, request_id, attachment_ids },
     ),
   receipt: (id: string, session: string, revision: string, requestId: string) =>
     apiV1Client.get<ApiEnvelope<{ status: string }>>(
@@ -70,6 +81,35 @@ export const remoteConnectionsApi = {
         session,
       )}/events?revision=${encodeURIComponent(revision)}`,
       { signal },
+    ),
+  upload: (scope: RemoteResourceScope, file: File) => {
+    const data = new FormData();
+    data.append("file", file);
+    return apiV1Client.post<ApiEnvelope<RemoteUpload>>(
+      `${path(scope.connectionId)}/sessions/${encodeURIComponent(
+        scope.sessionId,
+      )}/attachments`,
+      data,
+      { params: { revision: scope.revision } },
+    );
+  },
+  attachment: (scope: RemoteResourceScope, id: string, signal?: AbortSignal) =>
+    apiV1Client.get<Blob>(
+      `${path(scope.connectionId)}/sessions/${encodeURIComponent(
+        scope.sessionId,
+      )}/attachments/${encodeURIComponent(id)}`,
+      { params: { revision: scope.revision }, responseType: "blob", signal },
+    ),
+  answer: (
+    scope: RemoteResourceScope,
+    id: string,
+    answer: { choice_id: string; free_text: string },
+  ) =>
+    apiV1Client.post(
+      `${path(scope.connectionId)}/sessions/${encodeURIComponent(
+        scope.sessionId,
+      )}/human-choices/${encodeURIComponent(id)}`,
+      { ...answer, revision: scope.revision },
     ),
   sessions: (id: string) =>
     apiV1Client.get<ApiEnvelope<RemoteSession[]>>(`${path(id)}/sessions`),

@@ -679,12 +679,19 @@ export type ConfigRouteUpsertRequest = {
     config_id: string;
 };
 
+export type ConnectionChoiceRequest = {
+    choice_id: string;
+    free_text?: string;
+    revision: string;
+};
+
 export type ConnectionStopRequest = {
     revision: string;
 };
 
 export type ConnectionTextRequest = {
-    text: string;
+    text?: string;
+    attachment_ids?: Array<(string)>;
     request_id: string;
     revision: string;
 };
@@ -1284,6 +1291,11 @@ export type ProviderSourceConfigRequest = {
     config: DynamicConfig;
 };
 
+export type RemoteChoiceRequest = {
+    choice_id: string;
+    free_text?: string;
+};
+
 export type RemoteConnectionRequest = {
     name: string;
     base_url: string;
@@ -1306,7 +1318,8 @@ export type RemoteExposureRequest = {
 export type mode3 = 'all' | 'selected';
 
 export type RemoteTextRequest = {
-    text: string;
+    text?: string;
+    attachment_ids?: Array<(string)>;
     request_id: string;
 };
 
@@ -1726,6 +1739,87 @@ export type WorkflowStartRequest = {
      */
     input_artifacts?: Array<ArtifactReference>;
 };
+
+export type UploadRemoteAttachmentApiV1RemoteChatSessionsSessionIdAttachmentsPostData = {
+    body: {
+        file: (Blob | File);
+    };
+    path: {
+        session_id: string;
+    };
+};
+
+export type UploadRemoteAttachmentApiV1RemoteChatSessionsSessionIdAttachmentsPostResponse = (unknown);
+
+export type UploadRemoteAttachmentApiV1RemoteChatSessionsSessionIdAttachmentsPostError = (HTTPValidationError);
+
+export type DownloadRemoteAttachmentApiV1RemoteChatSessionsSessionIdAttachmentsAttachmentIdGetData = {
+    path: {
+        attachment_id: string;
+        session_id: string;
+    };
+};
+
+export type DownloadRemoteAttachmentApiV1RemoteChatSessionsSessionIdAttachmentsAttachmentIdGetResponse = ((Blob | File));
+
+export type DownloadRemoteAttachmentApiV1RemoteChatSessionsSessionIdAttachmentsAttachmentIdGetError = (HTTPValidationError);
+
+export type AnswerRemoteHumanChoiceApiV1RemoteChatSessionsSessionIdHumanChoicesRequestIdPostData = {
+    body: RemoteChoiceRequest;
+    path: {
+        request_id: string;
+        session_id: string;
+    };
+};
+
+export type AnswerRemoteHumanChoiceApiV1RemoteChatSessionsSessionIdHumanChoicesRequestIdPostResponse = (unknown);
+
+export type AnswerRemoteHumanChoiceApiV1RemoteChatSessionsSessionIdHumanChoicesRequestIdPostError = (unknown | HTTPValidationError);
+
+export type UploadConnectionAttachmentApiV1ChatRemoteConnectionsConnectionIdSessionsSessionIdAttachmentsPostData = {
+    body: {
+        file: (Blob | File);
+    };
+    path: {
+        connection_id: string;
+        session_id: string;
+    };
+    query: {
+        revision: string;
+    };
+};
+
+export type UploadConnectionAttachmentApiV1ChatRemoteConnectionsConnectionIdSessionsSessionIdAttachmentsPostResponse = (unknown);
+
+export type UploadConnectionAttachmentApiV1ChatRemoteConnectionsConnectionIdSessionsSessionIdAttachmentsPostError = (HTTPValidationError);
+
+export type DownloadConnectionAttachmentApiV1ChatRemoteConnectionsConnectionIdSessionsSessionIdAttachmentsAttachmentIdGetData = {
+    path: {
+        attachment_id: string;
+        connection_id: string;
+        session_id: string;
+    };
+    query: {
+        revision: string;
+    };
+};
+
+export type DownloadConnectionAttachmentApiV1ChatRemoteConnectionsConnectionIdSessionsSessionIdAttachmentsAttachmentIdGetResponse = ((Blob | File));
+
+export type DownloadConnectionAttachmentApiV1ChatRemoteConnectionsConnectionIdSessionsSessionIdAttachmentsAttachmentIdGetError = (HTTPValidationError);
+
+export type AnswerConnectionHumanChoiceApiV1ChatRemoteConnectionsConnectionIdSessionsSessionIdHumanChoicesRequestIdPostData = {
+    body: ConnectionChoiceRequest;
+    path: {
+        connection_id: string;
+        request_id: string;
+        session_id: string;
+    };
+};
+
+export type AnswerConnectionHumanChoiceApiV1ChatRemoteConnectionsConnectionIdSessionsSessionIdHumanChoicesRequestIdPostResponse = (unknown);
+
+export type AnswerConnectionHumanChoiceApiV1ChatRemoteConnectionsConnectionIdSessionsSessionIdHumanChoicesRequestIdPostError = (unknown | HTTPValidationError);
 
 export type SendRemoteTextApiV1RemoteChatSessionsSessionIdMessagesPostData = {
     body: RemoteTextRequest;

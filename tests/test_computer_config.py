@@ -7,7 +7,7 @@ import json
 from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
@@ -21,6 +21,37 @@ from astrbot.dashboard.services.config_service import (
     save_config,
     validate_config,
 )
+
+
+@pytest.mark.asyncio
+async def test_tighter_default_mode_invalidates_local_execution(monkeypatch):
+    """Changing the profile default to a tighter mode must stop live execution."""
+    shutdown = AsyncMock()
+    monkeypatch.setattr(
+        config_service.computer_client, "shutdown_all_local_execution", shutdown
+    )
+
+    await config_service._invalidate_local_execution_for_default_mode_change(
+        {"provider_settings": {"file_access_default_mode": "full"}},
+        {"provider_settings": {"file_access_default_mode": "readonly"}},
+    )
+
+    shutdown.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_looser_default_mode_keeps_local_execution(monkeypatch):
+    shutdown = AsyncMock()
+    monkeypatch.setattr(
+        config_service.computer_client, "shutdown_all_local_execution", shutdown
+    )
+
+    await config_service._invalidate_local_execution_for_default_mode_change(
+        {"provider_settings": {"file_access_default_mode": "readonly"}},
+        {"provider_settings": {"file_access_default_mode": "full"}},
+    )
+
+    shutdown.assert_not_awaited()
 
 
 @pytest.mark.parametrize("role", ["member", "admin"])
@@ -96,7 +127,9 @@ def test_local_permission_validation_does_not_inject_missing_policies():
 
 
 @pytest.mark.parametrize("role", ["member", "admin"])
-@pytest.mark.parametrize("status", ["detected", "missing", "unavailable", "unsupported"])
+@pytest.mark.parametrize(
+    "status", ["detected", "missing", "unavailable", "unsupported"]
+)
 @pytest.mark.parametrize(
     ("scope", "execution", "network", "denied_on"),
     [

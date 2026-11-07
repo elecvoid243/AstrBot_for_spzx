@@ -1863,6 +1863,11 @@ class LocalPythonComponent(PythonComponent):
                 pass
         self._active_sandbox_processes.pop(owner_id, None)
 
+    async def terminate_all_processes(self) -> None:
+        """Kill every in-flight sandboxed Python execution."""
+        for owner_id in list(self._active_sandbox_processes):
+            await self.terminate_owner_processes(owner_id)
+
 
 @dataclass
 class LocalFileSystemComponent(FileSystemComponent):

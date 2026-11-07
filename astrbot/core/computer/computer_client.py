@@ -737,3 +737,16 @@ async def shutdown_local_execution_for_owner(owner_id: str) -> None:
     python = booter.python
     if isinstance(python, LocalPythonComponent):
         await python.terminate_owner_processes(owner_id)
+
+
+async def shutdown_all_local_execution() -> None:
+    """Terminate every local shell session and in-flight sandboxed Python run."""
+    booter = local_booter
+    if not isinstance(booter, LocalBooter):
+        return
+    shell = booter.shell
+    if isinstance(shell, LocalShellComponent):
+        await shell.shutdown_sessions()
+    python = booter.python
+    if isinstance(python, LocalPythonComponent):
+        await python.terminate_all_processes()

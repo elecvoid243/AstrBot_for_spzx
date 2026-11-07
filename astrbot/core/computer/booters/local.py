@@ -1691,6 +1691,11 @@ class LocalPythonComponent(PythonComponent):
         init=False,
         repr=False,
     )
+    _active_host_processes: dict[str, list[subprocess.Popen[bytes]]] = field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+    )
 
     async def exec(
         self,
@@ -1724,37 +1729,47 @@ class LocalPythonComponent(PythonComponent):
                 owner_id,
             )
 
+        tracked = (
+            self._active_host_processes.setdefault(owner_id, []) if owner_id else None
+        )
+
         def _run() -> dict[str, Any]:
+            process: subprocess.Popen[bytes] | None = None
             try:
                 working_dir = os.path.abspath(cwd) if cwd else get_astrbot_root()
-                result = subprocess.run(
+                process = subprocess.Popen(
                     [python_exe, "-c", code],
-                    timeout=timeout,
-                    capture_output=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
                     cwd=working_dir,
                     # Windowless console for the direct child; nested CUI
                     # children inherit it. Non-Windows passes no extra flags.
                     **_NO_WINDOW_KWARGS,
                 )
-                stdout = "" if silent else _decode_shell_output(result.stdout)
-                stderr = (
-                    _decode_shell_output(result.stderr)
-                    if result.returncode != 0
-                    else ""
-                )
+                if tracked is not None:
+                    tracked.append(process)
+                try:
+                    out, err = process.communicate(timeout=timeout)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.communicate()
+                    return {
+                        "data": {
+                            "output": {"text": "", "images": []},
+                            "error": "Execution timed out.",
+                        }
+                    }
+                stdout = "" if silent else _decode_shell_output(out)
+                stderr = _decode_shell_output(err) if process.returncode != 0 else ""
                 return {
                     "data": {
                         "output": {"text": stdout, "images": []},
                         "error": stderr,
                     }
                 }
-            except subprocess.TimeoutExpired:
-                return {
-                    "data": {
-                        "output": {"text": "", "images": []},
-                        "error": "Execution timed out.",
-                    }
-                }
+            finally:
+                if tracked is not None and process is not None and process in tracked:
+                    tracked.remove(process)
 
         return await asyncio.to_thread(_run)
 
@@ -1863,9 +1878,20 @@ class LocalPythonComponent(PythonComponent):
                 pass
         self._active_sandbox_processes.pop(owner_id, None)
 
+        host_processes = self._active_host_processes.pop(owner_id, [])
+        for host_process in host_processes:
+            if host_process.poll() is None:
+                host_process.kill()
+        for host_process in host_processes:
+            try:
+                await asyncio.to_thread(host_process.wait, 5)
+            except Exception:
+                pass
+
     async def terminate_all_processes(self) -> None:
-        """Kill every in-flight sandboxed Python execution."""
-        for owner_id in list(self._active_sandbox_processes):
+        """Kill every in-flight sandboxed or host Python execution."""
+        owners = set(self._active_sandbox_processes) | set(self._active_host_processes)
+        for owner_id in list(owners):
             await self.terminate_owner_processes(owner_id)
 
 

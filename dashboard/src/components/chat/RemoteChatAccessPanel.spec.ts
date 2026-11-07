@@ -59,10 +59,20 @@ const stubs = {
             emit("update:modelValue", event.target.checked),
         }),
   }),
-  "v-select": container,
+  "v-select": defineComponent({
+    emits: ["update:modelValue"],
+    setup:
+      (_, { emit }) =>
+      () =>
+        h("button", {
+          class: "select-scope-all",
+          onClick: () => emit("update:modelValue", "all"),
+        }),
+  }),
   "v-autocomplete": container,
   "v-alert": container,
   "v-icon": container,
+  "v-progress-circular": true,
   "v-list": container,
   "v-list-item": defineComponent({
     setup:
@@ -91,6 +101,7 @@ beforeEach(() => {
         ],
         credentials: [
           { credential_id: "own-key", name: "Laptop", revoked: false },
+          { credential_id: "old-key", name: "Old phone", revoked: true },
         ],
       },
     },
@@ -105,12 +116,12 @@ describe("remote account access panel", () => {
     const wrapper = mount(RemoteChatAccessPanel, { global: { stubs } });
     await flushPromises();
     expect(wrapper.text()).toContain("remoteAccess.disabled");
-    await wrapper
-      .findAll("button")
-      .find((button) => button.text() === "remoteAccess.save")!
-      .trigger("click");
+    // Deleted (revoked) keys are treated as gone, not as a history row.
+    expect(wrapper.text()).not.toContain("Old phone");
+    // Scope changes save on their own — the dialog has no Save button.
+    await wrapper.find("button.select-scope-all").trigger("click");
     await flushPromises();
-    expect(api.setExposure).toHaveBeenCalledWith("selected", ["own-session"]);
+    expect(api.setExposure).toHaveBeenCalledWith("all", []);
     await wrapper.find("input").setValue("Work laptop");
     await wrapper
       .findAll("button")
@@ -139,10 +150,7 @@ describe("remote account access panel", () => {
     });
     const wrapper = mount(RemoteChatAccessPanel, { global: { stubs } });
     await flushPromises();
-    await wrapper
-      .findAll("button")
-      .find((button) => button.text() === "remoteAccess.save")!
-      .trigger("click");
+    await wrapper.find("button.select-scope-all").trigger("click");
     await flushPromises();
     expect(wrapper.text()).toContain("Session is unavailable");
     expect(wrapper.text()).not.toContain("remoteAccess.saved");

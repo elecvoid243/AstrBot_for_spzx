@@ -32,6 +32,7 @@
             density="comfortable"
             rounded="lg"
             hide-details
+            @update:model-value="onModeChange"
           />
           <v-autocomplete
             v-if="mode === 'selected'"
@@ -49,18 +50,18 @@
             rounded="lg"
             hide-details
             class="mt-3"
+            @update:model-value="onSelectionChange"
           />
+          <!-- Always mounted: the auto-save status must not shift the section
+               below when it appears and fades. -->
           <div class="ra-card__foot">
-            <v-btn
-              color="primary"
-              variant="tonal"
-              rounded="lg"
-              :disabled="busy"
-              @click="saveExposure"
-            >
-              {{ tm("remoteAccess.save") }}
-            </v-btn>
-            <span v-if="saved" class="ra-saved" role="status">
+            <v-progress-circular
+              v-if="savingExposure"
+              indeterminate
+              size="12"
+              width="1.5"
+            />
+            <span v-else class="ra-saved" role="status">
               <v-icon size="14">mdi-check</v-icon>
               {{ tm("remoteAccess.saved") }}
             </span>
@@ -125,26 +126,14 @@
           </div>
         </div>
 
-        <ul v-if="credentials.length" class="ra-cred-list">
+        <ul v-if="visibleCredentials.length" class="ra-cred-list">
           <li
-            v-for="credential in credentials"
+            v-for="credential in visibleCredentials"
             :key="credential.credential_id"
             class="ra-cred"
-            :class="{ 'is-revoked': credential.revoked }"
           >
             <span class="ra-cred__name">{{ credential.name }}</span>
-            <span
-              class="ra-cred__status"
-              :class="credential.revoked ? 'is-revoked' : 'is-active'"
-            >
-              {{
-                credential.revoked
-                  ? tm("remoteAccess.revoked")
-                  : tm("remoteAccess.active")
-              }}
-            </span>
             <button
-              v-if="!credential.revoked"
               type="button"
               class="ra-cred__revoke"
               :disabled="busy"
@@ -164,7 +153,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { remoteChatApi } from "@/api/v1";
 import { useModuleI18n } from "@/i18n/composables";
 
@@ -172,6 +161,7 @@ const { tm } = useModuleI18n("features/chat");
 const enabled = ref(false);
 const loaded = ref(false);
 const busy = ref(false);
+const savingExposure = ref(false);
 const error = ref("");
 const saved = ref(false);
 const copied = ref(false);
@@ -187,6 +177,13 @@ const modes = computed(() => [
   { title: tm("remoteAccess.selected"), value: "selected" },
   { title: tm("remoteAccess.all"), value: "all" },
 ]);
+
+// Deleted keys are revoked server-side (the record stays for audit); the
+// panel treats them as gone: they never render, so the list matches what the
+// user can still use.
+const visibleCredentials = computed(() =>
+  credentials.value.filter((credential) => !credential.revoked),
+);
 
 // A freshly rendered key gets a clean "copy" label, not the previous key's
 // "copied" state.
@@ -210,23 +207,51 @@ async function load() {
   loaded.value = true;
 }
 
-async function saveExposure() {
-  busy.value = true;
+// Scope changes save immediately: the dialog no longer carries a Save button.
+// A sequence guard keeps a slow response from an older selection from
+// overwriting the outcome of the latest one.
+let exposureSaveSeq = 0;
+let savedTimer: number | null = null;
+
+// The emitted value is passed explicitly: v-model's own update and this
+// listener share one event, and the saved payload must not depend on which
+// listener runs first.
+function onModeChange(value: unknown) {
+  const next = value === "all" ? "all" : "selected";
+  void saveExposure(next, next === "all" ? [] : selectedIds.value);
+}
+
+function onSelectionChange(value: unknown) {
+  const ids = Array.isArray(value) ? value.map(String) : [];
+  void saveExposure(mode.value === "all" ? "all" : "selected", ids);
+}
+
+async function saveExposure(
+  nextMode: "all" | "selected" = mode.value,
+  ids: string[] = selectedIds.value,
+) {
+  const seq = ++exposureSaveSeq;
+  savingExposure.value = true;
   error.value = "";
   saved.value = false;
+  if (savedTimer !== null) {
+    window.clearTimeout(savedTimer);
+    savedTimer = null;
+  }
   try {
-    await remoteChatApi.setExposure(
-      mode.value,
-      mode.value === "all" ? [] : selectedIds.value,
-    );
+    await remoteChatApi.setExposure(nextMode, nextMode === "all" ? [] : ids);
+    if (seq !== exposureSaveSeq) return;
     saved.value = true;
-    window.setTimeout(() => {
+    savedTimer = window.setTimeout(() => {
       saved.value = false;
+      savedTimer = null;
     }, 2200);
   } catch (err: any) {
-    error.value = err?.response?.data?.message || String(err);
+    if (seq === exposureSaveSeq) {
+      error.value = err?.response?.data?.message || String(err);
+    }
   } finally {
-    busy.value = false;
+    if (seq === exposureSaveSeq) savingExposure.value = false;
   }
 }
 
@@ -288,6 +313,10 @@ onMounted(async () => {
   } finally {
     busy.value = false;
   }
+});
+
+onBeforeUnmount(() => {
+  if (savedTimer !== null) window.clearTimeout(savedTimer);
 });
 </script>
 
@@ -364,7 +393,8 @@ onMounted(async () => {
   display: flex;
   align-items: center;
   gap: 12px;
-  margin-top: 12px;
+  margin-top: 10px;
+  min-height: 16px;
 }
 
 .ra-saved {
@@ -478,28 +508,6 @@ onMounted(async () => {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-weight: 500;
-}
-
-.ra-cred.is-revoked .ra-cred__name {
-  color: rgba(var(--v-theme-on-surface), 0.45);
-}
-
-.ra-cred__status {
-  flex: 0 0 auto;
-  padding: 2px 8px;
-  border-radius: 999px;
-  font-size: 11px;
-  font-weight: 600;
-}
-
-.ra-cred__status.is-active {
-  color: rgb(var(--v-theme-success));
-  background: rgba(var(--v-theme-success), 0.1);
-}
-
-.ra-cred__status.is-revoked {
-  color: rgba(var(--v-theme-on-surface), 0.5);
-  background: rgba(var(--v-theme-on-surface), 0.06);
 }
 
 .ra-cred__revoke {

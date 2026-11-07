@@ -571,6 +571,9 @@
 
           <div class="settings-menu-content">
             <v-list-item class="styled-menu-item settings-menu-item" rounded="md" @click="chatSettingsMenuOpen = false; showRemoteAccess = true">
+              <template #prepend>
+                <RadioTower :size="18" class="styled-menu-lucide-icon" />
+              </template>
               <v-list-item-title>{{ tm('remoteAccess.title') }}</v-list-item-title>
             </v-list-item>
             <v-menu
@@ -1233,6 +1236,7 @@ import {
   MoreHorizontal,
   PanelLeft,
   Pencil,
+  RadioTower,
   Search,
   Settings,
   SquarePen,

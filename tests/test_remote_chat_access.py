@@ -1,7 +1,9 @@
 """Caller-visible remote access contract against the production ASGI app/SQLite."""
 
 import hashlib
+import json
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import pytest
 from sqlmodel import select
@@ -20,6 +22,47 @@ from tests.test_multi_user_chat import (
 from tests.test_multi_user_chat import (
     ordinary_chat as ordinary_chat,
 )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("initial", [True, False])
+async def test_remote_switch_persists_through_system_config_saves(
+    ordinary_chat, initial
+):
+    client, server, core, db, admin, users = ordinary_chat
+    headers = {"Authorization": f"Bearer {admin['token']}"}
+    core.astrbot_config["chatui"]["remote_sessions_enabled"] = initial
+    core.astrbot_config.save_config()
+    credential = await client.post(
+        "/api/v1/chat/remote-access/credentials",
+        headers=headers,
+        json={"name": "Settings test"},
+    )
+    remote = {"Authorization": f"RemoteSession {credential.json()['data']['key']}"}
+    config = (await client.get("/api/v1/system-config", headers=headers)).json()[
+        "data"
+    ]["config"]
+    config["chatui"]["remote_sessions_enabled"] = not initial
+    for field, value in ((None, None), ("timezone", "UTC"), ("log_level", "DEBUG")):
+        if field:
+            config[field] = value
+        response = await client.put(
+            "/api/v1/system-config", headers=headers, json=config
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["status"] == "ok", response.text
+        reloaded = (await client.get("/api/v1/system-config", headers=headers)).json()[
+            "data"
+        ]["config"]
+        assert reloaded["chatui"]["remote_sessions_enabled"] is not initial
+        stored = json.loads(
+            Path(core.astrbot_config.config_path).read_text(encoding="utf-8-sig")
+        )
+        assert stored["chatui"]["remote_sessions_enabled"] is not initial
+        if field:
+            assert stored[field] == value
+        gated = await client.get("/api/v1/remote-chat/sessions", headers=remote)
+        assert gated.status_code == (403 if initial else 200), gated.text
 
 
 @pytest.mark.asyncio

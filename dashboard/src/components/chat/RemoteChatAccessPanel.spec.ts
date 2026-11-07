@@ -146,17 +146,4 @@ describe("remote account access panel", () => {
     expect(wrapper.text()).toContain("Session is unavailable");
     expect(wrapper.text()).not.toContain("remoteAccess.saved");
   });
-
-  it("keeps the instance switch separate from personal exposure", async () => {
-    const wrapper = mount(RemoteChatAccessPanel, {
-      props: { systemOnly: true },
-      global: { stubs },
-    });
-    await flushPromises();
-    await wrapper.find('input[type="checkbox"]').setValue(true);
-    await flushPromises();
-    expect(api.setEnabled).toHaveBeenCalledWith(true);
-    expect(api.setExposure).not.toHaveBeenCalled();
-    expect(wrapper.text()).not.toContain("remoteAccess.credentials");
-  });
 });

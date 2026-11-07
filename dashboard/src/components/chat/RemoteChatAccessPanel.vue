@@ -1,107 +1,93 @@
 <template>
   <div class="remote-access-panel">
-    <h3 v-if="systemOnly" class="mb-3">{{ tm("remoteAccess.title") }}</h3>
     <v-alert v-if="error" type="error" variant="tonal" class="mb-3">{{
       error
     }}</v-alert>
     <v-progress-linear v-if="busy" indeterminate class="mb-3" />
     <template v-if="loaded">
-      <template v-if="systemOnly">
-        <v-switch
-          :model-value="enabled"
-          :label="tm('remoteAccess.enabled')"
-          :disabled="busy"
-          color="primary"
-          hide-details
-          @update:model-value="setEnabled(Boolean($event))"
-        />
-        <p class="text-body-2">{{ tm("remoteAccess.enabledHint") }}</p>
-      </template>
-      <template v-else>
-        <v-alert v-if="!enabled" type="info" variant="tonal" class="mb-3">
-          {{ tm("remoteAccess.disabled") }}
-        </v-alert>
-        <p class="text-body-2 mb-3">{{ tm("remoteAccess.scopeHint") }}</p>
-        <v-select
-          v-model="mode"
-          :items="modes"
-          :label="tm('remoteAccess.exposure')"
-          :disabled="busy"
-          variant="outlined"
-          hide-details
-          class="mb-3"
-        />
-        <v-autocomplete
-          v-if="mode === 'selected'"
-          v-model="selectedIds"
-          :items="sessions"
-          item-title="label"
-          item-value="session_id"
-          :label="tm('remoteAccess.sessions')"
-          :disabled="busy"
-          multiple
-          chips
-          closable-chips
-          variant="outlined"
-          class="mb-2"
-        />
-        <v-btn variant="tonal" :disabled="busy" @click="saveExposure">
-          {{ tm("remoteAccess.save") }}
-        </v-btn>
-        <span v-if="saved" role="status" class="ml-3">{{
-          tm("remoteAccess.saved")
-        }}</span>
-        <h4 class="mt-6 mb-2">{{ tm("remoteAccess.credentials") }}</h4>
-        <p class="text-body-2 mb-3">{{ tm("remoteAccess.keyHint") }}</p>
-        <v-text-field
-          v-model="name"
-          :label="tm('remoteAccess.name')"
-          maxlength="128"
-          :disabled="busy"
-          variant="outlined"
-          hide-details
-          class="mb-3"
-        />
-        <v-btn
-          variant="tonal"
-          :disabled="busy || !name.trim()"
-          @click="createCredential"
+      <v-alert v-if="!enabled" type="info" variant="tonal" class="mb-3">
+        {{ tm("remoteAccess.disabled") }}
+      </v-alert>
+      <p class="text-body-2 mb-3">{{ tm("remoteAccess.scopeHint") }}</p>
+      <v-select
+        v-model="mode"
+        :items="modes"
+        :label="tm('remoteAccess.exposure')"
+        :disabled="busy"
+        variant="outlined"
+        hide-details
+        class="mb-3"
+      />
+      <v-autocomplete
+        v-if="mode === 'selected'"
+        v-model="selectedIds"
+        :items="sessions"
+        item-title="label"
+        item-value="session_id"
+        :label="tm('remoteAccess.sessions')"
+        :disabled="busy"
+        multiple
+        chips
+        closable-chips
+        variant="outlined"
+        class="mb-2"
+      />
+      <v-btn variant="tonal" :disabled="busy" @click="saveExposure">
+        {{ tm("remoteAccess.save") }}
+      </v-btn>
+      <span v-if="saved" role="status" class="ml-3">{{
+        tm("remoteAccess.saved")
+      }}</span>
+      <h4 class="mt-6 mb-2">{{ tm("remoteAccess.credentials") }}</h4>
+      <p class="text-body-2 mb-3">{{ tm("remoteAccess.keyHint") }}</p>
+      <v-text-field
+        v-model="name"
+        :label="tm('remoteAccess.name')"
+        maxlength="128"
+        :disabled="busy"
+        variant="outlined"
+        hide-details
+        class="mb-3"
+      />
+      <v-btn
+        variant="tonal"
+        :disabled="busy || !name.trim()"
+        @click="createCredential"
+      >
+        {{ tm("remoteAccess.create") }}
+      </v-btn>
+      <v-alert v-if="newKey" type="success" variant="tonal" class="mt-3">
+        <p>{{ tm("remoteAccess.keyOnce") }}</p>
+        <code class="remote-key">{{ newKey }}</code>
+        <v-btn variant="text" @click="copyKey">{{
+          tm("remoteAccess.copy")
+        }}</v-btn>
+        <v-btn variant="text" @click="newKey = ''">{{
+          tm("remoteAccess.hide")
+        }}</v-btn>
+      </v-alert>
+      <v-list v-if="credentials.length" class="mt-3">
+        <v-list-item
+          v-for="credential in credentials"
+          :key="credential.credential_id"
         >
-          {{ tm("remoteAccess.create") }}
-        </v-btn>
-        <v-alert v-if="newKey" type="success" variant="tonal" class="mt-3">
-          <p>{{ tm("remoteAccess.keyOnce") }}</p>
-          <code class="remote-key">{{ newKey }}</code>
-          <v-btn variant="text" @click="copyKey">{{
-            tm("remoteAccess.copy")
-          }}</v-btn>
-          <v-btn variant="text" @click="newKey = ''">{{
-            tm("remoteAccess.hide")
-          }}</v-btn>
-        </v-alert>
-        <v-list v-if="credentials.length" class="mt-3">
-          <v-list-item
-            v-for="credential in credentials"
-            :key="credential.credential_id"
-          >
-            <v-list-item-title>{{ credential.name }}</v-list-item-title>
-            <template #append>
-              <span v-if="credential.revoked">{{
-                tm("remoteAccess.revoked")
-              }}</span>
-              <v-btn
-                v-else
-                variant="text"
-                color="error"
-                :disabled="busy"
-                @click="revoke(credential.credential_id)"
-              >
-                {{ tm("remoteAccess.revoke") }}
-              </v-btn>
-            </template>
-          </v-list-item>
-        </v-list>
-      </template>
+          <v-list-item-title>{{ credential.name }}</v-list-item-title>
+          <template #append>
+            <span v-if="credential.revoked">{{
+              tm("remoteAccess.revoked")
+            }}</span>
+            <v-btn
+              v-else
+              variant="text"
+              color="error"
+              :disabled="busy"
+              @click="revoke(credential.credential_id)"
+            >
+              {{ tm("remoteAccess.revoke") }}
+            </v-btn>
+          </template>
+        </v-list-item>
+      </v-list>
     </template>
   </div>
 </template>
@@ -111,7 +97,6 @@ import { computed, onMounted, ref } from "vue";
 import { remoteChatApi } from "@/api/v1";
 import { useModuleI18n } from "@/i18n/composables";
 
-defineProps<{ systemOnly?: boolean }>();
 const { tm } = useModuleI18n("features/chat");
 const enabled = ref(false);
 const loaded = ref(false);
@@ -187,19 +172,6 @@ async function revoke(id: string) {
   try {
     await remoteChatApi.revokeCredential(id);
     await load();
-  } catch (err: any) {
-    error.value = err?.response?.data?.message || String(err);
-  } finally {
-    busy.value = false;
-  }
-}
-
-async function setEnabled(value: boolean) {
-  busy.value = true;
-  error.value = "";
-  try {
-    await remoteChatApi.setEnabled(value);
-    enabled.value = value;
   } catch (err: any) {
     error.value = err?.response?.data?.message || String(err);
   } finally {

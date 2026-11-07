@@ -265,7 +265,18 @@
                         <div class="settings-section__title">{{ tm('sections.security.title') }}</div>
                     </div>
                     <div class="settings-section__content">
-                        <RemoteChatAccessPanel system-only class="settings-list-card pa-4 mb-4" />
+                        <div v-if="!systemConfigLoading && systemConfigData.chatui" class="settings-list-card pa-4 mb-4">
+                            <h3 class="mb-3">{{ tmChat('remoteAccess.title') }}</h3>
+                            <v-switch
+                                :model-value="systemConfigData.chatui.remote_sessions_enabled === true"
+                                :label="tmChat('remoteAccess.enabled')"
+                                :disabled="systemConfigSaving"
+                                color="primary"
+                                hide-details
+                                @update:model-value="systemConfigData.chatui.remote_sessions_enabled = Boolean($event)"
+                            />
+                            <p class="text-body-2">{{ tmChat('remoteAccess.enabledHint') }}</p>
+                        </div>
                         <template v-if="!systemConfigLoading">
                             <div
                                 v-for="group in securitySystemConfigGroups"
@@ -568,7 +579,6 @@
 </template>
 
 <script setup>
-import RemoteChatAccessPanel from '@/components/chat/RemoteChatAccessPanel.vue';
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { apiKeyApi, systemConfigApi, updatesApi } from '@/api/v1';
 import AstrBotConfigV4 from '@/components/shared/AstrBotConfigV4.vue';
@@ -589,6 +599,7 @@ import { askForConfirmation, useConfirmDialog } from '@/utils/confirmDialog';
 
 const { tm } = useModuleI18n('features/settings');
 const { tm: tmMeta } = useModuleI18n('features/config-metadata');
+const { tm: tmChat } = useModuleI18n('features/chat');
 const { t, locale } = useI18n();
 const toastStore = useToastStore();
 const confirmDialog = useConfirmDialog();

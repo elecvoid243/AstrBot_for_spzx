@@ -1425,6 +1425,8 @@ async def _apply_subagent_manager_tools(
             shared_context_maxlen=orch_cfg.get("shared_context_maxlen", 300),
             tools_blacklist=dynamic_cfg.get("tools_blacklist", None),
             tools_inherent=dynamic_cfg.get("tools_inherent", None),
+            mcp_blacklist=dynamic_cfg.get("mcp_blacklist"),
+            mcp_inherent=dynamic_cfg.get("mcp_inherent"),
             execution_timeout=orch_cfg.get("execution_timeout", 1200),
             history_enabled=history_enabled,
             rule_prompt=dynamic_cfg.get("rule_prompt", ""),

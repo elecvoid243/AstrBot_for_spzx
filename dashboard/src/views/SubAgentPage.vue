@@ -595,6 +595,17 @@
               </div>
             </div>
 
+            <div class="dashboard-card dashboard-card--padded mb-4">
+              <div class="dashboard-section-title section-mini-title">{{ tm('enhancedTools.mcpBlacklist') }}</div>
+              <div class="dashboard-section-subtitle mb-3">{{ tm('enhancedTools.mcpBlacklistHint') }}</div>
+              <v-select v-model="dynamicCfg.mcp_blacklist" :items="availableMcpServers" :label="tm('enhancedTools.mcpSelect')" multiple chips closable-chips clearable variant="outlined" density="comfortable" hide-details />
+            </div>
+            <div class="dashboard-card dashboard-card--padded mb-4">
+              <div class="dashboard-section-title section-mini-title">{{ tm('enhancedTools.mcpInherent') }}</div>
+              <div class="dashboard-section-subtitle mb-3">{{ tm('enhancedTools.mcpInherentHint') }}</div>
+              <v-select v-model="dynamicCfg.mcp_inherent" :items="availableMcpServers" :label="tm('enhancedTools.mcpSelect')" multiple chips closable-chips clearable variant="outlined" density="comfortable" hide-details />
+            </div>
+
             <!-- 工具黑名单 -->
             <div class="dashboard-card dashboard-card--padded mb-4">
               <div class="dashboard-section-title section-mini-title">{{ tm('enhancedTools.blacklist') }}</div>
@@ -758,7 +769,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { onBeforeRouteLeave } from 'vue-router'
 import { useTheme } from 'vuetify'
-import { subagentApi } from '@/api/v1'
+import { mcpApi, subagentApi } from '@/api/v1'
 import PersonaQuickPreview from '@/components/shared/PersonaQuickPreview.vue'
 import PersonaSelector from '@/components/shared/PersonaSelector.vue'
 import ProviderSelector from '@/components/shared/ProviderSelector.vue'
@@ -789,6 +800,8 @@ type DynamicAgentsConfig = {
   rule_prompt: string
   tools_blacklist: string[]
   tools_inherent: string[]
+  mcp_blacklist: string[]
+  mcp_inherent: string[]
 }
 
 type SubAgentOrchestratorConfig = {
@@ -908,7 +921,9 @@ const dynamicCfg = ref<DynamicAgentsConfig>({
   default_provider_id: '',
   rule_prompt: '',
   tools_blacklist: [...DEFAULT_BLACKLIST],
-  tools_inherent: [...DEFAULT_INHERENT]
+  tools_inherent: [...DEFAULT_INHERENT],
+  mcp_blacklist: [],
+  mcp_inherent: []
 })
 
 const rootCfg = ref({
@@ -990,7 +1005,9 @@ function normalizeDynamicAgents(raw: any): DynamicAgentsConfig {
     default_provider_id: (src?.default_provider_id ?? '').toString(),
     rule_prompt: (src?.rule_prompt ?? '').toString(),
     tools_blacklist: blacklist !== null ? blacklist : [...DEFAULT_BLACKLIST],
-    tools_inherent: inherent !== null ? inherent : [...DEFAULT_INHERENT]
+    tools_inherent: inherent !== null ? inherent : [...DEFAULT_INHERENT],
+    mcp_blacklist: Array.isArray(src?.mcp_blacklist) ? src.mcp_blacklist : [],
+    mcp_inherent: Array.isArray(src?.mcp_inherent) ? src.mcp_inherent : []
   }
 }
 
@@ -1037,7 +1054,9 @@ function serializeFullConfig(config: SubAgentConfig, dynamic: DynamicAgentsConfi
       default_provider_id: dynamic.default_provider_id,
       rule_prompt: dynamic.rule_prompt,
       tools_blacklist: dynamic.tools_blacklist,
-      tools_inherent: dynamic.tools_inherent
+      tools_inherent: dynamic.tools_inherent,
+      mcp_blacklist: dynamic.mcp_blacklist,
+      mcp_inherent: dynamic.mcp_inherent
     },
     history_enabled: root.history_enabled,
     shared_context_enabled: root.shared_context_enabled,
@@ -1055,6 +1074,29 @@ function serializeFullConfig(config: SubAgentConfig, dynamic: DynamicAgentsConfi
 function addToolFromCombobox() {
   if (!toolSelectorSearch.value) return
   addToolToList(toolSelectorSearch.value)
+}
+
+const mcpServerNames = ref<string[]>([])
+const availableMcpServers = computed(() => [...new Set([
+  ...mcpServerNames.value,
+  ...dynamicCfg.value.mcp_blacklist,
+  ...dynamicCfg.value.mcp_inherent
+])])
+
+async function loadMcpServers() {
+  try {
+    const res = await mcpApi.list()
+    if (res.data.status === 'ok') {
+      mcpServerNames.value = (res.data.data || [])
+        .filter((server: any) => server.active)
+        .map((server: any) => server.name)
+    } else {
+      toast(res.data.message || tm('enhancedTools.mcpLoadFailed'), 'error')
+    }
+  } catch (e) {
+    console.error('Failed to load MCP servers:', e)
+    toast(tm('enhancedTools.mcpLoadFailed'), 'error')
+  }
 }
 
 async function loadAvailableTools() {
@@ -1170,7 +1212,9 @@ async function save() {
         default_provider_id: dynamicCfg.value.default_provider_id,
         rule_prompt: dynamicCfg.value.rule_prompt,
         tools_blacklist: dynamicCfg.value.tools_blacklist,
-        tools_inherent: dynamicCfg.value.tools_inherent
+        tools_inherent: dynamicCfg.value.tools_inherent,
+        mcp_blacklist: dynamicCfg.value.mcp_blacklist,
+        mcp_inherent: dynamicCfg.value.mcp_inherent
       },
       history_enabled: rootCfg.value.history_enabled,
       shared_context_enabled: rootCfg.value.shared_context_enabled,
@@ -1208,7 +1252,7 @@ async function reload() {
       return
     }
   }
-  await loadConfig()
+  await Promise.all([loadConfig(), loadMcpServers()])
 }
 
 async function confirmLeaveIfNeeded(): Promise<boolean> {
@@ -1284,6 +1328,7 @@ onMounted(() => {
   window.addEventListener('beforeunload', handleBeforeUnload)
   loadConfig()
   loadAvailableTools()
+  loadMcpServers()
 })
 
 onBeforeUnmount(() => {

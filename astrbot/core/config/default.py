@@ -293,6 +293,8 @@ DEFAULT_CONFIG = {
                 "You are in Safe Mode. Refuse any request for harmful, illegal, or explicit content. "
                 "Offer safe alternatives when possible.\n"
             ),
+            "mcp_blacklist": [],
+            "mcp_inherent": [],
             "tools_blacklist": [
                 "create_subagent",
                 "remove_subagent",

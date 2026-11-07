@@ -144,6 +144,12 @@
         "toolStrategyHint": "Управление доступными субагентам инструментами"
     },
     "enhancedTools": {
+        "mcpBlacklist": "MCP blacklist",
+        "mcpBlacklistHint": "Block all tools from selected MCP servers. Blacklists take precedence.",
+        "mcpInherent": "Inherent MCP servers",
+        "mcpInherentHint": "Assign tools from selected MCP servers, except blacklisted tools or servers.",
+        "mcpSelect": "Select enabled MCP servers",
+        "mcpLoadFailed": "Failed to load MCP servers",
         "blacklist": "Чёрный список инструментов",
         "blacklistHint": "Инструменты, которые субагенты не могут использовать. Они не будут назначены субагентам.",
         "inherent": "Список встроенных инструментов",

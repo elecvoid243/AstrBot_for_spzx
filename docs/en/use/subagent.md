@@ -44,6 +44,12 @@ Click the "Add SubAgent" button:
 
 After configuring the agents, click `Save` on the page.
 
+### MCP tool policy for dynamic subagents
+
+Under **Dynamic Subagent Settings**, use **Tool Strategy** to configure MCP servers in the blacklist or inherent list. Tools from a blacklisted server are not assigned to dynamic subagents. Tools from an inherent server are automatically assigned, even if the main Agent does not specify them. The tool and MCP blacklists take precedence over inherent lists.
+
+Enabled MCP servers appear among the choices. Disabling a server or temporarily disconnecting it does not remove its saved policy; the policy applies to its tools again when the server becomes available. Click `Save` after making changes.
+
 ## Best Practices
 
 - **Single Responsibility**: Each SubAgent should handle one category of related tasks (e.g., search, file processing, smart home control).

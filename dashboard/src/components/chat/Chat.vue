@@ -1050,16 +1050,21 @@
             <button
               type="button"
               class="jump-to-bottom"
+              :class="{ 'jump-to-bottom--live': streamingWhileAway }"
               :title="tm('actions.scrollToBottom')"
               :aria-label="tm('actions.scrollToBottom')"
               @click="jumpToBottom"
             >
-              <v-icon size="20">mdi-chevron-down</v-icon>
+              <v-icon class="jump-to-bottom-arrow" size="20"
+                >mdi-chevron-down</v-icon
+              >
               <span
                 v-if="streamingWhileAway"
-                class="jump-to-bottom-live"
+                class="jump-to-bottom-typing"
                 aria-hidden="true"
-              />
+              >
+                <span></span><span></span><span></span>
+              </span>
             </button>
           </div>
         </transition>
@@ -2676,7 +2681,8 @@ const showJumpToBottom = computed(
   () => !followActive.value && distanceToBottom.value > 24,
 );
 // A reply is being written while the reader is parked in history — the case
-// the button exists for, so the pip tells them output is still arriving below.
+// the button exists for, so its face switches to the still-writing dots and
+// tells them output is still arriving below.
 const streamingWhileAway = computed(
   () =>
     showJumpToBottom.value &&
@@ -8333,25 +8339,64 @@ function toggleTheme() {
   }
 }
 
-/* Live-output pip: the reader is away from the tail while a reply is written. */
-.jump-to-bottom-live {
-  position: absolute;
-  top: 3px;
-  right: 3px;
-  width: 8px;
-  height: 8px;
-  border-radius: 999px;
-  background: rgb(var(--v-theme-primary));
-  box-shadow: 0 0 0 2px rgb(var(--v-theme-surface));
-  animation: jump-to-bottom-pulse 1.6s ease-in-out infinite;
+/* 2026-11-07 (elecvoid243): output is still arriving while the reader is away,
+   so the button face becomes the "still writing" dots. The arrow stays in the
+   DOM and returns on hover/focus, so the control's meaning and hit target never
+   change — only its face does, which is what the corner pip used to tell. */
+.jump-to-bottom-arrow {
+  transition: opacity 0.12s ease;
 }
 
-@keyframes jump-to-bottom-pulse {
+.jump-to-bottom--live .jump-to-bottom-arrow {
+  opacity: 0;
+}
+
+.jump-to-bottom--live:hover .jump-to-bottom-arrow,
+.jump-to-bottom--live:focus-visible .jump-to-bottom-arrow {
+  opacity: 1;
+}
+
+.jump-to-bottom-typing {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+}
+
+.jump-to-bottom--live:hover .jump-to-bottom-typing,
+.jump-to-bottom--live:focus-visible .jump-to-bottom-typing {
+  opacity: 0;
+}
+
+.jump-to-bottom-typing span {
+  width: 4px;
+  height: 4px;
+  border-radius: 999px;
+  background: rgb(var(--v-theme-primary));
+  animation: jump-to-bottom-bounce 1.1s ease-in-out infinite;
+}
+
+.jump-to-bottom-typing span:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.jump-to-bottom-typing span:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+@keyframes jump-to-bottom-bounce {
   0%,
+  80%,
   100% {
+    transform: translateY(0);
     opacity: 0.45;
   }
-  50% {
+  40% {
+    transform: translateY(-3px);
     opacity: 1;
   }
 }
@@ -8375,7 +8420,7 @@ function toggleTheme() {
     transition: none;
   }
 
-  .jump-to-bottom-live {
+  .jump-to-bottom-typing span {
     animation: none;
     opacity: 1;
   }

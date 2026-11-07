@@ -265,26 +265,35 @@
                         <div class="settings-section__title">{{ tm('sections.security.title') }}</div>
                     </div>
                     <div class="settings-section__content">
-                        <div v-if="!systemConfigLoading && systemConfigData.chatui" class="settings-list-card pa-4 mb-4">
-                            <h3 class="mb-3">{{ tmChat('remoteAccess.title') }}</h3>
-                            <v-switch
-                                :model-value="systemConfigData.chatui.remote_sessions_enabled === true"
-                                :label="tmChat('remoteAccess.enabled')"
-                                :disabled="systemConfigSaving"
-                                color="primary"
-                                hide-details
-                                @update:model-value="systemConfigData.chatui.remote_sessions_enabled = Boolean($event)"
-                            />
-                            <p class="text-body-2">{{ tmChat('remoteAccess.enabledHint') }}</p>
-                            <v-switch
-                                :model-value="systemConfigData.chatui.remote_session_creation_enabled === true"
-                                :label="tmChat('remoteAccess.allowCreation')"
-                                :disabled="systemConfigSaving"
-                                color="primary"
-                                hide-details
-                                @update:model-value="systemConfigData.chatui.remote_session_creation_enabled = Boolean($event)"
-                            />
-                            <p class="text-body-2">{{ tmChat('remoteAccess.creationHint') }}</p>
+                        <div v-if="!systemConfigLoading && systemConfigData.chatui" class="system-config-group">
+                            <div class="system-config-group__title">{{ tmChat('remoteAccess.title') }}</div>
+                            <div class="settings-list-card">
+                                <div
+                                    v-for="setting in [
+                                        { key: 'remote_sessions_enabled', label: 'enabled', hint: 'enabledHint' },
+                                        { key: 'remote_session_creation_enabled', label: 'allowCreation', hint: 'creationHint' }
+                                    ]"
+                                    :key="setting.key"
+                                    class="settings-item"
+                                >
+                                    <div class="settings-item__label">
+                                        <div class="settings-item__title">{{ tmChat(`remoteAccess.${setting.label}`) }}</div>
+                                        <div class="settings-item__subtitle">{{ tmChat(`remoteAccess.${setting.hint}`) }}</div>
+                                    </div>
+                                    <div class="settings-item__control config-input">
+                                        <v-switch
+                                            :model-value="systemConfigData.chatui[setting.key] === true"
+                                            :aria-label="tmChat(`remoteAccess.${setting.label}`)"
+                                            :disabled="systemConfigSaving"
+                                            color="primary"
+                                            inset
+                                            density="compact"
+                                            hide-details
+                                            @update:model-value="systemConfigData.chatui[setting.key] = Boolean($event)"
+                                        />
+                                    </div>
+                                </div>
+                            </div>
                         </div>
                         <template v-if="!systemConfigLoading">
                             <div

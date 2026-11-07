@@ -39,6 +39,7 @@
           {
             'branch-divider-row': isBranchDivider(msg),
             'inherited-row': isInheritedMessage(msgIndex),
+            'editing-row': isEditingMessage(msg),
           },
         ]"
       >
@@ -245,16 +246,11 @@
               <template v-else-if="isEditingMessage(msg)">
                 <div class="inline-message-editor">
                   <textarea
+                    :ref="setEditTextarea"
                     :value="editDraft"
                     class="inline-message-editor-input"
                     rows="2"
-                    autofocus
-                    @input="
-                      emit(
-                        'update:editDraft',
-                        ($event.target as HTMLTextAreaElement).value,
-                      )
-                    "
+                    @input="handleEditInput"
                     @keydown.esc="emit('cancelEdit')"
                   ></textarea>
                   <div class="inline-message-editor-actions">
@@ -1367,6 +1363,58 @@ function isEditingMessage(message: ChatRecord) {
   );
 }
 
+// 2026-11-07 (elecvoid243): the inline editor now behaves like the composer —
+// its height follows the draft instead of a fixed `rows`. Only one message can
+// be edited at a time, so one element handle is enough; a function ref keeps
+// that handle unambiguous inside the v-for row.
+const editTextarea = ref<HTMLTextAreaElement | null>(null);
+
+function setEditTextarea(el: unknown) {
+  editTextarea.value = (el as HTMLTextAreaElement | null) ?? null;
+}
+
+/**
+ * Pin the textarea height to its content.
+ *
+ * The floor (default height showing a few lines) and the ceiling (a very long
+ * draft scrolls instead of eating the viewport) live in CSS `min-height` /
+ * `max-height`, so a viewport resize re-clamps the box without a JS listener.
+ */
+function resizeEditTextarea() {
+  const el = editTextarea.value;
+  if (!el) return;
+  el.style.height = "auto";
+  el.style.height = `${el.scrollHeight}px`;
+}
+
+function handleEditInput(event: Event) {
+  emit("update:editDraft", (event.target as HTMLTextAreaElement).value);
+  // Resize from the input itself instead of waiting for the parent to echo the
+  // draft back: a keystroke must never render a clipped line for one frame.
+  resizeEditTextarea();
+}
+
+watch(
+  () => props.editingMessageId,
+  (id) => {
+    if (id == null) return;
+    nextTick(() => {
+      const el = editTextarea.value;
+      if (!el) return;
+      // preventScroll: the parent scrolls the row into view itself, and the
+      // browser's focus scroll would fight that landing position.
+      el.focus({ preventScroll: true });
+      el.setSelectionRange(el.value.length, el.value.length);
+      resizeEditTextarea();
+    });
+  },
+);
+
+watch(
+  () => props.editDraft,
+  () => nextTick(resizeEditTextarea),
+);
+
 function canEditMessage(message: ChatRecord, messageIndex: number) {
   return (
     props.enableEdit &&
@@ -2372,21 +2420,48 @@ function formatDuration(seconds: number) {
   white-space: pre-wrap;
 }
 
+/* 2026-11-07 (elecvoid243): editing a message is rewriting the user's own
+   words, so the editor borrows the composer's shape instead of the sent
+   bubble's: it takes the full chat width and a lighter neutral surface. The
+   user lane is deliberately overridden — 72 % of the column made a long draft
+   unreadable, which is the whole point of editing it. */
+.message-row.editing-row .message-stack {
+  flex: 1 1 auto;
+  width: 100%;
+  max-width: 100%;
+  align-items: stretch;
+}
+
+.message-row.editing-row .message-bubble.user {
+  width: 100%;
+  max-width: 100%;
+  padding: 14px 16px 12px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.1);
+  background: rgba(var(--v-theme-on-surface), 0.04);
+  color: rgb(var(--v-theme-on-surface));
+}
+
 .inline-message-editor {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  min-width: min(420px, 72vw);
+  gap: 8px;
+  width: 100%;
 }
 
 .inline-message-editor-input {
   width: 100%;
-  min-height: 0;
-  max-height: 220px;
-  padding: 0;
+  /* Default height is a few lines, not one: edit opens on readable text. The
+     ceiling matches the composer so a long draft scrolls inside the card
+     rather than pushing the conversation out of the viewport. */
+  min-height: 96px;
+  max-height: min(420px, 48vh);
+  padding: 2px 2px 0;
   border: 0;
   outline: 0;
-  resize: vertical;
+  /* resizeEditTextarea() owns the height; a drag handle would be overwritten
+     by the next keystroke. */
+  resize: none;
+  overflow-y: auto;
   background: transparent;
   color: inherit;
   font: inherit;
@@ -2968,10 +3043,6 @@ function formatDuration(seconds: number) {
 
   .message-bubble.user {
     padding: 10px 14px;
-  }
-
-  .inline-message-editor {
-    min-width: min(100%, calc(100vw - 36px));
   }
 
   .image-part img {

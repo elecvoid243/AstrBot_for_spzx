@@ -20,6 +20,33 @@ beforeEach(() => {
 });
 
 describe("Agent message provenance", () => {
+  it("shows remote connection and source without a local conversation link", () => {
+    const wrapper = mount(ChatMessageList, {
+      props: {
+        messages: [
+          {
+            id: 1,
+            content: {
+              type: "user",
+              message: [{ type: "plain", text: "Remote Agent input" }],
+              agent_source: {
+                ...source,
+                remote: true,
+                connection_name: "Office desktop",
+              },
+            },
+          },
+        ],
+      },
+      global: { stubs: { StyledMenu: true } },
+    });
+    const badge = wrapper.get(".agent-message-source");
+    expect(badge.text()).toContain("Office desktop");
+    expect(badge.text()).toContain("source-session");
+    expect(badge.attributes("href")).toBeUndefined();
+    expect(badge.element.tagName).toBe("DIV");
+    wrapper.unmount();
+  });
   it("renders server provenance and navigates to the source session", async () => {
     const router = createRouter({
       history: createMemoryHistory(),

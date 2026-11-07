@@ -227,6 +227,9 @@ export interface ChatContent {
     login_name: string;
     session_id: string;
     display_name: string;
+    remote?: boolean;
+    connection_name?: string | null;
+    instance_name?: string | null;
   };
   reasoning?: string;
   isLoading?: boolean;

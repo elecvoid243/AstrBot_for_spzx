@@ -31,6 +31,29 @@ export type AccountResponse = {
     data: AccountInfo;
 };
 
+export type AgentChannelMessage = {
+    text: string;
+    request_id: string;
+    session_id: string;
+};
+
+export type AgentChannelRequest = {
+    chain_id: string;
+    session_id: string;
+    display_name: string;
+};
+
+export type AgentControlDecision = {
+    request_id: string;
+    decision: {
+        [key: string]: unknown;
+    };
+};
+
+export type AgentControlPoll = {
+    results?: Array<AgentControlDecision>;
+};
+
 export type AgentTeamCreatePayload = {
     name: string;
     members: Array<AgentTeamMemberPayload>;
@@ -276,6 +299,9 @@ export type ChatAgentMessageSource = {
     login_name: string;
     session_id: string;
     display_name: string;
+    remote?: boolean;
+    connection_name?: (string) | null;
+    instance_name?: (string) | null;
 };
 
 export type ChatChunkUploadRequest = {
@@ -1745,6 +1771,36 @@ export type WorkflowStartRequest = {
      */
     input_artifacts?: Array<ArtifactReference>;
 };
+
+export type OpenAgentChannelApiV1RemoteChatAgentChannelsPostData = {
+    body: AgentChannelRequest;
+};
+
+export type OpenAgentChannelApiV1RemoteChatAgentChannelsPostResponse = (unknown);
+
+export type OpenAgentChannelApiV1RemoteChatAgentChannelsPostError = (HTTPValidationError);
+
+export type PollAgentChannelApiV1RemoteChatAgentChannelsChannelIdPollPostData = {
+    body: AgentControlPoll;
+    path: {
+        channel_id: string;
+    };
+};
+
+export type PollAgentChannelApiV1RemoteChatAgentChannelsChannelIdPollPostResponse = (unknown);
+
+export type PollAgentChannelApiV1RemoteChatAgentChannelsChannelIdPollPostError = (HTTPValidationError);
+
+export type SendRemoteAgentMessageApiV1RemoteChatAgentChannelsChannelIdMessagesPostData = {
+    body: AgentChannelMessage;
+    path: {
+        channel_id: string;
+    };
+};
+
+export type SendRemoteAgentMessageApiV1RemoteChatAgentChannelsChannelIdMessagesPostResponse = (unknown);
+
+export type SendRemoteAgentMessageApiV1RemoteChatAgentChannelsChannelIdMessagesPostError = (HTTPValidationError);
 
 export type RemoteCreationOptionsApiV1RemoteChatAgentCreationGetData = {
     query?: {

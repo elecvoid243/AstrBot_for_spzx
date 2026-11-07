@@ -10219,6 +10219,18 @@
           },
           "display_name": {
             "type": "string"
+          },
+          "remote": {
+            "type": "boolean",
+            "default": false
+          },
+          "connection_name": {
+            "type": "string",
+            "nullable": true
+          },
+          "instance_name": {
+            "type": "string",
+            "nullable": true
           }
         }
       },

@@ -313,6 +313,10 @@ class ChatAgentMessageSource(BaseModel):
     session_id: str
     display_name: str
 
+    remote: bool = False
+    connection_name: str | None = None
+    instance_name: str | None = None
+
 
 class ChatHistoryContent(OpenModel):
     type: str

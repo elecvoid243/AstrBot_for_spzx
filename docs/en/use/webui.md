@@ -59,9 +59,19 @@ Choose **Chat sidebar → Remote connections → a connection → New remote ses
 
 ![Create within an explicit connection](./images/chat-remote-create.jpg)
 
-The ordinary Agent tools `list_chat_sessions`, `read_chat_session` and `create_chat_session` support local and directly bound remote sessions. Discovery returns `connection_id`, `connection_revision`, stable `target_id`, `project_id` and `project_name` (the sidebar directory title). Copy both connection fields for remote reads/creation; omit them for local behavior. Remote creation requires explicit `project_id` (null for no project) or exact `project_name`; duplicate names within that connection require an ID. Remote defaults come from the remote instance rather than the local runner. Remote Agent first-message sending is unavailable in this release.
+The ordinary Agent tools `list_chat_sessions`, `read_chat_session` and `create_chat_session` support local and directly bound remote sessions. Discovery returns `connection_id`, `connection_revision`, stable `target_id`, `project_id` and `project_name` (the sidebar directory title). Copy both connection fields for remote reads/creation; omit them for local behavior. Remote creation requires explicit `project_id` (null for no project) or exact `project_name`; duplicate names within that connection require an ID. Remote defaults come from the remote instance rather than the local runner. After creation, use `send_chat_message` to send the first Agent message.
 
 Agent operations require both instances to enable remote connections and Agent cross-session access; the target enforces account exposure and creation permission. Human actions are independent of Agent switches. Tools never discover third-party bindings on the remote host. Read returns saved display history with optional tool results, exclusive `before_id` paging, at most 50 records (default 20), 8000 characters per record (default 2000) and 40000 characters per response. Truncation and `next_before_id` allow continued paging without checkpoints, filesystem paths or attachment capabilities. Revocation, account changes and rebinding invalidate reads and cached remote creation results.
+
+### Agent messages across instances
+
+`send_chat_message` now accepts the discovered `connection_id`, `connection_revision`, target `session_id` and `text`. Omitting connection fields retains local sending; existing navigation stays in place. A dedicated credential and private control channel authenticate the peer before ordinary history, execution and busy follow-up admission. The target keeps its own settings. Source badges show the named connection credential and source session without linking a remote ID to a local conversation. Source session labels are asserted by the authenticated peer, rather than independently verified session ownership.
+
+![Remote Agent source in ordinary chat history](./images/chat-remote-agent.jpg)
+
+A one-way binding allows observing the remote's ordinary generated answer. An active Agent reply requires a separate reverse direct binding and target exposure. A binding from A to B and B to C never grants A access to C. Agent messages cannot answer a pending human choice. Stops, revoked grants, either instance's Agent or remote switch, unreachable servers and unknown acceptance produce explicit outcomes.
+
+Local sends, remote sends, concurrent branches and active replies share one atomic budget at the originating instance: 15 sends by default, continuously tightened to the lowest participating limit, including earlier sends. Acceptance acknowledges input, while later execution may send again. Direct binding initiators keep an outbound control channel alive and relay budget requests across further hops; no callback to an origin behind NAT or indirect resource grant is required. Lost control, process restart or bounded control expiry rejects new automatic sends without resetting counters or automatic retries. Uncertain acceptance never refunds a permit for a blind resend. Coordination is in memory and retained for at most one hour; a human can start a new turn after expiry.
 
 ## Save and restore your Chat sessions
 

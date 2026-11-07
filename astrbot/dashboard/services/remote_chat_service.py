@@ -5,14 +5,18 @@ import base64
 import hashlib
 import json
 import secrets
+import time
 from collections.abc import AsyncIterator
 from urllib.parse import urlsplit
+from uuid import uuid4
+from weakref import WeakValueDictionary
 
 import anyio
 import httpx
 from cryptography.fernet import Fernet, InvalidToken
 from sqlmodel import select
 
+from astrbot.builtin_stars.session_messages.tools import SessionMessageChain
 from astrbot.core.config.astrbot_config import AstrBotConfig
 from astrbot.core.db import BaseDatabase
 from astrbot.core.db.po import (
@@ -56,6 +60,256 @@ class RemoteChatService:
         self.receipts: dict[tuple[str, str, str], dict] = {}
         # Invalidate admissions whose asynchronous reads overlap a grant change.
         self.grant_revisions = grant_revisions
+        self.agent_channels: dict[str, dict] = {}
+        self.agent_chains: WeakValueDictionary = WeakValueDictionary()
+        self.control_tasks: set[asyncio.Task] = set()
+        self.outbound_controls: dict[tuple, asyncio.Task] = {}
+
+    async def send_agent_message(
+        self,
+        event,
+        connection_id: str,
+        connection_revision: str,
+        session_id: str,
+        text: str,
+    ) -> dict:
+        """Send through a direct binding while retaining origin admission control.
+
+        Args:
+            event: Ordinary server-owned source execution.
+            connection_id: Account-owned direct binding from discovery.
+            connection_revision: Exact immutable binding revision.
+            session_id: Existing exposed remote ordinary conversation.
+            text: Agent text, never a human choice answer.
+
+        Returns:
+            Credential-free acceptance receipt; execution continues independently.
+
+        Raises:
+            ChatServiceError: Current source, binding, target or control is unavailable.
+        """
+        from astrbot.core.cron.webchat_turn import parse_webchat_turn_session
+
+        if (
+            any(
+                not isinstance(value, str) or not value.strip()
+                for value in (connection_id, connection_revision, session_id, text)
+            )
+            or len(session_id) > 255
+            or session_id in {".", ".."}
+            or "/" in session_id
+            or "\\" in session_id
+        ):
+            raise ChatServiceError(
+                "A direct binding, revision, target session and nonempty text are required"
+            )
+        await self.chat.list_message_sessions(event)
+        if event.get_extra("agent_stop_requested"):
+            raise ChatServiceError("Source execution was stopped by the user")
+        principal = event.get_extra("_dashboard_account")
+        source_id, _ = parse_webchat_turn_session(event.unified_msg_origin)
+        chain = event.get_extra("_session_message_chain")
+        if not isinstance(chain, SessionMessageChain):
+            chain = SessionMessageChain(sessions={source_id})
+            event.set_extra("_session_message_chain", chain)
+            self.chat.session_message_chains.add(chain)
+        if source_id in chain.stopped:
+            raise ChatServiceError(
+                "This automatic message chain was stopped by the user"
+            )
+        if (
+            len(self.agent_chains) >= 1024
+            and (principal.account_id, chain.chain_id) not in self.agent_chains
+        ):
+            raise ChatServiceError(
+                "Automatic message chain coordination capacity reached"
+            )
+        self.agent_chains[principal.account_id, chain.chain_id] = chain
+        identity = (
+            principal.account_id,
+            connection_id,
+            connection_revision,
+            chain.chain_id,
+            source_id,
+        )
+        if identity not in self.outbound_controls:
+            if len(self.outbound_controls) >= 1024:
+                raise ChatServiceError(
+                    "Automatic message chain coordination capacity reached"
+                )
+            self.outbound_controls[identity] = asyncio.create_task(
+                self.open_agent_control(
+                    event,
+                    connection_id,
+                    connection_revision,
+                    principal,
+                    chain,
+                    source_id,
+                    identity,
+                )
+            )
+            self.outbound_controls[identity].add_done_callback(
+                lambda finished: (
+                    self.outbound_controls.pop(identity, None)
+                    if finished.cancelled() or finished.exception() is not None
+                    else None
+                )
+            )
+        channel_id = await asyncio.shield(self.outbound_controls[identity])
+        result = await self.agent_connection(
+            event,
+            connection_id,
+            connection_revision,
+            "channels/" + channel_id + "/messages",
+            payload={
+                "session_id": session_id,
+                "text": text,
+                "request_id": str(uuid4()),
+            },
+        )
+        if not isinstance(result, dict) or result.get("status") not in {
+            "accepted",
+            "rejected",
+            "unknown",
+            "processing",
+        }:
+            raise ChatServiceError(
+                "Remote acceptance is unknown; do not blindly resend"
+            )
+        return {
+            **{
+                key: result[key]
+                for key in ("status", "run_id", "error")
+                if key in result and isinstance(result[key], str)
+            },
+            "session_id": session_id,
+            "connection_id": connection_id,
+            "connection_revision": connection_revision,
+        }
+
+    async def open_agent_control(
+        self,
+        event,
+        connection_id,
+        connection_revision,
+        principal,
+        chain,
+        source_id,
+        identity,
+    ):
+        """Open one shared outbound mailbox pump for this source and direct binding.
+
+        Args:
+            event: Trusted source execution, retained for live policy revalidation.
+            connection_id: Direct account binding.
+            connection_revision: Immutable selected binding revision.
+            principal: Server-owned source account.
+            chain: Existing authority or upstream relay; never a fresh counter.
+            source_id: Local source session for authenticated provenance labels.
+            identity: Account, binding, chain and source scoped reuse key.
+
+        Returns:
+            Private remote mailbox capability, excluded from tool results.
+
+        Raises:
+            ChatServiceError: Joining or maintaining the authoritative budget fails.
+        """
+        source = await self.chat.require_owned_chat_session(
+            principal.resource_owner, source_id
+        )
+        # Channels are private capabilities and never appear in tool output/history.
+        opened = await self.agent_connection(
+            event,
+            connection_id,
+            connection_revision,
+            "channels",
+            payload={
+                "chain_id": chain.chain_id,
+                "session_id": source_id,
+                "display_name": source.display_name or source_id,
+            },
+        )
+        if (
+            not isinstance(opened, dict)
+            or not isinstance(opened.get("channel_id"), str)
+            or type(opened.get("limit")) is not int
+            or opened["limit"] < 1
+        ):
+            raise ChatServiceError(
+                "Remote instance does not support shared chain control"
+            )
+        channel_id = opened["channel_id"]
+        # Joining a stricter participant tightens the authority before delivering.
+        decision = await chain.reserve(
+            min(self.chat.require_session_message_limit(), opened["limit"]),
+            str(uuid4()),
+            False,
+        )
+        if decision.get("error"):
+            raise ChatServiceError(decision["error"])
+        async with self.db.get_db() as connection:
+            account = await connection.get(DashboardAccount, principal.account_id)
+
+        async def control():
+            """Keep polling after acceptance and relay later-hop reservations."""
+            results = []
+            expires = time.monotonic() + 3600
+            try:
+                while time.monotonic() < expires:
+                    # No source model or remote callback participates in control.
+                    response = await self.read_connection(
+                        account,
+                        connection_id,
+                        "agent/channels/" + channel_id + "/poll",
+                        method="POST",
+                        payload={"results": results},
+                        revision=connection_revision,
+                    )
+                    if not isinstance(response, dict) or not isinstance(
+                        response.get("requests"), list
+                    ):
+                        break
+                    if response.get("stopped") or chain.stopped:
+                        break
+                    results = []
+                    for item in response["requests"]:
+                        if (
+                            not isinstance(item, dict)
+                            or not isinstance(item.get("request_id"), str)
+                            or type(item.get("limit")) is not int
+                            or item["limit"] < 1
+                            or type(item.get("consume")) is not bool
+                        ):
+                            raise ValueError("Invalid admission request")
+                        await self.chat.list_message_sessions(event)
+                        self.require_enabled()
+                        if event.get_extra("agent_stop_requested"):
+                            raise ChatServiceError(
+                                "Source execution was stopped by the user"
+                            )
+                        result = await chain.reserve(
+                            min(
+                                self.chat.require_session_message_limit(),
+                                item["limit"],
+                                chain.max_sends or item["limit"],
+                            ),
+                            item["request_id"],
+                            item["consume"],
+                        )
+                        results.append(
+                            {"request_id": item["request_id"], "decision": result}
+                        )
+            except (ApiError, ChatServiceError, ValueError):
+                pass
+            finally:
+                # A broken branch cannot start a new independent budget elsewhere.
+                chain.stopped.add("remote-control:" + channel_id)
+                self.outbound_controls.pop(identity, None)
+
+        task = asyncio.create_task(control(), name="remote_chain_control")
+        self.control_tasks.add(task)
+        task.add_done_callback(self.control_tasks.discard)
+        return channel_id
 
     def require_enabled(self) -> None:
         """Gate new inbound and outbound remote operations using live config.

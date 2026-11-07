@@ -3,6 +3,8 @@
 import asyncio
 import hashlib
 import json
+import secrets
+import time
 from typing import Literal
 from urllib.parse import quote
 from uuid import UUID, uuid4
@@ -11,8 +13,13 @@ import anyio
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
+from sqlmodel import select
 
-from astrbot.core.db.po import DashboardAccount
+from astrbot.builtin_stars.session_messages.tools import (
+    AgentMessageSource,
+    SessionMessageChain,
+)
+from astrbot.core.db.po import DashboardAccount, RemoteChatCredential
 from astrbot.core.utils.webchat_access import (
     DashboardPrincipal,
     dashboard_account_context,
@@ -21,6 +28,7 @@ from astrbot.core.utils.webchat_access import (
 )
 from astrbot.dashboard.responses import ApiError, ok
 from astrbot.dashboard.services.chat_service import ChatServiceError
+from astrbot.dashboard.services.remote_chat_control import RemoteChainControl
 
 from .auth import require_dashboard_user
 
@@ -88,6 +96,276 @@ async def require_remote_account(request: Request) -> DashboardAccount:
     if scheme.lower() != "remotesession" or not raw_key.strip():
         raise ApiError("Dedicated remote credential required", status_code=401)
     return await request.app.state.services.remote_chat.authenticate(raw_key.strip())
+
+
+class AgentChannelRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    chain_id: UUID = Field(strict=False)
+    session_id: str = Field(min_length=1, max_length=255)
+    display_name: str = Field(min_length=1, max_length=512)
+
+
+class AgentChannelMessage(RemoteTextRequest):
+    session_id: str = Field(min_length=1, max_length=255)
+
+
+class AgentControlDecision(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    request_id: UUID = Field(strict=False)
+    decision: dict
+
+
+class AgentControlPoll(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    results: list[AgentControlDecision] = Field(default_factory=list, max_length=128)
+
+
+@router.post("/remote-chat/agent/channels")
+async def open_agent_channel(
+    payload: AgentChannelRequest,
+    request: Request,
+    account: DashboardAccount = Depends(require_remote_account),
+):
+    """Bind peer-asserted source labels to an authenticated private control channel.
+
+    Args:
+        payload: Peer server's source labels; no caller-selected local identity.
+        request: Request authenticated with a dedicated remote credential.
+        account: Recipient account determined solely by that credential.
+
+    Returns:
+        Private channel capability and the current host send limit.
+
+    Raises:
+        ApiError: Host policy or bounded coordination capacity denies a channel.
+    """
+    service = request.app.state.services.remote_chat
+    limit = service.chat.require_session_message_limit()
+    now = time.monotonic()
+    for key, channel in list(service.agent_channels.items()):
+        if channel["control"].expires < now:
+            channel["control"].closed = True
+            del service.agent_channels[key]
+    if len(service.agent_channels) >= 1024:
+        raise ApiError(
+            "Automatic message chain coordination capacity reached", status_code=400
+        )
+    identity = (account.account_id, str(payload.chain_id))
+    chain = service.agent_chains.get(identity)
+    control = RemoteChainControl()
+    if chain is None:
+        if len(service.agent_chains) >= 1024:
+            raise ApiError(
+                "Automatic message chain coordination capacity reached", status_code=400
+            )
+        chain = SessionMessageChain(chain_id=str(payload.chain_id), control=control)
+        service.agent_chains[identity] = chain
+    channel_id = secrets.token_urlsafe(32)
+    raw_key = request.headers["Authorization"].partition(" ")[2].strip()
+    # Bind the mailbox to this exact credential, including after key replacement.
+    digest = hashlib.sha256(raw_key.encode()).hexdigest()
+    async with service.db.get_db() as connection:
+        credential = (
+            await connection.execute(
+                select(RemoteChatCredential).where(
+                    RemoteChatCredential.key_hash == digest
+                )
+            )
+        ).scalar_one()
+    service.agent_channels[channel_id] = {
+        "account_id": account.account_id,
+        "key_digest": digest,
+        "chain": chain,
+        "control": control,
+        "source": {
+            "kind": "agent",
+            "account_id": "remote-peer",
+            "login_name": "Remote Agent",
+            "session_id": payload.session_id,
+            "display_name": payload.display_name,
+            "remote": True,
+            "connection_name": credential.name,
+            "instance_name": credential.name,
+        },
+    }
+    return ok({"channel_id": channel_id, "limit": limit})
+
+
+@router.post("/remote-chat/agent/channels/{channel_id}/poll")
+async def poll_agent_channel(
+    channel_id: str,
+    payload: AgentControlPoll,
+    request: Request,
+    account: DashboardAccount = Depends(require_remote_account),
+):
+    """Exchange private budget decisions over the authenticated peer's outbound poll.
+
+    Args:
+        channel_id: Private capability issued to this exact dedicated credential.
+        payload: Authority decisions, containing no resource grants or identities.
+        request: Credential-authenticated request.
+        account: Credential-bound recipient account.
+
+    Returns:
+        Pending budget requests and the local stop state.
+
+    Raises:
+        ApiError: The channel, credential or account is no longer available.
+    """
+    service = request.app.state.services.remote_chat
+    channel = service.agent_channels.get(channel_id)
+    digest = hashlib.sha256(
+        request.headers["Authorization"].partition(" ")[2].strip().encode()
+    ).hexdigest()
+    if (
+        channel is None
+        or channel["account_id"] != account.account_id
+        or channel["key_digest"] != digest
+        or channel["control"].expires < time.monotonic()
+    ):
+        raise ApiError(
+            "Automatic message chain control is unavailable", status_code=404
+        )
+    # Coordination carries no resource access. Pausing Agent sends still allows
+    # already accepted execution to resolve pending control without a reset.
+    control = channel["control"]
+    pending = control.poll(
+        [
+            {"request_id": str(row.request_id), "decision": row.decision}
+            for row in payload.results
+        ]
+    )
+    if not pending:
+        control.dirty.clear()
+        try:
+            await asyncio.wait_for(control.dirty.wait(), 1)
+        except asyncio.TimeoutError:
+            pass
+        await service.authenticate(
+            request.headers["Authorization"].partition(" ")[2].strip()
+        )
+        pending = list(control.pending.values())
+    return ok({"requests": pending, "stopped": bool(channel["chain"].stopped)})
+
+
+@router.post("/remote-chat/agent/channels/{channel_id}/messages")
+async def send_remote_agent_message(
+    channel_id: str,
+    payload: AgentChannelMessage,
+    request: Request,
+    account: DashboardAccount = Depends(require_remote_account),
+):
+    """Admit authenticated peer Agent text using ordinary execution and history.
+
+    Args:
+        channel_id: Server-issued channel bound to this dedicated credential.
+        payload: Text, target and receipt identity; no caller-selected Agent source.
+        request: Credential-authenticated peer request.
+        account: Local recipient identity resolved from the credential.
+
+    Returns:
+        Acceptance receipt; acceptance does not imply execution completion.
+
+    Raises:
+        ApiError: Live grant, channel, Agent policy or exposure is unavailable.
+    """
+    service = request.app.state.services.remote_chat
+    channel = service.agent_channels.get(channel_id)
+    raw_key = request.headers["Authorization"].partition(" ")[2].strip()
+    digest = hashlib.sha256(raw_key.encode()).hexdigest()
+    if (
+        channel is None
+        or channel["account_id"] != account.account_id
+        or channel["key_digest"] != digest
+        or channel["control"].expires < time.monotonic()
+    ):
+        raise ApiError(
+            "Automatic message chain control is unavailable", status_code=404
+        )
+    await service.require_session(account, payload.session_id)
+    service.chat.require_session_message_limit()
+    identity = (account.account_id, payload.session_id, str(payload.request_id))
+    digest = hashlib.sha256((channel_id + payload.text).encode()).hexdigest()
+    receipt = service.receipts.get(identity)
+    if receipt is not None and receipt["digest"] != digest:
+        raise ApiError("Request identity already used", status_code=409)
+    if receipt is None:
+        if len(service.receipts) >= 1024:
+            raise ApiError("Admission is busy", status_code=400)
+        receipt = {"status": "processing", "digest": digest, "run_id": str(uuid4())}
+        service.receipts[identity] = receipt
+        stop_revision = service.chat.session_message_stop_revisions.get(
+            payload.session_id, 0
+        )
+        revision = service.grant_revisions.get(account.account_id, 0)
+
+        async def check_admission():
+            """Revalidate the live grant after preparation and budget relay."""
+            current = await service.authenticate(raw_key)
+            await service.require_session(current, payload.session_id)
+            service.require_enabled()
+            service.chat.require_session_message_limit()
+            if (
+                channel["control"].closed
+                or time.monotonic() - channel["control"].last_poll > 10
+            ):
+                raise ApiError(
+                    "Automatic message chain control is unavailable", status_code=400
+                )
+            if service.grant_revisions.get(account.account_id, 0) != revision:
+                raise ApiError("Remote grant changed during admission", status_code=403)
+
+        async def admit():
+            """Use ordinary Agent history, follow-up and queue admission."""
+            principal = DashboardPrincipal(
+                account.account_id,
+                account.resource_owner,
+                account.role,
+                account.username,
+            )
+            tokens = (
+                dashboard_account_context.set(principal),
+                webchat_resource_owner.set(account.resource_owner),
+                webchat_account_role.set(account.role),
+            )
+            try:
+                stream = await service.chat.build_chat_stream(
+                    account.resource_owner,
+                    {"session_id": payload.session_id, "message": payload.text},
+                    message_id=receipt["run_id"],
+                    admission_check=check_admission,
+                    agent_source=AgentMessageSource(
+                        principal,
+                        channel["source"]["session_id"],
+                        channel["source"]["display_name"],
+                        channel["chain"],
+                        target_stop_revision=stop_revision,
+                        remote_source=channel["source"],
+                    ),
+                )
+                receipt["status"] = "accepted"
+                await stream.aclose()
+            except (ChatServiceError, ApiError) as exc:
+                if receipt["status"] != "accepted":
+                    receipt["status"] = "rejected"
+                    receipt["error"] = (
+                        str(exc)
+                        if isinstance(exc, ChatServiceError)
+                        else "Remote authorization or control changed"
+                    )
+            except Exception:
+                if receipt["status"] != "accepted":
+                    receipt["status"] = "unknown"
+            finally:
+                dashboard_account_context.reset(tokens[0])
+                webchat_resource_owner.reset(tokens[1])
+                webchat_account_role.reset(tokens[2])
+
+        receipt["task"] = asyncio.create_task(admit())
+    await asyncio.shield(receipt["task"])
+    return ok(
+        {key: receipt[key] for key in ("status", "run_id", "error") if key in receipt}
+    )
 
 
 @router.get("/chat/remote-access")

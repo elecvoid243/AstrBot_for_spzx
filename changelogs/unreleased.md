@@ -40,3 +40,10 @@
 - Added default-off host creation permission at Settings → Security → Remote session access. Disabling it preserves exposed sessions and communication.
 - Navigation mapping: Chat sidebar → Remote connections → connection now adds New remote session; local New conversation is unchanged. Creation selects a remote project, uses remote defaults and updates selected exposure for all bindings of the same remote account.
 - Ordinary Agent list/read/create tools now accept explicit direct connection IDs and binding revisions, returning project directory names and stable targets. Agent operations require both Agent switches; human operations use remote authorization independently. Read keeps bounded display projection and pagination. Remote Agent sending remains RC07.
+
+## Remote Agent messaging (RC07)
+
+- Extend `send_chat_message` with explicit direct connection IDs and immutable revisions. Authenticated peer provenance enters ordinary history, execution and safe busy follow-up; remote source badges show the connection and source session without a local link. Existing navigation stays unchanged.
+- Require separate reverse bindings for active replies, current exposure and both instances' Agent/remote switches; preserve human-only choices and final admission invalidation.
+- Share one origin authority across local sends, remote sends, concurrent branches and reverse replies. Outbound long polling supports NAT and further-hop budget relays without indirect resource access; stricter live limits only tighten the chain. Unknown acceptance retains its reservation, with no automatic resend or durable queue.
+- Keep process-local coordination bounded (one-hour channels, bounded mailboxes/decisions). Expiry, lost control and restarts reject further automatic sends instead of resetting the budget.

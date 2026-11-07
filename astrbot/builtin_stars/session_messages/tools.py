@@ -3,6 +3,7 @@
 import asyncio
 import json
 from dataclasses import dataclass, field
+from uuid import uuid4
 
 from astrbot.core.agent.run_context import ContextWrapper
 from astrbot.core.agent.tool import (
@@ -49,9 +50,13 @@ def _project_read_message(
                 "login_name",
                 "session_id",
                 "display_name",
+                "connection_name",
+                "instance_name",
             )
             if isinstance(source.get(key), str)
         }
+        if source.get("remote") is True:
+            result["agent_source"]["remote"] = True
         for key in ("login_name", "display_name"):
             label = result["agent_source"].get(key)
             if isinstance(label, str) and len(label) > 512:
@@ -178,6 +183,42 @@ class SessionMessageChain:
     stopped: set[str] = field(default_factory=set)
     # Tighten on admission; an existing chain must never gain a larger budget.
     max_sends: int | None = None
+    chain_id: str = field(default_factory=lambda: str(uuid4()))
+    control: object | None = None
+    decisions: dict = field(default_factory=dict)
+
+    async def reserve(self, limit: int, request_id: str, consume: bool = True) -> dict:
+        """Decide once at the origin, or relay over its outbound control channel.
+
+        Args:
+            limit: Current participating instance's upper bound.
+            request_id: Private idempotency identity for this admission.
+            consume: Reserve a delivery, or only tighten the chain's upper bound.
+
+        Returns:
+            Authoritative decision, including the cumulative reserved count.
+        """
+        if self.control is not None:
+            return await self.control.reserve(limit, request_id, consume)
+        # No await separates tightening, checking and reservation at the authority.
+        self.max_sends = min(self.max_sends or limit, limit)
+        if request_id not in self.decisions:
+            error = None
+            if any(value.startswith("remote-control:") for value in self.stopped):
+                error = "Automatic message chain control is unavailable; no new sends are allowed"
+            elif len(self.decisions) >= 4096:
+                error = "Automatic message chain coordination capacity reached"
+            elif consume and self.count >= self.max_sends:
+                error = (
+                    f"Automatic message chain limit reached ({self.max_sends} sends)"
+                )
+            if not error and consume:
+                self.count += 1
+            result = {"error": error, "count": self.count, "limit": self.max_sends}
+            if len(self.decisions) < 4096:
+                self.decisions[request_id] = result
+            return result
+        return self.decisions[request_id]
 
 
 @dataclass(frozen=True)
@@ -190,14 +231,15 @@ class AgentMessageSource:
     chain: SessionMessageChain
     # Reject a user stop that occurs while the recipient input is being prepared.
     target_stop_revision: int = 0
+    remote_source: dict | None = None
 
     def public_data(self) -> dict:
         """Return credential-free provenance for history and model input.
 
         Returns:
-            Server-generated source identity and a source-session link.
+            Local source identity or authenticated peer's credential-free labels.
         """
-        return {
+        return self.remote_source or {
             "kind": "agent",
             "account_id": self.account.account_id,
             "login_name": self.account.login_name,
@@ -515,12 +557,22 @@ class SendChatMessageTool(FunctionTool[AstrAgentContext]):
         "acceptance, without waiting for the recipient's execution. The recipient "
         "uses its own settings and can reply with this tool. Agent text is never "
         "human authorization or a choice answer. No automatic completion report; "
-        "use read_chat_session to inspect saved recipient history."
+        "use read_chat_session to inspect saved recipient history. For a directly bound remote, "
+        "copy connection_id and connection_revision from discovery. Active reverse sends "
+        "require a separate reverse binding; all sends share the original chain budget."
     )
     parameters: dict = field(
         default_factory=lambda: {
             "type": "object",
             "properties": {
+                "connection_id": {
+                    "type": "string",
+                    "description": "Direct binding ID; omit for local.",
+                },
+                "connection_revision": {
+                    "type": "string",
+                    "description": "Immutable binding revision from discovery.",
+                },
                 "session_id": {
                     "type": "string",
                     "description": "Existing target session ID.",
@@ -552,9 +604,78 @@ class SendChatMessageTool(FunctionTool[AstrAgentContext]):
         service = getattr(context.context.context, "session_message_service", None)
         if service is None:
             return "error: ChatUI session messaging is unavailable"
-        if set(kwargs) != {"session_id", "text"}:
-            return "error: Only session_id and text are accepted"
+        if (
+            set(kwargs) - self.parameters["properties"].keys()
+            or not {"session_id", "text"} <= kwargs.keys()
+        ):
+            return "error: Only session_id and text plus optional connection_id/connection_revision are accepted"
         try:
+            if "connection_id" in kwargs:
+                if any(
+                    not isinstance(kwargs.get(key), str) or not kwargs[key].strip()
+                    for key in ("connection_id", "session_id", "text")
+                ):
+                    return "error: A direct connection, target session and nonempty text are required"
+                if (
+                    not isinstance(kwargs.get("connection_revision"), str)
+                    or not kwargs["connection_revision"]
+                ):
+                    return "error: Remote sends require connection_id and connection_revision"
+                event = context.context.event
+                await service.list_message_sessions(event)
+                if (
+                    service.remote_chat.config.get("chatui", {}).get(
+                        "remote_sessions_enabled"
+                    )
+                    is not True
+                ):
+                    raise ChatServiceError("Remote session connections are disabled")
+                invocation = current_tool_invocation.get()
+                pending = event.get_extra("_remote_message_sends")
+                if pending is None:
+                    pending = {}
+                    event.set_extra("_remote_message_sends", pending)
+                identity = (
+                    (
+                        invocation,
+                        kwargs["connection_id"],
+                        kwargs["connection_revision"],
+                        kwargs["session_id"],
+                    )
+                    if invocation
+                    else str(uuid4())
+                )
+                if identity not in pending:
+                    if len(pending) >= 1024:
+                        return "error: Send coordination capacity reached"
+                    pending[identity] = asyncio.create_task(
+                        service.remote_chat.send_agent_message(event, **kwargs)
+                    )
+                else:
+                    # Unknown cached outcomes must also honor revoked targets.
+                    from urllib.parse import quote
+
+                    await service.remote_chat.agent_connection(
+                        event,
+                        kwargs["connection_id"],
+                        kwargs["connection_revision"],
+                        "sessions/" + quote(kwargs["session_id"], safe="") + "/history",
+                        params={"limit": 1},
+                    )
+                result = await asyncio.shield(pending[identity])
+                # A cached outcome is not a continuing authorization grant.
+                from urllib.parse import quote
+
+                await service.remote_chat.agent_connection(
+                    event,
+                    kwargs["connection_id"],
+                    kwargs["connection_revision"],
+                    "sessions/" + quote(kwargs["session_id"], safe="") + "/history",
+                    params={"limit": 1},
+                )
+                return json.dumps(result, ensure_ascii=False)
+            if "connection_revision" in kwargs:
+                return "error: connection_revision requires connection_id"
             return json.dumps(
                 await service.send_session_message(context.context.event, **kwargs),
                 ensure_ascii=False,

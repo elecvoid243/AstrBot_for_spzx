@@ -98,6 +98,101 @@ tags:
   - name: Webhooks
 
 paths:
+  /api/v1/remote-chat/agent/channels:
+    post:
+      tags:
+      - Remote Chat
+      summary: Open Agent Channel
+      description: "Bind peer-asserted source labels to an authenticated private control channel.\n\nArgs:\n    payload: Peer server's source labels; no caller-selected local identity.\n    request: Request authenticated with a dedicated remote credential.\n    account: Recipient account determined solely by that credential.\n\nReturns:\n    Private channel capability and the current host send limit.\n\nRaises:\n    ApiError: Host policy or bounded coordination capacity denies a channel."
+      operationId: open_agent_channel_api_v1_remote_chat_agent_channels_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentChannelRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - RemoteSessionAuth: []
+  /api/v1/remote-chat/agent/channels/{channel_id}/poll:
+    post:
+      tags:
+      - Remote Chat
+      summary: Poll Agent Channel
+      description: "Exchange private budget decisions over the authenticated peer's outbound poll.\n\nArgs:\n    channel_id: Private capability issued to this exact dedicated credential.\n    payload: Authority decisions, containing no resource grants or identities.\n    request: Credential-authenticated request.\n    account: Credential-bound recipient account.\n\nReturns:\n    Pending budget requests and the local stop state.\n\nRaises:\n    ApiError: The channel, credential or account is no longer available."
+      operationId: poll_agent_channel_api_v1_remote_chat_agent_channels__channel_id__poll_post
+      parameters:
+      - name: channel_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Channel Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentControlPoll'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - RemoteSessionAuth: []
+  /api/v1/remote-chat/agent/channels/{channel_id}/messages:
+    post:
+      tags:
+      - Remote Chat
+      summary: Send Remote Agent Message
+      description: "Admit authenticated peer Agent text using ordinary execution and history.\n\nArgs:\n    channel_id: Server-issued channel bound to this dedicated credential.\n    payload: Text, target and receipt identity; no caller-selected Agent source.\n    request: Credential-authenticated peer request.\n    account: Local recipient identity resolved from the credential.\n\nReturns:\n    Acceptance receipt; acceptance does not imply execution completion.\n\nRaises:\n    ApiError: Live grant, channel, Agent policy or exposure is unavailable."
+      operationId: send_remote_agent_message_api_v1_remote_chat_agent_channels__channel_id__messages_post
+      parameters:
+      - name: channel_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Channel Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentChannelMessage'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - RemoteSessionAuth: []
   /api/v1/remote-chat/agent/creation:
     get:
       description: |-
@@ -9228,6 +9323,79 @@ components:
       schema: { type: string }
 
   schemas:
+    AgentChannelMessage:
+      properties:
+        text:
+          type: string
+          maxLength: 1000000
+          minLength: 1
+          title: Text
+        request_id:
+          type: string
+          format: uuid
+          title: Request Id
+        session_id:
+          type: string
+          maxLength: 255
+          minLength: 1
+          title: Session Id
+      additionalProperties: false
+      type: object
+      required:
+      - text
+      - request_id
+      - session_id
+      title: AgentChannelMessage
+    AgentChannelRequest:
+      properties:
+        chain_id:
+          type: string
+          format: uuid
+          title: Chain Id
+        session_id:
+          type: string
+          maxLength: 255
+          minLength: 1
+          title: Session Id
+        display_name:
+          type: string
+          maxLength: 512
+          minLength: 1
+          title: Display Name
+      additionalProperties: false
+      type: object
+      required:
+      - chain_id
+      - session_id
+      - display_name
+      title: AgentChannelRequest
+    AgentControlDecision:
+      properties:
+        request_id:
+          type: string
+          format: uuid
+          title: Request Id
+        decision:
+          additionalProperties: true
+          type: object
+          title: Decision
+      additionalProperties: false
+      type: object
+      required:
+      - request_id
+      - decision
+      title: AgentControlDecision
+    AgentControlPoll:
+      properties:
+        results:
+          items:
+            $ref: '#/components/schemas/AgentControlDecision'
+          type: array
+          maxItems: 128
+          title: Results
+      additionalProperties: false
+      type: object
+      title: AgentControlPoll
     ConnectionCreateRequest:
       properties:
         title:
@@ -12852,6 +13020,9 @@ components:
         login_name: { type: string }
         session_id: { type: string }
         display_name: { type: string }
+        remote: { type: boolean, default: false }
+        connection_name: { type: string, nullable: true }
+        instance_name: { type: string, nullable: true }
     ChatHistoryContent:
       type: object
       additionalProperties: true

@@ -84,8 +84,18 @@
             </button>
           </div>
           <template v-else>
+            <div
+              v-if="messageContent(msg).agent_source?.remote"
+              class="agent-message-source"
+              :title="messageContent(msg).agent_source!.session_id"
+            >
+              <span class="agent-message-source-copy">
+                <span class="agent-message-source-title">{{ messageContent(msg).agent_source!.display_name }}</span>
+                <span class="agent-message-source-meta">{{ tm('message.agentSource') }} · {{ messageContent(msg).agent_source!.connection_name }} · {{ messageContent(msg).agent_source!.session_id }}</span>
+              </span>
+            </div>
             <RouterLink
-              v-if="messageContent(msg).agent_source"
+              v-else-if="messageContent(msg).agent_source"
               class="agent-message-source"
               :to="{
                 name: 'ChatDetail',

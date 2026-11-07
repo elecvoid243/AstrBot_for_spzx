@@ -3679,9 +3679,8 @@ class ChatService:
                 )
                 from astrbot.core.tools.interactive_choice_registry import registry
 
-                # Recheck after asynchronous preparation. This gate, queue admission
-                # and chain commit below do not yield, so competing sends and stops
-                # cannot change their result between the check and acceptance.
+                # Prepare target checks before requesting the sole authority.
+                # Recheck local gates after the asynchronous reservation below.
                 chain = agent_source.chain
                 limit = self.require_session_message_limit()
                 chain.max_sends = (
@@ -3773,6 +3772,59 @@ class ChatService:
                     # Remote admission is live through asynchronous preparation.
                     # This check does not affect already accepted execution.
                     await admission_check()
+                if agent_source is not None:
+                    decision = await chain.reserve(
+                        self.require_session_message_limit(), message_id
+                    )
+                    if decision.get("error"):
+                        raise ChatServiceError(decision["error"])
+                    if admission_check is not None:
+                        await admission_check()
+                    while self.require_session_message_limit() < decision["limit"]:
+                        # Tighten centrally if this host changed policy while a
+                        # reservation or the live grant recheck was in flight.
+                        decision = await chain.reserve(
+                            self.require_session_message_limit(),
+                            str(uuid.uuid4()),
+                            False,
+                        )
+                        if decision.get("error"):
+                            raise ChatServiceError(decision["error"])
+                        if admission_check is not None:
+                            await admission_check()
+                    if decision["count"] > decision["limit"]:
+                        raise ChatServiceError(
+                            f"Automatic message chain limit reached ({decision['limit']} sends)"
+                        )
+                    # A relayed decision yields. Recheck local nonblocking gates
+                    # immediately before enqueue; unknown reservations stay spent.
+                    self.require_session_message_limit()
+                    if (
+                        webchat_conv_id in chain.stopped
+                        or agent_source.session_id in chain.stopped
+                        or self.session_message_stop_revisions.get(webchat_conv_id, 0)
+                        != agent_source.target_stop_revision
+                    ):
+                        raise ChatServiceError(
+                            "This automatic message chain was stopped by the user"
+                        )
+                    if registry.find_pending_by_umo(umo) is not None:
+                        raise ChatServiceError(
+                            "Target is waiting for a user answer; Agent messages cannot answer it"
+                        )
+                    if chat_queue.full():
+                        raise ChatServiceError(
+                            "Target input queue is full; message was not accepted"
+                        )
+                    if recipient_event is not None and (
+                        recipient_runner.done()
+                        or recipient_event.get_extra("agent_stop_requested")
+                        or recipient_event.get_extra("_session_message_chain")
+                        not in (None, chain)
+                    ):
+                        raise ChatServiceError(
+                            "Target can no longer accept this automatic follow-up"
+                        )
                 queue_item = (
                     username,
                     webchat_conv_id,
@@ -3810,9 +3862,8 @@ class ChatService:
                     input_accepted = True
                     if input_admission is not None and not input_admission.done():
                         input_admission.set_result(True)
-                    # Commit only after the real input queue accepts the message.
-                    # Later notification failures must never roll this state back.
-                    chain.count += 1
+                    # Publish ownership only after the real queue accepts input.
+                    # Its authoritative budget reservation already happened above.
                     chain.sessions.add(webchat_conv_id)
                     self.session_message_chains.add(chain)
                     if recipient_event is not None:
@@ -3829,6 +3880,20 @@ class ChatService:
                         await chat_queue.put(queue_item)
                     input_accepted = True
             except BaseException:
+                if (
+                    agent_source is not None
+                    and chain.control is None
+                    and admission_check is None
+                    and not input_accepted
+                ):
+                    reserved = chain.decisions.get(message_id)
+                    if reserved is not None and not reserved.get("error"):
+                        # A local synchronous enqueue failure proves no delivery.
+                        # Remote/uncertain admissions never take this refund path.
+                        chain.count -= 1
+                        reserved["error"] = (
+                            "Message was rejected before queue acceptance"
+                        )
                 run.task.cancel()
                 await asyncio.gather(run.task, return_exceptions=True)
                 # A task cancelled before its first step never enters its finally.

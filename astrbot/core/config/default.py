@@ -4012,13 +4012,13 @@ CONFIG_METADATA_3 = {
                         "type": "string",
                         "options": ["auto", "git_bash", "pwsh", "powershell", "cmd"],
                         "labels": [
-                            "自动（Git Bash 优先）",
-                            "Git Bash",
+                            "自动（PowerShell 优先）",
+                            "Git Bash（无沙盒支持）",
                             "PowerShell 7",
                             "Windows PowerShell 5.1",
                             "cmd.exe",
                         ],
-                        "hint": "仅 Windows 生效。auto 依次探测 Git Bash、pwsh、powershell.exe；显式选择但未安装时回退到 auto。",
+                        "hint": "仅 Windows 生效。auto 依次探测 pwsh、powershell.exe、Git Bash，优先使用 PowerShell。Git Bash 不支持 Windows 沙盒：readonly/workspace 模式下会自动回退到 Windows PowerShell，仅在完全访问模式或显式选择时可用。显式选择但未安装时回退到 auto。",
                         "condition": {
                             "provider_settings.computer_use_runtime": "local",
                         },

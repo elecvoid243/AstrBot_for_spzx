@@ -81,20 +81,9 @@ def test_find_git_bash_falls_back_to_program_files(tmp_path, monkeypatch):
     assert local_booter._find_git_bash() == str(root / "bin" / "bash.exe")
 
 
-def test_resolve_auto_prefers_git_bash(monkeypatch):
+def test_resolve_auto_prefers_pwsh(monkeypatch):
     monkeypatch.setattr(local_booter.sys, "platform", "win32")
     monkeypatch.setattr(local_booter, "_find_git_bash", lambda: r"D:\Git\bin\bash.exe")
-
-    spec = local_booter.resolve_local_shell("auto")
-
-    assert spec.family == "git_bash"
-    assert spec.executable == r"D:\Git\bin\bash.exe"
-    assert spec.prefix_args == ("-c",)
-
-
-def test_resolve_auto_falls_back_to_pwsh(monkeypatch):
-    monkeypatch.setattr(local_booter.sys, "platform", "win32")
-    monkeypatch.setattr(local_booter, "_find_git_bash", lambda: None)
     monkeypatch.setattr(
         local_booter.shutil,
         "which",
@@ -112,16 +101,43 @@ def test_resolve_auto_falls_back_to_pwsh(monkeypatch):
     )
 
 
-def test_resolve_auto_falls_back_to_windows_powershell(monkeypatch):
-    """Neither Git Bash nor pwsh present, as on the reference machine."""
+def test_resolve_auto_prefers_windows_powershell_over_git_bash(monkeypatch):
+    """Git Bash is only an auto fallback; PowerShell wins when present."""
     monkeypatch.setattr(local_booter.sys, "platform", "win32")
-    monkeypatch.setattr(local_booter, "_find_git_bash", lambda: None)
-    monkeypatch.setattr(local_booter.shutil, "which", lambda name: None)
+    monkeypatch.setattr(local_booter, "_find_git_bash", lambda: r"D:\Git\bin\bash.exe")
+    monkeypatch.setattr(
+        local_booter.shutil,
+        "which",
+        lambda name: "powershell.EXE" if name == "powershell.exe" else None,
+    )
 
     spec = local_booter.resolve_local_shell("auto")
 
     assert spec.family == "powershell"
     assert spec.executable == "powershell.exe"
+
+
+def test_resolve_auto_falls_back_to_git_bash(monkeypatch):
+    """Auto still avoids disabling shell execution when PowerShell is absent."""
+    monkeypatch.setattr(local_booter.sys, "platform", "win32")
+    monkeypatch.setattr(local_booter, "_find_git_bash", lambda: r"D:\Git\bin\bash.exe")
+    monkeypatch.setattr(local_booter.shutil, "which", lambda name: None)
+
+    spec = local_booter.resolve_local_shell("auto")
+
+    assert spec.family == "git_bash"
+    assert spec.executable == r"D:\Git\bin\bash.exe"
+    assert spec.prefix_args == ("-c",)
+
+
+def test_resolve_explicit_git_bash_is_honoured(monkeypatch):
+    monkeypatch.setattr(local_booter.sys, "platform", "win32")
+    monkeypatch.setattr(local_booter, "_find_git_bash", lambda: r"D:\Git\bin\bash.exe")
+
+    spec = local_booter.resolve_local_shell("git_bash")
+
+    assert spec.family == "git_bash"
+    assert spec.executable == r"D:\Git\bin\bash.exe"
 
 
 def test_resolve_explicit_family_is_honoured(monkeypatch):

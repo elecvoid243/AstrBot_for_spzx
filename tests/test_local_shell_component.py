@@ -995,6 +995,7 @@ async def test_managed_shell_uses_git_bash_when_available(monkeypatch, tmp_path)
         sandboxed=False,
         cwd=str(tmp_path),
         yield_time_ms=5_000,
+        shell_spec=local_booter.ShellSpec("git_bash", r"D:\Git\bin\bash.exe", ("-c",)),
     )
 
     assert result["status"] == "completed"
@@ -1012,7 +1013,14 @@ def test_exec_uses_git_bash_argv_when_available(monkeypatch):
     monkeypatch.setattr(local_booter.sys, "platform", "win32")
     monkeypatch.setattr(local_booter, "_find_git_bash", lambda: r"D:\Git\bin\bash.exe")
 
-    result = asyncio.run(LocalShellComponent().exec("ls -la"))
+    result = asyncio.run(
+        LocalShellComponent().exec(
+            "ls -la",
+            shell_spec=local_booter.ShellSpec(
+                "git_bash", r"D:\Git\bin\bash.exe", ("-c",)
+            ),
+        )
+    )
 
     assert result["exit_code"] == 0
     assert calls[0][0][0] == [r"D:\Git\bin\bash.exe", "-c", "ls -la"]

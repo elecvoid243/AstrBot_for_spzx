@@ -358,9 +358,10 @@ def _find_git_bash() -> str | None:
 def resolve_local_shell(shell_type: str = "auto") -> ShellSpec:
     """Resolve which local shell commands should run in.
 
-    On Windows, "auto" prefers Git Bash, then PowerShell 7, then Windows
-    PowerShell. An explicit family that is not installed falls back to "auto",
-    so a stale config value cannot disable shell execution.
+    On Windows, "auto" prefers PowerShell 7, then Windows PowerShell, then
+    Git Bash. Git Bash has no Windows sandbox support, so the automatic order
+    keeps it as a last resort. An explicit family that is not installed falls
+    back to "auto", so a stale config value cannot disable shell execution.
 
     Args:
         shell_type: "auto" or one of "git_bash", "pwsh", "powershell", "cmd".
@@ -391,10 +392,12 @@ def resolve_local_shell(shell_type: str = "auto") -> ShellSpec:
             shell_type,
         )
 
-    if git_bash := _find_git_bash():
-        return ShellSpec("git_bash", git_bash, ("-c",))
     if shutil.which("pwsh"):
         return ShellSpec("pwsh", "pwsh.exe", _POWERSHELL_PREFIX_ARGS)
+    if shutil.which("powershell.exe") or shutil.which("powershell"):
+        return ShellSpec("powershell", "powershell.exe", _POWERSHELL_PREFIX_ARGS)
+    if git_bash := _find_git_bash():
+        return ShellSpec("git_bash", git_bash, ("-c",))
     return ShellSpec("powershell", "powershell.exe", _POWERSHELL_PREFIX_ARGS)
 
 

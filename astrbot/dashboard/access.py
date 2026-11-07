@@ -141,6 +141,10 @@ USER_OPERATIONS = (
         "setup_status",
         "dashboard_setup_status",
         "current_account",
+        "get_remote_chat_access",
+        "set_remote_chat_exposure",
+        "create_remote_chat_credential",
+        "revoke_remote_chat_credential",
         "create_chat_session",
         "dashboard_new_session",
         "chat_sessions",
@@ -241,6 +245,15 @@ async def validate_account_request(request: Request, account) -> None:
         ApiError: The caller supplies internal fields or an unavailable resource.
     """
     operation = getattr(request.state, "dashboard_operation", None)
+    if operation in {
+        "get_remote_chat_access",
+        "set_remote_chat_exposure",
+        "create_remote_chat_credential",
+        "revoke_remote_chat_credential",
+    }:
+        # Closed route schemas reject caller-selected identities. Services bind
+        # exposure and credentials to the authenticated Dashboard account only.
+        return
     if operation in {
         "export_chat_session",
         "import_chat_sessions",

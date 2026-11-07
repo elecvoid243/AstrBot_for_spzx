@@ -19,6 +19,8 @@ from astrbot.core.db.po import (
     PlatformSession,
     Preference,
     ProviderStat,
+    RemoteChatCredential,
+    RemoteChatExposure,
     SessionProjectRelation,
     UmoAlias,
     WebChatSubagentRun,
@@ -543,6 +545,11 @@ async def delete_account_data(app, account: DashboardAccount) -> None:
             (Preference, preference_filter),
             (ProviderStat, col(ProviderStat.umo).in_(origins)),
             (UmoAlias, col(UmoAlias.umo).in_(origins)),
+            (
+                RemoteChatCredential,
+                RemoteChatCredential.account_id == account.account_id,
+            ),
+            (RemoteChatExposure, RemoteChatExposure.account_id == account.account_id),
         ):
             await session.execute(delete(model).where(condition))
         await session.delete(current)

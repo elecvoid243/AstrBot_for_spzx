@@ -2343,5 +2343,27 @@
     "messageCount": "{count} messages",
     "attachmentCount": "{count} attachments",
     "versionMismatch": "The package comes from a different minor version; some content may not render as expected."
+  },
+  "remoteAccess": {
+    "title": "Remote session access",
+    "enabled": "Allow remote session connections",
+    "enabledHint": "Instance switch, off by default. Disabling blocks new inbound and outbound remote operations, keeps configuration, and leaves started tasks running.",
+    "disabled": "The administrator has disabled remote connections. You can still manage your exposure and keys.",
+    "scopeHint": "Expose only your ordinary Chat sessions on this instance. Other instances and side conversations are excluded. Changes apply to every key immediately.",
+    "exposure": "Exposure scope",
+    "selected": "Only selected sessions",
+    "all": "All my sessions, including future sessions",
+    "sessions": "Exposed sessions",
+    "save": "Save exposure",
+    "saved": "Exposure saved",
+    "credentials": "Connection keys",
+    "keyHint": "Create a separate key for each direct binding. Keys share your current exposure scope. Password changes and account deactivation revoke access.",
+    "name": "Binding name",
+    "create": "Create key",
+    "keyOnce": "Copy this key now. It will only be shown once.",
+    "copy": "Copy",
+    "hide": "Hide key",
+    "revoke": "Revoke",
+    "revoked": "Revoked"
   }
 }

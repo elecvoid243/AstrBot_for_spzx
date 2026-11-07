@@ -98,6 +98,220 @@ tags:
   - name: Webhooks
 
 paths:
+  /api/v1/chat/remote-access:
+    get:
+      tags:
+      - Remote Chat
+      summary: Get Remote Chat Access
+      operationId: getRemoteChatAccess
+      responses:
+        '200':
+          $ref: '#/components/responses/Ok'
+      security:
+      - BearerAuth: []
+      description: Dashboard login only. Manage the current account; enabled switch
+        requires an administrator.
+  /api/v1/chat/remote-access/exposure:
+    put:
+      tags:
+      - Remote Chat
+      summary: Set Remote Chat Exposure
+      operationId: setRemoteChatExposure
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RemoteExposureRequest'
+        required: true
+      responses:
+        '200':
+          $ref: '#/components/responses/Ok'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - BearerAuth: []
+      description: Dashboard login only. Manage the current account; enabled switch
+        requires an administrator.
+  /api/v1/chat/remote-access/credentials:
+    post:
+      tags:
+      - Remote Chat
+      summary: Create Remote Chat Credential
+      operationId: createRemoteChatCredential
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RemoteCredentialRequest'
+        required: true
+      responses:
+        '200':
+          $ref: '#/components/responses/Ok'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - BearerAuth: []
+      description: Dashboard login only. Manage the current account; enabled switch
+        requires an administrator.
+  /api/v1/chat/remote-access/credentials/{credential_id}:
+    delete:
+      tags:
+      - Remote Chat
+      summary: Revoke Remote Chat Credential
+      operationId: revokeRemoteChatCredential
+      parameters:
+      - name: credential_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Credential Id
+      responses:
+        '200':
+          $ref: '#/components/responses/Ok'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - BearerAuth: []
+      description: Dashboard login only. Manage the current account; enabled switch
+        requires an administrator.
+  /api/v1/chat/remote-access/enabled:
+    put:
+      tags:
+      - Remote Chat
+      summary: Set Remote Chat Enabled
+      operationId: setRemoteChatEnabled
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RemoteEnabledRequest'
+        required: true
+      responses:
+        '200':
+          $ref: '#/components/responses/Ok'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - BearerAuth: []
+      description: Dashboard login only. Manage the current account; enabled switch
+        requires an administrator.
+  /api/v1/remote-chat/sessions:
+    get:
+      tags:
+      - Remote Chat
+      summary: Discover Remote Chat Sessions
+      operationId: discoverRemoteChatSessions
+      responses:
+        '200':
+          $ref: '#/components/responses/Ok'
+      security:
+      - RemoteSessionAuth: []
+      description: Dedicated account-bound RemoteSession key only; current exposure,
+        account state and instance switch are checked on every call. No third-party
+        forwarding.
+  /api/v1/remote-chat/projects:
+    get:
+      tags:
+      - Remote Chat
+      summary: Discover Remote Chat Projects
+      operationId: discoverRemoteChatProjects
+      responses:
+        '200':
+          $ref: '#/components/responses/Ok'
+      security:
+      - RemoteSessionAuth: []
+      description: Dedicated account-bound RemoteSession key only; current exposure,
+        account state and instance switch are checked on every call. No third-party
+        forwarding.
+  /api/v1/remote-chat/projects/{project_id}/sessions:
+    get:
+      tags:
+      - Remote Chat
+      summary: Discover Remote Chat Project Sessions
+      operationId: discoverRemoteChatProjectSessions
+      parameters:
+      - name: project_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Project Id
+      responses:
+        '200':
+          $ref: '#/components/responses/Ok'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - RemoteSessionAuth: []
+      description: Dedicated account-bound RemoteSession key only; current exposure,
+        account state and instance switch are checked on every call. No third-party
+        forwarding.
+  /api/v1/remote-chat/sessions/{session_id}/history:
+    get:
+      tags:
+      - Remote Chat
+      summary: Read Remote Chat History
+      operationId: readRemoteChatHistory
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Session Id
+      - name: before_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+            minimum: 1
+          - type: 'null'
+          title: Before Id
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 200
+          minimum: 1
+          default: 50
+          title: Limit
+      responses:
+        '200':
+          $ref: '#/components/responses/Ok'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - RemoteSessionAuth: []
+      description: Dedicated account-bound RemoteSession key only; current exposure,
+        account state and instance switch are checked on every call. No third-party
+        forwarding.
   /api/v1/plugins/browser-control/session:
     post:
       tags: [Plugins]
@@ -7999,6 +8213,11 @@ paths:
       - BearerAuth: []
 components:
   securitySchemes:
+    RemoteSessionAuth:
+      type: apiKey
+      in: header
+      name: Authorization
+      description: Dedicated account key using RemoteSession <key>. Global API keys and login passwords are not accepted.
     ChatBrowserSession:
       type: apiKey
       description: Browser-only credential confirmed by the initiating sender in the original
@@ -8245,6 +8464,47 @@ components:
       schema: { type: string }
 
   schemas:
+    RemoteCredentialRequest:
+      properties:
+        name:
+          type: string
+          maxLength: 128
+          minLength: 1
+          title: Name
+      additionalProperties: false
+      type: object
+      required:
+      - name
+      title: RemoteCredentialRequest
+    RemoteEnabledRequest:
+      properties:
+        enabled:
+          type: boolean
+          title: Enabled
+      additionalProperties: false
+      type: object
+      required:
+      - enabled
+      title: RemoteEnabledRequest
+    RemoteExposureRequest:
+      properties:
+        mode:
+          type: string
+          enum:
+          - all
+          - selected
+          title: Mode
+        session_ids:
+          items:
+            type: string
+          type: array
+          maxItems: 10000
+          title: Session Ids
+      additionalProperties: false
+      type: object
+      required:
+      - mode
+      title: RemoteExposureRequest
     DraftRebaseRequest:
       properties:
         expected_revision:

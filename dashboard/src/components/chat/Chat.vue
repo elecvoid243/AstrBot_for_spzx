@@ -540,6 +540,7 @@
         </button>
 
         <StyledMenu
+          v-model="chatSettingsMenuOpen"
           location="top start"
           offset="10"
           :close-on-content-click="false"
@@ -566,6 +567,9 @@
           </template>
 
           <div class="settings-menu-content">
+            <v-list-item class="styled-menu-item settings-menu-item" rounded="md" @click="chatSettingsMenuOpen = false; showRemoteAccess = true">
+              <v-list-item-title>{{ tm('remoteAccess.title') }}</v-list-item-title>
+            </v-list-item>
             <v-menu
               location="end"
               offset="8"
@@ -692,6 +696,16 @@
             </v-list-item>
           </div>
         </StyledMenu>
+        <v-dialog v-model="showRemoteAccess" max-width="640" scrollable>
+          <v-card v-if="showRemoteAccess">
+            <v-card-title class="text-h3 pa-4 pb-0 pl-6">{{ tm('remoteAccess.title') }}</v-card-title>
+            <v-card-text><RemoteChatAccessPanel /></v-card-text>
+            <v-card-actions>
+              <v-spacer />
+              <v-btn variant="text" @click="showRemoteAccess = false">{{ t('core.common.close') }}</v-btn>
+            </v-card-actions>
+          </v-card>
+        </v-dialog>
       </div>
     </aside>
 
@@ -1403,6 +1417,9 @@ import {
 import ChatMessageSearchDialog from "@/components/chat/ChatMessageSearchDialog.vue";
 import ArchivedSessionsDialog from "@/components/chat/ArchivedSessionsDialog.vue";
 import ImportSessionsDialog from "@/components/chat/ImportSessionsDialog.vue";
+import RemoteChatAccessPanel from "@/components/chat/RemoteChatAccessPanel.vue";
+const showRemoteAccess = ref(false);
+const chatSettingsMenuOpen = ref(false);
 import {
   useSessions,
   type ArchivedSession,

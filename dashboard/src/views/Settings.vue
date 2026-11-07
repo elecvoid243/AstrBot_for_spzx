@@ -265,6 +265,7 @@
                         <div class="settings-section__title">{{ tm('sections.security.title') }}</div>
                     </div>
                     <div class="settings-section__content">
+                        <RemoteChatAccessPanel system-only class="settings-list-card pa-4 mb-4" />
                         <template v-if="!systemConfigLoading">
                             <div
                                 v-for="group in securitySystemConfigGroups"
@@ -567,6 +568,7 @@
 </template>
 
 <script setup>
+import RemoteChatAccessPanel from '@/components/chat/RemoteChatAccessPanel.vue';
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { apiKeyApi, systemConfigApi, updatesApi } from '@/api/v1';
 import AstrBotConfigV4 from '@/components/shared/AstrBotConfigV4.vue';

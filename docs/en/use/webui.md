@@ -2,6 +2,28 @@
 
 The AstrBot admin panel features plugin management, log viewing, visual configuration, statistics viewing, and more.
 
+## Expose your sessions to a remote client
+
+Administrators enable **Settings → Security → Remote session access → Allow remote session connections**. The instance switch is off by default. Turning it off blocks new inbound and outbound remote operations, preserves configuration and leaves already started tasks running. Outbound connection management is added separately.
+
+Every account, including ordinary accounts, can open **Chat sidebar → Settings → Remote session access**. Existing navigation entries are unchanged. Choose **Only selected sessions** (the initial selection is empty) or **All my sessions, including future sessions**, then save. This scope includes your ordinary local sessions, including archived sessions and sessions inside projects. It excludes side conversations, other accounts, and resources from other instances. Removing a session from the scope takes effect on the next request for every connection key.
+
+Create a separate named key for each direct binding. Copy it when it appears: plaintext is shown once and is never stored on the server. Close the dialog or use **Hide key** to clear it from the panel. **Revoke** permanently invalidates that key; other keys remain usable. Account deactivation, deletion or a password reset also invalidates access. Login renames preserve ownership; rotating account login credentials requires issuing new connection keys.
+
+![Personal remote session exposure and connection keys](./images/chat-remote-access.jpg)
+
+An authenticated API client uses `Authorization: RemoteSession <key>` with these read-only endpoints:
+
+| Request | Result |
+| --- | --- |
+| `GET /api/v1/remote-chat/projects` | Projects containing exposed sessions; no workspace paths |
+| `GET /api/v1/remote-chat/sessions` | Exposed local sessions with project names |
+| `GET /api/v1/remote-chat/projects/{project_id}/sessions` | Only the exposed sessions in that project |
+| `GET /api/v1/remote-chat/sessions/{session_id}/history?limit=50` | Newest page of full message history, in chronological order |
+| `GET /api/v1/remote-chat/sessions/{session_id}/history?limit=50&before_id={next_before_id}` | Older page; repeat while `has_more` is true |
+
+History pages contain complete message bodies, without summary truncation. Page size is 1–200. A known session, project, message or attachment ID grants no additional access. Dedicated keys cannot call ordinary Chat, file or administrative endpoints. Global API keys, login passwords and browser sessions cannot replace a dedicated key at these remote endpoints. There is no forwarded access to other instances. Attachments, streaming and delivery are separate follow-up features; future endpoints must reuse the same live credential and exposure checks.
+
 ## Save and restore your Chat sessions
 
 Use a session's **Export** action to download its ZIP archive, then use **Import sessions** in the Chat sidebar to upload, review and confirm it. The existing entries remain in the same places for administrators and ordinary accounts. Only the owner can export a session; knowing another account's session or import identifier does not grant access, including for an administrator using Chat.

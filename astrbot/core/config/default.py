@@ -433,6 +433,7 @@ DEFAULT_CONFIG = {
     # definition; written through /api/chat/ui-settings rather than the
     # system config editor, hence no CONFIG_METADATA entry.
     "chatui": {
+        "remote_sessions_enabled": False,
         "thinking_effort": {
             "active_preset": "deepseek-v4",
             "value": "max",

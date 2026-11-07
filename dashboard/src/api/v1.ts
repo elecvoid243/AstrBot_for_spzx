@@ -858,6 +858,24 @@ export interface FileChangeSource {
   run_id?: string;
 }
 
+export const remoteChatApi = {
+  access() {
+    return typed<any>(openApiV1.getRemoteChatAccess());
+  },
+  setExposure(mode: 'all' | 'selected', session_ids: string[]) {
+    return typed<any>(openApiV1.setRemoteChatExposure({ body: { mode, session_ids } }));
+  },
+  createCredential(name: string) {
+    return typed<any>(openApiV1.createRemoteChatCredential({ body: { name } }));
+  },
+  revokeCredential(credential_id: string) {
+    return typed<any>(openApiV1.revokeRemoteChatCredential({ path: { credential_id } }));
+  },
+  setEnabled(enabled: boolean) {
+    return typed<any>(openApiV1.setRemoteChatEnabled({ body: { enabled } }));
+  },
+};
+
 export const chatApi = {
   prepareWorkspace(sessionId: string) {
     return typed<{ path: string }>(

@@ -49,6 +49,31 @@ class DashboardAccount(TimestampMixin, SQLModel, table=True):
         return self.legacy_owner if self.legacy_owner is not None else self.account_id
 
 
+class RemoteChatExposure(TimestampMixin, SQLModel, table=True):
+    """Account-owned exposure policy for direct remote ChatUI connections."""
+
+    __tablename__: str = "remote_chat_exposures"
+
+    account_id: str = Field(primary_key=True)
+    mode: str = Field(default="selected", nullable=False)
+    session_ids: list[str] = Field(default_factory=list, sa_type=JSON)
+
+
+class RemoteChatCredential(TimestampMixin, SQLModel, table=True):
+    """Revocable account-bound verifier; plaintext is returned only at creation."""
+
+    __tablename__: str = "remote_chat_credentials"
+
+    credential_id: str = Field(
+        default_factory=lambda: uuid.uuid4().hex, primary_key=True
+    )
+    account_id: str = Field(index=True, nullable=False)
+    account_token_version: int = Field(nullable=False)
+    name: str = Field(nullable=False)
+    key_hash: str = Field(unique=True, index=True, nullable=False)
+    revoked: bool = Field(default=False, nullable=False)
+
+
 class PlatformStat(SQLModel, table=True):
     """This class represents the statistics of bot usage across different platforms.
 

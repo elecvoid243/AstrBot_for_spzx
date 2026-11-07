@@ -53,6 +53,7 @@ from astrbot.dashboard.services.persona_service import PersonaService
 from astrbot.dashboard.services.platform_service import PlatformService
 from astrbot.dashboard.services.plugin_page_service import PluginPageService
 from astrbot.dashboard.services.plugin_service import PluginService
+from astrbot.dashboard.services.remote_chat_service import RemoteChatService
 from astrbot.dashboard.services.session_management_service import (
     SessionManagementService,
 )
@@ -204,6 +205,7 @@ def create_dashboard_asgi_app(
         auth=AuthService(db, core_lifecycle.astrbot_config),
         backups=BackupService(db, core_lifecycle),
         chat=chat,
+        remote_chat=RemoteChatService(db, core_lifecycle.astrbot_config, chat),
         chat_projects=ChatUIProjectService(db),
         commands=CommandService(core_lifecycle.astrbot_config, core_lifecycle),
         conversations=ConversationService(db, core_lifecycle),
@@ -395,6 +397,17 @@ def create_dashboard_asgi_app(
         role_token = None
         account_token = None
         try:
+            # This surface accepts only dedicated remote credentials. Ambient
+            # cookies and global API keys must not select an account for it.
+            if request.url.path.startswith("/api/v1/remote-chat/"):
+                return await call_next(request)
+            if (
+                request.headers.get("Authorization", "").partition(" ")[0].lower()
+                == "remotesession"
+            ):
+                raise ApiError(
+                    "Remote credentials are restricted to remote chat", status_code=401
+                )
             public_auth = request.url.path in {
                 "/api/auth/login",
                 "/api/v1/auth/login",

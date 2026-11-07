@@ -25,6 +25,7 @@ from .personas import router as personas_router
 from .platform import router as platform_router
 from .plugins import router as plugins_router
 from .providers import router as providers_router
+from .remote_chat import router as remote_chat_router
 from .role_assets import router as role_assets_router
 from .session_transfer import router as session_transfer_router
 from .sessions import router as sessions_router
@@ -53,6 +54,7 @@ def build_api_router() -> APIRouter:
         providers_router,
         plugins_router,
         chat_router,
+        remote_chat_router,
         chat_projects_router,
         conversations_router,
         cron_router,

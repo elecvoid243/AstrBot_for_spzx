@@ -1274,6 +1274,21 @@ export type ProviderSourceConfigRequest = {
     config: DynamicConfig;
 };
 
+export type RemoteCredentialRequest = {
+    name: string;
+};
+
+export type RemoteEnabledRequest = {
+    enabled: boolean;
+};
+
+export type RemoteExposureRequest = {
+    mode: 'all' | 'selected';
+    session_ids?: Array<(string)>;
+};
+
+export type mode3 = 'all' | 'selected';
+
 export type RenameRequest = {
     name: string;
 };
@@ -1540,7 +1555,7 @@ export type TrialRunRequest = {
 
 export type kind3 = 'workflow' | 'autonomous';
 
-export type mode3 = 'full' | 'single' | 'partial';
+export type mode4 = 'full' | 'single' | 'partial';
 
 export type TrialSource = {
     content?: ({
@@ -1690,6 +1705,76 @@ export type WorkflowStartRequest = {
      */
     input_artifacts?: Array<ArtifactReference>;
 };
+
+export type GetRemoteChatAccessResponse = (SuccessEnvelope);
+
+export type GetRemoteChatAccessError = unknown;
+
+export type SetRemoteChatExposureData = {
+    body: RemoteExposureRequest;
+};
+
+export type SetRemoteChatExposureResponse = (SuccessEnvelope);
+
+export type SetRemoteChatExposureError = (HTTPValidationError);
+
+export type CreateRemoteChatCredentialData = {
+    body: RemoteCredentialRequest;
+};
+
+export type CreateRemoteChatCredentialResponse = (SuccessEnvelope);
+
+export type CreateRemoteChatCredentialError = (HTTPValidationError);
+
+export type RevokeRemoteChatCredentialData = {
+    path: {
+        credential_id: string;
+    };
+};
+
+export type RevokeRemoteChatCredentialResponse = (SuccessEnvelope);
+
+export type RevokeRemoteChatCredentialError = (HTTPValidationError);
+
+export type SetRemoteChatEnabledData = {
+    body: RemoteEnabledRequest;
+};
+
+export type SetRemoteChatEnabledResponse = (SuccessEnvelope);
+
+export type SetRemoteChatEnabledError = (HTTPValidationError);
+
+export type DiscoverRemoteChatSessionsResponse = (SuccessEnvelope);
+
+export type DiscoverRemoteChatSessionsError = unknown;
+
+export type DiscoverRemoteChatProjectsResponse = (SuccessEnvelope);
+
+export type DiscoverRemoteChatProjectsError = unknown;
+
+export type DiscoverRemoteChatProjectSessionsData = {
+    path: {
+        project_id: string;
+    };
+};
+
+export type DiscoverRemoteChatProjectSessionsResponse = (SuccessEnvelope);
+
+export type DiscoverRemoteChatProjectSessionsError = (HTTPValidationError);
+
+export type ReadRemoteChatHistoryData = {
+    path: {
+        session_id: string;
+    };
+    query?: {
+        before_id?: (number | null);
+        limit?: number;
+    };
+};
+
+export type ReadRemoteChatHistoryResponse = (SuccessEnvelope);
+
+export type ReadRemoteChatHistoryError = (HTTPValidationError);
 
 export type CreateBrowserControlSessionData = {
     body: BrowserControlSessionRequest;

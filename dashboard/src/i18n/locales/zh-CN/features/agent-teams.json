@@ -40,7 +40,7 @@
   },
   "page": {
     "title": "Agent 团队",
-    "beta": "Beta",
+    "incomplete": "未完成",
     "refresh": "刷新"
   },
   "tabs": {

@@ -27,6 +27,7 @@ const stubs = {
   },
   RoleTemplatesPanel: { template: '<div class="role-templates-panel-stub" />' },
   "v-container": { template: "<div><slot /></div>" },
+  "v-chip": { template: '<span class="chip-stub"><slot /></span>' },
   "v-btn": {
     props: {
       icon: { type: String, default: undefined },
@@ -77,6 +78,8 @@ describe("AgentTeamsPage", () => {
     expect(wrapper.find(".workflow-workspace-stub").exists()).toBe(true);
     expect(wrapper.text()).not.toContain("迁移旧定义");
     expect(wrapper.find(".dashboard-title").text()).toBe("Agent 团队");
+    // The workbench is not feature-complete yet, so the header must say so.
+    expect(wrapper.find(".at-page-heading .chip-stub").text()).toBe("未完成");
   });
   it("opens an incoming chat run link while the assets panel is already mounted", async () => {
     const wrapper = mountPage();

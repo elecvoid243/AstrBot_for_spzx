@@ -7,6 +7,9 @@
           <div>
           <div class="d-flex align-center flex-wrap ga-2">
             <h1 class="dashboard-title">{{ tm("page.title") }}</h1>
+            <v-chip size="x-small" color="orange-darken-2" variant="tonal" label>
+              {{ tm("page.incomplete") }}
+            </v-chip>
           </div>
           <p class="dashboard-subtitle">{{ tm("workbench.intro") }}</p>
           </div>

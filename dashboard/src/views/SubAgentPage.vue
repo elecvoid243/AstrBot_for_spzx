@@ -3,12 +3,7 @@
     <v-container fluid class="dashboard-shell pa-4 pa-md-6">
       <div class="dashboard-header">
         <div class="dashboard-header-main">
-          <div class="d-flex align-center flex-wrap" style="gap: 8px;">
-            <h1 class="dashboard-title">{{ tm('page.title') }}</h1>
-            <v-chip size="x-small" color="orange-darken-2" variant="tonal" label>
-              {{ tm('page.beta') }}
-            </v-chip>
-          </div>
+          <h1 class="dashboard-title">{{ tm('page.title') }}</h1>
           <p class="dashboard-subtitle">{{ tm('page.subtitle') }}</p>
         </div>
 

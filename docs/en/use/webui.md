@@ -366,9 +366,9 @@ The model menu in the header and the thinking-effort menu save choices on the se
 
 Ask the Agent in conversation A to find an existing conversation with `list_chat_sessions`, then send text with `send_chat_message(session_id, text)`. Each entry includes `project_id` and `project_name`, the ChatUI sidebar folder title; both are `null` for conversations without a project. The recipient uses its own profile, model, thinking effort, project and history. It can reply to A with the same tool. These tools use the existing plugin tool activation, persona selection and member/admin permissions.
 
-The recipient shows **Agent message from**, the authenticated account and source conversation. Click the source link to open that conversation. This provenance also appears in model input and survives history reload. Agent text cannot run human chat commands or answer `ask_user_choice`; a recipient waiting for the user rejects the send. Only owned, unarchived ordinary sessions are supported, including project sessions. Self-send, other accounts, deleted sessions, side chats and hidden team sessions are rejected. The Agent can also create the recipient as described below.
+The recipient shows a compact source card above the Agent message, with the source conversation title above **Agent message from** and the authenticated account. Click anywhere on the card to open that conversation. Long titles and account names are shortened visually; hover over the card to read the full source label. Screen readers also receive the complete label. An empty conversation title falls back to its session ID. This provenance also appears in model input and survives history reload. Agent text cannot run human chat commands or answer `ask_user_choice`; a recipient waiting for the user rejects the send. Only owned, unarchived ordinary sessions are supported, including project sessions. Self-send, other accounts, deleted sessions, side chats and hidden team sessions are rejected. The Agent can also create the recipient as described below.
 
-![Agent message with source-session link](./images/chat-session-messages.jpg)
+![Agent message with a clickable source card](./images/chat-session-messages.jpg)
 
 The tool returns an accepted message/run location without waiting for the recipient to finish. Acceptance does not mean execution completed. Busy sessions use the ordinary safe follow-up mechanism; if they cannot accept input safely, the tool explains why. Switching or closing the page does not stop the run: reopen the session to read its complete saved output. Use the ordinary Stop button to stop execution. That automatic chain cannot restart the stopped recipient; a later human message can begin a fresh turn. Each server-tracked automatic chain accepts at most 8 sends. There is no persistent queue, automatic completion report or process-restart recovery guarantee.
 
@@ -380,11 +380,11 @@ A project name is the ChatUI sidebar folder title, not a filesystem path. For ex
 
 Without `text`, the tool only creates B and does not start a model. Nonempty first-message `text` uses the same send path and provenance described above. B does not copy A's history or create a side chat or hidden member. Creation refreshes the existing ordinary/project conversation lists. Click B to open its history or continue manually; A and B can keep exchanging messages with `send_chat_message`.
 
-These screenshots show the real ChatUI with English selected; interface labels vary with the language setting. The first shows an empty project conversation created without a first message. The second shows a new ordinary conversation with its first Agent message and a later human continuation, including the source link, model and thinking setting.
+The first screenshot shows an empty project conversation created without a first message, with English selected. The detail below illustrates the source card used for an incoming Agent message, with Chinese selected. A created conversation uses the same card for its first Agent message and can then be continued by a human as usual. Interface labels follow the selected language.
 
 ![Empty project conversation created without a first message](/images/chat-session-created-empty.jpg)
 
-![New ordinary conversation with its first Agent message and source link](/images/chat-session-created-first-message.jpg)
+![Source card on an incoming Agent message, with Chinese selected](/images/chat-session-created-first-message.jpg)
 
 The tool returns the created conversation ID, `project_id`, `project_name` and opening location; both project fields are `null` for no project. If creation succeeds but the first message is rejected, it returns `created_send_failed`, the session ID and `send_error`. Ask the Agent to reuse that ID for sending. Retrying the same real tool invocation reuses its creation result within the current execution; this does not provide process-restart recovery. Configuration failures clean up the incomplete session. First-message sends share the original automatic chain's 8-send limit: creating another conversation cannot reset that budget.
 

@@ -84,10 +84,51 @@
                   conversationId: messageContent(msg).agent_source!.session_id,
                 },
               }"
+              :aria-label="`${tm('message.agentSource')} · ${
+                messageContent(msg).agent_source!.login_name ||
+                messageContent(msg).agent_source!.account_id
+              } · ${
+                messageContent(msg).agent_source!.display_name?.trim() ||
+                messageContent(msg).agent_source!.session_id
+              }`"
+              :title="`${tm('message.agentSource')} · ${
+                messageContent(msg).agent_source!.login_name ||
+                messageContent(msg).agent_source!.account_id
+              } · ${
+                messageContent(msg).agent_source!.display_name?.trim() ||
+                messageContent(msg).agent_source!.session_id
+              }`"
             >
-              {{ tm("message.agentSource") }} ·
-              {{ messageContent(msg).agent_source!.login_name }} ·
-              {{ messageContent(msg).agent_source!.display_name }} ↗
+              <span class="agent-message-source-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" focusable="false">
+                  <path
+                    d="M7 8h10M7 12h6M5 3h14a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H9l-6 4V5a2 2 0 0 1 2-2Z"
+                  />
+                </svg>
+              </span>
+              <span class="agent-message-source-copy">
+                <span class="agent-message-source-title">{{
+                  messageContent(msg).agent_source!.display_name?.trim() ||
+                  messageContent(msg).agent_source!.session_id
+                }}</span>
+                <span class="agent-message-source-meta">
+                  <span>{{ tm("message.agentSource") }}</span>
+                  <span aria-hidden="true">·</span>
+                  <span class="agent-message-source-account">{{
+                    messageContent(msg).agent_source!.login_name ||
+                    messageContent(msg).agent_source!.account_id
+                  }}</span>
+                </span>
+              </span>
+              <svg
+                class="agent-message-source-arrow"
+                viewBox="0 0 24 24"
+                fill="none"
+                aria-hidden="true"
+                focusable="false"
+              >
+                <path d="M7 17 17 7M7 7h10v10" />
+              </svg>
             </RouterLink>
             <!-- 2026-10-08 (elecvoid243): the injection panel opens at the
                  message's head, above the reply, so a long reply never
@@ -2067,10 +2108,94 @@ function formatDuration(seconds: number) {
 }
 
 .agent-message-source {
-  color: rgb(var(--v-theme-primary));
-  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-end;
+  gap: 9px;
+  max-inline-size: min(100%, 320px);
+  min-inline-size: 0;
+  padding: 7px 10px 7px 8px;
   margin-bottom: 6px;
-  overflow-wrap: anywhere;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.1);
+  border-radius: 12px;
+  background: rgba(var(--v-theme-primary), 0.035);
+  color: rgba(var(--v-theme-on-surface), 0.88);
+  text-decoration: none;
+  transition:
+    background-color 140ms ease,
+    border-color 140ms ease;
+}
+
+.agent-message-source:hover {
+  border-color: rgba(var(--v-theme-primary), 0.26);
+  background: rgba(var(--v-theme-primary), 0.075);
+  text-decoration: none;
+}
+
+.agent-message-source:focus-visible {
+  outline: 2px solid rgb(var(--v-theme-primary));
+  outline-offset: 3px;
+}
+
+.agent-message-source-icon {
+  display: grid;
+  place-items: center;
+  flex: 0 0 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: rgba(var(--v-theme-primary), 0.08);
+  color: rgb(var(--v-theme-primary));
+}
+
+.agent-message-source-icon svg,
+.agent-message-source-arrow {
+  width: 16px;
+  height: 16px;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.agent-message-source-copy {
+  min-width: 0;
+}
+
+.agent-message-source-title,
+.agent-message-source-account {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-message-source-title {
+  display: block;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 18px;
+}
+
+.agent-message-source-meta {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--chat-muted);
+  font-size: 11px;
+  line-height: 15px;
+}
+
+.agent-message-source-meta > span:not(.agent-message-source-account) {
+  flex-shrink: 0;
+}
+
+.agent-message-source-arrow {
+  flex-shrink: 0;
+  color: rgb(var(--v-theme-primary));
+  transition: transform 140ms ease;
+}
+
+.agent-message-source:hover .agent-message-source-arrow {
+  transform: translate(1px, -1px);
 }
 
 .from-bot .message-stack {
@@ -2641,6 +2766,8 @@ function formatDuration(seconds: number) {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .agent-message-source,
+  .agent-message-source-arrow,
   .agent-work-pill,
   .agent-work-pill-chevron {
     transition: none;

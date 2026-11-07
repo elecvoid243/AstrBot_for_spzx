@@ -1219,6 +1219,43 @@ async def test_shutdown_sessions_keeps_sessions_of_the_configured_family(
 
 
 @pytest.mark.asyncio
+async def test_shutdown_sessions_filters_owner(monkeypatch, tmp_path):
+    """Tightening a conversation must stop only that conversation's sessions."""
+    shell = LocalShellComponent()
+    terminated = []
+
+    async def fake_terminate(session):
+        terminated.append(session.session_id)
+
+    monkeypatch.setattr(shell, "_terminate_process", fake_terminate)
+
+    out_dir = tmp_path / "shell"
+    out_dir.mkdir()
+    for session_id, owner in (("sh_a", "umo-a"), ("sh_b", "umo-b")):
+        output_path = out_dir / f"{session_id}.log"
+        output_path.touch()
+        shell._sessions[session_id] = local_booter._LocalShellSession(
+            session_id=session_id,
+            owner_id=owner,
+            creator_id="user",
+            creator_is_admin=True,
+            sandboxed=False,
+            process=object(),
+            output_path=output_path,
+            started_at=0.0,
+            output_event=asyncio.Event(),
+            reader_task=asyncio.create_task(asyncio.sleep(0)),
+            wait_task=asyncio.create_task(asyncio.sleep(0)),
+            shell_family="powershell",
+        )
+
+    await shell.shutdown_sessions(owner_id="umo-a")
+
+    assert terminated == ["sh_a"]
+    assert set(shell._sessions) == {"sh_b"}
+
+
+@pytest.mark.asyncio
 async def test_bounded_await_returns_true_when_task_completes():
     """A task that finishes within the timeout is awaited normally."""
     task = asyncio.create_task(asyncio.sleep(0))

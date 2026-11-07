@@ -1493,7 +1493,12 @@ class LocalShellComponent(ShellComponent):
         await self._remove_session(session)
         return {"session_id": session_id, "removed": True}
 
-    async def shutdown_sessions(self, *, keep_family: str | None = None) -> None:
+    async def shutdown_sessions(
+        self,
+        *,
+        keep_family: str | None = None,
+        owner_id: str | None = None,
+    ) -> None:
         """Terminate and remove managed local shell sessions.
 
         Args:
@@ -1501,12 +1506,15 @@ class LocalShellComponent(ShellComponent):
                 left running and only the remaining ones are terminated. The
                 dashboard uses it to invalidate sessions that a shell-type
                 change made stale.
+            owner_id: When set, only sessions owned by this conversation are
+                terminated. Used when the file-access mode is tightened.
         """
         async with self._sessions_lock:
             sessions = [
                 session
                 for session in self._sessions.values()
-                if keep_family is None or session.shell_family != keep_family
+                if (keep_family is None or session.shell_family != keep_family)
+                and (owner_id is None or session.owner_id == owner_id)
             ]
         for session in sessions:
             session.terminated = True

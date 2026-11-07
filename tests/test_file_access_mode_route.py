@@ -32,6 +32,9 @@ class _FakeSp:
     async def session_put(self, umo, key, value):
         self.store[(umo, key)] = value
 
+    async def session_remove(self, umo, key):
+        self.store.pop((umo, key), None)
+
 
 @pytest.fixture()
 def client(monkeypatch: pytest.MonkeyPatch):
@@ -95,6 +98,39 @@ def test_post_sets_and_reads_back(client):
     assert res.json()["data"]["mode"] == "readonly"
 
 
+def test_post_tightening_terminates_owner_shell_sessions(client, monkeypatch):
+    terminate = AsyncMock()
+    monkeypatch.setattr(chat_api, "shutdown_local_shell_sessions_for_owner", terminate)
+    fs_access.set_mode_for_umo("u1", fs_access.FileAccessMode.WORKSPACE)
+
+    res = client.post("/chat/file-access-mode", json={"umo": "u1", "mode": "readonly"})
+
+    assert res.status_code == 200
+    terminate.assert_awaited_once_with("u1")
+
+
+def test_post_loosening_keeps_owner_shell_sessions(client, monkeypatch):
+    terminate = AsyncMock()
+    monkeypatch.setattr(chat_api, "shutdown_local_shell_sessions_for_owner", terminate)
+    fs_access.set_mode_for_umo("u1", fs_access.FileAccessMode.READONLY)
+
+    res = client.post("/chat/file-access-mode", json={"umo": "u1", "mode": "workspace"})
+
+    assert res.status_code == 200
+    terminate.assert_not_awaited()
+
+
+def test_post_persists_mode_across_memory_reset(client):
+    res = client.post("/chat/file-access-mode", json={"umo": "u1", "mode": "readonly"})
+    assert res.status_code == 200
+
+    fs_access.reset()
+    res = client.get("/chat/file-access-mode", params={"umo": "u1"})
+
+    assert res.status_code == 200
+    assert res.json()["data"]["mode"] == "readonly"
+
+
 def test_post_rejects_invalid_mode(client):
     res = client.post("/chat/file-access-mode", json={"umo": "u1", "mode": "bogus"})
     assert res.status_code == 422
@@ -108,11 +144,15 @@ def test_get_returns_fixed_and_custom_roots(client):
     assert data["custom_roots"] == []
 
 
-def test_prepare_workspace_creates_the_owned_session_root(client, tmp_path, monkeypatch):
+def test_prepare_workspace_creates_the_owned_session_root(
+    client, tmp_path, monkeypatch
+):
     from astrbot.core import workspace
 
     root = tmp_path / "workspaces" / "owned-session"
-    monkeypatch.setattr(chat_api, "get_astrbot_workspaces_path", lambda: str(root.parent))
+    monkeypatch.setattr(
+        chat_api, "get_astrbot_workspaces_path", lambda: str(root.parent)
+    )
     resolver = AsyncMock(return_value=root)
     monkeypatch.setattr(workspace, "resolve_workspace_root_for_umo", resolver)
     service = SimpleNamespace(
@@ -128,7 +168,9 @@ def test_prepare_workspace_creates_the_owned_session_root(client, tmp_path, monk
     resolver.assert_awaited_once_with("owned-umo", service.db)
 
 
-def test_prepare_workspace_resolves_the_session_specific_default(client, tmp_path, monkeypatch):
+def test_prepare_workspace_resolves_the_session_specific_default(
+    client, tmp_path, monkeypatch
+):
     from astrbot.core import workspace
 
     base = tmp_path / "workspaces"

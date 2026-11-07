@@ -495,7 +495,7 @@ async def delete_account_data(app, account: DashboardAccount) -> None:
     for umo in origins:
         await chat.umop_config_router.delete_route(umo)
         await sp.clear_async("umo", umo)
-        fs_access.clear_mode_for_umo(umo)
+        await fs_access.clear_mode_persisted_for_umo(umo)
         fs_access.set_dynamic_roots(umo, None)
         fs_access._custom_roots_cache.pop(umo, None)
         chat.conv_mgr.session_conversations.pop(umo, None)

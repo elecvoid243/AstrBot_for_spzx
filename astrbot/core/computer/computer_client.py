@@ -17,7 +17,7 @@ from astrbot.core.utils.astrbot_path import (
 )
 
 from .booters.base import ComputerBooter
-from .booters.local import LocalBooter, resolve_local_shell
+from .booters.local import LocalBooter, LocalShellComponent, resolve_local_shell
 
 session_booter: dict[str, ComputerBooter] = {}
 local_booter: ComputerBooter | None = None
@@ -712,3 +712,21 @@ async def shutdown_local_booter() -> None:
         await booter.shutdown()
     except Exception as exc:
         logger.warning("[Computer] Failed to shut down local booter: %s", exc)
+
+
+async def shutdown_local_shell_sessions_for_owner(owner_id: str) -> None:
+    """Terminate local shell sessions owned by one conversation.
+
+    Does not create a local booter: when no local execution environment exists
+    there cannot be a managed session to invalidate.
+
+    Args:
+        owner_id: Unified message origin whose sessions must be stopped.
+    """
+    booter = local_booter
+    if not isinstance(booter, LocalBooter):
+        return
+    shell = booter.shell
+    if not isinstance(shell, LocalShellComponent):
+        return
+    await shell.shutdown_sessions(owner_id=owner_id)

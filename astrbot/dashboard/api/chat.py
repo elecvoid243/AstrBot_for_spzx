@@ -13,6 +13,9 @@ from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from astrbot import logger
+from astrbot.core.computer.computer_client import (
+    shutdown_local_shell_sessions_for_owner,
+)
 from astrbot.core.subagent_manager import SubAgentManager
 from astrbot.core.subagent_progress import subagent_progress
 from astrbot.core.tools import fs_access
@@ -203,6 +206,7 @@ async def get_file_access_mode(
     default = fs_access.resolve_default(
         request.app.state.core_lifecycle.astrbot_config_mgr.get_conf(umo)
     )
+    await fs_access.load_mode_for_umo(umo)
     mode = fs_access.get_mode_for_umo(umo, default=default)
     custom_roots = await fs_access.get_custom_roots(umo)
     return ok(
@@ -225,7 +229,21 @@ async def set_file_access_mode(
     default = fs_access.resolve_default(
         request.app.state.core_lifecycle.astrbot_config_mgr.get_conf(payload.umo)
     )
-    fs_access.set_mode_for_umo(payload.umo, fs_access.FileAccessMode(payload.mode))
+    await fs_access.load_mode_for_umo(payload.umo)
+    previous = fs_access.get_mode_for_umo(payload.umo, default=default)
+    new_mode = fs_access.FileAccessMode(payload.mode)
+    await fs_access.set_mode_for_umo_persisted(payload.umo, new_mode)
+    if fs_access.is_tightening(previous, new_mode):
+        try:
+            # Tightening must not leave workspace-write shells running with
+            # their old authority; the new mode only protects future calls.
+            await shutdown_local_shell_sessions_for_owner(payload.umo)
+        except Exception as exc:
+            logger.warning(
+                "Failed to terminate local shell sessions after tightening %s: %s",
+                payload.umo,
+                exc,
+            )
     mode = fs_access.get_mode_for_umo(payload.umo, default=default)
     return ok({"umo": payload.umo, "mode": mode.value, "default_mode": default.value})
 

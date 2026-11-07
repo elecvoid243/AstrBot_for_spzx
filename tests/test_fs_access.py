@@ -38,6 +38,9 @@ class _FakeSp:
     async def session_put(self, umo, key, value):
         self.store[(umo, key)] = value
 
+    async def session_remove(self, umo, key):
+        self.store.pop((umo, key), None)
+
 
 @pytest.fixture(autouse=True)
 def _clean_state(monkeypatch: pytest.MonkeyPatch):
@@ -196,6 +199,38 @@ async def test_assert_writable_workspace_allows_dynamic_roots(tmp_path):
     wt.mkdir()
     fs_access.set_dynamic_roots(UMO, [wt])
     await fs_access.assert_writable(str(wt / "main.py"), _make_context())
+
+
+def test_is_tightening_orders_full_workspace_readonly():
+    assert fs_access.is_tightening(FileAccessMode.FULL, FileAccessMode.WORKSPACE)
+    assert fs_access.is_tightening(FileAccessMode.FULL, FileAccessMode.READONLY)
+    assert fs_access.is_tightening(FileAccessMode.WORKSPACE, FileAccessMode.READONLY)
+    assert not fs_access.is_tightening(
+        FileAccessMode.READONLY, FileAccessMode.WORKSPACE
+    )
+    assert not fs_access.is_tightening(FileAccessMode.WORKSPACE, FileAccessMode.FULL)
+    assert fs_access.is_tightening(None, FileAccessMode.WORKSPACE)
+    assert not fs_access.is_tightening(None, FileAccessMode.FULL)
+
+
+@pytest.mark.asyncio
+async def test_mode_persists_and_loads_after_memory_reset():
+    await fs_access.set_mode_for_umo_persisted(UMO, FileAccessMode.READONLY)
+    fs_access.reset()
+
+    loaded = await fs_access.load_mode_for_umo(UMO)
+
+    assert loaded is FileAccessMode.READONLY
+    assert fs_access.get_mode_for_umo(UMO) is FileAccessMode.READONLY
+
+
+@pytest.mark.asyncio
+async def test_clear_mode_removes_persisted_value():
+    await fs_access.set_mode_for_umo_persisted(UMO, FileAccessMode.WORKSPACE)
+    await fs_access.clear_mode_persisted_for_umo(UMO)
+    fs_access.reset()
+
+    assert await fs_access.load_mode_for_umo(UMO) is None
 
 
 @pytest.mark.asyncio

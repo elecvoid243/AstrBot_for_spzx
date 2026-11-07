@@ -3811,11 +3811,14 @@ defineExpose({
   overflow: hidden;
   border: 1px solid var(--sp-chip-border);
   border-radius: 14px;
-  background: var(--sp-chip-bg);
+  /* Near-white so the tray reads as a whisper above the composer; the border
+     and divider carry the structure instead of a gray fill. */
+  background: #fafaf9;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
 }
 
 .input-area.is-dark .pending-follow-ups {
+  background: var(--sp-chip-bg);
   box-shadow: none;
 }
 
@@ -3860,7 +3863,7 @@ defineExpose({
 .pending-follow-ups__actions {
   display: inline-flex;
   align-items: center;
-  gap: 2px;
+  gap: 6px;
   flex-shrink: 0;
 }
 
@@ -3873,8 +3876,8 @@ defineExpose({
   justify-content: center;
   gap: 0;
   padding: 3px 9px 2px;
-  border: 0;
-  border-radius: 7px;
+  border: 1px solid var(--sp-chip-border);
+  border-radius: 8px;
   background: transparent;
   color: var(--sp-text-muted);
   font: inherit;
@@ -3922,7 +3925,9 @@ defineExpose({
 .pending-follow-ups__list {
   list-style: none;
   margin: 0;
-  padding: 0 6px 6px;
+  /* A hairline separates the queue's header from its items. */
+  border-top: 1px solid var(--sp-chip-divider);
+  padding: 4px 6px 6px;
 }
 
 .pending-follow-up-row {

@@ -1327,7 +1327,10 @@ import { useFileComments } from "@/composables/useFileComments";
 import { useFileReferences } from "@/composables/useFileReferences";
 import { useInlineAnnotations } from "@/composables/useInlineAnnotations";
 import { NEW_CHAT_DRAFT_KEY, useChatDrafts } from "@/composables/useChatDrafts";
-import { usePendingFollowUps } from "@/composables/usePendingFollowUps";
+import {
+  usePendingFollowUps,
+  type PendingFollowUp,
+} from "@/composables/usePendingFollowUps";
 import { resolveSessionUmo } from "@/utils/resolveSessionUmo";
 import {
   messageBlocks as buildMessageBlocks,
@@ -6417,17 +6420,25 @@ const flushingFollowUps = new Set<string>();
     tool call) when one is running, and starts fresh runs otherwise. */
 async function flushPendingFollowUps(sessionId: string) {
   if (!sessionId || flushingFollowUps.has(sessionId)) return;
-  const items = [...pendingFollowUps.itemsFor(sessionId)];
+  // Claim the queue before the first await. Config preparation can take a
+  // while, and leaving the rows on screen made a second click send the same
+  // text again — the duplicate follow-ups reported on 2026-11-08.
+  const items = pendingFollowUps.takeAll(sessionId);
   if (!items.length) return;
   flushingFollowUps.add(sessionId);
+  const failed: PendingFollowUp[] = [];
   try {
     for (const item of items) {
-      await sendQueuedFollowUp(sessionId, item.text);
-      pendingFollowUps.remove(sessionId, item.id);
+      try {
+        await sendQueuedFollowUp(sessionId, item.text);
+      } catch (error) {
+        console.error("Failed to send queued follow-up:", error);
+        failed.push(item);
+      }
     }
-  } catch (error) {
-    console.error("Failed to send queued follow-up:", error);
   } finally {
+    // One bad item must not strand the rest of the batch.
+    if (failed.length) pendingFollowUps.restore(sessionId, failed);
     flushingFollowUps.delete(sessionId);
   }
 }
@@ -6437,9 +6448,13 @@ async function flushPendingFollowUps(sessionId: string) {
     (equivalent to /stop + resend). */
 async function flushPendingFollowUpsNow(sessionId: string | null) {
   if (!sessionId) return;
-  const items = [...pendingFollowUps.itemsFor(sessionId)];
+  // Claim first for the same reason as flushPendingFollowUps: the stop/wait
+  // window can last seconds, and the visible rows otherwise invite repeat
+  // clicks that send the same text again.
+  const items = pendingFollowUps.takeAll(sessionId);
   if (!items.length) return;
   flushingFollowUps.add(sessionId);
+  const failed: PendingFollowUp[] = [];
   try {
     if (isSessionRunning(sessionId)) {
       try {
@@ -6456,12 +6471,15 @@ async function flushPendingFollowUpsNow(sessionId: string | null) {
       }
     }
     for (const item of items) {
-      await sendQueuedFollowUp(sessionId, item.text);
-      pendingFollowUps.remove(sessionId, item.id);
+      try {
+        await sendQueuedFollowUp(sessionId, item.text);
+      } catch (error) {
+        console.error("Failed to send queued follow-up:", error);
+        failed.push(item);
+      }
     }
-  } catch (error) {
-    console.error("Failed to send queued follow-up:", error);
   } finally {
+    if (failed.length) pendingFollowUps.restore(sessionId, failed);
     flushingFollowUps.delete(sessionId);
   }
 }
@@ -6523,11 +6541,12 @@ async function flushOldestPendingFollowUp(sessionId: string | null) {
   const oldest = pendingFollowUps.itemsFor(sessionId)[0];
   if (!oldest) return;
   flushingFollowUps.add(sessionId);
+  pendingFollowUps.remove(sessionId, oldest.id);
   try {
     await sendQueuedFollowUp(sessionId, oldest.text);
-    pendingFollowUps.remove(sessionId, oldest.id);
   } catch (error) {
     console.error("Failed to send queued follow-up:", error);
+    pendingFollowUps.restore(sessionId, [oldest]);
   } finally {
     flushingFollowUps.delete(sessionId);
   }

@@ -66,6 +66,27 @@ export function usePendingFollowUps() {
     if (index >= 0) items.splice(index, 1);
   }
 
+  /**
+   * Put claimed items back at the head of the queue after a failed flush.
+   *
+   * Flushes claim items via takeAll() before awaiting anything, so a slow or
+   * rejected send can never be retried by a second click. The failed ones come
+   * back in their original order; ids already present are skipped so a
+   * double-restore cannot duplicate a row.
+   *
+   * Args:
+   *   sessionId: Session owning the queue.
+   *   items: Claimed items that were NOT delivered.
+   */
+  function restore(sessionId: string, items: PendingFollowUp[]): void {
+    if (!items.length) return;
+    const existing = pendingBySession[sessionId] || [];
+    const known = new Set(existing.map((entry) => entry.id));
+    const restored = items.filter((entry) => !known.has(entry.id));
+    if (!restored.length) return;
+    pendingBySession[sessionId] = [...restored, ...existing];
+  }
+
   /** Atomically drain the queue (used by flush triggers). Returns the
       removed items so a failed flush could still inspect them. */
   function takeAll(sessionId: string): PendingFollowUp[] {
@@ -81,5 +102,6 @@ export function usePendingFollowUps() {
     updateText,
     remove,
     takeAll,
+    restore,
   };
 }

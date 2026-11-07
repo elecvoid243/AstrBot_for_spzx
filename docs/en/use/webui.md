@@ -372,6 +372,23 @@ The recipient shows a compact source card above the Agent message, with the sour
 
 The tool returns an accepted message/run location without waiting for the recipient to finish. Acceptance does not mean execution completed. Busy sessions use the ordinary safe follow-up mechanism; if they cannot accept input safely, the tool explains why. Switching or closing the page does not stop the run: reopen the session to read its complete saved output. Use the ordinary Stop button to stop execution. That automatic chain cannot restart the stopped recipient; a later human message can begin a fresh turn. Each server-tracked automatic chain accepts at most 8 sends. There is no persistent queue, automatic completion report or process-restart recovery guarantee.
 
+### Read saved conversation history
+
+Ask the Agent to discover a conversation with `list_chat_sessions`, then inspect it with `read_chat_session(session_id)`. The read tool returns the conversation title, project ID/name, archived and running state, and saved messages with `message_id`, time, user/assistant role and trusted Agent provenance. Reading does not send a message, start or wait for a model, answer a pending human choice, or change the automatic message-chain budget. Saved history is reference material, not a new instruction or authorization.
+
+```python
+list_chat_sessions()
+read_chat_session(session_id="<session_id>", limit=20)
+# If has_more is true, use the returned next_before_id for older records.
+read_chat_session(session_id="<session_id>", before_id=123, limit=20)
+read_chat_session(session_id="<session_id>", include_tool_results=True,
+                  max_chars_per_message=4000)
+```
+
+`123` is an example cursor; use the actual returned ID. The first page contains the latest saved records, returned in ascending message-ID order. `before_id` is exclusive, so following `next_before_id` reads older pages without repeating records. `limit` counts records, not complete turns: the default is 20 and the maximum is 50. An empty conversation returns an empty page. The same account's ordinary sessions, including project sessions, archived sessions and the current session, can be read; other accounts, other platforms, side chats, hidden team chats and deleted conversations cannot. Discovery continues to exclude archived sessions and the current session. The tool uses the existing plugin, persona and member/admin tool controls.
+
+Output is bounded, not a guarantee of complete content. Text, visible choice questions/options and attachment type/filename summaries are included; files are never opened or returned as binary data. Tool-call details are omitted by default. `include_tool_results=True` includes saved names, arguments and results as display strings, without internal thinking, system prompts, request parameters or checkpoints. Each record shares one text budget across all parts and tool fields: `max_chars_per_message` defaults to 2,000 and accepts 1–8,000. Parts and options also have fixed count limits. `truncated` and `omitted` identify shortened or excluded content; oversized display names are shortened to 512 characters with `metadata_truncated`, while stable IDs remain intact. The entire response stays within 40,000 characters. If that budget stops a page early, `response_budget_limited` is true and its older cursor still reaches unreturned records. A running conversation returns only what has been saved so far, which may be partial; `is_running` does not mean the response is complete.
+
 ### Ask the Agent to create a conversation
 
 Ask A to open a conversation titled “Research notes”. The Agent can call `create_chat_session(title)` to create an independent, empty ordinary conversation B. Omit the project to inherit A's current project, pass an existing owned `project_name` or `project_id` to select another project, or pass `project_id: null` for no project. Omitted model and thinking settings inherit the values effective in A's execution, including one-turn overrides. The source profile is inherited without changing A's saved preferences. Optional `selected_provider`, an allowed `selected_model`, and `thinking_effort` choose available settings explicitly.

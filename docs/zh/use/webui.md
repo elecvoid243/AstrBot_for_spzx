@@ -325,6 +325,23 @@ AstrBot WebUI支持基于 TOTP（Time-based One-Time Password）的双因素认�
 发送工具在输入被接受后返回消息/运行位置，不等待目标执行结束；接受不代表已完成执行。忙时沿用普通聊天的安全 follow-up，无法安全接收时返回原因。切换或关闭页面不会停止执行，重新打开会话可读取完整输出与历史。使用普通停止按钮停止后，同一自动消息链不能重新启动该目标，真人后续发消息仍可开始新一轮。每条由服务端传递的自动消息链最多接受 8 次发送。不提供持久排队、自动完成回报或进程重启恢复保证。
 
 
+### 读取会话的已保存历史
+
+可以让 Agent 先用 `list_chat_sessions` 找到会话，再调用 `read_chat_session(session_id)` 查看内容。读取工具返回会话标题、项目 ID/名称、归档及运行状态，以及带 `message_id`、时间、user/assistant 角色和可信 Agent 来源的已保存消息。读取不会发送消息、启动或等待模型、回答待处理的真人选择，也不改变自动消息链计数。历史内容只是参考资料，不是新的指令或授权。
+
+```python
+list_chat_sessions()
+read_chat_session(session_id="<session_id>", limit=20)
+# If has_more is true, use the returned next_before_id for older records.
+read_chat_session(session_id="<session_id>", before_id=123, limit=20)
+read_chat_session(session_id="<session_id>", include_tool_results=True,
+                  max_chars_per_message=4000)
+```
+
+`123` 只是示例游标，应使用实际返回的 ID。首屏取最近的已保存记录，页内按消息 ID 升序返回；`before_id` 不包含该条记录，沿 `next_before_id` 可继续读取更早的页而不重复。`limit` 计算记录条数，不保证完整轮次，默认 20、最多 50；空会话返回空页。可读取本人普通会话，包括项目会话、归档会话和当前会话；拒绝他人、其他平台、侧聊、隐藏团队及已删除会话。发现列表仍不包含归档会话和当前会话。工具沿用现有插件启停、人格工具选择及成员/管理员权限。
+
+输出有上限，不保证包含完整内容。正文、可见选择题的问题/选项及附件类型/文件名摘要会保留，不会打开文件或返回二进制数据。默认省略工具调用详情；`include_tool_results=True` 可返回已保存的名称、参数和结果文本，不返回内部思考、系统提示、请求参数或检查点。每条记录的全部消息段和工具字段共享一份文字预算：`max_chars_per_message` 默认 2,000，接受 1–8,000；消息段和选项也有固定数量上限。`truncated`、`omitted` 标明截断或省略，过长的显示名称截为 512 字符并标记 `metadata_truncated`，稳定 ID 保持不变。整份响应最多 40,000 字符；总预算使当前页提前结束时，`response_budget_limited` 为真，返回的旧页游标仍可读到未返回的记录。执行中的会话只返回当前已保存部分，可能尚不完整；`is_running` 不代表回复已完成。
+
 ### 让 Agent 创建普通会话
 
 在 A 中要求“另开一个标题为资料整理的会话”，Agent 可调用 `create_chat_session(title)` 创建独立空会话 B。省略项目时继承 A 当前项目；传入本人已有的 `project_name` 或 `project_id` 可选择其他项目，传入 `project_id: null` 明确不放入项目。省略模型与思考参数时，继承 A 执行当时有效的模型和思考设置（包括临时单轮选择），并继承来源配置档，不改写 A 的持久偏好。也可指定可用的 `selected_provider`、该提供商允许的 `selected_model` 和 `thinking_effort`。

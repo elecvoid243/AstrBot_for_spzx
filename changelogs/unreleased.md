@@ -1,5 +1,7 @@
 # Unreleased
 
+- Sidebar **+** now always opens the project-creation dialog and navigates to the new project page; it no longer opens the spcode directory-load flow that attached the currently open conversation to the new project. / 侧边栏「+」改为始终打开新建项目对话框，并在创建后跳转到新项目页；不再打开会把当前对话挂到新项目下的 spcode 目录加载流程。
+
 - Project load in ChatUI now only registers the directory and injects an existing `AGENTS.md`; it never generates `AGENTS.md` or initializes codegraph. The load dialog is path-only, the loading/completed bubbles are gone, and the project chip reports whether `AGENTS.md` was injected. / ChatUI 项目加载改为“选路径即加载”：仅登记目录并在 `AGENTS.md` 存在时注入，不自动生成、不自动初始化 codegraph；加载对话框只保留路径，移除加载/完成气泡，项目胶囊显示 `AGENTS.md` 注入状态。
 
 - Keep the ChatUI activity ring attached to the active reply when another Agent sends a follow-up. Hide pending receipt placeholders, clear captured or empty completed receipts, and reconnect to the original run when needed. / 修复跨会话 Agent 追加消息导致思考转圈落在底部空白行的问题；待接收及已追加的请求占位不再抢占回复状态，必要时重新订阅原运行。

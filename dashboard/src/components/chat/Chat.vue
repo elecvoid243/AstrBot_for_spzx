@@ -3085,15 +3085,14 @@ async function startNewChat() {
 }
 
 async function openCreateProjectDialog() {
-  if (isOrdinaryUser.value) {
-    editingProject.value = null;
-    projectDialogError.value = "";
-    projectDialogOpen.value = true;
-    return;
-  }
-  showChatWorkspace();
-  await nextTick();
-  inputRef.value?.openLoadDialog();
+  // The sidebar "+" is a project-creation entry for every role. It must not
+  // open the spcode directory-load dialog: that flow links the currently open
+  // conversation to the loaded directory, which is the opposite of what a
+  // project-creation entry should do. Loading a directory into the current
+  // session stays available from the composer's project chip / "+" menu.
+  editingProject.value = null;
+  projectDialogError.value = "";
+  projectDialogOpen.value = true;
 }
 
 function openEditProjectDialog(project: Project) {
@@ -3973,13 +3972,22 @@ async function saveProject(formData: ProjectFormData, projectId?: string) {
         formData.workspace_path,
       );
     } else {
-      await createProject(
+      const created = await createProject(
         formData.title,
         formData.emoji,
         formData.description,
         formData.workspace_type,
         formData.workspace_path,
       );
+      projectDialogOpen.value = false;
+      editingProject.value = null;
+      // Creation is a navigation action (2026-11-07): open the new project
+      // page so the user creates its first session there instead of silently
+      // attaching the conversation that happened to be open.
+      if (created?.project_id) {
+        await selectProject(created.project_id);
+      }
+      return;
     }
     projectDialogOpen.value = false;
     editingProject.value = null;

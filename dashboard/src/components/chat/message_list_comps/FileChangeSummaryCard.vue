@@ -9,10 +9,12 @@
   `content.file_changes`.
 
   Row actions: expand → lazily fetch the unified diff
-  (POST /chat/file-changes/diff), open on disk or reveal the
-  containing folder (existing useOpenOnDisk composable), two-click
-  inline undo (POST /chat/file-changes/restore). A reverted row
-  collapses, shows a "changes reverted" badge and disables further
+  (POST /chat/file-changes/diff), open the file (in the chat's
+  Git-diff sidebar file browser, on disk, or its containing folder —
+  one "open" button that expands into those three targets, sidebar
+  first), and two-click inline undo
+  (POST /chat/file-changes/restore). A reverted row collapses,
+  shows a "changes reverted" badge and disables further
   diff/undo actions.
 
   Whole-card collapse (2026-09-17): the header is itself the toggle — a
@@ -36,7 +38,10 @@
       class="fcs-head"
       :title="toggleLabel"
       :aria-expanded="!collapsed"
-      @click="collapsed = !collapsed"
+      @click="
+        collapsed = !collapsed;
+        openGroupPath = '';
+      "
     >
       <span class="fcs-head-icon">
         <v-icon size="13">mdi-file-edit-outline</v-icon>
@@ -107,22 +112,48 @@
         </button>
 
         <div class="fcs-actions">
-          <v-btn
-            v-if="canOpenFile(file)"
-            icon="mdi-open-in-new"
-            size="x-small"
-            variant="text"
-            :title="tm('fileChange.openOnDisk')"
-            @click.stop="openOnDisk(file.path, basename(file.path))"
-          />
-          <v-btn
-            v-if="file.runtime === 'local' && isAdmin"
-            icon="mdi-folder-open-outline"
-            size="x-small"
-            variant="text"
-            :title="tm('fileChange.openFolder')"
-            @click.stop="openFolder(file.path, basename(file.path))"
-          />
+          <div
+            v-if="hasOpenActions(file)"
+            class="fcs-open-group"
+            :class="{ 'fcs-open-group--expanded': openGroupPath === file.path }"
+          >
+            <button
+              v-if="openGroupPath !== file.path"
+              type="button"
+              class="fcs-open-toggle"
+              :title="tm('fileChange.open')"
+              @click.stop="openGroupPath = file.path"
+            >
+              {{ tm("fileChange.open") }}
+              <v-icon size="13">mdi-chevron-down</v-icon>
+            </button>
+            <template v-else>
+              <v-btn
+                v-if="canOpenInSidebar(file)"
+                icon="mdi-dock-right"
+                size="x-small"
+                variant="text"
+                :title="tm('fileChange.openInSidebar')"
+                @click.stop="openFileInSidebar(file)"
+              />
+              <v-btn
+                v-if="canOpenFile(file)"
+                icon="mdi-open-in-new"
+                size="x-small"
+                variant="text"
+                :title="tm('fileChange.openOnDisk')"
+                @click.stop="openFileOnDisk(file)"
+              />
+              <v-btn
+                v-if="canOpenFolder(file)"
+                icon="mdi-folder-open-outline"
+                size="x-small"
+                variant="text"
+                :title="tm('fileChange.openFolder')"
+                @click.stop="openContainingFolder(file)"
+              />
+            </template>
+          </div>
           <v-btn
             v-if="canUndo(file)"
             icon="mdi-undo"
@@ -167,11 +198,12 @@
 </template>
 
 <script setup lang="ts">
-import { computed, reactive, ref, watch } from "vue";
+import { computed, inject, onBeforeUnmount, reactive, ref, watch } from "vue";
 import DiffPreview from "./DiffPreview.vue";
 import { chatApi } from "@/api/v1";
 import { useModuleI18n } from "@/i18n/composables";
 import { useOpenOnDisk } from "@/composables/useOpenOnDisk";
+import { OPEN_FILE_REFERENCE } from "@/composables/fileReference";
 import { useToast } from "@/utils/toast";
 import { accountSessionRevision, assertCurrentAccount } from "@/utils/accountSession";
 import type { FileChangeSummaryFile } from "@/utils/fileChangeTool";
@@ -199,6 +231,7 @@ const source = computed(() => ({
 watch(accountSessionRevision, () => {
   expanded.clear();
   reverted.clear();
+  openGroupPath.value = "";
   for (const cache of [diffs, baseContents, overlayModes]) {
     for (const key of Object.keys(cache)) delete cache[key];
   }
@@ -208,6 +241,15 @@ watch(accountSessionRevision, () => {
 const { tm } = useModuleI18n("features/chat");
 const { openOnDisk, openFolder } = useOpenOnDisk("fileChange");
 const toast = useToast();
+
+/** Bridge to the Git-diff sidebar's file browser. Chat.vue provides the
+ * same callback for Markdown file-reference links; surfaces without that
+ * sidebar simply do not expose the "open in sidebar" target. */
+const openFileReference = inject(OPEN_FILE_REFERENCE, undefined);
+
+/** Path whose open group is expanded. Only one row expands at a time, and
+ * "" means every row shows the collapsed "Open" button. */
+const openGroupPath = ref("");
 
 /** Whole-card collapse (2026-09-17): hides the file rows, keeps the
  * header (count + totals) visible. Per-instance and expanded by default
@@ -280,6 +322,57 @@ function canOverlay(file: FileChangeSummaryFile): boolean {
 function canOpenFile(file: FileChangeSummaryFile): boolean {
   return localStorage.getItem("role") === "admin" && file.runtime === "local" && file.kind !== "remove";
 }
+
+function canOpenFolder(file: FileChangeSummaryFile): boolean {
+  return file.runtime === "local" && isAdmin;
+}
+
+/** A removal has no bytes to preview, so the sidebar would only show a
+ * path-not-found error for it. */
+function canOpenInSidebar(file: FileChangeSummaryFile): boolean {
+  return (
+    !!openFileReference &&
+    isAdmin &&
+    file.runtime === "local" &&
+    file.kind !== "remove"
+  );
+}
+
+function hasOpenActions(file: FileChangeSummaryFile): boolean {
+  return canOpenFile(file) || canOpenFolder(file) || canOpenInSidebar(file);
+}
+
+function openFileOnDisk(file: FileChangeSummaryFile) {
+  openGroupPath.value = "";
+  void openOnDisk(file.path, basename(file.path));
+}
+
+function openContainingFolder(file: FileChangeSummaryFile) {
+  openGroupPath.value = "";
+  void openFolder(file.path, basename(file.path));
+}
+
+function openFileInSidebar(file: FileChangeSummaryFile) {
+  openGroupPath.value = "";
+  openFileReference?.({ path: file.path, startLine: null, endLine: null });
+}
+
+/** Any click outside the expanded group folds it back to the single button. */
+function onDocumentPointerDown(event: PointerEvent) {
+  const target = event.target;
+  if (target instanceof Element && target.closest(".fcs-open-group--expanded"))
+    return;
+  openGroupPath.value = "";
+}
+
+watch(openGroupPath, (path) => {
+  if (path) document.addEventListener("pointerdown", onDocumentPointerDown, true);
+  else document.removeEventListener("pointerdown", onDocumentPointerDown, true);
+});
+
+onBeforeUnmount(() => {
+  document.removeEventListener("pointerdown", onDocumentPointerDown, true);
+});
 
 function canUndo(file: FileChangeSummaryFile): boolean {
   if (props.sourceUnavailable || !hasSource.value) return false;
@@ -647,6 +740,43 @@ watch(
   flex: none;
   opacity: 0;
   transition: opacity 0.12s ease;
+}
+
+/* One "Open" affordance at rest; clicking swaps it for the concrete
+   targets (disk / sidebar / folder) in the same row slot. */
+.fcs-open-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.fcs-open-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  height: 24px;
+  padding: 0 5px 0 7px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: rgba(var(--v-theme-on-surface), 0.62);
+  font: inherit;
+  font-size: 11.5px;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    background 0.12s ease,
+    color 0.12s ease;
+}
+
+.fcs-open-toggle:hover {
+  background: rgba(var(--v-theme-primary), 0.12);
+  color: rgb(var(--v-theme-primary));
+}
+
+.fcs-open-toggle:focus-visible {
+  outline: 2px solid rgba(var(--v-theme-primary), 0.55);
+  outline-offset: -2px;
 }
 
 .fcs-row:hover .fcs-actions,

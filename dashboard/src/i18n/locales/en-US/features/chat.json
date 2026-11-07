@@ -348,7 +348,9 @@
   "fileChange": {
     "lines": "{count} lines",
     "editing": "Editing…",
+    "open": "Open",
     "openOnDisk": "Open on disk",
+    "openInSidebar": "Open in sidebar",
     "opened": "Opened {name}",
     "openFailed": "Failed to open file: {message}",
     "openFolder": "Open containing folder",

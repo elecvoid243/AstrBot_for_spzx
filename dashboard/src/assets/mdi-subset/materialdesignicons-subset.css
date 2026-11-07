@@ -1,4 +1,4 @@
-/* Auto-generated MDI subset – 397 icons */
+/* Auto-generated MDI subset – 398 icons */
 /* Do not edit manually. Run: pnpm run subset-icons */
 
 @font-face {
@@ -538,6 +538,10 @@
 
 .mdi-delete-sweep-outline::before {
   content: "\F0C62";
+}
+
+.mdi-dock-right::before {
+  content: "\F10AB";
 }
 
 .mdi-dots-hexagon::before {

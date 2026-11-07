@@ -348,7 +348,9 @@
   "fileChange": {
     "lines": "{count} 行",
     "editing": "正在编辑…",
+    "open": "打开",
     "openOnDisk": "在磁盘上打开",
+    "openInSidebar": "在侧边栏打开",
     "opened": "已打开 {name}",
     "openFailed": "打开文件失败：{message}",
     "openFolder": "打开文件夹",

@@ -315,7 +315,9 @@
   "fileChange": {
     "lines": "{count} строк",
     "editing": "Редактирование…",
+    "open": "Открыть",
     "openOnDisk": "Открыть на диске",
+    "openInSidebar": "Открыть в боковой панели",
     "opened": "Открыт файл {name}",
     "openFailed": "Не удалось открыть файл: {message}",
     "openFolder": "Открыть папку",

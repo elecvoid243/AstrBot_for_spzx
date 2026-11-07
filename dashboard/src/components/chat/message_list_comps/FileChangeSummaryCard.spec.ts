@@ -8,10 +8,15 @@
 //
 // Author: elecvoid243 | 2026-09-17
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { flushPromises, mount, type VueWrapper } from "@vue/test-utils";
+import { defineComponent, h, provide } from "vue";
 import FileChangeSummaryCard from "./FileChangeSummaryCard.vue";
 import zh from "@/i18n/locales/zh-CN/features/chat.json";
+import {
+  OPEN_FILE_REFERENCE,
+  type FileReferenceTarget,
+} from "@/composables/fileReference";
 import type { FileChangeSummaryFile } from "@/utils/fileChangeTool";
 
 const mocks = vi.hoisted(() => ({
@@ -90,6 +95,30 @@ function mountCard(files: FileChangeSummaryFile[] = FILES) {
     props: { files, isDark: false, sessionId: "owned-session", messageId: 42 },
     global: { stubs: STUBS },
   });
+}
+
+/** Mount inside a provider so the card can inject the sidebar bridge
+ * (Chat.vue provides OPEN_FILE_REFERENCE for Markdown file links). */
+function mountWithSidebar(
+  files: FileChangeSummaryFile[] = FILES,
+  openReference?: (target: FileReferenceTarget) => void,
+) {
+  const harness = mount(
+    defineComponent({
+      setup() {
+        if (openReference) provide(OPEN_FILE_REFERENCE, openReference);
+        return () =>
+          h(FileChangeSummaryCard, {
+            files,
+            isDark: false,
+            sessionId: "owned-session",
+            messageId: 42,
+          });
+      },
+    }),
+    { global: { stubs: STUBS } },
+  );
+  return harness.findComponent(FileChangeSummaryCard);
 }
 
 describe("FileChangeSummaryCard collapse toggle", () => {
@@ -307,4 +336,118 @@ it("keeps imported file changes display-only", async () => {
   await wrapper.find(".fcs-file").trigger("click");
   expect(mocks.fileChangeDiff).not.toHaveBeenCalled();
   expect(wrapper.findAll(".fcs-row")).toHaveLength(2);
+});
+
+describe("FileChangeSummaryCard open group", () => {
+  const openReference = vi.fn();
+
+  beforeEach(() => {
+    // The open targets are admin-only host actions, like the old
+    // open-on-disk / open-folder buttons.
+    localStorage.setItem("role", "admin");
+    mocks.fileChangeStatus.mockReset();
+    mocks.fileChangeStatus.mockResolvedValue({
+      data: { status: "ok", data: { files: [] } },
+    });
+    openReference.mockReset();
+  });
+
+  afterEach(() => {
+    localStorage.removeItem("role");
+  });
+
+  it("hides the three open targets behind one Open button", async () => {
+    const wrapper = mountWithSidebar(FILES, openReference);
+    await flushPromises();
+
+    let row = wrapper.findAll(".fcs-row")[0];
+    expect(row.find(".fcs-open-toggle").text()).toContain(zh.fileChange.open);
+    expect(row.find(`[title="${zh.fileChange.openOnDisk}"]`).exists()).toBe(
+      false,
+    );
+
+    await row.find(".fcs-open-toggle").trigger("click");
+    row = wrapper.findAll(".fcs-row")[0];
+
+    expect(row.find(".fcs-open-toggle").exists()).toBe(false);
+    expect(row.find(`[title="${zh.fileChange.openOnDisk}"]`).exists()).toBe(
+      true,
+    );
+    expect(row.find(`[title="${zh.fileChange.openInSidebar}"]`).exists()).toBe(
+      true,
+    );
+    expect(row.find(`[title="${zh.fileChange.openFolder}"]`).exists()).toBe(
+      true,
+    );
+    // Sidebar first: it is the in-app target, the other two touch the host.
+    expect(
+      row
+        .findAll(".fcs-open-group button")
+        .map((button) => button.attributes("title")),
+    ).toEqual([
+      zh.fileChange.openInSidebar,
+      zh.fileChange.openOnDisk,
+      zh.fileChange.openFolder,
+    ]);
+  });
+
+  it("hands the row path to the sidebar file browser and folds back", async () => {
+    const wrapper = mountWithSidebar(FILES, openReference);
+    await flushPromises();
+
+    await wrapper.find(".fcs-open-toggle").trigger("click");
+    await wrapper
+      .find(`[title="${zh.fileChange.openInSidebar}"]`)
+      .trigger("click");
+
+    expect(openReference).toHaveBeenCalledWith({
+      path: FILES[0].path,
+      startLine: null,
+      endLine: null,
+    });
+    expect(wrapper.findAll(".fcs-row")[0].find(".fcs-open-toggle").exists()).toBe(
+      true,
+    );
+  });
+
+  it("folds the expanded group on an outside pointerdown", async () => {
+    const wrapper = mountWithSidebar();
+    await flushPromises();
+
+    await wrapper.find(".fcs-open-toggle").trigger("click");
+    expect(wrapper.find(".fcs-open-group--expanded").exists()).toBe(true);
+
+    document.dispatchEvent(new Event("pointerdown"));
+    await flushPromises();
+
+    expect(wrapper.find(".fcs-open-group--expanded").exists()).toBe(false);
+    expect(wrapper.find(".fcs-open-toggle").exists()).toBe(true);
+  });
+
+  it("omits the sidebar target for removals and without a sidebar", async () => {
+    let wrapper = mountWithSidebar([
+      { ...FILES[0], kind: "remove", restore_available: true },
+    ]);
+    await flushPromises();
+    await wrapper.find(".fcs-open-toggle").trigger("click");
+
+    expect(wrapper.find(`[title="${zh.fileChange.openOnDisk}"]`).exists()).toBe(
+      false,
+    );
+    expect(wrapper.find(`[title="${zh.fileChange.openInSidebar}"]`).exists()).toBe(
+      false,
+    );
+    expect(wrapper.find(`[title="${zh.fileChange.openFolder}"]`).exists()).toBe(
+      true,
+    );
+
+    // No provider (e.g. a chat surface without GitDiffSidebar): the
+    // sidebar is not a valid destination even for an existing file.
+    wrapper = mountWithSidebar();
+    await flushPromises();
+    await wrapper.find(".fcs-open-toggle").trigger("click");
+    expect(wrapper.find(`[title="${zh.fileChange.openInSidebar}"]`).exists()).toBe(
+      false,
+    );
+  });
 });

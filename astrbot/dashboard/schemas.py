@@ -33,21 +33,6 @@ class BrowserControlTarget(BaseModel):
     scroll_x: float = Field(allow_inf_nan=False)
     scroll_y: float = Field(allow_inf_nan=False)
     position_revision: int | None = Field(default=None, ge=0)
-    coordinate_token: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
-    frame_id: str | None = Field(default=None, pattern=r"^[a-f0-9]{32}$")
-    media_session_id: str | None = Field(default=None, pattern=r"^[a-f0-9]{32}$")
-    media_epoch: int | None = Field(default=None, ge=1)
-    rtp_timestamp: int | None = Field(default=None, ge=0, le=4294967295)
-    capture_sequence: int | None = Field(default=None, ge=1)
-
-
-class BrowserMediaOffer(BaseModel):
-    """Establish media with a one-use host ticket, never a selected browser URL."""
-
-    model_config = ConfigDict(extra="forbid", strict=True)
-    ticket: str = Field(min_length=1, max_length=8192)
-    type: Literal["offer"]
-    sdp: str = Field(min_length=1, max_length=131072)
 
 
 class BrowserControlCommand(BaseModel):

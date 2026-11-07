@@ -127,36 +127,6 @@ paths:
           description: Chat ownership or plugin capability denied
         '409':
           description: Browser identity expired or plugin update required
-  /api/v1/plugins/browser-media/session:
-    post:
-      tags: [Plugins]
-      operationId: createBrowserMediaSession
-      summary: Issue a single-use browser media ticket
-      description: >
-        Requires a Dashboard login, owned ChatUI session, enabled ownership-aware
-        Browser Use plugin and verified video capability. The single-use ticket
-        expires after 15 seconds. Submit {ticket,type:'offer',sdp} as the first
-        message to /api/v1/plugins/browser-media/ws. The socket carries SDP and
-        immutable sent-RTP frame records independently of ordered browser input.
-        See docs/en/dev/browser-manual-control.md for capture/coordinate provenance.
-      security: [{ BearerAuth: [] }]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/BrowserControlSessionRequest'
-      responses:
-        '200':
-          description: Expiring connection-bound ticket
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/BrowserControlSessionResponse'
-        '403':
-          description: Chat ownership or plugin capability denied
-        '409':
-          description: Browser identity expired or plugin update required
   /api/v1/auth/session:
     get:
       tags: [Accounts]
@@ -8334,49 +8304,6 @@ components:
           - type: 'null'
           default: null
           title: Position Revision
-        coordinate_token:
-          anyOf:
-          - pattern: ^[a-f0-9]{64}$
-            type: string
-          - type: 'null'
-          default: null
-          title: Coordinate Token
-        frame_id:
-          anyOf:
-          - pattern: ^[a-f0-9]{32}$
-            type: string
-          - type: 'null'
-          default: null
-          title: Frame Id
-        media_session_id:
-          anyOf:
-          - pattern: ^[a-f0-9]{32}$
-            type: string
-          - type: 'null'
-          default: null
-          title: Media Session Id
-        media_epoch:
-          anyOf:
-          - minimum: 1
-            type: integer
-          - type: 'null'
-          default: null
-          title: Media Epoch
-        rtp_timestamp:
-          anyOf:
-          - maximum: 4294967295
-            minimum: 0
-            type: integer
-          - type: 'null'
-          default: null
-          title: Rtp Timestamp
-        capture_sequence:
-          anyOf:
-          - minimum: 1
-            type: integer
-          - type: 'null'
-          default: null
-          title: Capture Sequence
       required:
       - tab_id
       - document_id

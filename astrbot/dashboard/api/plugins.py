@@ -11,15 +11,9 @@ from typing import Any
 from urllib.parse import quote, urlencode
 from uuid import uuid4
 
-import anyio
 import jwt
 from fastapi import APIRouter, Body, Depends, Query, Request, WebSocket
-from fastapi.responses import (
-    JSONResponse,
-    PlainTextResponse,
-    Response,
-    StreamingResponse,
-)
+from fastapi.responses import JSONResponse, PlainTextResponse, Response
 from pydantic import ValidationError
 from starlette.websockets import WebSocketDisconnect
 
@@ -36,7 +30,6 @@ from astrbot.dashboard.schemas import (
     BrowserControlCommand,
     BrowserControlSessionRequest,
     BrowserControlSessionResponse,
-    BrowserMediaOffer,
     EnabledPatch,
     PluginByIdRequest,
     PluginConfigFileDeleteRequest,
@@ -135,277 +128,6 @@ async def _dispatch_browser_control(scope, account, identity, command):
             payload.get("message", "Upgrade Browser Use to enable manual control"), 409
         )
     return payload["data"]
-
-
-async def _dispatch_browser_media(scope, account, identity, command):
-    """Invoke the loaded ownership-aware plugin using host-only signaling state.
-
-    Args:
-        scope: Current authenticated HTTP or WebSocket scope.
-        account: Persisted enabled Dashboard account.
-        identity: Signed chat/browser/viewer identity; no browser URL is accepted.
-        command: Host-validated offer, events or close operation.
-
-    Returns:
-        A native answer/acknowledgement or the protected metadata stream.
-
-    Raises:
-        ApiError: The loaded plugin, ownership or private runtime rejects admission.
-    """
-    proxy = Request(
-        {
-            **scope,
-            "type": "http",
-            "method": "POST",
-            "path": "/api/v1/plugins/extensions/browser-use/media",
-            "query_string": urlencode(
-                {
-                    key: identity[key]
-                    for key in ("chat_id", "generation", "browser_session_id")
-                }
-            ).encode(),
-            "state": {},
-        }
-    )
-    proxy._body = b""
-    proxy.state.dashboard_account = account
-    proxy.state.browser_media = {**command, "viewer_id": identity["client_id"]}
-    result = await _call_plugin_extension(
-        "browser-use/media", proxy, account.resource_owner
-    )
-    if isinstance(result, StreamingResponse):
-        return result
-    if isinstance(result, Response):
-        payload = json.loads(result.body)
-        if result.status_code >= 400:
-            raise ApiError(
-                payload.get("message", "Browser media unavailable"), result.status_code
-            )
-    else:
-        payload = result
-    if not isinstance(payload, dict) or payload.get("status") != "ok":
-        raise ApiError("Browser media capability unavailable", 409)
-    return payload["data"]
-
-
-@router.post(
-    "/plugins/browser-media/session", response_model=BrowserControlSessionResponse
-)
-async def create_browser_media_session(
-    body: BrowserControlSessionRequest,
-    request: Request,
-    username: str = Depends(require_dashboard_user),
-):
-    """Issue a one-use media ticket after the normal owned-chat/plugin checks.
-
-    Args:
-        body: Browser lifetime last observed by this authenticated user.
-        request: Current Dashboard request.
-        username: Authenticated stable resource owner.
-
-    Returns:
-        A fifteen-second ticket for the first same-origin media socket message.
-    """
-    account = request.state.dashboard_account
-    identity = {**body.model_dump(), "client_id": uuid4().hex}
-    state = await _dispatch_browser_control(
-        request.scope, account, identity, {"operation": "inspect"}
-    )
-    if (
-        state.get("video_stream_version") != 1
-        or state.get("coordinate_contract_version") != 2
-        or state.get("frame_provenance_version") != 1
-    ):
-        raise ApiError("Browser video unavailable; use JPEG", 409)
-    if not state.get("available") or any(
-        state.get(key) != identity[key] for key in ("generation", "browser_session_id")
-    ):
-        raise ApiError("Browser identity expired", 409)
-    ticket = jwt.encode(
-        {
-            **identity,
-            "sub": account.account_id,
-            "ver": account.token_version,
-            "token_type": "browser-media-v1",
-            "exp": int(time.time()) + 15,
-        },
-        request.app.state.jwt_secret,
-        algorithm="HS256",
-    )
-    tickets = getattr(request.app.state, "browser_media_tickets", {})
-    request.app.state.browser_media_tickets = {
-        key: expiry for key, expiry in tickets.items() if expiry > time.time()
-    }
-    request.app.state.browser_media_tickets[identity["client_id"]] = time.time() + 15
-    return BrowserControlSessionResponse(
-        ticket=ticket, expires_in=15, websocket_path="/api/v1/plugins/browser-media/ws"
-    )
-
-
-@router.websocket("/plugins/browser-media/ws")
-async def browser_media_ws(websocket: WebSocket):
-    """Forward protected signaling/RTP metadata without exposing private endpoints.
-
-    Args:
-        websocket: Same-origin media socket, independent of ordered human input.
-    """
-    origin = websocket.headers.get("origin")
-    if origin and origin.rstrip("/") != str(websocket.base_url).rstrip("/").replace(
-        "ws://", "http://"
-    ).replace("wss://", "https://"):
-        await websocket.close(code=1008)
-        return
-    await websocket.accept()
-    identity = None
-    account = None
-    stream = None
-    tasks = []
-    opened = False
-    try:
-        raw = await asyncio.wait_for(websocket.receive_text(), 5)
-        if len(raw) > 147456:
-            raise ApiError("Media offer is too large", 400)
-        offer = BrowserMediaOffer.model_validate_json(raw)
-        identity = jwt.decode(
-            offer.ticket, websocket.app.state.jwt_secret, algorithms=["HS256"]
-        )
-        if identity.get("token_type") != "browser-media-v1":
-            raise ApiError("Invalid media ticket", 401)
-        expiry = getattr(websocket.app.state, "browser_media_tickets", {}).pop(
-            identity.get("client_id"), 0
-        )
-        if expiry < time.time():
-            raise ApiError("Media ticket expired or already used", 401)
-        account = await websocket.app.state.services.auth.accounts.resolve(identity)
-        if account is None:
-            raise ApiError("Account unavailable", 401)
-        # Recheck the actual browser before allocating a private peer.
-        state = await _dispatch_browser_control(
-            websocket.scope, account, identity, {"operation": "inspect"}
-        )
-        if not state.get("available") or any(
-            state.get(key) != identity[key]
-            for key in ("generation", "browser_session_id")
-        ):
-            raise ApiError("Browser identity expired", 409)
-        answer = await _dispatch_browser_media(
-            websocket.scope, account, identity, {"operation": "offer", "sdp": offer.sdp}
-        )
-        opened = True
-        await websocket.send_json(answer)
-        stream = await _dispatch_browser_media(
-            websocket.scope, account, identity, {"operation": "events"}
-        )
-        if not isinstance(stream, StreamingResponse):
-            raise ApiError("Media metadata stream unavailable", 409)
-
-        async def receive():
-            """Use liveness messages to recheck persisted authorization on idle pages."""
-            while True:
-                raw = await asyncio.wait_for(websocket.receive_text(), 15)
-                if len(raw) > 128 or json.loads(raw) != {"operation": "heartbeat"}:
-                    raise ApiError("Unsupported media message", 400)
-                current = await websocket.app.state.services.auth.accounts.resolve(
-                    identity
-                )
-                if current is None:
-                    raise ApiError("Account unavailable", 401)
-                await _dispatch_browser_control(
-                    websocket.scope, current, identity, {"operation": "inspect"}
-                )
-
-        async def forward():
-            """Forward bounded records, reauthorizing naturally arriving stream data."""
-            buffer = b""
-            checked = 0.0
-            async for chunk in stream.body_iterator:
-                if time.monotonic() - checked >= 1:
-                    current = await websocket.app.state.services.auth.accounts.resolve(
-                        identity
-                    )
-                    if current is None:
-                        raise ApiError("Account unavailable", 401)
-                    state = await _dispatch_browser_control(
-                        websocket.scope, current, identity, {"operation": "inspect"}
-                    )
-                    if not state.get("available") or any(
-                        state.get(key) != identity[key]
-                        for key in ("generation", "browser_session_id")
-                    ):
-                        raise ApiError("Browser identity expired", 409)
-                    checked = time.monotonic()
-                buffer += chunk.encode() if isinstance(chunk, str) else chunk
-                while b"\n\n" in buffer:
-                    block, buffer = buffer.split(b"\n\n", 1)
-                    if len(block) > 65536:
-                        raise ApiError("Media metadata is too large", 400)
-                    if block.startswith(b":"):
-                        await asyncio.wait_for(
-                            websocket.send_json({"type": "heartbeat"}), 2
-                        )
-                        continue
-                    data = next(
-                        (
-                            line[6:]
-                            for line in block.splitlines()
-                            if line.startswith(b"data: ")
-                        ),
-                        None,
-                    )
-                    if data is None:
-                        continue
-                    event = json.loads(data)
-                    if event.get("type") == "frame" and (
-                        event.get("media_session_id") != answer.get("media_session_id")
-                        or any(
-                            event.get(key) != identity[key]
-                            for key in ("generation", "browser_session_id")
-                        )
-                    ):
-                        raise ApiError("Media frame ownership expired", 409)
-                    await asyncio.wait_for(websocket.send_json(event), 2)
-                    if event.get("type") == "revoked":
-                        return
-                if len(buffer) > 65536:
-                    raise ApiError("Media metadata is too large", 400)
-
-        tasks = [asyncio.create_task(receive()), asyncio.create_task(forward())]
-        done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-        for task in done:
-            task.result()
-    except WebSocketDisconnect:
-        pass
-    except Exception as exc:
-        revoked = isinstance(exc, jwt.InvalidTokenError) or (
-            isinstance(exc, ApiError) and exc.status_code in {401, 403, 404, 409}
-        )
-        with contextlib.suppress(RuntimeError, WebSocketDisconnect):
-            await websocket.send_json(
-                {
-                    "type": "revoked" if revoked else "media-error",
-                    "reason": "authorization_expired"
-                    if revoked
-                    else "media_unavailable",
-                }
-            )
-            await websocket.close(code=1008 if revoked else 1011)
-    finally:
-        # ASGI disconnect cancellation must not skip the private peer retirement.
-        with anyio.CancelScope(shield=True):
-            for task in tasks:
-                task.cancel()
-            if tasks:
-                await asyncio.gather(*tasks, return_exceptions=True)
-            if stream is not None:
-                with contextlib.suppress(Exception):
-                    await stream.body_iterator.aclose()
-            if opened and account is not None:
-                with contextlib.suppress(Exception):
-                    await _dispatch_browser_media(
-                        websocket.scope, account, identity, {"operation": "close"}
-                    )
-            with contextlib.suppress(RuntimeError, WebSocketDisconnect):
-                await websocket.close()
 
 
 @router.post(
@@ -836,7 +558,6 @@ async def _authorize_chat_extension(plugin_path, request, username, handler):
             "close",
             "manual",
             "viewport",
-            "media",
         )
     }
     spcode = plugin_path.startswith("spcode/") and plugin_path[7:] in SPCODE_CHAT_PATHS
@@ -851,12 +572,6 @@ async def _authorize_chat_extension(plugin_path, request, username, handler):
             raise ApiError(
                 "Use the authenticated browser control channel", status_code=403
             )
-    if plugin_path == "browser-use/media":
-        expected = "browser-owned-chat-media-v1"
-        if getattr(request.state, "browser_media", None) is None:
-            raise ApiError(
-                "Use the authenticated browser media channel", status_code=403
-            )
     admin_spcode = spcode and account.role == "admin"
     if (
         not admin_spcode
@@ -866,16 +581,13 @@ async def _authorize_chat_extension(plugin_path, request, username, handler):
     if browser:
         operation = plugin_path.rsplit("/", 1)[-1]
         if request.method != (
-            "POST"
-            if operation in {"stop", "close", "manual", "viewport", "media"}
-            else "GET"
+            "POST" if operation in {"stop", "close", "manual", "viewport"} else "GET"
         ):
             raise ApiError("Extension is unavailable", status_code=403)
         if (
             set(request.query_params)
             - (
                 {"chat_id", "generation", "browser_session_id", "action_cursor"}
-                | ({"frames"} if operation == "stream" else set())
                 | (
                     {"tab_id", "width", "height", "device_scale_factor"}
                     if operation == "viewport"

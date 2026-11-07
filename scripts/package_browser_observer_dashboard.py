@@ -17,7 +17,7 @@ def main() -> None:
     """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--plugin-version", default="0.4.0")
+    parser.add_argument("--plugin-version", default="0.3.0")
     parser.add_argument("--plugin-revision", required=True)
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]

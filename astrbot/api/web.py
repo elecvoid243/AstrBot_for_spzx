@@ -203,7 +203,6 @@ class PluginRequest:
         self.chat_origin = getattr(request_state, "chat_origin", None)
         # Only the authenticated host WebSocket can populate this command.
         self.browser_control = getattr(request_state, "browser_control", None)
-        self.browser_media = getattr(request_state, "browser_media", None)
         self.query: PluginMultiDict[str] = PluginMultiDict[str](
             list(request_.query_params.multi_items())
         )

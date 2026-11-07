@@ -4,64 +4,6 @@ The existing `browser-use/status`, `snapshot`, `stream`, `stop`, and `close`
 extensions retain their methods and ownership rules. `manual_control_version: 1`
 announces support. Missing capability means read-only compatibility.
 
-## Verified video and coordinate provenance (V02)
-
-The updated private runtime enables `coordinate_contract_version: 2` for JPEG
-and video. A new discrete target includes the opaque `coordinate_token` and
-server-issued `frame_id` from decoded pixels. Omitting fields cannot downgrade
-an enabled contract. Native frame/document/owner geometry and window, nested and
-open/closed shadow scroll state are checked again before input. Unknown frames,
-active View Transitions and bounded discovery failures freeze new input and can
-recover. This does not lock arbitrary DOM semantics or promise atomic interaction
-with arbitrary animation. Held drags keep their validated original anchor and
-ordered moves; mouse/key release and reset use original input sessions even if
-new pixels cannot be mapped. Each new native route/session lookup is bounded.
-
-`video_stream_version: 1` and `frame_provenance_version: 1` advertise optional
-video. `POST /api/v1/plugins/browser-media/session` takes the same owned browser
-identity and Dashboard login as control and returns a single-use 15-second
-ticket. The first same-origin `/api/v1/plugins/browser-media/ws` message is
-`{ticket,type:"offer",sdp}`. Only the host selects the owner and viewer; public
-extension requests cannot forge media context. Account credential version, chat,
-plugin and actual browser admission are rechecked during the session. The socket
-returns an SDP answer, capture epoch events, immutable sent-frame records and
-heartbeats. It accepts `{operation:"heartbeat"}` every five seconds. Credentials
-and private CDP/loopback addresses never reach media payloads or URLs.
-
-An optional `media-stats` message every 60 sent frames contains bounded cumulative
-capture/decode, encoder wall/calling-thread CPU and queue counters. It carries no
-page content or input data and cannot authorize a frame. Calling-thread CPU excludes
-native codec worker threads; process CPU measurements include those threads.
-
-Each peer uses `iceServers: []`. The pinned aiortc 1.14.0 adapter hooks only that
-sender/transport, observes its negotiated VP8 payload type and actual final sent
-RTP packet, and restores its hooks on close. The source is shared bounded CDP JPEG
-capture/decode with independent off-thread VP8 encoders for up to four viewers.
-Missing verified dependencies retain JPEG support; unknown adapters fail media
-closed. No browser extension, public relay, audio or hardware encoder is required.
-
-The receiver also requires native `VideoFrame` support to retain one checked picture without copying every frame to JPEG. The client matches `requestVideoFrameCallback().rtpTimestamp` and actual decoded
-dimensions to the bounded media-session/epoch map. Records bind browser lifetime,
-document, CSS viewport, scroll/full coordinate token, control epoch and processed
-input watermark. Late/missing/ambiguous metadata cannot be replaced with the latest
-SSE state. The watermark is a truthful lower bound for visible feedback, not a
-requirement to recapture after every character: ordered text and shortcuts can
-reuse an issued frame while its full coordinates remain current. Video targets also carry `media_session_id`, `media_epoch`,
-`rtp_timestamp` and `capture_sequence`. RTP wrap is ordered by a separate bounded
-media sequence. A stream subscription with `frames=0` receives state/actions only,
-so video does not run a competing JPEG screencast. Snapshot tools remain available.
-During a brief metadata gap, focused keyboard input keeps its original checked
-picture and waits in the bounded ordered queue for a mapped frame. Coordinate
-changes or blur discard that queue; terminal key release never waits for new pixels.
-Pinch-scaled visual viewports freeze new input until scale returns to one.
-
-Media faults preserve manual ownership. Explicit retry/JPEG fallback obtains
-fresh verified pixels; navigation/capture epochs keep the peer and control socket.
-Sidebar/chat/account changes, browser close, plugin disable or viewer disconnect
-retire media resources; the last viewer stops capture and encoding. Normal stop
-preserves the browser. Revoked access clears retained pixels. Final offline-package
-installation and four-viewer resource stress are separate acceptance work.
-
 1. `POST /api/v1/plugins/browser-control/session` with the ordinary Dashboard
    bearer login and `{chat_id, generation, browser_session_id}` validates the
    currently owned main ChatUI session, profile/plugin enablement, exact audited
@@ -80,7 +22,7 @@ installation and four-viewer resource stress are separate acceptance work.
    server-owned `control_epoch` enables input. `control_mode` is `agent`,
    `acquiring`, `human` or `paused`, independently of browser availability and
    `execution_state`. Epoch is distinct from observation frame `sequence`.
-4. Send ordered typed commands: `{operation: click, control_epoch, input_id,
+4. Send typed commands one at a time: `{operation: click, control_epoch, input_id,
    x, y, target}`. `target` contains `tab_id`, `document_id`, `viewport_width`,
    `viewport_height`, `scroll_x`, `scroll_y` from the displayed image. Coordinates
    map the actual image rectangle to remote CSS viewport pixels. The runtime
@@ -135,12 +77,6 @@ Lost input confirmation means an unknown outcome. The UI stops, reports that the
 action may have happened, and never replays it. Old socket replies cannot enable
 input. During explicit handback, SSE may precede the socket acknowledgement; input
 stays disabled while waiting for that confirmation.
-
-If a press becomes stale after explicit handback was queued, the UI drains only
-already-sent terminal inputs, then sends `reset_keys` before one `release`.
-It never replays the press. An unsuccessful terminal acknowledgement or a
-25-second confirmation timeout disconnects control and leaves the Agent paused;
-the user must explicitly recover control before trying handback again.
 
 Every revocation and terminal path releases keys and any possibly held mouse on
 their original CDP sessions within a shared bounded deadline. Mouse cleanup releases
@@ -218,8 +154,8 @@ New targets include `position_revision`, sampled by a document scroll/resize
 listener including nested scrollers. This revision is independent of image sequence
 and control epoch. Legacy targets without the optional field remain compatible.
 Snapshot capture compares the revision before/after taking pixels, rejects mixed
-coordinate spaces, and scales images to at most 1920×1080 while retaining remote
-CSS viewport dimensions. The existing 2 MiB JPEG/3 MiB event budgets remain.
+coordinate spaces, and scales images to at most 1280×720 while retaining remote
+CSS viewport dimensions. The existing 512 KiB JPEG/768 KiB event budgets remain.
 Human capture waits 100 ms between captures (read-only mode keeps 250 ms); queues,
 subscriber limits and deadlines remain bounded. Actual capture rate is machine-dependent.
 
@@ -236,20 +172,6 @@ Stale wheel samples receive a consumed-ID `status: stale` acknowledgement, witho
 
 ## Mouse dragging and explicit refresh
 
-`drag_input_version: 1` advertises ordered `pointer` input with `phase: down|move|up|cancel`. A press validates the complete displayed target. Moves and release stay bound to the original tab, document and viewport while allowing drag-induced scrolling. Every queued move is retained in order; release is never dropped or gated on a new frame. Target changes, focus loss, cancellation and disconnect release the mouse on its original CDP session, without replaying uncertain input. `cancel` and `reset_keys` do not depend on stale frame coordinates.
+`drag_input_version: 1` advertises ordered `pointer` input with `phase: down|move|up|cancel`. A press validates the complete displayed target. Moves and release stay bound to the original tab, document and viewport while allowing drag-induced scrolling. Only adjacent unsent moves are coalesced; release is never dropped or gated on a new frame. Target changes, focus loss, cancellation and disconnect release the mouse on its original CDP session, without replaying uncertain input. `cancel` and `reset_keys` do not depend on stale frame coordinates.
 
 Observation subscribes once on opening. Idle or disconnected clients never retry automatically; Refresh explicitly reauthorizes, captures and subscribes again. Lease heartbeats remain independent of observation refresh.
-
-For matched video-package acceptance, use a fresh short output path and run
-`python scripts/browser_video_production_acceptance.py --out <new-path> --plugin-source <plugin-checkout> --plugin-zip <complete-plugin.zip> --dashboard-zip <matching-dashboard.zip> --hd --samples 30 --four-viewer-seconds 300 --login-handoff --terminal-faults`.
-Keep the matching backend source ZIP beside the Dashboard ZIP. This mode verifies
-package/revision hashes and runs the extracted backend and frontend with the
-installed private runtime. The runner owns its process tree and records raw
-pixels, optical feedback latency, per-viewer resources, network audit and cleanup.
-The 300-second four-viewer window includes native animation and scrolling; repeated
-source frames are reported separately from useful presentation rate.
-
-A rejected pointer press may already have its ordered release in flight. The UI
-drains only terminal mouse/key releases and resets in that case, waits for fresh
-pixels, and retains the lease. Any other unconfirmed action still closes control;
-the rejected press is never replayed.

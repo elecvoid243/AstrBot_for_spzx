@@ -1,9 +1,5 @@
 {
   "agentBrowser": {
-    "videoFailed": "视频已暂停 · 请重试或切换 JPEG",
-    "retryVideo": "重试视频",
-    "useJpeg": "切换 JPEG",
-
     "staleInput": "页面位置已变化，本次操作未执行；请等待新画面后重试。",
     "staleWheel": "页面位置已变化，旧滚轮操作已拒绝。请等待新画面后继续滚动。",
     "inputPending": "正在依次发送操作…",

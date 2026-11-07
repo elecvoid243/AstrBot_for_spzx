@@ -16,13 +16,13 @@
   // Light intentionally stays ghost — the transparent, border-only look that
   // predates 4d3e435e4; only the dark theme needs a surface to lift off #1a1a1a.
   --sp-chip-bg-on-page: transparent;
-  // App-bar session tabs: the container outline stays invisible, but each tab
-  // itself gets the light-gray pill that selection/hover used to paint. The
-  // active tab keeps the same surface and is told apart by primary colour.
+  // App-bar session tabs: the container outline stays invisible and only the
+  // selected tab carries the light-gray pill. Hover on an unselected tab is
+  // deliberately fainter than selection, so the two states never read alike.
   --sp-nav-group-bg: transparent;
   --sp-nav-group-border: transparent;
-  --sp-nav-btn-bg: rgba(var(--v-theme-on-surface), 0.05);
-  --sp-nav-btn-hover-bg: rgba(var(--v-theme-on-surface), 0.08);
+  --sp-nav-btn-bg: transparent;
+  --sp-nav-btn-hover-bg: rgba(var(--v-theme-on-surface), 0.04);
   --sp-nav-active-bg: rgba(var(--v-theme-on-surface), 0.05);
   --sp-nav-active-shadow: none;
   --sp-chip-border: rgba(var(--v-theme-on-surface), 0.12);

@@ -119,90 +119,125 @@
       queued when the run ends are dispatched as normal messages by
       Chat.vue (see flushPendingFollowUps).
     -->
-    <transition-group
+    <!-- 2026-11-07 (elecvoid243): one tray for the whole follow-up queue.
+         Append / interrupt act on every queued item, so they live once in the
+         header; rows only keep their per-item edit / delete. Shortcut hints
+         sit under each action, and the queue is entered one message at a time
+         with Enter (see handleKeyDown). -->
+    <transition
       v-if="props.sessionId && pendingFollowUpItems.length"
-      tag="div"
       name="followup"
-      class="pending-follow-ups"
     >
-      <div
-        v-for="item in pendingFollowUpItems"
-        :key="item.id"
-        class="pending-follow-up-card"
+      <section
+        class="pending-follow-ups"
+        :aria-label="tm('input.followUpTitle')"
       >
-        <template v-if="editingFollowUpId === item.id">
-          <v-textarea
-            v-model="editingFollowUpText"
-            density="compact"
-            variant="outlined"
-            hide-details
-            auto-grow
-            rows="1"
-            class="pending-follow-up-card__editor"
-            @keydown.enter.prevent="saveFollowUpEdit(item.id)"
-            @keydown.esc="editingFollowUpId = null"
-          />
-          <div class="pending-follow-up-card__actions">
-            <v-btn
-              size="small"
-              variant="text"
-              @click="editingFollowUpId = null"
+        <div class="pending-follow-ups__head">
+          <div class="pending-follow-ups__title">
+            <v-icon size="14" class="pending-follow-ups__clock"
+              >mdi-clock-outline</v-icon
             >
-              {{ tm("input.cancel") }}
-            </v-btn>
-            <v-btn
-              size="small"
-              variant="tonal"
-              @click="saveFollowUpEdit(item.id)"
-            >
-              {{ tm("input.save") }}
-            </v-btn>
+            <span>{{ tm("input.followUpTitle") }}</span>
+            <span class="pending-follow-ups__count" aria-live="polite">{{
+              pendingFollowUpItems.length
+            }}</span>
           </div>
-        </template>
-        <template v-else>
-          <div class="pending-follow-up-card__badge">
-            <v-icon size="14">mdi-clock-outline</v-icon>
-          </div>
-          <span class="pending-follow-up-card__text" :title="item.text">
-            {{ item.text }}
-          </span>
-          <div class="pending-follow-up-card__actions">
-            <v-btn
-              size="small"
-              variant="tonal"
-              class="pending-follow-up-card__send"
+          <div class="pending-follow-ups__actions">
+            <button
+              type="button"
+              class="pending-action pending-action--send"
+              :aria-label="tm('input.followUpSend')"
               @click="emit('flushPending')"
             >
-              <v-icon icon="mdi-arrow-up" size="small" start />
-              {{ tm("input.followUpSend") }}
-            </v-btn>
-            <v-btn
-              size="small"
-              variant="tonal"
-              class="pending-follow-up-card__interrupt"
+              <span class="pending-action__main">
+                <v-icon size="14">mdi-arrow-up</v-icon>
+                <span class="pending-action__label">{{
+                  tm("input.followUpSend")
+                }}</span>
+              </span>
+              <span class="pending-action__key">Enter</span>
+            </button>
+            <button
+              type="button"
+              class="pending-action pending-action--interrupt"
+              :aria-label="tm('input.followUpInterrupt')"
               @click="emit('interruptPending')"
             >
-              <v-icon icon="mdi-stop-circle-outline" size="small" start />
-              {{ tm("input.followUpInterrupt") }}
-            </v-btn>
-            <v-btn
-              icon="mdi-pencil-outline"
-              size="small"
-              variant="text"
-              :aria-label="tm('input.followUpEdit')"
-              @click="startFollowUpEdit(item)"
-            />
-            <v-btn
-              icon="mdi-trash-can-outline"
-              size="small"
-              variant="text"
-              :aria-label="tm('input.followUpDelete')"
-              @click="removeFollowUp(item.id)"
-            />
+              <span class="pending-action__main">
+                <v-icon size="14">mdi-stop-circle-outline</v-icon>
+                <span class="pending-action__label">{{
+                  tm("input.followUpInterrupt")
+                }}</span>
+              </span>
+              <span class="pending-action__key">Shift + Enter</span>
+            </button>
           </div>
-        </template>
-      </div>
-    </transition-group>
+        </div>
+
+        <ul class="pending-follow-ups__list">
+          <li
+            v-for="(item, index) in pendingFollowUpItems"
+            :key="item.id"
+            class="pending-follow-up-row"
+          >
+            <template v-if="editingFollowUpId === item.id">
+              <span class="pending-follow-up-row__index">{{ index + 1 }}</span>
+              <v-textarea
+                v-model="editingFollowUpText"
+                density="compact"
+                variant="outlined"
+                hide-details
+                auto-grow
+                rows="1"
+                class="pending-follow-up-row__editor"
+                @keydown.enter.prevent="saveFollowUpEdit(item.id)"
+                @keydown.esc="editingFollowUpId = null"
+              />
+              <div class="pending-follow-up-row__edit-actions">
+                <button
+                  type="button"
+                  class="pending-row-action"
+                  @click="editingFollowUpId = null"
+                >
+                  {{ tm("input.cancel") }}
+                </button>
+                <button
+                  type="button"
+                  class="pending-row-action pending-row-action--primary"
+                  @click="saveFollowUpEdit(item.id)"
+                >
+                  {{ tm("input.save") }}
+                </button>
+              </div>
+            </template>
+            <template v-else>
+              <span class="pending-follow-up-row__index">{{ index + 1 }}</span>
+              <span class="pending-follow-up-row__text" :title="item.text">{{
+                item.text
+              }}</span>
+              <span class="pending-follow-up-row__actions">
+                <button
+                  type="button"
+                  class="pending-row-icon"
+                  :aria-label="tm('input.followUpEdit')"
+                  @click="startFollowUpEdit(item)"
+                >
+                  <v-icon size="14">mdi-pencil-outline</v-icon>
+                </button>
+                <button
+                  type="button"
+                  class="pending-row-icon"
+                  :aria-label="tm('input.followUpDelete')"
+                  @click="removeFollowUp(item.id)"
+                >
+                  <v-icon size="14">mdi-trash-can-outline</v-icon>
+                </button>
+              </span>
+            </template>
+          </li>
+        </ul>
+      </section>
+    </transition>
     <div
       class="input-container"
       :class="{
@@ -1833,22 +1868,23 @@ function handleKeyDown(e: KeyboardEvent) {
   // 2026-09-18 (elecvoid243): follow-up queue shortcuts. With an empty
   // composer Enter has nothing to send (it would only start a newline), so
   // it confirms the OLDEST queued message instead — one Enter per message —
-  // and Ctrl/Cmd+Enter forces an interrupt. Any typed text keeps the normal
-  // send path, which may queue the message as yet another follow-up. The
-  // project-op send lock still wins: the composer stays inert while a
-  // load/unload rewrites the system prompt.
+  // and Shift+Enter forces an interrupt (renamed from Ctrl/Cmd+Enter on
+  // 2026-11-07 to match the hints under the tray's actions). Any typed text
+  // keeps the normal send path, which may queue the message as yet another
+  // follow-up. The project-op send lock still wins: the composer stays inert
+  // while a load/unload rewrites the system prompt.
   if (
     !localPrompt.value.trim() &&
     skillGuide.queued.value.length === 0 &&
     !sendLocked.value &&
     pendingFollowUpItems.value.length
   ) {
-    if (e.ctrlKey || e.metaKey) {
+    if (e.shiftKey) {
       e.preventDefault();
       emit("interruptPending");
       return;
     }
-    if (!e.shiftKey) {
+    if (!e.ctrlKey && !e.metaKey) {
       e.preventDefault();
       emit("flushPendingOldest");
       return;
@@ -3764,127 +3800,274 @@ defineExpose({
 }
 
 /* ── Pending follow-up queue (ZCode-style) ── */
+/* ── Pending follow-up queue (2026-11-07 redesign, elecvoid243) ──
+   One tray for the whole queue instead of one card per message: append /
+   interrupt act on every queued item, so they belong once in the header.
+   Rows only keep their per-item edit / delete. */
 .pending-follow-ups {
   width: var(--chat-content-width, 80%);
   max-width: var(--chat-content-max-width, 960px);
-  /* No bottom margin: the queue sits flush on the composer so the two
-     read as one stacked cluster (2026-09-13). */
-  margin: 0 auto;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.pending-follow-up-card {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 7px 8px 7px 10px;
+  margin: 0 auto 8px;
+  overflow: hidden;
   border: 1px solid var(--sp-chip-border);
-  border-radius: 16px;
+  border-radius: 14px;
   background: var(--sp-chip-bg);
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
 }
 
-/* Queued-state badge: a small clock in a primary-tinted disc so the row
-   reads as "held for later", matching the accent language of the skill
-   chips above the composer. */
-.pending-follow-up-card__badge {
+.input-area.is-dark .pending-follow-ups {
+  box-shadow: none;
+}
+
+.pending-follow-ups__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 6px 6px 12px;
+}
+
+.pending-follow-ups__title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: var(--sp-text-muted);
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.pending-follow-ups__clock {
+  color: var(--sp-text-path);
+}
+
+.pending-follow-ups__count {
+  min-width: 17px;
+  height: 17px;
+  padding: 0 5px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: var(--sp-ghost-open-bg);
+  color: var(--sp-text-muted);
+  font-size: 10.5px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.pending-follow-ups__actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+/* Stacked label + shortcut hint: the key line is deliberately tiny so it
+   never competes with the action name. */
+.pending-action {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0;
+  padding: 3px 9px 2px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--sp-text-muted);
+  font: inherit;
+  cursor: pointer;
+  transition:
+    background-color 0.12s ease,
+    color 0.12s ease;
+}
+
+.pending-action:hover {
+  background: var(--sp-ghost-hover-bg);
+  color: var(--sp-text-primary);
+}
+
+.pending-action:focus-visible {
+  outline: 2px solid rgb(var(--v-theme-primary));
+  outline-offset: 1px;
+}
+
+.pending-action__main {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12.5px;
+  font-weight: 500;
+  line-height: 18px;
+}
+
+.pending-action__key {
+  color: var(--sp-text-path);
+  font-size: 9px;
+  line-height: 11px;
+  letter-spacing: 0.02em;
+  font-variant-numeric: tabular-nums;
+}
+
+.pending-action--interrupt .pending-action__main {
+  color: #8b1a1a;
+}
+
+.input-area.is-dark .pending-action--interrupt .pending-action__main {
+  color: #e08a8a;
+}
+
+.pending-follow-ups__list {
+  list-style: none;
+  margin: 0;
+  padding: 0 6px 6px;
+}
+
+.pending-follow-up-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 3px 6px;
+  border-radius: 8px;
+  transition: background-color 0.12s ease;
+}
+
+.pending-follow-up-row + .pending-follow-up-row {
+  border-top: 1px solid var(--sp-chip-divider);
+  border-radius: 0 0 8px 8px;
+}
+
+.pending-follow-up-row:hover {
+  background: var(--sp-ghost-hover-bg);
+}
+
+.pending-follow-up-row__index {
+  flex: 0 0 16px;
+  color: var(--sp-text-path);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.pending-follow-up-row__text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--sp-text-primary);
+  font-size: 13px;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pending-follow-up-row__actions {
+  display: inline-flex;
+  gap: 2px;
+  flex: 0 0 auto;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.pending-follow-up-row:hover .pending-follow-up-row__actions,
+.pending-follow-up-row:focus-within .pending-follow-up-row__actions {
+  opacity: 1;
+}
+
+.pending-row-icon {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   width: 26px;
   height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--sp-text-path);
+  cursor: pointer;
+}
+
+.pending-row-icon:hover {
+  background: var(--sp-ghost-open-bg);
+  color: var(--sp-text-primary);
+}
+
+.pending-row-icon:focus-visible,
+.pending-row-action:focus-visible {
+  outline: 2px solid rgb(var(--v-theme-primary));
+  outline-offset: 1px;
+}
+
+.pending-follow-up-row__edit-actions {
+  display: inline-flex;
+  gap: 4px;
   flex-shrink: 0;
-  border-radius: 50%;
-  background: rgba(var(--v-theme-primary), 0.12);
+}
+
+.pending-row-action {
+  padding: 4px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--sp-text-muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.pending-row-action:hover {
+  background: var(--sp-ghost-hover-bg);
+}
+
+.pending-row-action--primary {
   color: rgb(var(--v-theme-primary));
+  font-weight: 600;
 }
 
-.input-area.is-dark .pending-follow-up-card {
-  box-shadow: none;
+.pending-follow-up-row__editor {
+  flex: 1;
+  min-width: 0;
 }
 
-/* Keep the queue aligned with the composer's mobile width so the flush
-   stack stays visually centered. */
-@media (max-width: 768px) {
-  .pending-follow-ups {
-    width: calc(100% - 20px);
-  }
+.pending-follow-up-row__editor :deep(.v-field__field) {
+  font-size: 13px;
 }
 
-/* 2026-09-17: below this width the two labeled actions (send / force
-   interrupt) plus the edit and delete icons no longer fit beside the
-   message text — let the action row wrap onto its own line instead of
-   squeezing the text down to a couple of characters. */
-@media (max-width: 480px) {
-  .pending-follow-up-card {
-    flex-wrap: wrap;
-    row-gap: 2px;
-  }
-
-  .pending-follow-up-card__actions {
-    width: 100%;
-    justify-content: flex-end;
-  }
-}
-
-/* Enter/leave/move transitions for queue items (transition-group). */
+/* Enter/leave transition for the queue tray itself. */
 .followup-enter-active,
-.followup-leave-active,
-.followup-move {
+.followup-leave-active {
   transition:
     opacity 0.18s ease,
     transform 0.18s ease;
 }
+
 .followup-enter-from,
 .followup-leave-to {
   opacity: 0;
   transform: translateY(6px);
 }
 
-.pending-follow-up-card__text {
-  flex: 1;
-  min-width: 0;
-  font-size: 13px;
-  color: var(--sp-text-primary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  text-align: left;
+/* Keep the tray aligned with the composer on phones; action labels give way
+   to icon + shortcut hint, and row actions stay visible for touch. */
+@media (max-width: 768px) {
+  .pending-follow-ups {
+    width: calc(100% - 20px);
+  }
+
+  .pending-action__label {
+    display: none;
+  }
+
+  .pending-action {
+    padding-inline: 6px;
+  }
+
+  .pending-follow-up-row__actions {
+    opacity: 1;
+  }
 }
 
-.pending-follow-up-card__actions {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  flex-shrink: 0;
-}
-
-/* Force-interrupt action (2026-09-17): shares the send button's neutral
-   tonal chip — same variant, own `color` left inherited — but recolours its
-   label and icon dark red so the destructive exit reads as such without the
-   saturated warning tint it used to carry. Vuetify paints the tonal surface
-   with `currentColor` at 12%, so recolouring the button itself would tint
-   the background too; the label subtree is the only safe target. */
-.pending-follow-up-card__interrupt :deep(.v-btn__content) {
-  color: #8b1a1a;
-}
-
-/* Dark theme: the same dark red would drop below the contrast floor on the
-   dark card surface, so it lightens to a muted brick while staying red. */
-.input-area.is-dark .pending-follow-up-card__interrupt :deep(.v-btn__content) {
-  color: #e08a8a;
-}
-
-/* Long custom text keeps the card compact; the full text is one edit
-   away and shown via title tooltip. */
-.pending-follow-up-card__editor {
-  flex: 1;
-  min-width: 0;
-}
-
-.pending-follow-up-card__editor :deep(.v-field__field) {
-  font-size: 13px;
-}
 </style>

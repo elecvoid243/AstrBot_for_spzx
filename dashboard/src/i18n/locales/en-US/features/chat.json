@@ -121,6 +121,7 @@
     "dropToUpload": "Drop files to upload",
     "dropToReference": "Drop to reference this file",
     "stopGenerating": "Stop generating",
+    "followUpTitle": "Queued messages",
     "followUpSend": "Send",
     "followUpInterrupt": "Force interrupt",
     "followUpEdit": "Edit follow-up message",

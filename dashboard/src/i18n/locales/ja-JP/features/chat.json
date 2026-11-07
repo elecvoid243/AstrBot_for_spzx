@@ -108,6 +108,7 @@
     "chatPrompt": "チャットしよう！",
     "dropToUpload": "ドロップしてファイルをアップロード",
     "stopGenerating": "生成を停止",
+    "followUpTitle": "追加メッセージ",
     "followUpSend": "送信",
     "followUpInterrupt": "強制中断"
   },

@@ -101,13 +101,12 @@ async function submitPayload(
 }
 
 describe("ProjectLoadDialog project mode", () => {
-  it("renders only the path field and the load hint", async () => {
+  it("renders only the path field", async () => {
     const wrapper = mountDialog();
     await openDialog(wrapper);
 
     const text = wrapper.text();
     expect(wrapper.find('[data-testid="project-path"]').exists()).toBe(true);
-    expect(text).toContain("会自动注入项目内的 AGENTS.md");
     expect(text).not.toContain("加载已有项目");
     expect(text).not.toContain("新建一个项目");
     expect(text).not.toContain("代码项目");

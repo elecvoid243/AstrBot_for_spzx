@@ -259,13 +259,6 @@ async function onConfirm(): Promise<void> {
             </template>
           </v-text-field>
 
-          <div
-            v-if="props.commandMode === 'project'"
-            class="text-caption text-medium-emphasis mb-3"
-          >
-            {{ tm("spcodeProjectLoad.dialog.loadHint") }}
-          </div>
-
           <ProjectDirectoryBrowser
             v-model="browserOpen"
             @select="onBrowserSelect"

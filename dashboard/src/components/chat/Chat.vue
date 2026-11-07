@@ -3071,7 +3071,8 @@ watch(
             return;
           }
           const following = shouldStickToBottom(currSessionId.value);
-          if (!following && !scrollPointerActive) preserveReadingAnchor();
+          if (following) scrollToBottom();
+          else if (!scrollPointerActive) preserveReadingAnchor();
         });
         historyLayoutObserver.observe(content, {
           childList: true,
@@ -6213,15 +6214,15 @@ function handleMessagesScroll() {
   const isSelfScroll =
     Math.abs(top - selfScrollTop) <= 1 &&
     Math.abs(top - lastMessagesScrollTop) <= 1;
-  // A clamp can be delivered after the content has already grown again.
-  // While following, selfScrollTop is the last written bottom: if it no
-  // longer fits in the range, an idle upward event is not user intent.
-  const followRangeShrank =
+  // A clamp can arrive after content has regrown to or beyond its old height.
+  // A queued follow covers that intermediate layout change even when the old
+  // bottom fits again. Explicit gestures still take ownership before scrolling.
+  const followLayoutPending =
     shouldStickToBottom(sessionId) &&
     !userScrollPending &&
-    selfScrollTop > maxScrollTop + 1;
-  if (followRangeShrank) scrollToBottom();
-  if (!isSelfScroll && !followRangeShrank) {
+    (selfScrollTop > maxScrollTop + 1 || bottomScrollFrame !== 0);
+  if (followLayoutPending) scrollToBottom();
+  if (!isSelfScroll && !followLayoutPending) {
     if ((movedUp || movedDown) && jumpLandingContainer) {
       // A native scroll without a preceding gesture must also cancel a landing.
       viewportInteractionToken += 1;

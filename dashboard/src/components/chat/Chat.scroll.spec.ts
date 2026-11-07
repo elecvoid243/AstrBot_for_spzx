@@ -357,6 +357,67 @@ describe("Chat viewport ownership", () => {
     expect(h.writes).toEqual([1100]);
   });
 
+  it.each([1600, 1800])(
+    "keeps idle follow when content recovers to %ipx before a delayed clamp event",
+    async (height) => {
+      const h = scrollHarness();
+      await nextTick();
+      h.controller.scrollToBottom();
+      h.frame();
+      h.writes.length = 0;
+      // Markdown can replace a temporary block and regrow past the old bottom
+      // before the browser delivers the scroll event for its intermediate clamp.
+      h.setLayout({ top: 1000, height: 1400 });
+      h.setLayout({ height });
+      h.mutations.at(-1)!.callback([], {} as MutationObserver);
+      h.controller.handleMessagesScroll();
+      expect(h.controller.shouldStickToBottom("A")).toBe(true);
+      h.frame();
+      expect(h.panel.scrollTop).toBe(height - 400);
+
+      h.setLayout({ height: height + 200 });
+      h.observers.at(-1)!.callback([], {} as ResizeObserver);
+      h.frame();
+      expect(h.panel.scrollTop).toBe(height - 200);
+    },
+  );
+
+  it("follows DOM overflow growth that does not resize the observed content box", async () => {
+    const h = scrollHarness();
+    await nextTick();
+    h.controller.scrollToBottom();
+    h.frame();
+    h.setLayout({ height: 1900 });
+    h.mutations.at(-1)!.callback([], {} as MutationObserver);
+    h.frame();
+    expect(h.panel.scrollTop).toBe(1500);
+  });
+
+  it.each(["wheel", "keydown", "pointerdown", "touchstart"])(
+    "yields to %s while a layout-driven follow is queued",
+    async (type) => {
+      const h = scrollHarness();
+      await nextTick();
+      h.controller.scrollToBottom();
+      h.frame();
+      h.writes.length = 0;
+      h.setLayout({ height: 1800 });
+      h.mutations.at(-1)!.callback([], {} as MutationObserver);
+      h.controller.handleMessagesScrollIntent({
+        type,
+        target: h.panel,
+        deltaY: -100,
+        key: "ArrowUp",
+      });
+      h.setLayout({ top: 1100 });
+      h.controller.handleMessagesScroll();
+      h.frame();
+      expect(h.controller.shouldStickToBottom("A")).toBe(false);
+      expect(h.panel.scrollTop).toBe(1100);
+      expect(h.writes).toEqual([]);
+    },
+  );
+
   it("still yields to an upward gesture when content shrinks and regrows", () => {
     const h = scrollHarness();
     h.controller.scrollToBottom();

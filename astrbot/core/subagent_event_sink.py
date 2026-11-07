@@ -1,9 +1,7 @@
-"""Streams subagent execution progress into the WebChat SSE back queue.
+"""Publish durable WebChat subagent traces independently of the main reply.
 
-The sink is a thin mapper: it converts subagent ``AgentResponse``s into
-``subagent_event`` payloads written to the *main* run's back queue, so the
-existing ChatService fan-out forwards them to the dashboard without any
-new transport. Only instantiated for webchat foreground handoffs.
+The parent receives compact navigation cards; invocation pages subscribe to
+their own snapshots and deltas, including background work after the parent ends.
 """
 
 # Author: elecvoid243
@@ -36,15 +34,21 @@ class SubAgentEventSink:
         agent_name: str,
         input_preview: str = "",
         input_full: str = "",
+        *,
+        umo: str = "",
+        instance_id: str = "",
+        background: bool = False,
     ):
-        """Create a sink bound to the main run's back queue.
+        """Create an independent trace sink with parent navigation cards.
 
         Args:
             message_id: Main run message id (== back queue request id).
             agent_name: Display name of the subagent.
             input_preview: Truncated task description for the run header.
-            input_full: Untruncated task text, shown when the user expands
-                the task section in the dashboard.
+            input_full: Untruncated task text shown on the invocation page.
+            umo: Trusted WebChat origin for independent persistence and streams.
+            instance_id: Agent lifetime identity, distinct from its display name.
+            background: Whether the invocation runs in the background.
         """
         self.subagent_run_id = f"sa_{uuid.uuid4().hex[:12]}"
         self._message_id = message_id
@@ -52,10 +56,17 @@ class SubAgentEventSink:
         self._input_preview = input_preview
         self._input_full = input_full
         self._closed = False
+        self._umo = umo
+        self._instance_id = instance_id
+        self._background = background
 
     async def _emit(self, kind: str, payload: dict) -> None:
         if self._closed:
             return
+        # Close admission before awaiting persistence or a full parent queue.
+        # Late callbacks must not recreate an invocation already completed.
+        if kind in {"completed", "failed", "timeout"}:
+            self._closed = True
         event = {
             "type": "subagent_event",
             "message_id": self._message_id,
@@ -68,6 +79,28 @@ class SubAgentEventSink:
                 "ts": time.time(),
             },
         }
+        if self._umo:
+            from astrbot.core.subagent_progress import subagent_progress
+
+            await subagent_progress.record(
+                self._umo, self._instance_id, self._background, event["data"]
+            )
+            # The parent owns only a compact navigation card. Its queue may
+            # already be closed while a background invocation continues.
+            if kind not in {"started", "completed", "failed", "timeout"}:
+                return
+            event["data"] = {
+                **event["data"],
+                "detached": True,
+                "background": self._background,
+                "payload": {
+                    key: value
+                    for key, value in payload.items()
+                    if key not in {"result_text", "input_full"}
+                },
+            }
+            await webchat_queue_mgr.put_back_queue(self._message_id, event)
+            return
         accepted = await webchat_queue_mgr.put_back_queue(self._message_id, event)
         if not accepted:
             # Main run queue is gone (client aborted); stop emitting cheaply.

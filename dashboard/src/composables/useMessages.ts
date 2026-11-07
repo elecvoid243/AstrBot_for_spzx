@@ -2912,7 +2912,7 @@ export function partToPayload(part: MessagePart) {
   };
 }
 
-async function readSseStream(
+export async function readSseStream(
   body: ReadableStream<Uint8Array>,
   onPayload: (payload: any) => void,
 ) {

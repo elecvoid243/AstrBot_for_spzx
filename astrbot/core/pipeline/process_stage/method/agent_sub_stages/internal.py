@@ -481,6 +481,7 @@ class InternalAgentSubStage(Stage):
                         agent_runner.streaming = streaming_response
 
                     register_active_runner(event.unified_msg_origin, agent_runner)
+                    event.set_extra("_main_agent_execution_finished", False)
                     runner_registered = True
                     action_type = event.get_extra("action_type")
 
@@ -627,6 +628,10 @@ class InternalAgentSubStage(Stage):
                         ),
                     )
                 finally:
+                    # The pipeline can finish without a DONE runner state, e.g.
+                    # after exhausting the step budget. Background wakeups must
+                    # follow the execution lifetime, not that stale state.
+                    event.set_extra("_main_agent_execution_finished", True)
                     # clean all subagents if enabled
                     if build_cfg.subagent_orchestrator.get("main_enable"):
                         try:

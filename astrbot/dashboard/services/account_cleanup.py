@@ -21,6 +21,7 @@ from astrbot.core.db.po import (
     ProviderStat,
     SessionProjectRelation,
     UmoAlias,
+    WebChatSubagentRun,
     WebChatThread,
 )
 from astrbot.core.goal import goal_service
@@ -531,6 +532,7 @@ async def delete_account_data(app, account: DashboardAccount) -> None:
                 ),
             ),
             (WebChatThread, WebChatThread.creator == owner),
+            (WebChatSubagentRun, col(WebChatSubagentRun.session_id).in_(ids)),
             (ChatUIProject, ChatUIProject.creator == owner),
             (
                 PlatformSession,

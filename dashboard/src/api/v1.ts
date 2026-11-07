@@ -911,6 +911,10 @@ export const chatApi = {
   systemStreamUrl(sessionId: string) {
     return `/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/system-stream`;
   },
+  subagentRunsStreamUrl(sessionId: string, runId?: string) {
+    const base = `/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/subagent-runs/stream`;
+    return runId ? `${base}?run_id=${encodeURIComponent(runId)}` : base;
+  },
   liveWebSocketUrl(token: string, host = window.location.host) {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     return `${protocol}//${host}/api/v1/live-chat/ws?token=${encodeURIComponent(token)}`;

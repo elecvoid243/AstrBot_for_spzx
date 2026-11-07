@@ -681,6 +681,24 @@ class PlatformMessageHistory(TimestampMixin, SQLModel, table=True):
     )
 
 
+class WebChatSubagentRun(SQLModel, table=True):
+    """Durable progress of one WebChat subagent invocation."""
+
+    __tablename__: str = "webchat_subagent_runs"
+
+    run_id: str = Field(primary_key=True)
+    session_id: str = Field(primary_key=True, index=True)
+    umo: str = Field(index=True)
+    agent_instance_id: str = Field(index=True)
+    agent_name: str
+    background: bool = False
+    status: str = "running"
+    cleaned: bool = False
+    started_ts: float = 0
+    revision: int = 0
+    data: dict = Field(sa_type=JSON, nullable=False)
+
+
 class WebChatThread(TimestampMixin, SQLModel, table=True):
     """A side thread created from a selected WebChat assistant response."""
 

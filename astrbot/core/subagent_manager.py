@@ -10,6 +10,7 @@ from __future__ import annotations
 import os.path
 import re
 import time
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -61,6 +62,7 @@ class SubAgentConfig:
     description: str = ""
     workdir: str | None = None
     execution_timeout: float = 600.0
+    instance_id: str = field(default_factory=lambda: uuid.uuid4().hex)
 
 
 @dataclass
@@ -327,8 +329,9 @@ DAG Orchestration automatically delegate subagents. When you have 2+ independent
         cleaned = []
         for name in list(session.subagents.keys()):
             if name not in session.protected_agents:
-                cls.remove_subagent(session_id, name)
-                cleaned.append(name)
+                result = cls.remove_subagent(session_id, name)
+                if result.startswith(RET_SUBAGENT_REMOVED):
+                    cleaned.append(name)
 
         # 如果启用了公共上下文，处理清理
         if session.shared_context_enabled:
@@ -928,6 +931,7 @@ DAG Orchestration automatically delegate subagents. When you have 2+ independent
         for sid in expired_session_ids:
             session = cls._sessions.get(sid)
             if session:
+                cls._archive_subagent_runs(sid, list(session.subagents.values()))
                 agent_names = list(session.subagents.keys())
                 cleaned_agents_count += len(agent_names)
                 cls._sessions.pop(sid, None)
@@ -972,6 +976,7 @@ DAG Orchestration automatically delegate subagents. When you have 2+ independent
                 )
 
         if config.name in session.subagents:
+            cls._archive_subagent_runs(session_id, [session.subagents[config.name]])
             session.handoff_tools.pop(config.name, None)
         # When shared_context is enabled, the send_shared_context tool is allocated regardless of whether the main agent allocates the tool to the subagent
         if config.tools is None:
@@ -1105,6 +1110,7 @@ DAG Orchestration automatically delegate subagents. When you have 2+ independent
             return {"status": "not_found", "cleaned_agents": []}
         else:
             cleaned = list(session.subagents.keys())
+            cls._archive_subagent_runs(session_id, list(session.subagents.values()))
             for name in cleaned:
                 logger.info("[SubAgent:Cleanup] Cleaned: %s", name)
             return {"status": "cleaned", "cleaned_agents": cleaned}
@@ -1169,6 +1175,9 @@ DAG Orchestration automatically delegate subagents. When you have 2+ independent
             return f"{RET_SUBAGENT_REMOVE_FAILED}: {agent_name} is still RUNNING. Waiting for finish first."
 
         def _remove_by_name(name):
+            config = session.subagents.get(name)
+            if config is not None:
+                cls._archive_subagent_runs(session_id, [config])
             session.subagents.pop(name, None)
             session.protected_agents.discard(name)
             session.handoff_tools.pop(name, None)
@@ -1192,6 +1201,7 @@ DAG Orchestration automatically delegate subagents. When you have 2+ independent
                     removed += 1
                 return f"{RET_SUBAGENT_REMOVED}: Removed {removed} subagents. {len(session.subagents.keys())} subagents are reserved because they are still running."
             else:
+                cls._archive_subagent_runs(session_id, list(session.subagents.values()))
                 session.subagents.clear()
                 session.handoff_tools.clear()
                 session.protected_agents.clear()
@@ -1211,6 +1221,20 @@ DAG Orchestration automatically delegate subagents. When you have 2+ independent
                 return (
                     f"{RET_SUBAGENT_REMOVED}: Subagent {agent_name} has been removed."
                 )
+
+    @staticmethod
+    def _archive_subagent_runs(session_id: str, configs: list[SubAgentConfig]) -> None:
+        """Archive traces only for the exact lifetimes actually removed.
+
+        Args:
+            session_id: Trusted runtime origin being cleaned or replaced.
+            configs: Removed agent instances, excluding running agents kept alive.
+        """
+        from astrbot.core.subagent_progress import subagent_progress
+
+        subagent_progress.schedule_cleaned(
+            session_id, [config.instance_id for config in configs]
+        )
 
     @classmethod
     def get_handoff_tools_for_session(cls, session_id: str) -> list:

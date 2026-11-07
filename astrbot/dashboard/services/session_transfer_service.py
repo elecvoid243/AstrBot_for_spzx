@@ -20,6 +20,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from sqlmodel import select
+
 from astrbot import logger
 from astrbot.core.config.default import VERSION
 from astrbot.core.db import po as db_po
@@ -372,12 +374,54 @@ class SessionTransferService:
                 }
             )
 
+        serialized_history = [self._serialize_row(row) for row in history]
+        # Inline independent snapshots in the existing archive format. Imported
+        # invocations can then be indexed as cleaned without losing their trace.
+        streams = [(session_id, serialized_history)] + [
+            (entry["thread"]["thread_id"], entry["history"])
+            for entry in thread_payloads
+        ]
+        for stream_id, records in streams:
+            parts = [
+                part
+                for record in records
+                if isinstance(record.get("content"), dict)
+                for part in record["content"].get("message", [])
+                if isinstance(part, dict)
+                and part.get("type") == "subagent_run"
+                and part.get("detached")
+            ]
+            if not parts:
+                continue
+            async with self.db.get_db() as db_session:
+                traces = (
+                    (
+                        await db_session.execute(
+                            select(db_po.WebChatSubagentRun).where(
+                                db_po.WebChatSubagentRun.session_id == stream_id
+                            )
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+            by_id = {trace.run_id: trace for trace in traces}
+            for part in parts:
+                trace = by_id.get(part.get("subagent_run_id"))
+                if trace is not None:
+                    part.clear()
+                    part.update(deepcopy(trace.data))
+                    part.update(
+                        status=trace.status, background=trace.background, cleaned=True
+                    )
+                    part.pop("detached", None)
+
         data_payload = {
             "sessions": [
                 {
                     "session": self._serialize_row(session),
                     "conversations": await self._session_conversations(session_umo),
-                    "history": [self._serialize_row(row) for row in history],
+                    "history": serialized_history,
                     "threads": thread_payloads,
                     "preferences": preferences,
                     "attachments": attachments,

@@ -2786,6 +2786,29 @@ export type ChatFileChangeStatusResponse = (SuccessEnvelope);
 
 export type ChatFileChangeStatusError = unknown;
 
+export type ListChatSubagentRunsData = {
+    path: {
+        session_id: string;
+    };
+};
+
+export type ListChatSubagentRunsResponse = (SuccessEnvelope);
+
+export type ListChatSubagentRunsError = unknown;
+
+export type StreamChatSubagentRunsData = {
+    path: {
+        session_id: string;
+    };
+    query?: {
+        run_id?: string;
+    };
+};
+
+export type StreamChatSubagentRunsResponse = (string);
+
+export type StreamChatSubagentRunsError = unknown;
+
 export type PostSubagentFollowUpData = {
     body: ChatSubagentFollowUpRequest;
 };

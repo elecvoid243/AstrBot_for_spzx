@@ -645,6 +645,10 @@ class BotMessageAccumulator:
 
         if kind == "started":
             part["input_preview"] = str(payload.get("input_preview") or "")
+            part["input_full"] = str(payload.get("input_full") or "")
+            if data.get("detached"):
+                part["detached"] = True
+                part["background"] = bool(data.get("background"))
         elif kind == "text_delta":
             # Streamed assistant text is intermediate narration; keep it in
             # the chronological activity log. The final answer arrives via
@@ -1828,6 +1832,9 @@ class ChatService:
                 )
             webchat_queue_mgr.remove_queues(thread_id)
             self.running_convs.pop(thread_id, None)
+            from astrbot.core.subagent_progress import subagent_progress
+
+            await subagent_progress.delete_session(thread_id, db=self.db)
             await self.db.delete_webchat_thread(thread_id)
 
     async def load_current_conversation_history(self, session) -> tuple[str, list]:
@@ -3897,6 +3904,9 @@ class ChatService:
 
         if session.platform_id == "webchat":
             webchat_queue_mgr.remove_queues(session_id)
+            from astrbot.core.subagent_progress import subagent_progress
+
+            await subagent_progress.delete_session(session_id, db=self.db)
 
         await self.db.remove_preference(
             "webchat_session", session_id, "model_selection"

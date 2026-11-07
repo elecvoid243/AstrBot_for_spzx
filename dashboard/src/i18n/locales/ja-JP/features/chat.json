@@ -104,6 +104,17 @@
     "followUpSend": "送信",
     "followUpInterrupt": "強制中断"
   },
+  "subagentPages": {
+    "navigation": "会話ページ",
+    "main": "メイン会話",
+    "agents": "サブエージェント",
+    "background": "バックグラウンド",
+    "cleaned": "クリーンアップ済み",
+    "empty": "サブエージェントの呼び出しはありません",
+    "invocation": "呼び出し",
+    "loading": "履歴を読み込み中…",
+    "unavailable": "このサブエージェントの履歴を読み込めません。"
+  },
   "message": {
     "agentSource": "エージェントメッセージの送信元",
     "user": "ユーザー",

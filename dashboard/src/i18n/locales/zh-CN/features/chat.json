@@ -422,6 +422,17 @@
       "polling": "长轮询中"
     }
   },
+  "subagentPages": {
+    "navigation": "会话子页面",
+    "main": "主对话",
+    "agents": "子代理",
+    "background": "后台",
+    "cleaned": "已清理",
+    "empty": "暂无子代理调用",
+    "invocation": "调用",
+    "loading": "正在加载子代理轨迹…",
+    "unavailable": "无法加载该子代理的轨迹。"
+  },
   "subagentStatus": {
     "running": "运行中",
     "completed": "已完成",

@@ -422,6 +422,17 @@
       "polling": "Polling"
     }
   },
+  "subagentPages": {
+    "navigation": "Conversation pages",
+    "main": "Main conversation",
+    "agents": "Subagents",
+    "background": "Background",
+    "cleaned": "Cleaned up",
+    "empty": "No subagent calls yet",
+    "invocation": "Call",
+    "loading": "Loading subagent history…",
+    "unavailable": "This subagent history is unavailable."
+  },
   "subagentStatus": {
     "running": "Running",
     "completed": "Completed",

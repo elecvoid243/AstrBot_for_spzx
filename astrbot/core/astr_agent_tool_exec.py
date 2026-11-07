@@ -520,8 +520,9 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
         prov_settings: dict,
         agent_name: str,
         input_text: str | None,
+        background: bool = False,
     ) -> SubAgentEventSink | None:
-        """Create a progress sink for webchat foreground handoffs.
+        """Create a progress sink for WebChat subagent invocations.
 
         Returns None (feature off) for non-webchat platforms, when
         ``provider_settings.show_subagent_progress`` is False, or when the
@@ -532,6 +533,7 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
             prov_settings: The ``provider_settings`` config section.
             agent_name: Name of the subagent being delegated to.
             input_text: The delegated task text (truncated for preview).
+            background: Whether the invocation runs independently of its parent.
 
         Returns:
             A bound SubAgentEventSink, or None when progress streaming is off.
@@ -543,13 +545,20 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
         message_id = getattr(getattr(event, "message_obj", None), "message_id", None)
         if not message_id:
             return None
+        umo = getattr(event, "unified_msg_origin", "")
+        agent_session = SubAgentManager.get_session(umo)
+        agent_config = (
+            agent_session.subagents.get(agent_name) if agent_session else None
+        )
         return SubAgentEventSink(
             message_id=str(message_id),
             agent_name=agent_name,
             input_preview=(input_text or "")[:200],
-            # Send the full task text so the dashboard "expand" toggle can
-            # show the complete delegated task instead of a truncated copy.
+            # Keep the complete delegated task on the invocation page.
             input_full=input_text or "",
+            umo=umo,
+            instance_id=getattr(agent_config, "instance_id", ""),
+            background=background,
         )
 
     @classmethod
@@ -559,6 +568,7 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
         run_context: ContextWrapper[AstrAgentContext],
         *,
         image_urls_prepared: bool = False,
+        _background: bool = False,
         **tool_args: T.Any,
     ):
         tool_args = dict(tool_args)
@@ -785,7 +795,9 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
         )
         stream = prov_settings.get("streaming_response", False)
         # Progress sink for webchat ChatUI (None when platform/config opts out).
-        sink = cls._maybe_create_subagent_sink(event, prov_settings, agent_name, input_)
+        sink = cls._maybe_create_subagent_sink(
+            event, prov_settings, agent_name, input_, background=_background
+        )
 
         # Create trace span for subagent execution
         from astrbot.core.utils.trace import TraceSpan
@@ -956,9 +968,9 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
             )
 
         # 添加执行超时控制
-        if sink:
-            await sink.start()
         try:
+            if sink:
+                await sink.start()
             if execution_timeout > 0:
                 llm_resp = await asyncio.wait_for(
                     _run_subagent(), timeout=execution_timeout
@@ -1195,6 +1207,7 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
                         tool,
                         run_context,
                         image_urls_prepared=True,
+                        _background=True,
                         **tool_args,
                     )
                 ) as results:
@@ -1440,6 +1453,18 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
         if not llm_resp:
             logger.warning("background task agent got no response")
             return
+        if (
+            not cron_event._has_send_oper
+            and event.get_platform_name() == "webchat"
+            and llm_resp.completion_text
+            and not stop_signal.is_set()
+        ):
+            # A normal final answer must reach ChatUI even when the awakened
+            # model did not explicitly call send_message_to_user.
+            delivered = await ctx.send_message(
+                session, MessageChain().message(llm_resp.completion_text)
+            )
+            cron_event._has_send_oper = bool(delivered)
         # Set once anything reaches this session, e.g. via send_message_to_user.
         if not cron_event._has_send_oper:
             logger.warning(
@@ -1940,7 +1965,9 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
             if context_extra and isinstance(context_extra, dict):
                 main_agent_runner = context_extra.get("main_agent_runner")
                 main_agent_is_running = (
-                    main_agent_runner is not None and not main_agent_runner.done()
+                    main_agent_runner is not None
+                    and not event.get_extra("_main_agent_execution_finished", False)
+                    and not main_agent_runner.done()
                 )
             else:
                 main_agent_is_running = False

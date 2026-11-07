@@ -734,11 +734,19 @@
         class="conversation-stack"
         :class="{ 'is-empty': isEmptyChat }"
       >
+        <SubagentPages
+          v-if="currSessionId"
+          ref="subagentPagesRef"
+          :session-id="currSessionId"
+          :title="currentSessionTitle"
+          :is-dark="isDark"
+          @view-change="onSubagentViewChange"
+        />
         <!-- Persistent side chats, started empty or from a selected excerpt.
              The entry sits in the top-right margin, clear of the 28px
              scroll-marker rail; hovering it lists this session's side chats. -->
         <div
-          v-if="currSessionId && !isReadonlySession"
+          v-if="currSessionId && !isReadonlySession && !subagentPageOpen"
           class="side-chat-entry"
           @mouseenter="openSideChatMenu"
           @mouseleave="sideChatMenuOpen = false"
@@ -817,6 +825,7 @@
         </div>
 
         <section
+          v-if="!subagentPageOpen"
           ref="messagesContainer"
           class="messages-panel"
           @scroll="handleMessagesScroll"
@@ -1033,7 +1042,10 @@
              floats over the panel without taking scroll space or needing the
              composer's measured height. -->
         <transition name="jump-to-bottom">
-          <div v-if="showJumpToBottom" class="jump-to-bottom-row">
+          <div
+            v-if="showJumpToBottom && !subagentPageOpen"
+            class="jump-to-bottom-row"
+          >
             <button
               type="button"
               class="jump-to-bottom"
@@ -1051,7 +1063,7 @@
           </div>
         </transition>
 
-        <section ref="composerShell" class="composer-shell">
+        <section v-if="!subagentPageOpen" ref="composerShell" class="composer-shell">
           <template v-if="!isReadonlySession">
             <ChatInput
               ref="inputRef"
@@ -1370,6 +1382,7 @@ const liveSelection = ref<{
   thinkingEffort?: string;
 }>();
 import ChatMessageList from "@/components/chat/ChatMessageList.vue";
+import SubagentPages from "@/components/chat/SubagentPages.vue";
 import ChatScrollMarkers, {
   type ChatScrollMarker,
 } from "@/components/chat/ChatScrollMarkers.vue";
@@ -1689,6 +1702,8 @@ const {
 } = useProviderModelSelection(currSessionId);
 const commandSending = ref(false);
 const messagesContainer = ref<HTMLElement | null>(null);
+const subagentPageOpen = ref(false);
+const subagentPagesRef = ref<InstanceType<typeof SubagentPages> | null>(null);
 const messagesListShell = ref<HTMLElement | null>(null);
 const composerShell = ref<HTMLElement | null>(null);
 const inputRef = ref<InstanceType<typeof ChatInput> | null>(null);
@@ -2806,6 +2821,37 @@ provide("isDark", isDark);
 // centre it (see centerInMessagesPanel) instead of writing scrollTop itself,
 // so stick-to-bottom and the reading anchor stay in one owner.
 provide("centerInMessagesPanel", centerInMessagesPanel);
+provide("openSubagentRun", async (part: Record<string, any>, sessionId?: string) => {
+  if (!(await confirmFileNavigation())) return;
+  viewportInteractionToken += 1;
+  endJumpLanding();
+  endJumpScrollLock();
+  jumpInProgress.value = false;
+  closeThreadPanel();
+  reasoningPanelOpen.value = false;
+  activeReasoningTarget.value = null;
+  refsSidebarOpen.value = false;
+  gitDiffSidebarOpen.value = false;
+  closeTodoMenu();
+  chatHeader.SET_WORKSPACE_FILES_OPEN(false);
+  chatHeader.SET_GOAL_SIDEBAR_OPEN(false);
+  subagentPagesRef.value?.openRun(part, sessionId || currSessionId.value);
+});
+provide("subagentRunMetadata", (runId: string) => subagentPagesRef.value?.getRun(runId));
+
+async function onSubagentViewChange(open: boolean) {
+  if (open === subagentPageOpen.value) return;
+  if (open) recordViewportAnchor(currSessionId.value);
+  subagentPageOpen.value = open;
+  if (open) return;
+  await nextTick();
+  if (pendingViewportSessionId) return;
+  if (shouldStickToBottom(currSessionId.value)) scrollToBottom();
+  else {
+    const anchor = viewportAnchorBySession.get(currSessionId.value);
+    if (anchor) void jumpToViewport(anchor, false);
+  }
+}
 
 async function scrollToMessageFromQuery() {
   const idxStr = route.query.scrollToIndex as string | undefined;

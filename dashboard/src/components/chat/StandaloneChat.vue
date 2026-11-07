@@ -8,7 +8,19 @@
         </div>
       </div>
     </transition>
-    <section ref="messagesContainer" class="standalone-messages">
+    <SubagentPages
+      v-if="currSessionId"
+      ref="subagentPagesRef"
+      :session-id="currSessionId"
+      :title="currentSession?.display_name || tm('subagentPages.main')"
+      :is-dark="isDark"
+      @view-change="onSubagentViewChange"
+    />
+    <section
+      v-if="!subagentPageOpen"
+      ref="messagesContainer"
+      class="standalone-messages"
+    >
       <div v-if="initializing" class="standalone-state">
         <v-progress-circular indeterminate size="28" width="3" />
       </div>
@@ -176,7 +188,7 @@
       </div>
     </section>
 
-    <section class="standalone-composer">
+    <section v-if="!subagentPageOpen" class="standalone-composer">
       <ChatInput
         ref="inputRef"
         v-model:prompt="draft"
@@ -225,11 +237,13 @@ import {
   onBeforeUnmount,
   onMounted,
   reactive,
+  provide,
   ref,
   watch,
 } from "vue";
 import { chatApi, configRouteApi, fileApi } from "@/api/v1";
 import ChatInput from "@/components/chat/ChatInput.vue";
+import SubagentPages from "@/components/chat/SubagentPages.vue";
 import { useDragUpload } from "@/composables/useDragUpload";
 import {
   CHAT_MARKDOWN_CUSTOM_TAGS,
@@ -277,6 +291,22 @@ const initializing = ref(false);
 const enableStreaming = ref(true);
 const shouldStickToBottom = ref(true);
 const messagesContainer = ref<HTMLElement | null>(null);
+const subagentPageOpen = ref(false);
+const subagentPagesRef = ref<InstanceType<typeof SubagentPages> | null>(null);
+let mainScrollTop = 0;
+provide("openSubagentRun", (part: Record<string, any>, sessionId?: string) =>
+  subagentPagesRef.value?.openRun(part, sessionId || currSessionId.value),
+);
+provide("subagentRunMetadata", (runId: string) => subagentPagesRef.value?.getRun(runId));
+async function onSubagentViewChange(open: boolean) {
+  if (open) mainScrollTop = messagesContainer.value?.scrollTop || 0;
+  subagentPageOpen.value = open;
+  if (!open) {
+    await nextTick();
+    if (shouldStickToBottom.value) scrollToBottom();
+    else if (messagesContainer.value) messagesContainer.value.scrollTop = mainScrollTop;
+  }
+}
 const inputRef = ref<InstanceType<typeof ChatInput> | null>(null);
 const imagePreview = reactive({ visible: false, url: "" });
 

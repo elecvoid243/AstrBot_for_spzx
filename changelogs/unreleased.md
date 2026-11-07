@@ -1,5 +1,7 @@
 # Unreleased
 
+- **Expand subagent card → read-only invocation page** under the session's Main conversation / Subagents navigation. Show independent Running and Background markers, group removed and legacy invocations under Cleaned up, and mount only the selected transcript. Remove the card's follow-up input. Persist and resume background progress beyond the parent reply's lifetime, and deliver an awakened WebChat agent's final answer even without an explicit send-message tool call. / **展开子代理卡片 → 只读调用子页面**，从会话顶部的主对话／子代理入口切换；独立显示运行中与后台标志，已移除及旧调用归入已清理分组，只挂载当前轨迹，移除追加消息入口；后台进度可在主回复结束后继续保存和恢复，唤醒后的普通最终回复也会送达 ChatUI。
+
 - Unify **Ask in thread → Ask in side chat** with the saved side-chat panel, full composer and menu. Quoted chats keep their excerpt and checkpoint context; existing quoted threads remain available. / 将 **在新分支中询问 → 在侧边聊天中询问**，统一使用侧边聊天面板、完整输入框和保存菜单，保留选中文字及检查点上下文，兼容已有引用分支。
 
 - Keep internal image attachment markers out of ChatUI reply text, completion events and recovery snapshots while preserving image display and surrounding text. / 修复 ChatUI 图片附件内部标记泄漏到回复正文、结束事件与恢复快照的问题，保留图片显示及前后文字。

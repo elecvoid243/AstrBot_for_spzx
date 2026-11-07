@@ -2072,6 +2072,46 @@ paths:
         "200":
           $ref: "#/components/responses/Ok"
 
+  /api/v1/chat/sessions/{session_id}/subagent-runs:
+    get:
+      operationId: listChatSubagentRuns
+      summary: List invocation metadata for an owned WebChat session
+      description: Requires current account ownership of the persisted WebChat session or thread.
+      security: [{ BearerAuth: [] }]
+      tags: [Chat]
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Compact invocation metadata without execution traces
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SuccessEnvelope' }
+  /api/v1/chat/sessions/{session_id}/subagent-runs/stream:
+    get:
+      operationId: streamChatSubagentRuns
+      summary: Stream invocation metadata or one trace independently of its parent reply
+      description: Requires current account ownership; an invocation identifier cannot grant access to another session.
+      security: [{ BearerAuth: [] }]
+      tags: [Chat]
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          schema: { type: string }
+        - name: run_id
+          in: query
+          required: false
+          schema: { type: string, maxLength: 128 }
+      responses:
+        '200':
+          description: Snapshot-first SSE with sequenced deltas and recovery snapshots
+          content:
+            text/event-stream:
+              schema: { type: string }
   /api/v1/chat/subagent-follow-up:
     post:
       tags: [Chat]

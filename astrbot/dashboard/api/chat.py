@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import os
 import sys
 import time
@@ -13,6 +14,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from astrbot import logger
 from astrbot.core.subagent_manager import SubAgentManager
+from astrbot.core.subagent_progress import subagent_progress
 from astrbot.core.tools import fs_access
 from astrbot.core.tools.computer_tools.edit_history import (
     get_history_manager,
@@ -945,6 +947,73 @@ async def resume_chat_run(
             "Transfer-Encoding": "chunked",
             "Connection": "keep-alive",
         },
+    )
+
+
+@router.get("/chat/sessions/{session_id}/subagent-runs")
+async def list_chat_subagent_runs(
+    session_id: str,
+    auth: AuthContext = Depends(require_chat_scope),
+    service: ChatService = Depends(get_service),
+):
+    """List compact invocation entries for an owned WebChat session.
+
+    Args:
+        session_id: Parent WebChat session or thread.
+        auth: Authenticated dashboard owner.
+        service: Session ownership authority.
+
+    Returns:
+        Navigation metadata, excluding execution traces.
+    """
+    try:
+        await service.require_owned_chat_session(
+            auth.username, session_id, allow_thread=True
+        )
+    except ChatServiceError as exc:
+        raise ApiError("Resource is unavailable", status_code=403) from exc
+    return ok(await subagent_progress.list_runs(session_id))
+
+
+@router.get("/chat/sessions/{session_id}/subagent-runs/stream")
+async def stream_chat_subagent_runs(
+    session_id: str,
+    run_id: str | None = Query(default=None, max_length=128),
+    auth: AuthContext = Depends(require_chat_scope),
+    service: ChatService = Depends(get_service),
+):
+    """Subscribe to metadata or one trace independently of the main reply.
+
+    Args:
+        session_id: Parent WebChat session or thread.
+        run_id: Optional invocation whose full trace is being viewed.
+        auth: Authenticated dashboard owner.
+        service: Session ownership authority.
+
+    Returns:
+        Snapshot-first event stream with bounded, recoverable live updates.
+
+    Raises:
+        ApiError: The invocation is not part of the owned session.
+    """
+    try:
+        await service.require_owned_chat_session(
+            auth.username, session_id, allow_thread=True
+        )
+    except ChatServiceError as exc:
+        raise ApiError("Resource is unavailable", status_code=403) from exc
+    entries = await subagent_progress.list_runs(session_id)
+    if run_id and not any(entry["subagent_run_id"] == run_id for entry in entries):
+        raise ApiError("Resource is unavailable", status_code=404)
+
+    async def events():
+        async for payload in subagent_progress.stream(session_id, run_id):
+            yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 

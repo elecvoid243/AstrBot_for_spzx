@@ -431,6 +431,24 @@ Sent audio and video attachment cards include playback controls and a download b
 
 Under `Settings → Maintenance`, backup imports also show upload progress and offer `Resume Upload` after an upload failure. Chunked backup uploads support up to 8 GiB. These controls extend the existing chat attachment area and backup import dialog; their entry points have not moved.
 
+### Subagent pages
+
+The conversation title appears above **Main conversation** and the **Subagents** menu. Each invocation has its own read-only page. Click the compact subagent card in the main reply, or select a call in the menu, to view its assigned task, streamed thoughts, tools and answer using the same message layout as the main conversation. Subagent pages have no message composer or follow-up input.
+
+![Main conversation with the subagent picker](./images/subagent-pages-main.png)
+
+**Running** identifies an active invocation; **Background** identifies how it was launched, so both can appear together. Finishing a task does not itself mean the agent was cleaned up. Actual removal or automatic cleanup moves its invocations into the collapsed **Cleaned up** group. Older records without lifecycle metadata also appear there and retain their saved content. Cleaning up the agent does not close a page you are reading.
+
+![Read-only subagent page with live background output](./images/subagent-pages-detail.png)
+
+New calls update the menu without switching your page. Use **Main conversation** to return; refreshing or reopening a session also starts on the main page. Only the selected page's message components are mounted. Background progress and its final status are saved independently of the main reply, and reconnecting loads the current snapshot even when the main reply has already ended. When a background result wakes the main agent, its normal final answer is delivered to ChatUI even if it did not explicitly call the message-sending tool.
+
+| Previous entry | Current entry |
+| --- | --- |
+| Expand a subagent card inside a main reply | Click the card → that invocation's read-only page |
+| Follow-up input inside the expanded card | Removed; subagent pages are read-only |
+| Old subagent execution cards | Subagents → Cleaned up → the saved invocation |
+
 ### Side Chats and Branch Threads
 
 With a conversation open, hover over or click **New side chat** (the speech-bubble-plus button at the top right of the message area). The menu lists the side chats saved for this conversation; choose **New side chat** to start another. It starts empty, without a quoted message or inherited main-conversation context. Include any background the separate question needs yourself.

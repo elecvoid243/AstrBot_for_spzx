@@ -35,6 +35,68 @@ from astrbot.dashboard.services.session_transfer_service import (
 SESSION_ID = "sess-1"
 
 
+@pytest.mark.asyncio
+async def test_export_hydrates_only_owned_independent_subagent_snapshots(tmp_path):
+    from astrbot.core.db.po import WebChatSubagentRun
+    from astrbot.core.db.sqlite import SQLiteDatabase
+
+    database = SQLiteDatabase(str(tmp_path / "subagent-export.db"))
+    await database.initialize()
+    database.inited = True
+    try:
+        async with database.get_db() as session:
+            for owner, text in [
+                (SESSION_ID, "owned full trace"),
+                ("foreign-session", "private foreign trace"),
+            ]:
+                session.add(
+                    WebChatSubagentRun(
+                        run_id="same-run",
+                        session_id=owner,
+                        umo="",
+                        agent_instance_id="",
+                        agent_name="worker",
+                        background=True,
+                        status="completed",
+                        data={
+                            "type": "subagent_run",
+                            "subagent_run_id": "same-run",
+                            "agent_name": "worker",
+                            "activity": [{"kind": "think", "text": text}],
+                            "text": text,
+                        },
+                    )
+                )
+            await session.commit()
+        service = _make_service()
+        service.db.get_db = database.get_db
+        history = _row(
+            content={
+                "type": "bot",
+                "message": [
+                    {
+                        "type": "subagent_run",
+                        "subagent_run_id": "same-run",
+                        "detached": True,
+                    }
+                ],
+            }
+        )
+        service.platform_history_mgr.get = AsyncMock(return_value=[history])
+        exported = await service.export_session("alice", SESSION_ID)
+        with zipfile.ZipFile(exported.path) as archive:
+            data = json.loads(archive.read(EXPORT_DATA_NAME))
+        part = data["sessions"][0]["history"][0]["content"]["message"][0]
+        assert part["text"] == "owned full trace"
+        assert part["background"] is True
+        assert part["cleaned"] is True
+        assert "detached" not in part
+        assert "private foreign trace" not in json.dumps(data)
+        assert history.content["message"][0]["detached"] is True
+    finally:
+        await database.engine.dispose()
+
+
 def _row(**overrides):
     """Build a real PlatformMessageHistory row (same style as
     tests/test_chat_history_pagination.py)."""

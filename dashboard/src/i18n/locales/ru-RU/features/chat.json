@@ -386,6 +386,17 @@
       "polling": "Опрос"
     }
   },
+  "subagentPages": {
+    "navigation": "Страницы диалога",
+    "main": "Основной диалог",
+    "agents": "Субагенты",
+    "background": "В фоне",
+    "cleaned": "Очищенные",
+    "empty": "Вызовов субагентов пока нет",
+    "invocation": "Вызов",
+    "loading": "Загрузка истории субагента…",
+    "unavailable": "История этого субагента недоступна."
+  },
   "subagentStatus": {
     "running": "Выполняется",
     "completed": "Завершено",

@@ -626,9 +626,11 @@ async def test_background_wakeup_applies_max_agent_step(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("delivered", [False, True])
+@pytest.mark.parametrize("platform", ["webchat", "other"])
 async def test_background_wakeup_warns_when_result_is_not_sent_to_user(
     monkeypatch: pytest.MonkeyPatch,
     delivered: bool,
+    platform: str,
 ):
     """The user only sees the result if the main agent sends it to them."""
     from astrbot.core.tools.message_tools import SendMessageToUserTool
@@ -682,8 +684,10 @@ async def test_background_wakeup_warns_when_result_is_not_sent_to_user(
     )
     logger = MagicMock()
     monkeypatch.setattr("astrbot.core.astr_agent_tool_exec.logger", logger)
+    event = _DummyEvent([])
+    event.get_platform_name = lambda: platform
     run_context = ContextWrapper(
-        context=SimpleNamespace(event=_DummyEvent([]), context=context),
+        context=SimpleNamespace(event=event, context=context),
         tool_call_timeout=120,
     )
 
@@ -697,12 +701,13 @@ async def test_background_wakeup_warns_when_result_is_not_sent_to_user(
         summary_name="BackgroundTask",
     )
 
-    assert send_message.await_count == int(delivered)
+    visible = delivered or platform == "webchat"
+    assert send_message.await_count == int(visible)
     warned = any(
         "long_tool" in call.args[0] and "task_id=task-id" in call.args[0]
         for call in logger.warning.call_args_list
     )
-    assert warned is not delivered
+    assert warned is not visible
 
 
 @pytest.mark.asyncio
@@ -893,6 +898,7 @@ class _ToolLoopEvent(AstrMessageEvent):
 
     def __init__(self) -> None:
         self.unified_msg_origin = "webchat:FriendMessage:webchat!user!session"
+        self._extras = {}
 
     def get_platform_name(self):
         return "test"
@@ -954,6 +960,15 @@ def handoff_env(monkeypatch):
         lambda cls, session_id, agent_name=None: ""
     )
     queue_stub = _RecordingQueueStub()
+    queue_stub.progress_events = []
+    monkeypatch.setattr(
+        "astrbot.core.subagent_progress.subagent_progress.record",
+        AsyncMock(
+            side_effect=lambda _umo, _instance, _background, data: (
+                queue_stub.progress_events.append(data)
+            )
+        ),
+    )
     monkeypatch.setattr(
         "astrbot.core.subagent_event_sink.webchat_queue_mgr", queue_stub
     )
@@ -970,6 +985,33 @@ def _first_live_handle():
     if not session or not session.subagent_runners:
         return None
     return next(iter(session.subagent_runners.values()))
+
+
+@pytest.mark.asyncio
+async def test_cancel_during_progress_admission_emits_a_terminal_event(
+    handoff_env, monkeypatch
+):
+    admitted = asyncio.Event()
+    kinds = []
+
+    async def record(_umo, _instance, _background, data):
+        kinds.append(data["kind"])
+        if data["kind"] == "started":
+            admitted.set()
+            await asyncio.Event().wait()
+
+    monkeypatch.setattr(
+        "astrbot.core.subagent_progress.subagent_progress.record", record
+    )
+    tool, context = _live_handoff_args(_FinalAnswerProvider())
+    results = FunctionToolExecutor._execute_handoff(tool, context, input="task")
+    task = asyncio.create_task(anext(results))
+    await asyncio.wait_for(admitted.wait(), timeout=5)
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+    await results.aclose()
+    assert task.cancelled()
+    assert kinds == ["started", "failed"]
 
 
 def _live_handoff_args(provider, *, extra=None, messages=None):
@@ -1153,7 +1195,7 @@ async def test_handoff_relays_unconsumed_follow_up_to_main_agent(handoff_env):
     text = results[-1].content[0].text
     assert "[SYSTEM NOTICE]" in text
     assert "too late note" in text
-    kinds = [p["data"]["kind"] for p in handoff_env.payloads]
+    kinds = [p["kind"] for p in handoff_env.progress_events]
     assert "user_message_relayed" in kinds
 
 
@@ -1445,6 +1487,7 @@ async def test_stopped_managed_background_handoff_finishes_pending_record(
 async def test_external_runner_cancel_closes_pending_tool_executor():
     runner = ToolLoopAgentRunner()
     runner._abort_signal = asyncio.Event()
+    runner._manual_pause = None
     started, release, closed, side_effect = (asyncio.Event() for _ in range(4))
 
     async def execute():

@@ -43,6 +43,8 @@ export interface SubAgentEventData {
   kind?: string;
   payload?: Record<string, unknown>;
   ts?: number;
+  detached?: boolean;
+  background?: boolean;
 }
 
 export function applySubAgentEvent(parts: MessagePart[], data: unknown): void {
@@ -84,6 +86,8 @@ export function applySubAgentEvent(parts: MessagePart[], data: unknown): void {
   if (kind === "started") {
     part.input_preview = String(payload.input_preview || "");
     part.input_full = String(payload.input_full || "");
+    part.detached = Boolean(event.detached);
+    part.background = Boolean(event.background);
   } else if (kind === "text_delta") {
     // Streamed assistant text is intermediate narration; keep it in the
     // chronological activity log. The final answer arrives via the

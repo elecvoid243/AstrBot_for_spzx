@@ -56,11 +56,21 @@ export function normalizeMessageParts(parts: unknown): MessagePart[] {
         think: String(part.think ?? part.text ?? ""),
       };
     }
-    // Author: elecvoid243, 2026-07-26
-    // Plan: docs/superpowers/plans/2026-07-26-subagent-chatui-progress.md
-    // `subagent_run` parts are already structured (live reducer output or
-    // persisted history) and intentionally fall through to the verbatim
-    // `{ ...part }` passthrough below.
+    // Long traces are loaded by the invocation page. Keeping them inside the
+    // parent's reactive history would still traverse them on every streamed token.
+    if (part.type === "subagent_run") {
+      return {
+        type: "subagent_run",
+        subagent_run_id: part.subagent_run_id,
+        agent_name: part.agent_name,
+        status: part.status,
+        background: part.background,
+        cleaned: part.cleaned,
+        started_ts: part.started_ts,
+        execution_time: part.execution_time,
+        detached: true,
+      };
+    }
     // ① v1.0 schema:InteractiveChoicePart 已通过 SSE 顶层 type 到达,
     //    不再解 plain 文本/拆 tool_call(见 parseInteractiveChoice 模块注释)。
     // ② 校验 + 截断(防御性兜底,后端已截过一遍)

@@ -301,6 +301,7 @@ class AuthService:
                 account.token_version += 1
                 session.add(account)
                 await session.commit()
+                self.accounts.invalidate_access(account.account_id)
             token = self.generate_jwt(username, account=account)
             return AuthServiceResult(
                 data={
@@ -544,6 +545,7 @@ class AuthService:
                 account.token_version += 1
                 session.add(account)
                 await session.commit()
+                self.accounts.invalidate_access(account.account_id)
             return AuthServiceResult(message="Updated account successfully")
 
     def generate_jwt(

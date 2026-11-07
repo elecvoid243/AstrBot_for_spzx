@@ -18,6 +18,15 @@ class AccountService:
     def __init__(self, db: BaseDatabase, config: AstrBotConfig) -> None:
         self.db = db
         self.config = config
+        self.access_revisions: dict[str, int] = {}
+
+    def invalidate_access(self, account_id: str) -> None:
+        """Invalidate prepared admissions after a committed security change.
+
+        Args:
+            account_id: Stable identity whose account or remote grant changed.
+        """
+        self.access_revisions[account_id] = self.access_revisions.get(account_id, 0) + 1
 
     async def ensure_admin(self) -> DashboardAccount:
         """Idempotently import the configured administrator and security updates.
@@ -93,6 +102,7 @@ class AccountService:
                     account.token_version += 1
                     session.add(account)
                     await session.commit()
+                    self.invalidate_access(account.account_id)
                 return account
 
     async def resolve(self, payload: dict) -> DashboardAccount | None:

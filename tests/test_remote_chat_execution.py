@@ -246,16 +246,44 @@ async def test_unknown_receipt_and_no_credential_forwarding(connected_instances)
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("revoke", ["key", "exposure", "switch"])
+@pytest.mark.parametrize(
+    "revoke", ["key", "exposure", "switch", "disable", "reset-password"]
+)
 async def test_grant_change_during_final_session_read_rejects_input(
     connected_instances, monkeypatch, revoke
 ):
     _, instance, _ = connected_instances
     remote, server, core, db, admin, credential = instance
     service = server.asgi_app.state.services.remote_chat
-    session = await db.create_platform_session(creator=admin["resource_owner"])
+    target = admin
+    if revoke in {"disable", "reset-password"}:
+        from tests.test_multi_user_chat import USER_PASSWORD, login
+
+        admin_headers = {"Authorization": "Bearer " + admin["token"]}
+        created = await remote.post(
+            "/api/v1/accounts",
+            headers=admin_headers,
+            json={"username": "remote-account", "password": USER_PASSWORD},
+        )
+        assert created.status_code == 200
+        target = await login(remote, "remote-account", USER_PASSWORD)
+        target_headers = {"Authorization": "Bearer " + target["token"]}
+        exposed = await remote.put(
+            "/api/v1/chat/remote-access/exposure",
+            headers=target_headers,
+            json={"mode": "all"},
+        )
+        assert exposed.status_code == 200
+        credential = (
+            await remote.post(
+                "/api/v1/chat/remote-access/credentials",
+                headers=target_headers,
+                json={"name": "Account invalidation test"},
+            )
+        ).json()["data"]
+    session = await db.create_platform_session(creator=target["resource_owner"])
     request_id = str(uuid4())
-    identity = (admin["account_id"], session.session_id, request_id)
+    identity = (target["account_id"], session.session_id, request_id)
     entered, release = asyncio.Event(), asyncio.Event()
     final_auth = False
     original_authenticate = service.authenticate
@@ -297,11 +325,19 @@ async def test_grant_change_during_final_session_read_rejects_input(
             headers=headers,
             json={"mode": "selected", "session_ids": []},
         )
-    else:
+    elif revoke == "switch":
         revoked = await remote.put(
             "/api/v1/chat/remote-access/enabled",
             headers=headers,
             json={"enabled": False},
+        )
+    else:
+        revoked = await remote.post(
+            f"/api/v1/accounts/{target['account_id']}/{revoke}",
+            headers=headers,
+            json={"password": "UpdatedRemotePassword123!"}
+            if revoke == "reset-password"
+            else None,
         )
     assert revoked.status_code == 200
     release.set()

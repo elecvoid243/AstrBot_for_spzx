@@ -29,15 +29,27 @@ class RemoteChatService:
     """Keep remote credentials separate from global API keys and login secrets."""
 
     def __init__(
-        self, db: BaseDatabase, config: AstrBotConfig, chat: ChatService
+        self,
+        db: BaseDatabase,
+        config: AstrBotConfig,
+        chat: ChatService,
+        grant_revisions: dict[str, int],
     ) -> None:
+        """Share account invalidations with the final remote admission check.
+
+        Args:
+            db: Authoritative account, credential and session storage.
+            config: Live instance settings.
+            chat: Ordinary local ChatUI execution service.
+            grant_revisions: Account service's process-local invalidation epochs.
+        """
         self.db = db
         self.config = config
         self.chat = chat
         # Bounded, process-local admission receipts. These never schedule delivery.
         self.receipts: dict[tuple[str, str, str], dict] = {}
         # Invalidate admissions whose asynchronous reads overlap a grant change.
-        self.grant_revisions: dict[str, int] = {}
+        self.grant_revisions = grant_revisions
 
     def require_enabled(self) -> None:
         """Gate new inbound and outbound remote operations using live config.

@@ -194,6 +194,7 @@ def create_dashboard_asgi_app(
         dashboard_static_folder=static_folder,
     )
     chat = ChatService(db, core_lifecycle)
+    auth = AuthService(db, core_lifecycle.astrbot_config)
     core_lifecycle.plugin_manager.context.session_message_service = chat
     services = SimpleNamespace(
         config_profiles=ConfigProfileService(core_lifecycle, db, runtime=stats.runtime),
@@ -202,10 +203,12 @@ def create_dashboard_asgi_app(
         config_routes=ConfigRoutingService(core_lifecycle),
         agent_collab=AgentCollabService(),
         api_keys=ApiKeyService(db),
-        auth=AuthService(db, core_lifecycle.astrbot_config),
+        auth=auth,
         backups=BackupService(db, core_lifecycle),
         chat=chat,
-        remote_chat=RemoteChatService(db, core_lifecycle.astrbot_config, chat),
+        remote_chat=RemoteChatService(
+            db, core_lifecycle.astrbot_config, chat, auth.accounts.access_revisions
+        ),
         chat_projects=ChatUIProjectService(db),
         commands=CommandService(core_lifecycle.astrbot_config, core_lifecycle),
         conversations=ConversationService(db, core_lifecycle),

@@ -98,6 +98,7 @@ async def reset_account_password(
             account.token_version += 1
             session.add(account)
             await session.commit()
+            request.app.state.services.auth.accounts.invalidate_access(account_id)
     return ok(AccountInfo.model_validate(account, from_attributes=True).model_dump())
 
 
@@ -134,6 +135,7 @@ async def disable_account(
                 account.token_version += 1
                 session.add(account)
                 await session.commit()
+                request.app.state.services.auth.accounts.invalidate_access(account_id)
     return ok(AccountInfo.model_validate(account, from_attributes=True).model_dump())
 
 
@@ -174,6 +176,7 @@ async def enable_account(
                 account.token_version += 1
                 session.add(account)
                 await session.commit()
+                request.app.state.services.auth.accounts.invalidate_access(account_id)
     return ok(AccountInfo.model_validate(account, from_attributes=True).model_dump())
 
 
@@ -213,6 +216,7 @@ async def delete_account(
             account.token_version += 1
             session.add(account)
             await session.commit()
+            request.app.state.services.auth.accounts.invalidate_access(account_id)
         state.deleting_accounts.add(account_id)
     cleanup = asyncio.create_task(delete_account_data(request.app, account))
     try:

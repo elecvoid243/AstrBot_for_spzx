@@ -12,7 +12,7 @@ Create a separate named key for each direct binding. Copy it when it appears: pl
 
 ![Personal remote session exposure and connection keys](./images/chat-remote-access.jpg)
 
-An authenticated API client uses `Authorization: RemoteSession <key>` with these read-only endpoints:
+An authenticated API client uses `Authorization: RemoteSession <key>` with these endpoints:
 
 | Request | Result |
 | --- | --- |
@@ -21,10 +21,14 @@ An authenticated API client uses `Authorization: RemoteSession <key>` with these
 | `GET /api/v1/remote-chat/projects/{project_id}/sessions` | Only the exposed sessions in that project |
 | `GET /api/v1/remote-chat/sessions/{session_id}/history?limit=50` | Newest page of full message history, in chronological order |
 | `GET /api/v1/remote-chat/sessions/{session_id}/history?limit=50&before_id={next_before_id}` | Older page; repeat while `has_more` is true |
+| `POST /api/v1/remote-chat/sessions/{session_id}/messages` | Text and UUID `request_id`; returns admission status and server run ID |
+| `GET /api/v1/remote-chat/sessions/{session_id}/receipts/{request_id}` | Authoritative process-local admission receipt, or unknown |
+| `GET /api/v1/remote-chat/sessions/{session_id}/events` | Authorized SSE snapshots of saved history and ordinary active runs |
+| `POST /api/v1/remote-chat/sessions/{session_id}/stop` | Stop active tasks in the exposed session |
 
-History pages contain complete message bodies, without summary truncation. Page size is 1–200. A known session, project, message or attachment ID grants no additional access. Dedicated keys cannot call ordinary Chat, file or administrative endpoints. Global API keys, login passwords and browser sessions cannot replace a dedicated key at these remote endpoints. There is no forwarded access to other instances. Attachments, streaming and delivery are separate follow-up features; future endpoints must reuse the same live credential and exposure checks.
+History pages contain complete message bodies, without summary truncation. Page size is 1–200. A known session, project, message or attachment ID grants no additional access. Dedicated keys cannot call ordinary Chat, file or administrative endpoints. Global API keys, login passwords and browser sessions cannot replace a dedicated key at these remote endpoints. There is no forwarded access to other instances. Attachments, interactive choices and Agent delivery are separate follow-up features; future endpoints must reuse the same live credential and exposure checks.
 
-## Read sessions from other machines
+## Chat with sessions on other machines
 
 ![Direct connections grouped separately from this instance](./images/chat-remote-history.jpg)
 
@@ -32,9 +36,18 @@ History pages contain complete message bodies, without summary truncation. Page 
 
 Open **Chat sidebar → Remote connections → Manage connections**. Each local account can save multiple named bindings. Enter the remote server origin (for example `http://192.168.1.20:6185`) and a dedicated key issued by that remote account. Both instances must enable remote session connections. HTTP and HTTPS, IPv4, IPv6 and private LAN origins are supported; paths, URL credentials, query strings and redirects are rejected. The local server uses the saved key; it never sends your local login token to another server. Saved keys stay encrypted on the local server and are not returned to the browser. Rotating the local Dashboard signing secret requires replacing saved connection keys.
 
-The former Projects/Conversations sections remain under **This instance**. Remote connections have separate groups, preserving project folders and session names. Connection IDs, rather than names, distinguish routes and selected sessions even when two machines use the same project or session ID. Select a remote session to see its connection name and server address above its history. **Load older** retrieves earlier full messages in pages of 50. Remote history has no local send, delete, branch or configuration action. Markdown is displayed without active links or embedded media; attachment, tool and interactive records remain readable as inert history until their remote transports are available.
+The former Projects/Conversations sections remain under **This instance**. Remote connections have separate groups, preserving project folders and session names. Connection IDs, rather than names, distinguish routes and selected sessions even when two machines use the same project or session ID. Select a remote session to see its connection name and server address above its history. **Load older** retrieves earlier full messages in pages of 50. The remote composer uses the session's saved remote model and thinking configuration. Remote history has no local delete, branch or configuration action. Markdown is displayed without active links or embedded media; attachment, tool and interactive records remain readable as inert history until their remote transports are available.
 
 Use **Manage connections** to rename a binding, change its address, replace its key (leave the replacement field blank to retain it), or remove it locally. Removing a binding does not delete remote sessions. The panel distinguishes unreachable servers, expired authorization, disabled remote access and unsupported protocols. A failed grant clears the corresponding accessible list and transcript, while the local login remains valid. Access is rechecked every 15 seconds, when the window regains focus, and by **Refresh access**. Account switching immediately discards old lists and history, including delayed responses. Turning the local switch off retains connection metadata and blocks management and outbound reads until enabled again. A remote grant exposes only that instance's own sessions, never its outbound bindings.
+
+
+The former read-only remote history view now includes **Send**, **Send follow-up** while busy, and **Stop remote task**. Stop covers tasks started on the remote machine or another connection. Execution and authoritative history stay remote. Remote session creation, attachments, interactive choices and Agent sending remain follow-up features.
+
+![Remote execution and follow-up input](./images/chat-remote-execution.jpg)
+
+Closing the page or losing connectivity detaches the observer; accepted work continues. Reconnection automatically reads saved history and active run snapshots, including the original run receiving a follow-up. Offline input stays a draft and is never queued or automatically resent. A lost admission response shows **Acceptance is unconfirmed**. **Check remote acceptance** queries the remote receipt for that request ID: accepted clears the draft, rejected unlocks manual retry, and processing or unknown keeps retry locked. Receipts are bounded and process-local; eviction or a remote restart leaves an unknown result, so inspect remote history before composing a new message. Unfinished execution is not guaranteed to survive a remote process restart.
+
+Revoking the key, removing exposure, disabling either instance switch or rebinding closes corresponding result streams (including idle streams) and rejects new access; accepted execution continues. The remote account can still view and stop it locally. Remote authorization failures preserve the local login. Drafts and receipt identities are scoped by local account, connection, binding revision and remote session.
 
 ## Save and restore your Chat sessions
 

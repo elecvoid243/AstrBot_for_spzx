@@ -7,7 +7,7 @@ import re
 import shutil
 import time
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
@@ -3414,7 +3414,24 @@ class ChatService:
         *,
         agent_source: AgentMessageSource | None = None,
         message_id: str | None = None,
+        admission_check: Callable[[], Awaitable[None]] | None = None,
     ) -> AsyncIterator[str]:
+        """Admit ordinary WebChat input and return its independent subscriber.
+
+        Args:
+            username: Trusted resource owner of the local session.
+            post_data: Ordinary message and saved-selection overrides.
+            agent_source: Trusted provenance for an Agent-originated message.
+            message_id: Server-assigned run identity, or None to generate one.
+            admission_check: Optional live remote grant check immediately before
+                nonblocking input admission; failures discard provisional history.
+
+        Returns:
+            SSE subscriber whose closure does not cancel accepted execution.
+
+        Raises:
+            ChatServiceError: Input, ownership, configuration or admission failed.
+        """
         if "message" not in post_data and "files" not in post_data:
             raise ChatServiceError("Missing key: message or files")
         if "session_id" not in post_data and "conversation_id" not in post_data:
@@ -3716,6 +3733,10 @@ class ChatService:
             )
 
             try:
+                if admission_check is not None:
+                    # Remote admission is live through asynchronous preparation.
+                    # This check does not affect already accepted execution.
+                    await admission_check()
                 queue_item = (
                     username,
                     webchat_conv_id,
@@ -3761,7 +3782,16 @@ class ChatService:
                     if recipient_event is not None:
                         recipient_event.set_extra("_session_message_chain", chain)
                 else:
-                    await chat_queue.put(queue_item)
+                    if admission_check is not None:
+                        try:
+                            chat_queue.put_nowait(queue_item)
+                        except asyncio.QueueFull as exc:
+                            raise ChatServiceError(
+                                "Target input queue is full"
+                            ) from exc
+                    else:
+                        await chat_queue.put(queue_item)
+                    input_accepted = True
             except BaseException:
                 run.task.cancel()
                 await asyncio.gather(run.task, return_exceptions=True)
@@ -3798,7 +3828,9 @@ class ChatService:
 
             return stream
         except BaseException:
-            if agent_source is not None and not input_accepted:
+            if (
+                agent_source is not None or admission_check is not None
+            ) and not input_accepted:
                 if input_admission is not None and not input_admission.done():
                     input_admission.set_result(False)
                 # The ordinary history writer may have saved a provisional row

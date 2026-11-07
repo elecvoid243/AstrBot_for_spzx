@@ -2386,7 +2386,18 @@
       "remote_unauthorized": "Authorization expired — replace the connection key",
       "remote_disabled": "Remote connections disabled on server",
       "remote_unavailable": "Session or connection unavailable",
-      "remote_protocol_error": "Server does not support this connection protocol"
-    }
+      "remote_protocol_error": "Server does not support this connection protocol",
+      "remote_acceptance_unknown": "Message acceptance could not be confirmed",
+      "remote_rejected": "Remote session rejected this message"
+    },
+    "execution": "Runs on the remote instance",
+    "message": "Message to remote session",
+    "send": "Send",
+    "followUp": "Send follow-up",
+    "stop": "Stop remote task",
+    "running": "Remote task running · input is sent as a follow-up",
+    "idle": "Execution and history stay on the remote instance",
+    "unknown": "Acceptance is unconfirmed. Reconnect to check the remote receipt. Retry stays locked while acceptance is unknown; nothing is sent automatically.",
+    "checked": "Check remote acceptance"
   }
 }

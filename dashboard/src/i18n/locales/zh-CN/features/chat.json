@@ -2419,7 +2419,18 @@
       "remote_unauthorized": "授权失效，请替换连接密钥",
       "remote_disabled": "远端已关闭连接",
       "remote_unavailable": "会话或连接不可用",
-      "remote_protocol_error": "服务器不支持此连接协议"
-    }
+      "remote_protocol_error": "服务器不支持此连接协议",
+      "remote_acceptance_unknown": "无法确认远端是否已接受消息",
+      "remote_rejected": "远端会话未接受此消息"
+    },
+    "execution": "在远端实例执行",
+    "message": "发送到远端会话的文本",
+    "send": "发送",
+    "followUp": "发送后续输入",
+    "stop": "停止远端任务",
+    "running": "远端任务运行中 · 输入将作为后续消息发送",
+    "idle": "执行和历史保留在远端实例",
+    "unknown": "接受状态未确认。请重新连接并核对远端接收状态；无法确认时保持锁定，不会自动补发。",
+    "checked": "核对远端接收状态"
   }
 }

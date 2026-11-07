@@ -679,6 +679,16 @@ export type ConfigRouteUpsertRequest = {
     config_id: string;
 };
 
+export type ConnectionStopRequest = {
+    revision: string;
+};
+
+export type ConnectionTextRequest = {
+    text: string;
+    request_id: string;
+    revision: string;
+};
+
 export type ConversationBatchDeleteRequest = {
     conversations: Array<ConversationRef>;
 };
@@ -1295,6 +1305,11 @@ export type RemoteExposureRequest = {
 
 export type mode3 = 'all' | 'selected';
 
+export type RemoteTextRequest = {
+    text: string;
+    request_id: string;
+};
+
 export type RenameRequest = {
     name: string;
 };
@@ -1711,6 +1726,101 @@ export type WorkflowStartRequest = {
      */
     input_artifacts?: Array<ArtifactReference>;
 };
+
+export type SendRemoteTextApiV1RemoteChatSessionsSessionIdMessagesPostData = {
+    body: RemoteTextRequest;
+    path: {
+        session_id: string;
+    };
+};
+
+export type SendRemoteTextApiV1RemoteChatSessionsSessionIdMessagesPostResponse = (unknown);
+
+export type SendRemoteTextApiV1RemoteChatSessionsSessionIdMessagesPostError = (HTTPValidationError);
+
+export type RemoteAdmissionReceiptApiV1RemoteChatSessionsSessionIdReceiptsRequestIdGetData = {
+    path: {
+        request_id: string;
+        session_id: string;
+    };
+};
+
+export type RemoteAdmissionReceiptApiV1RemoteChatSessionsSessionIdReceiptsRequestIdGetResponse = (unknown);
+
+export type RemoteAdmissionReceiptApiV1RemoteChatSessionsSessionIdReceiptsRequestIdGetError = (HTTPValidationError);
+
+export type StopRemoteSessionApiV1RemoteChatSessionsSessionIdStopPostData = {
+    path: {
+        session_id: string;
+    };
+};
+
+export type StopRemoteSessionApiV1RemoteChatSessionsSessionIdStopPostResponse = (unknown);
+
+export type StopRemoteSessionApiV1RemoteChatSessionsSessionIdStopPostError = (HTTPValidationError);
+
+export type RemoteSessionEventsApiV1RemoteChatSessionsSessionIdEventsGetData = {
+    path: {
+        session_id: string;
+    };
+};
+
+export type RemoteSessionEventsApiV1RemoteChatSessionsSessionIdEventsGetResponse = (unknown);
+
+export type RemoteSessionEventsApiV1RemoteChatSessionsSessionIdEventsGetError = (HTTPValidationError);
+
+export type ConnectionAdmissionReceiptApiV1ChatRemoteConnectionsConnectionIdSessionsSessionIdReceiptsRequestIdGetData = {
+    path: {
+        connection_id: string;
+        request_id: string;
+        session_id: string;
+    };
+    query: {
+        revision: string;
+    };
+};
+
+export type ConnectionAdmissionReceiptApiV1ChatRemoteConnectionsConnectionIdSessionsSessionIdReceiptsRequestIdGetResponse = (unknown);
+
+export type ConnectionAdmissionReceiptApiV1ChatRemoteConnectionsConnectionIdSessionsSessionIdReceiptsRequestIdGetError = (HTTPValidationError);
+
+export type SendConnectionTextApiV1ChatRemoteConnectionsConnectionIdSessionsSessionIdMessagesPostData = {
+    body: ConnectionTextRequest;
+    path: {
+        connection_id: string;
+        session_id: string;
+    };
+};
+
+export type SendConnectionTextApiV1ChatRemoteConnectionsConnectionIdSessionsSessionIdMessagesPostResponse = (unknown);
+
+export type SendConnectionTextApiV1ChatRemoteConnectionsConnectionIdSessionsSessionIdMessagesPostError = (HTTPValidationError);
+
+export type StopConnectionSessionApiV1ChatRemoteConnectionsConnectionIdSessionsSessionIdStopPostData = {
+    body: ConnectionStopRequest;
+    path: {
+        connection_id: string;
+        session_id: string;
+    };
+};
+
+export type StopConnectionSessionApiV1ChatRemoteConnectionsConnectionIdSessionsSessionIdStopPostResponse = (unknown);
+
+export type StopConnectionSessionApiV1ChatRemoteConnectionsConnectionIdSessionsSessionIdStopPostError = (HTTPValidationError);
+
+export type ConnectionSessionEventsApiV1ChatRemoteConnectionsConnectionIdSessionsSessionIdEventsGetData = {
+    path: {
+        connection_id: string;
+        session_id: string;
+    };
+    query: {
+        revision: string;
+    };
+};
+
+export type ConnectionSessionEventsApiV1ChatRemoteConnectionsConnectionIdSessionsSessionIdEventsGetResponse = (unknown);
+
+export type ConnectionSessionEventsApiV1ChatRemoteConnectionsConnectionIdSessionsSessionIdEventsGetError = (HTTPValidationError);
 
 export type ListRemoteConnectionsResponse = (unknown);
 

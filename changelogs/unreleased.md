@@ -29,3 +29,8 @@
 - File and Docs toolbars: **Delete → Move to recycle bin**. Manual file management now supports host files outside the loaded project; rename stays within the current directory. Failed trash operations preserve files without permanent deletion. / 文件及文档工具栏：**删除 → 移入回收站**；支持管理项目外宿主文件，同目录重命名，回收站失败时保留文件。
 
 - Added account-owned remote Chat connections and paginated read-only history. Previous sidebar Projects/Conversations sections now appear under This instance; Remote connections → Manage connections adds directly bound machines with separate project/session groups. Saved dedicated keys stay server-side, and remote authorization failures clear the affected view without ending the local login. (#155)
+
+### Remote Chat RC04 (#156)
+
+- Extend the former remote read-only history view with human text, ordinary busy follow-up, live snapshots and session-wide stop. Reconnect without resending; execution and history stay remote.
+- Retain offline drafts; query bounded remote admission receipts after uncertain sends. Revoke result access live without cancelling accepted work; preserve inert rendering and local account isolation.

@@ -20,6 +20,9 @@ export function resetAccountSession(clearIdentity = true): void {
   for (const key of sessionKeys) {
     if (/chat|lastBotRoute/i.test(key)) sessionStorage.removeItem(key);
   }
+  for (const key of Object.keys(localStorage)) {
+    if (key.startsWith("remote-chat-draft:")) localStorage.removeItem(key);
+  }
   if (clearIdentity) {
     for (const key of [
       "user",

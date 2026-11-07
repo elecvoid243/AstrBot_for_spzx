@@ -8,7 +8,13 @@ import MarkdownMessagePart from "./message_list_comps/MarkdownMessagePart.vue";
 import { remoteConnectionsApi } from "@/api/remoteConnections";
 import { resetAccountSession } from "@/utils/accountSession";
 vi.mock("@/api/remoteConnections", () => ({
-  remoteConnectionsApi: { history: vi.fn() },
+  remoteConnectionsApi: {
+    history: vi.fn(),
+    events: vi.fn(() => new Promise(() => {})),
+    send: vi.fn(),
+    stop: vi.fn(),
+    receipt: vi.fn(),
+  },
 }));
 const connection = (id: string) => ({
   connection_id: id,
@@ -229,5 +235,64 @@ it("clears history and cursor on same-ID binding revision changes", async () => 
     "same",
     undefined,
   );
+  wrapper.unmount();
+});
+
+it("keeps uncertain input locked until an authoritative accepted receipt", async () => {
+  let controller!: ReadableStreamDefaultController<Uint8Array>;
+  const body = new ReadableStream<Uint8Array>({
+    start(value) {
+      controller = value;
+    },
+  });
+  vi.mocked(remoteConnectionsApi.events).mockResolvedValueOnce({
+    ok: true,
+    body,
+  } as Response);
+  vi.mocked(remoteConnectionsApi.history).mockResolvedValue(
+    page("history") as any,
+  );
+  vi.mocked(remoteConnectionsApi.send).mockRejectedValue({
+    response: { data: { data: { code: "remote_acceptance_unknown" } } },
+  });
+  const wrapper = make();
+  await settle();
+  controller.enqueue(
+    new TextEncoder().encode(
+      "data: " +
+        JSON.stringify({
+          type: "snapshot",
+          data: {
+            history: [],
+            active_runs: [],
+            has_more: false,
+            is_running: false,
+          },
+        }) +
+        "\n\n",
+    ),
+  );
+  await settle();
+  const vm = wrapper.vm as any;
+  // Drive the same composer actions without mounting unrelated local ChatInput services.
+  vm.draft = "Do not duplicate";
+  await wrapper.find("form").trigger("submit");
+  await settle();
+  expect(remoteConnectionsApi.send).toHaveBeenCalledTimes(1);
+  expect(vm.uncertain).toBe(true);
+  expect(vm.draft).toBe("Do not duplicate");
+  vi.mocked(remoteConnectionsApi.receipt).mockResolvedValueOnce({
+    data: { data: { status: "unknown" } },
+  } as any);
+  await vm.checkReceipt();
+  expect(vm.uncertain).toBe(true);
+  await wrapper.find("form").trigger("submit");
+  expect(remoteConnectionsApi.send).toHaveBeenCalledTimes(1);
+  vi.mocked(remoteConnectionsApi.receipt).mockResolvedValueOnce({
+    data: { data: { status: "accepted" } },
+  } as any);
+  await vm.checkReceipt();
+  expect(vm.uncertain).toBe(false);
+  expect(vm.draft).toBe("");
   wrapper.unmount();
 });

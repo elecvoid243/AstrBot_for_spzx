@@ -98,6 +98,290 @@ tags:
   - name: Webhooks
 
 paths:
+  /api/v1/remote-chat/sessions/{session_id}/messages:
+    post:
+      tags:
+      - Remote Chat
+      summary: Send Remote Text
+      operationId: send_remote_text_api_v1_remote_chat_sessions__session_id__messages_post
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Session Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RemoteTextRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - RemoteSessionAuth: []
+  /api/v1/remote-chat/sessions/{session_id}/receipts/{request_id}:
+    get:
+      tags:
+      - Remote Chat
+      summary: Remote Admission Receipt
+      operationId: remote_admission_receipt_api_v1_remote_chat_sessions__session_id__receipts__request_id__get
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Session Id
+      - name: request_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Request Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - RemoteSessionAuth: []
+  /api/v1/remote-chat/sessions/{session_id}/stop:
+    post:
+      tags:
+      - Remote Chat
+      summary: Stop Remote Session
+      operationId: stop_remote_session_api_v1_remote_chat_sessions__session_id__stop_post
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Session Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - RemoteSessionAuth: []
+  /api/v1/remote-chat/sessions/{session_id}/events:
+    get:
+      tags:
+      - Remote Chat
+      summary: Remote Session Events
+      operationId: remote_session_events_api_v1_remote_chat_sessions__session_id__events_get
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Session Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - RemoteSessionAuth: []
+  /api/v1/chat/remote-connections/{connection_id}/sessions/{session_id}/receipts/{request_id}:
+    get:
+      tags:
+      - Remote Chat
+      summary: Connection Admission Receipt
+      operationId: connection_admission_receipt_api_v1_chat_remote_connections__connection_id__sessions__session_id__receipts__request_id__get
+      parameters:
+      - name: connection_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Connection Id
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Session Id
+      - name: request_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Request Id
+      - name: revision
+        in: query
+        required: true
+        schema:
+          type: string
+          title: Revision
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - BearerAuth: []
+  /api/v1/chat/remote-connections/{connection_id}/sessions/{session_id}/messages:
+    post:
+      tags:
+      - Remote Chat
+      summary: Send Connection Text
+      operationId: send_connection_text_api_v1_chat_remote_connections__connection_id__sessions__session_id__messages_post
+      parameters:
+      - name: connection_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Connection Id
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Session Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConnectionTextRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - BearerAuth: []
+  /api/v1/chat/remote-connections/{connection_id}/sessions/{session_id}/stop:
+    post:
+      tags:
+      - Remote Chat
+      summary: Stop Connection Session
+      operationId: stop_connection_session_api_v1_chat_remote_connections__connection_id__sessions__session_id__stop_post
+      parameters:
+      - name: connection_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Connection Id
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Session Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConnectionStopRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - BearerAuth: []
+  /api/v1/chat/remote-connections/{connection_id}/sessions/{session_id}/events:
+    get:
+      tags:
+      - Remote Chat
+      summary: Connection Session Events
+      operationId: connection_session_events_api_v1_chat_remote_connections__connection_id__sessions__session_id__events_get
+      parameters:
+      - name: connection_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Connection Id
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Session Id
+      - name: revision
+        in: query
+        required: true
+        schema:
+          type: string
+          title: Revision
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - BearerAuth: []
   /api/v1/chat/remote-connections:
     get:
       tags:
@@ -8658,6 +8942,54 @@ components:
       schema: { type: string }
 
   schemas:
+    ConnectionStopRequest:
+      properties:
+        revision:
+          type: string
+          title: Revision
+      additionalProperties: false
+      type: object
+      required:
+      - revision
+      title: ConnectionStopRequest
+    ConnectionTextRequest:
+      properties:
+        text:
+          type: string
+          maxLength: 1000000
+          minLength: 1
+          title: Text
+        request_id:
+          type: string
+          format: uuid
+          title: Request Id
+        revision:
+          type: string
+          title: Revision
+      additionalProperties: false
+      type: object
+      required:
+      - text
+      - request_id
+      - revision
+      title: ConnectionTextRequest
+    RemoteTextRequest:
+      properties:
+        text:
+          type: string
+          maxLength: 1000000
+          minLength: 1
+          title: Text
+        request_id:
+          type: string
+          format: uuid
+          title: Request Id
+      additionalProperties: false
+      type: object
+      required:
+      - text
+      - request_id
+      title: RemoteTextRequest
     RemoteConnectionRequest:
       properties:
         name:

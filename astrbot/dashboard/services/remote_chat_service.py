@@ -1,9 +1,11 @@
 """Direct account-bound remote reads over the ordinary local ChatUI service."""
 
+import asyncio
 import base64
 import hashlib
 import json
 import secrets
+from collections.abc import AsyncIterator
 from urllib.parse import urlsplit
 
 import anyio
@@ -32,6 +34,8 @@ class RemoteChatService:
         self.db = db
         self.config = config
         self.chat = chat
+        # Bounded, process-local admission receipts. These never schedule delivery.
+        self.receipts: dict[tuple[str, str, str], dict] = {}
 
     def require_enabled(self) -> None:
         """Gate new inbound and outbound remote operations using live config.
@@ -415,14 +419,23 @@ class RemoteChatService:
         connection_id: str,
         path: str,
         params: dict | None = None,
+        *,
+        method: str = "GET",
+        payload: dict | None = None,
+        revision: str | None = None,
+        stream: bool = False,
     ):
-        """Read a fixed remote protocol resource with bounded, nonredirecting I/O.
+        """Exchange a fixed protocol resource with bounded, nonredirecting I/O.
 
         Args:
             account: Authenticated local account, never a remote caller.
             connection_id: Direct binding owned by this local account.
             path: Protocol path constructed by a local route, never a caller URL.
             params: Validated history paging parameters.
+            method: Fixed HTTP operation selected by the local route.
+            payload: Validated text message, never arbitrary execution options.
+            revision: Binding revision shown to the caller when submitting input.
+            stream: Return a continuously authorized result subscription.
 
         Returns:
             Remote success data, without HTTP headers or credential metadata.
@@ -436,6 +449,12 @@ class RemoteChatService:
             row = await connection.get(RemoteChatConnection, connection_id)
         if row is None or row.account_id != account.account_id:
             raise ApiError("Connection is unavailable", status_code=404)
+        if revision is not None and row.revision != revision:
+            raise ApiError(
+                "Connection changed",
+                status_code=409,
+                data={"code": "remote_unavailable"},
+            )
         try:
             cipher = Fernet(
                 base64.urlsafe_b64encode(
@@ -451,15 +470,20 @@ class RemoteChatService:
                 status_code=409,
                 data={"code": "remote_unauthorized"},
             ) from None
+        if stream:
+            return self.connection_events(account, row, key, path)
         try:
             with anyio.fail_after(15):
                 async with httpx.AsyncClient(
-                    follow_redirects=False, trust_env=False, timeout=10
+                    follow_redirects=False,
+                    trust_env=False,
+                    timeout=httpx.Timeout(10, connect=2),
                 ) as client:
                     async with client.stream(
-                        "GET",
+                        method,
                         row.base_url + "/api/v1/remote-chat/" + path,
                         params=params,
+                        json=payload,
                         headers={
                             "Authorization": "RemoteSession " + key,
                             "Accept": "application/json",
@@ -470,7 +494,14 @@ class RemoteChatService:
                                 401: "remote_unauthorized",
                                 403: "remote_disabled",
                                 404: "remote_unavailable",
-                            }.get(response.status_code, "remote_protocol_error")
+                                400: "remote_rejected",
+                                422: "remote_rejected",
+                            }.get(
+                                response.status_code,
+                                "remote_acceptance_unknown"
+                                if method == "POST"
+                                else "remote_protocol_error",
+                            )
                             raise ApiError(
                                 "Remote connection request failed",
                                 status_code=502,
@@ -506,18 +537,122 @@ class RemoteChatService:
                 raise ApiError(
                     "Connection changed during request",
                     status_code=409,
-                    data={"code": "remote_unavailable"},
+                    data={
+                        "code": "remote_acceptance_unknown"
+                        if method == "POST"
+                        else "remote_unavailable"
+                    },
                 )
             return payload["data"]
-        except (httpx.HTTPError, TimeoutError):
+        except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout):
             raise ApiError(
                 "Remote server is unreachable",
                 status_code=502,
                 data={"code": "remote_offline"},
             ) from None
+        except (httpx.HTTPError, TimeoutError):
+            raise ApiError(
+                "Remote server is unreachable",
+                status_code=502,
+                data={
+                    "code": "remote_acceptance_unknown"
+                    if method == "POST"
+                    else "remote_offline"
+                },
+            ) from None
+
         except (ValueError, TypeError):
             raise ApiError(
                 "Remote server does not support the connection protocol",
                 status_code=502,
-                data={"code": "remote_protocol_error"},
+                data={
+                    "code": "remote_acceptance_unknown"
+                    if method == "POST"
+                    else "remote_protocol_error"
+                },
             ) from None
+
+    async def connection_events(
+        self, account: DashboardAccount, row: RemoteChatConnection, key: str, path: str
+    ) -> AsyncIterator[str]:
+        """Forward a direct subscription while checking local admission when idle.
+
+        Args:
+            account: Local authenticated account at admission.
+            row: Immutable snapshot of the direct binding.
+            key: Decrypted dedicated credential, never included in events.
+            path: Fixed remote session event path.
+
+        Yields:
+            Bounded SSE frames, or a sanitized terminal access error.
+        """
+        pending = None
+        try:
+            async with httpx.AsyncClient(
+                follow_redirects=False,
+                trust_env=False,
+                timeout=httpx.Timeout(10, read=5),
+            ) as client:
+                async with client.stream(
+                    "GET",
+                    row.base_url + "/api/v1/remote-chat/" + path,
+                    headers={"Authorization": "RemoteSession " + key},
+                ) as response:
+                    if response.status_code != 200:
+                        code = {
+                            401: "remote_unauthorized",
+                            403: "remote_disabled",
+                            404: "remote_unavailable",
+                        }.get(response.status_code, "remote_protocol_error")
+                        raise ApiError("Remote stream unavailable", data={"code": code})
+                    chunks = response.aiter_bytes()
+                    pending = asyncio.create_task(anext(chunks))
+                    buffer = bytearray()
+                    while True:
+                        await asyncio.wait({pending}, timeout=0.25)
+                        self.require_enabled()
+                        with anyio.CancelScope(shield=True):
+                            async with self.db.get_db() as connection:
+                                current = await connection.get(
+                                    RemoteChatConnection, row.connection_id
+                                )
+                                current_account = await connection.get(
+                                    DashboardAccount, account.account_id
+                                )
+                        if (
+                            current is None
+                            or current.revision != row.revision
+                            or current.account_id != account.account_id
+                            or current_account is None
+                            or not current_account.enabled
+                            or current_account.token_version != account.token_version
+                        ):
+                            raise ApiError(
+                                "Connection changed",
+                                data={"code": "remote_unavailable"},
+                            )
+                        if not pending.done():
+                            continue
+                        try:
+                            chunk = pending.result()
+                        except StopAsyncIteration:
+                            return
+                        buffer.extend(chunk)
+                        if len(buffer) > 32 * 1024 * 1024:
+                            raise ValueError
+                        while (boundary := buffer.find(b"\n\n")) >= 0:
+                            frame = bytes(buffer[: boundary + 2])
+                            del buffer[: boundary + 2]
+                            yield frame
+                        pending = asyncio.create_task(anext(chunks))
+        except (ApiError, httpx.HTTPError, ValueError) as exc:
+            code = (
+                (exc.data or {}).get("code", "remote_disabled")
+                if isinstance(exc, ApiError)
+                else "remote_offline"
+            )
+            yield "data: " + json.dumps({"type": "access_error", "code": code}) + "\n\n"
+        finally:
+            if pending is not None:
+                pending.cancel()
+                await asyncio.gather(pending, return_exceptions=True)

@@ -355,7 +355,7 @@ async def test_send_failure_returns_reusable_created_id_and_preserves_chain(
     m, context, invoke = creation
     event = context.context.event
     chain = SessionMessageChain(
-        count=8 if failure == "limit" else 0, sessions={m.ids[0]}
+        count=15 if failure == "limit" else 0, sessions={m.ids[0]}
     )
     event.set_extra("_session_message_chain", chain)
     if failure == "stopped":

@@ -323,6 +323,20 @@ def validate_config(
                 )
 
     if is_core:
+        # Validate before generic integer coercion can truncate floats or accept bools.
+        if "session_messages" in data:
+            settings = data["session_messages"]
+            if not isinstance(settings, dict):
+                errors.append("session_messages must be an object")
+            else:
+                if "enable" in settings and type(settings["enable"]) is not bool:
+                    errors.append("session_messages.enable must be a boolean")
+                if "max_chain_sends" in settings:
+                    limit = settings["max_chain_sends"]
+                    if type(limit) is not int or limit < 1:
+                        errors.append(
+                            "session_messages.max_chain_sends must be a positive integer"
+                        )
         meta_all = {
             **schema["platform_group"]["metadata"],
             **schema["provider_group"]["metadata"],

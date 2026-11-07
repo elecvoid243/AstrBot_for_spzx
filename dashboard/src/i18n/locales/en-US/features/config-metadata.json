@@ -1423,6 +1423,16 @@
       "no_proxy": {
         "description": "Direct Connection Address List"
       },
+      "session_messages": {
+        "enable": {
+          "description": "Enable Agent cross-session access",
+          "hint": "Instance-wide, enabled by default. Disabling blocks Agent discovery, reading, creation, sending and new incoming Agent messages. Human chat and executions already started continue. Takes effect when saved; session profiles cannot override it."
+        },
+        "max_chain_sends": {
+          "description": "Automatic message chain send limit",
+          "hint": "Positive integer, default 15. Concurrent sends in one chain share the budget; a new human message starts a new chain. Crossing instances does not reset the counter: previous sends count, the lowest limit of all participating instances applies and cannot later be raised."
+        }
+      },
       "goal": {
         "admin_only": {
           "description": "Admin Only",

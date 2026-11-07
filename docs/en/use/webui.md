@@ -370,7 +370,15 @@ The recipient shows a compact source card above the Agent message, with the sour
 
 ![Agent message with a clickable source card](./images/chat-session-messages.jpg)
 
-The tool returns an accepted message/run location without waiting for the recipient to finish. Acceptance does not mean execution completed. Busy sessions use the ordinary safe follow-up mechanism; if they cannot accept input safely, the tool explains why. Switching or closing the page does not stop the run: reopen the session to read its complete saved output. Use the ordinary Stop button to stop execution. That automatic chain cannot restart the stopped recipient; a later human message can begin a fresh turn. Each server-tracked automatic chain accepts at most 8 sends. There is no persistent queue, automatic completion report or process-restart recovery guarantee.
+The tool returns an accepted message/run location without waiting for the recipient to finish. Acceptance does not mean execution completed. Busy sessions use the ordinary safe follow-up mechanism; if they cannot accept input safely, the tool explains why. Switching or closing the page does not stop the run: reopen the session to read its complete saved output. Use the ordinary Stop button to stop execution. That automatic chain cannot restart the stopped recipient; a later human message can begin a fresh turn. Each server-tracked automatic chain accepts up to the instance-configured limit (15 sends by default). Concurrent sends share that budget; a new human message starts a new chain, including a follow-up to an active execution. There is no persistent queue, automatic completion report or process-restart recovery guarantee.
+
+### Agent cross-session settings
+
+Administrators can open **Settings → General → Agent cross-session access** to turn Agent discovery, reading, creation, sending and new incoming Agent messages on or off for the whole instance. It is enabled by default. Saving applies immediately; session config profiles cannot override these settings. Human chat and executions already started continue. Existing tool activation and permission controls still apply.
+
+The send limit accepts a positive integer, defaults to **15**, and counts accepted sends, including first messages to newly created conversations. Tightening the limit applies to an existing chain; raising it cannot increase that chain's budget. The same counting rule applies across instances: crossing hosts does not reset the counter, previous sends count, and the lowest limit of participating instances cannot later be raised.
+
+![Agent cross-session settings](./images/agent-session-settings.png)
 
 ### Read saved conversation history
 
@@ -403,7 +411,7 @@ The first screenshot shows an empty project conversation created without a first
 
 ![Source card on an incoming Agent message, with Chinese selected](/images/chat-session-created-first-message.jpg)
 
-The tool returns the created conversation ID, `project_id`, `project_name` and opening location; both project fields are `null` for no project. If creation succeeds but the first message is rejected, it returns `created_send_failed`, the session ID and `send_error`. Ask the Agent to reuse that ID for sending. Retrying the same real tool invocation reuses its creation result within the current execution; this does not provide process-restart recovery. Configuration failures clean up the incomplete session. First-message sends share the original automatic chain's 8-send limit: creating another conversation cannot reset that budget.
+The tool returns the created conversation ID, `project_id`, `project_name` and opening location; both project fields are `null` for no project. If creation succeeds but the first message is rejected, it returns `created_send_failed`, the session ID and `send_error`. Ask the Agent to reuse that ID for sending. Retrying the same real tool invocation reuses its creation result within the current execution; this does not provide process-restart recovery. Configuration failures clean up the incomplete session. First-message sends share the original automatic chain's configured send limit (15 by default): creating another conversation cannot reset that budget.
 
 The reasoning sidebar follows the latest activity when opened. Scrolling up or dragging its scrollbar pauses following; scrolling back down to the bottom resumes it. Opening the sidebar through search or a file-change entry prioritizes that location, and streaming updates do not pull it back to the bottom.
 

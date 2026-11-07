@@ -13,7 +13,6 @@ from astrbot.core.agent.tool import (
 from astrbot.core.astr_agent_context import AstrAgentContext
 from astrbot.core.utils.webchat_access import DashboardPrincipal
 
-MAX_SESSION_MESSAGE_CHAIN = 8
 MAX_SESSION_READ_CHARS = 40000
 
 
@@ -177,6 +176,8 @@ class SessionMessageChain:
     count: int = 0
     sessions: set[str] = field(default_factory=set)
     stopped: set[str] = field(default_factory=set)
+    # Tighten on admission; an existing chain must never gain a larger budget.
+    max_sends: int | None = None
 
 
 @dataclass(frozen=True)
@@ -553,6 +554,10 @@ class CreateChatSessionTool(FunctionTool[AstrAgentContext]):
             return "error: A trusted main Agent tool invocation is required"
         if set(kwargs) - self.parameters["properties"].keys():
             return "error: Unsupported creation arguments"
+        try:
+            service.require_session_message_limit()
+        except ChatServiceError as exc:
+            return f"error: {exc}"
         # This cache lives only as long as the source execution. Never use a
         # model-provided key or a mutable shared field for parallel tool calls.
         pending = event.get_extra("_created_chat_sessions")

@@ -65,6 +65,9 @@
         "title": "缓存",
         "subtitle": "临时目录自动清理阈值。"
       },
+      "sessionMessages": {
+        "title": "Agent 跨会话能力"
+      },
       "goalLoop": {
         "title": "目标循环",
         "subtitle": "内置 /goal 常驻目标循环的评判模型与轮次预算。"

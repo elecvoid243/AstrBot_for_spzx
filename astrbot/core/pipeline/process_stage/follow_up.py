@@ -232,6 +232,9 @@ def try_capture_follow_up(event: AstrMessageEvent) -> FollowUpCapture | None:
         # Tools executed by the already-running recipient must retain the same
         # server counter and stop boundary after consuming an Agent follow-up.
         runner_event.set_extra("_session_message_chain", chain)
+    elif not event.get_extra("_agent_message_source"):
+        # A real human follow-up starts a new budget even on an active runner.
+        runner_event.set_extra("_session_message_chain", None)
     # Allocate strict order at capture time (arrival order), not at wake time.
     order_seq = _allocate_follow_up_order(event.unified_msg_origin)
     monitor_task = asyncio.create_task(

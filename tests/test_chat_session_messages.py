@@ -716,7 +716,7 @@ async def test_concurrent_admissions_recheck_limit_and_stop(
             )
         )
     )
-    chain = SessionMessageChain(count=7, sessions={a})
+    chain = SessionMessageChain(count=14, sessions={a})
     source.set_extra("_session_message_chain", chain)
     callback = webchat_queue_mgr._listener_callback
     await webchat_queue_mgr.clear_listener()
@@ -763,7 +763,7 @@ async def test_concurrent_admissions_recheck_limit_and_stop(
             result for result in results if isinstance(result, ChatServiceError)
         ]
         assert len(accepted) == len(rejected) == 1, results
-        assert chain.count == 8
+        assert chain.count == 15
         if admission_change == "stop":
             assert "stopped by the user" in str(rejected[0])
         elif admission_change == "choice":
@@ -1049,9 +1049,9 @@ async def test_rejections_stop_limit_and_human_restart(messaging, monkeypatch):
     assert "background complete" in response.text
     assert b in chain.stopped
     chain.stopped.clear()
-    chain.count = 8
+    chain.count = 15
     assert "limit reached" in await tool.call(context, session_id=b, text="over limit")
-    assert chain.count == 8
+    assert chain.count == 15
     from astrbot.core.goal.goal_service import build_goal_turn_event
 
     continuation = build_goal_turn_event(source, "goal continuation", "goal-test")
@@ -1109,13 +1109,18 @@ async def test_stop_between_acceptance_and_execution_keeps_input_but_does_not_ru
 
 
 @pytest.mark.asyncio
-async def test_real_tool_loop_hits_finite_chain_limit(messaging):
-    """Exercise the fixed message limit through actual model tool calls.
+@pytest.mark.parametrize("configured_limit", [None, 3, 20])
+async def test_real_tool_loop_hits_finite_chain_limit(messaging, configured_limit):
+    """Exercise the default message limit through actual model tool calls.
 
     Args:
         messaging: Isolated production chat path.
+        configured_limit: Optional instance override; None exercises the default.
     """
     m = messaging
+    limit = 15 if configured_limit is None else configured_limit
+    if configured_limit is not None:
+        m.core.astrbot_config["session_messages"]["max_chain_sends"] = configured_limit
     a, b = m.ids
     limit_seen = asyncio.Event()
 
@@ -1160,12 +1165,12 @@ async def test_real_tool_loop_hits_finite_chain_limit(messaging):
         15,
     )
     assert limit_seen.is_set(), response.text
-    assert m.events[0].get_extra("_session_message_chain").count == 8
+    assert m.events[0].get_extra("_session_message_chain").count == limit
     await wait_until(lambda: not m.service.chat_runs_by_session)
     history = (
         await m.client.get(f"/api/v1/chat/sessions/{b}", headers=m.headers)
     ).json()["data"]["history"]
-    assert len([row for row in history if row["content"].get("agent_source")]) == 8
+    assert len([row for row in history if row["content"].get("agent_source")]) == limit
 
 
 @pytest.mark.asyncio

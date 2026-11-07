@@ -5000,12 +5000,15 @@ class ChatService:
         goal_text: str,
         max_turns: int | None = None,
     ) -> dict:
-        """Set (or replace) a session's standing goal and kick off the loop.
+        """Set a session's standing goal, or edit the one it already has.
 
-        Authorized by session ownership (same as apply_goal_action). The
-        goal text becomes the loop's first turn, queued through the same
-        register-then-inject channel the resume action uses. The resulting
-        state reaches the UI through the ``goal_state_changed`` push.
+        Authorized by session ownership (same as apply_goal_action). A new
+        goal's text becomes the loop's first turn, queued through the same
+        register-then-inject channel the resume action uses. Editing an
+        existing goal updates text/budget in place and deliberately queues
+        nothing: an edit must not re-run the goal, which used to duplicate
+        the turn. The resulting state reaches the UI through the
+        ``goal_state_changed`` push.
 
         Args:
             username: Authenticated dashboard user; must own the session.
@@ -5031,6 +5034,18 @@ class ChatService:
         from astrbot.core.goal.goal_service import goal_service
 
         umo = build_webchat_unified_msg_origin(session)
+        existing = await goal_service.goals.get(umo)
+        if existing is not None:
+            try:
+                edited = await goal_service.update_goal(
+                    umo, goal_text, max_turns=max_turns
+                )
+            except ValueError as e:
+                raise ChatServiceError(str(e))
+            if edited is not None:
+                return {"goal": edited.to_public_dict()}
+            # Cleared between the read and the write: fall through to the
+            # create path so the user's edit is not silently dropped.
         try:
             state = await goal_service.set_goal(umo, goal_text, max_turns=max_turns)
         except ValueError as e:

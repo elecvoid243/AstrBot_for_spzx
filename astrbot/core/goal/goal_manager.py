@@ -130,6 +130,39 @@ class GoalManager:
             await self._track(umo)
             return state
 
+    async def update(
+        self, umo: str, goal: str, *, max_turns: int | None = None
+    ) -> GoalState | None:
+        """Edit an existing goal in place without restarting its loop.
+
+        The identity (goal_id), status, turn count and epoch are preserved:
+        an edit is a correction, not a new run. Callers that want a fresh
+        loop must clear the goal and set a new one.
+
+        Args:
+            umo: Unified message origin of the session.
+            goal: New goal text.
+            max_turns: Optional new turn budget; ``None`` keeps the current one.
+
+        Returns:
+            The updated state, or None when the session has no goal.
+
+        Raises:
+            ValueError: If the goal text is empty.
+        """
+        goal = (goal or "").strip()
+        if not goal:
+            raise ValueError("goal text is empty")
+        async with self._lock_for(umo):
+            state = await self.get(umo)
+            if state is None:
+                return None
+            state.goal = goal
+            if max_turns is not None:
+                state.max_turns = max(1, int(max_turns))
+            await self._save(umo, state)
+            return state
+
     async def pause(self, umo: str, reason: str = "user-paused") -> GoalState | None:
         async with self._lock_for(umo):
             state = await self.get(umo)

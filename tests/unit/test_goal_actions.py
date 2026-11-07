@@ -188,6 +188,37 @@ async def test_set_goal_requires_owner_and_text(fresh_goals):
         await service.set_session_goal("alice", "cid1", "   ")
 
 
+async def test_editing_an_existing_goal_updates_in_place_without_kickoff(
+    fresh_goals, monkeypatch
+):
+    """Editing mid-run must not queue a second turn (the duplicate-turn bug)."""
+    service = _make_service()
+    service.db.get_platform_session_by_id = AsyncMock(return_value=_session())
+
+    queue = asyncio.Queue()
+
+    class _FakeMgr:
+        def get_or_create_queue(self, cid):
+            return queue
+
+    monkeypatch.setattr(chat_service_mod, "webchat_queue_mgr", _FakeMgr())
+    register_mock = AsyncMock()
+    monkeypatch.setattr(service, "register_synthetic_chat_run", register_mock)
+
+    original = await fresh_goals.set(UMO, "旧目标", max_turns=20)
+
+    result = await service.set_session_goal("alice", "cid1", "新目标", max_turns=40)
+
+    goal = result["goal"]
+    assert goal["goal_id"] == original.goal_id
+    assert goal["goal"] == "新目标"
+    assert goal["max_turns"] == 40
+    assert goal["status"] == "active"
+    # The edit is state-only: nothing was registered or queued.
+    assert queue.empty()
+    register_mock.assert_not_awaited()
+
+
 async def test_set_goal_without_budget_follows_config(fresh_goals, monkeypatch):
     service = _make_service()
     service.db.get_platform_session_by_id = AsyncMock(return_value=_session())

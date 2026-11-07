@@ -68,6 +68,23 @@ def test_unregister_removes_agent_stop_callback() -> None:
     callback.assert_not_called()
 
 
+def test_request_agent_stop_can_target_a_single_goal() -> None:
+    """A goal clear must not cancel an ordinary turn in the same session."""
+    registry = ActiveEventRegistry()
+    umo = "webchat:FriendMessage:webchat!alice!session"
+    goal_event = StubEvent(umo)
+    goal_event.extras["goal_id"] = "goal-a"
+    ordinary_event = StubEvent(umo)
+    registry.register(goal_event)
+    registry.register(ordinary_event)
+
+    stopped = registry.request_agent_stop_all(umo, goal_id="goal-a")
+
+    assert stopped == 1
+    assert goal_event.extras["agent_stop_requested"] is True
+    assert "agent_stop_requested" not in ordinary_event.extras
+
+
 def test_active_runner_wires_immediate_stop_callback() -> None:
     """Active Runner registration connects registry stop to Runner cancellation."""
     event = StubEvent("webchat:FriendMessage:webchat!alice!runner-session")

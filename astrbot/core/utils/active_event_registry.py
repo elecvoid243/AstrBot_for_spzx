@@ -226,6 +226,7 @@ class ActiveEventRegistry:
         exclude: AstrMessageEvent | None = None,
         *,
         message_id: str | None = None,
+        goal_id: str | None = None,
     ) -> int:
         """Request agent cancellation while allowing history cleanup to finish.
 
@@ -233,6 +234,9 @@ class ActiveEventRegistry:
             umo: Unified message origin of the active events.
             exclude: Event to exclude from cancellation.
             message_id: Optional message identity limiting cancellation to one turn.
+            goal_id: Optional goal identity. When set, only turns carrying that
+                ``goal_id`` extra are stopped, so a goal edit/clear cannot
+                cancel an ordinary user turn running in the same session.
 
         Returns:
             Number of distinct events receiving a cancellation request.
@@ -242,8 +246,10 @@ class ActiveEventRegistry:
         events.update(event for task, event in tasks.items() if not task.done())
         count = 0
         for event in events:
-            if event is not exclude and (
-                message_id is None or event.message_obj.message_id == message_id
+            if (
+                event is not exclude
+                and (message_id is None or event.message_obj.message_id == message_id)
+                and (goal_id is None or event.get_extra("goal_id") == goal_id)
             ):
                 event.set_extra("agent_stop_requested", True)
                 self.get_background_stop_signal(event).set()
@@ -255,6 +261,7 @@ class ActiveEventRegistry:
             if (
                 event is not exclude
                 and (message_id is None or event.message_obj.message_id == message_id)
+                and (goal_id is None or event.get_extra("goal_id") == goal_id)
                 and not task.done()
                 and task not in self._background_cancel_requested
             ):

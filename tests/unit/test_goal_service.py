@@ -649,11 +649,10 @@ async def test_pause_and_clear_request_agent_stop(monkeypatch):
     import importlib
 
     svc_mod = importlib.import_module("astrbot.core.goal.goal_service")
-
     calls = []
 
-    def fake_stop(umo, exclude=None):
-        calls.append(umo)
+    def fake_stop(umo, exclude=None, *, goal_id=None):
+        calls.append((umo, goal_id))
         return 1
 
     monkeypatch.setattr(
@@ -661,11 +660,15 @@ async def test_pause_and_clear_request_agent_stop(monkeypatch):
     )
     service = _make_service()
     service.goals = GoalManager(InMemoryKV())
-    await service.goals.set("umo1", "g")
+    created = await service.goals.set("umo1", "g")
     state = await service.pause_goal("umo1")
-    assert state.status == "paused" and calls == ["umo1"]
+    assert state.status == "paused"
+    assert calls == [("umo1", created.goal_id)]
     had = await service.clear_goal("umo1")
-    assert had is True and calls == ["umo1", "umo1"]
+    assert had is True
+    # Only turns carrying this goal's id are targeted; ordinary user turns
+    # (no goal_id extra) keep running.
+    assert calls == [("umo1", created.goal_id), ("umo1", created.goal_id)]
 
 
 # ---------------------------------------------------------------------------

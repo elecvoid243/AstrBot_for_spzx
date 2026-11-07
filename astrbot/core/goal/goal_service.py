@@ -237,22 +237,39 @@ class GoalService:
         return None
 
     async def pause_goal(self, umo: str, reason: str = "user-paused"):
-        """Pause the goal and immediately stop any in-flight agent turn."""
+        """Pause the goal and stop only its own in-flight turn.
+
+        Ordinary user messages running in the same session must survive:
+        they carry no ``goal_id`` extra, so the filtered stop leaves them
+        untouched.
+        """
         state = await self.goals.pause(umo, reason=reason)
         if state is not None:
-            stopped = active_event_registry.request_agent_stop_all(umo)
+            stopped = active_event_registry.request_agent_stop_all(
+                umo, goal_id=state.goal_id
+            )
             if stopped:
                 logger.info(
-                    f"goal loop: requested stop for {stopped} turn(s), umo={umo}"
+                    f"goal loop: requested stop for {stopped} goal turn(s), umo={umo}"
                 )
         return state
 
     async def clear_goal(self, umo: str) -> bool:
-        """Clear the goal and immediately stop any in-flight agent turn."""
+        """Clear the goal and stop only its own in-flight turn.
+
+        The goal id is read before the record is deleted; the filtered stop
+        then affects just the goal-owned event(s), never an ordinary task the
+        user started after the goal finished.
+        """
+        state = await self.goals.get(umo)
+        goal_id = state.goal_id if state is not None else None
         had = await self.goals.clear(umo)
-        stopped = active_event_registry.request_agent_stop_all(umo)
-        if stopped:
-            logger.info(f"goal loop: requested stop for {stopped} turn(s), umo={umo}")
+        if had and goal_id:
+            stopped = active_event_registry.request_agent_stop_all(umo, goal_id=goal_id)
+            if stopped:
+                logger.info(
+                    f"goal loop: requested stop for {stopped} goal turn(s), umo={umo}"
+                )
         return had
 
     async def set_goal(
@@ -275,6 +292,24 @@ class GoalService:
         if max_turns is None:
             max_turns = self._config().get("max_turns")
         return await self.goals.set(umo, goal, max_turns=max_turns)
+
+    async def update_goal(
+        self, umo: str, goal: str, *, max_turns: int | None = None
+    ) -> GoalState | None:
+        """Edit a standing goal in place without starting another turn.
+
+        Args:
+            umo: Unified message origin of the session.
+            goal: New goal text.
+            max_turns: Optional new turn budget; ``None`` keeps the current one.
+
+        Returns:
+            The updated state, or None when the goal is gone.
+
+        Raises:
+            ValueError: If the goal text is empty.
+        """
+        return await self.goals.update(umo, goal, max_turns=max_turns)
 
     async def _notify(self, event: AstrMessageEvent, text: str) -> None:
         """Proactively push a message to the session of ``event``."""

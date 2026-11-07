@@ -428,6 +428,8 @@ DEFAULT_CONFIG = {
             "ca_certs": "",
         },
     },
+    # Instance policy, always read from the default configuration.
+    "session_messages": {"enable": True, "max_chain_sends": 15},
     # ChatUI frontend preferences. Kept in the config file (not browser
     # localStorage) so every browser opening this instance shares one
     # definition; written through /api/chat/ui-settings rather than the
@@ -3444,6 +3446,13 @@ CONFIG_METADATA_2 = {
             "log_file_path": {"type": "string", "condition": {"log_file_enable": True}},
             "log_file_max_mb": {"type": "int", "condition": {"log_file_enable": True}},
             "temp_dir_max_size": {"type": "int"},
+            "session_messages": {
+                "type": "object",
+                "items": {
+                    "enable": {"type": "bool"},
+                    "max_chain_sends": {"type": "int"},
+                },
+            },
             "trace_log_enable": {"type": "bool"},
             "trace_log_path": {
                 "type": "string",
@@ -5203,6 +5212,16 @@ CONFIG_METADATA_3_SYSTEM = {
                         "description": "仅管理员可用",
                         "type": "bool",
                         "hint": "开启后，仅管理员可以使用 /goal 与 /subgoal 指令。",
+                    },
+                    "session_messages.enable": {
+                        "description": "Agent 跨会话能力",
+                        "type": "bool",
+                        "hint": "实例级开关，默认开启。关闭后禁止 Agent 发现、读取、新建、发送及接收新的 Agent 消息；真人聊天和已启动执行不受影响。保存后立即生效，不受会话配置覆盖。",
+                    },
+                    "session_messages.max_chain_sends": {
+                        "description": "自动消息链发送上限",
+                        "type": "int",
+                        "hint": "正整数，默认 15。同一链的并发发送共享预算，真人新消息开启新链。跨实例不重置计数，计入此前发送次数，采用已参与实例的最低上限，后续不能放宽。",
                     },
                     "goal.max_turns": {
                         "description": "轮次预算",

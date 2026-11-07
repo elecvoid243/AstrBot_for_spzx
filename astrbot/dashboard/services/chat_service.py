@@ -18,7 +18,6 @@ from weakref import WeakSet
 from sqlmodel import select
 
 from astrbot.builtin_stars.session_messages.tools import (
-    MAX_SESSION_MESSAGE_CHAIN,
     AgentMessageSource,
     SessionMessageChain,
 )
@@ -3099,6 +3098,27 @@ class ChatService:
             await self.session_config(owner, session_id, payload.get("config_id"))
         return selection
 
+    def require_session_message_limit(self) -> int:
+        """Check instance policy for new Agent session operations and deliveries.
+
+        Returns:
+            The positive send limit from the instance's default configuration.
+
+        Raises:
+            ChatServiceError: Agent session access is disabled or misconfigured.
+        """
+        settings = self.core_lifecycle.astrbot_config_mgr.confs["default"].get(
+            "session_messages", {}
+        )
+        if not isinstance(settings, dict) or settings.get("enable", True) is not True:
+            raise ChatServiceError("Agent cross-session access is disabled")
+        limit = settings.get("max_chain_sends", 15)
+        if type(limit) is not int or limit < 1:
+            raise ChatServiceError(
+                "Agent message chain limit must be a positive integer"
+            )
+        return limit
+
     async def list_message_sessions(self, event) -> list[dict]:
         """Discover supported sessions for an authenticated ordinary execution.
 
@@ -3113,6 +3133,7 @@ class ChatService:
         """
         from astrbot.core.cron.webchat_turn import parse_webchat_turn_session
 
+        self.require_session_message_limit()
         account = event.get_extra("_dashboard_account")
         if not isinstance(account, DashboardPrincipal) or event.get_extra(
             "agent_team_execution"
@@ -3253,6 +3274,7 @@ class ChatService:
         if config_id not in self.core_lifecycle.astrbot_config_mgr.confs:
             raise ChatServiceError("Config profile is unavailable")
         await self.validate_chat_selection(owner, source_id, selection, use_saved=False)
+        self.require_session_message_limit()
         created = await self.new_session(owner, "webchat")
         session_id = created["session_id"]
         try:
@@ -3344,6 +3366,10 @@ class ChatService:
             chain = SessionMessageChain(sessions={source_id})
             event.set_extra("_session_message_chain", chain)
             self.session_message_chains.add(chain)
+        limit = self.require_session_message_limit()
+        chain.max_sends = (
+            min(chain.max_sends, limit) if chain.max_sends is not None else limit
+        )
         if (
             event.get_extra("agent_stop_requested")
             or source_id in chain.stopped
@@ -3352,8 +3378,10 @@ class ChatService:
             raise ChatServiceError(
                 "This automatic message chain was stopped by the user"
             )
-        if chain.count >= MAX_SESSION_MESSAGE_CHAIN:
-            raise ChatServiceError("Automatic message chain limit reached (8 sends)")
+        if chain.count >= chain.max_sends:
+            raise ChatServiceError(
+                f"Automatic message chain limit reached ({chain.max_sends} sends)"
+            )
         if registry.find_pending_by_umo(umo) is not None:
             raise ChatServiceError(
                 "Target is waiting for a user answer; Agent messages cannot answer it"
@@ -3434,6 +3462,8 @@ class ChatService:
         """
         if "message" not in post_data and "files" not in post_data:
             raise ChatServiceError("Missing key: message or files")
+        if agent_source is not None:
+            self.require_session_message_limit()
         if "session_id" not in post_data and "conversation_id" not in post_data:
             raise ChatServiceError("Missing key: session_id or conversation_id")
 
@@ -3653,6 +3683,12 @@ class ChatService:
                 # and chain commit below do not yield, so competing sends and stops
                 # cannot change their result between the check and acceptance.
                 chain = agent_source.chain
+                limit = self.require_session_message_limit()
+                chain.max_sends = (
+                    min(chain.max_sends, limit)
+                    if chain.max_sends is not None
+                    else limit
+                )
                 if (
                     agent_source.session_id in chain.stopped
                     or webchat_conv_id in chain.stopped
@@ -3662,9 +3698,9 @@ class ChatService:
                     raise ChatServiceError(
                         "This automatic message chain was stopped by the user"
                     )
-                if chain.count >= MAX_SESSION_MESSAGE_CHAIN:
+                if chain.count >= chain.max_sends:
                     raise ChatServiceError(
-                        "Automatic message chain limit reached (8 sends)"
+                        f"Automatic message chain limit reached ({chain.max_sends} sends)"
                     )
                 if registry.find_pending_by_umo(
                     umo := build_webchat_unified_msg_origin(platform_session)

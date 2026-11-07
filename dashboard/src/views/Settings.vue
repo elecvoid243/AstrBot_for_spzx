@@ -837,6 +837,7 @@ const systemConfigGroups = computed(() => {
 
     return [
         createGroup('runtime', ['timezone', 'callback_api_base']),
+        createGroup('sessionMessages', ['session_messages.enable', 'session_messages.max_chain_sends']),
         createGroup('network', ['http_proxy', 'no_proxy', 'pip_install_arg', 'pypi_index_url']),
         createGroup('webuiSecurity', [
             'dashboard.trust_proxy_headers',
@@ -884,7 +885,7 @@ const systemConfigGroups = computed(() => {
 });
 
 const generalSystemConfigGroups = computed(() => systemConfigGroups.value.filter((group) => (
-    group.key === 'runtime' || group.key === 'logs' || group.key === 'tempStorage' || group.key === 'goalLoop'
+    group.key === 'runtime' || group.key === 'logs' || group.key === 'tempStorage' || group.key === 'goalLoop' || group.key === 'sessionMessages'
 )));
 const appearanceSystemConfigGroups = computed(() => systemConfigGroups.value.filter((group) => (
     group.key === 't2iRendering'

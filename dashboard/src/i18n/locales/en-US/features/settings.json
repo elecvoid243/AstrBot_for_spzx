@@ -65,6 +65,9 @@
         "title": "Cache",
         "subtitle": "Automatic cleanup threshold for the temporary directory."
       },
+      "sessionMessages": {
+        "title": "Agent cross-session access"
+      },
       "goalLoop": {
         "title": "Goal Loop",
         "subtitle": "Judge model and turn budget for the built-in /goal standing goal loop."

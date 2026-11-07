@@ -1444,6 +1444,16 @@
       "no_proxy": {
         "description": "直连地址列表"
       },
+      "session_messages": {
+        "enable": {
+          "description": "Agent 跨会话能力",
+          "hint": "实例级开关，默认开启。关闭后禁止 Agent 发现、读取、新建、发送及接收新的 Agent 消息；真人聊天和已启动执行不受影响。保存后立即生效，不受会话配置覆盖。"
+        },
+        "max_chain_sends": {
+          "description": "自动消息链发送上限",
+          "hint": "正整数，默认 15。同一链的并发发送共享预算，真人新消息开启新链。跨实例不重置计数，计入此前发送次数，采用已参与实例的最低上限，后续不能放宽。"
+        }
+      },
       "goal": {
         "admin_only": {
           "description": "仅管理员可用",

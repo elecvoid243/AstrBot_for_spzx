@@ -6564,8 +6564,11 @@ function toggleTheme() {
   top: 0;
   right: 0;
   bottom: 0;
+  /* 2026-11-07 (elecvoid243): the hit area stays fully inside the sidebar.
+     The old `margin-right: -3px` straddled the seam, so half of the hover tint
+     landed in the chat column, where the 50px app bar clipped it. That 2px
+     step at the bar's lower edge read as the toolbar's left edge jutting out. */
   width: 6px;
-  margin-right: -3px;
   cursor: ew-resize;
   z-index: 10;
   background: transparent;

@@ -22,7 +22,11 @@ from astrbot.core.db.po import (
     RemoteChatExposure,
 )
 from astrbot.dashboard.responses import ApiError
-from astrbot.dashboard.services.chat_service import ChatService
+from astrbot.dashboard.services.chat_service import ChatService, ChatServiceError
+from astrbot.dashboard.services.chatui_project_service import (
+    ChatUIProjectService,
+    ChatUIProjectServiceError,
+)
 
 
 class RemoteChatService:
@@ -46,7 +50,9 @@ class RemoteChatService:
         self.db = db
         self.config = config
         self.chat = chat
+        chat.remote_chat = self
         # Bounded, process-local admission receipts. These never schedule delivery.
+        self.exposure_lock = asyncio.Lock()
         self.receipts: dict[tuple[str, str, str], dict] = {}
         # Invalidate admissions whose asynchronous reads overlap a grant change.
         self.grant_revisions = grant_revisions
@@ -59,6 +65,317 @@ class RemoteChatService:
         """
         if self.config.get("chatui", {}).get("remote_sessions_enabled") is not True:
             raise ApiError("Remote session connections are disabled", status_code=403)
+
+    async def create_session(
+        self,
+        account: DashboardAccount,
+        payload: dict,
+        raw_key: str,
+        *,
+        agent: bool = False,
+    ) -> dict:
+        """Create an ordinary remote-owned chat and publish its direct grant.
+
+        Args:
+            account: Dedicated credential's authenticated account.
+            payload: Validated title, explicit project and optional model choices.
+            raw_key: Dedicated secret, used only for final live revalidation.
+            agent: Also enforce the target's Agent policy.
+
+        Returns:
+            Credential-free ordinary session descriptor.
+
+        Raises:
+            ApiError: Creation, project or live authorization is unavailable.
+        """
+        # Serialize selected-list updates so simultaneous creates retain every ID.
+        async with self.exposure_lock:
+            self.require_enabled()
+            if (
+                self.config.get("chatui", {}).get("remote_session_creation_enabled")
+                is not True
+            ):
+                raise ApiError("Remote session creation is disabled", status_code=403)
+            if agent:
+                self.chat.require_session_message_limit()
+            revision = self.grant_revisions.get(account.account_id, 0)
+            owner = account.resource_owner
+            projects = ChatUIProjectService(self.db)
+            project_id = payload.get("project_id")
+            if "project_name" in payload:
+                if "project_id" in payload:
+                    raise ApiError("Choose project_id or project_name", status_code=400)
+                matches = []
+                page = 1
+                while True:
+                    rows = await self.db.get_chatui_projects_by_creator(
+                        owner, page=page, page_size=100
+                    )
+                    matches.extend(
+                        row.project_id
+                        for row in rows
+                        if row.title == payload["project_name"]
+                    )
+                    if len(rows) < 100:
+                        break
+                    page += 1
+                if len(matches) != 1:
+                    raise ApiError(
+                        "Project name is missing or ambiguous; use project_id",
+                        status_code=400,
+                    )
+                project_id = matches[0]
+            elif "project_id" not in payload:
+                raise ApiError(
+                    "An explicit project_id (or null) is required", status_code=400
+                )
+            session_id = None
+            try:
+                project = (
+                    await projects.get_project(owner, project_id) if project_id else {}
+                )
+                created = await self.chat.new_session(owner, "webchat")
+                session_id = created["session_id"]
+                await self.chat.update_session_display_name(
+                    owner, session_id, payload["title"].strip()
+                )
+                if project_id:
+                    await projects.add_session_to_project(
+                        owner, {"session_id": session_id, "project_id": project_id}
+                    )
+                selection = await self.chat.session_selection(
+                    owner,
+                    session_id,
+                    {
+                        key: payload[key]
+                        for key in (
+                            "selected_provider",
+                            "selected_model",
+                            "thinking_effort",
+                        )
+                        if key in payload
+                    },
+                )
+                current = await self.authenticate(raw_key)
+                async with self.db.get_db() as connection:
+                    policy = await connection.get(
+                        RemoteChatExposure, current.account_id
+                    )
+                    self.require_enabled()
+                    if (
+                        self.config.get("chatui", {}).get(
+                            "remote_session_creation_enabled"
+                        )
+                        is not True
+                    ):
+                        raise ApiError(
+                            "Remote session creation is disabled", status_code=403
+                        )
+                    if agent:
+                        self.chat.require_session_message_limit()
+                    if self.grant_revisions.get(account.account_id, 0) != revision:
+                        raise ApiError(
+                            "Remote grant changed during creation", status_code=403
+                        )
+                    if policy is None:
+                        policy = RemoteChatExposure(account_id=current.account_id)
+                    if policy.mode != "all":
+                        policy.session_ids = [*policy.session_ids, session_id]
+                    connection.add(policy)
+                    await connection.commit()
+                    # A policy/account change may finish during the database commit.
+                    self.require_enabled()
+                    if (
+                        self.config.get("chatui", {}).get(
+                            "remote_session_creation_enabled"
+                        )
+                        is not True
+                    ):
+                        raise ApiError(
+                            "Remote session creation is disabled", status_code=403
+                        )
+                    if agent:
+                        self.chat.require_session_message_limit()
+                    if self.grant_revisions.get(account.account_id, 0) != revision:
+                        raise ApiError(
+                            "Remote grant changed during creation", status_code=403
+                        )
+                    # Invalidate overlapping admission reads, including selected mode.
+                    self.grant_revisions[account.account_id] = (
+                        self.grant_revisions.get(account.account_id, 0) + 1
+                    )
+                return {
+                    "status": "created",
+                    "session_id": session_id,
+                    "display_name": payload["title"].strip(),
+                    "project_id": project_id,
+                    "project_name": project.get("title"),
+                    "selection": selection,
+                }
+            except BaseException as exc:
+                if session_id:
+                    session = await self.db.get_platform_session_by_id(session_id)
+                    if session:
+                        await self.chat.delete_session_internal(session, owner)
+                if isinstance(exc, (ChatServiceError, ChatUIProjectServiceError)):
+                    raise ApiError(str(exc), status_code=400) from None
+                raise
+
+    async def agent_connection(
+        self,
+        event,
+        connection_id: str,
+        revision: str,
+        path: str,
+        *,
+        params=None,
+        payload=None,
+    ):
+        """Use a direct binding after source and target Agent checks.
+
+        Args:
+            event: Trusted ordinary local Agent event.
+            connection_id: Explicit binding owned by the source account.
+            revision: Immutable binding revision returned by discovery.
+            path: Fixed protocol path built by a tool.
+            params: Bounded read options.
+            payload: Creation arguments, or None for a read.
+
+        Returns:
+            Remote authorized data without credentials.
+
+        Raises:
+            ChatServiceError: Source, target, binding or remote policy denies access.
+        """
+        await self.chat.list_message_sessions(event)
+        principal = event.get_extra("_dashboard_account")
+        async with self.db.get_db() as connection:
+            account = await connection.get(DashboardAccount, principal.account_id)
+        if account is None:
+            raise ChatServiceError("Account is unavailable")
+        try:
+            result = await self.read_connection(
+                account,
+                connection_id,
+                "agent/" + path,
+                params,
+                revision=revision,
+                method="POST" if payload is not None else "GET",
+                payload=payload,
+            )
+            # Do not reveal a late response after source policy or identity changes.
+            source_revision = self.grant_revisions.get(principal.account_id, 0)
+            await self.chat.list_message_sessions(event)
+            async with self.db.get_db() as connection:
+                current = await connection.get(RemoteChatConnection, connection_id)
+            self.require_enabled()
+            self.chat.require_session_message_limit()
+            if self.grant_revisions.get(principal.account_id, 0) != source_revision:
+                raise ChatServiceError("Source account changed during request")
+            if (
+                current is None
+                or current.account_id != principal.account_id
+                or current.revision != revision
+            ):
+                raise ChatServiceError("Connection changed during request")
+            return result
+        except ApiError as exc:
+            raise ChatServiceError(
+                (exc.data or {}).get("code", "Remote access denied")
+            ) from None
+
+    async def agent_sessions(self, event) -> list[dict]:
+        """Discover local chats and authorized directly bound remote chats.
+
+        Args:
+            event: Trusted ordinary local Agent event.
+
+        Returns:
+            Descriptors scoped by connection and immutable binding revision.
+        """
+        result = await self.chat.list_message_sessions(event)
+        result = [
+            {
+                **row,
+                "connection_id": None,
+                "connection_name": "This instance",
+                "target_id": "local:" + row["session_id"],
+            }
+            for row in result
+        ]
+        if self.config.get("chatui", {}).get("remote_sessions_enabled") is not True:
+            return result
+        principal = event.get_extra("_dashboard_account")
+        async with self.db.get_db() as connection:
+            account = await connection.get(DashboardAccount, principal.account_id)
+        bindings = (await self.connections(account))["connections"]
+        for binding in bindings:
+            try:
+                rows = await self.agent_connection(
+                    event, binding["connection_id"], binding["revision"], "sessions"
+                )
+            except ChatServiceError:
+                continue
+            if not isinstance(rows, list):
+                continue
+            for row in rows:
+                if not isinstance(row, dict) or not isinstance(
+                    row.get("session_id"), str
+                ):
+                    continue
+                result.append(
+                    {
+                        **{
+                            key: row.get(key)
+                            for key in (
+                                "session_id",
+                                "display_name",
+                                "project_id",
+                                "project_name",
+                            )
+                        },
+                        "connection_id": binding["connection_id"],
+                        "connection_name": binding["name"],
+                        "connection_revision": binding["revision"],
+                        "target_id": "remote:"
+                        + binding["connection_id"]
+                        + ":"
+                        + binding["revision"]
+                        + ":"
+                        + row["session_id"],
+                    }
+                )
+        # A failed remote request must not hide a revoked source execution.
+        await self.chat.list_message_sessions(event)
+        if self.config.get("chatui", {}).get("remote_sessions_enabled") is not True:
+            return [row for row in result if row["connection_id"] is None]
+        source_revision = self.grant_revisions.get(principal.account_id, 0)
+        async with self.db.get_db() as connection:
+            current = (
+                (
+                    await connection.execute(
+                        select(RemoteChatConnection).where(
+                            RemoteChatConnection.account_id == principal.account_id
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        revisions = {row.connection_id: row.revision for row in current}
+        await self.chat.list_message_sessions(event)
+        self.chat.require_session_message_limit()
+        if self.grant_revisions.get(principal.account_id, 0) != source_revision:
+            raise ChatServiceError("Source account changed during discovery")
+        return [
+            row
+            for row in result
+            if row["connection_id"] is None
+            or (
+                self.config.get("chatui", {}).get("remote_sessions_enabled") is True
+                and revisions.get(row["connection_id"]) == row["connection_revision"]
+            )
+        ]
 
     async def authenticate(self, raw_key: str) -> DashboardAccount:
         """Resolve a dedicated key against its current account on every request.
@@ -222,25 +539,27 @@ class RemoteChatService:
         Raises:
             ApiError: A selected session is unavailable to this account.
         """
-        available = {
-            item["session_id"]
-            for item in await self.sessions(account, exposed_only=False)
-        }
-        if set(session_ids) - available:
-            raise ApiError("Session is unavailable", status_code=404)
-        async with self.db.get_db() as connection:
-            policy = await connection.get(RemoteChatExposure, account.account_id)
-            if policy is None:
-                policy = RemoteChatExposure(account_id=account.account_id)
-            policy.mode = mode
-            policy.session_ids = (
-                list(dict.fromkeys(session_ids)) if mode == "selected" else []
-            )
-            connection.add(policy)
-            await connection.commit()
-            self.grant_revisions[account.account_id] = (
-                self.grant_revisions.get(account.account_id, 0) + 1
-            )
+        # Share the create-and-expose transaction boundary with manual policy writes.
+        async with self.exposure_lock:
+            available = {
+                item["session_id"]
+                for item in await self.sessions(account, exposed_only=False)
+            }
+            if set(session_ids) - available:
+                raise ApiError("Session is unavailable", status_code=404)
+            async with self.db.get_db() as connection:
+                policy = await connection.get(RemoteChatExposure, account.account_id)
+                if policy is None:
+                    policy = RemoteChatExposure(account_id=account.account_id)
+                policy.mode = mode
+                policy.session_ids = (
+                    list(dict.fromkeys(session_ids)) if mode == "selected" else []
+                )
+                connection.add(policy)
+                await connection.commit()
+                self.grant_revisions[account.account_id] = (
+                    self.grant_revisions.get(account.account_id, 0) + 1
+                )
 
     async def create_credential(self, account: DashboardAccount, name: str) -> dict:
         """Issue one independently revocable secret for a direct binding.
@@ -411,6 +730,9 @@ class RemoteChatService:
                 row.encrypted_key = cipher.encrypt(key.encode()).decode()
             connection.add(row)
             await connection.commit()
+            self.grant_revisions[account.account_id] = (
+                self.grant_revisions.get(account.account_id, 0) + 1
+            )
             return row.connection_id
 
     async def delete_connection(
@@ -432,6 +754,9 @@ class RemoteChatService:
                 raise ApiError("Connection is unavailable", status_code=404)
             await connection.delete(row)
             await connection.commit()
+            self.grant_revisions[account.account_id] = (
+                self.grant_revisions.get(account.account_id, 0) + 1
+            )
 
     async def read_connection(
         self,

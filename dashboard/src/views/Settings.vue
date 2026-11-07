@@ -276,6 +276,15 @@
                                 @update:model-value="systemConfigData.chatui.remote_sessions_enabled = Boolean($event)"
                             />
                             <p class="text-body-2">{{ tmChat('remoteAccess.enabledHint') }}</p>
+                            <v-switch
+                                :model-value="systemConfigData.chatui.remote_session_creation_enabled === true"
+                                :label="tmChat('remoteAccess.allowCreation')"
+                                :disabled="systemConfigSaving"
+                                color="primary"
+                                hide-details
+                                @update:model-value="systemConfigData.chatui.remote_session_creation_enabled = Boolean($event)"
+                            />
+                            <p class="text-body-2">{{ tmChat('remoteAccess.creationHint') }}</p>
                         </div>
                         <template v-if="!systemConfigLoading">
                             <div

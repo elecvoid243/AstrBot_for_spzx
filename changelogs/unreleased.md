@@ -34,3 +34,9 @@
 
 - Extend the former remote read-only history view with human text, ordinary busy follow-up, live snapshots and session-wide stop. Reconnect without resending; execution and history stay remote.
 - Retain offline drafts; query bounded remote admission receipts after uncertain sends. Revoke result access live without cancelling accepted work; preserve inert rendering and local account isolation.
+
+## Remote creation and Agent discovery (RC06)
+
+- Added default-off host creation permission at Settings → Security → Remote session access. Disabling it preserves exposed sessions and communication.
+- Navigation mapping: Chat sidebar → Remote connections → connection now adds New remote session; local New conversation is unchanged. Creation selects a remote project, uses remote defaults and updates selected exposure for all bindings of the same remote account.
+- Ordinary Agent list/read/create tools now accept explicit direct connection IDs and binding revisions, returning project directory names and stable targets. Agent operations require both Agent switches; human operations use remote authorization independently. Read keeps bounded display projection and pagination. Remote Agent sending remains RC07.

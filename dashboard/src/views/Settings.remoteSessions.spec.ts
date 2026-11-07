@@ -94,7 +94,10 @@ describe("Settings remote connections use the full configuration save chain", ()
     "preserves the toggle after other settings save (initial=%s)",
     async (initial) => {
       let persisted = {
-        chatui: { remote_sessions_enabled: initial },
+        chatui: {
+          remote_sessions_enabled: initial,
+          remote_session_creation_enabled: initial,
+        },
         timezone: "Asia/Hong_Kong",
         log_level: "INFO",
       };
@@ -141,8 +144,12 @@ describe("Settings remote connections use the full configuration save chain", ()
         await wrapper
           .find('input[aria-label="remoteAccess.enabled"]')
           .setValue(!initial);
+        await wrapper
+          .find('input[aria-label="remoteAccess.allowCreation"]')
+          .setValue(!initial);
         await vi.advanceTimersByTimeAsync(800);
         await flushPromises();
+        expect(persisted.chatui.remote_session_creation_enabled).toBe(!initial);
         expect(persisted.chatui.remote_sessions_enabled).toBe(!initial);
         expect(api.setEnabled).not.toHaveBeenCalled();
         await wrapper
@@ -153,6 +160,7 @@ describe("Settings remote connections use the full configuration save chain", ()
         await vi.advanceTimersByTimeAsync(800);
         await flushPromises();
         expect(persisted.timezone).toBe("UTC");
+        expect(persisted.chatui.remote_session_creation_enabled).toBe(!initial);
         expect(persisted.chatui.remote_sessions_enabled).toBe(!initial);
         await wrapper.find('input[data-setting="log_level"]').setValue("DEBUG");
         await vi.advanceTimersByTimeAsync(800);

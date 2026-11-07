@@ -210,6 +210,9 @@ class AgentMessageSource:
 class ListChatSessionsTool(FunctionTool[AstrAgentContext]):
     name: str = "list_chat_sessions"
     description: str = (
+        "Discover local and directly bound remote ordinary ChatUI sessions. Remote entries "
+        "include connection_id, connection_revision and stable target_id; copy both connection fields for reads/creation. "
+        "project_name is the project directory title. Only directly authorized instances are included. "
         "Discover existing ordinary ChatUI sessions owned by the current account, "
         "including project sessions. Each entry returns project_id and project_name "
         "(the ChatUI sidebar folder title, null for no project). Archived, side and "
@@ -238,7 +241,9 @@ class ListChatSessionsTool(FunctionTool[AstrAgentContext]):
             return "error: ChatUI session messaging is unavailable"
         try:
             return json.dumps(
-                await service.list_message_sessions(context.context.event),
+                await service.remote_chat.agent_sessions(context.context.event)
+                if getattr(service, "remote_chat", None) is not None
+                else await service.list_message_sessions(context.context.event),
                 ensure_ascii=False,
             )
         except (ChatServiceError, ValueError) as exc:
@@ -262,6 +267,14 @@ class ReadChatSessionTool(FunctionTool[AstrAgentContext]):
         default_factory=lambda: {
             "type": "object",
             "properties": {
+                "connection_id": {
+                    "type": "string",
+                    "description": "Direct remote connection ID from discovery; omit for local.",
+                },
+                "connection_revision": {
+                    "type": "string",
+                    "description": "Exact immutable revision from discovery, required with connection_id.",
+                },
                 "session_id": {
                     "type": "string",
                     "description": "Owned ordinary session ID.",
@@ -343,37 +356,103 @@ class ReadChatSessionTool(FunctionTool[AstrAgentContext]):
             # Discovery performs the established source/account revalidation;
             # its target list excludes self/archives and is not read authorization.
             await service.list_message_sessions(event)
-            owner = event.get_extra("_dashboard_account").resource_owner
-            target = await service.require_owned_chat_session(owner, session_id)
-            if target.is_group:
-                raise ChatServiceError("Permission denied")
-            metadata = await service.get_session(
-                owner, session_id, limit=limit if before_id is None else 1
-            )
-            page = (
-                metadata
-                if before_id is None
-                else await service.get_history_before(
-                    owner, session_id, before_id, limit=limit
+            connection_id = kwargs.get("connection_id")
+            if connection_id is not None:
+                revision = kwargs.get("connection_revision")
+                if (
+                    not isinstance(connection_id, str)
+                    or not connection_id
+                    or not isinstance(revision, str)
+                    or not revision
+                ):
+                    raise ChatServiceError(
+                        "Remote reads require connection_id and connection_revision"
+                    )
+                if session_id in {".", ".."} or "/" in session_id or "\\" in session_id:
+                    raise ChatServiceError("Session is unavailable")
+                from urllib.parse import quote
+
+                metadata = await service.remote_chat.agent_connection(
+                    event,
+                    connection_id,
+                    revision,
+                    "sessions/" + quote(session_id, safe="") + "/history",
+                    params={
+                        "limit": limit,
+                        **({"before_id": before_id} if before_id is not None else {}),
+                    },
                 )
+                if (
+                    not isinstance(metadata, dict)
+                    or not isinstance(metadata.get("history"), list)
+                    or type(metadata.get("has_more")) is not bool
+                    or metadata.get("session_id") != session_id
+                    or len(metadata["history"]) > limit
+                    or any(
+                        not isinstance(row, dict)
+                        or not isinstance(row.get("content"), dict)
+                        or type(row.get("id")) is not int
+                        or row["id"] < 1
+                        or (before_id is not None and row["id"] >= before_id)
+                        for row in metadata["history"]
+                    )
+                    or [row["id"] for row in metadata["history"]]
+                    != sorted({row["id"] for row in metadata["history"]})
+                ):
+                    raise ChatServiceError("Invalid remote history")
+                page = metadata
+                response = {
+                    key: metadata.get(key)
+                    for key in (
+                        "session_id",
+                        "display_name",
+                        "project_id",
+                        "project_name",
+                        "archived",
+                        "is_running",
+                    )
+                }
+                response.update(
+                    connection_id=connection_id, connection_revision=revision
+                )
+            else:
+                if "connection_revision" in kwargs:
+                    raise ChatServiceError("connection_revision requires connection_id")
+                owner = event.get_extra("_dashboard_account").resource_owner
+                target = await service.require_owned_chat_session(owner, session_id)
+                if target.is_group:
+                    raise ChatServiceError("Permission denied")
+                metadata = await service.get_session(
+                    owner, session_id, limit=limit if before_id is None else 1
+                )
+                page = (
+                    metadata
+                    if before_id is None
+                    else await service.get_history_before(
+                        owner, session_id, before_id, limit=limit
+                    )
+                )
+                project = metadata.get("project") or {}
+                response = {
+                    "session_id": target.session_id,
+                    "display_name": target.display_name,
+                    "project_id": project.get("project_id"),
+                    "project_name": project.get("title"),
+                    "archived": bool(target.archived),
+                    "is_running": bool(
+                        metadata.get("is_running") or metadata.get("active_runs")
+                    ),
+                }
+            response.update(
+                {
+                    "history_state": "Saved history only; a running reply may be incomplete.",
+                    "messages": [],
+                    "has_more": False,
+                    "next_before_id": None,
+                    "response_budget_limited": False,
+                    "metadata_truncated": False,
+                }
             )
-            project = metadata.get("project") or {}
-            response = {
-                "session_id": target.session_id,
-                "display_name": target.display_name,
-                "project_id": project.get("project_id"),
-                "project_name": project.get("title"),
-                "archived": bool(target.archived),
-                "is_running": bool(
-                    metadata.get("is_running") or metadata.get("active_runs")
-                ),
-                "history_state": "Saved history only; a running reply may be incomplete.",
-                "messages": [],
-                "has_more": False,
-                "next_before_id": None,
-                "response_budget_limited": False,
-                "metadata_truncated": False,
-            }
             # Display names have no hard storage limit. Stable IDs stay intact.
             for key in ("display_name", "project_name"):
                 label = response[key]
@@ -488,6 +567,9 @@ class SendChatMessageTool(FunctionTool[AstrAgentContext]):
 class CreateChatSessionTool(FunctionTool[AstrAgentContext]):
     name: str = "create_chat_session"
     description: str = (
+        "Create a local or directly bound remote ordinary ChatUI session. For remote creation, "
+        "copy connection_id and connection_revision from discovery and explicitly choose project_id "
+        "(null for no project) or project_name. Remote settings default on the target instance; remote text sending is unavailable. "
         "Create an independent ordinary ChatUI session with empty history. Omitted "
         "project and settings inherit this execution's effective values. Select an existing "
         "owned project directly with project_name (exact ChatUI sidebar folder title, "
@@ -501,6 +583,14 @@ class CreateChatSessionTool(FunctionTool[AstrAgentContext]):
         default_factory=lambda: {
             "type": "object",
             "properties": {
+                "connection_id": {
+                    "type": "string",
+                    "description": "Direct remote connection ID from discovery; omit for local.",
+                },
+                "connection_revision": {
+                    "type": "string",
+                    "description": "Exact immutable revision from discovery, required with connection_id.",
+                },
                 "title": {"type": "string", "description": "New conversation title."},
                 "project_id": {
                     "type": ["string", "null"],
@@ -558,6 +648,74 @@ class CreateChatSessionTool(FunctionTool[AstrAgentContext]):
             service.require_session_message_limit()
         except ChatServiceError as exc:
             return f"error: {exc}"
+        if "connection_id" in kwargs or "connection_revision" in kwargs:
+            connection_id = kwargs.get("connection_id")
+            revision = kwargs.get("connection_revision")
+            if (
+                not isinstance(connection_id, str)
+                or not connection_id
+                or not isinstance(revision, str)
+                or not revision
+            ):
+                return "error: Remote creation requires connection_id and connection_revision"
+            if "text" in kwargs:
+                return "error: Remote Agent first-message sending is unavailable; create without text"
+            if "project_id" not in kwargs and "project_name" not in kwargs:
+                return "error: Remote creation requires explicit project_id (or null) or project_name"
+            try:
+                # Revalidate even a cached invocation after a grant or binding change.
+                options = await service.remote_chat.agent_connection(
+                    event, connection_id, revision, "creation"
+                )
+                if not options.get("allowed"):
+                    raise ChatServiceError("Remote session creation is disabled")
+                principal = event.get_extra("_dashboard_account")
+                identity = (invocation, principal.account_id, connection_id, revision)
+                pending = event.get_extra("_created_remote_chat_sessions")
+                if pending is None:
+                    pending = {}
+                    event.set_extra("_created_remote_chat_sessions", pending)
+                if identity not in pending:
+                    pending[identity] = asyncio.create_task(
+                        service.remote_chat.agent_connection(
+                            event,
+                            connection_id,
+                            revision,
+                            "sessions",
+                            payload={
+                                key: value
+                                for key, value in kwargs.items()
+                                if key not in {"connection_id", "connection_revision"}
+                            },
+                        )
+                    )
+                result = await asyncio.shield(pending[identity])
+                # Recheck both the selected grant and creation policy before returning.
+                options = await service.remote_chat.agent_connection(
+                    event,
+                    connection_id,
+                    revision,
+                    "creation",
+                    params={"session_id": result["session_id"]},
+                )
+                if not options.get("allowed"):
+                    raise ChatServiceError("Remote session creation is disabled")
+                return json.dumps(
+                    {
+                        **result,
+                        "connection_id": connection_id,
+                        "connection_revision": revision,
+                        "target_id": "remote:"
+                        + connection_id
+                        + ":"
+                        + revision
+                        + ":"
+                        + result["session_id"],
+                    },
+                    ensure_ascii=False,
+                )
+            except (ChatServiceError, ValueError) as exc:
+                return f"error: {exc}"
         # This cache lives only as long as the source execution. Never use a
         # model-provided key or a mutable shared field for parallel tool calls.
         pending = event.get_extra("_created_chat_sessions")

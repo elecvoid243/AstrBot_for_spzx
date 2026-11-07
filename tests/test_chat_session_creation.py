@@ -615,6 +615,9 @@ async def test_list_tool_returns_folder_titles_without_per_session_project_queri
         "display_name": "B",
         "project_id": project["project_id"],
         "project_name": "Research folder",
+        "connection_id": None,
+        "connection_name": "This instance",
+        "target_id": "local:" + m.ids[1],
     }
     for sid in (plain.session_id, stale.session_id):
         assert by_id[sid]["project_id"] is None
@@ -818,12 +821,16 @@ async def test_listed_project_name_preserves_title_whitespace(creation, plain_na
     listed = json.loads(await ListChatSessionsTool().call(context))
     entry = next(item for item in listed if item["session_id"] == m.ids[1])
     assert entry["project_name"] == " Research folder "
-    result = await invoke({"title": "Copied title B", "project_name": entry["project_name"]})
+    result = await invoke(
+        {"title": "Copied title B", "project_name": entry["project_name"]}
+    )
     assert isinstance(result, dict), result
     assert result["status"] == "created"
     assert result["project_id"] == spaced["project_id"]
     assert result["project_name"] == entry["project_name"]
     m.ids.append(result["session_id"])
-    assert (await m.db.get_project_by_session(result["session_id"], owner)).project_id == spaced["project_id"]
+    assert (
+        await m.db.get_project_by_session(result["session_id"], owner)
+    ).project_id == spaced["project_id"]
     if plain_namesake:
         assert await projects.get_project_sessions(owner, plain["project_id"]) == []

@@ -42,6 +42,20 @@ class ConnectionStopRequest(BaseModel):
     revision: str
 
 
+class RemoteCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    title: str = Field(min_length=1, max_length=255, pattern=r"\S")
+    project_id: str | None = Field(default=None, min_length=1, max_length=255)
+    project_name: str | None = Field(default=None, min_length=1, max_length=512)
+    selected_provider: str | None = Field(default=None, min_length=1)
+    selected_model: str | None = Field(default=None, min_length=1)
+    thinking_effort: str | None = Field(default=None, min_length=1)
+
+
+class ConnectionCreateRequest(RemoteCreateRequest):
+    revision: str
+
+
 class RemoteExposureRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     mode: Literal["all", "selected"]
@@ -145,6 +159,214 @@ async def discover_remote_chat_sessions(
     request: Request, account: DashboardAccount = Depends(require_remote_account)
 ):
     return ok(await request.app.state.services.remote_chat.sessions(account))
+
+
+@router.post("/remote-chat/sessions")
+@router.post("/remote-chat/agent/sessions")
+async def create_remote_chat_session(
+    payload: RemoteCreateRequest,
+    request: Request,
+    account: DashboardAccount = Depends(require_remote_account),
+):
+    """Create only under the credential-bound account and host creation policy.
+
+    Args:
+        payload: Title, explicit remote project and ordinary model choices.
+        request: Dedicated-auth request; the Agent route adds the Agent gate.
+        account: Account resolved from the dedicated credential, never caller input.
+
+    Returns:
+        Created ordinary session metadata without credentials.
+
+    Raises:
+        ApiError: Host creation, live authorization or owned project validation fails.
+    """
+    result = await request.app.state.services.remote_chat.create_session(
+        account,
+        payload.model_dump(exclude_unset=True),
+        request.headers["Authorization"].partition(" ")[2].strip(),
+        agent="/agent/" in request.url.path,
+    )
+    return JSONResponse(ok(result), headers={"Cache-Control": "no-store"})
+
+
+@router.get("/remote-chat/agent/sessions")
+async def discover_remote_agent_sessions(
+    request: Request, account: DashboardAccount = Depends(require_remote_account)
+):
+    service = request.app.state.services.remote_chat
+    service.chat.require_session_message_limit()
+    rows = await service.sessions(account)
+    await service.authenticate(
+        request.headers["Authorization"].partition(" ")[2].strip()
+    )
+    service.chat.require_session_message_limit()
+    return ok([row for row in rows if not row["archived"]])
+
+
+@router.get("/remote-chat/agent/sessions/{session_id}/history")
+async def read_remote_agent_history(
+    session_id: str,
+    request: Request,
+    before_id: int | None = Query(default=None, ge=1),
+    limit: int = Query(default=20, ge=1, le=50),
+    account: DashboardAccount = Depends(require_remote_account),
+):
+    """Read exposed display history for a directly authorized Agent caller.
+
+    Args:
+        session_id: Ordinary session in the credential account's exposure scope.
+        request: Dedicated-auth request, independent of ambient browser identity.
+        before_id: Exclusive saved-message cursor, or None for the newest page.
+        limit: Maximum saved records; the calling tool applies display budgets.
+        account: Current account bound to the dedicated credential.
+
+    Returns:
+        Safe session metadata and saved display records for tool projection.
+
+    Raises:
+        ApiError: The credential, account, exposure or remote access is unavailable.
+        ChatServiceError: Agent access is disabled or the session is unavailable.
+    """
+    service = request.app.state.services.remote_chat
+    service.chat.require_session_message_limit()
+    await service.require_session(account, session_id)
+    metadata = await service.chat.get_session(
+        account.resource_owner, session_id, limit if before_id is None else 1
+    )
+    page = (
+        metadata
+        if before_id is None
+        else await service.chat.get_history_before(
+            account.resource_owner, session_id, before_id, limit
+        )
+    )
+    await service.authenticate(
+        request.headers["Authorization"].partition(" ")[2].strip()
+    )
+    await service.require_session(account, session_id)
+    service.chat.require_session_message_limit()
+    target = await service.chat.require_owned_chat_session(
+        account.resource_owner, session_id
+    )
+    project = metadata.get("project") or {}
+    return ok(
+        {
+            "session_id": session_id,
+            "display_name": target.display_name,
+            "project_id": project.get("project_id"),
+            "project_name": project.get("title"),
+            "archived": bool(target.archived),
+            "is_running": bool(
+                metadata.get("is_running") or metadata.get("active_runs")
+            ),
+            "history": page["history"],
+            "has_more": page["has_more"],
+        }
+    )
+
+
+@router.get("/chat/remote-connections/{connection_id}/creation")
+async def connection_creation_options(
+    connection_id: str,
+    request: Request,
+    revision: str = Query(),
+    _owner: str = Depends(require_dashboard_user),
+):
+    data = await request.app.state.services.remote_chat.read_connection(
+        request.state.dashboard_account, connection_id, "creation", revision=revision
+    )
+    return JSONResponse(ok(data), headers={"Cache-Control": "no-store"})
+
+
+@router.get("/remote-chat/creation")
+@router.get("/remote-chat/agent/creation")
+async def remote_creation_options(
+    request: Request,
+    account: DashboardAccount = Depends(require_remote_account),
+    session_id: str | None = Query(default=None),
+):
+    """Offer owned remote projects only while host creation is allowed.
+
+    Args:
+        request: Dedicated-auth request; the Agent path adds the Agent gate.
+        account: Account bound to the dedicated credential.
+        session_id: Optional created session whose exposure must still be valid.
+
+    Returns:
+        Live host permission and owned project titles/IDs, including empty projects.
+
+    Raises:
+        ApiError: Live credential, account or optional session exposure fails.
+        ChatServiceError: The Agent route is disabled by target instance policy.
+    """
+    service = request.app.state.services.remote_chat
+    allowed = (
+        service.config.get("chatui", {}).get("remote_session_creation_enabled") is True
+    )
+    projects = []
+    if allowed:
+        page = 1
+        while True:
+            rows = await service.db.get_chatui_projects_by_creator(
+                account.resource_owner, page=page, page_size=100
+            )
+            projects.extend(
+                {"project_id": row.project_id, "title": row.title} for row in rows
+            )
+            if len(rows) < 100:
+                break
+            page += 1
+    await service.authenticate(
+        request.headers["Authorization"].partition(" ")[2].strip()
+    )
+    if session_id is not None:
+        await service.require_session(account, session_id)
+    if "/agent/" in request.url.path:
+        service.chat.require_session_message_limit()
+    service.require_enabled()
+    allowed = (
+        service.config.get("chatui", {}).get("remote_session_creation_enabled") is True
+    )
+    return ok({"allowed": allowed, "projects": projects if allowed else []})
+
+
+@router.post("/chat/remote-connections/{connection_id}/sessions")
+async def create_connection_session(
+    connection_id: str,
+    payload: ConnectionCreateRequest,
+    request: Request,
+    _owner: str = Depends(require_dashboard_user),
+):
+    result = await request.app.state.services.remote_chat.read_connection(
+        request.state.dashboard_account,
+        connection_id,
+        "sessions",
+        method="POST",
+        payload=payload.model_dump(exclude={"revision"}, exclude_unset=True),
+        revision=payload.revision,
+    )
+    if not isinstance(result, dict) or not isinstance(result.get("session_id"), str):
+        raise ApiError(
+            "Invalid remote creation response",
+            status_code=502,
+            data={"code": "remote_acceptance_unknown"},
+        )
+    return JSONResponse(
+        ok(
+            {
+                key: result.get(key)
+                for key in (
+                    "status",
+                    "session_id",
+                    "display_name",
+                    "project_id",
+                    "project_name",
+                )
+            }
+        ),
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @router.get("/remote-chat/projects")

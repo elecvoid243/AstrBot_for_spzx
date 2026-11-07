@@ -41,13 +41,27 @@ The former Projects/Conversations sections remain under **This instance**. Remot
 Use **Manage connections** to rename a binding, change its address, replace its key (leave the replacement field blank to retain it), or remove it locally. Removing a binding does not delete remote sessions. The panel distinguishes unreachable servers, expired authorization, disabled remote access and unsupported protocols. A failed grant clears the corresponding accessible list and transcript, while the local login remains valid. Access is rechecked every 15 seconds, when the window regains focus, and by **Refresh access**. Account switching immediately discards old lists and history, including delayed responses. Turning the local switch off retains connection metadata and blocks management and outbound reads until enabled again. A remote grant exposes only that instance's own sessions, never its outbound bindings.
 
 
-The former read-only remote history view now includes **Send**, **Send follow-up** while busy, and **Stop remote task**. Stop covers tasks started on the remote machine or another connection. Execution and authoritative history stay remote. Remote session creation, attachments, interactive choices and Agent sending remain follow-up features.
+The former read-only remote history view now includes **Send**, **Send follow-up** while busy, and **Stop remote task**. Stop covers tasks started on the remote machine or another connection. Execution and authoritative history stay remote. Attachments, interactive choices and Agent sending remain follow-up features.
 
 ![Remote execution and follow-up input](./images/chat-remote-execution.jpg)
 
 Closing the page or losing connectivity detaches the observer; accepted work continues. Reconnection automatically reads saved history and active run snapshots, including the original run receiving a follow-up. Offline input stays a draft and is never queued or automatically resent. A lost admission response shows **Acceptance is unconfirmed**. **Check remote acceptance** queries the remote receipt for that request ID: accepted clears the draft, rejected unlocks manual retry, and processing or unknown keeps retry locked. Receipts are bounded and process-local; eviction or a remote restart leaves an unknown result, so inspect remote history before composing a new message. Unfinished execution is not guaranteed to survive a remote process restart.
 
 Revoking the key, removing exposure, disabling either instance switch or rebinding closes corresponding result streams (including idle streams) and rejects new access; accepted execution continues. The remote account can still view and stop it locally. Remote authorization failures preserve the local login. Drafts and receipt identities are scoped by local account, connection, binding revision and remote session.
+
+### Create remote sessions and use Agent discovery
+
+Administrators can enable **Settings → Security → Remote session access → Allow creating sessions through connections**. This host permission defaults to off and is independent of the remote connections and Agent cross-session switches. Disabling creation preserves access and communication with exposed sessions. Navigation mapping: the existing remote connection list adds **New remote session** below each connection; local **New conversation** keeps its existing behavior.
+
+![Host creation permission](./images/chat-remote-creation-settings.jpg)
+
+Choose **Chat sidebar → Remote connections → a connection → New remote session**. Enter a title and choose an existing remote project directory (including empty projects), or **No project**. Duplicate project titles show their project IDs to distinguish them. Local folders and filesystem paths are not sent. Creation uses remote configuration and model defaults and automatically adds the ordinary session to the account's selected exposure list. Other connections bound to that same remote account can discover it immediately. Send its first message in the remote composer, using the existing receipt and execution path. If confirmation is lost, refresh and inspect sessions before creating again.
+
+![Create within an explicit connection](./images/chat-remote-create.jpg)
+
+The ordinary Agent tools `list_chat_sessions`, `read_chat_session` and `create_chat_session` support local and directly bound remote sessions. Discovery returns `connection_id`, `connection_revision`, stable `target_id`, `project_id` and `project_name` (the sidebar directory title). Copy both connection fields for remote reads/creation; omit them for local behavior. Remote creation requires explicit `project_id` (null for no project) or exact `project_name`; duplicate names within that connection require an ID. Remote defaults come from the remote instance rather than the local runner. Remote Agent first-message sending is unavailable in this release.
+
+Agent operations require both instances to enable remote connections and Agent cross-session access; the target enforces account exposure and creation permission. Human actions are independent of Agent switches. Tools never discover third-party bindings on the remote host. Read returns saved display history with optional tool results, exclusive `before_id` paging, at most 50 records (default 20), 8000 characters per record (default 2000) and 40000 characters per response. Truncation and `next_before_id` allow continued paging without checkpoints, filesystem paths or attachment capabilities. Revocation, account changes and rebinding invalidate reads and cached remote creation results.
 
 ## Save and restore your Chat sessions
 

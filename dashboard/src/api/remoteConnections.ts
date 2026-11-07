@@ -36,6 +36,23 @@ export const remoteConnectionsApi = {
       ? apiV1Client.put(path(id), data)
       : apiV1Client.post("/chat/remote-connections", data),
   remove: (id: string) => apiV1Client.delete(path(id)),
+  creation: (id: string, revision: string) =>
+    apiV1Client.get<
+      ApiEnvelope<{
+        allowed: boolean;
+        projects: { project_id: string; title: string }[];
+      }>
+    >(`${path(id)}/creation`, { params: { revision } }),
+  createSession: (
+    id: string,
+    revision: string,
+    title: string,
+    project_id: string | null,
+  ) =>
+    apiV1Client.post<ApiEnvelope<{ session_id: string }>>(
+      `${path(id)}/sessions`,
+      { revision, title, project_id },
+    ),
   send: (
     id: string,
     session: string,

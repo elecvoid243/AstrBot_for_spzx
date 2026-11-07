@@ -2397,7 +2397,9 @@
     "copy": "复制",
     "hide": "隐藏密钥",
     "revoke": "撤销",
-    "revoked": "已撤销"
+    "revoked": "已撤销",
+    "allowCreation": "允许通过连接新建会话",
+    "creationHint": "主机级权限，默认关闭。关闭新建仍可访问和通信已暴露的会话。Agent 操作还需两端均开启 Agent 跨会话访问。"
   },
   "remoteConnections": {
     "title": "远端连接",
@@ -2431,6 +2433,13 @@
     "running": "远端任务运行中 · 输入将作为后续消息发送",
     "idle": "执行和历史保留在远端实例",
     "unknown": "接受状态未确认。请重新连接并核对远端接收状态；无法确认时保持锁定，不会自动补发。",
-    "checked": "核对远端接收状态"
+    "checked": "核对远端接收状态",
+    "newSession": "新建远端会话",
+    "creationDenied": "此主机未允许通过连接新建会话。",
+    "sessionTitle": "会话标题",
+    "project": "远端项目目录",
+    "noProject": "无项目",
+    "creationHint": "使用远端项目与模型默认配置。新会话立即暴露给绑定此远端账号的连接。创建后在远端输入框发送首条消息。",
+    "creationUnknown": "无法确认创建结果。请刷新连接并检查会话列表后再新建。"
   }
 }

@@ -2364,7 +2364,9 @@
     "copy": "Copy",
     "hide": "Hide key",
     "revoke": "Revoke",
-    "revoked": "Revoked"
+    "revoked": "Revoked",
+    "allowCreation": "Allow creating sessions through connections",
+    "creationHint": "Host permission, off by default. Disabling creation keeps access and communication with exposed sessions. Agent operations also require Agent cross-session access on both instances."
   },
   "remoteConnections": {
     "title": "Remote connections",
@@ -2398,6 +2400,13 @@
     "running": "Remote task running · input is sent as a follow-up",
     "idle": "Execution and history stay on the remote instance",
     "unknown": "Acceptance is unconfirmed. Reconnect to check the remote receipt. Retry stays locked while acceptance is unknown; nothing is sent automatically.",
-    "checked": "Check remote acceptance"
+    "checked": "Check remote acceptance",
+    "newSession": "New remote session",
+    "creationDenied": "This host does not allow creating sessions through connections.",
+    "sessionTitle": "Session title",
+    "project": "Remote project directory",
+    "noProject": "No project",
+    "creationHint": "Uses the remote project and model defaults. The new session is immediately exposed to connections bound to this remote account. Send its first message in the remote composer.",
+    "creationUnknown": "Creation could not be confirmed. Refresh the connection and inspect its sessions before creating again."
   }
 }

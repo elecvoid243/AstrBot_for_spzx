@@ -98,6 +98,226 @@ tags:
   - name: Webhooks
 
 paths:
+  /api/v1/remote-chat/agent/creation:
+    get:
+      description: |-
+        Offer owned remote projects only while host creation is allowed.
+
+        Args:
+            request: Dedicated-auth request; the Agent path adds the Agent gate.
+            account: Account bound to the dedicated credential.
+            session_id: Optional created session whose exposure must still be valid.
+
+        Returns:
+            Live host permission and owned project titles/IDs, including empty projects.
+
+        Raises:
+            ApiError: Live credential, account or optional session exposure fails.
+            ChatServiceError: The Agent route is disabled by target instance policy.
+      tags:
+      - Remote Chat
+      summary: Remote Creation Options
+      operationId: remote_creation_options_api_v1_remote_chat_agent_creation_get
+      parameters:
+      - name: session_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Session Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/remote-chat/creation:
+    get:
+      description: |-
+        Offer owned remote projects only while host creation is allowed.
+
+        Args:
+            request: Dedicated-auth request; the Agent path adds the Agent gate.
+            account: Account bound to the dedicated credential.
+            session_id: Optional created session whose exposure must still be valid.
+
+        Returns:
+            Live host permission and owned project titles/IDs, including empty projects.
+
+        Raises:
+            ApiError: Live credential, account or optional session exposure fails.
+            ChatServiceError: The Agent route is disabled by target instance policy.
+      tags:
+      - Remote Chat
+      summary: Remote Creation Options
+      operationId: remote_creation_options_api_v1_remote_chat_creation_get
+      parameters:
+      - name: session_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Session Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/chat/remote-connections/{connection_id}/creation:
+    get:
+      tags:
+      - Remote Chat
+      summary: Connection Creation Options
+      operationId: connection_creation_options_api_v1_chat_remote_connections__connection_id__creation_get
+      parameters:
+      - name: connection_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Connection Id
+      - name: revision
+        in: query
+        required: true
+        schema:
+          type: string
+          title: Revision
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/remote-chat/agent/sessions/{session_id}/history:
+    get:
+      description: |-
+        Read exposed display history for a directly authorized Agent caller.
+
+        Args:
+            session_id: Ordinary session in the credential account's exposure scope.
+            request: Dedicated-auth request, independent of ambient browser identity.
+            before_id: Exclusive saved-message cursor, or None for the newest page.
+            limit: Maximum saved records; the calling tool applies display budgets.
+            account: Current account bound to the dedicated credential.
+
+        Returns:
+            Safe session metadata and saved display records for tool projection.
+
+        Raises:
+            ApiError: The credential, account, exposure or remote access is unavailable.
+            ChatServiceError: Agent access is disabled or the session is unavailable.
+      tags:
+      - Remote Chat
+      summary: Read Remote Agent History
+      operationId: read_remote_agent_history_api_v1_remote_chat_agent_sessions__session_id__history_get
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Session Id
+      - name: before_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+            minimum: 1
+          - type: 'null'
+          title: Before Id
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 50
+          minimum: 1
+          default: 20
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/remote-chat/agent/sessions:
+    get:
+      tags:
+      - Remote Chat
+      summary: Discover Remote Agent Sessions
+      operationId: discover_remote_agent_sessions_api_v1_remote_chat_agent_sessions_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+    post:
+      description: |-
+        Create only under the credential-bound account and host creation policy.
+
+        Args:
+            payload: Title, explicit remote project and ordinary model choices.
+            request: Dedicated-auth request; the Agent route adds the Agent gate.
+            account: Account resolved from the dedicated credential, never caller input.
+
+        Returns:
+            Created ordinary session metadata without credentials.
+
+        Raises:
+            ApiError: Host creation, live authorization or owned project validation fails.
+      tags:
+      - Remote Chat
+      summary: Create Remote Chat Session
+      operationId: create_remote_chat_session_api_v1_remote_chat_agent_sessions_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RemoteCreateRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/remote-chat/sessions/{session_id}/messages:
     post:
       tags:
@@ -493,6 +713,36 @@ paths:
         are never returned. Remote failures use connection-level 502 codes, never local
         login 401.
   /api/v1/chat/remote-connections/{connection_id}/sessions:
+    post:
+      tags:
+      - Remote Chat
+      summary: Create Connection Session
+      operationId: create_connection_session_api_v1_chat_remote_connections__connection_id__sessions_post
+      parameters:
+      - name: connection_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Connection Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConnectionCreateRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
     get:
       tags:
       - Remote Chat
@@ -691,6 +941,42 @@ paths:
       description: Dashboard login only. Manage the current account; enabled switch
         requires an administrator.
   /api/v1/remote-chat/sessions:
+    post:
+      description: |-
+        Create only under the credential-bound account and host creation policy.
+
+        Args:
+            payload: Title, explicit remote project and ordinary model choices.
+            request: Dedicated-auth request; the Agent route adds the Agent gate.
+            account: Account resolved from the dedicated credential, never caller input.
+
+        Returns:
+            Created ordinary session metadata without credentials.
+
+        Raises:
+            ApiError: Host creation, live authorization or owned project validation fails.
+      tags:
+      - Remote Chat
+      summary: Create Remote Chat Session
+      operationId: create_remote_chat_session_api_v1_remote_chat_sessions_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RemoteCreateRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
     get:
       tags:
       - Remote Chat
@@ -8942,6 +9228,100 @@ components:
       schema: { type: string }
 
   schemas:
+    ConnectionCreateRequest:
+      properties:
+        title:
+          type: string
+          maxLength: 255
+          minLength: 1
+          pattern: \S
+          title: Title
+        project_id:
+          anyOf:
+          - type: string
+            maxLength: 255
+            minLength: 1
+          - type: 'null'
+          title: Project Id
+        project_name:
+          anyOf:
+          - type: string
+            maxLength: 512
+            minLength: 1
+          - type: 'null'
+          title: Project Name
+        selected_provider:
+          anyOf:
+          - type: string
+            minLength: 1
+          - type: 'null'
+          title: Selected Provider
+        selected_model:
+          anyOf:
+          - type: string
+            minLength: 1
+          - type: 'null'
+          title: Selected Model
+        thinking_effort:
+          anyOf:
+          - type: string
+            minLength: 1
+          - type: 'null'
+          title: Thinking Effort
+        revision:
+          type: string
+          title: Revision
+      additionalProperties: false
+      type: object
+      required:
+      - title
+      - revision
+      title: ConnectionCreateRequest
+    RemoteCreateRequest:
+      properties:
+        title:
+          type: string
+          maxLength: 255
+          minLength: 1
+          pattern: \S
+          title: Title
+        project_id:
+          anyOf:
+          - type: string
+            maxLength: 255
+            minLength: 1
+          - type: 'null'
+          title: Project Id
+        project_name:
+          anyOf:
+          - type: string
+            maxLength: 512
+            minLength: 1
+          - type: 'null'
+          title: Project Name
+        selected_provider:
+          anyOf:
+          - type: string
+            minLength: 1
+          - type: 'null'
+          title: Selected Provider
+        selected_model:
+          anyOf:
+          - type: string
+            minLength: 1
+          - type: 'null'
+          title: Selected Model
+        thinking_effort:
+          anyOf:
+          - type: string
+            minLength: 1
+          - type: 'null'
+          title: Thinking Effort
+      additionalProperties: false
+      type: object
+      required:
+      - title
+      title: RemoteCreateRequest
     ConnectionStopRequest:
       properties:
         revision:

@@ -679,6 +679,16 @@ export type ConfigRouteUpsertRequest = {
     config_id: string;
 };
 
+export type ConnectionCreateRequest = {
+    title: string;
+    project_id?: (string | null);
+    project_name?: (string | null);
+    selected_provider?: (string | null);
+    selected_model?: (string | null);
+    thinking_effort?: (string | null);
+    revision: string;
+};
+
 export type ConnectionStopRequest = {
     revision: string;
 };
@@ -1290,6 +1300,15 @@ export type RemoteConnectionRequest = {
     key?: (string | null);
 };
 
+export type RemoteCreateRequest = {
+    title: string;
+    project_id?: (string | null);
+    project_name?: (string | null);
+    selected_provider?: (string | null);
+    selected_model?: (string | null);
+    thinking_effort?: (string | null);
+};
+
 export type RemoteCredentialRequest = {
     name: string;
 };
@@ -1727,6 +1746,65 @@ export type WorkflowStartRequest = {
     input_artifacts?: Array<ArtifactReference>;
 };
 
+export type RemoteCreationOptionsApiV1RemoteChatAgentCreationGetData = {
+    query?: {
+        session_id?: (string | null);
+    };
+};
+
+export type RemoteCreationOptionsApiV1RemoteChatAgentCreationGetResponse = (unknown);
+
+export type RemoteCreationOptionsApiV1RemoteChatAgentCreationGetError = (HTTPValidationError);
+
+export type RemoteCreationOptionsApiV1RemoteChatCreationGetData = {
+    query?: {
+        session_id?: (string | null);
+    };
+};
+
+export type RemoteCreationOptionsApiV1RemoteChatCreationGetResponse = (unknown);
+
+export type RemoteCreationOptionsApiV1RemoteChatCreationGetError = (HTTPValidationError);
+
+export type ConnectionCreationOptionsApiV1ChatRemoteConnectionsConnectionIdCreationGetData = {
+    path: {
+        connection_id: string;
+    };
+    query: {
+        revision: string;
+    };
+};
+
+export type ConnectionCreationOptionsApiV1ChatRemoteConnectionsConnectionIdCreationGetResponse = (unknown);
+
+export type ConnectionCreationOptionsApiV1ChatRemoteConnectionsConnectionIdCreationGetError = (HTTPValidationError);
+
+export type ReadRemoteAgentHistoryApiV1RemoteChatAgentSessionsSessionIdHistoryGetData = {
+    path: {
+        session_id: string;
+    };
+    query?: {
+        before_id?: (number | null);
+        limit?: number;
+    };
+};
+
+export type ReadRemoteAgentHistoryApiV1RemoteChatAgentSessionsSessionIdHistoryGetResponse = (unknown);
+
+export type ReadRemoteAgentHistoryApiV1RemoteChatAgentSessionsSessionIdHistoryGetError = (HTTPValidationError);
+
+export type DiscoverRemoteAgentSessionsApiV1RemoteChatAgentSessionsGetResponse = (unknown);
+
+export type DiscoverRemoteAgentSessionsApiV1RemoteChatAgentSessionsGetError = unknown;
+
+export type CreateRemoteChatSessionApiV1RemoteChatAgentSessionsPostData = {
+    body: RemoteCreateRequest;
+};
+
+export type CreateRemoteChatSessionApiV1RemoteChatAgentSessionsPostResponse = (unknown);
+
+export type CreateRemoteChatSessionApiV1RemoteChatAgentSessionsPostError = (HTTPValidationError);
+
 export type SendRemoteTextApiV1RemoteChatSessionsSessionIdMessagesPostData = {
     body: RemoteTextRequest;
     path: {
@@ -1855,6 +1933,17 @@ export type DeleteRemoteConnectionResponse = (unknown);
 
 export type DeleteRemoteConnectionError = (HTTPValidationError);
 
+export type CreateConnectionSessionApiV1ChatRemoteConnectionsConnectionIdSessionsPostData = {
+    body: ConnectionCreateRequest;
+    path: {
+        connection_id: string;
+    };
+};
+
+export type CreateConnectionSessionApiV1ChatRemoteConnectionsConnectionIdSessionsPostResponse = (unknown);
+
+export type CreateConnectionSessionApiV1ChatRemoteConnectionsConnectionIdSessionsPostError = (HTTPValidationError);
+
 export type ListConnectionSessionsData = {
     path: {
         connection_id: string;
@@ -1917,6 +2006,14 @@ export type SetRemoteChatEnabledData = {
 export type SetRemoteChatEnabledResponse = (SuccessEnvelope);
 
 export type SetRemoteChatEnabledError = (HTTPValidationError);
+
+export type CreateRemoteChatSessionApiV1RemoteChatSessionsPostData = {
+    body: RemoteCreateRequest;
+};
+
+export type CreateRemoteChatSessionApiV1RemoteChatSessionsPostResponse = (unknown);
+
+export type CreateRemoteChatSessionApiV1RemoteChatSessionsPostError = (HTTPValidationError);
 
 export type DiscoverRemoteChatSessionsResponse = (SuccessEnvelope);
 

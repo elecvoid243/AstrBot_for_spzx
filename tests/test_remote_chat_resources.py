@@ -470,3 +470,86 @@ async def test_remote_ordinary_account_upload_owner_and_cross_account_denial(res
     await webchat_queue_mgr.get_or_create_back_queue(run_id, session.session_id).put(
         {"type": "end", "data": "", "message_id": run_id}
     )
+
+
+@pytest.mark.asyncio
+async def test_created_selected_session_keeps_resource_and_human_choice_scope(
+    resources,
+):
+    """Keep creation, resource access and human answers under one live exposure.
+
+    Args:
+        resources: Two production applications with account-owned direct bindings.
+    """
+    local, remote, _, _, _, headers, binding, _ = resources
+    client = local[0]
+    target, _, core, db, admin, _ = remote
+    remote_headers = {"Authorization": "Bearer " + admin["token"]}
+    await target.put(
+        "/api/v1/chat/remote-access/exposure",
+        headers=remote_headers,
+        json={"mode": "selected", "session_ids": []},
+    )
+    core.astrbot_config["chatui"]["remote_session_creation_enabled"] = True
+    base = "/api/v1/chat/remote-connections/" + binding["connection_id"]
+    created = await client.post(
+        base + "/sessions",
+        headers=headers,
+        json={
+            "title": "Integrated session",
+            "project_id": None,
+            "revision": binding["revision"],
+        },
+    )
+    assert created.status_code == 200, created.text
+    sid = created.json()["data"]["session_id"]
+    path = base + "/sessions/" + sid
+    core.astrbot_config["chatui"]["remote_session_creation_enabled"] = False
+    upload = await client.post(
+        path + "/attachments",
+        headers=headers,
+        params={"revision": binding["revision"]},
+        files={"file": ("created.txt", b"created session bytes", "text/plain")},
+    )
+    assert upload.status_code == 200, upload.text
+    url = path + "/attachments/" + upload.json()["data"]["attachment_id"]
+    assert (
+        await client.get(url, headers=headers, params={"revision": binding["revision"]})
+    ).content == b"created session bytes"
+    session = await db.get_platform_session_by_id(sid)
+    choice_id = str(uuid4())
+    future = asyncio.get_running_loop().create_future()
+    registry.add(
+        choice_id,
+        build_webchat_unified_msg_origin(session),
+        future,
+        {"prompt": "Approve created session"},
+        time.time(),
+        time.time() + 60,
+    )
+    try:
+        # Agent disablement leaves the authorized human resource/answer path available.
+        for instance in (local, remote):
+            instance[2].astrbot_config["session_messages"]["enable"] = False
+        answer = await client.post(
+            path + "/human-choices/" + choice_id,
+            headers=headers,
+            json={"revision": binding["revision"], "choice_id": "A"},
+        )
+        assert answer.status_code == 200, answer.text
+        assert future.result()["choice_id"] == "A"
+        await target.put(
+            "/api/v1/chat/remote-access/exposure",
+            headers=remote_headers,
+            json={"mode": "selected", "session_ids": []},
+        )
+        assert (
+            await client.get(
+                url, headers=headers, params={"revision": binding["revision"]}
+            )
+        ).status_code == 502
+        assert (
+            await client.get("/api/v1/chat/remote-connections", headers=headers)
+        ).status_code == 200
+    finally:
+        registry.remove(choice_id)

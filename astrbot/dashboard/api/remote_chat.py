@@ -20,7 +20,11 @@ from astrbot.builtin_stars.session_messages.tools import (
     AgentMessageSource,
     SessionMessageChain,
 )
-from astrbot.core.db.po import DashboardAccount, RemoteChatAttachment, RemoteChatCredential
+from astrbot.core.db.po import (
+    DashboardAccount,
+    RemoteChatAttachment,
+    RemoteChatCredential,
+)
 from astrbot.core.platform.sources.webchat.webchat_queue_mgr import webchat_queue_mgr
 from astrbot.core.tools.interactive_choice_registry import registry
 from astrbot.core.utils.webchat_access import (

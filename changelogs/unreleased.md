@@ -68,3 +68,8 @@
 - Extend the existing remote composer with **Attach images or files**, scoped image previews/downloads, and human choice answers. No navigation entry moves. Keep files and execution on the directly bound remote instance; retain RC04 receipt and reconnect semantics.
 - Add live account/session exposure checks for pending uploads, historical and active attachments, and human answers. Rebinding discards stale previews and replies; remote failures preserve local login. Agent/tool messages cannot claim human provenance through request fields.
 - 扩展原远端输入框，增加**添加图片或文件**、受限图片预览／下载及真人选择回答；导航入口不变，附件与执行保留远端，继续沿用 RC04 回执及重连语义。撤权、账号与连接隔离同样适用于附件和交互。
+
+### Remote Chat integration (RC08, #160)
+
+- Combine remote resources/human answers with direct Agent messaging and creation while preserving the latest local ChatUI. Existing navigation mapping remains This instance / Remote connections; attachment and choice actions stay in the selected remote conversation. Refresh English/Chinese screenshots and document compatible APIs and limit hints.
+- Verify creation into selected exposure retains attachment and human-answer authorization, including creation and Agent switches disabled after creation and live exposure withdrawal.

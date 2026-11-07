@@ -1142,6 +1142,7 @@ onMounted(async () => {
     :class="{
       'chat-mode-header': isChatPath,
       'chat-mode-header--dark': isChatPath && isDarkTheme,
+      'chat-header--resizing': isChatPath && customizer.chatSidebarResizing,
     }"
     :absolute="isChatPath"
     :style="chatHeaderStyle"
@@ -2335,10 +2336,23 @@ onMounted(async () => {
   background: #fdfcfc !important;
   border-bottom: 0;
   box-shadow: none !important;
+  /* Vuetify's .v-toolbar eases left/width over .2s with its own curve; the
+     sidebar's width transition is .18s ease. Match them so collapse/expand
+     move both edges in step instead of one arriving first. */
+  transition-duration: 0.18s;
+  transition-timing-function: ease;
 }
 
 .top-header.chat-mode-header.chat-mode-header--dark {
   background: rgb(var(--v-theme-background)) !important;
+}
+
+/* 2026-11-07 (elecvoid243): while the sidebar splitter is dragged it drops its
+   own width transition (.chat-sidebar.is-resizing). The header must drop its
+   left/width transition in the same gesture, otherwise it trails the sidebar
+   by up to one transition duration and briefly overlaps its edge. */
+.top-header.chat-header--resizing {
+  transition: none;
 }
 
 .top-header.chat-mode-header .v-toolbar__content {

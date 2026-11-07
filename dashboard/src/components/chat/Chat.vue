@@ -1879,6 +1879,7 @@ function startSidebarResize(e: MouseEvent) {
     didMove: false,
   };
   isResizingSidebar.value = true;
+  customizer.SET_CHAT_SIDEBAR_RESIZING(true);
   window.addEventListener("mousemove", onSidebarResizeMove);
   window.addEventListener("mouseup", onSidebarResizeEnd);
 }
@@ -1905,6 +1906,7 @@ function onSidebarResizeEnd() {
     sidebarDragState = null;
   }
   isResizingSidebar.value = false;
+  customizer.SET_CHAT_SIDEBAR_RESIZING(false);
   window.removeEventListener("mousemove", onSidebarResizeMove);
   window.removeEventListener("mouseup", onSidebarResizeEnd);
 }

@@ -43,6 +43,11 @@ export const useCustomizerStore = defineStore("customizer", {
     // width for the desktop left sidebar. Persisted in localStorage so
     // it survives reloads and is shared between /chat and /chatbox.
     chatSidebarWidth: loadChatSidebarWidth(),
+    // 2026-11-07 (elecvoid243): true while the sidebar splitter is being
+    // dragged. The app bar reads it to drop Vuetify's `.v-toolbar` left/width
+    // transition for the gesture — that 200ms ease made the header visibly
+    // chase the sidebar. A gesture flag, so it is never persisted.
+    chatSidebarResizing: false,
   }),
 
   getters: {
@@ -95,6 +100,9 @@ export const useCustomizerStore = defineStore("customizer", {
       if (typeof localStorage !== "undefined") {
         localStorage.setItem(CHAT_SIDEBAR_WIDTH_KEY, String(clamped));
       }
+    },
+    SET_CHAT_SIDEBAR_RESIZING(payload: boolean) {
+      this.chatSidebarResizing = payload;
     },
   },
 });

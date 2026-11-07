@@ -2918,7 +2918,7 @@ export interface AgentWorkSplit {
   finalBlockIndex: number;
 }
 
-function isFinalReplyBlock(block: MessageDisplayBlock): boolean {
+export function isFinalReplyBlock(block: MessageDisplayBlock): boolean {
   return (
     block.kind === "content" &&
     block.parts.some(

@@ -813,6 +813,7 @@ import {
   displayParts as displayMessageParts,
   messageBlocks as buildMessageBlocks,
   splitAgentWork,
+  isFinalReplyBlock,
   type MessageDisplayBlock,
 } from "@/composables/useMessages";
 import type {
@@ -1666,6 +1667,12 @@ function agentWorkExpanded(message: ChatRecord, messageIndex: number) {
 const foldedRowIndexes = computed(() => {
   const rows = props.messages;
   const hidden = new Set<number>();
+  // A bot row "has a reply" when it renders a plain-text block: that is what
+  // a reader sees as an answer. `agentWorkPillVisible` is NOT this test — a
+  // simple reply with no work before it has nothing to collapse, so it has no
+  // pill and would otherwise be mistaken for a work-only segment.
+  const hasVisibleReply = (row: ChatRecord) =>
+    renderBlocks(row).some(isFinalReplyBlock);
 
   for (let index = 0; index < rows.length; index += 1) {
     const row = rows[index];
@@ -1694,7 +1701,7 @@ const foldedRowIndexes = computed(() => {
         const appended =
           before !== null &&
           !isUserMessage(before) &&
-          !agentWorkPillVisible(before, cursor - 1) &&
+          !hasVisibleReply(before) &&
           !messageContent(before).isLoading &&
           !isMessageStreaming(before, cursor - 1);
         if (!appended) break;
@@ -1703,7 +1710,7 @@ const foldedRowIndexes = computed(() => {
         continue;
       }
       const workOnly =
-        !agentWorkPillVisible(candidate, cursor) &&
+        !hasVisibleReply(candidate) &&
         !messageContent(candidate).isLoading &&
         !isMessageStreaming(candidate, cursor);
       if (!workOnly) break;

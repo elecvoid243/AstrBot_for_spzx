@@ -138,7 +138,6 @@ class SubAgentManager:
         "remove_subagent",
         "list_subagents",
         "wait_for_subagent",
-        "orchestrate_tasks",
         "view_shared_context",
     }
     _tools_inherent: set[str] = {
@@ -242,7 +241,8 @@ DAG Orchestration automatically delegate subagents. When you have 2+ independent
         cls._rule_prompt = rule_prompt
         cls._time_prompt_enabled = time_prompt_enabled
         cls._timezone = timezone
-        cls._dag_enabled = dag_enabled
+        # Keep accepting the legacy setting while DAG orchestration is disabled.
+        cls._dag_enabled = False
         cls._default_provider_id = default_provider_id
         cls._context_inherit_mode = (
             context_inherit_mode
@@ -263,7 +263,6 @@ DAG Orchestration automatically delegate subagents. When you have 2+ independent
                 "remove_subagent",
                 "list_subagents",
                 "wait_for_subagent",
-                "orchestrate_tasks",
                 "view_shared_context",
             }
         else:

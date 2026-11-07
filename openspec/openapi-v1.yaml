@@ -4156,7 +4156,32 @@ paths:
       x-astrbot-scope: mcp
       responses:
         "200":
-          $ref: "#/components/responses/Ok"
+          description: Configured and runtime MCP servers
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, data]
+                properties:
+                  status: { type: string, const: ok }
+                  message: { type: string }
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      required: [name, policy_name, policy_conflict, source, readonly, active, connected, tools]
+                      properties:
+                        name: { type: string }
+                        policy_name: { type: string }
+                        policy_conflict: { type: boolean }
+                        source: { type: string, enum: [config, runtime] }
+                        readonly: { type: boolean }
+                        active: { type: boolean }
+                        connected: { type: boolean }
+                        tools:
+                          type: array
+                          items: { type: string }
+                      additionalProperties: true
     post:
       tags: [MCP]
       summary: Add an MCP server

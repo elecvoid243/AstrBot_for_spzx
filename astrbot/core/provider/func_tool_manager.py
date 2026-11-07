@@ -631,6 +631,7 @@ class FunctionToolManager:
                     cfg=cfg,
                     shutdown_event=shutdown_event,
                     timeout=init_timeout,
+                    source="config",
                 ),
                 name=f"mcp-init:{name}",
             )
@@ -683,6 +684,7 @@ class FunctionToolManager:
         *,
         shutdown_event: asyncio.Event | None = None,
         timeout: float,
+        source: str = "runtime",
     ) -> None:
         """Initialize MCP server with timeout and register task/event together.
 
@@ -703,6 +705,7 @@ class FunctionToolManager:
 
         mcp_client = MCPClient()
         mcp_client.name = name
+        mcp_client._astrbot_mcp_source = source
 
         connect_done = asyncio.Event()
         connect_error: BaseException | None = None
@@ -923,6 +926,8 @@ class FunctionToolManager:
         config: dict,
         shutdown_event: asyncio.Event | None = None,
         timeout: float | int | str | None = None,
+        *,
+        source: str = "runtime",
     ) -> None:
         """Enable a new MCP server and initialize it.
 
@@ -932,6 +937,7 @@ class FunctionToolManager:
             shutdown_event: Event to signal when the MCP client should shut down.
             timeout: Timeout in seconds for initialization.
                 Uses ASTRBOT_MCP_ENABLE_TIMEOUT by default (separate from init timeout).
+            source: Whether the server is managed by saved configuration or runtime code.
 
         Raises:
             MCPInitTimeoutError: If initialization does not complete within timeout.
@@ -950,6 +956,7 @@ class FunctionToolManager:
             cfg=config,
             shutdown_event=shutdown_event,
             timeout=timeout_value,
+            source=source,
         )
 
     async def disable_mcp_server(
@@ -1231,6 +1238,7 @@ class FunctionToolManager:
                                     self.enable_mcp_server(
                                         name=name,
                                         config=config,
+                                        source="config",
                                     ),
                                 )
                             await asyncio.gather(*tasks)

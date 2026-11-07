@@ -882,6 +882,17 @@ class MCPTool(FunctionTool, Generic[TContext]):
         self.mcp_client = mcp_client
         self.mcp_server_name = mcp_server_name
 
+    @property
+    def mcp_policy_name(self) -> str:
+        """Return a stable server policy identifier for this tool.
+
+        Returns:
+            The saved server name, or a runtime-prefixed name for external clients.
+        """
+        if getattr(self.mcp_client, "_astrbot_mcp_source", "runtime") == "config":
+            return self.mcp_server_name
+        return f"runtime:{self.mcp_server_name}"
+
     async def call(
         self, context: ContextWrapper[TContext], **kwargs
     ) -> mcp.types.CallToolResult:

@@ -153,6 +153,7 @@ def test_handoff_mcp_policy_applies_to_active_tools_and_blacklist(
     monkeypatch, selected
 ):
     mgr = FunctionToolManager()
+    monkeypatch.setattr(mgr, "load_mcp_config", lambda: {"mcpServers": {}})
     mgr.func_list = [
         MCPTool(
             mcp.Tool(name=name, description="test", inputSchema={}), MagicMock(), server
@@ -163,8 +164,10 @@ def test_handoff_mcp_policy_applies_to_active_tools_and_blacklist(
             ("denied_name", "inherent"),
         ]
     ]
-    monkeypatch.setattr(SubAgentManager, "_mcp_inherent", {"inherent", "blocked"})
-    monkeypatch.setattr(SubAgentManager, "_mcp_blacklist", {"blocked"})
+    monkeypatch.setattr(
+        SubAgentManager, "_mcp_inherent", {"runtime:inherent", "runtime:blocked"}
+    )
+    monkeypatch.setattr(SubAgentManager, "_mcp_blacklist", {"runtime:blocked"})
     monkeypatch.setattr(SubAgentManager, "_tools_blacklist", {"denied_name"})
     event = _DummyEvent()
     context = SimpleNamespace(
@@ -185,10 +188,11 @@ def test_handoff_mcp_policy_applies_to_active_tools_and_blacklist(
 
 def test_fork_fallback_applies_dynamic_mcp_policy(monkeypatch):
     mgr = FunctionToolManager()
+    monkeypatch.setattr(mgr, "load_mcp_config", lambda: {"mcpServers": {}})
     mgr.func_list = [
         MCPTool(mcp.Tool(name="one", inputSchema={}), MagicMock(), "server")
     ]
-    monkeypatch.setattr(SubAgentManager, "_mcp_inherent", {"server"})
+    monkeypatch.setattr(SubAgentManager, "_mcp_inherent", {"runtime:server"})
     monkeypatch.setattr(SubAgentManager, "_mcp_blacklist", set())
     monkeypatch.setattr(SubAgentManager, "_tools_blacklist", set())
     context = SimpleNamespace(
@@ -207,6 +211,41 @@ def test_fork_fallback_applies_dynamic_mcp_policy(monkeypatch):
 
     assert dynamic is not None and dynamic.get_tool("one") is not None
     assert static is None
+
+
+def test_mcp_policy_preserves_unambiguous_legacy_names():
+    spec = mcp.Tool(name="one", inputSchema={})
+    plugin_tool = MCPTool(spec, SimpleNamespace(), "server")
+    config_tool = MCPTool(spec, SimpleNamespace(_astrbot_mcp_source="config"), "server")
+    manager = SimpleNamespace(load_mcp_config=lambda: {"mcpServers": {}})
+
+    assert FunctionToolExecutor._matches_mcp_policy(plugin_tool, {"server"}, manager)
+    assert FunctionToolExecutor._matches_mcp_policy(config_tool, {"server"}, manager)
+    manager.load_mcp_config = lambda: {"mcpServers": {"server": {}}}
+    assert not FunctionToolExecutor._matches_mcp_policy(
+        plugin_tool, {"server"}, manager
+    )
+    assert FunctionToolExecutor._matches_mcp_policy(config_tool, {"server"}, manager)
+    assert FunctionToolExecutor._matches_mcp_policy(
+        plugin_tool, {"runtime:server"}, manager
+    )
+    config_collision = MCPTool(
+        spec, SimpleNamespace(_astrbot_mcp_source="config"), "runtime:server"
+    )
+    manager.func_list = [plugin_tool, config_collision]
+    manager.load_mcp_config = lambda: {"mcpServers": {"runtime:server": {}}}
+    assert not FunctionToolExecutor._matches_mcp_policy(
+        plugin_tool, {"runtime:server"}, manager, inherent=True
+    )
+    assert FunctionToolExecutor._matches_mcp_policy(
+        plugin_tool, {"runtime:server"}, manager
+    )
+    assert not FunctionToolExecutor._matches_mcp_policy(
+        config_collision, {"runtime:server"}, manager, inherent=True
+    )
+    assert FunctionToolExecutor._matches_mcp_policy(
+        config_collision, {"runtime:server"}, manager
+    )
 
 
 @pytest.mark.asyncio
@@ -1343,7 +1382,7 @@ async def test_fork_mcp_blacklist_rejects_only_dynamic_agents(
 ):
     SubAgentManager._context_inherit_mode = "fork"
     monkeypatch.setattr(SubAgentManager, "_mcp_inherent", set())
-    monkeypatch.setattr(SubAgentManager, "_mcp_blacklist", {"server"})
+    monkeypatch.setattr(SubAgentManager, "_mcp_blacklist", {"runtime:server"})
     mcp_tool = MCPTool(mcp.Tool(name="one", inputSchema={}), MagicMock(), "server")
     toolset = ToolSet()
     toolset.add_tool(mcp_tool)

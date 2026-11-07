@@ -17,3 +17,10 @@ def test_tool_is_in_inherent_list():
         "tools_inherent"
     ]
     assert "astrbot_apply_patch" in inherent
+
+
+def test_default_subagent_blacklist_excludes_removed_dag_tool():
+    blacklist = DEFAULT_CONFIG["subagent_orchestrator"]["dynamic_agents"][
+        "tools_blacklist"
+    ]
+    assert "orchestrate_tasks" not in blacklist

@@ -145,6 +145,8 @@
     "toolStrategyHint": "控制动态子代理可使用哪些工具"
   },
   "enhancedTools": {
+    "mcpPolicyConflict": "MCP 策略标识冲突：{names}。请重命名同名的普通 MCP；解决冲突前，双方均无法作为固有 MCP 使用。",
+    "runtimeMcp": "运行时",
     "mcpBlacklist": "MCP 黑名单",
     "mcpBlacklistHint": "禁止动态子代理使用所选 MCP 服务器提供的所有工具。黑名单优先于固有配置和单个工具选择。",
     "mcpInherent": "固有 MCP 名单",

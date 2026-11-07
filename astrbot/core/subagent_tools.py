@@ -669,6 +669,8 @@ class OrchestrateTasksTool(FunctionTool):
     )
 
     async def call(self, context, **kwargs) -> str:
+        if not SubAgentManager._dag_enabled:
+            return "Error: DAG orchestration is disabled."
         tasks_data = kwargs.get("tasks", [])
         max_parallel = kwargs.get("max_parallel", 5)
         session_id = context.context.event.unified_msg_origin

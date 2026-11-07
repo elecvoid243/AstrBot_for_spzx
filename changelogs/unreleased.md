@@ -1,5 +1,9 @@
 # Unreleased
 
+- Show running plugin-provided MCP servers in the MCP list and subagent tool policies; manage their lifecycle on the plugin page. / MCP 列表和子代理工具策略显示运行中的插件自带 MCP，启停及配置请在插件页面操作。
+
+- Remove **Subagent orchestration mode → DAG orchestration**; existing DAG settings no longer enable DAG. Restore-default tool lists no longer include the retired `orchestrate_tasks` tool. / 移除 **子代理编排方式 → DAG 编排**，旧配置不再启用 DAG；工具恢复默认名单移除已停用的 `orchestrate_tasks`。
+
 - Move **message-area title and subagent navigation → existing Chat toolbar**, restore compact subagent card styling, and place subagent reasoning beside the transcript on the right. Add per-invocation **Information** buttons with durable configuration snapshots (system prompt, tools, Skills and Provider ID). / 将 **消息区标题与子代理导航 → 现有 Chat 工具栏**，移除重复标题，恢复紧凑卡片样式，修复子代理思考抽屉的位置；下拉菜单新增信息按钮，按需显示调用时保存的系统提示词、工具、Skills 和 Provider ID 等配置。
 
 - **Expand subagent card → read-only invocation page** under the session's Main conversation / Subagents navigation. Show independent Running and Background markers, group removed and legacy invocations under Cleaned up, and mount only the selected transcript. Remove the card's follow-up input. Persist and resume background progress beyond the parent reply's lifetime, and deliver an awakened WebChat agent's final answer even without an explicit send-message tool call. / **展开子代理卡片 → 只读调用子页面**，从会话顶部的主对话／子代理入口切换；独立显示运行中与后台标志，已移除及旧调用归入已清理分组，只挂载当前轨迹，移除追加消息入口；后台进度可在主回复结束后继续保存和恢复，唤醒后的普通最终回复也会送达 ChatUI。

@@ -172,6 +172,7 @@ class FakeLlmTools:
         config: dict,
         *,
         timeout: int,
+        source: str = "runtime",
     ) -> None:
         self.enabled_servers.append((name, copy.deepcopy(config)))
 
@@ -4055,7 +4056,19 @@ async def test_v1_mcp_list_reports_connected_runtime(
         client=SimpleNamespace(
             tools=[SimpleNamespace(name="demo_tool")],
             server_errlogs=[],
+            _astrbot_mcp_source="config",
         ),
+    )
+    import mcp
+
+    from astrbot.core.agent.mcp_client import MCPTool
+
+    fake_tools.func_list.append(
+        MCPTool(
+            mcp.Tool(name="demo_tool", inputSchema={}),
+            fake_tools.mcp_server_runtime_view["demo-server"].client,
+            "demo-server",
+        )
     )
 
     response = await asgi_client.get(
@@ -4069,6 +4082,56 @@ async def test_v1_mcp_list_reports_connected_runtime(
     )
     assert demo_server["connected"] is True
     assert demo_server["tools"] == ["demo_tool"]
+
+
+@pytest.mark.asyncio
+async def test_v1_mcp_list_includes_runtime_and_independent_clients(
+    asgi_client: httpx.AsyncClient,
+    fake_core_lifecycle,
+):
+    import mcp
+
+    from astrbot.core.agent.mcp_client import MCPTool
+
+    class PluginMCPTool(MCPTool):
+        pass
+
+    fake_tools = fake_core_lifecycle.provider_manager.llm_tools
+    browser = SimpleNamespace(server_errlogs=[])
+    fake_tools.config["mcpServers"]["runtime:browser"] = {"active": True}
+    desktop = SimpleNamespace()
+    fake_tools.mcp_server_runtime_view["browser"] = SimpleNamespace(client=browser)
+    fake_tools.func_list = [
+        PluginMCPTool(
+            mcp.Tool(name="browser_allowed", inputSchema={}), browser, "browser"
+        ),
+        PluginMCPTool(
+            mcp.Tool(name="winmcp_Click", inputSchema={}), desktop, "demo-server"
+        ),
+    ]
+    response = await asgi_client.get("/api/v1/mcp/servers", headers=_jwt_headers())
+    assert response.status_code == 200
+    entries = {item["policy_name"]: item for item in response.json()["data"]}
+    assert entries["runtime:browser"]["tools"] == ["browser_allowed"]
+    assert entries["runtime:browser"]["policy_conflict"] is True
+    config_entry = next(
+        item
+        for item in response.json()["data"]
+        if item["source"] == "config" and item["name"] == "runtime:browser"
+    )
+    assert config_entry["policy_conflict"] is True
+    assert entries["runtime:demo-server"]["tools"] == ["winmcp_Click"]
+    assert entries["runtime:demo-server"]["readonly"] is True
+    assert entries["demo-server"]["readonly"] is True
+    assert entries["demo-server"]["connected"] is False
+
+    response = await asgi_client.patch(
+        "/api/v1/mcp/servers/demo-server/enabled",
+        headers=_jwt_headers(),
+        json={"enabled": False},
+    )
+    assert response.json()["status"] != "ok"
+    assert fake_tools.disabled_servers == []
 
 
 @pytest.mark.asyncio

@@ -11,6 +11,8 @@
     "marketplace": "MCP Marketplace"
   },
   "mcpServers": {
+    "policyConflict": "Policy identifier {name} conflicts with a configured MCP server name. Rename that server; neither server can be used as inherent until the conflict is resolved.",
+    "pluginManaged": "Managed at runtime or has a name conflict; configure it on the plugin page",
     "title": "MCP Servers",
     "description": "Manage MCP servers",
     "buttons": {

@@ -145,6 +145,8 @@
     "toolStrategyHint": "Control which tools subagents can use"
   },
   "enhancedTools": {
+    "mcpPolicyConflict": "MCP policy identifiers conflict: {names}. Rename the matching configured MCP server; neither server can be used as inherent until the conflict is resolved.",
+    "runtimeMcp": "runtime",
     "mcpBlacklist": "MCP blacklist",
     "mcpBlacklistHint": "Block all tools from selected MCP servers. Blacklists take precedence over inherent and individual tool selections.",
     "mcpInherent": "Inherent MCP servers",

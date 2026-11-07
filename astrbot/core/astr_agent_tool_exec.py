@@ -437,6 +437,52 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
             }
         return {}
 
+    @staticmethod
+    def _matches_mcp_policy(
+        tool: MCPTool, policy: set[str], tool_mgr, *, inherent: bool = False
+    ) -> bool:
+        """Match an MCP policy while preserving unambiguous legacy runtime names.
+
+        Args:
+            tool: The MCP tool to check.
+            policy: Configured server policy identifiers.
+            tool_mgr: Manager providing the saved MCP server names.
+            inherent: Whether the policy grants, rather than denies, tools.
+
+        Returns:
+            Whether the policy applies to this tool.
+        """
+        if tool.mcp_policy_name in policy:
+            if inherent:
+                if tool.mcp_policy_name != tool.mcp_server_name:
+                    saved = tool_mgr.load_mcp_config().get("mcpServers", {})
+                    if tool.mcp_policy_name in saved:
+                        return False
+                elif tool.mcp_policy_name.startswith("runtime:"):
+                    runtime_name = tool.mcp_policy_name.removeprefix("runtime:")
+                    runtime = getattr(tool_mgr, "mcp_server_runtime_view", {}).get(
+                        runtime_name
+                    )
+                    if (
+                        runtime is not None
+                        and getattr(runtime.client, "_astrbot_mcp_source", "runtime")
+                        != "config"
+                    ) or any(
+                        isinstance(other, MCPTool)
+                        and other.mcp_policy_name == tool.mcp_policy_name
+                        and other.mcp_policy_name != other.mcp_server_name
+                        for other in getattr(tool_mgr, "func_list", [])
+                    ):
+                        return False
+            return True
+        if (
+            tool.mcp_policy_name == tool.mcp_server_name
+            or tool.mcp_server_name not in policy
+        ):
+            return False
+        saved = tool_mgr.load_mcp_config().get("mcpServers", {})
+        return tool.mcp_server_name not in saved
+
     @classmethod
     def _build_handoff_toolset(
         cls,
@@ -518,10 +564,12 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
                     getattr(registered_tool, "_wrapped", registered_tool), MCPTool
                 )
                 and registered_tool.active
-                and getattr(
-                    registered_tool, "_wrapped", registered_tool
-                ).mcp_server_name
-                in SubAgentManager._mcp_inherent
+                and cls._matches_mcp_policy(
+                    getattr(registered_tool, "_wrapped", registered_tool),
+                    SubAgentManager._mcp_inherent,
+                    tool_mgr,
+                    inherent=True,
+                )
                 and registered_tool.name not in SubAgentManager._tools_blacklist
             ):
                 toolset.add_tool(registered_tool)
@@ -533,8 +581,11 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
             and not (
                 mcp_policy
                 and isinstance(getattr(item, "_wrapped", item), MCPTool)
-                and getattr(item, "_wrapped", item).mcp_server_name
-                in SubAgentManager._mcp_blacklist
+                and cls._matches_mcp_policy(
+                    getattr(item, "_wrapped", item),
+                    SubAgentManager._mcp_blacklist,
+                    tool_mgr,
+                )
             )
         ]
         return None if toolset.empty() else toolset
@@ -684,29 +735,34 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
         use_fork_context = inherit_mode == "fork"
         session = SubAgentManager.get_session(umo)
         mcp_policy = bool(session and agent_name not in session.protected_agents)
+        tool_mgr = (
+            ctx.get_llm_tool_manager()
+            if hasattr(ctx, "get_llm_tool_manager")
+            else llm_tools
+        )
         if use_fork_context and mcp_policy and SubAgentManager._mcp_inherent:
             toolset, fork_schema_mode = cls._build_fork_toolset(
                 run_context, tool, mcp_policy=mcp_policy
             )
-            tool_mgr = (
-                ctx.get_llm_tool_manager()
-                if hasattr(ctx, "get_llm_tool_manager")
-                else llm_tools
-            )
             inherited_names = {
-                (t.name, getattr(t, "_wrapped", t).mcp_server_name)
+                (t.name, getattr(t, "_wrapped", t).mcp_policy_name)
                 for t in (toolset.tools if toolset else [])
                 if isinstance(getattr(t, "_wrapped", t), MCPTool)
             }
             required_names = {
-                (t.name, getattr(t, "_wrapped", t).mcp_server_name)
+                (t.name, getattr(t, "_wrapped", t).mcp_policy_name)
                 for t in tool_mgr.get_full_tool_set()
                 if isinstance(getattr(t, "_wrapped", t), MCPTool)
                 and t.active
-                and getattr(t, "_wrapped", t).mcp_server_name
-                in SubAgentManager._mcp_inherent
-                and getattr(t, "_wrapped", t).mcp_server_name
-                not in SubAgentManager._mcp_blacklist
+                and cls._matches_mcp_policy(
+                    getattr(t, "_wrapped", t),
+                    SubAgentManager._mcp_inherent,
+                    tool_mgr,
+                    inherent=True,
+                )
+                and not cls._matches_mcp_policy(
+                    getattr(t, "_wrapped", t), SubAgentManager._mcp_blacklist, tool_mgr
+                )
                 and t.name not in SubAgentManager._tools_blacklist
             }
             if not required_names <= inherited_names:
@@ -792,8 +848,11 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
                         for t in (toolset.tools if toolset else [])
                         if mcp_policy
                         and isinstance(getattr(t, "_wrapped", t), MCPTool)
-                        and getattr(t, "_wrapped", t).mcp_server_name
-                        in SubAgentManager._mcp_blacklist
+                        and cls._matches_mcp_policy(
+                            getattr(t, "_wrapped", t),
+                            SubAgentManager._mcp_blacklist,
+                            tool_mgr,
+                        )
                     }
                     if toolset is not None and toolset.get_tool(name)
                 ),
@@ -962,8 +1021,11 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
                 or (
                     mcp_policy
                     and isinstance(getattr(t, "_wrapped", t), MCPTool)
-                    and getattr(t, "_wrapped", t).mcp_server_name
-                    in SubAgentManager._mcp_blacklist
+                    and cls._matches_mcp_policy(
+                        getattr(t, "_wrapped", t),
+                        SubAgentManager._mcp_blacklist,
+                        tool_mgr,
+                    )
                 )
             }
         # Share the turn's file-change log with the subagent. File tools append

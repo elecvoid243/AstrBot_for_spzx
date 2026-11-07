@@ -3977,7 +3977,21 @@ export type SetToolPermissionResponse = (SuccessEnvelope);
 
 export type SetToolPermissionError = unknown;
 
-export type ListMcpServersResponse = (SuccessEnvelope);
+export type ListMcpServersResponse = ({
+    status: "ok";
+    message?: string;
+    data: Array<{
+        name: string;
+        policy_name: string;
+        policy_conflict: boolean;
+        source: 'config' | 'runtime';
+        readonly: boolean;
+        active: boolean;
+        connected: boolean;
+        tools: Array<(string)>;
+        [key: string]: unknown | string | boolean;
+    }>;
+});
 
 export type ListMcpServersError = unknown;
 

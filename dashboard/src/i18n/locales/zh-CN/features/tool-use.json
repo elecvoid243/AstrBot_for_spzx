@@ -11,6 +11,8 @@
     "marketplace": "MCP 市场"
   },
   "mcpServers": {
+    "policyConflict": "策略标识 {name} 与普通 MCP 名称冲突，请重命名该普通 MCP。冲突解决前双方均不能作为固有 MCP 使用。",
+    "pluginManaged": "由运行时管理或存在名称冲突，请到插件页面中配置",
     "title": "MCP 服务器",
     "description": "管理 MCP 服务器",
     "buttons": {

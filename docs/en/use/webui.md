@@ -564,6 +564,8 @@ On either plugin list, you can also click `Install Plugin` (+) in the bottom rig
 
 The `Skills` and `MCP Servers` pages support search. The skills list also displays each skill's source to distinguish built-in, project, and other skills.
 
+Running plugin-provided MCP servers also appear in the MCP list. Configure or enable them on the corresponding plugin page; they cannot be managed directly from the MCP page.
+
 > Due to the plugin update mechanism, the AstrBot Team cannot fully guarantee the security of plugins in the plugin market. Please carefully verify them. The AstrBot Team is not responsible for any losses caused by plugins.
 
 ### Handling Plugin Load Failures

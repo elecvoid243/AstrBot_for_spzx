@@ -57,24 +57,6 @@
             </div>
           </div>
 
-          <!-- 编排方式 -->
-          <div class="setting-card">
-            <div class="setting-card-head">
-              <div>
-                <div class="setting-title">{{ tm('dag.orchestrationMode') }}</div>
-                <div class="setting-subtitle">{{ tm('dag.orchestrationModeHint') }}</div>
-              </div>
-              <v-select
-                v-model="orchestrationMode"
-                :items="orchestrationModeOptions"
-                density="compact"
-                variant="outlined"
-                style="width: 160px;"
-                hide-details
-              />
-            </div>
-          </div>
-
           <!-- 上下文继承模式 -->
           <div class="setting-card">
             <div class="setting-card-head">
@@ -92,63 +74,6 @@
               />
             </div>
           </div>
-
-          <!-- DAG 编排设置 (条件展开) -->
-          <template v-if="dagCfg.dag_enabled">
-            <div class="setting-card">
-              <div class="setting-card-head">
-                <div>
-                  <div class="setting-title">{{ tm('dag.maxNodes') }}</div>
-                  <div class="setting-subtitle">{{ tm('dag.maxNodesHint') }}</div>
-                </div>
-                <v-text-field
-                  v-model.number="dagCfg.dag_max_nodes"
-                  type="number"
-                  density="compact"
-                  variant="outlined"
-                  style="width: 120px;"
-                  hide-details
-                  :rules="[v => v >= 1 || 'Min 1']"
-                />
-              </div>
-            </div>
-
-            <div class="setting-card">
-              <div class="setting-card-head">
-                <div>
-                  <div class="setting-title">{{ tm('dag.maxParallel') }}</div>
-                  <div class="setting-subtitle">{{ tm('dag.maxParallelHint') }}</div>
-                </div>
-                <v-text-field
-                  v-model.number="dagCfg.dag_max_parallel"
-                  type="number"
-                  density="compact"
-                  variant="outlined"
-                  style="width: 120px;"
-                  hide-details
-                  :rules="[v => v >= 1 || 'Min 1']"
-                />
-              </div>
-            </div>
-
-            <div class="setting-card">
-              <div class="setting-card-head">
-                <div>
-                  <div class="setting-title">{{ tm('dag.maxInjectLength') }}</div>
-                  <div class="setting-subtitle">{{ tm('dag.maxInjectLengthHint') }}</div>
-                </div>
-                <v-text-field
-                  v-model.number="dagCfg.dag_max_inject_length"
-                  type="number"
-                  density="compact"
-                  variant="outlined"
-                  style="width: 120px;"
-                  hide-details
-                  :rules="[v => v >= 100 || 'Min 100']"
-                />
-              </div>
-            </div>
-          </template>
 
           <!-- 启用历史记忆 -->
           <div class="setting-card">
@@ -603,7 +528,10 @@
             <div class="dashboard-card dashboard-card--padded mb-4">
               <div class="dashboard-section-title section-mini-title">{{ tm('enhancedTools.mcpInherent') }}</div>
               <div class="dashboard-section-subtitle mb-3">{{ tm('enhancedTools.mcpInherentHint') }}</div>
-              <v-select v-model="dynamicCfg.mcp_inherent" :items="availableMcpServers" :label="tm('enhancedTools.mcpSelect')" multiple chips closable-chips clearable variant="outlined" density="comfortable" hide-details />
+              <v-alert v-if="conflictingMcpPolicies.length" type="warning" variant="tonal" class="mb-3">
+                {{ tm('enhancedTools.mcpPolicyConflict', { names: conflictingMcpPolicies.join(', ') }) }}
+              </v-alert>
+              <v-select v-model="dynamicCfg.mcp_inherent" :items="inherentMcpServers" :label="tm('enhancedTools.mcpSelect')" multiple chips closable-chips clearable variant="outlined" density="comfortable" hide-details />
             </div>
 
             <!-- 工具黑名单 -->
@@ -817,13 +745,6 @@ type SubAgentOrchestratorConfig = {
   time_prompt_enabled: boolean
 }
 
-type DAGConfig = {
-  dag_enabled: boolean
-  dag_max_nodes: number
-  dag_max_parallel: number
-  dag_max_inject_length: number
-}
-
 type AvailableTool = {
   name: string
   description: string
@@ -891,7 +812,6 @@ const DEFAULT_BLACKLIST = [
   'remove_subagent',
   'list_subagents',
   'wait_for_subagent',
-  'orchestrate_tasks',
   'broadcast_shared_context',
   'view_shared_context'
 ]
@@ -935,24 +855,6 @@ const rootCfg = ref({
   context_inherit_mode: 'normal'
 })
 
-const dagCfg = ref<DAGConfig>({
-  dag_enabled: false,
-  dag_max_nodes: 10,
-  dag_max_parallel: 5,
-  dag_max_inject_length: 4000
-})
-
-const orchestrationModeOptions = [
-  { title: '默认', value: 'default' },
-  { title: 'DAG 编排', value: 'dag' }
-]
-
-const orchestrationMode = computed({
-  get: () => dagCfg.value.dag_enabled ? 'dag' : 'default',
-  set: (val: string) => {
-    dagCfg.value.dag_enabled = val === 'dag'
-  }
-})
 
 const CONTEXT_INHERIT_MODES = ['normal', 'fork', 'auto']
 
@@ -968,7 +870,7 @@ const mainStateDescription = computed(() =>
 
 const hasUnsavedChanges = computed(() => {
   if (!hasLoaded.value) return false
-  const currentSnapshot = serializeFullConfig(cfg.value, dynamicCfg.value, rootCfg.value, dagCfg.value)
+  const currentSnapshot = serializeFullConfig(cfg.value, dynamicCfg.value, rootCfg.value)
   return currentSnapshot !== initialSnapshot.value
 })
 
@@ -1025,17 +927,7 @@ function normalizeRootConfig(raw: any) {
   }
 }
 
-function normalizeDagConfig(raw: any): DAGConfig {
-  const orchData = raw?.subagent_orchestrator || raw || {}
-  return {
-    dag_enabled: orchData?.dag_enabled === true,
-    dag_max_nodes: Number(orchData?.dag_max_nodes) || 10,
-    dag_max_parallel: Number(orchData?.dag_max_parallel) || 5,
-    dag_max_inject_length: Number(orchData?.dag_max_inject_length) || 4000
-  }
-}
-
-function serializeFullConfig(config: SubAgentConfig, dynamic: DynamicAgentsConfig, root: any, dag: DAGConfig): string {
+function serializeFullConfig(config: SubAgentConfig, dynamic: DynamicAgentsConfig, root: any): string {
   return JSON.stringify({
     main_enable: config.main_enable,
     remove_main_duplicate_tools: config.remove_main_duplicate_tools,
@@ -1063,11 +955,7 @@ function serializeFullConfig(config: SubAgentConfig, dynamic: DynamicAgentsConfi
     shared_context_maxlen: root.shared_context_maxlen,
     execution_timeout: root.execution_timeout,
     time_prompt_enabled: root.time_prompt_enabled,
-    context_inherit_mode: root.context_inherit_mode,
-    dag_enabled: dag.dag_enabled,
-    dag_max_nodes: dag.dag_max_nodes,
-    dag_max_parallel: dag.dag_max_parallel,
-    dag_max_inject_length: dag.dag_max_inject_length
+    context_inherit_mode: root.context_inherit_mode
   })
 }
 
@@ -1076,20 +964,31 @@ function addToolFromCombobox() {
   addToolToList(toolSelectorSearch.value)
 }
 
-const mcpServerNames = ref<string[]>([])
-const availableMcpServers = computed(() => [...new Set([
-  ...mcpServerNames.value,
-  ...dynamicCfg.value.mcp_blacklist,
-  ...dynamicCfg.value.mcp_inherent
-])])
+const mcpServerOptions = ref<{ title: string; value: string; conflict: boolean }[]>([])
+const conflictingMcpPolicies = computed(() => [...new Set(mcpServerOptions.value.filter(option => option.conflict).map(option => option.value))])
+const availableMcpServers = computed(() => {
+  const options = [...mcpServerOptions.value]
+  for (const value of [...dynamicCfg.value.mcp_blacklist, ...dynamicCfg.value.mcp_inherent]) {
+    if (!options.some(option => option.value === value)) options.push({ title: value, value, conflict: false })
+  }
+  return options
+})
+const inherentMcpServers = computed(() => availableMcpServers.value.map(option => ({
+  ...option,
+  props: { disabled: conflictingMcpPolicies.value.includes(option.value) }
+})))
 
 async function loadMcpServers() {
   try {
     const res = await mcpApi.list()
     if (res.data.status === 'ok') {
-      mcpServerNames.value = (res.data.data || [])
+      mcpServerOptions.value = (res.data.data || [])
         .filter((server: any) => server.active)
-        .map((server: any) => server.name)
+        .map((server: any) => ({
+          title: server.source === 'runtime' ? `${server.name} (${tm('enhancedTools.runtimeMcp')})` : server.name,
+          value: server.policy_name || server.name,
+          conflict: server.policy_conflict === true
+        }))
     } else {
       toast(res.data.message || tm('enhancedTools.mcpLoadFailed'), 'error')
     }
@@ -1120,9 +1019,8 @@ async function loadConfig() {
       cfg.value = normalizeConfig(data.subagent_orchestrator || data)
       dynamicCfg.value = normalizeDynamicAgents(data.subagent_orchestrator || data)
       rootCfg.value = normalizeRootConfig(data.subagent_orchestrator || data)
-      dagCfg.value = normalizeDagConfig(data.subagent_orchestrator || data)
       expandedAgents.value = Object.fromEntries(cfg.value.agents.map((agent) => [agent.__key, false]))
-      initialSnapshot.value = serializeFullConfig(cfg.value, dynamicCfg.value, rootCfg.value, dagCfg.value)
+      initialSnapshot.value = serializeFullConfig(cfg.value, dynamicCfg.value, rootCfg.value)
       hasLoaded.value = true
     } else {
       toast(res.data.message || tm('messages.loadConfigFailed'), 'error')
@@ -1221,16 +1119,12 @@ async function save() {
       shared_context_maxlen: rootCfg.value.shared_context_maxlen,
       execution_timeout: rootCfg.value.execution_timeout,
       time_prompt_enabled: rootCfg.value.time_prompt_enabled,
-      context_inherit_mode: rootCfg.value.context_inherit_mode,
-      dag_enabled: dagCfg.value.dag_enabled,
-      dag_max_nodes: dagCfg.value.dag_max_nodes,
-      dag_max_parallel: dagCfg.value.dag_max_parallel,
-      dag_max_inject_length: dagCfg.value.dag_max_inject_length
+      context_inherit_mode: rootCfg.value.context_inherit_mode
     }
 
     const res = await subagentApi.updateConfig(payload)
     if (res.data.status === 'ok') {
-      initialSnapshot.value = serializeFullConfig(cfg.value, dynamicCfg.value, rootCfg.value, dagCfg.value)
+      initialSnapshot.value = serializeFullConfig(cfg.value, dynamicCfg.value, rootCfg.value)
       toast(res.data.message || tm('messages.saveSuccess'), 'success')
     } else {
       toast(res.data.message || tm('messages.saveFailed'), 'error')

@@ -305,6 +305,7 @@ interface ActiveConnection {
   completed?: boolean;
   errorShown?: boolean;
   botVisible?: boolean;
+  followUpCaptured?: boolean;
   precedingPlainText?: string;
 }
 
@@ -669,7 +670,7 @@ export function useMessages(options: UseMessagesOptions) {
 
   function isSessionRunning(sessionId: string) {
     return Object.values(activeConnections).some(
-      (connection) => connection.sessionId === sessionId,
+      (connection) => connection.sessionId === sessionId && !connection.completed,
     );
   }
 
@@ -1094,8 +1095,18 @@ export function useMessages(options: UseMessagesOptions) {
         isLoading: true,
       },
     });
-    messages.push(botRecord);
-    startResumeStream(sessionId, runId, messages[messages.length - 1]);
+    // An incoming Agent request may be consumed by the visible run as a
+    // follow-up. Keep its receipt off the page until it produces real output.
+    const anotherVisibleRun =
+      hasLiveSystemRecord(sessionId) ||
+      Object.values(activeConnections).some(
+        (connection) =>
+          connection.sessionId === sessionId &&
+          connection.botVisible !== false &&
+          !connection.completed,
+      );
+    if (!anotherVisibleRun) messages.push(botRecord);
+    startResumeStream(sessionId, runId, botRecord);
   }
 
   async function restoreNextActiveRun(
@@ -1693,12 +1704,16 @@ export function useMessages(options: UseMessagesOptions) {
       transport: "sse",
       abort,
       botRecord,
-      botVisible: true,
+      botVisible:
+        messagesBySession[sessionId]?.some(
+          (record) => String(record.id) === String(botRecord.id),
+        ) ?? false,
     };
     activeConnections[runId] = connection;
 
     void (async () => {
       let receivedEnd = false;
+      let runUnavailable = false;
       let lastError: unknown = null;
 
       for (
@@ -1721,6 +1736,7 @@ export function useMessages(options: UseMessagesOptions) {
             !response.body ||
             !contentType.includes("text/event-stream")
           ) {
+            runUnavailable = response.status === 404;
             retryable = response.status >= 500;
             throw new Error(`Resume stream failed: ${response.status}`);
           }
@@ -1763,6 +1779,17 @@ export function useMessages(options: UseMessagesOptions) {
       const ownsConnection = activeConnections[runId]?.abort === abort;
       if (ownsConnection) delete activeConnections[runId];
       if (!abort.signal.aborted && ownsConnection) {
+        // A completed receipt can have no reply, including after reconnecting
+        // beyond its follow-up confirmation. It must not outlive the real run.
+        if (
+          (receivedEnd || runUnavailable) &&
+          messageParts(botRecord).length === 0 &&
+          !messageContent(botRecord).reasoning
+        ) {
+          const records = messagesBySession[sessionId] || [];
+          const index = records.indexOf(botRecord);
+          if (index >= 0) records.splice(index, 1);
+        }
         if (!isSessionRunning(sessionId)) {
           await loadSessionMessages(sessionId, true, false);
         }
@@ -2102,7 +2129,7 @@ export function useMessages(options: UseMessagesOptions) {
 
   function ensureBotRecordVisible(connection: ActiveConnection) {
     const { botRecord, userRecord } = connection;
-    if (!botRecord) return;
+    if (!botRecord || connection.followUpCaptured) return;
     const records = messagesBySession[connection.sessionId] || [];
     // Compare by id, not by object identity: the array is reactive, so a raw
     // reference and its proxied element are different objects and an identity
@@ -2143,7 +2170,36 @@ export function useMessages(options: UseMessagesOptions) {
     const chainType = normalized?.chain_type;
     const data = normalized?.data ?? "";
 
-    if (msgType === "follow_up_captured") return;
+    if (msgType === "follow_up_captured") {
+      if (!connection || !sessionId) return;
+      connection.followUpCaptured = true;
+      connection.completed = true;
+      connection.botVisible = false;
+      markMessageStarted(botRecord);
+      const records = messagesBySession[sessionId] || [];
+      if (
+        messageParts(botRecord).length === 0 &&
+        !messageContent(botRecord).reasoning
+      ) {
+        const index = records.indexOf(botRecord);
+        if (index >= 0) records.splice(index, 1);
+      }
+      const targetRunId =
+        typeof data?.target_run_id === "string" ? data.target_run_id : "";
+      if (
+        targetRunId &&
+        targetRunId !== connection.messageId &&
+        !systemStreamState.liveBySession[sessionId]?.[targetRunId] &&
+        !Object.values(activeConnections).some(
+          (candidate) =>
+            candidate.sessionId === sessionId &&
+            (candidate.runId === targetRunId || candidate.messageId === targetRunId),
+        )
+      )
+        attachLiveRun(sessionId, targetRunId);
+      return;
+    }
+    if (connection?.followUpCaptured && msgType !== "user_message_saved") return;
     if (msgType === "message_segment" && connection && sessionId) {
       const records = messagesBySession[sessionId] || [];
       const oldIndex = records.indexOf(botRecord);
@@ -2217,7 +2273,10 @@ export function useMessages(options: UseMessagesOptions) {
       return;
     }
     if (msgType === "session_id" || msgType === "session_bound") return;
-    if (connection && msgType !== "user_message_saved" && msgType !== "end") {
+    if (
+      connection &&
+      !["user_message_saved", "end", "run_snapshot"].includes(msgType)
+    ) {
       ensureBotRecordVisible(connection);
     }
     if (msgType === "run_snapshot") {
@@ -2251,6 +2310,13 @@ export function useMessages(options: UseMessagesOptions) {
       botRecord.content = snapshotRecord.content;
       botRecord.content.fileChangeRunId = snapshot.run_id;
       botRecord.llm_checkpoint_id = snapshotRecord.llm_checkpoint_id;
+      if (
+        connection &&
+        (connection.botVisible !== false ||
+          messageParts(botRecord).length > 0 ||
+          messageContent(botRecord).reasoning)
+      )
+        ensureBotRecordVisible(connection);
       void resolveRecordMedia([botRecord]);
       return;
     }

@@ -1,5 +1,7 @@
 # Unreleased
 
+- Keep the ChatUI activity ring attached to the active reply when another Agent sends a follow-up. Hide pending receipt placeholders, clear captured or empty completed receipts, and reconnect to the original run when needed. / 修复跨会话 Agent 追加消息导致思考转圈落在底部空白行的问题；待接收及已追加的请求占位不再抢占回复状态，必要时重新订阅原运行。
+
 - Show running plugin-provided MCP servers in the MCP list and subagent tool policies; manage their lifecycle on the plugin page. / MCP 列表和子代理工具策略显示运行中的插件自带 MCP，启停及配置请在插件页面操作。
 
 - Remove **Subagent orchestration mode → DAG orchestration**; existing DAG settings no longer enable DAG. Restore-default tool lists no longer include the retired `orchestrate_tasks` tool. / 移除 **子代理编排方式 → DAG 编排**，旧配置不再启用 DAG；工具恢复默认名单移除已停用的 `orchestrate_tasks`。

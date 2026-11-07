@@ -12,6 +12,10 @@
   // buttons. Pushed whiter (2026-08-15) so chips blend toward the light
   // input surface while the border keeps them distinguishable.
   --sp-chip-bg: #f5f5f5;
+  // Chips that sit directly on the chat canvas (status row above the composer,
+  // app-bar tabs). Light was already legible with the soft gray, so this
+  // matches --sp-chip-bg exactly; only the dark value steps up.
+  --sp-chip-bg-on-page: #f5f5f5;
   --sp-chip-border: rgba(var(--v-theme-on-surface), 0.12);
   --sp-chip-border-strong: rgba(var(--v-theme-on-surface), 0.16);
   --sp-chip-divider: rgba(var(--v-theme-on-surface), 0.08);
@@ -52,6 +56,10 @@
   // gray rather than near-black against the #1a1a1a page background; still
   // sits below the chat input container (#2d2d2d) in the elevation stack.
   --sp-chip-bg: #262626;
+  // #262626 was still too close to the #1a1a1a page canvas on real screens;
+  // these chips are the only element on that canvas, so they step up to the
+  // familiar #333 "elevated dark" gray.
+  --sp-chip-bg-on-page: #333333;
   --sp-chip-border: rgba(var(--v-theme-on-surface), 0.16);
   --sp-chip-border-strong: rgba(var(--v-theme-on-surface), 0.2);
   --sp-chip-divider: rgba(var(--v-theme-on-surface), 0.12);

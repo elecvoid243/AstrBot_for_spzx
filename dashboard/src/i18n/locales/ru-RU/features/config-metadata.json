@@ -366,8 +366,8 @@
                 },
                 "computer_use_local_shell": {
                     "description": "Локальная оболочка",
-                    "hint": "Только для Windows. auto по очереди проверяет Git Bash, pwsh и powershell.exe; если выбранная оболочка не установлена, используется auto.",
-                    "labels": ["Авто (сначала Git Bash)", "Git Bash", "PowerShell 7", "Windows PowerShell 5.1", "cmd.exe"]
+                    "hint": "Только для Windows. auto по очереди проверяет pwsh, powershell.exe и Git Bash, поэтому предпочтение отдаётся PowerShell. Git Bash не поддерживается песочницей Windows: в режимах readonly/workspace он автоматически переключается на Windows PowerShell. Он доступен только в режиме полного доступа или при явном выборе; если выбранная оболочка не установлена, используется auto.",
+                    "labels": ["Авто (сначала PowerShell)", "Git Bash (без поддержки песочницы)", "PowerShell 7", "Windows PowerShell 5.1", "cmd.exe"]
                 },
                 "computer_use_local_permissions": {
                     "description": "Локальные политики доступа"
@@ -503,6 +503,7 @@
                     "arch": "Архитектура",
                     "sandbox": "Локальная изоляция",
                     "unavailableHint": "Не удалось запустить песочницу. Это влияет на выполнение Shell/Python с ограничениями и поиск файлов в рабочей области. По ошибке ниже проверьте политики безопасности системы (например, AppArmor и ограничения пользовательских пространств имён в Linux) или ограничения контейнера. После исправления перезапустите AstrBot для повторной проверки.",
+                    "windowsUnavailableHint": "Не удалось запустить песочницу Windows. Это влияет на выполнение Shell/Python с ограничениями и операции с файлами рабочей области. По ошибке ниже проверьте права рабочей области и ACL, затем перезапустите AstrBot для повторной проверки.",
                     "status": {
                         "detected": "{backend} · Проверка запуска пройдена",
                         "missing": "Отсутствует {dependency}",

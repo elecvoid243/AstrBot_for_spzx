@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -36,6 +37,9 @@ class _FakeSp:
 
     async def session_put(self, umo, key, value):
         self.store[(umo, key)] = value
+
+    async def session_remove(self, umo, key):
+        self.store.pop((umo, key), None)
 
 
 @pytest.fixture(autouse=True)
@@ -195,6 +199,114 @@ async def test_assert_writable_workspace_allows_dynamic_roots(tmp_path):
     wt.mkdir()
     fs_access.set_dynamic_roots(UMO, [wt])
     await fs_access.assert_writable(str(wt / "main.py"), _make_context())
+
+
+def test_is_tightening_orders_full_workspace_readonly():
+    assert fs_access.is_tightening(FileAccessMode.FULL, FileAccessMode.WORKSPACE)
+    assert fs_access.is_tightening(FileAccessMode.FULL, FileAccessMode.READONLY)
+    assert fs_access.is_tightening(FileAccessMode.WORKSPACE, FileAccessMode.READONLY)
+    assert not fs_access.is_tightening(
+        FileAccessMode.READONLY, FileAccessMode.WORKSPACE
+    )
+    assert not fs_access.is_tightening(FileAccessMode.WORKSPACE, FileAccessMode.FULL)
+    assert fs_access.is_tightening(None, FileAccessMode.WORKSPACE)
+    assert not fs_access.is_tightening(None, FileAccessMode.FULL)
+
+
+@pytest.mark.asyncio
+async def test_mode_persists_and_loads_after_memory_reset():
+    await fs_access.set_mode_for_umo_persisted(UMO, FileAccessMode.READONLY)
+    fs_access.reset()
+
+    loaded = await fs_access.load_mode_for_umo(UMO)
+
+    assert loaded is FileAccessMode.READONLY
+    assert fs_access.get_mode_for_umo(UMO) is FileAccessMode.READONLY
+
+
+@pytest.mark.asyncio
+async def test_clear_mode_removes_persisted_value():
+    await fs_access.set_mode_for_umo_persisted(UMO, FileAccessMode.WORKSPACE)
+    await fs_access.clear_mode_persisted_for_umo(UMO)
+    fs_access.reset()
+
+    assert await fs_access.load_mode_for_umo(UMO) is None
+
+
+@pytest.mark.asyncio
+async def test_assert_writable_hydrates_persisted_readonly(tmp_path):
+    await fs_access.set_mode_for_umo_persisted(UMO, FileAccessMode.READONLY)
+    fs_access.reset()
+
+    with pytest.raises(PermissionError):
+        await fs_access.assert_writable(
+            str(tmp_path / "a.txt"), _make_context(), current_workspace_root=tmp_path
+        )
+
+
+@pytest.mark.asyncio
+async def test_sandbox_spec_windows_workspace_grants_workspace_and_extra_roots(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+):
+    monkeypatch.setattr(sys, "platform", "win32")
+    fs_access.set_mode_for_umo(UMO, FileAccessMode.WORKSPACE)
+    extra = tmp_path / "extra"
+    extra.mkdir()
+    fs_access.set_dynamic_roots(UMO, [extra])
+
+    spec = await fs_access.sandbox_spec_for_context(
+        _make_context(), current_workspace_root=tmp_path
+    )
+
+    assert spec is not None
+    assert spec.workspace == tmp_path.resolve()
+    assert spec.workspace_writable is True
+    assert spec.allow_network is False
+    assert extra.resolve() in spec.writable_roots
+    assert tmp_path.resolve() not in spec.writable_roots
+
+
+@pytest.mark.asyncio
+async def test_sandbox_spec_windows_readonly_has_no_writable_roots(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+):
+    monkeypatch.setattr(sys, "platform", "win32")
+    fs_access.set_mode_for_umo(UMO, FileAccessMode.READONLY)
+    fs_access.set_dynamic_roots(UMO, [tmp_path / "extra"])
+
+    spec = await fs_access.sandbox_spec_for_context(
+        _make_context(), current_workspace_root=tmp_path
+    )
+
+    assert spec is not None
+    assert spec.workspace_writable is False
+    assert spec.writable_roots == ()
+
+
+@pytest.mark.asyncio
+async def test_sandbox_spec_is_none_in_full_mode(monkeypatch, tmp_path):
+    monkeypatch.setattr(sys, "platform", "win32")
+    fs_access.set_mode_for_umo(UMO, FileAccessMode.FULL)
+
+    spec = await fs_access.sandbox_spec_for_context(
+        _make_context(), current_workspace_root=tmp_path
+    )
+
+    assert spec is None
+
+
+@pytest.mark.asyncio
+async def test_sandbox_spec_is_none_on_non_windows(monkeypatch, tmp_path):
+    monkeypatch.setattr(sys, "platform", "linux")
+    fs_access.set_mode_for_umo(UMO, FileAccessMode.WORKSPACE)
+
+    spec = await fs_access.sandbox_spec_for_context(
+        _make_context(), current_workspace_root=tmp_path
+    )
+
+    assert spec is None
 
 
 @pytest.mark.asyncio

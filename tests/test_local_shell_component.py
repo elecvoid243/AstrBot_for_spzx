@@ -995,6 +995,7 @@ async def test_managed_shell_uses_git_bash_when_available(monkeypatch, tmp_path)
         sandboxed=False,
         cwd=str(tmp_path),
         yield_time_ms=5_000,
+        shell_spec=local_booter.ShellSpec("git_bash", r"D:\Git\bin\bash.exe", ("-c",)),
     )
 
     assert result["status"] == "completed"
@@ -1012,7 +1013,14 @@ def test_exec_uses_git_bash_argv_when_available(monkeypatch):
     monkeypatch.setattr(local_booter.sys, "platform", "win32")
     monkeypatch.setattr(local_booter, "_find_git_bash", lambda: r"D:\Git\bin\bash.exe")
 
-    result = asyncio.run(LocalShellComponent().exec("ls -la"))
+    result = asyncio.run(
+        LocalShellComponent().exec(
+            "ls -la",
+            shell_spec=local_booter.ShellSpec(
+                "git_bash", r"D:\Git\bin\bash.exe", ("-c",)
+            ),
+        )
+    )
 
     assert result["exit_code"] == 0
     assert calls[0][0][0] == [r"D:\Git\bin\bash.exe", "-c", "ls -la"]
@@ -1216,6 +1224,43 @@ async def test_shutdown_sessions_keeps_sessions_of_the_configured_family(
 
     assert terminated == ["sh_bash"]
     assert set(shell._sessions) == {"sh_ps"}
+
+
+@pytest.mark.asyncio
+async def test_shutdown_sessions_filters_owner(monkeypatch, tmp_path):
+    """Tightening a conversation must stop only that conversation's sessions."""
+    shell = LocalShellComponent()
+    terminated = []
+
+    async def fake_terminate(session):
+        terminated.append(session.session_id)
+
+    monkeypatch.setattr(shell, "_terminate_process", fake_terminate)
+
+    out_dir = tmp_path / "shell"
+    out_dir.mkdir()
+    for session_id, owner in (("sh_a", "umo-a"), ("sh_b", "umo-b")):
+        output_path = out_dir / f"{session_id}.log"
+        output_path.touch()
+        shell._sessions[session_id] = local_booter._LocalShellSession(
+            session_id=session_id,
+            owner_id=owner,
+            creator_id="user",
+            creator_is_admin=True,
+            sandboxed=False,
+            process=object(),
+            output_path=output_path,
+            started_at=0.0,
+            output_event=asyncio.Event(),
+            reader_task=asyncio.create_task(asyncio.sleep(0)),
+            wait_task=asyncio.create_task(asyncio.sleep(0)),
+            shell_family="powershell",
+        )
+
+    await shell.shutdown_sessions(owner_id="umo-a")
+
+    assert terminated == ["sh_a"]
+    assert set(shell._sessions) == {"sh_b"}
 
 
 @pytest.mark.asyncio

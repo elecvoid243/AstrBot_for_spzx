@@ -46,6 +46,8 @@ from astrbot.core.tools.fs_access import (
     FileAccessMode,
     get_custom_roots,
     get_mode_for_umo,
+    is_tightening,
+    load_mode_for_umo,
     set_custom_roots,
     set_mode_for_umo,
 )
@@ -5304,10 +5306,22 @@ class ChatService:
             default_mode = resolve_file_access_default(parent_cfg)
         except Exception:
             default_mode = FileAccessMode.FULL
-        set_mode_for_umo(
-            thread_umo,
-            get_mode_for_umo(parent_umo, default=default_mode),
-        )
+        await load_mode_for_umo(parent_umo)
+        previous_mode = get_mode_for_umo(thread_umo, default=default_mode)
+        new_mode = get_mode_for_umo(parent_umo, default=default_mode)
+        set_mode_for_umo(thread_umo, new_mode)
+        if is_tightening(previous_mode, new_mode):
+            try:
+                from astrbot.core.computer import computer_client
+
+                await computer_client.shutdown_local_execution_for_owner(thread_umo)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to terminate side-thread shell sessions after "
+                    "tightening %s: %s",
+                    thread_umo,
+                    exc,
+                )
         try:
             roots = await get_custom_roots(parent_umo)
             if roots:

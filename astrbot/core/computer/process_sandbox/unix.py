@@ -68,6 +68,14 @@ class UnixSandboxProcess:
         """Send SIGKILL to the complete Unix process group."""
         self._send_signal(signal_module.SIGKILL)
 
+    def send_signal(self, sig: int) -> None:
+        """Forward one signal to the session-leading process.
+
+        Args:
+            sig: Unix signal number to deliver.
+        """
+        self._process.send_signal(sig)
+
     def _send_signal(self, signal: int) -> None:
         """Send a Unix signal to the process group if it still exists.
 
@@ -167,6 +175,34 @@ class UnixProcessSandbox(ProcessSandbox):
             stderr_limited=output_limit is not None and len(stderr) > output_limit,
         )
 
+    async def spawn_argv(
+        self,
+        argv: list[str],
+        spec: SandboxSpec,
+        *,
+        env: dict[str, str] | None = None,
+    ) -> SandboxProcess:
+        """Start an arbitrary command in a separately managed process group.
+
+        Args:
+            argv: Command and arguments to execute inside the sandbox.
+            spec: Filesystem, network, and resource policy.
+            env: Additional environment variables exposed inside the sandbox.
+
+        Returns:
+            Process adapter whose lifecycle methods affect the process group.
+        """
+        process = await asyncio.create_subprocess_exec(
+            *self.build_command(argv, spec, env=env),
+            cwd=spec.workspace.resolve(),
+            env={"PATH": os.defpath},
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            start_new_session=True,
+        )
+        return UnixSandboxProcess(process)
+
     async def spawn_shell(
         self,
         command: str,
@@ -184,16 +220,7 @@ class UnixProcessSandbox(ProcessSandbox):
         Returns:
             Process adapter whose lifecycle methods affect the process group.
         """
-        process = await asyncio.create_subprocess_exec(
-            *self.build_command(["/bin/sh", "-c", command], spec, env=env),
-            cwd=spec.workspace.resolve(),
-            env={"PATH": os.defpath},
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-            start_new_session=True,
-        )
-        return UnixSandboxProcess(process)
+        return await self.spawn_argv(["/bin/sh", "-c", command], spec, env=env)
 
     @abstractmethod
     def _build_command(

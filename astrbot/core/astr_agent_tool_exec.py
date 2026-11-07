@@ -221,6 +221,18 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
             AsyncGenerator[None | mcp.types.CallToolResult, None]
 
         """
+        # Hydrate the persisted per-conversation file-access mode before any
+        # tool runs; process-local overrides are otherwise empty after restart
+        # until the dashboard reads the mode.
+        try:
+            from astrbot.core.tools import fs_access
+
+            await fs_access.load_mode_for_umo(
+                run_context.context.event.unified_msg_origin
+            )
+        except Exception:
+            pass
+
         # 防止subagent的名字叫"subagent"造成工具歧义（在create中已经不会发生，此处用于兜底）
         if (
             isinstance(tool, FunctionTool)

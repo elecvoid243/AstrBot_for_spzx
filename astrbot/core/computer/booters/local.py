@@ -32,6 +32,11 @@ from astrbot.core.utils.astrbot_path import (
 )
 
 from ..olayer import FileSystemComponent, PythonComponent, ShellComponent
+from ..process_sandbox import create_process_sandbox
+from ..process_sandbox.base import (
+    SandboxProcess,
+    SandboxSpec,
+)
 from .base import ComputerBooter
 from .shipyard_search_file_util import _truncate_long_lines
 
@@ -353,9 +358,10 @@ def _find_git_bash() -> str | None:
 def resolve_local_shell(shell_type: str = "auto") -> ShellSpec:
     """Resolve which local shell commands should run in.
 
-    On Windows, "auto" prefers Git Bash, then PowerShell 7, then Windows
-    PowerShell. An explicit family that is not installed falls back to "auto",
-    so a stale config value cannot disable shell execution.
+    On Windows, "auto" prefers PowerShell 7, then Windows PowerShell, then
+    Git Bash. Git Bash has no Windows sandbox support, so the automatic order
+    keeps it as a last resort. An explicit family that is not installed falls
+    back to "auto", so a stale config value cannot disable shell execution.
 
     Args:
         shell_type: "auto" or one of "git_bash", "pwsh", "powershell", "cmd".
@@ -386,10 +392,12 @@ def resolve_local_shell(shell_type: str = "auto") -> ShellSpec:
             shell_type,
         )
 
-    if git_bash := _find_git_bash():
-        return ShellSpec("git_bash", git_bash, ("-c",))
     if shutil.which("pwsh"):
         return ShellSpec("pwsh", "pwsh.exe", _POWERSHELL_PREFIX_ARGS)
+    if shutil.which("powershell.exe") or shutil.which("powershell"):
+        return ShellSpec("powershell", "powershell.exe", _POWERSHELL_PREFIX_ARGS)
+    if git_bash := _find_git_bash():
+        return ShellSpec("git_bash", git_bash, ("-c",))
     return ShellSpec("powershell", "powershell.exe", _POWERSHELL_PREFIX_ARGS)
 
 
@@ -496,7 +504,7 @@ class _LocalShellSession:
     creator_id: str
     creator_is_admin: bool
     sandboxed: bool
-    process: asyncio.subprocess.Process
+    process: SandboxProcess | asyncio.subprocess.Process
     output_path: Path
     started_at: float
     output_event: asyncio.Event
@@ -527,6 +535,11 @@ class LocalShellComponent(ShellComponent):
         init=False,
         repr=False,
     )
+    _background_reapers: set[asyncio.Task[None]] = field(
+        default_factory=set,
+        init=False,
+        repr=False,
+    )
 
     def add_change_listener(self, listener: Callable[[str], None]) -> None:
         """Register a sync listener fired with the owner_id on session changes.
@@ -552,6 +565,85 @@ class LocalShellComponent(ShellComponent):
                     exc,
                 )
 
+    @staticmethod
+    def _sandboxed_argv(
+        command: str,
+        shell_spec: ShellSpec | None,
+        *,
+        shell: bool = True,
+    ) -> list[str]:
+        """Build the executable argv handed to the process sandbox.
+
+        Git Bash (MSYS2) cannot start under the restricted token, so the
+        sandboxed path rejects it instead of silently leaking an unsandboxed
+        shell. Callers that let users pick a shell fall back before this point.
+        """
+        if sys.platform == "win32" and shell:
+            spec = shell_spec or resolve_local_shell()
+            if spec.family == "git_bash":
+                raise PermissionError(
+                    "Git Bash is not supported by the Windows process sandbox; "
+                    "use PowerShell or cmd."
+                )
+            return [spec.executable, *spec.prefix_args, command]
+        if shell:
+            return ["/bin/sh", "-c", command]
+        return [command]
+
+    @staticmethod
+    def _sandboxed_env(env: dict[str, str] | None) -> dict[str, str]:
+        """Keep only model-supplied environment overrides for the sandbox.
+
+        The host environment is reconstructed by the sandbox backend from a
+        safe whitelist; copying os.environ here would leak host credentials.
+        """
+        return {str(key): str(value) for key, value in (env or {}).items()}
+
+    async def _exec_sandboxed(
+        self,
+        command: str,
+        *,
+        env: dict[str, str] | None,
+        timeout: int | None,
+        background: bool,
+        shell: bool,
+        shell_spec: ShellSpec | None,
+        sandbox_spec: SandboxSpec,
+    ) -> dict[str, Any]:
+        """Run one non-managed command through the platform process sandbox."""
+        sandbox = create_process_sandbox()
+        argv = self._sandboxed_argv(command, shell_spec, shell=shell)
+        sandbox_env = self._sandboxed_env(env)
+        if background:
+            process = await sandbox.spawn_argv(argv, sandbox_spec, env=sandbox_env)
+            reaper = asyncio.create_task(
+                self._reap_sandbox_process(process),
+                name=f"local_sandbox_reap_{process.pid}",
+            )
+            self._background_reapers.add(reaper)
+            reaper.add_done_callback(self._background_reapers.discard)
+            return {"pid": process.pid, "stdout": "", "stderr": "", "exit_code": None}
+        result = await asyncio.to_thread(
+            sandbox.run,
+            argv,
+            sandbox_spec,
+            env=sandbox_env,
+            timeout=timeout or 300,
+        )
+        return {
+            "stdout": _decode_shell_output(result.stdout),
+            "stderr": _decode_shell_output(result.stderr),
+            "exit_code": result.returncode,
+        }
+
+    @staticmethod
+    async def _reap_sandbox_process(process: SandboxProcess) -> None:
+        """Wait for a detached sandboxed command so its temp root is cleaned."""
+        try:
+            await process.wait()
+        except Exception:  # pragma: no cover - lifecycle fallback
+            pass
+
     async def exec(
         self,
         command: str,
@@ -561,11 +653,23 @@ class LocalShellComponent(ShellComponent):
         shell: bool = True,
         background: bool = False,
         shell_spec: ShellSpec | None = None,
+        sandbox_spec: SandboxSpec | None = None,
     ) -> dict[str, Any]:
         if not _is_safe_command(command):
             raise PermissionError("Blocked unsafe shell command.")
         if refusal := _would_kill_self(command):
             raise PermissionError(refusal)
+
+        if sandbox_spec is not None:
+            return await self._exec_sandboxed(
+                command,
+                env=env,
+                timeout=timeout,
+                background=background,
+                shell=shell,
+                shell_spec=shell_spec,
+                sandbox_spec=sandbox_spec,
+            )
 
         def _run() -> dict[str, Any]:
             run_env = os.environ.copy()
@@ -671,6 +775,7 @@ class LocalShellComponent(ShellComponent):
         yield_time_ms: int = 10_000,
         max_output_chars: int = 10_000,
         shell_spec: ShellSpec | None = None,
+        sandbox_spec: SandboxSpec | None = None,
     ) -> dict[str, Any]:
         """Start a locally managed shell process and briefly wait for it.
 
@@ -685,6 +790,8 @@ class LocalShellComponent(ShellComponent):
             timeout: Hard process lifetime in seconds. None disables it.
             yield_time_ms: Maximum time to wait before returning a session ID.
             max_output_chars: Maximum output bytes returned in this call.
+            shell_spec: Shell dialect to launch, when the caller selected one.
+            sandbox_spec: Process-sandbox policy; None keeps host execution.
 
         Returns:
             Process result with output, status, and session metadata.
@@ -717,7 +824,7 @@ class LocalShellComponent(ShellComponent):
         output_path.touch()
 
         process_kwargs: dict[str, Any] = {}
-        if sys.platform == "win32":
+        if sandbox_spec is None and sys.platform == "win32":
             # CREATE_NEW_PROCESS_GROUP keeps CTRL_BREAK_EVENT interrupt
             # (see interrupt_session) working by giving the child its own
             # process group attached to a console. CREATE_NO_WINDOW cannot be
@@ -734,27 +841,41 @@ class LocalShellComponent(ShellComponent):
             startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
             startupinfo.wShowWindow = 0  # SW_HIDE
             process_kwargs["startupinfo"] = startupinfo
-        else:
+        elif sandbox_spec is None:
             process_kwargs["start_new_session"] = True
 
         spec = shell_spec or resolve_local_shell()
 
         try:
-            if sys.platform == "win32":
-                process_factory = asyncio.create_subprocess_exec
-                process_args = (spec.executable, *spec.prefix_args, command)
+            if sandbox_spec is not None:
+                sandbox = create_process_sandbox()
+                process = await sandbox.spawn_argv(
+                    self._sandboxed_argv(command, spec),
+                    sandbox_spec,
+                    env=self._sandboxed_env(env),
+                )
+            elif sys.platform == "win32":
+                process = await asyncio.create_subprocess_exec(
+                    spec.executable,
+                    *spec.prefix_args,
+                    command,
+                    cwd=working_dir,
+                    env=run_env,
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.STDOUT,
+                    **process_kwargs,
+                )
             else:
-                process_factory = asyncio.create_subprocess_shell
-                process_args = (command,)
-            process = await process_factory(
-                *process_args,
-                cwd=working_dir,
-                env=run_env,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-                **process_kwargs,
-            )
+                process = await asyncio.create_subprocess_shell(
+                    command,
+                    cwd=working_dir,
+                    env=run_env,
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.STDOUT,
+                    **process_kwargs,
+                )
         except Exception:
             output_path.unlink(missing_ok=True)
             raise
@@ -1374,7 +1495,12 @@ class LocalShellComponent(ShellComponent):
         await self._remove_session(session)
         return {"session_id": session_id, "removed": True}
 
-    async def shutdown_sessions(self, *, keep_family: str | None = None) -> None:
+    async def shutdown_sessions(
+        self,
+        *,
+        keep_family: str | None = None,
+        owner_id: str | None = None,
+    ) -> None:
         """Terminate and remove managed local shell sessions.
 
         Args:
@@ -1382,12 +1508,15 @@ class LocalShellComponent(ShellComponent):
                 left running and only the remaining ones are terminated. The
                 dashboard uses it to invalidate sessions that a shell-type
                 change made stale.
+            owner_id: When set, only sessions owned by this conversation are
+                terminated. Used when the file-access mode is tightened.
         """
         async with self._sessions_lock:
             sessions = [
                 session
                 for session in self._sessions.values()
-                if keep_family is None or session.shell_family != keep_family
+                if (keep_family is None or session.shell_family != keep_family)
+                and (owner_id is None or session.owner_id == owner_id)
             ]
         for session in sessions:
             session.terminated = True
@@ -1560,6 +1689,17 @@ class LocalShellComponent(ShellComponent):
 
 @dataclass
 class LocalPythonComponent(PythonComponent):
+    _active_sandbox_processes: dict[str, set[SandboxProcess]] = field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+    )
+    _active_host_processes: dict[str, list[subprocess.Popen[bytes]]] = field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+    )
+
     async def exec(
         self,
         code: str,
@@ -1567,6 +1707,8 @@ class LocalPythonComponent(PythonComponent):
         timeout: int = 30,
         silent: bool = False,
         cwd: str | None = None,
+        sandbox_spec: SandboxSpec | None = None,
+        owner_id: str | None = None,
     ) -> dict[str, Any]:
         # The child interpreter must be the console-subsystem ``python.exe``:
         # together with ``CREATE_NO_WINDOW`` below it gets a windowless
@@ -1580,39 +1722,180 @@ class LocalPythonComponent(PythonComponent):
             if sibling_console_exe.exists():
                 python_exe = str(sibling_console_exe)
 
+        if sandbox_spec is not None:
+            return await self._exec_sandboxed_python(
+                code,
+                python_exe,
+                timeout,
+                silent,
+                sandbox_spec,
+                owner_id,
+            )
+
+        tracked = (
+            self._active_host_processes.setdefault(owner_id, []) if owner_id else None
+        )
+
         def _run() -> dict[str, Any]:
+            process: subprocess.Popen[bytes] | None = None
             try:
                 working_dir = os.path.abspath(cwd) if cwd else get_astrbot_root()
-                result = subprocess.run(
+                process = subprocess.Popen(
                     [python_exe, "-c", code],
-                    timeout=timeout,
-                    capture_output=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
                     cwd=working_dir,
                     # Windowless console for the direct child; nested CUI
                     # children inherit it. Non-Windows passes no extra flags.
                     **_NO_WINDOW_KWARGS,
                 )
-                stdout = "" if silent else _decode_shell_output(result.stdout)
-                stderr = (
-                    _decode_shell_output(result.stderr)
-                    if result.returncode != 0
-                    else ""
-                )
+                if tracked is not None:
+                    tracked.append(process)
+                try:
+                    out, err = process.communicate(timeout=timeout)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.communicate()
+                    return {
+                        "data": {
+                            "output": {"text": "", "images": []},
+                            "error": "Execution timed out.",
+                        }
+                    }
+                stdout = "" if silent else _decode_shell_output(out)
+                stderr = _decode_shell_output(err) if process.returncode != 0 else ""
                 return {
                     "data": {
                         "output": {"text": stdout, "images": []},
                         "error": stderr,
                     }
                 }
-            except subprocess.TimeoutExpired:
-                return {
-                    "data": {
-                        "output": {"text": "", "images": []},
-                        "error": "Execution timed out.",
-                    }
-                }
+            finally:
+                if tracked is not None and process is not None and process in tracked:
+                    tracked.remove(process)
 
         return await asyncio.to_thread(_run)
+
+    async def _exec_sandboxed_python(
+        self,
+        code: str,
+        python_exe: str,
+        timeout: int,
+        silent: bool,
+        sandbox_spec: SandboxSpec,
+        owner_id: str | None,
+    ) -> dict[str, Any]:
+        """Run one Python snippet through the platform process sandbox.
+
+        The process is tracked by owner so a file-access tightening can kill
+        it before its old writable policy expires.
+        """
+        sandbox = create_process_sandbox()
+        process = await sandbox.spawn_argv([python_exe, "-c", code], sandbox_spec)
+        if owner_id:
+            self._active_sandbox_processes.setdefault(owner_id, set()).add(process)
+
+        chunks: list[bytes] = []
+
+        async def _drain() -> None:
+            stream = process.stdout
+            if stream is None:
+                return
+            while chunk := await stream.read(65536):
+                chunks.append(chunk)
+
+        reader = asyncio.create_task(_drain())
+        timed_out = False
+        try:
+            try:
+                returncode = await asyncio.wait_for(process.wait(), timeout=timeout)
+            except asyncio.TimeoutError:
+                timed_out = True
+                process.kill()
+                try:
+                    await process.wait()
+                except Exception:
+                    pass
+            except asyncio.CancelledError:
+                process.kill()
+                try:
+                    await process.wait()
+                except Exception:
+                    pass
+                raise
+            except Exception:
+                process.kill()
+                try:
+                    await process.wait()
+                except Exception:
+                    pass
+                raise
+            else:
+                try:
+                    await reader
+                except Exception:
+                    pass
+        finally:
+            if owner_id:
+                active = self._active_sandbox_processes.get(owner_id)
+                if active is not None:
+                    active.discard(process)
+                    if not active:
+                        self._active_sandbox_processes.pop(owner_id, None)
+            if not reader.done():
+                reader.cancel()
+                try:
+                    await reader
+                except Exception:
+                    pass
+        if timed_out:
+            return {
+                "data": {
+                    "output": {"text": "", "images": []},
+                    "error": "Execution timed out.",
+                }
+            }
+        text = _decode_shell_output(b"".join(chunks))
+        stdout = "" if silent else text
+        stderr = text if returncode != 0 else ""
+        return {
+            "data": {
+                "output": {"text": stdout, "images": []},
+                "error": stderr,
+            }
+        }
+
+    async def terminate_owner_processes(self, owner_id: str) -> None:
+        """Kill in-flight sandboxed Python executions owned by one conversation.
+
+        Args:
+            owner_id: Unified message origin whose executions must stop.
+        """
+        processes = list(self._active_sandbox_processes.get(owner_id, ()))
+        for process in processes:
+            process.kill()
+        for process in processes:
+            try:
+                await process.wait()
+            except Exception:
+                pass
+        self._active_sandbox_processes.pop(owner_id, None)
+
+        host_processes = self._active_host_processes.pop(owner_id, [])
+        for host_process in host_processes:
+            if host_process.poll() is None:
+                host_process.kill()
+        for host_process in host_processes:
+            try:
+                await asyncio.to_thread(host_process.wait, 5)
+            except Exception:
+                pass
+
+    async def terminate_all_processes(self) -> None:
+        """Kill every in-flight sandboxed or host Python execution."""
+        owners = set(self._active_sandbox_processes) | set(self._active_host_processes)
+        for owner_id in list(owners):
+            await self.terminate_owner_processes(owner_id)
 
 
 @dataclass

@@ -529,6 +529,35 @@ async def _invalidate_stale_local_shell_sessions(config: dict) -> None:
         logger.warning("Failed to invalidate stale local shell sessions: %s", exc)
 
 
+async def _invalidate_local_execution_for_default_mode_change(
+    old_config: dict, new_config: dict
+) -> None:
+    """Stop local execution when the profile default becomes more restrictive.
+
+    Existing shell sessions and in-flight Python runs were started under the
+    previous default authority. Best effort: the configuration is already
+    persisted, so a cleanup failure must not turn a save into an error.
+
+    Args:
+        old_config: Configuration before the save.
+        new_config: Configuration after the save.
+    """
+    from astrbot.core.tools import fs_access
+
+    if not fs_access.is_tightening(
+        fs_access.resolve_default(old_config),
+        fs_access.resolve_default(new_config),
+    ):
+        return
+    try:
+        await computer_client.shutdown_all_local_execution()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Failed to terminate local execution after tightening the default mode: %s",
+            exc,
+        )
+
+
 def _get_nested_value(data: dict, path: tuple[str, ...]) -> Any:
     current = data
     for key in path:
@@ -823,6 +852,9 @@ class ConfigProfileService:
                 config[key] = default_conf.get(key, [])
 
         current_config = self.acm.confs[config_id]
+        from astrbot.core.tools import fs_access as _fs_access
+
+        old_default_mode = _fs_access.resolve_default(current_config)
         if (
             not allow_admin_id_change
             and "admins_id" in config
@@ -853,6 +885,10 @@ class ConfigProfileService:
             config, self.acm.confs[config_id], is_core=True, runtime=self.runtime
         )
         await _invalidate_stale_local_shell_sessions(config)
+        await _invalidate_local_execution_for_default_mode_change(
+            {"provider_settings": {"file_access_default_mode": old_default_mode.value}},
+            config,
+        )
         if protected_2fa_changed and self.db is not None:
             await revoke_user_trusted_devices(self.db)
         await self.core_lifecycle.reload_pipeline_scheduler(config_id)

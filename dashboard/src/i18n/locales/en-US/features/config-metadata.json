@@ -239,8 +239,8 @@
         },
         "computer_use_local_shell": {
           "description": "Local Shell",
-          "hint": "Windows only. auto probes Git Bash, then pwsh, then powershell.exe; an explicit choice that is not installed falls back to auto.",
-          "labels": ["Auto (Git Bash first)", "Git Bash", "PowerShell 7", "Windows PowerShell 5.1", "cmd.exe"]
+          "hint": "Windows only. auto probes pwsh, then powershell.exe, then Git Bash, so PowerShell is preferred. Git Bash is not supported by the Windows sandbox: in readonly or workspace mode it automatically falls back to Windows PowerShell. It remains available in full access mode or when explicitly selected; an explicit choice that is not installed falls back to auto.",
+          "labels": ["Auto (PowerShell first)", "Git Bash (no sandbox support)", "PowerShell 7", "Windows PowerShell 5.1", "cmd.exe"]
         },
         "computer_use_local_permissions": {
           "description": "Local Permission Policies"
@@ -376,6 +376,7 @@
           "arch": "Architecture",
           "sandbox": "Local isolation",
           "unavailableHint": "Sandbox startup failed, affecting restricted Shell/Python execution and workspace file search. Use the error below to check system security policies (such as Linux AppArmor and user namespace restrictions) or container restrictions, then restart AstrBot to check again.",
+          "windowsUnavailableHint": "Windows sandbox startup failed, affecting restricted Shell/Python execution and workspace file operations. Use the error below to check the workspace and ACL permissions, then restart AstrBot to check again.",
           "status": {
             "detected": "{backend} · Startup check passed",
             "missing": "Missing {dependency}",

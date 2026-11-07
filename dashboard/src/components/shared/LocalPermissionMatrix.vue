@@ -1,5 +1,5 @@
 <template>
-  <div class="local-permission-matrix" :class="{ 'local-permission-matrix--simple': unsupported }">
+  <div class="local-permission-matrix" :class="{ 'local-permission-matrix--simple': matrixUnsupported }">
     <v-progress-linear v-if="runtimeLoading && !runtime" indeterminate color="primary" />
     <v-alert v-else-if="!runtime" type="warning" variant="tonal" density="compact">
       {{ tm('runtimeUnknown') }}
@@ -25,15 +25,19 @@
         </dt>
         <dd>
           {{ tm(`runtime.status.${runtime.sandbox.status}`, {
-            backend: runtime.sandbox.backend === 'seatbelt' ? 'Seatbelt' : 'bubblewrap',
-            dependency: runtime.sandbox.backend === 'seatbelt' ? 'sandbox-exec' : 'bwrap'
+            backend: sandboxBackendLabel,
+            dependency: sandboxDependencyLabel
           }) }}
         </dd>
       </div>
     </dl>
 
     <v-alert v-if="runtime?.sandbox?.status === 'unavailable'" type="warning" variant="tonal" density="compact">
-      <div>{{ tm('runtime.unavailableHint') }}</div>
+      <div>
+        {{ runtime.sandbox.backend === 'windows-acl'
+          ? tm('runtime.windowsUnavailableHint')
+          : tm('runtime.unavailableHint') }}
+      </div>
       <div v-if="runtime.sandbox.error" class="sandbox-error mt-2">{{ runtime.sandbox.error }}</div>
     </v-alert>
 
@@ -41,7 +45,7 @@
       <thead>
         <tr>
           <th scope="col">{{ tm('role') }}</th>
-          <th v-if="unsupported" scope="col">{{ tm('accessMode') }}</th>
+          <th v-if="matrixUnsupported" scope="col">{{ tm('accessMode') }}</th>
           <template v-else>
             <th scope="col" class="text-center">{{ tm('execution') }}</th>
             <th scope="col" class="text-center">{{ tm('network') }}</th>
@@ -52,7 +56,7 @@
       <tbody>
         <tr v-for="role in roles" :key="role" :aria-label="tm(`roles.${role}`)">
           <th scope="row">{{ tm(`roles.${role}`) }}</th>
-          <td v-if="unsupported">
+          <td v-if="matrixUnsupported">
             <v-select
               :model-value="accessModes[role]"
               :items="[
@@ -217,7 +221,24 @@ const { tm } = useModuleI18n('features/config-metadata.ai_group.agent_computer_u
 const runtime = ref(null)
 const runtimeLoading = ref(true)
 const unsupported = computed(() => runtime.value?.sandbox?.status === 'unsupported')
+// Windows ships a write/delete-only sandbox, so the per-role execution /
+// network / filesystem matrix stays on the legacy access-mode controls.
+const matrixUnsupported = computed(
+  () => unsupported.value || runtime.value?.sandbox?.backend === 'windows-acl'
+)
 const sandboxUnavailable = computed(() => ['missing', 'unavailable'].includes(runtime.value?.sandbox?.status))
+const sandboxBackendLabel = computed(() => {
+  const backend = runtime.value?.sandbox?.backend
+  if (backend === 'seatbelt') return 'Seatbelt'
+  if (backend === 'windows-acl') return 'Windows ACL'
+  return 'bubblewrap'
+})
+const sandboxDependencyLabel = computed(() => {
+  const backend = runtime.value?.sandbox?.backend
+  if (backend === 'seatbelt') return 'sandbox-exec'
+  if (backend === 'windows-acl') return 'restricted token'
+  return 'bwrap'
+})
 const roles = ['member', 'admin']
 const defaults = computed(() => runtime.value?.os === 'windows' ? windowsPermissionDefaults : {
   member: {

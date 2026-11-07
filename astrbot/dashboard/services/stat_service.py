@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import os
 import platform
 import re
 import shutil
@@ -85,6 +86,11 @@ class StatService:
                     else "missing"
                 ),
             }
+        elif system == "windows":
+            # The Windows ACL backend is shipped with the app; the startup
+            # probe below proves the restricted-token runner can actually
+            # initialize on this machine before reporting it as usable.
+            sandbox = {"backend": "windows-acl", "status": "detected"}
         if sandbox["status"] == "detected":
             try:
                 temp_root = Path(get_astrbot_temp_path())
@@ -92,8 +98,18 @@ class StatService:
                 with tempfile.TemporaryDirectory(
                     prefix="sandbox-probe-", dir=temp_root
                 ) as workspace:
+                    probe_argv = (
+                        [
+                            os.environ.get("COMSPEC", r"C:\Windows\System32\cmd.exe"),
+                            "/d",
+                            "/c",
+                            "exit 0",
+                        ]
+                        if system == "windows"
+                        else ["/bin/sh", "-c", ":"]
+                    )
                     result = create_process_sandbox().run(
-                        ["/bin/sh", "-c", ":"],
+                        probe_argv,
                         SandboxSpec(workspace=Path(workspace)),
                         timeout=5,
                         output_limit=1024,

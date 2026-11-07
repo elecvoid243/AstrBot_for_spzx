@@ -6,9 +6,11 @@ Three modes (docs/superpowers/specs/2026-08-20-file-access-mode-design.md):
 - workspace: writes restricted to the session workspace, temp dirs,
   configured extra roots, and plugin-registered dynamic roots.
 
-State is process-local and per-umo; it resets to the config default on
-restart. The mode is enforced at tool-call time (see computer_tools/fs.py
-and shell.py) so it also covers subagent tool calls.
+The explicit mode is per-umo and persisted in SharedPreferences. Async
+entry points (dashboard reads and side-thread inheritance) hydrate it
+lazily; synchronous tool resolution falls back to the config default until
+that hydration has happened. The mode is enforced at tool-call time (see
+computer_tools/fs.py and shell.py) so it also covers subagent tool calls.
 
 Workspace-mode roots are composed of: the session workspace root, AstrBot
 temp dirs, config extra roots, plugin dynamic roots (loaded project dir /
@@ -19,11 +21,13 @@ active worktree), and per-umo custom roots edited from the dashboard
 from __future__ import annotations
 
 import os
+import sys
 from collections.abc import Sequence
 from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from astrbot.api import logger
 from astrbot.core import sp
 from astrbot.core.utils.astrbot_path import (
     get_astrbot_system_tmp_path,
@@ -33,6 +37,7 @@ from astrbot.core.utils.astrbot_path import (
 if TYPE_CHECKING:
     from astrbot.core.agent.run_context import ContextWrapper
     from astrbot.core.astr_agent_context import AstrAgentContext
+    from astrbot.core.computer.process_sandbox.base import SandboxSpec
 
     ToolContext = ContextWrapper[AstrAgentContext]
 
@@ -43,12 +48,40 @@ class FileAccessMode(str, Enum):
     WORKSPACE = "workspace"
 
 
+_MODE_RESTRICTIVENESS = {
+    FileAccessMode.FULL: 2,
+    FileAccessMode.WORKSPACE: 1,
+    FileAccessMode.READONLY: 0,
+}
+
+
+def is_tightening(previous: FileAccessMode | None, new: FileAccessMode) -> bool:
+    """Return whether moving to a new mode removes file access authority.
+
+    Used by callers that must invalidate already-running execution after a
+    mode switch. An unknown previous mode counts as tightening for every
+    restricted mode, because the effective default may have been wider.
+
+    Args:
+        previous: Previously effective mode, or None when unknown.
+        new: Mode being applied.
+
+    Returns:
+        True when the new mode is strictly more restrictive.
+    """
+    if previous is None:
+        return new is not FileAccessMode.FULL
+    return _MODE_RESTRICTIVENESS[new] < _MODE_RESTRICTIVENESS[previous]
+
+
 _mode_overrides: dict[str, FileAccessMode] = {}
+_mode_hydration_attempted: set[str] = set()
 _last_writable: dict[str, FileAccessMode] = {}
 _dynamic_roots: dict[str, tuple[Path, ...]] = {}
 _custom_roots_cache: dict[str, tuple[Path, ...]] = {}
 
 _CUSTOM_ROOTS_KEY = "fs_access_custom_roots"
+_MODE_KEY = "fs_access_mode"
 
 
 def resolve_default(cfg: dict) -> FileAccessMode:
@@ -85,6 +118,73 @@ def set_mode_for_umo(umo: str, mode: FileAccessMode) -> None:
     _mode_overrides[umo] = mode
 
 
+async def load_mode_for_umo(umo: str) -> FileAccessMode | None:
+    """Hydrate one umo's persisted explicit mode into memory.
+
+    Called by async entry points that have storage access. Synchronous tool
+    paths keep using whatever override is already cached, falling back to the
+    config default otherwise.
+
+    Args:
+        umo: Unified message origin.
+
+    Returns:
+        The loaded mode, or None when no valid override is stored.
+    """
+    cached = _mode_overrides.get(umo)
+    if cached is not None:
+        return cached
+    if umo in _mode_hydration_attempted:
+        return None
+    _mode_hydration_attempted.add(umo)
+    try:
+        raw = await sp.session_get(umo, _MODE_KEY, None)
+    except Exception as exc:
+        logger.warning("Failed to load file access mode for %s: %s", umo, exc)
+        return None
+    if not isinstance(raw, str):
+        return None
+    try:
+        mode = FileAccessMode(raw)
+    except ValueError:
+        return None
+    _mode_overrides[umo] = mode
+    if mode is not FileAccessMode.READONLY:
+        _last_writable[umo] = mode
+    return mode
+
+
+async def set_mode_for_umo_persisted(umo: str, mode: FileAccessMode) -> None:
+    """Apply and persist the explicit per-umo mode.
+
+    Args:
+        umo: Unified message origin.
+        mode: New explicit mode.
+    """
+    set_mode_for_umo(umo, mode)
+    _mode_hydration_attempted.add(umo)
+    try:
+        await sp.session_put(umo, _MODE_KEY, mode.value)
+    except Exception as exc:
+        logger.warning("Failed to persist file access mode for %s: %s", umo, exc)
+
+
+async def clear_mode_persisted_for_umo(umo: str) -> None:
+    """Drop the in-memory and persisted explicit mode for one umo.
+
+    Args:
+        umo: Unified message origin.
+    """
+    clear_mode_for_umo(umo)
+    _mode_hydration_attempted.discard(umo)
+    try:
+        await sp.session_remove(umo, _MODE_KEY)
+    except Exception as exc:
+        logger.warning(
+            "Failed to clear persisted file access mode for %s: %s", umo, exc
+        )
+
+
 def restore_writable_for_umo(umo: str, *, default: FileAccessMode) -> FileAccessMode:
     """Leave readonly mode, restoring the last writable mode (never readonly)."""
     mode = _last_writable.get(umo, default)
@@ -110,6 +210,7 @@ def count_readonly_overrides() -> int:
 def reset() -> None:
     """Clear all state (test fixture / shutdown)."""
     _mode_overrides.clear()
+    _mode_hydration_attempted.clear()
     _last_writable.clear()
     _dynamic_roots.clear()
     _custom_roots_cache.clear()
@@ -258,6 +359,58 @@ def _is_within(path: Path, roots: tuple[Path, ...]) -> bool:
     return False
 
 
+async def sandbox_spec_for_context(
+    context: ToolContext,
+    *,
+    current_workspace_root: Path | None = None,
+) -> SandboxSpec | None:
+    """Build the process-sandbox policy for a local shell or Python call.
+
+    Windows-only for now: other platforms keep their existing host execution.
+    FULL mode stays unsandboxed for backward compatibility, so this returns
+    None for FULL and for non-Windows hosts. WORKSPACE grants write access to
+    the session workspace plus the configured/plugin/custom extra roots;
+    READONLY grants no writable root (the backend still allows a private temp
+    directory owned by that single execution).
+
+    Args:
+        context: Tool-call context used to resolve the mode and roots.
+        current_workspace_root: Pre-resolved workspace root, if known.
+
+    Returns:
+        The sandbox policy, or None when the call should keep host execution.
+    """
+    await load_mode_for_umo(context.context.event.unified_msg_origin)
+    if sys.platform != "win32":
+        return None
+    mode = get_mode(context)
+    if mode is FileAccessMode.FULL:
+        return None
+
+    from astrbot.core.computer.process_sandbox.base import SandboxSpec
+
+    from .computer_tools.util import workspace_root_for_context
+
+    workspace = Path(
+        current_workspace_root or await workspace_root_for_context(context)
+    ).resolve(strict=False)
+    writable_roots: tuple[Path, ...] = ()
+    if mode is FileAccessMode.WORKSPACE:
+        writable_roots = tuple(
+            Path(root).resolve(strict=False)
+            for root in await extra_write_roots(context)
+            if Path(root).resolve(strict=False) != workspace
+        )
+    return SandboxSpec(
+        workspace=workspace,
+        workspace_writable=mode is FileAccessMode.WORKSPACE,
+        filesystem_scope="host",
+        writable_roots=writable_roots,
+        readable_roots=(),
+        allow_network=False,
+    )
+
+
 async def assert_writable(
     path: str,
     context: ToolContext,
@@ -275,6 +428,7 @@ async def assert_writable(
         PermissionError: In readonly mode, or in workspace mode when the
             path is outside all writable roots.
     """
+    await load_mode_for_umo(context.context.event.unified_msg_origin)
     mode = get_mode(context)
     if mode is FileAccessMode.FULL:
         return

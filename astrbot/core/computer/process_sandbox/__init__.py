@@ -29,6 +29,10 @@ def create_process_sandbox() -> ProcessSandbox:
         from .seatbelt import SeatbeltProcessSandbox
 
         return SeatbeltProcessSandbox()
+    if sys.platform == "win32":
+        from .windows_acl import WindowsAclProcessSandbox
+
+        return WindowsAclProcessSandbox()
     raise RuntimeError("No Local process sandbox backend is available.")
 
 

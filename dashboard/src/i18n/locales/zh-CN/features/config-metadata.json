@@ -255,8 +255,8 @@
         },
         "computer_use_local_shell": {
           "description": "本地 Shell 类型",
-          "hint": "仅 Windows 生效。auto 依次探测 Git Bash、pwsh、powershell.exe；显式选择但未安装时回退到 auto。",
-          "labels": ["自动（Git Bash 优先）", "Git Bash", "PowerShell 7", "Windows PowerShell 5.1", "cmd.exe"]
+          "hint": "仅 Windows 生效。auto 依次探测 pwsh、powershell.exe、Git Bash，优先使用 PowerShell。Git Bash 不支持 Windows 沙盒：readonly/workspace 模式下会自动回退到 Windows PowerShell，仅在完全访问模式或显式选择时可用。显式选择但未安装时回退到 auto。",
+          "labels": ["自动（PowerShell 优先）", "Git Bash（无沙盒支持）", "PowerShell 7", "Windows PowerShell 5.1", "cmd.exe"]
         },
         "computer_use_local_permissions": {
           "description": "本地权限策略"
@@ -392,6 +392,7 @@
           "arch": "架构",
           "sandbox": "本地隔离",
           "unavailableHint": "沙箱启动失败，受限 Shell/Python 执行及工作区文件搜索会受到影响。请根据下方错误检查系统安全策略（如 Linux 的 AppArmor、用户命名空间限制）或容器限制，修复后重启 AstrBot 重新检测。",
+          "windowsUnavailableHint": "Windows 沙盒启动失败，受限 Shell/Python 执行及工作区文件操作会受到影响。请根据下方错误检查工作区及 ACL 权限，修复后重启 AstrBot 重新检测。",
           "status": {
             "detected": "{backend} · 启动检测通过",
             "missing": "缺少 {dependency}",

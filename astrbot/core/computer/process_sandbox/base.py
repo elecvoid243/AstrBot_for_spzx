@@ -150,6 +150,10 @@ class SandboxProcess(Protocol):
         """Force termination of the sandbox process tree."""
         ...
 
+    def send_signal(self, sig: int) -> None:
+        """Send an OS signal or console control event to the process tree."""
+        ...
+
 
 class ProcessSandbox(ABC):
     """Platform-independent launcher for restricted child processes."""
@@ -226,6 +230,29 @@ class ProcessSandbox(ABC):
 
         Raises:
             SandboxTimeoutError: If the process exceeds ``timeout``.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def spawn_argv(
+        self,
+        argv: list[str],
+        spec: SandboxSpec,
+        *,
+        env: dict[str, str] | None = None,
+    ) -> SandboxProcess:
+        """Start an arbitrary command asynchronously inside the sandbox.
+
+        Callers choose the shell dialect themselves (for example PowerShell or
+        cmd on Windows), so the backend must not impose a platform shell.
+
+        Args:
+            argv: Command and arguments to execute inside the sandbox.
+            spec: Filesystem and network access granted to the process.
+            env: Additional environment variables exposed inside the sandbox.
+
+        Returns:
+            Running restricted process.
         """
         raise NotImplementedError
 

@@ -17,7 +17,12 @@ from astrbot.core.utils.astrbot_path import (
 )
 
 from .booters.base import ComputerBooter
-from .booters.local import LocalBooter, resolve_local_shell
+from .booters.local import (
+    LocalBooter,
+    LocalPythonComponent,
+    LocalShellComponent,
+    resolve_local_shell,
+)
 
 session_booter: dict[str, ComputerBooter] = {}
 local_booter: ComputerBooter | None = None
@@ -712,3 +717,36 @@ async def shutdown_local_booter() -> None:
         await booter.shutdown()
     except Exception as exc:
         logger.warning("[Computer] Failed to shut down local booter: %s", exc)
+
+
+async def shutdown_local_execution_for_owner(owner_id: str) -> None:
+    """Terminate local shell sessions and in-flight Python runs for one owner.
+
+    Does not create a local booter: when no local execution environment exists
+    there cannot be managed execution to invalidate.
+
+    Args:
+        owner_id: Unified message origin whose execution must be stopped.
+    """
+    booter = local_booter
+    if not isinstance(booter, LocalBooter):
+        return
+    shell = booter.shell
+    if isinstance(shell, LocalShellComponent):
+        await shell.shutdown_sessions(owner_id=owner_id)
+    python = booter.python
+    if isinstance(python, LocalPythonComponent):
+        await python.terminate_owner_processes(owner_id)
+
+
+async def shutdown_all_local_execution() -> None:
+    """Terminate every local shell session and in-flight sandboxed Python run."""
+    booter = local_booter
+    if not isinstance(booter, LocalBooter):
+        return
+    shell = booter.shell
+    if isinstance(shell, LocalShellComponent):
+        await shell.shutdown_sessions()
+    python = booter.python
+    if isinstance(python, LocalPythonComponent):
+        await python.terminate_all_processes()

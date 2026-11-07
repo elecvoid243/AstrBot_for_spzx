@@ -25,6 +25,10 @@ def test_local_shell_schema_lists_every_family():
 
     assert entry["options"] == ["auto", "git_bash", "pwsh", "powershell", "cmd"]
     assert len(entry["labels"]) == len(entry["options"])
+    assert "PowerShell" in entry["labels"][0]
+    assert "Git Bash" in entry["labels"][1]
+    assert "Git Bash" in entry["hint"]
+    assert "沙盒" in entry["hint"]
     assert entry["condition"] == {
         "provider_settings.computer_use_runtime": "local",
     }
@@ -55,4 +59,6 @@ def test_local_shell_has_translations_for_every_locale(locale):
 
     assert entry["description"]
     assert entry["hint"]
+    assert "Git Bash" in entry["hint"]
+    assert "PowerShell" in entry["labels"][0]
     assert len(entry["labels"]) == len(options)

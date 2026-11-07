@@ -4,7 +4,7 @@ The AstrBot admin panel features plugin management, log viewing, visual configur
 
 ## Expose your sessions to a remote client
 
-Administrators enable **Settings → Security → Remote session access → Allow remote session connections**. The instance switch is off by default. Turning it off blocks new inbound and outbound remote operations, preserves configuration and leaves already started tasks running. Outbound connection management is added separately.
+Administrators enable **Settings → Security → Remote session access → Allow remote session connections**. The instance switch is off by default. Turning it off blocks new inbound and outbound remote operations, preserves configuration and leaves already started tasks running.
 
 Every account, including ordinary accounts, can open **Chat sidebar → Settings → Remote session access**. Existing navigation entries are unchanged. Choose **Only selected sessions** (the initial selection is empty) or **All my sessions, including future sessions**, then save. This scope includes your ordinary local sessions, including archived sessions and sessions inside projects. It excludes side conversations, other accounts, and resources from other instances. Removing a session from the scope takes effect on the next request for every connection key.
 
@@ -23,6 +23,18 @@ An authenticated API client uses `Authorization: RemoteSession <key>` with these
 | `GET /api/v1/remote-chat/sessions/{session_id}/history?limit=50&before_id={next_before_id}` | Older page; repeat while `has_more` is true |
 
 History pages contain complete message bodies, without summary truncation. Page size is 1–200. A known session, project, message or attachment ID grants no additional access. Dedicated keys cannot call ordinary Chat, file or administrative endpoints. Global API keys, login passwords and browser sessions cannot replace a dedicated key at these remote endpoints. There is no forwarded access to other instances. Attachments, streaming and delivery are separate follow-up features; future endpoints must reuse the same live credential and exposure checks.
+
+## Read sessions from other machines
+
+![Direct connections grouped separately from this instance](./images/chat-remote-history.jpg)
+
+![Manage account-owned connections](./images/chat-remote-connections.jpg)
+
+Open **Chat sidebar → Remote connections → Manage connections**. Each local account can save multiple named bindings. Enter the remote server origin (for example `http://192.168.1.20:6185`) and a dedicated key issued by that remote account. Both instances must enable remote session connections. HTTP and HTTPS, IPv4, IPv6 and private LAN origins are supported; paths, URL credentials, query strings and redirects are rejected. The local server uses the saved key; it never sends your local login token to another server. Saved keys stay encrypted on the local server and are not returned to the browser. Rotating the local Dashboard signing secret requires replacing saved connection keys.
+
+The former Projects/Conversations sections remain under **This instance**. Remote connections have separate groups, preserving project folders and session names. Connection IDs, rather than names, distinguish routes and selected sessions even when two machines use the same project or session ID. Select a remote session to see its connection name and server address above its history. **Load older** retrieves earlier full messages in pages of 50. Remote history has no local send, delete, branch or configuration action. Markdown is displayed without active links or embedded media; attachment, tool and interactive records remain readable as inert history until their remote transports are available.
+
+Use **Manage connections** to rename a binding, change its address, replace its key (leave the replacement field blank to retain it), or remove it locally. Removing a binding does not delete remote sessions. The panel distinguishes unreachable servers, expired authorization, disabled remote access and unsupported protocols. A failed grant clears the corresponding accessible list and transcript, while the local login remains valid. Access is rechecked every 15 seconds, when the window regains focus, and by **Refresh access**. Account switching immediately discards old lists and history, including delayed responses. Turning the local switch off retains connection metadata and blocks management and outbound reads until enabled again. A remote grant exposes only that instance's own sessions, never its outbound bindings.
 
 ## Save and restore your Chat sessions
 

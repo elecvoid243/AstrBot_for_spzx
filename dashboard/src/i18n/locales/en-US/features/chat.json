@@ -2365,5 +2365,28 @@
     "hide": "Hide key",
     "revoke": "Revoke",
     "revoked": "Revoked"
+  },
+  "remoteConnections": {
+    "title": "Remote connections",
+    "manage": "Manage connections",
+    "local": "This instance",
+    "name": "Connection name",
+    "address": "Server address",
+    "key": "Dedicated connection key",
+    "replaceKey": "Replacement key (leave blank to keep)",
+    "refresh": "Refresh access",
+    "readOnly": "Read-only history",
+    "disabled": "Remote connections are disabled by this instance. Saved connections are retained.",
+    "saveFailed": "Could not save the connection. Check the address, dedicated key and local switch.",
+    "status": {
+      "ready": "Connected",
+      "loading": "Checking access…",
+      "disabled": "Connections disabled",
+      "remote_offline": "Server unreachable",
+      "remote_unauthorized": "Authorization expired — replace the connection key",
+      "remote_disabled": "Remote connections disabled on server",
+      "remote_unavailable": "Session or connection unavailable",
+      "remote_protocol_error": "Server does not support this connection protocol"
+    }
   }
 }

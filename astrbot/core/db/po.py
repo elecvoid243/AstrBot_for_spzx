@@ -74,6 +74,21 @@ class RemoteChatCredential(TimestampMixin, SQLModel, table=True):
     revoked: bool = Field(default=False, nullable=False)
 
 
+class RemoteChatConnection(TimestampMixin, SQLModel, table=True):
+    """A direct outbound binding; its reusable secret stays encrypted server-side."""
+
+    __tablename__: str = "remote_chat_connections"
+
+    connection_id: str = Field(
+        default_factory=lambda: uuid.uuid4().hex, primary_key=True
+    )
+    account_id: str = Field(index=True, nullable=False)
+    name: str = Field(nullable=False)
+    base_url: str = Field(nullable=False)
+    encrypted_key: str = Field(nullable=False, repr=False)
+    revision: str = Field(default_factory=lambda: uuid.uuid4().hex, nullable=False)
+
+
 class PlatformStat(SQLModel, table=True):
     """This class represents the statistics of bot usage across different platforms.
 

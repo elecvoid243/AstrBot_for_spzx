@@ -2398,5 +2398,28 @@
     "hide": "隐藏密钥",
     "revoke": "撤销",
     "revoked": "已撤销"
+  },
+  "remoteConnections": {
+    "title": "远端连接",
+    "manage": "管理连接",
+    "local": "本机",
+    "name": "连接名称",
+    "address": "服务器地址",
+    "key": "专用连接密钥",
+    "replaceKey": "替换密钥（留空保留）",
+    "refresh": "刷新授权",
+    "readOnly": "只读历史",
+    "disabled": "本实例已关闭远端连接，保存的连接配置会保留。",
+    "saveFailed": "无法保存连接，请检查地址、专用密钥与本机总开关。",
+    "status": {
+      "ready": "已连接",
+      "loading": "正在检查授权…",
+      "disabled": "连接已关闭",
+      "remote_offline": "服务器离线或不可达",
+      "remote_unauthorized": "授权失效，请替换连接密钥",
+      "remote_disabled": "远端已关闭连接",
+      "remote_unavailable": "会话或连接不可用",
+      "remote_protocol_error": "服务器不支持此连接协议"
+    }
   }
 }

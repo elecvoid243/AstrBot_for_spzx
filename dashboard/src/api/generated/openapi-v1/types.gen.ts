@@ -1274,6 +1274,12 @@ export type ProviderSourceConfigRequest = {
     config: DynamicConfig;
 };
 
+export type RemoteConnectionRequest = {
+    name: string;
+    base_url: string;
+    key?: (string | null);
+};
+
 export type RemoteCredentialRequest = {
     name: string;
 };
@@ -1705,6 +1711,64 @@ export type WorkflowStartRequest = {
      */
     input_artifacts?: Array<ArtifactReference>;
 };
+
+export type ListRemoteConnectionsResponse = (unknown);
+
+export type ListRemoteConnectionsError = unknown;
+
+export type CreateRemoteConnectionData = {
+    body: RemoteConnectionRequest;
+};
+
+export type CreateRemoteConnectionResponse = (unknown);
+
+export type CreateRemoteConnectionError = (HTTPValidationError);
+
+export type UpdateRemoteConnectionData = {
+    body: RemoteConnectionRequest;
+    path: {
+        connection_id: string;
+    };
+};
+
+export type UpdateRemoteConnectionResponse = (unknown);
+
+export type UpdateRemoteConnectionError = (HTTPValidationError);
+
+export type DeleteRemoteConnectionData = {
+    path: {
+        connection_id: string;
+    };
+};
+
+export type DeleteRemoteConnectionResponse = (unknown);
+
+export type DeleteRemoteConnectionError = (HTTPValidationError);
+
+export type ListConnectionSessionsData = {
+    path: {
+        connection_id: string;
+    };
+};
+
+export type ListConnectionSessionsResponse = (unknown);
+
+export type ListConnectionSessionsError = (HTTPValidationError);
+
+export type ReadConnectionHistoryData = {
+    path: {
+        connection_id: string;
+        session_id: string;
+    };
+    query?: {
+        before_id?: (number | null);
+        limit?: number;
+    };
+};
+
+export type ReadConnectionHistoryResponse = (unknown);
+
+export type ReadConnectionHistoryError = (HTTPValidationError);
 
 export type GetRemoteChatAccessResponse = (SuccessEnvelope);
 

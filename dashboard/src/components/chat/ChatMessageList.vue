@@ -58,6 +58,15 @@
         </div>
 
         <div class="message-stack">
+          <div v-if="remoteHistory" class="message-bubble" :class="{ user: isUserMessage(msg), bot: !isUserMessage(msg) }">
+            <div v-if="messageContent(msg).agent_source" class="plain-content">{{ tm('message.agentSource') }} · {{ messageContent(msg).agent_source?.display_name || messageContent(msg).agent_source?.session_id }}</div>
+            <pre v-if="messageContent(msg).reasoning" class="plain-content">{{ messageContent(msg).reasoning }}</pre>
+            <template v-for="(part, index) in messageParts(msg)" :key="index">
+              <MarkdownMessagePart v-if="part.type === 'plain'" :content="part.text || ''" :refs="null" :is-dark="isDark" :custom-html-tags="[]" inert />
+              <pre v-else class="plain-content">{{ formatJson(part) }}</pre>
+            </template>
+          </div>
+          <template v-else>
           <div v-if="isBranchDivider(msg)" class="branch-divider">
             <button
               type="button"
@@ -715,6 +724,7 @@
               </div>
             </div>
           </template>
+          </template>
         </div>
       </div>
     </div>
@@ -726,6 +736,7 @@
     />
 
     <v-overlay
+      v-if="!remoteHistory"
       v-model="imagePreview.visible"
       class="image-preview-overlay"
       scrim="rgba(0, 0, 0, 0.86)"
@@ -800,6 +811,8 @@ import { copyToClipboard } from "@/utils/clipboard";
 const props = withDefaults(
   defineProps<{
     messages: ChatRecord[];
+    /** Remote transcript: render content without local resource capabilities. */
+    remoteHistory?: boolean;
     isDark?: boolean;
     isStreaming?: boolean;
     variant?: "main" | "thread";
@@ -1082,6 +1095,7 @@ onMounted(() => {
   // Bug Y1 / Y2 fix: hydrate is scoped to a single UMO so a refresh
   // on session B cannot drag in session A's pending boxes. Thread
   // transcripts have no live UMO and must leave the active store alone.
+  if (props.remoteHistory) return;
   if (props.currentUmo) interactiveChoiceStore.hydrate(props.currentUmo);
   // Round-2 defensive migration: turn OLD plain-text wire-format
   // JSON (round-1 pre-fix) into proper `interactive_choice` parts
@@ -1150,6 +1164,7 @@ onMounted(() => {
 watch(
   () => props.messages,
   (next) => {
+    if (props.remoteHistory) return;
     // Round-2 defensive migration runs first so a freshly arrived
     // old-history batch (e.g. paginated load) is upgraded before
     // the store mirror sees it.

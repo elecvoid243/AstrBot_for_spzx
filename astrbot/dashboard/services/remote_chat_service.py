@@ -1,14 +1,21 @@
 """Direct account-bound remote reads over the ordinary local ChatUI service."""
 
+import base64
 import hashlib
+import json
 import secrets
+from urllib.parse import urlsplit
 
+import anyio
+import httpx
+from cryptography.fernet import Fernet, InvalidToken
 from sqlmodel import select
 
 from astrbot.core.config.astrbot_config import AstrBotConfig
 from astrbot.core.db import BaseDatabase
 from astrbot.core.db.po import (
     DashboardAccount,
+    RemoteChatConnection,
     RemoteChatCredential,
     RemoteChatExposure,
 )
@@ -255,3 +262,262 @@ class RemoteChatService:
             credential.revoked = True
             connection.add(credential)
             await connection.commit()
+
+    async def connections(self, account: DashboardAccount) -> dict:
+        """List only the current local account's non-secret binding metadata.
+
+        Args:
+            account: Authenticated local Dashboard account.
+
+        Returns:
+            The live local switch and saved direct connections without keys.
+        """
+        async with self.db.get_db() as connection:
+            rows = (
+                (
+                    await connection.execute(
+                        select(RemoteChatConnection).where(
+                            RemoteChatConnection.account_id == account.account_id
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        return {
+            "enabled": self.config.get("chatui", {}).get("remote_sessions_enabled")
+            is True,
+            "connections": [
+                {
+                    "connection_id": row.connection_id,
+                    "name": row.name,
+                    "base_url": row.base_url,
+                    "revision": row.revision,
+                }
+                for row in rows
+            ],
+        }
+
+    async def save_connection(
+        self,
+        account: DashboardAccount,
+        name: str,
+        base_url: str,
+        key: str | None,
+        connection_id: str | None = None,
+    ) -> str:
+        """Save a direct HTTP origin and encrypt its dedicated credential at rest.
+
+        Args:
+            account: Authenticated local account that owns this binding.
+            name: User-visible connection name.
+            base_url: HTTP(S) origin, including private/LAN addresses.
+            key: Replacement dedicated credential, or None to retain it.
+            connection_id: Existing binding to update, or None for creation.
+
+        Returns:
+            Stable connection identity, independent of its display name.
+
+        Raises:
+            ApiError: The switch, binding, address or credential is invalid.
+        """
+        self.require_enabled()
+        try:
+            url = urlsplit(base_url.strip())
+            if (
+                url.scheme not in {"http", "https"}
+                or not url.hostname
+                or url.username is not None
+                or url.password is not None
+                or url.path not in {"", "/"}
+                or url.query
+                or url.fragment
+                or any(char.isspace() or ord(char) < 32 for char in base_url)
+                or "\\" in base_url
+            ):
+                raise ValueError
+            url.port
+            origin = str(httpx.URL(base_url.strip())).rstrip("/")
+        except (ValueError, httpx.InvalidURL):
+            raise ApiError(
+                "Use an HTTP(S) server origin without credentials, path, query or fragment",
+                status_code=400,
+            ) from None
+        if not name.strip() or (
+            key is not None
+            and (
+                not key.startswith("arc_")
+                or not key.isascii()
+                or any(char.isspace() or ord(char) < 33 for char in key)
+            )
+        ):
+            raise ApiError(
+                "A name and dedicated RemoteSession key are required", status_code=400
+            )
+        async with self.db.get_db() as connection:
+            row = (
+                await connection.get(RemoteChatConnection, connection_id)
+                if connection_id
+                else None
+            )
+            if connection_id and (row is None or row.account_id != account.account_id):
+                raise ApiError("Connection is unavailable", status_code=404)
+            if row is None:
+                if key is None:
+                    raise ApiError(
+                        "A dedicated RemoteSession key is required", status_code=400
+                    )
+                row = RemoteChatConnection(
+                    account_id=account.account_id,
+                    name=name.strip(),
+                    base_url=origin,
+                    encrypted_key="",
+                )
+            if connection_id:
+                row.revision = secrets.token_hex(16)
+            row.name, row.base_url = name.strip(), origin
+            if key is not None:
+                cipher = Fernet(
+                    base64.urlsafe_b64encode(
+                        hashlib.sha256(
+                            self.config["dashboard"]["jwt_secret"].encode()
+                        ).digest()
+                    )
+                )
+                row.encrypted_key = cipher.encrypt(key.encode()).decode()
+            connection.add(row)
+            await connection.commit()
+            return row.connection_id
+
+    async def delete_connection(
+        self, account: DashboardAccount, connection_id: str
+    ) -> None:
+        """Delete an owned outbound binding without modifying remote resources.
+
+        Args:
+            account: Authenticated local account.
+            connection_id: Binding owned by this account.
+
+        Raises:
+            ApiError: Connections are disabled or the binding is unavailable.
+        """
+        self.require_enabled()
+        async with self.db.get_db() as connection:
+            row = await connection.get(RemoteChatConnection, connection_id)
+            if row is None or row.account_id != account.account_id:
+                raise ApiError("Connection is unavailable", status_code=404)
+            await connection.delete(row)
+            await connection.commit()
+
+    async def read_connection(
+        self,
+        account: DashboardAccount,
+        connection_id: str,
+        path: str,
+        params: dict | None = None,
+    ):
+        """Read a fixed remote protocol resource with bounded, nonredirecting I/O.
+
+        Args:
+            account: Authenticated local account, never a remote caller.
+            connection_id: Direct binding owned by this local account.
+            path: Protocol path constructed by a local route, never a caller URL.
+            params: Validated history paging parameters.
+
+        Returns:
+            Remote success data, without HTTP headers or credential metadata.
+
+        Raises:
+            ApiError: Binding, local switch, network, protocol or remote grant failed.
+                Remote failures never use local HTTP 401 (which means login expired).
+        """
+        self.require_enabled()
+        async with self.db.get_db() as connection:
+            row = await connection.get(RemoteChatConnection, connection_id)
+        if row is None or row.account_id != account.account_id:
+            raise ApiError("Connection is unavailable", status_code=404)
+        try:
+            cipher = Fernet(
+                base64.urlsafe_b64encode(
+                    hashlib.sha256(
+                        self.config["dashboard"]["jwt_secret"].encode()
+                    ).digest()
+                )
+            )
+            key = cipher.decrypt(row.encrypted_key.encode()).decode()
+        except InvalidToken:
+            raise ApiError(
+                "Replace this connection's key",
+                status_code=409,
+                data={"code": "remote_unauthorized"},
+            ) from None
+        try:
+            with anyio.fail_after(15):
+                async with httpx.AsyncClient(
+                    follow_redirects=False, trust_env=False, timeout=10
+                ) as client:
+                    async with client.stream(
+                        "GET",
+                        row.base_url + "/api/v1/remote-chat/" + path,
+                        params=params,
+                        headers={
+                            "Authorization": "RemoteSession " + key,
+                            "Accept": "application/json",
+                        },
+                    ) as response:
+                        if response.status_code != 200:
+                            code = {
+                                401: "remote_unauthorized",
+                                403: "remote_disabled",
+                                404: "remote_unavailable",
+                            }.get(response.status_code, "remote_protocol_error")
+                            raise ApiError(
+                                "Remote connection request failed",
+                                status_code=502,
+                                data={"code": code},
+                            )
+                        body = bytearray()
+                        async for chunk in response.aiter_bytes():
+                            body.extend(chunk)
+                            if len(body) > 32 * 1024 * 1024:
+                                raise ValueError
+                        payload = json.loads(body)
+                        if (
+                            not isinstance(payload, dict)
+                            or payload.get("status") != "ok"
+                            or "data" not in payload
+                        ):
+                            raise ValueError
+            self.require_enabled()
+            async with self.db.get_db() as connection:
+                current = await connection.get(RemoteChatConnection, connection_id)
+                current_account = await connection.get(
+                    DashboardAccount, account.account_id
+                )
+            if (
+                current is None
+                or current.revision != row.revision
+                or current.base_url != row.base_url
+                or current.encrypted_key != row.encrypted_key
+                or current_account is None
+                or not current_account.enabled
+                or current_account.token_version != account.token_version
+            ):
+                raise ApiError(
+                    "Connection changed during request",
+                    status_code=409,
+                    data={"code": "remote_unavailable"},
+                )
+            return payload["data"]
+        except (httpx.HTTPError, TimeoutError):
+            raise ApiError(
+                "Remote server is unreachable",
+                status_code=502,
+                data={"code": "remote_offline"},
+            ) from None
+        except (ValueError, TypeError):
+            raise ApiError(
+                "Remote server does not support the connection protocol",
+                status_code=502,
+                data={"code": "remote_protocol_error"},
+            ) from None

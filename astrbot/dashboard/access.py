@@ -141,6 +141,12 @@ USER_OPERATIONS = (
         "setup_status",
         "dashboard_setup_status",
         "current_account",
+        "list_remote_connections",
+        "create_remote_connection",
+        "update_remote_connection",
+        "delete_remote_connection",
+        "list_connection_sessions",
+        "read_connection_history",
         "get_remote_chat_access",
         "set_remote_chat_exposure",
         "create_remote_chat_credential",
@@ -246,6 +252,12 @@ async def validate_account_request(request: Request, account) -> None:
     """
     operation = getattr(request.state, "dashboard_operation", None)
     if operation in {
+        "list_remote_connections",
+        "create_remote_connection",
+        "update_remote_connection",
+        "delete_remote_connection",
+        "list_connection_sessions",
+        "read_connection_history",
         "get_remote_chat_access",
         "set_remote_chat_exposure",
         "create_remote_chat_credential",

@@ -1164,7 +1164,7 @@ onMounted(async () => {
     </v-btn>
 
     <div v-if="isChatPath" class="chat-header-context">
-      <ProviderModelMenu variant="header" />
+      <ProviderModelMenu v-if="!route.query.remoteConnection" variant="header" />
       <div v-if="chatHeaderSubtitleText" class="chat-header-subtitle">
         {{ chatHeaderSubtitleText }}
       </div>

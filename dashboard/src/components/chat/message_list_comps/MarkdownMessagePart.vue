@@ -1,6 +1,8 @@
 <template>
   <div class="markdown-content">
+    <div v-if="inert" class="chat-markdown" v-html="inertHtml" />
     <MarkdownRender
+      v-else
       class="chat-markdown"
       custom-id="chat-message"
       :content="content"
@@ -18,6 +20,7 @@
 
 <script setup lang="ts">
 import { computed, provide } from "vue";
+import MarkdownIt from "markdown-it";
 import { MarkdownRender } from "markstream-vue";
 import {
   CHAT_MARKDOWN_HEADING_STYLE,
@@ -26,11 +29,18 @@ import {
 
 const props = defineProps<{
   content: string;
+  inert?: boolean;
   refs: { used?: Array<Record<string, unknown>> } | null;
   isDark: boolean;
   customHtmlTags: string[];
   isStreaming?: boolean;
 }>();
+
+// Remote transcripts must not resolve links, images or custom tags against this instance.
+const inertMarkdown = new MarkdownIt({ html: false, linkify: false });
+inertMarkdown.disable(["link", "image", "autolink"]);
+const inertHtml = computed(() => props.inert
+  ? inertMarkdown.render(props.content) : "");
 
 const isDarkRef = computed(() => props.isDark);
 const refsByIndex = computed(() => {

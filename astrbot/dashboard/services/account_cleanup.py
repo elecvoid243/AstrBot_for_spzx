@@ -19,6 +19,7 @@ from astrbot.core.db.po import (
     PlatformSession,
     Preference,
     ProviderStat,
+    RemoteChatConnection,
     RemoteChatCredential,
     RemoteChatExposure,
     SessionProjectRelation,
@@ -550,6 +551,10 @@ async def delete_account_data(app, account: DashboardAccount) -> None:
                 RemoteChatCredential.account_id == account.account_id,
             ),
             (RemoteChatExposure, RemoteChatExposure.account_id == account.account_id),
+            (
+                RemoteChatConnection,
+                RemoteChatConnection.account_id == account.account_id,
+            ),
         ):
             await session.execute(delete(model).where(condition))
         await session.delete(current)

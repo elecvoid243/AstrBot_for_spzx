@@ -8226,6 +8226,12 @@
   },
   "components": {
     "securitySchemes": {
+      "RemoteSessionAuth": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "Authorization",
+        "description": "Dedicated account key using RemoteSession <key>. Global API keys and login passwords are not accepted."
+      },
       "ChatBrowserSession": {
         "type": "apiKey",
         "description": "Browser-only credential confirmed by the initiating sender in the original chat.",

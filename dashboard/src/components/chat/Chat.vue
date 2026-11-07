@@ -150,6 +150,8 @@
       </div>
 
       <div v-if="!isSidebarCollapsed" class="sidebar-content">
+        <RemoteConnectionsPanel :enabled="remote.enabled.value" :connections="remote.connections.value" :sessions="remote.sessions" :status="remote.status" :selected-connection="remoteConnectionId" :selected-session="remoteSessionId" @select="selectRemoteSession" @refresh="refreshRemoteConnections" />
+        <div class="pa-3 text-caption">{{ tm('remoteConnections.local') }}</div>
         <!-- 2026-08-09 sidebar batch delete (elecvoid243): batch action
              bar shown while selection mode is active. -->
         <div v-if="selectionMode" class="batch-select-bar">
@@ -712,11 +714,11 @@
     <main
       class="chat-main"
       :class="{ 'empty-chat': isEmptyChat }"
-      v-on="dragEvents"
+      v-on="remoteConnectionId ? {} : dragEvents"
     >
       <transition name="drop-fade">
         <div
-          v-if="isDragging && !isProviderWorkspace"
+          v-if="isDragging && !isProviderWorkspace && !remoteConnectionId"
           class="chat-drop-overlay"
         >
           <div class="chat-drop-overlay-content">
@@ -725,7 +727,11 @@
           </div>
         </div>
       </transition>
-      <section v-if="isProviderWorkspace" class="provider-workspace-shell">
+      <template v-if="remoteConnectionId">
+        <RemoteConversation v-if="activeRemoteConnection && activeRemoteSession" :key="remoteIdentity" :connection="activeRemoteConnection" :session="activeRemoteSession" :is-dark="isDark" @unavailable="remote.refreshConnection(remoteConnectionId)" />
+        <div v-else class="pa-6" role="status">{{ tm(`remoteConnections.status.${remote.enabled.value ? remote.status[remoteConnectionId] || 'remote_unavailable' : 'disabled'}`) }}</div>
+      </template>
+      <section v-else-if="isProviderWorkspace" class="provider-workspace-shell">
         <ProviderChatCompletionPanel
           class="provider-workspace-page"
           :show-border="false"
@@ -1417,6 +1423,9 @@ import {
 import ChatMessageSearchDialog from "@/components/chat/ChatMessageSearchDialog.vue";
 import ArchivedSessionsDialog from "@/components/chat/ArchivedSessionsDialog.vue";
 import ImportSessionsDialog from "@/components/chat/ImportSessionsDialog.vue";
+import RemoteConnectionsPanel from "@/components/chat/RemoteConnectionsPanel.vue";
+import RemoteConversation from "@/components/chat/RemoteConversation.vue";
+import { useRemoteConnections } from "@/composables/useRemoteConnections";
 import RemoteChatAccessPanel from "@/components/chat/RemoteChatAccessPanel.vue";
 const showRemoteAccess = ref(false);
 const chatSettingsMenuOpen = ref(false);
@@ -1482,6 +1491,42 @@ const props = withDefaults(
 );
 
 const route = useRoute();
+const remote = useRemoteConnections();
+onMounted(() => {
+  watch(remoteConnectionId, (id) => {
+    if (!id) return;
+    closeSecondaryPanels();
+    gitDiffSidebarOpen.value = false;
+    fileReferenceNavigation.value = null;
+    closeTodoMenu();
+    chatHeader.SET_GOAL_SIDEBAR_OPEN(false);
+  });
+  watch(selectedProjectId, (id) => {
+    if (id && remoteConnectionId.value) void router.replace({ path: basePath(), query: {} });
+  });
+});
+const remoteConnectionId = computed(() => typeof route.query.remoteConnection === 'string' ? route.query.remoteConnection : '');
+const remoteSessionId = computed(() => typeof route.query.remoteSession === 'string' ? route.query.remoteSession : '');
+const remoteIdentity = computed(() => JSON.stringify([remoteConnectionId.value, remoteSessionId.value, remote.connections.value.find(c => c.connection_id === remoteConnectionId.value)?.revision]));
+const activeRemoteConnection = computed(() => remote.enabled.value && remote.status[remoteConnectionId.value] === 'ready' ? remote.connections.value.find(c => c.connection_id === remoteConnectionId.value) : undefined);
+const activeRemoteSession = computed(() => remote.sessions[remoteConnectionId.value]?.find(s => s.session_id === remoteSessionId.value));
+async function selectRemoteSession(connection: string, session: string) {
+  if (!(await confirmFileNavigation())) return;
+  closeSecondaryPanels();
+  gitDiffSidebarOpen.value = false;
+  fileReferenceNavigation.value = null;
+  closeTodoMenu();
+  chatHeader.SET_GOAL_SIDEBAR_OPEN(false);
+  selectedProjectId.value = null;
+  currSessionId.value = '';
+  await router.push({ path: basePath(), query: { remoteConnection: connection, remoteSession: session } });
+  closeMobileSidebar();
+}
+async function refreshRemoteConnections() {
+  remote.invalidate();
+  await remote.refresh();
+}
+
 const router = useRouter();
 const { lgAndUp } = useDisplay();
 const chatHeader = useChatHeaderStore();
@@ -3407,6 +3452,7 @@ provideSpcodeSession({
 });
 
 function getRouteSessionId() {
+  if (route.query.remoteConnection) return "";
   const raw = route.params.conversationId;
   return Array.isArray(raw) ? raw[0] : raw || "";
 }

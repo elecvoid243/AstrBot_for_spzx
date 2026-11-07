@@ -1,10 +1,11 @@
 """Personal exposure management and dedicated-credential remote discovery."""
 
 from typing import Literal
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 from astrbot.core.db.po import DashboardAccount
 from astrbot.dashboard.responses import ApiError, ok
@@ -178,4 +179,163 @@ async def read_remote_chat_history(
             "has_more": result["has_more"],
             "next_before_id": history[0]["id"] if history else None,
         }
+    )
+
+
+class RemoteConnectionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    name: str = Field(min_length=1, max_length=128)
+    base_url: str = Field(min_length=1, max_length=2048)
+    key: SecretStr | None = Field(default=None, max_length=512)
+
+
+@router.get("/chat/remote-connections")
+async def list_remote_connections(
+    request: Request, _owner: str = Depends(require_dashboard_user)
+):
+    return JSONResponse(
+        ok(
+            await request.app.state.services.remote_chat.connections(
+                request.state.dashboard_account
+            )
+        ),
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.post("/chat/remote-connections")
+async def create_remote_connection(
+    request: Request,
+    payload: RemoteConnectionRequest,
+    _owner: str = Depends(require_dashboard_user),
+):
+    identity = await request.app.state.services.remote_chat.save_connection(
+        request.state.dashboard_account,
+        payload.name,
+        payload.base_url,
+        payload.key.get_secret_value() if payload.key is not None else None,
+    )
+    return ok({"connection_id": identity})
+
+
+@router.put("/chat/remote-connections/{connection_id}")
+async def update_remote_connection(
+    connection_id: str,
+    request: Request,
+    payload: RemoteConnectionRequest,
+    _owner: str = Depends(require_dashboard_user),
+):
+    await request.app.state.services.remote_chat.save_connection(
+        request.state.dashboard_account,
+        payload.name,
+        payload.base_url,
+        payload.key.get_secret_value() if payload.key is not None else None,
+        connection_id,
+    )
+    return ok()
+
+
+@router.delete("/chat/remote-connections/{connection_id}")
+async def delete_remote_connection(
+    connection_id: str, request: Request, _owner: str = Depends(require_dashboard_user)
+):
+    await request.app.state.services.remote_chat.delete_connection(
+        request.state.dashboard_account, connection_id
+    )
+    return ok()
+
+
+@router.get("/chat/remote-connections/{connection_id}/sessions")
+async def list_connection_sessions(
+    connection_id: str, request: Request, _owner: str = Depends(require_dashboard_user)
+):
+    data = await request.app.state.services.remote_chat.read_connection(
+        request.state.dashboard_account, connection_id, "sessions"
+    )
+    # Do not turn arbitrary server responses into additional local capabilities.
+    if not isinstance(data, list) or any(
+        not isinstance(row, dict)
+        or not isinstance(row.get("session_id"), str)
+        or any(
+            row.get(field) is not None and not isinstance(row.get(field), str)
+            for field in ("display_name", "project_id", "project_name", "project_emoji")
+        )
+        or not isinstance(row.get("archived"), bool)
+        for row in data
+    ):
+        raise ApiError(
+            "Remote server does not support the connection protocol",
+            status_code=502,
+            data={"code": "remote_protocol_error"},
+        )
+    return JSONResponse(
+        ok(
+            [
+                {
+                    field: row.get(field)
+                    for field in (
+                        "session_id",
+                        "display_name",
+                        "archived",
+                        "project_id",
+                        "project_name",
+                        "project_emoji",
+                    )
+                }
+                for row in data
+            ]
+        ),
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.get("/chat/remote-connections/{connection_id}/sessions/{session_id}/history")
+async def read_connection_history(
+    connection_id: str,
+    session_id: str,
+    request: Request,
+    before_id: int | None = Query(default=None, ge=1),
+    limit: int = Query(default=50, ge=1, le=200),
+    _owner: str = Depends(require_dashboard_user),
+):
+    if session_id in {".", ".."} or "/" in session_id or "\\" in session_id:
+        raise ApiError("Session is unavailable", status_code=404)
+    data = await request.app.state.services.remote_chat.read_connection(
+        request.state.dashboard_account,
+        connection_id,
+        "sessions/" + quote(session_id, safe="") + "/history",
+        {"limit": limit, **({"before_id": before_id} if before_id is not None else {})},
+    )
+    if (
+        not isinstance(data, dict)
+        or not isinstance(data.get("history"), list)
+        or not isinstance(data.get("has_more"), bool)
+        or any(
+            not isinstance(row, dict)
+            or not isinstance(row.get("content"), dict)
+            or not isinstance(row.get("id"), int)
+            for row in data.get("history", [])
+        )
+        or (
+            data.get("has_more")
+            and (
+                not isinstance(data.get("next_before_id"), int)
+                or data["next_before_id"] < 1
+                or (before_id is not None and data["next_before_id"] >= before_id)
+            )
+        )
+    ):
+        raise ApiError(
+            "Remote server does not support the connection protocol",
+            status_code=502,
+            data={"code": "remote_protocol_error"},
+        )
+    return JSONResponse(
+        ok(
+            {
+                field: data.get(field)
+                for field in ("history", "has_more", "next_before_id")
+            }
+        ),
+        headers={"Cache-Control": "no-store"},
     )

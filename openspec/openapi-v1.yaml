@@ -98,6 +98,200 @@ tags:
   - name: Webhooks
 
 paths:
+  /api/v1/chat/remote-connections:
+    get:
+      tags:
+      - Remote Chat
+      summary: List Remote Connections
+      operationId: listRemoteConnections
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+      security:
+      - BearerAuth: []
+      description: Local Dashboard login only. Direct account-owned binding; saved secrets
+        are never returned. Remote failures use connection-level 502 codes, never local
+        login 401.
+    post:
+      tags:
+      - Remote Chat
+      summary: Create Remote Connection
+      operationId: createRemoteConnection
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RemoteConnectionRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - BearerAuth: []
+      description: Local Dashboard login only. Direct account-owned binding; saved secrets
+        are never returned. Remote failures use connection-level 502 codes, never local
+        login 401.
+  /api/v1/chat/remote-connections/{connection_id}:
+    put:
+      tags:
+      - Remote Chat
+      summary: Update Remote Connection
+      operationId: updateRemoteConnection
+      parameters:
+      - name: connection_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Connection Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RemoteConnectionRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - BearerAuth: []
+      description: Local Dashboard login only. Direct account-owned binding; saved secrets
+        are never returned. Remote failures use connection-level 502 codes, never local
+        login 401.
+    delete:
+      tags:
+      - Remote Chat
+      summary: Delete Remote Connection
+      operationId: deleteRemoteConnection
+      parameters:
+      - name: connection_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Connection Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - BearerAuth: []
+      description: Local Dashboard login only. Direct account-owned binding; saved secrets
+        are never returned. Remote failures use connection-level 502 codes, never local
+        login 401.
+  /api/v1/chat/remote-connections/{connection_id}/sessions:
+    get:
+      tags:
+      - Remote Chat
+      summary: List Connection Sessions
+      operationId: listConnectionSessions
+      parameters:
+      - name: connection_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Connection Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - BearerAuth: []
+      description: Local Dashboard login only. Direct account-owned binding; saved secrets
+        are never returned. Remote failures use connection-level 502 codes, never local
+        login 401.
+  /api/v1/chat/remote-connections/{connection_id}/sessions/{session_id}/history:
+    get:
+      tags:
+      - Remote Chat
+      summary: Read Connection History
+      operationId: readConnectionHistory
+      parameters:
+      - name: connection_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Connection Id
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Session Id
+      - name: before_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+            minimum: 1
+          - type: 'null'
+          title: Before Id
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 200
+          minimum: 1
+          default: 50
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - BearerAuth: []
+      description: Local Dashboard login only. Direct account-owned binding; saved secrets
+        are never returned. Remote failures use connection-level 502 codes, never local
+        login 401.
   /api/v1/chat/remote-access:
     get:
       tags:
@@ -8464,6 +8658,32 @@ components:
       schema: { type: string }
 
   schemas:
+    RemoteConnectionRequest:
+      properties:
+        name:
+          type: string
+          maxLength: 128
+          minLength: 1
+          title: Name
+        base_url:
+          type: string
+          maxLength: 2048
+          minLength: 1
+          title: Base Url
+        key:
+          anyOf:
+          - type: string
+            maxLength: 512
+            format: password
+            writeOnly: true
+          - type: 'null'
+          title: Key
+      additionalProperties: false
+      type: object
+      required:
+      - name
+      - base_url
+      title: RemoteConnectionRequest
     RemoteCredentialRequest:
       properties:
         name:

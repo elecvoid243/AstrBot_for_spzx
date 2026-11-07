@@ -29,6 +29,7 @@ withDefaults(defineProps<{ state?: GenerationState }>(), { state: "done" });
   width: 18px;
   height: 18px;
   color: rgb(var(--v-theme-primary));
+  /* Keep the live activity signal animated, like the sidebar progress ring. */
   animation: generation-orbit 1.05s linear infinite;
 }
 
@@ -86,13 +87,6 @@ withDefaults(defineProps<{ state?: GenerationState }>(), { state: "done" });
   }
   50% {
     opacity: 1;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .generation-indicator,
-  .generation-indicator .track {
-    animation: none;
   }
 }
 </style>

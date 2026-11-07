@@ -16,12 +16,13 @@
   // Light intentionally stays ghost — the transparent, border-only look that
   // predates 4d3e435e4; only the dark theme needs a surface to lift off #1a1a1a.
   --sp-chip-bg-on-page: transparent;
-  // App-bar session tabs: same values as the base .session-pages-nav, so the
-  // light theme is byte-for-byte what it was before the dark-mode work.
-  --sp-nav-group-bg: rgba(var(--v-theme-on-surface), 0.035);
-  --sp-nav-group-border: rgba(var(--v-theme-on-surface), 0.06);
-  --sp-nav-active-bg: rgb(var(--v-theme-surface));
-  --sp-nav-active-shadow: 0 1px 3px #0000000d;
+  // App-bar session tabs: fully ghost in light, matching the status chips.
+  // The active tab is told apart by primary colour + weight only, so no
+  // container or pill is painted on the bar.
+  --sp-nav-group-bg: transparent;
+  --sp-nav-group-border: transparent;
+  --sp-nav-active-bg: transparent;
+  --sp-nav-active-shadow: none;
   --sp-chip-border: rgba(var(--v-theme-on-surface), 0.12);
   --sp-chip-border-strong: rgba(var(--v-theme-on-surface), 0.16);
   --sp-chip-divider: rgba(var(--v-theme-on-surface), 0.08);

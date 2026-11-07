@@ -169,7 +169,7 @@ class CreateChatSessionTool(FunctionTool[AstrAgentContext]):
                 },
                 "project_name": {
                     "type": "string",
-                    "description": "Exact existing ChatUI sidebar folder title, including empty folders; surrounding input whitespace is trimmed. Not a filesystem path. Mutually exclusive with project_id. Duplicate names require an ID.",
+                    "description": "Exact existing ChatUI sidebar folder title, including empty folders. Copy project_name from list_chat_sessions verbatim; spaces are part of the saved title. Not a filesystem path. Mutually exclusive with project_id. Duplicate names require an ID.",
                 },
                 "selected_provider": {
                     "type": "string",

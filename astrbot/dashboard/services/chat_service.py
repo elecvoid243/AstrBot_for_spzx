@@ -3198,7 +3198,6 @@ class ChatService:
             project_name = payload["project_name"]
             if not isinstance(project_name, str) or not project_name.strip():
                 raise ChatServiceError("project_name must be a nonempty string")
-            project_name = project_name.strip()
             matches = []
             page = 1
             while True:

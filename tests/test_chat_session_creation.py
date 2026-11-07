@@ -647,7 +647,7 @@ async def test_create_by_name_finds_empty_owned_folder_and_retries_once(
     )
     target = await projects.create_project(owner, {"title": "研究项目"})
     assert await projects.get_project_sessions(owner, target["project_id"]) == []
-    payload = {"title": "Named B", "project_name": "  研究项目  "}
+    payload = {"title": "Named B", "project_name": "研究项目"}
     if first_message:
         payload["text"] = "First input to the named folder"
     result = await invoke(payload, "create-in-named-folder")
@@ -749,6 +749,7 @@ async def test_project_name_lookup_checks_all_owned_pages(creation, duplicate):
     [
         ({"project_name": "Missing"}, "not found"),
         ({"project_name": "research folder"}, "not found"),
+        ({"project_name": " Research folder "}, "not found"),
         ({"project_name": ""}, "nonempty string"),
         ({"project_name": "  "}, "nonempty string"),
         ({"project_name": None}, "nonempty string"),
@@ -794,3 +795,35 @@ async def test_invalid_project_name_rejects_before_allocating(
         m.user["resource_owner"], "webchat"
     )
     assert total == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("plain_namesake", [False, True])
+async def test_listed_project_name_preserves_title_whitespace(creation, plain_namesake):
+    """Copying a listed title selects its project without removing saved spaces.
+
+    Args:
+        creation: Real SQLite and trusted list/create tool execution.
+        plain_namesake: Whether an otherwise identical unspaced project also exists.
+    """
+    m, context, invoke = creation
+    owner = m.user["resource_owner"]
+    projects = m.server.asgi_app.state.services.chat_projects
+    spaced = await projects.create_project(owner, {"title": " Research folder "})
+    await projects.add_session_to_project(
+        owner, {"session_id": m.ids[1], "project_id": spaced["project_id"]}
+    )
+    if plain_namesake:
+        plain = await projects.create_project(owner, {"title": "Research folder"})
+    listed = json.loads(await ListChatSessionsTool().call(context))
+    entry = next(item for item in listed if item["session_id"] == m.ids[1])
+    assert entry["project_name"] == " Research folder "
+    result = await invoke({"title": "Copied title B", "project_name": entry["project_name"]})
+    assert isinstance(result, dict), result
+    assert result["status"] == "created"
+    assert result["project_id"] == spaced["project_id"]
+    assert result["project_name"] == entry["project_name"]
+    m.ids.append(result["session_id"])
+    assert (await m.db.get_project_by_session(result["session_id"], owner)).project_id == spaced["project_id"]
+    if plain_namesake:
+        assert await projects.get_project_sessions(owner, plain["project_id"]) == []

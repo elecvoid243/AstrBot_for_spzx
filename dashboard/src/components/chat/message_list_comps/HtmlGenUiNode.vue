@@ -2,26 +2,37 @@
   <div class="html-genui-node" :class="{ 'is-dark': isDark, 'is-loading': isLoading }">
     <div class="html-genui-header">
       <div class="html-genui-title">{{ panelTitle }}</div>
-      <div class="html-genui-toggle" role="tablist" aria-label="HTML GenUI view">
+      <div class="html-genui-header-actions">
+        <div class="html-genui-toggle" role="tablist" aria-label="HTML GenUI view">
+          <button
+            class="html-genui-toggle-button"
+            :class="{ active: viewMode === 'preview' }"
+            type="button"
+            role="tab"
+            :aria-selected="viewMode === 'preview'"
+            @click="viewMode = 'preview'"
+          >
+            Preview
+          </button>
+          <button
+            class="html-genui-toggle-button"
+            :class="{ active: viewMode === 'source' }"
+            type="button"
+            role="tab"
+            :aria-selected="viewMode === 'source'"
+            @click="viewMode = 'source'"
+          >
+            Source
+          </button>
+        </div>
         <button
-          class="html-genui-toggle-button"
-          :class="{ active: viewMode === 'preview' }"
           type="button"
-          role="tab"
-          :aria-selected="viewMode === 'preview'"
-          @click="viewMode = 'preview'"
+          class="html-genui-expand"
+          title="Fullscreen"
+          aria-label="Open fullscreen preview"
+          @click="fullscreenOpen = true"
         >
-          Preview
-        </button>
-        <button
-          class="html-genui-toggle-button"
-          :class="{ active: viewMode === 'source' }"
-          type="button"
-          role="tab"
-          :aria-selected="viewMode === 'source'"
-          @click="viewMode = 'source'"
-        >
-          Source
+          <v-icon size="16">mdi-arrow-expand</v-icon>
         </button>
       </div>
     </div>
@@ -35,6 +46,68 @@
       loading="lazy"
     ></iframe>
     <pre v-else class="html-genui-source"><code>{{ htmlContent }}</code></pre>
+
+    <!-- 2026-11-07 (elecvoid243): the inline frame stays bounded by the message
+         column, so dense prototypes get a full-viewport view without scrolling
+         the chat. The same srcdoc is reused; only the box changes. -->
+    <v-dialog
+      v-model="fullscreenOpen"
+      fullscreen
+      transition="dialog-bottom-transition"
+    >
+      <div class="html-genui-fullscreen">
+        <div class="html-genui-header html-genui-header--fullscreen">
+          <div class="html-genui-title">{{ panelTitle }}</div>
+          <div class="html-genui-header-actions">
+            <div
+              class="html-genui-toggle"
+              role="tablist"
+              aria-label="HTML GenUI view"
+            >
+              <button
+                class="html-genui-toggle-button"
+                :class="{ active: viewMode === 'preview' }"
+                type="button"
+                role="tab"
+                :aria-selected="viewMode === 'preview'"
+                @click="viewMode = 'preview'"
+              >
+                Preview
+              </button>
+              <button
+                class="html-genui-toggle-button"
+                :class="{ active: viewMode === 'source' }"
+                type="button"
+                role="tab"
+                :aria-selected="viewMode === 'source'"
+                @click="viewMode = 'source'"
+              >
+                Source
+              </button>
+            </div>
+            <button
+              type="button"
+              class="html-genui-expand"
+              title="Close"
+              aria-label="Close fullscreen preview"
+              @click="fullscreenOpen = false"
+            >
+              <v-icon size="18">mdi-close</v-icon>
+            </button>
+          </div>
+        </div>
+        <iframe
+          v-if="viewMode === 'preview'"
+          class="html-genui-frame html-genui-frame--fullscreen"
+          :srcdoc="renderedSrcdoc"
+          :sandbox="sandboxPolicy"
+          title="Generated HTML UI preview (fullscreen)"
+        ></iframe>
+        <pre v-else class="html-genui-source html-genui-source--fullscreen"><code>{{
+          htmlContent
+        }}</code></pre>
+      </div>
+    </v-dialog>
   </div>
 </template>
 
@@ -59,6 +132,7 @@ const props = defineProps<{
 
 const renderedSrcdoc = ref("");
 const viewMode = ref<"preview" | "source">("preview");
+const fullscreenOpen = ref(false);
 let pendingTimer: ReturnType<typeof setTimeout> | null = null;
 let lastRenderAt = 0;
 
@@ -195,6 +269,7 @@ function buildHeadExtras(dark: boolean) {
 }
 
 .html-genui-title {
+  flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   color: rgba(var(--v-theme-on-surface), 0.84);
@@ -203,6 +278,13 @@ function buildHeadExtras(dark: boolean) {
   line-height: 1.3;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.html-genui-header-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
 }
 
 .html-genui-toggle {
@@ -246,10 +328,37 @@ function buildHeadExtras(dark: boolean) {
   color: rgba(var(--v-theme-on-surface), 0.92);
 }
 
+.html-genui-expand {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid rgba(128, 128, 128, 0.22);
+  border-radius: 6px;
+  background: transparent;
+  color: rgba(var(--v-theme-on-surface), 0.68);
+  cursor: pointer;
+}
+
+.html-genui-expand:hover {
+  background: rgba(128, 128, 128, 0.1);
+  color: rgba(var(--v-theme-on-surface), 0.92);
+}
+
+.html-genui-expand:focus-visible {
+  outline: 2px solid rgba(128, 128, 128, 0.36);
+  outline-offset: 1px;
+}
+
 .html-genui-frame {
   display: block;
   width: 100%;
-  height: clamp(280px, 52vh, 620px);
+  /* 2026-11-07 (elecvoid243): +1 step over the old 52vh/620px ceiling. Rich
+     previews (multi-column layouts, charts) were scrolling inside the frame on
+     a normal laptop viewport. */
+  height: clamp(360px, 60vh, 720px);
   border: 0;
   background: #fff;
 }
@@ -259,7 +368,7 @@ function buildHeadExtras(dark: boolean) {
 }
 
 .html-genui-source {
-  height: clamp(280px, 52vh, 620px);
+  height: clamp(360px, 60vh, 720px);
   margin: 0;
   overflow: auto;
   padding: 14px;
@@ -272,5 +381,29 @@ function buildHeadExtras(dark: boolean) {
   tab-size: 2;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+/* Fullscreen viewer: the dialog owns the viewport, so only the header keeps a
+   fixed height and the frame/source take the rest. */
+.html-genui-fullscreen {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100dvh;
+  background: rgb(var(--v-theme-surface));
+}
+
+.html-genui-header--fullscreen {
+  flex: 0 0 auto;
+  min-height: 52px;
+  padding: 10px 16px;
+  background: rgb(var(--v-theme-surface));
+}
+
+.html-genui-frame--fullscreen,
+.html-genui-source--fullscreen {
+  flex: 1 1 auto;
+  height: auto;
+  min-height: 0;
 }
 </style>

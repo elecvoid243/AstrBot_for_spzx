@@ -56,7 +56,9 @@ class ListChatSessionsTool(FunctionTool[AstrAgentContext]):
     name: str = "list_chat_sessions"
     description: str = (
         "Discover existing ordinary ChatUI sessions owned by the current account, "
-        "including project sessions. Archived, side and hidden team chats are excluded."
+        "including project sessions. Each entry returns project_id and project_name "
+        "(the ChatUI sidebar folder title, null for no project). Archived, side and "
+        "hidden team chats are excluded."
     )
     parameters: dict = field(
         default_factory=lambda: {"type": "object", "properties": {}}
@@ -148,8 +150,10 @@ class CreateChatSessionTool(FunctionTool[AstrAgentContext]):
     name: str = "create_chat_session"
     description: str = (
         "Create an independent ordinary ChatUI session with empty history. Omitted "
-        "project and settings inherit this execution's effective values. project_id=null "
-        "explicitly chooses no project; a string must identify an existing owned project. "
+        "project and settings inherit this execution's effective values. Select an existing "
+        "owned project directly with project_name (exact ChatUI sidebar folder title, "
+        "not a filesystem path), or project_id. These parameters are mutually exclusive. "
+        "project_id=null explicitly chooses no project. Ambiguous names require an ID. "
         "Optional text sends the first Agent message through send_chat_message, sharing "
         "its automatic chain budget. Without text, only create. Returns the created ID "
         "even if first-message admission fails; reuse it with send_chat_message."
@@ -161,7 +165,11 @@ class CreateChatSessionTool(FunctionTool[AstrAgentContext]):
                 "title": {"type": "string", "description": "New conversation title."},
                 "project_id": {
                     "type": ["string", "null"],
-                    "description": "Existing owned project ID, null for no project; omit to inherit.",
+                    "description": "Existing owned project ID, or null for no project. Cannot be combined with project_name; omit both to inherit.",
+                },
+                "project_name": {
+                    "type": "string",
+                    "description": "Exact existing ChatUI sidebar folder title, including empty folders; surrounding input whitespace is trimmed. Not a filesystem path. Mutually exclusive with project_id. Duplicate names require an ID.",
                 },
                 "selected_provider": {
                     "type": "string",

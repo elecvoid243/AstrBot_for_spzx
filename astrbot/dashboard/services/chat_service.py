@@ -3139,6 +3139,7 @@ class ChatService:
                             "session_id": session.session_id,
                             "display_name": session.display_name,
                             "project_id": item["project_id"],
+                            "project_name": item["project_title"],
                         }
                     )
             if page * 100 >= total:
@@ -3189,16 +3190,48 @@ class ChatService:
                 raise ChatServiceError(f"{key} must be a nonempty string")
         projects = ChatUIProjectService(self.db)
         project_id = payload.get("project_id")
-        if "project_id" not in payload:
+        if "project_name" in payload:
+            if "project_id" in payload:
+                raise ChatServiceError(
+                    "project_id and project_name are mutually exclusive"
+                )
+            project_name = payload["project_name"]
+            if not isinstance(project_name, str) or not project_name.strip():
+                raise ChatServiceError("project_name must be a nonempty string")
+            project_name = project_name.strip()
+            matches = []
+            page = 1
+            while True:
+                owned_projects = await self.db.get_chatui_projects_by_creator(
+                    owner, page=page, page_size=100
+                )
+                matches.extend(
+                    project.project_id
+                    for project in owned_projects
+                    if project.title == project_name
+                )
+                if len(owned_projects) < 100:
+                    break
+                page += 1
+            if not matches:
+                raise ChatServiceError("Project name not found for the current account")
+            if len(matches) > 1:
+                raise ChatServiceError(
+                    "Project name is ambiguous; use project_id from: "
+                    + json.dumps(sorted(matches), ensure_ascii=False)
+                )
+            project_id = matches[0]
+        elif "project_id" not in payload:
             project = await self.db.get_project_by_session(source_id, owner)
             project_id = project.project_id if project else None
         if project_id is not None and (
             not isinstance(project_id, str) or not project_id
         ):
             raise ChatServiceError("project_id must be an existing project ID or null")
+        project_name = None
         try:
             if project_id is not None:
-                await projects.get_project(owner, project_id)
+                project_name = (await projects.get_project(owner, project_id))["title"]
         except ChatUIProjectServiceError as exc:
             raise ChatServiceError(str(exc)) from exc
         config_id = (await self.session_config(owner, source_id))["config_id"]
@@ -3236,6 +3269,7 @@ class ChatService:
             "session_id": session_id,
             "display_name": title.strip(),
             "project_id": project_id,
+            "project_name": project_name,
             "config_id": config_id,
             "selection": saved_selection,
             "detail_path": f"/#/chat/{session_id}",

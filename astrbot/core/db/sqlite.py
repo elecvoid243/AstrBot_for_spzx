@@ -2761,7 +2761,11 @@ class SQLiteDatabase(BaseDatabase):
             )
             .outerjoin(
                 ChatUIProject,
-                col(SessionProjectRelation.project_id) == col(ChatUIProject.project_id),
+                (
+                    col(SessionProjectRelation.project_id)
+                    == col(ChatUIProject.project_id)
+                )
+                & (col(ChatUIProject.creator) == creator),
             )
             .where(col(PlatformSession.creator) == creator)
         )

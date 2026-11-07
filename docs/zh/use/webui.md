@@ -316,7 +316,7 @@ AstrBot WebUI支持基于 TOTP（Time-based One-Time Password）的双因素认�
 
 ### 已有会话之间互发消息
 
-让会话 A 的 Agent 通过 `list_chat_sessions` 查找已有会话，再调用 `send_chat_message(session_id, text)` 发送文本。目标会话使用自己的配置、模型、思考强度、项目和历史，也可用同一工具回复 A。工具沿用现有插件工具启停、人格工具选择和成员/管理员权限。
+让会话 A 的 Agent 通过 `list_chat_sessions` 查找已有会话，返回项包含 `project_id` 和 `project_name`（左侧项目文件夹的标题，无项目时均为 `null`），再调用 `send_chat_message(session_id, text)` 发送文本。目标会话使用自己的配置、模型、思考强度、项目和历史，也可用同一工具回复 A。工具沿用现有插件工具启停、人格工具选择和成员/管理员权限。
 
 接收方会显示 **Agent 消息来源**、可信账号及来源会话，点击来源即可跳转。模型输入也会标注来源，刷新历史后仍保留。Agent 文本不能执行真人聊天命令，也不能代答 `ask_user_choice`；目标正在等用户回答时会明确拒收。仅支持本人未归档的普通会话（包括项目内会话），拒绝自发自收、跨账号、已删除、侧聊和隐藏团队会话。也可以让 Agent 创建目标会话，见下文。
 
@@ -327,7 +327,9 @@ AstrBot WebUI支持基于 TOTP（Time-based One-Time Password）的双因素认�
 
 ### 让 Agent 创建普通会话
 
-在 A 中要求“另开一个标题为资料整理的会话”，Agent 可调用 `create_chat_session(title)` 创建独立空会话 B。省略项目时继承 A 当前项目；传入本人已有的 `project_id` 可选择其他项目，传入 `project_id: null` 明确不放入项目。省略模型与思考参数时，继承 A 执行当时有效的模型和思考设置（包括临时单轮选择），并继承来源配置档，不改写 A 的持久偏好。也可指定可用的 `selected_provider`、该提供商允许的 `selected_model` 和 `thinking_effort`。
+在 A 中要求“另开一个标题为资料整理的会话”，Agent 可调用 `create_chat_session(title)` 创建独立空会话 B。省略项目时继承 A 当前项目；传入本人已有的 `project_name` 或 `project_id` 可选择其他项目，传入 `project_id: null` 明确不放入项目。省略模型与思考参数时，继承 A 执行当时有效的模型和思考设置（包括临时单轮选择），并继承来源配置档，不改写 A 的持久偏好。也可指定可用的 `selected_provider`、该提供商允许的 `selected_model` 和 `thinking_effort`。
+
+项目名是 ChatUI 左侧项目文件夹的标题，不是磁盘路径。例如 `create_chat_session(title="资料整理", project_name="研究项目")` 可直接选择已有的“研究项目”文件夹，即使其中还没有会话。名称精确匹配、区分大小写，并忽略输入两端空白；不会自动创建文件夹。`project_name` 与 `project_id` 互斥（包括 `project_id: null`），两者都省略才继承 A 的项目。名称不存在、为空或类型错误会在创建会话前拒绝；本人有多个同名项目时返回候选 `project_id`，请改用其中一个 ID，其他账户的同名项目不参与匹配。
 
 不传 `text` 时只创建，不启动模型；传入首条非空 `text` 时，沿用上述同一发送入口和来源标记。B 不复制 A 的历史，也不创建侧聊或隐藏成员。创建完成后会刷新原有普通/项目会话列表；点击 B 即可打开，查看记录或手动继续。之后 A 和 B 可继续使用 `send_chat_message` 双向交流。
 
@@ -337,7 +339,7 @@ AstrBot WebUI支持基于 TOTP（Time-based One-Time Password）的双因素认�
 
 ![新普通会话收到首条 Agent 消息并显示来源链接](/images/chat-session-created-first-message.jpg)
 
-工具返回创建的会话 ID 和打开位置。若已创建但首条消息被拒收，会返回 `created_send_failed`、会话 ID 和 `send_error`；让 Agent 使用这个 ID 重试发送即可，无需重复创建。同一次真实工具调用的重试会复用创建结果，这项去重仅限当前执行，不提供进程重启恢复。配置创建失败会清理不完整会话；创建后发送同样计入原自动消息链的 8 次上限，不能通过另开会话重置预算。
+工具返回创建的会话 ID、`project_id`、`project_name` 和打开位置；无项目时两个项目字段均为 `null`。若已创建但首条消息被拒收，会返回 `created_send_failed`、会话 ID 和 `send_error`；让 Agent 使用这个 ID 重试发送即可，无需重复创建。同一次真实工具调用的重试会复用创建结果，这项去重仅限当前执行，不提供进程重启恢复。配置创建失败会清理不完整会话；创建后发送同样计入原自动消息链的 8 次上限，不能通过另开会话重置预算。
 
 AstrBot 内置 ChatUI，可在浏览器中直接与已配置的模型对话。
 

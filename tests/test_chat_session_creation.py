@@ -3,20 +3,23 @@
 import asyncio
 import json
 import uuid
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 import pytest_asyncio
+from sqlmodel import select
 
 from astrbot.builtin_stars.session_messages.tools import (
     CreateChatSessionTool,
+    ListChatSessionsTool,
     SessionMessageChain,
 )
 from astrbot.core.agent.run_context import ContextWrapper
 from astrbot.core.agent.tool import current_tool_invocation
 from astrbot.core.astr_agent_context import AstrAgentContext
-from astrbot.core.db.po import DashboardAccount
+from astrbot.core.db.po import ChatUIProject, DashboardAccount
 from astrbot.core.platform.sources.webchat.webchat_queue_mgr import webchat_queue_mgr
 from astrbot.core.provider.entities import LLMResponse
 from astrbot.core.utils.webchat_access import DashboardPrincipal
@@ -113,7 +116,7 @@ async def creation(messaging):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("project_mode", ["inherit", "none", "explicit"])
+@pytest.mark.parametrize("project_mode", ["inherit", "none", "explicit", "name"])
 async def test_create_only_inherits_effective_settings_and_lists_empty_session(
     creation, project_mode
 ):
@@ -121,7 +124,7 @@ async def test_create_only_inherits_effective_settings_and_lists_empty_session(
 
     Args:
         creation: Trusted execution and creation tool.
-        project_mode: Omitted, explicitly absent, or explicitly selected project.
+        project_mode: Inherited, explicitly absent, ID-selected or name-selected project.
     """
     m, context, invoke = creation
     owner = m.user["resource_owner"]
@@ -150,12 +153,17 @@ async def test_create_only_inherits_effective_settings_and_lists_empty_session(
     await m.service.session_config(owner, m.ids[0], "inherited")
     payload = {"title": "Independent B"}
     expected_project = project["project_id"]
+    expected_name = "Source project"
     if project_mode == "none":
         payload["project_id"] = None
-        expected_project = None
-    elif project_mode == "explicit":
+        expected_project = expected_name = None
+    elif project_mode in ("explicit", "name"):
         other = await projects.create_project(owner, {"title": "Other project"})
-        payload["project_id"] = expected_project = other["project_id"]
+        expected_project = other["project_id"]
+        expected_name = "Other project"
+        payload["project_id" if project_mode == "explicit" else "project_name"] = (
+            expected_project if project_mode == "explicit" else "Other project"
+        )
     queue = webchat_queue_mgr.subscribe_system(m.ids[0])
     try:
         result = await invoke(payload)
@@ -163,6 +171,7 @@ async def test_create_only_inherits_effective_settings_and_lists_empty_session(
         sid = result["session_id"]
         m.ids.append(sid)
         assert result["project_id"] == expected_project
+        assert result["project_name"] == expected_name
         assert result["selection"]["thinking_effort"] == "xhigh"
         assert result["selection"]["selected_model"] == "runtime-provider"
         assert result["selection"]["selected_provider"] == "runtime-provider"
@@ -381,13 +390,20 @@ async def test_send_failure_returns_reusable_created_id_and_preserves_chain(
 
 
 @pytest.mark.asyncio
-async def test_main_agent_creates_sends_continues_and_receives_reply(creation):
+@pytest.mark.parametrize("project_selector", ["none", "name"])
+async def test_main_agent_creates_sends_continues_and_receives_reply(
+    creation, project_selector
+):
     """Real tools create B, send first text, continue from A and reply back.
 
     Args:
         creation: Isolated production main Agent, history, admission and tools.
+        project_selector: Explicitly ungrouped or named-project creation.
     """
     m, context, invoke = creation
+    project = await m.server.asgi_app.state.services.chat_projects.create_project(
+        m.user["resource_owner"], {"title": "Named project"}
+    )
     a = m.ids[0]
     created = []
     b_calls = 0
@@ -403,7 +419,11 @@ async def test_main_agent_creates_sends_continues_and_receives_reply(creation):
                 "create_chat_session",
                 {
                     "title": "Agent-created B",
-                    "project_id": None,
+                    **(
+                        {"project_id": None}
+                        if project_selector == "none"
+                        else {"project_name": "Named project"}
+                    ),
                     "thinking_effort": "high",
                     "text": "first input to B",
                 },
@@ -455,6 +475,12 @@ async def test_main_agent_creates_sends_continues_and_receives_reply(creation):
     await wait_until(lambda: bool(created) and not m.service.chat_runs_by_session)
     result = created[0]
     assert result["send"]["status"] == "accepted"
+    assert result["project_id"] == (
+        None if project_selector == "none" else project["project_id"]
+    )
+    assert result["project_name"] == (
+        None if project_selector == "none" else "Named project"
+    )
     b = result["session_id"]
     m.ids.append(b)
     await m.service.send_session_message(m.events[0], b, "second input to B")
@@ -534,3 +560,237 @@ async def test_created_notice_reaches_existing_system_stream(creation):
         assert not history
     finally:
         await stream.aclose()
+
+
+@pytest.mark.asyncio
+async def test_list_tool_returns_folder_titles_without_per_session_project_queries(
+    creation, monkeypatch
+):
+    """Use the joined project title without exposing another owner's association.
+
+    Args:
+        creation: Real SQLite and trusted tool execution.
+        monkeypatch: Rejects additional project queries during discovery.
+    """
+    m, context, invoke = creation
+    owner = m.user["resource_owner"]
+    projects = m.server.asgi_app.state.services.chat_projects
+    project = await projects.create_project(owner, {"title": "Research folder"})
+    await projects.add_session_to_project(
+        owner, {"session_id": m.ids[1], "project_id": project["project_id"]}
+    )
+    plain = await m.db.create_platform_session(creator=owner, display_name="No folder")
+    foreign = await projects.create_project(
+        m.foreign["resource_owner"], {"title": "Private foreign folder"}
+    )
+    foreign_session = await m.db.create_platform_session(
+        creator=m.foreign["resource_owner"]
+    )
+    # A stale cross-owner relation must not disclose the foreign folder's ID or title.
+    stale = await m.db.create_platform_session(
+        creator=owner, display_name="Stale relation"
+    )
+    await m.db.add_session_to_project(stale.session_id, foreign["project_id"])
+    archived = await m.db.create_platform_session(creator=owner)
+    await m.db.update_platform_session(archived.session_id, archived=1)
+    hidden = await m.db.create_platform_session(creator=owner, is_group=1)
+    m.ids.extend(
+        [plain.session_id, stale.session_id, archived.session_id, hidden.session_id]
+    )
+    monkeypatch.setattr(
+        m.db,
+        "get_chatui_project_by_id",
+        AsyncMock(side_effect=AssertionError("Unexpected per-session project lookup")),
+    )
+    monkeypatch.setattr(
+        m.db,
+        "get_chatui_projects_by_creator",
+        AsyncMock(side_effect=AssertionError("Discovery must reuse joined titles")),
+    )
+    result = json.loads(await ListChatSessionsTool().call(context))
+    by_id = {item["session_id"]: item for item in result}
+    assert set(by_id) == {m.ids[1], plain.session_id, stale.session_id}
+    assert by_id[m.ids[1]] == {
+        "session_id": m.ids[1],
+        "display_name": "B",
+        "project_id": project["project_id"],
+        "project_name": "Research folder",
+    }
+    for sid in (plain.session_id, stale.session_id):
+        assert by_id[sid]["project_id"] is None
+        assert by_id[sid]["project_name"] is None
+    assert foreign_session.session_id not in by_id
+    assert foreign["project_id"] not in json.dumps(result)
+    assert "Private foreign folder" not in json.dumps(result)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("first_message", [False, True])
+async def test_create_by_name_finds_empty_owned_folder_and_retries_once(
+    creation, first_message
+):
+    """Named selection overrides the source folder and ignores a foreign namesake.
+
+    Args:
+        creation: Real SQLite, main Agent, histories and creation tool.
+        first_message: Whether to deliver an initial message through the shared send path.
+    """
+    m, context, invoke = creation
+    owner = m.user["resource_owner"]
+    projects = m.server.asgi_app.state.services.chat_projects
+    source = await projects.create_project(owner, {"title": "Source folder"})
+    await projects.add_session_to_project(
+        owner, {"session_id": m.ids[0], "project_id": source["project_id"]}
+    )
+    foreign = await projects.create_project(
+        m.foreign["resource_owner"], {"title": "研究项目"}
+    )
+    target = await projects.create_project(owner, {"title": "研究项目"})
+    assert await projects.get_project_sessions(owner, target["project_id"]) == []
+    payload = {"title": "Named B", "project_name": "  研究项目  "}
+    if first_message:
+        payload["text"] = "First input to the named folder"
+    result = await invoke(payload, "create-in-named-folder")
+    assert result["status"] == "created", result
+    assert result["project_id"] == target["project_id"]
+    assert result["project_name"] == "研究项目"
+    assert await invoke(payload, "create-in-named-folder") == result
+    m.ids.append(result["session_id"])
+    assert [
+        item["session_id"]
+        for item in await projects.get_project_sessions(owner, target["project_id"])
+    ] == [result["session_id"]]
+    assert (
+        await projects.get_project_sessions(
+            m.foreign["resource_owner"], foreign["project_id"]
+        )
+        == []
+    )
+    _, total = await m.db.get_platform_sessions_by_creator_paginated(owner, "webchat")
+    assert total == 3
+    if first_message:
+        assert result["send"]["status"] == "accepted"
+        await wait_until(lambda: not m.service.chat_runs_by_session)
+        assert len(m.events) == 1
+        assert context.context.event.get_extra("_session_message_chain").count == 1
+    else:
+        assert "send" not in result
+        assert not m.events
+        assert not m.providers["gpt-mini"].calls
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("duplicate", [False, True])
+async def test_project_name_lookup_checks_all_owned_pages(creation, duplicate):
+    """Find old empty projects and reject names duplicated beyond the first page.
+
+    Args:
+        creation: Real database and trusted creation tool.
+        duplicate: Whether a newer project duplicates the oldest project's title.
+    """
+    m, context, invoke = creation
+    owner = m.user["resource_owner"]
+    projects = m.server.asgi_app.state.services.chat_projects
+    target = await projects.create_project(owner, {"title": "Research folder"})
+    await projects.add_session_to_project(
+        owner, {"session_id": m.ids[0], "project_id": target["project_id"]}
+    )
+    async with m.db.get_db() as connection:
+        row = (
+            await connection.execute(
+                select(ChatUIProject).where(
+                    ChatUIProject.project_id == target["project_id"]
+                )
+            )
+        ).scalar_one()
+        row.updated_at = datetime(2000, 1, 1, tzinfo=timezone.utc)
+        connection.add_all(
+            [
+                ChatUIProject(
+                    creator=owner,
+                    title=f"Filler {index}",
+                    updated_at=datetime(2001, 1, 1, tzinfo=timezone.utc),
+                )
+                for index in range(100)
+            ]
+        )
+        await connection.commit()
+    first_page = await m.db.get_chatui_projects_by_creator(owner)
+    assert len(first_page) == 100
+    assert target["project_id"] not in {item.project_id for item in first_page}
+    foreign = await projects.create_project(
+        m.foreign["resource_owner"], {"title": "Research folder"}
+    )
+    if duplicate:
+        second = await projects.create_project(owner, {"title": "Research folder"})
+    result = await invoke({"title": "Named B", "project_name": "Research folder"})
+    if duplicate:
+        assert result.startswith("error: Project name is ambiguous"), result
+        candidates = json.loads(result.split("use project_id from: ", 1)[1])
+        assert set(candidates) == {target["project_id"], second["project_id"]}
+        assert foreign["project_id"] not in result
+        _, total = await m.db.get_platform_sessions_by_creator_paginated(
+            owner, "webchat"
+        )
+        assert total == 2
+        # The caller can resolve the ambiguity by using an advertised ID.
+        result = await invoke(
+            {"title": "ID-selected B", "project_id": target["project_id"]}
+        )
+    assert result["status"] == "created", result
+    assert result["project_id"] == target["project_id"]
+    assert result["project_name"] == "Research folder"
+    m.ids.append(result["session_id"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "selector,reason",
+    [
+        ({"project_name": "Missing"}, "not found"),
+        ({"project_name": "research folder"}, "not found"),
+        ({"project_name": ""}, "nonempty string"),
+        ({"project_name": "  "}, "nonempty string"),
+        ({"project_name": None}, "nonempty string"),
+        ({"project_name": 42}, "nonempty string"),
+        ({"project_name": []}, "nonempty string"),
+        (
+            {"project_name": "Research folder", "project_id": "owned"},
+            "mutually exclusive",
+        ),
+        ({"project_name": "Research folder", "project_id": None}, "mutually exclusive"),
+    ],
+)
+async def test_invalid_project_name_rejects_before_allocating(
+    creation, monkeypatch, selector, reason
+):
+    """Reject invalid, missing, foreign-only or conflicting names before allocation.
+
+    Args:
+        creation: Real SQLite and trusted creation tool.
+        monkeypatch: Tracks allocation without replacing the real storage path.
+        selector: Model-supplied name and optional conflicting project ID.
+        reason: Required error explanation.
+    """
+    m, context, invoke = creation
+    projects = m.server.asgi_app.state.services.chat_projects
+    project = await projects.create_project(
+        m.user["resource_owner"], {"title": "Research folder"}
+    )
+    foreign = await projects.create_project(
+        m.foreign["resource_owner"], {"title": "Missing"}
+    )
+    payload = {"title": "Must not allocate", **selector}
+    if payload.get("project_id") == "owned":
+        payload["project_id"] = project["project_id"]
+    allocate = AsyncMock(wraps=m.service.new_session)
+    monkeypatch.setattr(m.service, "new_session", allocate)
+    result = await invoke(payload)
+    assert result.startswith("error:"), result
+    assert reason in result
+    assert foreign["project_id"] not in result
+    allocate.assert_not_awaited()
+    _, total = await m.db.get_platform_sessions_by_creator_paginated(
+        m.user["resource_owner"], "webchat"
+    )
+    assert total == 2

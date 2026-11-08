@@ -116,8 +116,8 @@
           <span>{{ tm("actions.newChat") }}</span>
         </v-btn>
 
-        <!-- 2026-11-08: admin shortcut to scheduled tasks. A new tab keeps the
-             running conversation (and its stream) alive while configuring jobs. -->
+        <!-- 2026-11-08: admin shortcut to scheduled tasks. The page opens in a
+             dialog so the running conversation and its stream stay mounted. -->
         <button
           v-if="!isOrdinaryUser && isSidebarCollapsed"
           class="new-chat-btn sidebar-cron-btn icon-only chat-sidebar-rail-btn"
@@ -1204,6 +1204,23 @@
   </div>
 
   <ChatMessageSearchDialog v-model="searchDialogOpen" />
+  <v-dialog v-model="scheduledTasksOpen" width="min(1100px, 94vw)" scrollable>
+    <v-card class="scheduled-tasks-dialog">
+      <v-card-title class="scheduled-tasks-dialog__header">
+        <span>{{ t("core.navigation.cron") }}</span>
+        <v-btn
+          icon="mdi-close"
+          size="small"
+          variant="text"
+          :aria-label="t('core.common.close')"
+          @click="scheduledTasksOpen = false"
+        />
+      </v-card-title>
+      <v-card-text class="scheduled-tasks-dialog__body">
+        <CronJobPage v-if="scheduledTasksOpen" embedded />
+      </v-card-text>
+    </v-card>
+  </v-dialog>
   <ArchivedSessionsDialog
     v-model="archivedDialogOpen"
     @restore="onArchivedRestored"
@@ -1219,6 +1236,7 @@
 <script setup lang="ts">
 import {
   computed,
+  defineAsyncComponent,
   nextTick,
   onBeforeUnmount,
   onMounted,
@@ -1450,6 +1468,11 @@ async function refreshRemoteConnections() {
 
 const router = useRouter();
 const { lgAndUp } = useDisplay();
+// Loaded on first open: the cron page is only reachable from this dialog for
+// admins, so it must not join the chat boot bundle.
+const CronJobPage = defineAsyncComponent(
+  () => import("@/views/CronJobPage.vue"),
+);
 const chatHeader = useChatHeaderStore();
 const customizer = useCustomizerStore();
 const { t } = useI18n();
@@ -3120,13 +3143,11 @@ async function openProviderWorkspace() {
   closeMobileSidebar();
 }
 
-/** Open the scheduled-task page in a new tab so the live chat stays mounted. */
+const scheduledTasksOpen = ref(false);
+
+/** Open scheduled tasks in-place so the live chat stays mounted behind it. */
 function openScheduledTasks(): void {
-  window.open(
-    router.resolve({ name: "CronJobs" }).href,
-    "_blank",
-    "noopener,noreferrer",
-  );
+  scheduledTasksOpen.value = true;
 }
 
 function sessionTitle(session: Session) {
@@ -6668,6 +6689,29 @@ function toggleTheme() {
   --chat-page-bg: rgb(var(--v-theme-background));
   --chat-border: rgba(255, 255, 255, 0.1);
   --chat-section-label: rgba(255, 255, 255, 0.5);
+}
+
+.scheduled-tasks-dialog {
+  display: flex;
+  flex-direction: column;
+  max-height: 86vh;
+}
+
+.scheduled-tasks-dialog__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 18px 10px;
+  font-size: 17px;
+  font-weight: 600;
+}
+
+.scheduled-tasks-dialog__body {
+  flex: 1;
+  min-height: 0;
+  /* The embedded page owns its own gutter (pa-4 / pa-md-6). */
+  padding: 0;
 }
 
 /* 2026-07-21 chatui sidebar resize (elecvoid243): replaced the

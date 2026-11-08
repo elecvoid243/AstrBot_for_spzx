@@ -1,5 +1,8 @@
 <template>
-  <div class="dashboard-page cron-page" :class="{ 'is-dark': isDark }">
+  <div
+    class="dashboard-page cron-page"
+    :class="{ 'is-dark': isDark, 'cron-page--embedded': embedded }"
+  >
     <v-container fluid class="dashboard-shell cron-shell pa-4 pa-md-6">
       <div class="cron-detail-width">
         <div class="cron-header mb-4 pb-4">
@@ -471,6 +474,11 @@ import UmoDisplay from "@/components/shared/UmoDisplay.vue";
 
 const { tm } = useModuleI18n("features/cron");
 const theme = useTheme();
+
+defineProps<{
+  /** Rendered inside a host dialog: drop page-level chrome that would double up. */
+  embedded?: boolean;
+}>();
 
 const isDark = computed(() => theme.global.current.value.dark);
 const loading = ref(false);
@@ -1399,6 +1407,29 @@ onMounted(() => {
 .cron-page {
   padding-bottom: 40px;
   background: transparent;
+}
+
+/* Embedded in the ChatUI dialog: the host already supplies the title bar and
+   the scroll body, so the page keeps only its own actions and content. */
+.cron-page--embedded {
+  min-height: 0;
+  padding-bottom: 0;
+}
+
+.cron-page--embedded .cron-detail-width {
+  max-width: none;
+}
+
+/* The host dialog already names the page; keep the subtitle and its
+   supported-platform link instead of duplicating the title. */
+.cron-page--embedded .cron-header-copy h1 {
+  display: none;
+}
+
+.cron-page--embedded .cron-header {
+  justify-content: flex-end;
+  margin-bottom: 12px;
+  padding-bottom: 0;
 }
 
 .cron-shell {

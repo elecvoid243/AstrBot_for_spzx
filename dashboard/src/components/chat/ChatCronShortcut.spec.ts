@@ -1,6 +1,6 @@
 // Source contract for the admin scheduled-task shortcut (author: elecvoid243,
 // 2026-11-08). The entry lives in the ChatUI sidebar under the model-config
-// and new-chat rows, admin-only, and opens the cron page in a new tab so
+// and new-chat rows, admin-only, and opens the cron page in a dialog so
 // configuring a job never unloads the running conversation.
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
@@ -31,12 +31,13 @@ describe("scheduled-task entry in the ChatUI sidebar", () => {
     );
   });
 
-  it("opens the cron page in a new tab instead of leaving the conversation", () => {
+  it("opens the cron page in a dialog instead of leaving the conversation", () => {
     expect(chatSource).toMatch(
-      /router\.resolve\(\{\s*name:\s*"CronJobs"\s*\}\)\.href/,
+      /<v-dialog v-model="scheduledTasksOpen"[\s\S]*?<CronJobPage[\s\S]*?embedded/,
     );
+    expect(chatSource).not.toContain('"_blank"');
     expect(chatSource).toMatch(
-      /window\.open\([\s\S]*?"_blank",\s*"noopener,noreferrer"/,
+      /const CronJobPage = defineAsyncComponent\(/,
     );
   });
 

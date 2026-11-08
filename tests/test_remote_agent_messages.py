@@ -44,6 +44,12 @@ async def test_remote_agent_admission_provenance_and_atomic_budget(remote_tools)
         )
     )
     assert result["status"] == "accepted", result
+    assert type(result["input_message_id"]) is int
+    saved_input = await remote_db.get_platform_message_history_by_id(
+        result["input_message_id"]
+    )
+    assert saved_input is not None
+    assert saved_input.user_id == target_session.session_id
     item = await webchat_queue_mgr.get_or_create_queue(target_session.session_id).get()
     adapter = WebChatAdapter({}, {}, asyncio.Queue())
     remote_event = adapter.create_event(await adapter.convert_message(item))

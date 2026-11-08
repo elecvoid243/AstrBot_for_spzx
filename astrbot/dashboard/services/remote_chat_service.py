@@ -178,7 +178,7 @@ class RemoteChatService:
             raise ChatServiceError(
                 "Remote acceptance is unknown; do not blindly resend"
             )
-        return {
+        receipt = {
             **{
                 key: result[key]
                 for key in ("status", "run_id", "error")
@@ -188,6 +188,13 @@ class RemoteChatService:
             "connection_id": connection_id,
             "connection_revision": connection_revision,
         }
+        # Older peers omit the saved input ID; a wrong type is not a baseline.
+        if (
+            type(result.get("input_message_id")) is int
+            and result["input_message_id"] > 0
+        ):
+            receipt["input_message_id"] = result["input_message_id"]
+        return receipt
 
     async def open_agent_control(
         self,

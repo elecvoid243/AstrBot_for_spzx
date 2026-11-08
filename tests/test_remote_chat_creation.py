@@ -283,8 +283,9 @@ async def test_agent_discovery_read_budget_creation_and_switches(remote_tools):
         row["display_name"] == "Local target" and row["connection_id"] is None
         for row in rows
     )
+    newest = None
     for i in range(12):
-        await remote_db.insert_platform_message_history(
+        newest = await remote_db.insert_platform_message_history(
             "webchat",
             sid,
             {
@@ -317,6 +318,8 @@ async def test_agent_discovery_read_budget_creation_and_switches(remote_tools):
     )
     page = json.loads(first)
     assert page["has_more"] and page["response_budget_limited"]
+    assert page["active_run_ids"] == []
+    assert page["last_message_id"] == newest.id
     assert "private arguments" not in first and "private tool result" not in first
     older = json.loads(
         await read.call(
@@ -330,6 +333,7 @@ async def test_agent_discovery_read_budget_creation_and_switches(remote_tools):
         )
     )
     assert older["messages"][-1]["message_id"] < page["next_before_id"]
+    assert older["last_message_id"] == newest.id
     hidden = await remote_db.create_platform_session(
         creator=remote_admin["resource_owner"]
     )

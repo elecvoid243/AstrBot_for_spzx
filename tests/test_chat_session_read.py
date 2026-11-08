@@ -517,7 +517,7 @@ async def test_archived_and_self_reads_preserve_busy_choice_chain_state(reader):
     """
     m, context, read = reader
     a, b = m.ids
-    await save_message(
+    saved = await save_message(
         m,
         b,
         {
@@ -548,6 +548,8 @@ async def test_archived_and_self_reads_preserve_busy_choice_chain_state(reader):
     try:
         result = await read(session_id=b)
         assert result["archived"] and result["is_running"]
+        assert result["active_run_ids"] == ["preparing"]
+        assert result["last_message_id"] == saved.id
         choice = result["messages"][0]["parts"][0]
         assert choice["prompt"] == "Should we publish?"
         assert choice["options"] == ["Publish", "Wait"]
@@ -566,6 +568,48 @@ async def test_archived_and_self_reads_preserve_busy_choice_chain_state(reader):
         registry.remove("read-waiting")
         m.service.chat_runs_by_session.pop(b)
         m.service.running_convs.pop(b)
+
+
+@pytest.mark.asyncio
+async def test_last_message_id_tracks_new_output_across_older_pages(reader):
+    """The newest saved ID is reported even when the read pages backwards.
+
+    Args:
+        reader: Real SQLite history and the registered read tool.
+    """
+    m, _, read = reader
+    b = m.ids[1]
+    first = await save_message(
+        m, b, {"type": "user", "message": [{"type": "plain", "text": "one"}]}
+    )
+    newest = await save_message(
+        m, b, {"type": "bot", "message": [{"type": "plain", "text": "two"}]}
+    )
+    page = await read(session_id=b, limit=1)
+    assert page["active_run_ids"] == []
+    assert page["last_message_id"] == newest.id
+    older = await read(session_id=b, before_id=newest.id, limit=1)
+    assert older["messages"][0]["message_id"] == first.id
+    assert older["last_message_id"] == newest.id
+
+
+@pytest.mark.asyncio
+async def test_active_run_ids_are_bounded_and_keep_the_busy_flag_true(reader):
+    """A long run list is cut deterministically and still marks the session busy.
+
+    Args:
+        reader: Real SQLite history and the registered read tool.
+    """
+    m, _, read = reader
+    b = m.ids[1]
+    m.service.chat_runs_by_session[b] = {f"run-{index:02d}" for index in range(33)}
+    try:
+        page = await read(session_id=b)
+        assert page["is_running"]
+        assert page["active_run_ids"] == [f"run-{index:02d}" for index in range(32)]
+        assert page["metadata_truncated"]
+    finally:
+        m.service.chat_runs_by_session.pop(b)
 
 
 @pytest.mark.asyncio

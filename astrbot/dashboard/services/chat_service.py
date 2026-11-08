@@ -3458,11 +3458,21 @@ class ChatService:
             # including when preparation itself failed before queue admission.
             if self.session_message_stop_revisions.get(session_id, 0) != stop_revision:
                 chain.stopped.add(session_id)
+        # The saved input row is the chronological baseline for later reads:
+        # any newer saved record was produced after this delivery.
+        run = self.chat_runs.get(message_id)
+        input_message = run.input_message if run is not None else None
+        input_message_id = None
+        if isinstance(input_message, dict):
+            candidate = input_message.get("id")
+            if type(candidate) is int and candidate > 0:
+                input_message_id = candidate
         return {
             "status": "accepted_follow_up" if runner is not None else "accepted",
             "session_id": session_id,
             "message_id": message_id,
             "run_id": message_id,
+            "input_message_id": input_message_id,
             "detail_path": f"/#/chat/{session_id}",
         }
 

@@ -1262,3 +1262,36 @@ async def test_real_waiting_choice_rejects_agent_and_preserves_human_answer(mess
     )
     response = await asyncio.wait_for(request, 5)
     assert "human answer received" in response.text
+
+
+@pytest.mark.asyncio
+async def test_send_receipt_reports_the_saved_input_baseline(messaging):
+    """A trusted admission reports the history row that later reads compare.
+
+    Args:
+        messaging: Real SQLite admission without a model round-trip.
+    """
+    m = messaging
+    a, b = m.ids
+    account = DashboardPrincipal(
+        m.user["account_id"], m.user["resource_owner"], "user", m.user["username"]
+    )
+    source = m.adapter.create_event(
+        await m.adapter.convert_message(
+            (
+                account.resource_owner,
+                a,
+                {
+                    "message": [{"type": "plain", "text": "source"}],
+                    "message_id": "source",
+                    "_dashboard_account": account,
+                },
+            )
+        )
+    )
+    accepted = await m.service.send_session_message(source, b, "baseline input")
+    rows = (await m.client.get(f"/api/v1/chat/sessions/{b}", headers=m.headers)).json()[
+        "data"
+    ]["history"]
+    saved = next(row for row in rows if row["content"].get("agent_source"))
+    assert accepted["input_message_id"] == saved["id"]

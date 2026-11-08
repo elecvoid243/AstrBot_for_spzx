@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr
 from sqlmodel import select
 
 from astrbot.builtin_stars.session_messages.tools import (
+    MAX_ACTIVE_RUN_IDS,
     AgentMessageSource,
     SessionMessageChain,
 )
@@ -370,6 +371,14 @@ async def send_remote_agent_message(
                         remote_source=channel["source"],
                     ),
                 )
+                run = service.chat.chat_runs.get(receipt["run_id"])
+                input_message = run.input_message if run is not None else None
+                if (
+                    isinstance(input_message, dict)
+                    and type(input_message.get("id")) is int
+                    and input_message["id"] > 0
+                ):
+                    receipt["input_message_id"] = input_message["id"]
                 receipt["status"] = "accepted"
                 await stream.aclose()
             except (ChatServiceError, ApiError) as exc:
@@ -391,7 +400,11 @@ async def send_remote_agent_message(
         receipt["task"] = asyncio.create_task(admit())
     await asyncio.shield(receipt["task"])
     return ok(
-        {key: receipt[key] for key in ("status", "run_id", "error") if key in receipt}
+        {
+            key: receipt[key]
+            for key in ("status", "run_id", "input_message_id", "error")
+            if key in receipt
+        }
     )
 
 
@@ -555,6 +568,11 @@ async def read_remote_agent_history(
         account.resource_owner, session_id
     )
     project = metadata.get("project") or {}
+    active_run_ids = sorted(
+        run_id
+        for run_id in service.chat.chat_runs_by_session.get(session_id, ())
+        if isinstance(run_id, str) and run_id
+    )
     return ok(
         {
             "session_id": session_id,
@@ -563,7 +581,13 @@ async def read_remote_agent_history(
             "project_name": project.get("title"),
             "archived": bool(target.archived),
             "is_running": bool(
-                metadata.get("is_running") or metadata.get("active_runs")
+                metadata.get("is_running")
+                or metadata.get("active_runs")
+                or active_run_ids
+            ),
+            "active_run_ids": active_run_ids[:MAX_ACTIVE_RUN_IDS],
+            "last_message_id": (
+                metadata["history"][-1]["id"] if metadata["history"] else None
             ),
             "history": page["history"],
             "has_more": page["has_more"],

@@ -61,7 +61,7 @@
               size="12"
               width="1.5"
             />
-            <span v-else class="ra-saved" role="status">
+            <span v-else-if="saved" class="ra-saved" role="status">
               <v-icon size="14">mdi-check</v-icon>
               {{ tm("remoteAccess.saved") }}
             </span>

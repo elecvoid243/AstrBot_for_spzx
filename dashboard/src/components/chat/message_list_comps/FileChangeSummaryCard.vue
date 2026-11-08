@@ -124,8 +124,10 @@
               :title="tm('fileChange.open')"
               @click.stop="openGroupPath = file.path"
             >
-              {{ tm("fileChange.open") }}
-              <v-icon size="13">mdi-chevron-down</v-icon>
+              <!-- Same glyph as the diff sidebar's open menu: the text label
+                   made the compact action strip twice as wide. -->
+              <v-icon size="15">mdi-open-in-app</v-icon>
+              <v-icon size="12">mdi-chevron-down</v-icon>
             </button>
             <template v-else>
               <v-btn
@@ -753,15 +755,14 @@ watch(
 .fcs-open-toggle {
   display: inline-flex;
   align-items: center;
-  gap: 1px;
+  gap: 0;
   height: 24px;
-  padding: 0 5px 0 7px;
+  padding: 0 4px;
   border: 0;
   border-radius: 999px;
   background: transparent;
   color: rgba(var(--v-theme-on-surface), 0.62);
   font: inherit;
-  font-size: 11.5px;
   line-height: 1;
   cursor: pointer;
   transition:

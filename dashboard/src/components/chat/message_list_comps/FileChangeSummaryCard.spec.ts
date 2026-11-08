@@ -47,6 +47,9 @@ const VBtnStub = {
 
 const STUBS = {
   "v-btn": VBtnStub,
+  // Icons carry no text in the real app (the glyph is a ::before pseudo
+  // element), so the stub must not leak the icon name into .text().
+  "v-icon": { template: "<i class='icon-stub' />" },
   "v-progress-circular": { template: "<span class='progress-stub' />" },
   DiffPreview: {
     name: "DiffPreview",
@@ -361,7 +364,12 @@ describe("FileChangeSummaryCard open group", () => {
     await flushPromises();
 
     let row = wrapper.findAll(".fcs-row")[0];
-    expect(row.find(".fcs-open-toggle").text()).toContain(zh.fileChange.open);
+    // Icon-only trigger: the label lives in the tooltip so the action strip
+    // stays narrow.
+    expect(row.find(".fcs-open-toggle").attributes("title")).toBe(
+      zh.fileChange.open,
+    );
+    expect(row.find(".fcs-open-toggle").text()).toBe("");
     expect(row.find(`[title="${zh.fileChange.openOnDisk}"]`).exists()).toBe(
       false,
     );

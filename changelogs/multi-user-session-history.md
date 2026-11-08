@@ -1,7 +1,0 @@
-# Multi-account session organization and history
-
-- Enable owner-scoped renaming, stars, archives, restore, deletion, batches, message search, history paging and markers in the shared Chat interface.
-- Allow ordinary accounts to edit and continue their latest saved user turn and retry the latest reply, with session, message, checkpoint and normalized-content checks. Validate quoted message ownership before any change.
-- Restrict associated thread cleanup to the same owner, and pass the trusted Dashboard principal owner when deleting session attachments. Keep independent API key and kernel cleanup semantics. Reject foreign IDs in formal and legacy routes, including daily administrator access; keep other platforms and operational exceptions unchanged.
-- Preserve local state on rejected operations, report partial batches, restore a saved reply when retry fails, and invalidate delayed lists, history, markers, search and selections on account changes.
-- Previous entry → current entry: ordinary accounts keep the existing Chat sidebar, now with Batch manage, Search messages, More actions and View archive. Project, branch, ZIP transfer and stream-recovery entry points remain closed until their own slices are delivered. Existing owned attachments, profile, model and effort choices continue to apply to edits and retries. Reject invalid attachment references and consumption parameters before changing history; no user configuration editor is added.

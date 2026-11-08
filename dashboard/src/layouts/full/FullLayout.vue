@@ -5,6 +5,7 @@ import VerticalSidebarVue from "./vertical-sidebar/VerticalSidebar.vue";
 import VerticalHeaderVue from "./vertical-header/VerticalHeader.vue";
 import ReadmeDialog from "@/components/shared/ReadmeDialog.vue";
 import AnnouncementBar from "@/components/shared/AnnouncementBar.vue";
+import StartupUpdateDialogs from "@/components/shared/StartupUpdateDialogs.vue";
 import Chat from "@/components/chat/Chat.vue";
 import { useAuthStore } from "@/stores/auth";
 const auth = useAuthStore();
@@ -123,6 +124,7 @@ onMounted(() => {
         customizer.inputBg ? 'inputWithbg' : '',
       ]"
     >
+      <StartupUpdateDialogs v-if="auth.role === 'admin'" />
       <v-progress-linear
         v-if="routerLoadingStore.isLoading"
         :model-value="routerLoadingStore.progress"

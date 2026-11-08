@@ -5,9 +5,20 @@ import { ref } from "vue";
 import StartupUpdateDialogs from "./StartupUpdateDialogs.vue";
 
 for (const name of [
-  "v-dialog", "v-card", "v-card-title", "v-card-text", "v-card-actions",
-  "v-icon", "v-chip", "v-progress-linear", "v-alert", "v-spacer", "v-btn", "v-checkbox",
-]) config.global.stubs[name] = true;
+  "v-dialog",
+  "v-card",
+  "v-card-title",
+  "v-card-text",
+  "v-card-actions",
+  "v-icon",
+  "v-chip",
+  "v-progress-linear",
+  "v-alert",
+  "v-spacer",
+  "v-btn",
+  "v-checkbox",
+])
+  config.global.stubs[name] = true;
 
 const mocks = vi.hoisted(() => ({
   check: vi.fn(),
@@ -101,7 +112,7 @@ describe("startup update dialogs", () => {
     wrapper.unmount();
   });
 
-  it("updates only selected plugins and prompts once per boot", async () => {
+  it("updates only selected plugins and remembers an explicit dismissal", async () => {
     mocks.check.mockResolvedValue({
       data: { status: "success", data: { has_new_version: false } },
     });
@@ -117,8 +128,70 @@ describe("startup update dialogs", () => {
     wrapper.unmount();
     const next = shallowMount(StartupUpdateDialogs);
     await flushPromises();
-    expect((next.vm as any).pluginsOpen).toBe(false);
-    expect(mocks.check).toHaveBeenCalledTimes(1);
+    expect((next.vm as any).pluginsOpen).toBe(true);
+    (next.vm as any).closePlugins();
+    next.unmount();
+    const dismissed = shallowMount(StartupUpdateDialogs);
+    await flushPromises();
+    expect((dismissed.vm as any).pluginsOpen).toBe(false);
+    expect(mocks.check).toHaveBeenCalledTimes(3);
+    dismissed.unmount();
+    mocks.market.mockResolvedValue([
+      { name: "one", market_plugin_id: "author/one", version: "3.0.0" },
+      { name: "two", market_plugin_id: "author/two", version: "2.0.0" },
+    ]);
+    const newer = shallowMount(StartupUpdateDialogs);
+    await flushPromises();
+    expect((newer.vm as any).plugins.map((item: any) => item.name)).toEqual([
+      "one",
+    ]);
+    expect((newer.vm as any).pluginsOpen).toBe(true);
+    newer.unmount();
+  });
+
+  it("remembers the closed core version independently from plugin updates", async () => {
+    const first = shallowMount(StartupUpdateDialogs);
+    await flushPromises();
+    (first.vm as any).closeCore();
+    expect((first.vm as any).pluginsOpen).toBe(true);
+    first.unmount();
+    const next = shallowMount(StartupUpdateDialogs);
+    await flushPromises();
+    expect((next.vm as any).coreOpen).toBe(false);
+    expect((next.vm as any).pluginsOpen).toBe(true);
+    next.unmount();
+    mocks.check.mockResolvedValue({
+      data: {
+        status: "success",
+        data: { has_new_version: true },
+        message: "\nChanges\n\nVersion: v3.0.0 | Published at: today",
+      },
+    });
+    const newer = shallowMount(StartupUpdateDialogs);
+    await flushPromises();
+    expect((newer.vm as any).coreOpen).toBe(true);
+    newer.unmount();
+  });
+
+  it("checks again on a later dashboard entry even without a backend restart", async () => {
+    mocks.check.mockResolvedValue({
+      data: { status: "success", data: { has_new_version: false } },
+    });
+    mocks.list.mockResolvedValue({ data: { status: "ok", data: [] } });
+    const first = shallowMount(StartupUpdateDialogs);
+    await flushPromises();
+    expect((first.vm as any).coreOpen).toBe(false);
+    first.unmount();
+    mocks.check.mockResolvedValue({
+      data: {
+        status: "success",
+        data: { has_new_version: true },
+        message: "\nChanges\n\nVersion: v2.0.0 | Published at: today",
+      },
+    });
+    const next = shallowMount(StartupUpdateDialogs);
+    await flushPromises();
+    expect((next.vm as any).coreOpen).toBe(true);
     next.unmount();
   });
 });

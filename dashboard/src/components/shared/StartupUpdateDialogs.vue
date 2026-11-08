@@ -30,7 +30,7 @@ const proxy = () =>
 let timer;
 let checking = false;
 let disposed = false;
-let presentedStart = null;
+let checkedStart = null;
 
 async function checkStartup() {
   if (
@@ -44,13 +44,7 @@ async function checkStartup() {
   checking = true;
   try {
     const start = await store.fetchStartTime();
-    if (
-      !start ||
-      start === -1 ||
-      presentedStart === start ||
-      localStorage.getItem("chat-update-start") === String(start)
-    )
-      return;
+    if (!start || start === -1 || checkedStart === start) return;
     release.value = null;
     plugins.value = [];
     coreDone.value = false;
@@ -71,12 +65,17 @@ async function checkStartup() {
         const match = String(result.message || "").match(
           /\n\nVersion: (.+?) \| Published at: [^\n]*\s*$/,
         );
-        if (match)
+        if (
+          match &&
+          !localStorage.getItem(
+            `astrbot:update:core:${encodeURIComponent(match[1])}`,
+          )
+        )
           release.value = {
             version: match[1],
             body: result.message.slice(0, match.index).trim(),
           };
-        else complete = false;
+        else if (!match) complete = false;
       }
     } else complete = false;
     if (
@@ -150,8 +149,13 @@ async function checkStartup() {
               }
             }
             if (
-              cmp < 0 ||
-              (cmp === 0 && local.includes("-") && !remote.includes("-"))
+              (cmp < 0 ||
+                (cmp === 0 && local.includes("-") && !remote.includes("-"))) &&
+              !localStorage.getItem(
+                `astrbot:update:plugin:${encodeURIComponent(
+                  item.name,
+                )}:${encodeURIComponent(remote)}`,
+              )
             ) {
               plugins.value.push({
                 ...item,
@@ -169,8 +173,7 @@ async function checkStartup() {
     } else complete = false;
     selected.value = plugins.value.map((p) => p.name);
     if (disposed) return;
-    if (complete) localStorage.setItem("chat-update-start", String(start));
-    if (release.value || plugins.value.length) presentedStart = start;
+    if (complete || release.value || plugins.value.length) checkedStart = start;
     if (release.value) coreOpen.value = true;
     else if (plugins.value.length) pluginsOpen.value = true;
   } catch (error) {
@@ -190,9 +193,26 @@ onBeforeUnmount(() => {
 });
 
 function closeCore() {
+  if (release.value)
+    localStorage.setItem(
+      `astrbot:update:core:${encodeURIComponent(release.value.version)}`,
+      "1",
+    );
   coreOpen.value = false;
   message.value = "";
   if (plugins.value.length) pluginsOpen.value = true;
+}
+
+function closePlugins() {
+  for (const item of plugins.value) {
+    localStorage.setItem(
+      `astrbot:update:plugin:${encodeURIComponent(
+        item.name,
+      )}:${encodeURIComponent(item.onlineVersion)}`,
+      "1",
+    );
+  }
+  pluginsOpen.value = false;
 }
 
 async function updateCore() {
@@ -310,7 +330,12 @@ async function updatePlugins() {
       >
     </v-card>
   </v-dialog>
-  <v-dialog v-model="pluginsOpen" max-width="640" :persistent="busy">
+  <v-dialog
+    :model-value="pluginsOpen"
+    max-width="640"
+    :persistent="busy"
+    @update:model-value="!$event && closePlugins()"
+  >
     <v-card rounded="xl">
       <v-card-title class="text-h3 pa-4 pb-0 pl-6"
         ><v-icon color="primary" class="mr-2">mdi-puzzle-outline</v-icon
@@ -354,7 +379,7 @@ async function updatePlugins() {
         ><v-spacer /><v-btn
           variant="text"
           :disabled="busy"
-          @click="pluginsOpen = false"
+          @click="closePlugins"
           >{{ zh ? "关闭" : "Close" }}</v-btn
         ><v-btn
           color="primary"

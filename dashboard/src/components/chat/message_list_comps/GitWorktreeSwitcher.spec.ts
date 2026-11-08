@@ -51,9 +51,9 @@ const mountOptions = {
       "v-list": { template: "<div><slot /></div>" },
       "v-divider": true,
       "v-list-item": {
-        props: ["title", "subtitle", "active", "prependIcon"],
+        props: ["title", "subtitle", "active"],
         template:
-          '<button class="menu-item" :aria-selected="active"><i>{{ prependIcon }}</i>{{ title }}<span>{{ subtitle }}</span><slot name="append" /></button>',
+          '<button class="menu-item" :aria-selected="active"><slot name="prepend" />{{ title }}<span>{{ subtitle }}</span><slot name="append" /></button>',
       },
     },
   },
@@ -173,7 +173,12 @@ describe("GitWorktreeSwitcher", () => {
     await wrapper.get(".worktree-menu-button").trigger("click");
     const options = wrapper.findAll(".worktree-menu-item");
     expect(options[1].attributes("aria-selected")).toBe("true");
-    expect(options[1].text()).toContain("mdi-lock");
+    // v-icon turns its default slot into an icon class, so state is read
+    // from the classes rather than the text.
+    expect(options[1].find(".mdi-check").exists()).toBe(true);
+    expect(options[1].get(".worktree-menu-action").classes()).toContain(
+      "mdi-lock-open-variant",
+    );
     expect(options[2].text()).toContain("9876543");
     expect(options[2].text()).toContain("/repo-detached");
     await options[1].trigger("contextmenu");
@@ -189,6 +194,40 @@ describe("GitWorktreeSwitcher", () => {
     await wrapper.get(".worktree-create-menu-item").trigger("click");
     expect(wrapper.emitted("create")).toHaveLength(2);
     expect(wrapper.find(".worktree-create-menu-item").exists()).toBe(false);
+  });
+
+  it("gates per-row lock and remove actions on main and locked worktrees", async () => {
+    const wrapper = mount(GitWorktreeSwitcher, mountOptions);
+    await nextTick();
+    stripHeight = 96;
+    resize();
+    await nextTick();
+    await wrapper.get(".worktree-menu-button").trigger("click");
+
+    let options = wrapper.findAll(".worktree-menu-item");
+    const mainActions = options[0].findAll(".worktree-menu-action");
+    expect(mainActions).toHaveLength(2);
+    expect(mainActions.every((icon) => icon.classes("is-disabled"))).toBe(true);
+    await mainActions[0].trigger("click");
+    await mainActions[1].trigger("click");
+    // stopPropagation keeps the row's own select handler out of the way.
+    expect(wrapper.emitted("change")).toBeUndefined();
+    expect(wrapper.emitted("lock")).toBeUndefined();
+    expect(wrapper.emitted("remove")).toBeUndefined();
+
+    const lockedActions = options[1].findAll(".worktree-menu-action");
+    expect(lockedActions[1].classes()).toContain("is-disabled");
+    await lockedActions[1].trigger("click");
+    expect(wrapper.emitted("remove")).toBeUndefined();
+    await lockedActions[0].trigger("click");
+    expect(wrapper.emitted("lock")?.at(-1)).toEqual([worktrees[1]]);
+    expect(wrapper.findAll(".worktree-menu-item")).toHaveLength(0);
+
+    await wrapper.get(".worktree-menu-button").trigger("click");
+    options = wrapper.findAll(".worktree-menu-item");
+    await options[2].findAll(".worktree-menu-action")[1].trigger("click");
+    expect(wrapper.emitted("remove")?.at(-1)).toEqual([worktrees[2]]);
+    expect(wrapper.findAll(".worktree-menu-item")).toHaveLength(0);
   });
 
   it("moves only the dropdown into the branch row and keeps full-width measurement", async () => {

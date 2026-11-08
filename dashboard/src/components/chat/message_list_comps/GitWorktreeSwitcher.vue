@@ -12,6 +12,8 @@ const emit = defineEmits<{
   change: [path: string | null];
   create: [];
   contextmenu: [event: MouseEvent, worktree: SpcodeGitWorktree];
+  lock: [worktree: SpcodeGitWorktree];
+  remove: [worktree: SpcodeGitWorktree];
 }>();
 const { tm } = useModuleI18n("features/chat");
 const tabs = ref<HTMLElement | null>(null);
@@ -42,6 +44,22 @@ const items = computed(() =>
   })),
 );
 const activeItem = computed(() => items.value.find((item) => item.active));
+
+// 2026-11-08 (elecvoid243): per-row management actions. The guards live
+// here (not only in the disabled styling) so a mis-wired click can never
+// reach the parent's destructive dialogs. Closing the menu first keeps the
+// v-menu overlay from covering the confirmation dialog it just opened.
+function onLockClick(wt: SpcodeGitWorktree): void {
+  if (wt.isMain) return;
+  menuOpen.value = false;
+  emit("lock", wt);
+}
+
+function onRemoveClick(wt: SpcodeGitWorktree): void {
+  if (wt.isMain || wt.locked) return;
+  menuOpen.value = false;
+  emit("remove", wt);
+}
 
 watch(tabs, (element, _, onCleanup) => {
   if (!element) return;
@@ -116,11 +134,7 @@ watch(tabs, (element, _, onCleanup) => {
           <span v-if="dropdownTarget" class="worktree-switcher-label">
             {{ tm("spcodeProjectLoad.diffSidebar.worktreeTabs.label") }}
           </span>
-          <v-menu
-            v-model="menuOpen"
-            location="bottom start"
-            max-width="400"
-          >
+          <v-menu v-model="menuOpen" location="bottom start" max-width="352">
             <template #activator="{ props: menuProps }">
               <button
                 v-bind="menuProps"
@@ -154,6 +168,10 @@ watch(tabs, (element, _, onCleanup) => {
                 "
               />
               <v-divider />
+              <!-- 2026-11-08 (elecvoid243) menu-unify: rows mirror the branch
+                   menu — prepended check for the active entry, inline
+                   management icons in the append slot, disabled states only
+                   for the main worktree and for removal of a locked one. -->
               <v-list-item
                 v-for="item in items"
                 :key="item.worktree.path"
@@ -161,7 +179,6 @@ watch(tabs, (element, _, onCleanup) => {
                 :active="item.active"
                 :title="item.label"
                 :subtitle="item.worktree.path"
-                :prepend-icon="item.icon"
                 @click="
                   emit(
                     'change',
@@ -172,11 +189,65 @@ watch(tabs, (element, _, onCleanup) => {
                   emit('contextmenu', $event, item.worktree)
                 "
               >
+                <template #prepend>
+                  <v-icon v-if="item.active" size="14" color="primary"
+                    >mdi-check</v-icon
+                  >
+                  <v-icon v-else size="14">{{ item.icon }}</v-icon>
+                </template>
                 <template #append>
                   <span v-if="item.badge" class="worktree-tab-badge">{{
                     item.badge
                   }}</span>
-                  <v-icon v-if="item.active" size="14">mdi-check</v-icon>
+                  <span class="worktree-menu-actions">
+                    <v-icon
+                      size="14"
+                      class="worktree-menu-action"
+                      :class="{ 'is-disabled': item.worktree.isMain }"
+                      :title="
+                        item.worktree.isMain
+                          ? tm(
+                              'spcodeProjectLoad.diffSidebar.worktreeMgmt.contextMenu.mainDisabled',
+                            )
+                          : item.worktree.locked
+                            ? tm(
+                                'spcodeProjectLoad.diffSidebar.worktreeMgmt.contextMenu.unlock',
+                              )
+                            : tm(
+                                'spcodeProjectLoad.diffSidebar.worktreeMgmt.contextMenu.lock',
+                              )
+                      "
+                      @click.stop="onLockClick(item.worktree)"
+                      >{{
+                        item.worktree.locked
+                          ? "mdi-lock-open-variant"
+                          : "mdi-lock"
+                      }}</v-icon
+                    >
+                    <v-icon
+                      size="14"
+                      class="worktree-menu-action worktree-menu-action--danger"
+                      :class="{
+                        'is-disabled':
+                          item.worktree.isMain || item.worktree.locked,
+                      }"
+                      :title="
+                        item.worktree.isMain
+                          ? tm(
+                              'spcodeProjectLoad.diffSidebar.worktreeMgmt.contextMenu.mainDisabled',
+                            )
+                          : item.worktree.locked
+                            ? tm(
+                                'spcodeProjectLoad.diffSidebar.worktreeMgmt.rowActions.removeLocked',
+                              )
+                            : tm(
+                                'spcodeProjectLoad.diffSidebar.worktreeMgmt.contextMenu.remove',
+                              )
+                      "
+                      @click.stop="onRemoveClick(item.worktree)"
+                      >mdi-trash-can-outline</v-icon
+                    >
+                  </span>
                 </template>
               </v-list-item>
             </v-list>
@@ -300,25 +371,74 @@ watch(tabs, (element, _, onCleanup) => {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* 2026-11-08 (elecvoid243) dropdown-unify: the compact trigger mirrors
+   .git-diff-sidebar-branch-mgmt-btn in GitDiffSidebar.vue, which stays the
+   source of truth for this row (12px text, 3px/8px padding, 6px radius,
+   1px theme border). Only the pill styling inherited from .worktree-tab
+   is overridden here. */
 .worktree-menu-button {
   width: 100%;
   max-width: 220px;
+  border-color: rgba(var(--v-border-color), var(--v-border-opacity, 1));
   border-radius: 6px;
   padding: 3px 8px;
+  gap: 4px;
+  line-height: 1.2;
   color: rgb(var(--v-theme-on-surface));
 }
 .worktree-menu-button .worktree-tab-label {
   flex: 1;
 }
+/* Same list metrics as .git-diff-sidebar-branch-menu. Vuetify's compact
+   two-line item is 56px tall by default, which is what made this menu read
+   as a different component: 1px + 16px title + 12px path + 1px = 30px. */
 .worktree-menu {
   max-height: 360px;
   overflow-y: auto;
+  font-size: 12px;
+}
+.worktree-menu :deep(.v-list-item.v-list-item--one-line),
+.worktree-menu :deep(.v-list-item.v-list-item--two-line) {
+  min-height: 30px;
+  padding-top: 1px;
+  padding-bottom: 1px;
 }
 .worktree-menu :deep(.v-list-item-title) {
   font-size: 12px;
+  line-height: 16px;
 }
 .worktree-menu :deep(.v-list-item-subtitle) {
-  font-size: 11px;
+  /* Path line: secondary to the 12px title, single line, clamped. */
+  font-size: 10.5px;
+  line-height: 12px;
+  -webkit-line-clamp: 1;
+}
+.worktree-menu :deep(.v-list-item__content) {
+  padding-inline: 8px;
+}
+/* Per-row actions follow the branch menu's inline icons: 60% opacity at
+   rest, full on hover, error tint for removal. */
+.worktree-menu-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: 2px;
+}
+.worktree-menu :deep(.worktree-menu-action) {
+  opacity: 0.6;
+  transition:
+    opacity 0.12s,
+    color 0.12s;
+}
+.worktree-menu :deep(.worktree-menu-action:hover) {
+  opacity: 1;
+}
+.worktree-menu :deep(.worktree-menu-action--danger:hover) {
+  color: rgb(var(--v-theme-error));
+}
+.worktree-menu :deep(.worktree-menu-action.is-disabled) {
+  opacity: 0.22;
+  cursor: default;
 }
 .worktree-tab-badge {
   flex-shrink: 0;

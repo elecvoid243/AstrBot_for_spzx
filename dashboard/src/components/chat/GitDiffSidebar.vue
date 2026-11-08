@@ -5333,8 +5333,8 @@ watch(
             <v-menu
               v-model="branchMenuOpen"
               :close-on-content-click="false"
-              location="bottom end"
-              max-width="320"
+              location="bottom start"
+              max-width="352"
             >
               <template #activator="{ props: menuProps }">
                 <button
@@ -5358,6 +5358,93 @@ watch(
                 </button>
               </template>
               <v-list density="compact" class="git-diff-sidebar-branch-menu">
+                <!-- 2026-11-08 (elecvoid243) menu-unify: creation is the
+                     first row in both the branch and the worktree menu, so
+                     it never hides below a long list. -->
+                <div
+                  v-if="branchCreateExpanded"
+                  class="git-diff-sidebar-branch-create"
+                >
+                  <v-text-field
+                    v-model="branchCreateName"
+                    :label="
+                      tm('spcodeProjectLoad.diffSidebar.branchMgmt.create.name')
+                    "
+                    :error-messages="
+                      branchCreateError ? [branchCreateError] : []
+                    "
+                    density="compact"
+                    variant="outlined"
+                    autofocus
+                    autocomplete="off"
+                    name="branch-create-name"
+                    @keyup.enter="onBranchCreateSubmit"
+                  />
+                  <v-text-field
+                    v-model="branchCreateStartPoint"
+                    :label="
+                      tm(
+                        'spcodeProjectLoad.diffSidebar.branchMgmt.create.startPoint',
+                      )
+                    "
+                    :placeholder="'HEAD'"
+                    density="compact"
+                    variant="outlined"
+                    class="mt-1"
+                    autocomplete="off"
+                    name="branch-create-start"
+                    @keyup.enter="onBranchCreateSubmit"
+                  />
+                  <div class="git-diff-sidebar-branch-create-actions">
+                    <v-btn
+                      size="x-small"
+                      variant="text"
+                      :disabled="isBranchCreating"
+                      @click="
+                        branchCreateExpanded = false;
+                        branchCreateError = null;
+                      "
+                    >
+                      {{
+                        tm(
+                          "spcodeProjectLoad.diffSidebar.branchMgmt.create.cancel",
+                        )
+                      }}
+                    </v-btn>
+                    <v-btn
+                      size="x-small"
+                      variant="flat"
+                      color="primary"
+                      :loading="isBranchCreating"
+                      :disabled="!branchCreateName.trim()"
+                      @click="onBranchCreateSubmit"
+                    >
+                      {{
+                        tm(
+                          "spcodeProjectLoad.diffSidebar.branchMgmt.create.submit",
+                        )
+                      }}
+                    </v-btn>
+                  </div>
+                </div>
+                <v-list-item
+                  v-else
+                  :disabled="isBranchCreating"
+                  @click="branchCreateExpanded = true"
+                >
+                  <template #prepend>
+                    <v-icon size="14">mdi-plus</v-icon>
+                  </template>
+                  <v-list-item-title>
+                    {{
+                      tm(
+                        "spcodeProjectLoad.diffSidebar.branchMgmt.create.menuItem",
+                      )
+                    }}
+                  </v-list-item-title>
+                </v-list-item>
+                <v-divider />
+
                 <!-- Loading -->
                 <template
                   v-if="branchesComposable.state.value.kind === 'loading'"
@@ -5444,90 +5531,6 @@ watch(
                   </v-list-item>
                 </template>
 
-                <!-- Inline create form -->
-                <v-divider />
-                <div
-                  v-if="branchCreateExpanded"
-                  class="git-diff-sidebar-branch-create"
-                >
-                  <v-text-field
-                    v-model="branchCreateName"
-                    :label="
-                      tm('spcodeProjectLoad.diffSidebar.branchMgmt.create.name')
-                    "
-                    :error-messages="
-                      branchCreateError ? [branchCreateError] : []
-                    "
-                    density="compact"
-                    variant="outlined"
-                    autofocus
-                    autocomplete="off"
-                    name="branch-create-name"
-                    @keyup.enter="onBranchCreateSubmit"
-                  />
-                  <v-text-field
-                    v-model="branchCreateStartPoint"
-                    :label="
-                      tm(
-                        'spcodeProjectLoad.diffSidebar.branchMgmt.create.startPoint',
-                      )
-                    "
-                    :placeholder="'HEAD'"
-                    density="compact"
-                    variant="outlined"
-                    class="mt-1"
-                    autocomplete="off"
-                    name="branch-create-start"
-                    @keyup.enter="onBranchCreateSubmit"
-                  />
-                  <div class="git-diff-sidebar-branch-create-actions">
-                    <v-btn
-                      size="x-small"
-                      variant="text"
-                      :disabled="isBranchCreating"
-                      @click="
-                        branchCreateExpanded = false;
-                        branchCreateError = null;
-                      "
-                    >
-                      {{
-                        tm(
-                          "spcodeProjectLoad.diffSidebar.branchMgmt.create.cancel",
-                        )
-                      }}
-                    </v-btn>
-                    <v-btn
-                      size="x-small"
-                      variant="flat"
-                      color="primary"
-                      :loading="isBranchCreating"
-                      :disabled="!branchCreateName.trim()"
-                      @click="onBranchCreateSubmit"
-                    >
-                      {{
-                        tm(
-                          "spcodeProjectLoad.diffSidebar.branchMgmt.create.submit",
-                        )
-                      }}
-                    </v-btn>
-                  </div>
-                </div>
-                <v-list-item
-                  v-else
-                  :disabled="isBranchCreating"
-                  @click="branchCreateExpanded = true"
-                >
-                  <template #prepend>
-                    <v-icon size="14">mdi-plus</v-icon>
-                  </template>
-                  <v-list-item-title>
-                    {{
-                      tm(
-                        "spcodeProjectLoad.diffSidebar.branchMgmt.create.menuItem",
-                      )
-                    }}
-                  </v-list-item-title>
-                </v-list-item>
               </v-list>
             </v-menu>
             <span
@@ -5694,6 +5697,8 @@ watch(
             @change="onWorktreeChange"
             @create="openCreateDialog"
             @contextmenu="openContextMenu"
+            @lock="onLockClick"
+            @remove="onRemoveClick"
           />
 
           <!-- Context menu (spec 2026-06-27 §2.3)
@@ -7365,8 +7370,16 @@ watch(
   overflow-y: auto;
   font-size: 12px;
 }
+/* 2026-11-08 (elecvoid243) menu-unify: 30px single-line rows so both menus
+   share one rhythm (Vuetify's compact density is 40px). */
+.git-diff-sidebar-branch-menu :deep(.v-list-item.v-list-item--one-line) {
+  min-height: 30px;
+  padding-top: 1px;
+  padding-bottom: 1px;
+}
 .git-diff-sidebar-branch-menu :deep(.v-list-item-title) {
   font-size: 12px;
+  line-height: 16px;
 }
 .git-diff-sidebar-branch-menu :deep(.v-list-item__content) {
   padding-inline: 8px;

@@ -1840,6 +1840,9 @@
           "remove": "Remove…",
           "mainDisabled": "Main worktree cannot be locked or removed"
         },
+        "rowActions": {
+          "removeLocked": "Locked - unlock first"
+        },
         "create": {
           "title": "New worktree",
           "modeCreate": "Create new branch (-b)",

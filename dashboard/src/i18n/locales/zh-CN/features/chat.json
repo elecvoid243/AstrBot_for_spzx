@@ -1192,6 +1192,9 @@
           "remove": "删除…",
           "mainDisabled": "主 worktree 不可锁定/删除"
         },
+        "rowActions": {
+          "removeLocked": "已锁定，需先解锁"
+        },
         "create": {
           "title": "新建 worktree",
           "modeCreate": "创建新分支 (-b)",

@@ -36,8 +36,22 @@ class ContextConfig:
     ``<= 0`` disables token-budget truncation and falls back to a fixed
     ``truncate_turns`` drop.
     """
-    llm_compress_keep_recent_ratio: float = 0.15
-    """Percent of current context tokens to keep as exact recent context during LLM-based compression."""
+    threshold_ratio: float = 0.8
+    """Fraction of the context window that triggers compaction."""
+    headroom_tokens: int = 16384
+    """Space kept free above the trigger for compaction work."""
+    retain_ratio: float = 0.16
+    """Fraction of the message budget kept verbatim during compaction."""
+    target_ratio: float = 0.55
+    """Desired post-compaction usage; <= 0 disables the target."""
+    min_yield_ratio: float = 0.0
+    """Minimum reduction a checkpoint must achieve; 0 accepts any smaller summary."""
+    max_summary_tokens: int = 0
+    """Upper bound for the summary request's output; 0 keeps the chat limit."""
+    compaction_retries: int = 1
+    """Extra summary passes within one process call."""
+    llm_compress_keep_recent_ratio: float | None = None
+    """Deprecated alias for ``retain_ratio``; kept for existing callers."""
     llm_compress_provider: "Provider | None" = None
     """LLM provider used for compression tasks. If None, truncation strategy is used."""
     custom_token_counter: TokenCounter | None = None
@@ -49,3 +63,8 @@ class ContextConfig:
     summary request so provider fields derived from them (such as
     reasoning_effort) stay identical to the chat requests the provider prefix
     cache was built from."""
+
+    def __post_init__(self) -> None:
+        """Map the legacy keep-recent ratio onto the message-budget ratio."""
+        if self.llm_compress_keep_recent_ratio is not None:
+            self.retain_ratio = self.llm_compress_keep_recent_ratio

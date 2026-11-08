@@ -85,7 +85,7 @@ def resolve_compaction_spec(
     absolute_threshold_tokens: int = 0,
     retain_ratio: float = 0.16,
     target_ratio: float = 0.55,
-    max_summary_tokens: int = 8192,
+    max_summary_tokens: int = 0,
     compaction_retries: int = 1,
     min_growth_ratio: float = 0.1,
     min_yield_ratio: float = 0.0,
@@ -101,7 +101,8 @@ def resolve_compaction_spec(
             ratio. A positive value is clamped to the pressure budget.
         retain_ratio: Fraction of the message budget kept verbatim.
         target_ratio: Desired post-compaction usage; 0 disables the target.
-        max_summary_tokens: Upper bound for the summary request's output.
+        max_summary_tokens: Upper bound for the summary request's output;
+            0 keeps the request's own limit.
         compaction_retries: Extra summary passes; capped at 3.
         min_growth_ratio: Fraction of the window required before re-compacting.
         min_yield_ratio: Minimum reduction a checkpoint must achieve.
@@ -110,8 +111,24 @@ def resolve_compaction_spec(
         The resolved spec, or None when the request has no message budget.
     """
     window = _coerce_int(context_window, 0)
+    absolute = _coerce_int(absolute_threshold_tokens, 0)
     if window <= 0:
-        return None
+        if absolute <= 0:
+            return None
+        # Absolute-threshold mode: no window means no capacity guard, but the
+        # configured trigger still drives compaction.
+        return CompactionSpec(
+            context_window=0,
+            output_budget=0,
+            headroom_tokens=0,
+            threshold_tokens=max(2, absolute),
+            retain_tokens=0,
+            target_tokens=0,
+            max_summary_tokens=max(0, _coerce_int(max_summary_tokens, 0)),
+            compaction_retries=min(3, _coerce_int(compaction_retries, 1)),
+            min_growth_tokens=1024,
+            min_yield_ratio=min(0.9, _coerce_ratio(min_yield_ratio, 0.0)),
+        )
 
     reserved = min(_coerce_int(output_budget, 0), window)
     message_budget = window - reserved
@@ -119,6 +136,9 @@ def resolve_compaction_spec(
         return None
 
     headroom = _coerce_int(headroom_tokens, 0)
+    # A headroom that consumes most of a small window would make the trigger
+    # unreachable in practice; keep it to at most a quarter of the budget.
+    headroom = min(headroom, message_budget // 4)
     pressure_budget = message_budget - headroom
     if pressure_budget <= 0:
         # A headroom larger than the message budget is unusable; ignore it
@@ -131,7 +151,6 @@ def resolve_compaction_spec(
         ratio = 0.8
     threshold = min(int(window * ratio), pressure_budget)
 
-    absolute = _coerce_int(absolute_threshold_tokens, 0)
     if absolute > 0:
         threshold = min(absolute, pressure_budget)
     threshold = max(2, threshold)
@@ -143,10 +162,11 @@ def resolve_compaction_spec(
     if target <= 0 or target >= threshold:
         target = 0
 
-    summary_cap = _coerce_int(max_summary_tokens, 8192)
-    summary_cap = max(
-        64, min(summary_cap, headroom or pressure_budget, pressure_budget)
-    )
+    summary_cap = _coerce_int(max_summary_tokens, 0)
+    if summary_cap > 0:
+        summary_cap = max(
+            64, min(summary_cap, headroom or pressure_budget, pressure_budget)
+        )
 
     retries = min(3, _coerce_int(compaction_retries, 1))
     min_growth = max(1024, int(window * _coerce_ratio(min_growth_ratio, 0.1)))

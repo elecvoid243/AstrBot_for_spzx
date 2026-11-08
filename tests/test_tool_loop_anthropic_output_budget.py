@@ -306,7 +306,7 @@ async def test_runner_summary_checks_the_same_native_output_limit(
             assert requests[0]["max_tokens"] == expected
         assert (
             any(
-                "Our previous history conversation summary:" in str(message.content)
+                "This is an automatically generated checkpoint" in str(message.content)
                 for message in sent
             )
             is fits

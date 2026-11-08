@@ -81,7 +81,7 @@ async def test_single_long_round_reaches_target_in_one_pass():
     provider = ScriptedSummaryProvider(ratio=0.25)
     manager = make_manager(provider)
 
-    result = await manager.process(long_round(), output_token_budget=2_000)
+    result = await manager.process(long_round())
 
     assert manager.token_counter.count_tokens(result) <= 11_000
     assert manager.last_compression["passes"] == 1
@@ -94,7 +94,7 @@ async def test_low_yield_summary_stops_after_two_passes():
     provider = ScriptedSummaryProvider(ratio=0.6)
     manager = make_manager(provider)
 
-    await manager.process(long_round(), output_token_budget=2_000)
+    await manager.process(long_round())
 
     assert provider.calls == 2
     assert manager.last_compression["insufficient"] is True

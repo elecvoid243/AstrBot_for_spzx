@@ -415,7 +415,7 @@ class LLMSummaryCompressor:
             ):
                 execution = current_team_execution.get()
                 params = dict(self.llm_params or {})
-                if max_summary_tokens is not None:
+                if max_summary_tokens is not None and max_summary_tokens > 0:
                     key = (
                         "max_completion_tokens"
                         if "max_completion_tokens" in params

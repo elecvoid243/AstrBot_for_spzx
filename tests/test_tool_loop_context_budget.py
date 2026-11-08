@@ -132,6 +132,8 @@ async def test_new_tool_result_triggers_compression_before_next_delivery(
         ],
         max_context_tokens=1000,
     )
+    provider.provider_config["compress_threshold_ratio"] = 0.82
+    provider.provider_config["compaction_headroom_tokens"] = 0
     executor = BudgetToolExecutor("x" * result_chars)
     runner = ToolLoopAgentRunner()
     await runner.reset(
@@ -254,6 +256,8 @@ async def test_full_estimation_counts_extra_content_once_and_uses_media_estimate
         [LLMResponse(role="assistant", completion_text="done")],
         max_context_tokens=1000,
     )
+    provider.provider_config["compress_threshold_ratio"] = 0.82
+    provider.provider_config["compaction_headroom_tokens"] = 0
     part = (
         ImageURLPart(image_url={"url": "data:image/png;base64," + "A" * 100000})
         if media
@@ -351,6 +355,8 @@ async def test_retry_preserves_the_request_without_recounting_or_reexecuting_too
         ],
         max_context_tokens=1000,
     )
+    provider.provider_config["compress_threshold_ratio"] = 0.82
+    provider.provider_config["compaction_headroom_tokens"] = 0
     executor = BudgetToolExecutor("x" * 220)
     runner = ToolLoopAgentRunner()
     runner.EMPTY_OUTPUT_RETRY_WAIT_MIN_S = 0

@@ -352,6 +352,10 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         # llm compressor
         llm_compress_keep_recent_ratio: float = 0.15,
         llm_compress_provider: Provider | None = None,
+        target_ratio: float = 0.55,
+        min_yield_ratio: float = 0.0,
+        max_summary_tokens: int = 0,
+        compaction_retries: int = 1,
         # truncate by turns compressor
         truncate_turns: int = 1,
         truncate_target_usage_ratio: float = 0.4,
@@ -371,6 +375,10 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         self.streaming = streaming
         self.llm_compress_keep_recent_ratio = llm_compress_keep_recent_ratio
         self.llm_compress_provider = llm_compress_provider
+        self.target_ratio = target_ratio
+        self.min_yield_ratio = min_yield_ratio
+        self.max_summary_tokens = max_summary_tokens
+        self.compaction_retries = compaction_retries
         self.truncate_turns = truncate_turns
         self.truncate_target_usage_ratio = truncate_target_usage_ratio
         self.custom_token_counter = custom_token_counter
@@ -408,10 +416,20 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             max_context_tokens=max_context_tokens,
             # <=0 keeps the compressors' ratio-based trigger.
             compress_threshold_tokens=compress_threshold_tokens,
+            threshold_ratio=float(
+                provider.provider_config.get("compress_threshold_ratio", 0.8) or 0.8
+            ),
+            headroom_tokens=int(
+                provider.provider_config.get("compaction_headroom_tokens", 16384) or 0
+            ),
             truncate_turns=self.truncate_turns,
             truncate_target_usage_ratio=self.truncate_target_usage_ratio,
             llm_compress_keep_recent_ratio=self.llm_compress_keep_recent_ratio,
             llm_compress_provider=self.llm_compress_provider,
+            target_ratio=self.target_ratio,
+            min_yield_ratio=self.min_yield_ratio,
+            max_summary_tokens=self.max_summary_tokens,
+            compaction_retries=self.compaction_retries,
             custom_token_counter=self.custom_token_counter,
             custom_compressor=self.custom_compressor,
             # Same per-request LLM params the chat requests send, so the

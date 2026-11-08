@@ -16,7 +16,7 @@ def test_threshold_subtracts_output_and_headroom():
     assert spec.threshold_tokens == 16_000
     assert spec.retain_tokens == 2_880
     assert spec.target_tokens == 11_000
-    assert spec.max_summary_tokens == 2_000
+    assert spec.max_summary_tokens == 0
 
 
 def test_absolute_threshold_cannot_exceed_pressure_budget():
@@ -45,15 +45,15 @@ def test_zero_message_budget_disables_compaction():
     assert resolve_compaction_spec(context_window=1_000, output_budget=1_000) is None
 
 
-def test_oversized_headroom_falls_back_to_zero():
+def test_headroom_is_capped_for_small_windows():
     spec = resolve_compaction_spec(
         context_window=1_000,
         output_budget=800,
         headroom_tokens=400,
     )
     assert spec is not None
-    assert spec.headroom_tokens == 0
-    assert spec.threshold_tokens == 200
+    assert spec.headroom_tokens == 50
+    assert spec.threshold_tokens == 150
     assert spec.target_tokens == 0
 
 

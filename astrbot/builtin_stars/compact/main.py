@@ -21,6 +21,8 @@ from astrbot import logger
 from astrbot.api import star
 from astrbot.api.all import MessageChain, MessageEventResult
 from astrbot.api.event import AstrMessageEvent, filter
+from astrbot.core.agent.context.compaction_region import select_compaction_range
+from astrbot.core.agent.context.compaction_spec import resolve_compaction_spec
 from astrbot.core.agent.context.compressor import LLMSummaryCompressor
 from astrbot.core.agent.context.token_counter import EstimateTokenCounter
 from astrbot.core.agent.message import (
@@ -106,11 +108,43 @@ class Main(star.Star):
             token_counter=EstimateTokenCounter(),
             llm_params=llm_params,
         )
+        window = int(provider.provider_config.get("max_context_tokens", 0) or 0)
+        if window <= 0:
+            window = int(compression_config.get("fallback_max_tokens", 128000) or 0)
+        spec = resolve_compaction_spec(
+            context_window=window,
+            output_budget=0,
+            threshold_ratio=float(
+                provider.provider_config.get("compress_threshold_ratio", 0.8) or 0.8
+            ),
+            headroom_tokens=int(
+                provider.provider_config.get("compaction_headroom_tokens", 16384) or 0
+            ),
+            retain_ratio=float(compression_config.get("keep_recent_ratio", 0.16)),
+            target_ratio=float(compression_config.get("target_ratio", 0.55) or 0.55),
+        )
+        if spec is None:
+            event.set_result(
+                MessageEventResult().message("压缩失败：无法解析当前模型的上下文窗口。")
+            )
+            return
+        selected = select_compaction_range(
+            messages,
+            retain_tokens=spec.retain_tokens,
+            token_counter=compressor.token_counter,
+        )
+        if selected is None:
+            event.set_result(
+                MessageEventResult().message("当前上下文没有可安全压缩的区间。")
+            )
+            return
         try:
-            new_messages = await compressor(messages, func_tool=chat_func_tool)
-        except TypeError:
-            # Compressors implementing the legacy single-argument protocol.
-            new_messages = await compressor(messages)
+            new_messages = await compressor(
+                messages,
+                func_tool=chat_func_tool,
+                spec=spec,
+                selected_range=selected,
+            )
         except Exception as e:
             logger.error(f"compact: unexpected error during compression: {e}")
             event.set_result(MessageEventResult().message(f"压缩失败:{e}"))

@@ -153,7 +153,9 @@ def test_compresses_and_saves() -> None:
     assert isinstance(new_history, list)
     assert 0 < len(new_history) <= len(history)
     assert len(json.dumps(new_history)) < len(json.dumps(history))
-    assert new_history[0]["_compaction_id"] == new_history[1]["_compaction_id"]
+    assert new_history[0]["role"] == "user"
+    assert "_compaction_id" in new_history[0]
+    assert sum(1 for message in new_history if "_compaction_id" in message) == 1
     texts = _result_texts(event)
     assert any("压缩完成" in t for t in texts)
 

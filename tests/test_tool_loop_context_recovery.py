@@ -339,6 +339,7 @@ async def test_long_task_partial_results_compress_cancel_resume_and_finish(
             tool_schema_mode="skills_like",
             llm_compress_provider=restored_summary,
             llm_compress_keep_recent_ratio=0,
+            compaction_retries=0,
         )
         tail = [event async for event in resumed.step_until_done(5)]
         assert resumed.get_final_llm_resp().completion_text == "done"

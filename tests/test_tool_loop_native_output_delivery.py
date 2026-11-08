@@ -773,7 +773,7 @@ async def test_summary_reserves_its_native_default(native_openai, fits):
         )
     assert (
         any(
-            "Our previous history conversation summary:" in str(message.content)
+            "This is an automatically generated checkpoint" in str(message.content)
             for message in sent
         )
         is fits
@@ -911,7 +911,7 @@ async def test_summary_override_priority_matches_its_native_request(
             } == {selected_field}
         assert (
             any(
-                "Our previous history conversation summary:" in str(message.content)
+                "This is an automatically generated checkpoint" in str(message.content)
                 for message in sent
             )
             is fits
@@ -1076,7 +1076,7 @@ async def test_summary_budget_is_delivered_to_the_native_sdk(
             assert other_field not in requests[0]
         assert (
             any(
-                "Our previous history conversation summary:" in str(message.content)
+                "This is an automatically generated checkpoint" in str(message.content)
                 for message in sent
             )
             is fits

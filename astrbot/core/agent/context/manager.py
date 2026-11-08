@@ -8,6 +8,8 @@ from astrbot.core.exceptions import ContextCapacityError, ToolProtocolIntegrityE
 from astrbot.core.provider.modalities import sanitize_contexts_by_modalities
 
 from ..message import Message, bind_checkpoint_messages
+from .compaction_region import select_compaction_range
+from .compaction_spec import CompactionSpec, resolve_compaction_spec
 from .compressor import LLMSummaryCompressor, TruncateByTurnsCompressor
 from .config import ContextConfig
 from .token_counter import EstimateTokenCounter
@@ -57,6 +59,7 @@ class ContextManager:
         self.config = config
 
         self.last_compression: dict | None = None
+        self._last_compaction_tokens: int | None = None
         """Report of the compression performed by the latest ``process()`` call.
 
         ``None`` means that call did not compress. Reset at the start of every
@@ -72,7 +75,7 @@ class ContextManager:
         elif config.llm_compress_provider:
             self.compressor = LLMSummaryCompressor(
                 provider=config.llm_compress_provider,
-                keep_recent_ratio=config.llm_compress_keep_recent_ratio,
+                keep_recent_ratio=config.retain_ratio,
                 compress_threshold_tokens=config.compress_threshold_tokens,
                 token_counter=self.token_counter,
                 llm_params=config.llm_params,
@@ -148,50 +151,76 @@ class ContextManager:
         try:
             result = messages
 
-            # Apply token-based compression to the complete visible request.
-            if (
-                self.config.max_context_tokens > 0
-                or self.config.compress_threshold_tokens > 0
-            ):
-                total_tokens = self._count_request_tokens(
-                    result, func_tool, usage_snapshot
-                )
-
-                if (
-                    check_compression_threshold
-                    and self.compressor.should_compress(
-                        result, total_tokens, self.config.max_context_tokens
-                    )
-                ) or (
-                    self.config.max_context_tokens > 0
-                    and total_tokens + output_token_budget
-                    > self.config.max_context_tokens
-                ):
-                    result = await self._run_compression(
-                        result,
-                        total_tokens,
-                        func_tool,
-                        output_token_budget,
-                        modalities,
-                        prune_tool_results,
-                        protected_messages,
-                    )
-                    usage_snapshot = None
-
-                total_tokens = self._count_request_tokens(
-                    result, func_tool, usage_snapshot
-                )
+            spec = resolve_compaction_spec(
+                context_window=self.config.max_context_tokens,
+                output_budget=output_token_budget,
+                threshold_ratio=self.config.threshold_ratio,
+                headroom_tokens=self.config.headroom_tokens,
+                absolute_threshold_tokens=self.config.compress_threshold_tokens,
+                retain_ratio=self.config.retain_ratio,
+                target_ratio=self.config.target_ratio,
+                max_summary_tokens=self.config.max_summary_tokens,
+                compaction_retries=self.config.compaction_retries,
+                min_yield_ratio=self.config.min_yield_ratio,
+            )
+            if spec is None:
                 if (
                     self.config.max_context_tokens > 0
-                    and total_tokens + output_token_budget
-                    > self.config.max_context_tokens
+                    and output_token_budget >= self.config.max_context_tokens
                 ):
                     raise ContextCapacityError(
-                        f"Context capacity exceeded: {total_tokens} input tokens "
-                        f"plus {output_token_budget} reserved output tokens "
-                        f"cannot fit in the {self.config.max_context_tokens}-token window "
-                        "after compression. Reduce the current input, tool definitions, or output limit."
+                        f"Context capacity exceeded: {output_token_budget} reserved "
+                        f"output tokens cannot fit in the "
+                        f"{self.config.max_context_tokens}-token window."
                     )
+                return result
+
+            total_tokens = self._count_request_tokens(result, func_tool, usage_snapshot)
+            if self._last_compaction_tokens is None and any(
+                message.compaction_id for message in result
+            ):
+                # A restored checkpoint is already recent context; do not
+                # immediately re-summarize it until the request grows again.
+                self._last_compaction_tokens = total_tokens
+            capacity_pressure = (
+                spec.context_window > 0
+                and total_tokens + output_token_budget > spec.context_window
+            )
+            threshold_pressure = (
+                check_compression_threshold and total_tokens > spec.threshold_tokens
+            )
+            if capacity_pressure or threshold_pressure:
+                if (
+                    not capacity_pressure
+                    and self._last_compaction_tokens is not None
+                    and total_tokens
+                    < self._last_compaction_tokens + spec.min_growth_tokens
+                ):
+                    return result
+                result = await self._run_compression(
+                    spec,
+                    result,
+                    total_tokens,
+                    func_tool,
+                    output_token_budget,
+                    modalities,
+                    prune_tool_results,
+                    protected_messages,
+                    reason="capacity" if capacity_pressure else "threshold",
+                )
+                usage_snapshot = None
+
+            total_tokens = self._count_request_tokens(result, func_tool, usage_snapshot)
+            if (
+                spec.context_window > 0
+                and total_tokens + output_token_budget > spec.context_window
+            ):
+                raise ContextCapacityError(
+                    f"Context capacity exceeded: {total_tokens} input tokens "
+                    f"plus {output_token_budget} reserved output tokens "
+                    f"cannot fit in the {spec.context_window}-token window "
+                    "after compression. Reduce the current input, tool definitions, or output limit."
+                )
 
             return result
         except Exception as e:
@@ -264,6 +293,7 @@ class ContextManager:
 
     async def _run_compression(
         self,
+        spec: CompactionSpec,
         messages: list[Message],
         prev_tokens: int,
         func_tool: "ToolSet | None" = None,
@@ -272,23 +302,20 @@ class ContextManager:
         prune_tool_results: Callable[[list[Message]], Awaitable[list[Message]]]
         | None = None,
         protected_messages: list[Message] | None = None,
+        reason: str = "threshold",
     ) -> list[Message]:
-        """
-        Compress/truncate the messages.
-
-        If the context still exceeds the limit after compression (for example
-        because the summary request failed), whole rounds are dropped, oldest
-        first, until it fits. The latest round is always kept, even when it
-        alone exceeds the limit.
+        """Compress or truncate the messages toward the resolved target.
 
         Args:
+            spec: Resolved compaction budgets for this request.
             messages: The original message list.
-            prev_tokens: The token count before compression.
-            func_tool: Tool set attached to the LLM summary request.
+            prev_tokens: Token count before compression.
+            func_tool: Tool set attached to the summary request.
             output_token_budget: Output tokens reserved in the model window.
             modalities: Effective provider capabilities for replacement history.
             prune_tool_results: Optional runner-owned tool-result offloading.
             protected_messages: Inputs awaiting durable delivery confirmation.
+            reason: Trigger label recorded in the compression report.
 
         Returns:
             The compressed/truncated message list.
@@ -299,124 +326,96 @@ class ContextManager:
         """
         logger.debug("Compress triggered, starting compression...")
 
-        pruned = False
         if prune_tool_results is not None:
             replacement = await prune_tool_results(messages)
-            pruned = replacement != messages
-            messages = replacement
-            tokens = self._count_request_tokens(messages, func_tool)
-            if (
-                pruned
-                and not self.compressor.should_compress(
-                    messages, tokens, self.config.max_context_tokens
-                )
-                and not (
-                    self.config.max_context_tokens > 0
-                    and tokens + output_token_budget > self.config.max_context_tokens
-                )
-            ):
-                self.last_compression = {
-                    "strategy": "tool_result_prune",
-                    "tokens_before": prev_tokens,
-                    "tokens_after": tokens,
-                }
-                return messages
+            if replacement != messages:
+                messages = replacement
+                tokens = self._count_request_tokens(messages, func_tool)
+                if tokens <= spec.threshold_tokens and (
+                    spec.context_window <= 0
+                    or tokens + output_token_budget <= spec.context_window
+                ):
+                    self.last_compression = {
+                        "strategy": "tool_result_prune",
+                        "tokens_before": prev_tokens,
+                        "tokens_after": tokens,
+                        "shadowed_tokens": 0,
+                        "checkpoint_tokens": 0,
+                        "yield_ratio": 0.0,
+                        "passes": 0,
+                        "reason": reason,
+                        "insufficient": False,
+                        "threshold_tokens": spec.threshold_tokens,
+                        "retain_tokens": spec.retain_tokens,
+                        "target_tokens": spec.target_tokens,
+                        "context_window": spec.context_window,
+                        "output_budget": spec.output_budget,
+                    }
+                    self._last_compaction_tokens = tokens
+                    return messages
 
-        try:
-            before_summary = messages
-            if isinstance(self.compressor, LLMSummaryCompressor):
-                messages = await self.compressor(
-                    messages, func_tool=func_tool, protected_messages=protected_messages
+        passes = 0
+        attempted = False
+        if isinstance(self.compressor, LLMSummaryCompressor):
+            # Capacity pressure cannot be fixed by summarizing the same range
+            # twice; hard-drop handles the residual instead.
+            max_passes = 1 if reason == "capacity" else 1 + spec.compaction_retries
+            for _ in range(max_passes):
+                selected = select_compaction_range(
+                    messages,
+                    retain_tokens=spec.retain_tokens,
+                    token_counter=self.token_counter,
+                    protected_messages=protected_messages,
                 )
-            else:
-                messages = await self.compressor(messages, func_tool=func_tool)
-        except TypeError:
-            # Third-party compressors may still implement the old
-            # single-argument protocol; retry without the kwarg so they keep
-            # working (without summary-request cache parity).
-            logger.warning(
-                "Custom compressor rejected the func_tool argument; "
-                "falling back to the legacy one-argument call.",
-            )
-            messages = await self.compressor(messages)
-
-        if any(message not in messages for message in (protected_messages or [])):
-            messages = before_summary
-
-        # Validate the replacement view before counting or dropping any rounds.
-        if modalities:
-            visible, stats = sanitize_contexts_by_modalities(
-                messages, modalities, preserve_internal=True
-            )
-            if stats.changed:
-                messages = bind_checkpoint_messages(visible)
-        messages = self.truncator.fix_messages(messages)
-        tokens_after_summary = self._count_request_tokens(messages, func_tool)
-
-        if (
-            isinstance(self.compressor, LLMSummaryCompressor)
-            and messages != before_summary
-            and (
-                self.compressor.should_compress(
-                    messages, tokens_after_summary, self.config.max_context_tokens
-                )
-                or (
-                    self.config.max_context_tokens > 0
-                    and tokens_after_summary + output_token_budget
-                    > self.config.max_context_tokens
-                )
-            )
-        ):
-            messages = await self.compressor(
-                messages,
-                func_tool=func_tool,
-                compact_current_round=True,
-                protected_messages=protected_messages,
-            )
-            if modalities:
-                visible, _ = sanitize_contexts_by_modalities(
-                    messages, modalities, preserve_internal=True
-                )
-                messages = bind_checkpoint_messages(visible)
-            messages = self.truncator.fix_messages(messages)
-            tokens_after_summary = self._count_request_tokens(messages, func_tool)
-
-        # calculate compress rate
-        if self.config.max_context_tokens > 0:
-            compress_rate = (
-                tokens_after_summary / self.config.max_context_tokens
-            ) * 100
-            logger.info(
-                f"Compress completed."
-                f" {prev_tokens} -> {tokens_after_summary} tokens,"
-                f" compression rate: {compress_rate:.2f}%.",
-            )
+                if selected is None:
+                    break
+                attempted = True
+                before = messages
+                try:
+                    messages = await self.compressor(
+                        messages,
+                        func_tool=func_tool,
+                        spec=spec,
+                        selected_range=selected,
+                        protected_messages=protected_messages,
+                    )
+                except TypeError:
+                    messages = await self.compressor(messages, func_tool=func_tool)
+                messages = self.truncator.fix_messages(messages)
+                if messages == before:
+                    break
+                passes += 1
+                tokens = self._count_request_tokens(messages, func_tool)
+                if spec.target_tokens and tokens <= spec.target_tokens:
+                    break
+                if tokens <= spec.threshold_tokens and (
+                    spec.context_window <= 0
+                    or tokens + output_token_budget <= spec.context_window
+                ):
+                    break
         else:
-            # Absolute-threshold mode without a window size: nothing to
-            # express the result as a rate of.
-            logger.info(
-                f"Compress completed. {prev_tokens} -> {tokens_after_summary} tokens.",
-            )
+            attempted = True
+            before = messages
+            try:
+                messages = await self.compressor(messages, func_tool=func_tool)
+            except TypeError:
+                messages = await self.compressor(messages)
+            messages = self.truncator.fix_messages(messages)
+            if messages != before:
+                passes = 1
 
-        tokens = tokens_after_summary
+        tokens = self._count_request_tokens(messages, func_tool)
         dropped_rounds = 0
-        needs_fallback = self.compressor.should_compress(
-            messages, tokens, self.config.max_context_tokens
-        ) or (
-            self.config.max_context_tokens > 0
-            and tokens + output_token_budget > self.config.max_context_tokens
-        )
-        if needs_fallback:
+        if tokens > spec.threshold_tokens or (
+            spec.context_window > 0
+            and tokens + output_token_budget > spec.context_window
+        ):
             logger.info(
-                "Context still exceeds max tokens after compression, dropping the oldest rounds..."
+                "Context still exceeds the compression target, dropping the oldest rounds..."
             )
-            # Drop whole rounds so tool calls stay with their results. Recount
-            # after each removal and always preserve the current request.
-            while self.compressor.should_compress(
-                messages, tokens, self.config.max_context_tokens
-            ) or (
-                self.config.max_context_tokens > 0
-                and tokens + output_token_budget > self.config.max_context_tokens
+            while tokens > spec.threshold_tokens or (
+                spec.context_window > 0
+                and tokens + output_token_budget > spec.context_window
             ):
                 replacement = self.truncator.drop_oldest_round(
                     messages, protected_messages
@@ -428,20 +427,41 @@ class ContextManager:
                 messages = self.truncator.fix_messages(messages)
                 tokens = self._count_request_tokens(messages, func_tool)
             logger.info(f"Dropped {dropped_rounds} oldest round(s).")
-
-            if self.compressor.should_compress(
-                messages, tokens, self.config.max_context_tokens
-            ):
+            if tokens > spec.threshold_tokens:
                 logger.warning(
                     "Protected context still exceeds the compression trigger."
                 )
 
-        self.last_compression = {
-            # Reuse the existing lossy-truncation label in the WebUI notice.
-            "strategy": "truncate_by_turns"
-            if dropped_rounds
-            else getattr(self.compressor, "strategy", "custom"),
-            "tokens_before": prev_tokens,
-            "tokens_after": tokens,
-        }
+        insufficient = bool(
+            (spec.target_tokens and tokens > spec.target_tokens)
+            or tokens > spec.threshold_tokens
+        )
+        if attempted or dropped_rounds:
+            shadowed = getattr(self.compressor, "last_shadowed_tokens", 0)
+            if not isinstance(shadowed, int):
+                shadowed = 0
+            checkpoint = getattr(self.compressor, "last_checkpoint_tokens", 0)
+            if not isinstance(checkpoint, int):
+                checkpoint = 0
+            strategy = getattr(self.compressor, "strategy", "custom")
+            if not isinstance(strategy, str):
+                strategy = "custom"
+            yield_ratio = (1 - checkpoint / shadowed) if shadowed else 0.0
+            self.last_compression = {
+                "strategy": ("truncate_by_turns" if dropped_rounds else strategy),
+                "tokens_before": prev_tokens,
+                "tokens_after": tokens,
+                "shadowed_tokens": shadowed,
+                "checkpoint_tokens": checkpoint,
+                "yield_ratio": round(max(0.0, min(1.0, yield_ratio)), 4),
+                "passes": passes,
+                "reason": reason,
+                "insufficient": insufficient,
+                "threshold_tokens": spec.threshold_tokens,
+                "retain_tokens": spec.retain_tokens,
+                "target_tokens": spec.target_tokens,
+                "context_window": spec.context_window,
+                "output_budget": spec.output_budget,
+            }
+            self._last_compaction_tokens = tokens
         return messages

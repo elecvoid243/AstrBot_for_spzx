@@ -151,9 +151,9 @@ async def test_successful_summary_is_protected_during_output_fallback():
     )
     manager = ContextManager(
         ContextConfig(
-            max_context_tokens=240,
+            max_context_tokens=800,
             compress_threshold_tokens=100,
-            llm_compress_keep_recent_ratio=0.3,
+            llm_compress_keep_recent_ratio=0.1,
             llm_compress_provider=provider,
             custom_token_counter=CharTokenCounter(),
         )
@@ -162,12 +162,12 @@ async def test_successful_summary_is_protected_during_output_fallback():
         Message(role="user", content="x" * 400),
         Message(role="assistant", content="old answer"),
         Message(role="user", content="retained"),
-        Message(role="assistant", content="y" * 40),
+        Message(role="assistant", content="y" * 200),
         Message(role="user", content="current"),
     ]
     result = await manager.process(messages, output_token_budget=55)
     assert result[0].compaction_id
-    assert result[1].compaction_id == result[0].compaction_id
+    assert sum(1 for message in result if message.compaction_id) == 1
     assert "s" * 30 in result[0].content
     assert result[-1] == messages[-1]
     assert not any(m.content == "retained" for m in result)

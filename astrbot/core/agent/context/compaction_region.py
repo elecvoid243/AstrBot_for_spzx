@@ -163,6 +163,12 @@ def select_compaction_range(
             cut = min(cut, last_user)
 
     end = cut
+    if end <= start and last_user > first_non_system:
+        # No completed steps after the current request: compact the history
+        # before it instead, keeping the request and its open batch exact.
+        start = first_non_system
+        end = last_user
+
     while start < end and (
         messages[start].role == "system" or id(messages[start]) in protected_ids
     ):

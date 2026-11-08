@@ -486,18 +486,13 @@ class TestContextManager:
         messages = [self.create_message("user", "Hi" * 50)]  # ~100 tokens
 
         with patch.object(
-            manager.compressor, "should_compress", return_value=False
-        ) as mock_should_compress:
-            with patch.object(
-                manager.compressor, "__call__", new_callable=AsyncMock
-            ) as mock_compress:
-                result = await manager.process(messages)
+            manager.compressor, "__call__", new_callable=AsyncMock
+        ) as mock_compress:
+            result = await manager.process(messages)
 
-                # should_compress should be called
-                mock_should_compress.assert_called_once()
-                # Compressor should not be called
-                mock_compress.assert_not_called()
-                assert result == messages
+            # The resolved threshold is above the request, so no call happens.
+            mock_compress.assert_not_called()
+            assert result == messages
 
     @pytest.mark.asyncio
     async def test_token_compression_triggered_above_threshold(self):
@@ -691,11 +686,11 @@ class TestContextManager:
         # Dropping the first round (600 tokens) is enough to get under 820, so
         # the round with the tool chain stays intact.
         assert result == [messages[0], *messages[3:]]
-        assert manager.last_compression == {
-            "strategy": "truncate_by_turns",
-            "tokens_before": 830,
-            "tokens_after": 230,
-        }
+        report = manager.last_compression
+        assert report is not None
+        assert report["strategy"] == "truncate_by_turns"
+        assert report["tokens_before"] == 830
+        assert report["tokens_after"] == 230
 
     @pytest.mark.asyncio
     async def test_failed_summary_recounts_each_round_and_preserves_prefix(self):
@@ -729,12 +724,12 @@ class TestContextManager:
         assert messages == original
         assert result == [*messages[:2], *extra_rounds[2:], *history[3:]]
         assert result[-1] is history[-1]
-        assert manager.last_compression == {
-            "strategy": "truncate_by_turns",
-            "tokens_before": manager.token_counter.count_tokens(original),
-            "tokens_after": manager.token_counter.count_tokens(result),
-        }
-        assert manager.last_compression["tokens_after"] <= 820
+        report = manager.last_compression
+        assert report is not None
+        assert report["strategy"] == "truncate_by_turns"
+        assert report["tokens_before"] == manager.token_counter.count_tokens(original)
+        assert report["tokens_after"] == manager.token_counter.count_tokens(result)
+        assert report["tokens_after"] <= 820
 
     @pytest.mark.asyncio
     async def test_fallback_keeps_latest_round_when_it_alone_exceeds_limit(
@@ -1041,7 +1036,13 @@ class TestContextManager:
         mock_compressor.should_compress = MagicMock(return_value=False)
         manager.compressor = mock_compressor
 
-        result = await manager._run_compression(messages, prev_tokens=100)
+        from astrbot.core.agent.context.compaction_spec import (
+            resolve_compaction_spec,
+        )
+
+        spec = resolve_compaction_spec(context_window=1000, output_budget=0)
+        assert spec is not None
+        result = await manager._run_compression(spec, messages, prev_tokens=100)
 
         # Compressor __call__ should be invoked (func_tool threaded through)
         mock_compressor.assert_called_once_with(messages, func_tool=None)
@@ -1164,10 +1165,12 @@ class TestContextManager:
             ContextConfig(
                 llm_compress_provider=provider,  # type: ignore[arg-type]
                 llm_compress_keep_recent_ratio=0.15,
-                max_context_tokens=1000,
+                max_context_tokens=3000,
+                threshold_ratio=0.82,
+                headroom_tokens=0,
             )
         )
-        messages = self.create_long_rounds(3)
+        messages = self.create_long_rounds(12)
         tokens_before = manager.token_counter.count_tokens(messages)
 
         result = await manager.process(messages)
@@ -1416,17 +1419,17 @@ async def test_llm_compressor_no_retry_when_tools_absent():
 async def test_context_manager_threads_func_tool_into_compression():
     """process() forwards func_tool to the compressor's summary request."""
     config = ContextConfig(
-        max_context_tokens=100,
+        max_context_tokens=40,
     )
     manager = ContextManager(config)
-    messages = [Message(role="user", content=f"msg {i}") for i in range(6)]
+    messages = [Message(role="user", content=f"msg {i}" * 3) for i in range(10)]
     mock_compressor = AsyncMock(return_value=messages)
     mock_compressor.should_compress = MagicMock(side_effect=[True, False])
     manager.compressor = mock_compressor
     toolset = MagicMock(name="chat_toolset")
     toolset.openai_schema.return_value = []
 
-    await manager.process(messages, trusted_token_usage=95, func_tool=toolset)
+    await manager.process(messages, func_tool=toolset)
 
     mock_compressor.assert_awaited_once_with(messages, func_tool=toolset)
 

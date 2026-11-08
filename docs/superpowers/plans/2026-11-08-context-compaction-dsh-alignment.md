@@ -111,7 +111,7 @@
 | `tool_pairing_balanced_before` | Task 3 | `(messages: list[Message], index: int) -> bool` |
 | `tool_pairing_balanced_after` | Task 3 | `(messages: list[Message], index: int) -> bool` |
 | `select_compaction_range` | Task 3 | `(messages, *, retain_tokens: int, token_counter: TokenCounter, protected_messages: list[Message] \| None = None) -> CompactionRange \| None`；`start` 含、`end` 不含 |
-| `LLMSummaryCompressor.__call__` | Task 4 | `(messages, func_tool=None, *, spec: CompactionSpec, range: CompactionRange, protected_messages=None) -> list[Message]` |
+| `LLMSummaryCompressor.__call__` | Task 4 | `(messages, func_tool=None, *, spec: CompactionSpec, selected_range: CompactionRange, protected_messages=None) -> list[Message]` |
 | `TruncateByTurnsCompressor.__call__` | Task 5 | `(messages, func_tool=None, *, spec: CompactionSpec \| None = None) -> list[Message]` |
 | `CompactionOutcome` | Task 4 `manager.py` | dataclass：`messages, strategy, tokens_before, tokens_after, shadowed_tokens, checkpoint_tokens, passes, reason, insufficient` |
 | `last_compression` 扩展字段 | Task 4 | `shadowed_tokens, checkpoint_tokens, yield_ratio, passes, reason, threshold_tokens, retain_tokens, target_tokens, context_window, output_budget` |
@@ -321,7 +321,7 @@ async def test_full_history_checkpoint_is_one_user_message():
 
 - [ ] **Step 2: 实现要点**
 
-- 选区由 `ContextManager` 完成并作为参数传入：`compressor(messages, spec=spec, range=range)`。`LLMSummaryCompressor` 不再自己算保留比例；自定义 compressor 若不接受新关键字，`ContextManager` 沿用现有 `TypeError` 回退到单参数调用（无 spec，不参与目标水位循环）。
+- 选区由 `ContextManager` 完成并作为参数传入：`compressor(messages, spec=spec, selected_range=selected)`。参数名不能叫 `range`，否则遮蔽内建 `range()`，破坏旧路径的循环。
 - 新增 `_summary_finish_reason(response) -> str | None`：OpenAI `choices[0].finish_reason`、Anthropic `stop_reason`、Gemini `candidates[0].finish_reason`；无法识别时返回 `None`。
 - `max_tokens = spec.max_summary_tokens`（默认 `min(headroom, 8192)`）写入摘要请求 `llm_params`，覆盖聊天请求的 `max_tokens`。
 - 空文本、含图像、`MAX_TOKENS` → 返回原 `messages`，不写 `last_compression`。

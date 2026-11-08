@@ -10,6 +10,8 @@ from ...provider.modalities import (
     sanitize_contexts_by_modalities,
 )
 from ..message import Message, bind_checkpoint_messages
+from .compaction_region import CompactionRange
+from .compaction_spec import CompactionSpec
 from .token_counter import EstimateTokenCounter, TokenCounter
 
 if TYPE_CHECKING:
@@ -63,7 +65,24 @@ Rules:
 - Do NOT mention this summarization request or that the context was compacted.
 - Output only the checkpoint text: do not call any tool or take any other action.
 - If the conversation already contains a <compacted-summary> block, it is a PRIOR checkpoint. Do not copy it forward verbatim: preserve still-true facts, drop stale ones, and merge newer information into a single consolidated summary under the same structure.
+
+
+CHECKPOINT_PREAMBLE = (
+    "This is an automatically generated checkpoint condensing an earlier span "
+    "of the conversation to free up context. Treat the captured context as "
+    "established background and build on it without restating it. Continue "
+    "the task directly from the messages that follow, without acknowledging "
+    "this checkpoint."
+)
 """
+
+CHECKPOINT_PREAMBLE = (
+    "This is an automatically generated checkpoint condensing an earlier span "
+    "of the conversation to free up context. Treat the captured context as "
+    "established background and build on it without restating it. Continue "
+    "the task directly from the messages that follow, without acknowledging "
+    "this checkpoint."
+)
 
 
 @runtime_checkable
@@ -274,6 +293,9 @@ class LLMSummaryCompressor:
         self.llm_params = llm_params or {}
 
         self.instruction_text = COMPACTION_INSTRUCTION
+        self.last_shadowed_tokens: int | None = None
+        self.last_checkpoint_tokens: int | None = None
+        self.last_summary_tokens: int | None = None
 
     def should_compress(
         self, messages: list[Message], current_tokens: int, max_tokens: int
@@ -331,11 +353,296 @@ class LLMSummaryCompressor:
 
         return rounds[:recent_start], rounds[recent_start:]
 
+    async def _request_summary(
+        self,
+        summary_contexts: list[Message],
+        func_tool: "ToolSet | None",
+        *,
+        max_summary_tokens: int | None = None,
+    ) -> str | None:
+        """Generate one summary from the supplied prefix.
+
+        Args:
+            summary_contexts: Prefix replayed to the summary model.
+            func_tool: Tool schema kept for prefix-cache parity.
+            max_summary_tokens: Optional cap for the summary output.
+
+        Returns:
+            The summary text, or None when generation failed or was truncated.
+
+        Raises:
+            ProcessPersistenceError: Durable team execution failed.
+            ToolProtocolIntegrityError: History cannot be paired.
+        """
+        from astrbot.core.agent_team_execution import (
+            ProcessPersistenceError,
+            current_team_execution,
+            model_delivery,
+            resolve_model_output_limit,
+        )
+
+        if summary_contexts[-1].role != "assistant":
+            summary_contexts.append(
+                Message(
+                    role="assistant",
+                    content="Acknowledged.",
+                )
+            )
+        summary_contexts.append(Message(role="user", content=self.instruction_text))
+        sanitized_summary_contexts, sanitize_stats = sanitize_contexts_by_modalities(
+            summary_contexts,
+            self.provider.provider_config.get("modalities", None),
+        )
+        log_context_sanitize_stats(sanitize_stats)
+        sanitized_summary_contexts = [
+            message.model_dump()
+            for message in ContextTruncator().fix_messages(
+                bind_checkpoint_messages(sanitized_summary_contexts)
+            )
+        ]
+        modalities = self.provider.provider_config.get("modalities")
+        summary_tools = func_tool
+        if isinstance(modalities, list) and modalities and "tool_use" not in modalities:
+            summary_tools = None
+
+        # Generate summary. A single attempt is enough: on failure the caller
+        # falls back to truncation, so retrying (e.g. on an exhausted quota)
+        # would only hold up the reply.
+        summary_content = ""
+        try:
+            for schemas in (
+                [summary_tools, None] if summary_tools is not None else [None]
+            ):
+                execution = current_team_execution.get()
+                params = dict(self.llm_params or {})
+                if max_summary_tokens is not None:
+                    key = (
+                        "max_completion_tokens"
+                        if "max_completion_tokens" in params
+                        else "max_tokens"
+                    )
+                    params[key] = min(
+                        int(params.get(key) or max_summary_tokens),
+                        max_summary_tokens,
+                    )
+                receipt = None
+                input_tokens = self.token_counter.count_tokens(
+                    bind_checkpoint_messages(sanitized_summary_contexts)
+                )
+                if schemas:
+                    input_tokens += self.token_counter.count_tokens(
+                        [
+                            Message(
+                                role="system",
+                                content=json.dumps(
+                                    schemas.openai_schema(), ensure_ascii=False
+                                ),
+                            )
+                        ]
+                    )
+                window = self.provider.provider_config.get("max_context_tokens", 0)
+                if window > 0 and input_tokens > window:
+                    raise ContextCapacityError(
+                        f"Summary context capacity exceeded: {input_tokens} input "
+                        f"tokens cannot fit in the {window}-token window."
+                    )
+                if execution and execution.begin_usage:
+                    receipt = await execution.begin_usage(
+                        {
+                            "receipt_id": uuid.uuid4().hex,
+                            "invocation_id": uuid.uuid4().hex,
+                            "kind": "model",
+                            "name": self.provider.provider_config.get("id"),
+                            "input_tokens": input_tokens,
+                            "max_output_tokens": params.get("max_completion_tokens")
+                            or params.get("max_tokens"),
+                        }
+                    )
+                response = None
+                try:
+                    default_limit = getattr(
+                        self.provider, "DEFAULT_MAX_OUTPUT_TOKENS", 0
+                    )
+                    if get_default := getattr(
+                        self.provider, "get_default_output_token_limit", None
+                    ):
+                        default_limit = get_default()
+                    output_budget = resolve_model_output_limit(
+                        params,
+                        self.provider.provider_config.get("custom_extra_body"),
+                        default=default_limit,
+                        admitted_limit=receipt["max_output_tokens"]
+                        if receipt
+                        else None,
+                    )
+                    if receipt:
+                        params[
+                            "max_completion_tokens"
+                            if "max_completion_tokens" in params
+                            else "max_tokens"
+                        ] = output_budget
+                    explicit_output = (
+                        isinstance(output_budget, int) and output_budget > 0
+                    )
+                    input_limit = (
+                        window - output_budget
+                        if explicit_output
+                        else int(window * self.compression_threshold)
+                    )
+                    if window > 0 and input_tokens > input_limit:
+                        raise ContextCapacityError(
+                            f"Summary context capacity exceeded: {input_tokens} input "
+                            f"tokens cannot fit with its output budget in the {window}-token window."
+                        )
+                    with model_delivery(receipt, output_limit=output_budget):
+                        if schemas is None and func_tool is not None:
+                            # Tool-free recovery omits the original schema argument.
+                            response = await self.provider.text_chat(
+                                contexts=sanitized_summary_contexts,
+                                llm_params=params or None,
+                                request_max_retries=1,
+                            )
+                        else:
+                            response = await self.provider.text_chat(
+                                contexts=sanitized_summary_contexts,
+                                func_tool=schemas,
+                                llm_params=params or None,
+                                request_max_retries=1,
+                            )
+                finally:
+                    if receipt and execution and execution.report_usage:
+                        report = (
+                            {
+                                "input_tokens": response.usage.input,
+                                "output_tokens": response.usage.output,
+                            }
+                            if response and response.usage
+                            else {
+                                "estimated_tokens": input_tokens
+                                + (len(response.completion_text) + 3) // 4
+                            }
+                            if response and response.role != "err"
+                            else {}
+                        )
+                        await execution.report_usage(receipt["receipt_id"], report)
+                summary_content = (
+                    (response.completion_text or "").strip() if response else ""
+                )
+                if summary_content and self._summary_was_truncated(response):
+                    logger.warning(
+                        "LLM context compression was truncated at the summary "
+                        "output cap; retaining history."
+                    )
+                    return None
+                if summary_content:
+                    break
+        except Exception as e:
+            if isinstance(e, (ProcessPersistenceError, ToolProtocolIntegrityError)):
+                raise
+            logger.error(f"Failed to generate summary: {e}")
+            return None
+
+        if not summary_content:
+            logger.warning("LLM context compression returned an empty summary.")
+            return None
+        return summary_content
+
+    async def _summarize_range(
+        self,
+        messages: list[Message],
+        func_tool: "ToolSet | None",
+        *,
+        spec: CompactionSpec,
+        selected_range: CompactionRange,
+    ) -> list[Message]:
+        """Summarize one selected range into a single checkpoint."""
+        input_snapshot = copy.deepcopy(messages)
+        summary_content = await self._request_summary(
+            list(messages[: selected_range.end]),
+            func_tool,
+            max_summary_tokens=spec.max_summary_tokens,
+        )
+        if summary_content is None:
+            return messages
+        if messages != input_snapshot:
+            logger.warning(
+                "Summary input changed while generation was running; retaining current history."
+            )
+            return messages
+
+        last_user = -1
+        for position, message in enumerate(messages):
+            if message.role == "user" and not message.compaction_id:
+                last_user = position
+        role = (
+            "assistant"
+            if last_user >= 0 and selected_range.start > last_user
+            else "user"
+        )
+        checkpoint = Message(
+            role=role,
+            content=(
+                f"{CHECKPOINT_PREAMBLE}\n\n<compacted-summary>\n"
+                f"{summary_content}\n</compacted-summary>"
+            ),
+            _compaction_id=uuid.uuid4().hex,
+        )
+        self.last_shadowed_tokens = selected_range.shadowed_tokens
+        self.last_checkpoint_tokens = self.token_counter.count_tokens([checkpoint])
+        self.last_summary_tokens = self.token_counter.count_tokens(
+            [Message(role="assistant", content=summary_content)]
+        )
+        if self.last_checkpoint_tokens >= selected_range.shadowed_tokens * (
+            1 - spec.min_yield_ratio
+        ):
+            logger.warning(
+                "Compaction checkpoint did not meet the minimum yield; retaining history."
+            )
+            return messages
+        result = (
+            messages[: selected_range.start]
+            + [checkpoint]
+            + messages[selected_range.end :]
+        )
+        if self.token_counter.count_tokens(result) >= self.token_counter.count_tokens(
+            messages
+        ):
+            logger.warning(
+                "Summary did not reduce the selected context; retaining its input."
+            )
+            return messages
+        return result
+
+    @staticmethod
+    def _summary_was_truncated(response: object) -> bool:
+        """Return True when the provider stopped at the summary output cap."""
+        raw = getattr(response, "raw_completion", None)
+        if raw is None:
+            return False
+        choices = getattr(raw, "choices", None)
+        if choices:
+            return getattr(choices[0], "finish_reason", None) in {
+                "length",
+                "max_tokens",
+            }
+        stop_reason = getattr(raw, "stop_reason", None)
+        if stop_reason is not None:
+            return stop_reason == "max_tokens"
+        candidates = getattr(raw, "candidates", None)
+        if candidates:
+            return (
+                "MAX_TOKENS"
+                in str(getattr(candidates[0], "finish_reason", None)).upper()
+            )
+        return False
+
     async def __call__(
         self,
         messages: list[Message],
         func_tool: "ToolSet | None" = None,
         *,
+        spec: CompactionSpec | None = None,
+        selected_range: CompactionRange | None = None,
         compact_current_round: bool = False,
         protected_messages: list[Message] | None = None,
     ) -> list[Message]:
@@ -365,14 +672,13 @@ class LLMSummaryCompressor:
         Raises:
             ToolProtocolIntegrityError: History cannot be paired unambiguously.
         """
-        from astrbot.core.agent_team_execution import (
-            ProcessPersistenceError,
-            current_team_execution,
-            model_delivery,
-            resolve_model_output_limit,
-        )
 
         from .round_utils import split_into_rounds
+
+        if spec is not None and selected_range is not None:
+            return await self._summarize_range(
+                messages, func_tool, spec=spec, selected_range=selected_range
+            )
 
         # Shared by automatic compression and direct kernel-compressor callers.
         # Repair only the model view; execution records remain authoritative.
@@ -477,153 +783,8 @@ class LLMSummaryCompressor:
             # earlier execution steps, leaving the request and recent tail exact.
             summary_contexts = list(messages[:partial_end])
 
-        if summary_contexts[-1].role != "assistant":
-            summary_contexts.append(
-                Message(
-                    role="assistant",
-                    content="Acknowledged.",
-                )
-            )
-        summary_contexts.append(Message(role="user", content=self.instruction_text))
-        sanitized_summary_contexts, sanitize_stats = sanitize_contexts_by_modalities(
-            summary_contexts,
-            self.provider.provider_config.get("modalities", None),
-        )
-        log_context_sanitize_stats(sanitize_stats)
-        sanitized_summary_contexts = [
-            message.model_dump()
-            for message in ContextTruncator().fix_messages(
-                bind_checkpoint_messages(sanitized_summary_contexts)
-            )
-        ]
-        modalities = self.provider.provider_config.get("modalities")
-        summary_tools = func_tool
-        if isinstance(modalities, list) and modalities and "tool_use" not in modalities:
-            summary_tools = None
-
-        # Generate summary. A single attempt is enough: on failure the caller
-        # falls back to truncation, so retrying (e.g. on an exhausted quota)
-        # would only hold up the reply.
-        summary_content = ""
-        try:
-            for schemas in (
-                [summary_tools, None] if summary_tools is not None else [None]
-            ):
-                execution = current_team_execution.get()
-                params = dict(self.llm_params or {})
-                receipt = None
-                input_tokens = self.token_counter.count_tokens(
-                    bind_checkpoint_messages(sanitized_summary_contexts)
-                )
-                if schemas:
-                    input_tokens += self.token_counter.count_tokens(
-                        [
-                            Message(
-                                role="system",
-                                content=json.dumps(
-                                    schemas.openai_schema(), ensure_ascii=False
-                                ),
-                            )
-                        ]
-                    )
-                window = self.provider.provider_config.get("max_context_tokens", 0)
-                if window > 0 and input_tokens > window:
-                    raise ContextCapacityError(
-                        f"Summary context capacity exceeded: {input_tokens} input "
-                        f"tokens cannot fit in the {window}-token window."
-                    )
-                if execution and execution.begin_usage:
-                    receipt = await execution.begin_usage(
-                        {
-                            "receipt_id": uuid.uuid4().hex,
-                            "invocation_id": uuid.uuid4().hex,
-                            "kind": "model",
-                            "name": self.provider.provider_config.get("id"),
-                            "input_tokens": input_tokens,
-                            "max_output_tokens": params.get("max_completion_tokens")
-                            or params.get("max_tokens"),
-                        }
-                    )
-                response = None
-                try:
-                    default_limit = getattr(
-                        self.provider, "DEFAULT_MAX_OUTPUT_TOKENS", 0
-                    )
-                    if get_default := getattr(
-                        self.provider, "get_default_output_token_limit", None
-                    ):
-                        default_limit = get_default()
-                    output_budget = resolve_model_output_limit(
-                        params,
-                        self.provider.provider_config.get("custom_extra_body"),
-                        default=default_limit,
-                        admitted_limit=receipt["max_output_tokens"]
-                        if receipt
-                        else None,
-                    )
-                    if receipt:
-                        params[
-                            "max_completion_tokens"
-                            if "max_completion_tokens" in params
-                            else "max_tokens"
-                        ] = output_budget
-                    explicit_output = (
-                        isinstance(output_budget, int) and output_budget > 0
-                    )
-                    input_limit = (
-                        window - output_budget
-                        if explicit_output
-                        else int(window * self.compression_threshold)
-                    )
-                    if window > 0 and input_tokens > input_limit:
-                        raise ContextCapacityError(
-                            f"Summary context capacity exceeded: {input_tokens} input "
-                            f"tokens cannot fit with its output budget in the {window}-token window."
-                        )
-                    with model_delivery(receipt, output_limit=output_budget):
-                        if schemas is None and func_tool is not None:
-                            # Tool-free recovery omits the original schema argument.
-                            response = await self.provider.text_chat(
-                                contexts=sanitized_summary_contexts,
-                                llm_params=params or None,
-                                request_max_retries=1,
-                            )
-                        else:
-                            response = await self.provider.text_chat(
-                                contexts=sanitized_summary_contexts,
-                                func_tool=schemas,
-                                llm_params=params or None,
-                                request_max_retries=1,
-                            )
-                finally:
-                    if receipt and execution and execution.report_usage:
-                        report = (
-                            {
-                                "input_tokens": response.usage.input,
-                                "output_tokens": response.usage.output,
-                            }
-                            if response and response.usage
-                            else {
-                                "estimated_tokens": input_tokens
-                                + (len(response.completion_text) + 3) // 4
-                            }
-                            if response and response.role != "err"
-                            else {}
-                        )
-                        await execution.report_usage(receipt["receipt_id"], report)
-                summary_content = (
-                    (response.completion_text or "").strip() if response else ""
-                )
-                if summary_content:
-                    break
-        except Exception as e:
-            if isinstance(e, (ProcessPersistenceError, ToolProtocolIntegrityError)):
-                raise
-            logger.error(f"Failed to generate summary: {e}")
-            return messages
-
-        if not summary_content:
-            logger.warning("LLM context compression returned an empty summary.")
+        summary_content = await self._request_summary(summary_contexts, func_tool)
+        if summary_content is None:
             return messages
 
         if messages != input_snapshot:

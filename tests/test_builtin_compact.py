@@ -105,7 +105,6 @@ def _compression_config(provider_id: str = "") -> dict:
                 "compression": {
                     "provider_id": provider_id,
                     "keep_recent_ratio": 0.1,
-                    "instruction": "",
                 },
             },
         },

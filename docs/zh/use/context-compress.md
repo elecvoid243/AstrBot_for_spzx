@@ -6,20 +6,14 @@
 
 AstrBot 在每次模型请求前检查上下文，包括工具执行后的后续请求。提供方设置了正数 `compress_threshold_tokens` 时使用该绝对阈值，否则使用模型窗口的 82%。计量包含系统提示词、消息和工具定义；输入加上生效的输出预算仍须放进模型窗口。摘要可能遗漏细节。
 
+是否触发压缩只取决于 Token 预算，不再按对话轮数预先截断；轮数仅在“按对话轮数截断”策略内部决定一次丢弃多少。
+
 ## 压缩策略
 
 目前有两种压缩策略
 
 1. 按照对话轮数截断，删除较早完整轮次。启用 token 预算截断时，默认目标为模型窗口的 40%，保留最新轮次和已标识摘要。
-2. 由 LLM 生成摘要，这是新配置的默认策略。可指定摘要模型，留空时尝试当前会话的聊天模型。默认 `keep_recent_ratio` 为 `0.15`，用于为近期原文分配预算。您还可以自定义压缩提示词：
-
-```
-Based on our full conversation history, produce a concise summary of key takeaways and/or project progress.
-1. Systematically cover all core topics discussed and the final conclusion/outcome for each; clearly highlight the latest primary focus.
-2. If any tools were used, summarize tool usage (total call count) and extract the most valuable insights from tool outputs.
-3. If there was an initial user goal, state it first and describe the current progress/status.
-4. Write the summary in the user's language.
-```
+2. 由 LLM 生成摘要，这是新配置的默认策略。可指定摘要模型，留空时尝试当前会话的聊天模型。默认 `keep_recent_ratio` 为 `0.15`，用于为近期原文分配预算。压缩提示词是内置的固定结构化模板，不再提供配置项。
 
 压缩后仍有压力时，AstrBot 从最早的普通历史轮次开始裁剪，保留系统消息、摘要和当前完整轮次。只超过压缩触发阈值时不会强制删除受保护内容；如果受保护内容、工具定义和输出预算仍超过模型窗口，请求会以明确的上下文容量错误停止。请缩小当前输入、减少工具定义、降低输出上限或选择更大的模型窗口。
 

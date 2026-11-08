@@ -219,12 +219,10 @@ def _migrate_agent_runner_config(
                 ),
             }
             runner_config["compression"] = {
-                "max_turns": provider_settings.get("max_context_length", -1),
                 "trim_turns": provider_settings.get("dequeue_context_length", 1),
                 "overflow_strategy": provider_settings.get(
                     "context_limit_reached_strategy", "llm_compress"
                 ),
-                "instruction": provider_settings.get("llm_compress_instruction", ""),
                 "keep_recent_ratio": provider_settings.get(
                     "llm_compress_keep_recent_ratio", 0.15
                 ),

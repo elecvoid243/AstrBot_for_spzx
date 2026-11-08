@@ -2178,43 +2178,10 @@ class TestBuildMainAgent:
         assert isinstance(result, module.MainAgentBuildResult)
 
     @pytest.mark.asyncio
-    async def test_build_main_agent_passes_max_context_length_to_runner(
-        self, mock_event, mock_context, mock_provider
-    ):
-        module = ama
-        mock_context.get_provider_by_id.return_value = None
-        mock_context.get_using_provider.return_value = mock_provider
-        mock_context.get_config.return_value = {}
-
-        conv_mgr = mock_context.conversation_manager
-        _setup_conversation_for_build(conv_mgr)
-
-        with (
-            patch("astrbot.core.astr_main_agent.AgentRunner") as mock_runner_cls,
-            patch("astrbot.core.astr_main_agent.AstrAgentContext"),
-        ):
-            mock_runner = MagicMock()
-            mock_runner.reset = AsyncMock()
-            mock_runner_cls.return_value = mock_runner
-
-            result = await module.build_main_agent(
-                event=mock_event,
-                plugin_context=mock_context,
-                config=module.MainAgentBuildConfig(
-                    tool_call_timeout=60,
-                    max_context_length=7,
-                ),
-            )
-
-        assert result is not None
-        mock_runner.reset.assert_awaited_once()
-        assert mock_runner.reset.await_args.kwargs["enforce_max_turns"] == 7
-
-    @pytest.mark.asyncio
     async def test_build_main_agent_passes_session_compression_to_runner(
         self, mock_event, mock_context, mock_provider
     ):
-        """Pass the summary provider, token budget and turn limits to the runner."""
+        """Pass the summary provider, token budget and truncation step to the runner."""
         compressor = MagicMock(spec=Provider)
         mock_context.get_provider_by_id.side_effect = lambda provider_id: (
             compressor if provider_id == "summary-model" else None
@@ -2238,9 +2205,7 @@ class TestBuildMainAgent:
                         {
                             "overflow_strategy": "llm_compress",
                             "provider_id": "summary-model",
-                            "instruction": "Keep unfinished tasks.",
                             "keep_recent_ratio": 0.3,
-                            "max_turns": 12,
                             "trim_turns": 3,
                             "fallback_max_tokens": 16384,
                         }
@@ -2252,9 +2217,7 @@ class TestBuildMainAgent:
         runner.reset.assert_awaited_once()
         kwargs = runner.reset.await_args.kwargs
         assert kwargs["llm_compress_provider"] is compressor
-        assert kwargs["llm_compress_instruction"] == "Keep unfinished tasks."
         assert kwargs["llm_compress_keep_recent_ratio"] == 0.3
-        assert kwargs["enforce_max_turns"] == 12
         assert kwargs["truncate_turns"] == 3
         assert kwargs["provider"].provider_config["max_context_tokens"] == 16384
 

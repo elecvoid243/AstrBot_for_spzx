@@ -21,14 +21,11 @@ class ContextConfig:
     this value, regardless of ``max_context_tokens``; <= 0 falls back to the
     compressors' ratio-based trigger.
     """
-    enforce_max_turns: int = -1  # -1 means no limit
-    """Maximum number of conversation turns to keep. -1 means no limit. Executed before compression."""
     truncate_turns: int = 1
     """Number of conversation turns to discard at once when truncation is triggered.
-    Two processes will use this value:
 
-    1. Enforce max turns truncation.
-    2. Truncation by turns compression strategy.
+    Used as the fixed drop count of the turn-based compressor and as the
+    minimum drop for token-budget truncation.
     """
     truncate_target_usage_ratio: float = 0.4
     """Target usage ratio of ``max_context_tokens`` after turn-based truncation.
@@ -39,8 +36,6 @@ class ContextConfig:
     ``<= 0`` disables token-budget truncation and falls back to a fixed
     ``truncate_turns`` drop.
     """
-    llm_compress_instruction: str | None = None
-    """Instruction prompt for LLM-based compression."""
     llm_compress_keep_recent_ratio: float = 0.15
     """Percent of current context tokens to keep as exact recent context during LLM-based compression."""
     llm_compress_provider: "Provider | None" = None

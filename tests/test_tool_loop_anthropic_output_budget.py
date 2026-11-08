@@ -271,7 +271,6 @@ async def test_runner_summary_checks_the_same_native_output_limit(
             tool_executor=executor,
             agent_hooks=BaseAgentRunHooks(),
             llm_compress_provider=summary,
-            llm_compress_instruction="Summarize briefly.",
         )
         async for _ in runner.step():
             pass
@@ -307,8 +306,7 @@ async def test_runner_summary_checks_the_same_native_output_limit(
             assert requests[0]["max_tokens"] == expected
         assert (
             any(
-                "Our previous history conversation summary: done"
-                in str(message.content)
+                "Our previous history conversation summary:" in str(message.content)
                 for message in sent
             )
             is fits

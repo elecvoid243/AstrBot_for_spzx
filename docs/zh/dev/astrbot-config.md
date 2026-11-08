@@ -72,7 +72,6 @@ AstrBot 默认配置如下：
         "default_personality": "default",
         "persona_pool": ["*"],
         "prompt_prefix": "{{prompt}}",
-        "max_context_length": -1,
         "dequeue_context_length": 1,
         "streaming_response": False,
         "show_tool_use_status": False,
@@ -350,13 +349,9 @@ Firecrawl 搜索引擎的 API Key 列表。使用 `firecrawl` 作为网页搜索
 
 用户提示词。可使用 `{{prompt}}` 作为用户输入的占位符。如果不输入占位符则代表添加在用户输入的前面。
 
-#### `provider_settings.max_context_length`
-
-当对话上下文超出这个数量时丢弃最旧的部分，一轮聊天记为 1 条。-1 为不限制。
-
 #### `provider_settings.dequeue_context_length`
 
-当触发上面提到的 `max_context_length` 限制时，每次丢弃的对话轮数。
+按对话轮数截断时，每次至少丢弃的对话轮数；启用按 Token 动态截断时，该值作为最少丢弃轮数兜底。
 
 #### `provider_settings.streaming_response`
 

@@ -752,7 +752,6 @@ async def test_summary_reserves_its_native_default(native_openai, fits):
                 ],
             ),
             llm_compress_provider=summary,
-            llm_compress_instruction="Summarize briefly.",
         )
         async for _ in runner.step():
             pass
@@ -774,7 +773,7 @@ async def test_summary_reserves_its_native_default(native_openai, fits):
         )
     assert (
         any(
-            "Our previous history conversation summary: done" in str(message.content)
+            "Our previous history conversation summary:" in str(message.content)
             for message in sent
         )
         is fits
@@ -867,7 +866,6 @@ async def test_summary_override_priority_matches_its_native_request(
                 ],
             ),
             llm_compress_provider=summary,
-            llm_compress_instruction="Summarize briefly.",
         )
         async for _ in runner.step():
             pass
@@ -913,8 +911,7 @@ async def test_summary_override_priority_matches_its_native_request(
             } == {selected_field}
         assert (
             any(
-                "Our previous history conversation summary: done"
-                in str(message.content)
+                "Our previous history conversation summary:" in str(message.content)
                 for message in sent
             )
             is fits
@@ -1039,7 +1036,6 @@ async def test_summary_budget_is_delivered_to_the_native_sdk(
                 ],
             ),
             llm_compress_provider=summary,
-            llm_compress_instruction="Summarize briefly.",
         )
         async for _ in runner.step():
             pass
@@ -1080,8 +1076,7 @@ async def test_summary_budget_is_delivered_to_the_native_sdk(
             assert other_field not in requests[0]
         assert (
             any(
-                "Our previous history conversation summary: done"
-                in str(message.content)
+                "Our previous history conversation summary:" in str(message.content)
                 for message in sent
             )
             is fits

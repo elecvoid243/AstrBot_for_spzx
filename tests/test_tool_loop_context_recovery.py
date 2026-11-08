@@ -585,10 +585,13 @@ async def test_round_truncation_reestimates_instead_of_reusing_previous_usage():
             LLMResponse(role="assistant", completion_text="done"),
         ],
         max_context_tokens=1000,
+        # Force round truncation from the second request on, where the
+        # previous usage no longer describes the current prefix.
+        compress_threshold_tokens=12,
     )
     runner, executor = await recovery_runner(
         provider,
-        enforce_max_turns=2,
+        truncate_target_usage_ratio=0,
         request=ProviderRequest(
             prompt="task",
             contexts=[
@@ -606,7 +609,7 @@ async def test_round_truncation_reestimates_instead_of_reusing_previous_usage():
     events = [event async for event in runner.step()]
     assert len(provider.requests) == 2
     assert executor.calls == [("read", {})]
-    assert not any(event.type == "context_compression" for event in events)
+    assert any(event.type == "context_compression" for event in events)
     assert "late request" in str(provider.requests[-1]["contexts"])
     assert "old request" not in str(provider.requests[-1]["contexts"])
     assert_paired(provider.requests[-1]["contexts"])

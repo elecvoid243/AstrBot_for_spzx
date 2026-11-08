@@ -29,6 +29,42 @@ if TYPE_CHECKING:
 
 from ..context.truncator import ContextTruncator
 
+COMPACTION_INSTRUCTION = """You are now acting as a compaction engine for this AI coding assistant. Condense the conversation ABOVE into a structured checkpoint that lets another model resume the work with no loss of essential context.
+
+Output EXACTLY the Markdown structure below: keep every section, in order. Use terse bullets, not prose paragraphs. Write "(none)" for an empty section — never drop a section.
+
+## Primary Request and Intent
+- [the user's original and evolving goals; quote verbatim where the exact wording matters]
+
+## Key Technical Concepts
+- [technologies, frameworks, patterns, and conventions in play]
+
+## Files and Code
+- [exact path: why it matters, key changes or snippets]
+
+## Errors and Fixes
+- [error: how it was resolved, plus any related user feedback]
+
+## Pending Jobs
+- [explicitly requested work not yet completed]
+
+## Current Work
+- [precisely what was in progress at this checkpoint]
+
+## Next Step
+- [the single next action, directly in line with the most recent request, or "(none)"]
+
+## Critical Context
+- [decisions and their rationale, constraints, user preferences, open questions, data needed to continue]
+
+Rules:
+- Write concise English engineering prose. Preserve exact file paths, commands, error strings, identifiers, numeric values, function signatures, and syntax fragments.
+- Capture user feedback and explicit instructions faithfully, especially corrections.
+- Do NOT mention this summarization request or that the context was compacted.
+- Output only the checkpoint text: do not call any tool or take any other action.
+- If the conversation already contains a <compacted-summary> block, it is a PRIOR checkpoint. Do not copy it forward verbatim: preserve still-true facts, drop stale ones, and merge newer information into a single consolidated summary under the same structure.
+"""
+
 
 @runtime_checkable
 class ContextCompressor(Protocol):
@@ -201,11 +237,6 @@ class LLMSummaryCompressor:
     budget as exact context.
     """
 
-    TASK_CONTINUATION_INSTRUCTION = (
-        "If a task appears to be in progress, end the summary with the latest "
-        "known result and the concrete next step to continue the task."
-    )
-
     strategy = "llm_compress"
     """Strategy label for the compression report consumed by the frontend."""
 
@@ -213,7 +244,6 @@ class LLMSummaryCompressor:
         self,
         provider: "Provider",
         keep_recent_ratio: float = 0.15,
-        instruction_text: str | None = None,
         compression_threshold: float = 0.82,
         compress_threshold_tokens: int = 0,
         token_counter: TokenCounter | None = None,
@@ -225,7 +255,6 @@ class LLMSummaryCompressor:
             provider: The LLM provider instance.
             keep_recent_ratio: Ratio of current context tokens to keep as recent
                 exact context. Clamped to 0-0.3.
-            instruction_text: Custom instruction for summary generation.
             compression_threshold: The compression trigger threshold (default: 0.82).
             compress_threshold_tokens: Absolute token threshold that triggers
                 compression. When ``> 0``, compression fires once the estimated
@@ -244,15 +273,7 @@ class LLMSummaryCompressor:
         self.token_counter = token_counter or EstimateTokenCounter()
         self.llm_params = llm_params or {}
 
-        self.instruction_text = instruction_text or (
-            "Based on our full conversation history, produce a concise summary of key takeaways and/or project progress.\n"
-            "The primary goal of this summary is to enable seamless continuation of the work that follows.\n"
-            "1. Systematically cover all core topics discussed and the final conclusion/outcome for each; clearly highlight the latest primary focus.\n"
-            "2. If any tools were used, summarize tool usage (total call count) and extract the most valuable insights from tool outputs.\n"
-            "3. If any materials (files, documents, code, references) were read during the conversation that may be helpful for subsequent work, list each one with its scope and path.\n"
-            "4. If there was an initial user goal, state it first and describe the current progress/status.\n"
-            "5. Write the summary in the user's language.\n"
-        )
+        self.instruction_text = COMPACTION_INSTRUCTION
 
     def should_compress(
         self, messages: list[Message], current_tokens: int, max_tokens: int
@@ -463,17 +484,7 @@ class LLMSummaryCompressor:
                     content="Acknowledged.",
                 )
             )
-        summary_contexts.append(
-            Message(
-                role="user",
-                content=(
-                    "Generate a summary of our previous conversation history.\n"
-                    f"<extra_instruction>\n{self.instruction_text}\n\n"
-                    f"{self.TASK_CONTINUATION_INSTRUCTION}</extra_instruction>\n"
-                    "Respond ONLY with the summary content, without any additional text or formatting."
-                ),
-            )
-        )
+        summary_contexts.append(Message(role="user", content=self.instruction_text))
         sanitized_summary_contexts, sanitize_stats = sanitize_contexts_by_modalities(
             summary_contexts,
             self.provider.provider_config.get("modalities", None),
@@ -628,7 +639,10 @@ class LLMSummaryCompressor:
                 + [
                     Message(
                         role="assistant",
-                        content=f"Earlier execution checkpoint (continue the current request): {summary_content}",
+                        content=(
+                            "Earlier execution checkpoint (continue the current request):\n"
+                            f"<compacted-summary>\n{summary_content}\n</compacted-summary>"
+                        ),
                         _compaction_id=compaction_id,
                     )
                 ]
@@ -640,7 +654,10 @@ class LLMSummaryCompressor:
                 + [
                     Message(
                         role="user",
-                        content=f"Our previous history conversation summary: {summary_content}",
+                        content=(
+                            "Our previous history conversation summary:\n"
+                            f"<compacted-summary>\n{summary_content}\n</compacted-summary>"
+                        ),
                         _compaction_id=compaction_id,
                     ),
                     Message(

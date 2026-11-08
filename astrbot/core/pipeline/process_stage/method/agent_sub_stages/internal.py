@@ -130,6 +130,12 @@ class InternalAgentSubStage(Stage):
         model_config = runner_config["model"]
         persona_config = runner_config["persona"]
         compression_config = runner_config["compression"]
+        if compression_config.get("max_turns", -1) != -1:
+            logger.warning(
+                "agent_runner.config.compression.max_turns is no longer "
+                "supported and is ignored; configure the provider-level "
+                "compress_threshold_tokens budget instead."
+            )
         misc_config = runner_config["misc"]
         self.streaming_response: bool = settings["streaming_response"]
         self.unsupported_streaming_strategy: str = settings[
@@ -175,20 +181,13 @@ class InternalAgentSubStage(Stage):
         self.context_limit_reached_strategy: str = compression_config.get(
             "overflow_strategy", "truncate_by_turns"
         )
-        self.llm_compress_instruction: str = compression_config.get("instruction", "")
         self.llm_compress_keep_recent_ratio: float = compression_config.get(
             "keep_recent_ratio", 0.15
         )
         self.llm_compress_provider_id: str = compression_config.get("provider_id", "")
-        self.max_context_length = compression_config.get("max_turns", -1)
-        self.dequeue_context_length: int = min(
-            max(1, compression_config.get("trim_turns", 1)),
-            self.max_context_length - 1
-            if self.max_context_length > 0
-            else compression_config.get("trim_turns", 1),
+        self.dequeue_context_length: int = max(
+            1, int(compression_config.get("trim_turns", 1) or 1)
         )
-        if self.dequeue_context_length <= 0:
-            self.dequeue_context_length = 1
         self.truncate_target_usage_ratio: float = min(
             max(float(compression_config.get("target_usage_ratio", 0.4)), 0.0), 0.8
         )
@@ -222,10 +221,8 @@ class InternalAgentSubStage(Stage):
             file_extract_prov=self.file_extract_prov,
             file_extract_msh_api_key=self.file_extract_msh_api_key,
             context_limit_reached_strategy=self.context_limit_reached_strategy,
-            llm_compress_instruction=self.llm_compress_instruction,
             llm_compress_keep_recent_ratio=self.llm_compress_keep_recent_ratio,
             llm_compress_provider_id=self.llm_compress_provider_id,
-            max_context_length=self.max_context_length,
             dequeue_context_length=self.dequeue_context_length,
             truncate_target_usage_ratio=self.truncate_target_usage_ratio,
             fallback_max_context_tokens=self.fallback_max_context_tokens,

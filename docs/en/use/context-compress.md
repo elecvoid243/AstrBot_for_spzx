@@ -6,20 +6,14 @@ On the `Config` page, select the profile to edit, open `AI → Advanced → Cont
 
 AstrBot checks context before every model request, including tool continuations. A positive provider `compress_threshold_tokens` overrides the normal trigger of 82% of the model window. Input estimation includes system instructions, messages, and tool definitions. Input plus the effective output budget must fit the window. Summaries can omit details.
 
+Whether compression runs depends only on the token budget; history is no longer pre-truncated by a turn count. Turns only decide how much the truncate-by-turns strategy discards.
+
 ## Compression Strategies
 
 There are currently two compression strategies:
 
 1. Truncate by conversation rounds, removing older complete rounds. Token-budget truncation targets 40% of the model window by default, retaining the latest round and identified summaries.
-2. LLM summaries, the default for new configurations. Choose a summary model or leave it empty to try the session's chat model. The default `keep_recent_ratio` of `0.15` budgets recent exact content. You can also customize the compression instruction:
-
-```
-Based on our full conversation history, produce a concise summary of key takeaways and/or project progress.
-1. Systematically cover all core topics discussed and the final conclusion/outcome for each; clearly highlight the latest primary focus.
-2. If any tools were used, summarize tool usage (total call count) and extract the most valuable insights from tool outputs.
-3. If there was an initial user goal, state it first and describe the current progress/status.
-4. Write the summary in the user's language.
-```
+2. LLM summaries, the default for new configurations. Choose a summary model or leave it empty to try the session's chat model. The default `keep_recent_ratio` of `0.15` budgets recent exact content. The compression instruction is a built-in fixed structured template and is no longer configurable.
 
 If pressure remains after compression, AstrBot removes the oldest ordinary rounds while preserving system messages, summaries, and the current complete round. Exceeding only the compression trigger does not force protected content to be removed. If protected content, tool definitions, and the output budget still exceed the model window, the request stops with an explicit capacity error. Reduce the current input, tool definitions, or output limit, or select a larger model window.
 

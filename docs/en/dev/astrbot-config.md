@@ -72,7 +72,6 @@ The default AstrBot configuration is as follows:
         "default_personality": "default",
         "persona_pool": ["*"],
         "prompt_prefix": "{{prompt}}",
-        "max_context_length": -1,
         "dequeue_context_length": 1,
         "streaming_response": False,
         "show_tool_use_status": False,
@@ -350,13 +349,9 @@ ID of the default personality to use. Configure personalities in the WebUI.
 
 User prompt. You can use `{{prompt}}` as a placeholder for user input. If no placeholder is provided, it's prepended to the user input.
 
-#### `provider_settings.max_context_length`
-
-When the conversation context exceeds this number, the oldest parts are discarded. One round of chat counts as 1. -1 means no limit.
-
 #### `provider_settings.dequeue_context_length`
 
-The number of conversation rounds to discard each time the `max_context_length` limit is triggered.
+Number of conversation turns to discard at least when truncating by turns; also the minimum drop when token-budget truncation is active.
 
 #### `provider_settings.streaming_response`
 

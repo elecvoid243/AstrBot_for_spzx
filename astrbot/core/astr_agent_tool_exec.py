@@ -936,9 +936,6 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
             if compress_provider is not None:
                 compress_kwargs = {
                     "llm_compress_provider": compress_provider,
-                    "llm_compress_instruction": compression_cfg[
-                        "llm_compress_instruction"
-                    ],
                     "llm_compress_keep_recent_ratio": compression_cfg[
                         "llm_compress_keep_recent_ratio"
                     ],

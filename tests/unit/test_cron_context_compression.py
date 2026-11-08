@@ -23,23 +23,20 @@ from astrbot.core.provider.entities import LLMResponse
 def test_explicit_build_settings_and_per_request_overrides_are_preserved():
     """Keep direct callers and dataclasses.replace independent of raw settings."""
     defaults = MainAgentBuildConfig(tool_call_timeout=60)
-    assert defaults.max_context_length == 50
     assert defaults.dequeue_context_length == 10
-    direct = MainAgentBuildConfig(
-        tool_call_timeout=60, max_context_length=7, dequeue_context_length=2
-    )
-    assert direct.max_context_length == 7
+    direct = MainAgentBuildConfig(tool_call_timeout=60, dequeue_context_length=2)
     assert direct.dequeue_context_length == 2
 
-    source = {"max_turns": 12, "trim_turns": 3, "provider_id": "summary-model"}
+    source = {"trim_turns": 3, "provider_id": "summary-model"}
     configured = MainAgentBuildConfig(
         tool_call_timeout=60, **resolve_context_compression_config(source)
     )
-    source["max_turns"] = 99
-    per_request = replace(configured, streaming_response=False, max_context_length=8)
-    assert configured.max_context_length == 12
-    assert per_request.max_context_length == 8
-    assert per_request.dequeue_context_length == 3
+    source["trim_turns"] = 99
+    per_request = replace(
+        configured, streaming_response=False, dequeue_context_length=8
+    )
+    assert configured.dequeue_context_length == 3
+    assert per_request.dequeue_context_length == 8
     assert per_request.llm_compress_provider_id == "summary-model"
     assert per_request.streaming_response is False
 
@@ -52,19 +49,15 @@ def test_explicit_build_settings_and_per_request_overrides_are_preserved():
         pytest.param(
             {
                 "overflow_strategy": "llm_compress",
-                "instruction": "Keep decisions and unfinished tasks.",
                 "keep_recent_ratio": 0.3,
                 "provider_id": "summary-model",
-                "max_turns": 12,
                 "trim_turns": 3,
                 "fallback_max_tokens": 16384,
             },
             (
                 "llm_compress",
-                "Keep decisions and unfinished tasks.",
                 0.3,
                 "summary-model",
-                12,
                 3,
                 16384,
             ),
@@ -72,33 +65,33 @@ def test_explicit_build_settings_and_per_request_overrides_are_preserved():
         ),
         pytest.param(
             {},
-            ("truncate_by_turns", "", 0.15, "", -1, 1, 128000),
+            ("truncate_by_turns", 0.15, "", 1, 128000),
             id="empty-config",
         ),
         pytest.param(
             None,
-            ("truncate_by_turns", "", 0.15, "", -1, 1, 128000),
+            ("truncate_by_turns", 0.15, "", 1, 128000),
             id="missing-cron-compression-section",
         ),
         pytest.param(
-            {"max_turns": 4, "trim_turns": 20},
-            ("truncate_by_turns", "", 0.15, "", 4, 3, 128000),
-            id="trim-clamped-to-preserve-recent-turn",
+            {"trim_turns": 20},
+            ("truncate_by_turns", 0.15, "", 20, 128000),
+            id="trim-passes-through",
         ),
         pytest.param(
-            {"max_turns": 1, "trim_turns": 0},
-            ("truncate_by_turns", "", 0.15, "", 1, 1, 128000),
-            id="single-turn-minimum-trim",
+            {"trim_turns": 0},
+            ("truncate_by_turns", 0.15, "", 1, 128000),
+            id="minimum-trim",
         ),
         pytest.param(
-            {"max_turns": -1, "trim_turns": 5},
-            ("truncate_by_turns", "", 0.15, "", -1, 5, 128000),
-            id="unlimited-turns",
+            {"trim_turns": 5},
+            ("truncate_by_turns", 0.15, "", 5, 128000),
+            id="configured-trim",
         ),
         pytest.param(
-            {"max_turns": -1, "trim_turns": -3},
-            ("truncate_by_turns", "", 0.15, "", -1, 1, 128000),
-            id="unlimited-turns-minimum-trim",
+            {"trim_turns": -3},
+            ("truncate_by_turns", 0.15, "", 1, 128000),
+            id="negative-trim-minimum",
         ),
     ],
 )
@@ -199,10 +192,8 @@ async def test_wakeup_uses_same_compression_settings_as_chat(
     wakeup_config = build.await_args.kwargs["config"]
     fields = (
         "context_limit_reached_strategy",
-        "llm_compress_instruction",
         "llm_compress_keep_recent_ratio",
         "llm_compress_provider_id",
-        "max_context_length",
         "dequeue_context_length",
         "fallback_max_context_tokens",
     )

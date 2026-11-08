@@ -3140,13 +3140,10 @@ async def test_pairing_historical_requests_preserve_original_records(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("streaming", [False, True])
-@pytest.mark.parametrize("through_manager", [False, True])
 @pytest.mark.parametrize(
     "invalid", ["conflict", "duplicate-call", "missing-call", "missing-result"]
 )
-async def test_pairing_protocol_error_blocks_all_providers(
-    streaming, through_manager, invalid
-):
+async def test_pairing_protocol_error_blocks_all_providers(streaming, invalid):
     call_ids = (
         ["A", "A"]
         if invalid == "duplicate-call"
@@ -3185,9 +3182,6 @@ async def test_pairing_protocol_error_blocks_all_providers(
         agent_hooks=MockHooks(),
         streaming=streaming,
         fallback_providers=[fallback],
-        enforce_max_turns=(2 if invalid == "conflict" else 1)
-        if through_manager
-        else -1,
     )
     with pytest.raises(ToolProtocolIntegrityError):
         async for _ in runner.step_until_done(1):

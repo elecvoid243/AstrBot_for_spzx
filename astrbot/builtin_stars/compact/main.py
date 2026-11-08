@@ -103,7 +103,6 @@ class Main(star.Star):
             keep_recent_ratio=float(
                 compression_config.get("keep_recent_ratio", 0.15),
             ),
-            instruction_text=str(compression_config.get("instruction", "")) or None,
             token_counter=EstimateTokenCounter(),
             llm_params=llm_params,
         )

@@ -110,11 +110,9 @@ AGENT_RUNNER_CONFIG_DEFAULTS: dict[str, dict[str, Any]] = {
             ),
         },
         "compression": {
-            "max_turns": -1,
             "trim_turns": 1,
             "target_usage_ratio": 0.4,
             "overflow_strategy": "llm_compress",
-            "instruction": "",
             "keep_recent_ratio": 0.15,
             "provider_id": "",
             "fallback_max_tokens": 128000,
@@ -213,22 +211,16 @@ def resolve_context_compression_config(
         Build arguments shared by chat, Cron and background-result wakeups.
         The input mapping is not modified.
     """
-    max_turns = compression_config.get("max_turns", -1)
-    trim_turns = compression_config.get("trim_turns", 1)
-    dequeue_turns = min(
-        max(1, trim_turns), max_turns - 1 if max_turns > 0 else trim_turns
-    )
+    trim_turns = max(1, int(compression_config.get("trim_turns", 1) or 1))
     return {
         "context_limit_reached_strategy": compression_config.get(
             "overflow_strategy", "truncate_by_turns"
         ),
-        "llm_compress_instruction": compression_config.get("instruction", ""),
         "llm_compress_keep_recent_ratio": compression_config.get(
             "keep_recent_ratio", 0.15
         ),
         "llm_compress_provider_id": compression_config.get("provider_id", ""),
-        "max_context_length": max_turns,
-        "dequeue_context_length": max(1, dequeue_turns),
+        "dequeue_context_length": trim_turns,
         "fallback_max_context_tokens": compression_config.get(
             "fallback_max_tokens", 128000
         ),

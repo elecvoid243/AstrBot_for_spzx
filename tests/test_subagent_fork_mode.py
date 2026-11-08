@@ -767,7 +767,6 @@ def test_main_agent_only_tools_set(monkeypatch):
 def make_compress_config(
     strategy="llm_compress",
     provider_id="",
-    instruction="Sum it.",
     ratio=0.2,
 ):
     return {
@@ -776,7 +775,6 @@ def make_compress_config(
             "config": {
                 "compression": {
                     "overflow_strategy": strategy,
-                    "instruction": instruction,
                     "keep_recent_ratio": ratio,
                     "provider_id": provider_id,
                 }
@@ -801,7 +799,7 @@ async def test_llm_compress_strategy_falls_back_to_subagent_provider(
 
     kwargs = get_tool_loop_agent_kwargs(mock_ctx)
     assert kwargs["llm_compress_provider"] is compress_provider
-    assert kwargs["llm_compress_instruction"] == "Sum it."
+    assert "llm_compress_instruction" not in kwargs
     assert kwargs["llm_compress_keep_recent_ratio"] == 0.2
     # Fallback anchor: the subagent's resolved provider id ("provider-1").
     mock_ctx.get_provider_by_id.assert_called_once_with("provider-1")

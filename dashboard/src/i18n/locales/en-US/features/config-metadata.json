@@ -402,13 +402,9 @@
       "hint": "[Context Management](https://docs.astrbot.app/en/use/context-compress.html)",
       "description": "Context Management Strategy",
       "agent_runner": { "config": { "compression": {
-        "max_turns": {
-          "description": "Max Turns Before Compression",
-          "hint": "Persistent conversation history is truncated or LLM-compressed by the strategy below only after it exceeds this many turns. Request-time contexts are also constrained by this value before sending. -1 means no turn-based limit."
-        },
         "trim_turns": {
-          "description": "Turns to Discard When Limit Exceeded",
-          "hint": "When history exceeds 'Max Turns Before Compression' and LLM compression is unavailable, discard at least this many oldest turns at once. When token-budget truncation is active (see 'Target Usage Ratio After Truncation' below), this value acts as the minimum drop. Request-time truncation also reuses this value."
+          "description": "Minimum Turns to Discard When Truncating by Turns",
+          "hint": "When truncating by turns, discard at least this many oldest turns at once. When token-budget truncation is active (see 'Target Usage Ratio After Truncation' below), this value acts as the minimum drop."
         },
         "target_usage_ratio": {
           "description": "Target Usage Ratio After Truncation",
@@ -420,11 +416,7 @@
             "Truncate by Turns",
             "Compress by LLM"
           ],
-          "hint": "Persistent conversation history uses this strategy only after exceeding 'Max Turns Before Compression'. Before each request, the same strategy may also protect the in-flight context when tokens approach the model window."
-        },
-        "instruction": {
-          "description": "Context Compression Instruction",
-          "hint": "Defaults to the astrbot_plugin_compact compression prompt; editable. Clear to fall back to the built-in prompt."
+          "hint": "Before each request, this strategy runs when context tokens exceed the compression threshold (provider-level compress_threshold_tokens, or 82% of the model window when unset) or when input plus output budget would overflow the model window."
         },
         "keep_recent_ratio": {
           "description": "Recent Context Token Ratio to Keep",

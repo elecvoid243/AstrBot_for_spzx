@@ -151,7 +151,7 @@ async def test_successful_summary_is_protected_during_output_fallback():
     )
     manager = ContextManager(
         ContextConfig(
-            max_context_tokens=200,
+            max_context_tokens=240,
             compress_threshold_tokens=100,
             llm_compress_keep_recent_ratio=0.3,
             llm_compress_provider=provider,
@@ -388,7 +388,7 @@ async def test_summary_that_grows_history_does_not_replace_it():
 
 
 @pytest.mark.asyncio
-async def test_pending_team_inputs_survive_summary_and_round_limit():
+async def test_pending_team_inputs_survive_summary():
     provider = MockProvider()
     first = Message(role="user", content="first pending team input " * 20)
     second = Message(role="user", content="second pending team input")
@@ -397,7 +397,6 @@ async def test_pending_team_inputs_survive_summary_and_round_limit():
         ContextConfig(
             max_context_tokens=2000,
             compress_threshold_tokens=100,
-            enforce_max_turns=1,
             llm_compress_provider=provider,
             custom_token_counter=CharTokenCounter(),
         )

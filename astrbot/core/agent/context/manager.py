@@ -73,7 +73,6 @@ class ContextManager:
             self.compressor = LLMSummaryCompressor(
                 provider=config.llm_compress_provider,
                 keep_recent_ratio=config.llm_compress_keep_recent_ratio,
-                instruction_text=config.llm_compress_instruction,
                 compress_threshold_tokens=config.compress_threshold_tokens,
                 token_counter=self.token_counter,
                 llm_params=config.llm_params,
@@ -148,15 +147,6 @@ class ContextManager:
         messages = self.truncator.fix_messages(messages)
         try:
             result = messages
-
-            # Enforce the existing round limit before validating a usage prefix.
-            if self.config.enforce_max_turns != -1:
-                result = self.truncator.truncate_by_turns(
-                    result,
-                    keep_most_recent_turns=self.config.enforce_max_turns,
-                    drop_turns=self.config.truncate_turns,
-                    protected_messages=protected_messages,
-                )
 
             # Apply token-based compression to the complete visible request.
             if (

@@ -111,7 +111,6 @@ class TestContextManager:
         """Truncate compressor drops oldest turns to the target usage ratio."""
         config = ContextConfig(
             max_context_tokens=40,
-            enforce_max_turns=-1,
             truncate_turns=1,
             truncate_target_usage_ratio=0.4,
         )
@@ -131,7 +130,6 @@ class TestContextManager:
         """Without max_context_tokens, the compressor falls back to fixed drops."""
         config = ContextConfig(
             max_context_tokens=0,
-            enforce_max_turns=-1,
             truncate_turns=3,
         )
         manager = ContextManager(config)
@@ -158,7 +156,6 @@ class TestContextManager:
         config = ContextConfig(
             llm_compress_provider=mock_provider,  # type: ignore
             llm_compress_keep_recent_ratio=0.15,
-            llm_compress_instruction="Summarize the conversation",
         )
         manager = ContextManager(config)
 
@@ -223,9 +220,6 @@ class TestContextManager:
         }
         assert summary_contexts[-1]["role"] == "user"
         assert compressor.instruction_text in summary_contexts[-1]["content"]
-        assert (
-            compressor.TASK_CONTINUATION_INSTRUCTION in summary_contexts[-1]["content"]
-        )
 
         assert len(result) == 4
         assert result[0].role == "user"
@@ -238,11 +232,9 @@ class TestContextManager:
         from astrbot.core.agent.context.compressor import LLMSummaryCompressor
 
         provider = MockProvider()
-        instruction = "Summarize the old context."
         compressor = LLMSummaryCompressor(
             provider=provider,
             keep_recent_ratio=0.01,
-            instruction_text=instruction,
         )  # type: ignore[arg-type]
         messages = [
             Message(role="system", content="System prompt"),
@@ -258,10 +250,7 @@ class TestContextManager:
         assert summary_contexts[2]["role"] == "assistant"
         assert summary_contexts[2]["content"]
         assert summary_contexts[3]["role"] == "user"
-        assert instruction in summary_contexts[3]["content"]
-        assert (
-            compressor.TASK_CONTINUATION_INSTRUCTION in summary_contexts[3]["content"]
-        )
+        assert compressor.instruction_text in summary_contexts[3]["content"]
 
         assert result[0] is messages[0]
         assert result[-1] is messages[-1]
@@ -274,7 +263,6 @@ class TestContextManager:
         compressor = LLMSummaryCompressor(
             provider=provider,
             keep_recent_ratio=0.15,
-            instruction_text="Summarize the whole trajectory.",
         )  # type: ignore[arg-type]
         messages = [
             Message(role="user", content="Run the tool."),
@@ -305,7 +293,6 @@ class TestContextManager:
         compressor = LLMSummaryCompressor(
             provider=provider,
             keep_recent_ratio=0,
-            instruction_text="Summarize old context.",
         )  # type: ignore[arg-type]
         messages = [
             Message(role="user", content="Old question"),
@@ -331,7 +318,6 @@ class TestContextManager:
         compressor = LLMSummaryCompressor(
             provider=provider,
             keep_recent_ratio=0.15,
-            instruction_text="Summarize old context.",
         )  # type: ignore[arg-type]
         messages = [Message(role="user", content="Current question")]
 
@@ -348,7 +334,6 @@ class TestContextManager:
         compressor = LLMSummaryCompressor(
             provider=provider,
             keep_recent_ratio=0.15,
-            instruction_text="Summarize the completed round.",
         )  # type: ignore[arg-type]
         messages = [
             Message(role="system", content="System prompt"),
@@ -376,7 +361,6 @@ class TestContextManager:
         compressor = LLMSummaryCompressor(
             provider=provider,
             keep_recent_ratio=0,
-            instruction_text="Summarize multimodal and tool history.",
         )  # type: ignore[arg-type]
         messages = [
             Message(
@@ -436,7 +420,6 @@ class TestContextManager:
         compressor = LLMSummaryCompressor(
             provider=provider,
             keep_recent_ratio=0.3,
-            instruction_text="Summarize.",
         )  # type: ignore[arg-type]
         messages = [
             Message(role="user", content="a" * 200),
@@ -482,7 +465,7 @@ class TestContextManager:
     @pytest.mark.asyncio
     async def test_process_with_no_limits(self):
         """Test processing when no limits are set (no truncation or compression)."""
-        config = ContextConfig(max_context_tokens=0, enforce_max_turns=-1)
+        config = ContextConfig(max_context_tokens=0)
         manager = ContextManager(config)
 
         messages = self.create_messages(20)
@@ -490,61 +473,6 @@ class TestContextManager:
 
         assert len(result) == 20
         assert result == messages
-
-    # ==================== Enforce Max Turns Tests ====================
-
-    @pytest.mark.asyncio
-    async def test_enforce_max_turns_basic(self):
-        """Test basic enforce_max_turns functionality."""
-        config = ContextConfig(enforce_max_turns=3, truncate_turns=1)
-        manager = ContextManager(config)
-
-        # Create 10 turns (20 messages)
-        messages = self.create_messages(20)
-        result = await manager.process(messages)
-
-        # Should keep only 3 most recent turns (6 messages)
-        assert len(result) <= 8  # May vary due to truncation logic
-
-    @pytest.mark.asyncio
-    async def test_enforce_max_turns_zero(self):
-        """Test enforce_max_turns with value 0 (should keep nothing)."""
-        config = ContextConfig(enforce_max_turns=0, truncate_turns=1)
-        manager = ContextManager(config)
-
-        messages = self.create_messages(10)
-        result = await manager.process(messages)
-
-        # Should result in empty or minimal message list
-        assert len(result) <= 2
-
-    @pytest.mark.asyncio
-    async def test_enforce_max_turns_negative(self):
-        """Test enforce_max_turns with -1 (no limit)."""
-        config = ContextConfig(enforce_max_turns=-1)
-        manager = ContextManager(config)
-
-        messages = self.create_messages(20)
-        result = await manager.process(messages)
-
-        assert len(result) == 20
-
-    @pytest.mark.asyncio
-    async def test_enforce_max_turns_with_system_messages(self):
-        """Test enforce_max_turns preserves system messages."""
-        config = ContextConfig(enforce_max_turns=2, truncate_turns=1)
-        manager = ContextManager(config)
-
-        messages = [
-            self.create_message("system", "System instruction"),
-            *self.create_messages(10),
-        ]
-        result = await manager.process(messages)
-
-        # System message should be preserved
-        system_msgs = [m for m in result if m.role == "system"]
-        assert len(system_msgs) >= 1
-        assert system_msgs[0].content == "System instruction"
 
     # ==================== Token-based Compression Tests ====================
 
@@ -839,43 +767,6 @@ class TestContextManager:
         assert result is messages
         assert provider.attempts == 1
 
-    # ==================== Combined Truncation and Compression Tests ====================
-
-    @pytest.mark.asyncio
-    async def test_combined_enforce_turns_and_token_limit(self):
-        """Test combining enforce_max_turns and token limit."""
-        config = ContextConfig(
-            enforce_max_turns=5, max_context_tokens=500, truncate_turns=1
-        )
-        manager = ContextManager(config)
-
-        # Create many messages
-        messages = self.create_messages(30)
-
-        result = await manager.process(messages)
-
-        # Should be truncated by both mechanisms
-        assert len(result) < 30
-
-    @pytest.mark.asyncio
-    async def test_sequential_processing_order(self):
-        """Test that enforce_max_turns happens before token compression."""
-        config = ContextConfig(enforce_max_turns=5, max_context_tokens=1000)
-        manager = ContextManager(config)
-
-        messages = self.create_messages(20)
-
-        # Mock the truncator to track calls
-        with patch.object(
-            manager.truncator,
-            "truncate_by_turns",
-            wraps=manager.truncator.truncate_by_turns,
-        ) as mock_truncate:
-            await manager.process(messages)
-
-            # Truncator should be called first
-            mock_truncate.assert_called_once()
-
     # ==================== Error Handling Tests ====================
 
     @pytest.mark.asyncio
@@ -1073,7 +964,7 @@ class TestContextManager:
     @pytest.mark.asyncio
     async def test_alternating_roles_preserved(self):
         """Test that user/assistant alternation is preserved after processing."""
-        config = ContextConfig(enforce_max_turns=3, truncate_turns=1)
+        config = ContextConfig(max_context_tokens=20, truncate_turns=1)
         manager = ContextManager(config)
 
         messages = self.create_messages(20)
@@ -1105,9 +996,7 @@ class TestContextManager:
     @pytest.mark.asyncio
     async def test_large_batch_processing(self):
         """Test processing a large batch of messages."""
-        config = ContextConfig(
-            enforce_max_turns=10, max_context_tokens=1000, truncate_turns=2
-        )
+        config = ContextConfig(max_context_tokens=100, truncate_turns=2)
         manager = ContextManager(config)
 
         # Create 100 messages (50 turns)
@@ -1124,7 +1013,6 @@ class TestContextManager:
         """Test that config settings are respected throughout processing."""
         config = ContextConfig(
             max_context_tokens=500,
-            enforce_max_turns=5,
             truncate_turns=2,
             llm_compress_keep_recent_ratio=0.15,
         )
@@ -1132,7 +1020,6 @@ class TestContextManager:
 
         # Verify config is stored
         assert manager.config.max_context_tokens == 500
-        assert manager.config.enforce_max_turns == 5
         assert manager.config.truncate_turns == 2
         assert manager.config.llm_compress_keep_recent_ratio == 0.15
 
@@ -1199,7 +1086,6 @@ class TestContextManager:
         config = ContextConfig(
             llm_compress_provider=mock_provider,  # type: ignore
             llm_compress_keep_recent_ratio=0.15,
-            llm_compress_instruction="请总结对话内容",
             max_context_tokens=100,
         )
         manager = ContextManager(config)

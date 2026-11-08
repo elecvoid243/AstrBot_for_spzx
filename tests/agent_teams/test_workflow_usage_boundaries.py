@@ -239,10 +239,7 @@ def test_real_usage_boundaries_retain_consumption_and_stop_uncommitted_work(
                         "tools_call_ids": ["evidence-original"],
                     }
                 if scenario == "usage_compression":
-                    if (
-                        "Generate a summary of our previous conversation history"
-                        in context
-                    ):
+                    if "You are now acting as a compaction engine" in context:
                         original = json.dumps(payload["contexts"])
                         response = {
                             "role": "assistant",
@@ -564,7 +561,7 @@ def test_real_usage_boundaries_retain_consumption_and_stop_uncommitted_work(
                 )
             if scenario == "usage_compression":
                 assert any(
-                    "Generate a summary of our previous conversation history"
+                    "You are now acting as a compaction engine"
                     in json.dumps(request["contexts"])
                     for request in requests
                 )

@@ -218,15 +218,10 @@ class MainAgentBuildConfig:
     """The API key for Moonshot AI file extraction provider."""
     context_limit_reached_strategy: str = "truncate_by_turns"
     """The strategy to handle context length limit reached."""
-    llm_compress_instruction: str = ""
-    """The instruction for compression in llm_compress strategy."""
     llm_compress_keep_recent_ratio: float = 0.15
     """Percent of current context tokens to keep as exact recent context during llm_compress strategy."""
     llm_compress_provider_id: str = ""
-    """The provider ID for the LLM used in context compression."""
-    max_context_length: int = 50
-    """The maximum number of turns to keep in context. -1 means no limit.
-    This enforce max turns before compression"""
+    """The provider ID for the LLM used for context compression."""
     dequeue_context_length: int = 10
     """The number of oldest turns to remove when context length limit is reached.
     Acts as the minimum drop when token-budget truncation is active."""
@@ -2377,7 +2372,6 @@ async def build_main_agent(
         tool_executor=FunctionToolExecutor(),
         agent_hooks=MAIN_AGENT_HOOKS,
         streaming=config.streaming_response,
-        llm_compress_instruction=config.llm_compress_instruction,
         llm_compress_keep_recent_ratio=config.llm_compress_keep_recent_ratio,
         llm_compress_provider=await _get_compress_provider(
             config,
@@ -2386,7 +2380,6 @@ async def build_main_agent(
         ),
         truncate_turns=config.dequeue_context_length,
         truncate_target_usage_ratio=config.truncate_target_usage_ratio,
-        enforce_max_turns=config.max_context_length,
         tool_schema_mode=config.tool_schema_mode,
         repeated_tool_notice_enabled=repeated_tool_notice_enabled,
         repeated_tool_notice_threshold=repeated_tool_notice_threshold,

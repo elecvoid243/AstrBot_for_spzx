@@ -120,7 +120,7 @@ async def run_worker(
         config["provider_settings"]["computer_use_runtime"] = "local"
     config["agent_runner"]["config"]["misc"]["add_cron_tools"] = False
     if scenario == "usage_compression":
-        config["agent_runner"]["config"]["compression"].update({"overflow_strategy": "llm_compress", "provider_id": "model-original", "keep_recent_ratio": 0.15, "max_turns": 50})
+        config["agent_runner"]["config"]["compression"].update({"overflow_strategy": "llm_compress", "provider_id": "model-original", "keep_recent_ratio": 0.15})
     if scenario.startswith(("parameters", "repair", "team_message_parameters")):
         config["agent_runner"]["config"]["misc"]["tool_schema_mode"] = "skills_like"
     config["agent_runner"]["config"]["model"]["provider_id"] = "model-alternate" if scenario.startswith(("inline_", "team_")) else "model-original"

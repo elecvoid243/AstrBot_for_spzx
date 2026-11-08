@@ -5478,6 +5478,10 @@ async function openThreadPanel(thread: ChatThread) {
 
 async function openRefsSidebar(refs: unknown) {
   if (!(await confirmFileNavigation())) return;
+  // The refs entry sits inside .messages-panel, whose pointerdown handler
+  // drops the reading anchor. Capture it again before this sidebar narrows
+  // the conversation and reflows the text the reader is viewing.
+  captureReadingAnchor();
   chatHeader.SET_WORKSPACE_FILES_OPEN(false);
   closeThreadPanel();
   reasoningPanelOpen.value = false;
@@ -5498,6 +5502,11 @@ async function openReasoningPanel(payload: {
   query?: string;
 }) {
   if (!(await confirmFileNavigation())) return;
+  // Same as openRefsSidebar: the reasoning bar lives in the message list, so
+  // its pointerdown cleared the anchor. Recapture before the panel opens or
+  // the reflowed viewport becomes the new reference and closing cannot
+  // restore the original reading position.
+  captureReadingAnchor();
   chatHeader.SET_WORKSPACE_FILES_OPEN(false);
   closeThreadPanel();
   refsSidebarOpen.value = false;

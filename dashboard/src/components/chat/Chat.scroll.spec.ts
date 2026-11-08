@@ -18,6 +18,7 @@ const ast = ts.createSourceFile(
 );
 const functions = new Set([
   "openFileReference",
+  "openReasoningPanel",
   "handleMessagesScrollIntent",
   "onBranchToggle",
   "endMessagesScrollGesture",
@@ -221,6 +222,7 @@ function scrollHarness() {
       `${code}
     return {
       openFileReference,
+      openReasoningPanel,
       messagesContainer, messagesListShell, viewportAnchorBySession,
       scrollToBottom, handleMessagesScrollIntent, endMessagesScrollGesture,
       onBranchToggle,
@@ -727,6 +729,35 @@ describe("Chat viewport ownership", () => {
     h.frame();
     expect(h.controller.shouldStickToBottom("A")).toBe(true);
     expect(h.panel.scrollTop).toBe(1600);
+  });
+
+  it("keeps the reading point when a reasoning bar opens and closes the sidebar", async () => {
+    const h = scrollHarness();
+    await nextTick();
+    h.setLayout({ top: 400, rowTop: 500 });
+    h.controller.setStickToBottom("A", false);
+    const trigger = document.createElement("button");
+    h.row.appendChild(trigger);
+    // The reasoning bar sits inside .messages-panel, so its pointerdown drops
+    // the anchor exactly like a citation click does.
+    h.controller.handleMessagesScrollIntent({
+      type: "pointerdown",
+      target: trigger,
+    });
+    await h.controller.openReasoningPanel({ message: {}, blockIndex: 0 });
+    expect(h.reasoningPanelOpen.value).toBe(true);
+    // Opening the panel narrows the conversation and wraps earlier text.
+    h.setLayout({ height: 2000, rowTop: 800 });
+    h.observers.at(-1)!.callback([], {} as ResizeObserver);
+    expect(h.panel.scrollTop).toBe(700);
+    expect(h.row.getBoundingClientRect().top).toBe(100);
+    h.controller.handleMessagesScroll();
+    // Closing restores the exact pre-open layout; the panel must return to
+    // the offset it had before the sidebar existed.
+    h.setLayout({ height: 1600, rowTop: 500 });
+    h.observers.at(-1)!.callback([], {} as ResizeObserver);
+    expect(h.row.getBoundingClientRect().top).toBe(100);
+    expect(h.panel.scrollTop).toBe(400);
   });
 
   it("yields reading corrections to an explicit history jump and resumes when it finishes", async () => {

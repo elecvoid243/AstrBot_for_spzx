@@ -382,7 +382,7 @@ class FileReadTool(FunctionTool):
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Path of the file to read. If relative, will be in workspace root.",
+                    "description": "Path of the file to read. Relative paths resolve under the session workspace (local) or the sandbox working directory (sandbox).",
                 },
                 "offset": {
                     "type": "integer",
@@ -491,7 +491,7 @@ class FileWriteTool(FunctionTool):
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Path of the file to write. If relative, will be in workspace root.",
+                    "description": "Path of the file to write. Relative paths resolve under the session workspace (local) or the sandbox working directory (sandbox).",
                 },
                 "content": {
                     "type": "string",
@@ -830,15 +830,16 @@ class FileEditTool(FunctionTool):
         "Edit files with fuzzy matching, view edit history, or rollback to previous versions.\n\n"
         "## Mode 1 — Edit (provide `old` and `new`)\n"
         "Replace text using fuzzy matching that handles whitespace, indentation, and escape sequences. "
-        "When editing from Read tool output, exclude the line number prefix (format: '1: ') from `old` and `new` — "
-        "only include the actual file content after the space. "
+        "`old` must be the file's literal text: copy it verbatim from astrbot_file_read_tool output "
+        "(that output carries no line numbers); for lines taken from astrbot_grep_tool output, "
+        "strip the leading `path:line:` first. "
         "Fails if `old` is not found, or if found multiple times when `replace_all` is false. "
         "Use `replace_all=true` for renaming across the file. "
-        "Automatically saves backup before each edit.\n\n"
+        "Automatically saves a backup before each edit.\n\n"
         "## Mode 2 — List history (only `path`, or `list_history=true`)\n"
         "Show all backups with timestamps and IDs for rollback.\n\n"
-        "## Mode 3 — Rollback (`backup_id`, no `old`/`new`)\n"
-        "Restore file to specified backup. Omit `backup_id` to restore the most recent backup."
+        "## Mode 3 — Rollback (`path` + `backup_id`, no `old`/`new`)\n"
+        "Restore the file to the given backup. `backup_id` is required: pass `path` alone to list history first, then choose an id."
     )
 
     parameters: dict = field(
@@ -847,7 +848,7 @@ class FileEditTool(FunctionTool):
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "File path to edit/rollback. Relative paths resolve in workspace root.",
+                    "description": "File path to edit/rollback. Relative paths resolve under the session workspace (local) or the sandbox working directory (sandbox).",
                 },
                 "old": {
                     "type": "string",
@@ -1186,7 +1187,13 @@ class FileEditTool(FunctionTool):
 @dataclass
 class GrepTool(FunctionTool):
     name: str = "astrbot_grep_tool"
-    description: str = "Search and read file contents using ripgrep."
+    description: str = (
+        "Search file contents with ripgrep (falls back to grep when rg is unavailable); "
+        "matches print as `path:line:text`. `pattern` is a REGEX and is case-sensitive. "
+        'Hidden files and .gitignore\'d paths are skipped, so a "no matches" result does '
+        "not prove the text is absent. Omit `path` to search the session workspace "
+        "(local) or the working directory (sandbox)."
+    )
     parameters: dict = field(
         default_factory=lambda: {
             "type": "object",
@@ -1197,7 +1204,7 @@ class GrepTool(FunctionTool):
                 },
                 "path": {
                     "type": "string",
-                    "description": "File or directory to search in (rg PATH). If relative, will be in workspace root.",
+                    "description": "File or directory to search in (rg PATH). Relative paths resolve under the session workspace (local) or the sandbox working directory (sandbox).",
                 },
                 "glob": {
                     "type": "string",
@@ -1679,8 +1686,8 @@ class FileRemoveTool(FunctionTool):
         "Delete an entire file or directory. Prefer this tool for file "
         "deletion — do NOT use shell `rm`/`del` or Python `os.remove`/"
         "`shutil.rmtree` to bypass it. Before deleting, ask the user. "
-        "If deleting fragments instead of the entire file, use "
-        "`astrbot_file_edit_tool`. Deleting a DIRECTORY requires parameter "
+        "If only part of a file must go, use the available edit/patch tool "
+        "instead. Deleting a DIRECTORY requires parameter "
         "'confirm=true'. If a directory contains more than max_items files, "
         "the call returns a proposal asking for batch confirmation INSTEAD "
         "of deleting — read the proposal/options, then retry with "
@@ -1698,9 +1705,9 @@ class FileRemoveTool(FunctionTool):
                 "path": {
                     "type": "string",
                     "description": (
-                        "Absolute path of the file or directory to remove. "
-                        "Must not contain '..' segments and must not be inside a "
-                        "protected system directory or the user-configured "
+                        "File or directory to remove. Relative paths resolve under the "
+                        "session workspace. Must not contain '..' segments and must not "
+                        "point inside a protected system directory or the user-configured "
                         "blacklist (see config 'file_remove_blacklist')."
                     ),
                 },

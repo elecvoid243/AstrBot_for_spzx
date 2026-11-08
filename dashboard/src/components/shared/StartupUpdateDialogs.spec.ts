@@ -321,4 +321,19 @@ describe("startup update dialogs", () => {
     expect(vm.coreOpen).toBe(false);
     wrapper.unmount();
   });
+
+  it("keeps both dialogs open on an outside click", async () => {
+    mocks.list.mockResolvedValue({ data: { status: "ok", data: [] } });
+    const wrapper = shallowMount(StartupUpdateDialogs);
+    await settle();
+    await passIdle();
+
+    const dialogs = wrapper.findAll("v-dialog-stub");
+    expect(dialogs).toHaveLength(2);
+    for (const dialog of dialogs) {
+      // A bare boolean prop renders as an empty attribute; false renders "false".
+      expect(dialog.attributes("persistent")).not.toBe("false");
+    }
+    wrapper.unmount();
+  });
 });

@@ -377,8 +377,7 @@ async function updatePlugins() {
   <v-dialog
     :model-value="coreOpen"
     max-width="680"
-    :persistent="busy"
-    @update:model-value="!$event && closeCore()"
+    persistent
   >
     <v-card rounded="xl">
       <v-card-title class="text-h3 pa-4 pb-0 pl-6"
@@ -438,8 +437,7 @@ async function updatePlugins() {
   <v-dialog
     :model-value="pluginsOpen"
     max-width="640"
-    :persistent="busy"
-    @update:model-value="!$event && closePlugins()"
+    persistent
   >
     <v-card rounded="xl">
       <v-card-title class="text-h3 pa-4 pb-0 pl-6"
@@ -504,15 +502,16 @@ async function updatePlugins() {
 </template>
 
 <style scoped>
-.update-notes,
-.plugin-list {
-  max-height: 50vh;
-  overflow-y: auto;
-}
 .update-notes {
+  max-height: min(70vh, calc(100dvh - 210px));
+  overflow-y: auto;
   padding: 16px;
   border-radius: 12px;
   background: rgba(var(--v-theme-on-surface), 0.04);
+}
+.plugin-list {
+  max-height: min(64vh, calc(100dvh - 230px));
+  overflow-y: auto;
 }
 .plugin-row {
   display: flex;

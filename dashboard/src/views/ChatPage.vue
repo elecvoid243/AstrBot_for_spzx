@@ -1,10 +1,12 @@
 <script setup>
 import Chat from '@/components/chat/Chat.vue'
+import StartupUpdateDialogs from '@/components/chat/StartupUpdateDialogs.vue'
 </script>
 
 <template>
     <div class="chat-container">
         <Chat />
+        <StartupUpdateDialogs />
     </div>
 </template>
 

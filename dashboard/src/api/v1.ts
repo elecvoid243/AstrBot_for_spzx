@@ -952,6 +952,9 @@ export const chatApi = {
       openApiV1.listChatSessions({ query: generatedQuery(params) }),
     );
   },
+  activeRuns() {
+    return typed<{ running: boolean }>(openApiV1.activeChatRuns());
+  },
   createSession(platformId?: string) {
     return typed<any>(
       openApiV1.createChatSession({

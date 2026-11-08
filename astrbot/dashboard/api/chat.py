@@ -612,6 +612,29 @@ async def stop_chat_session(
     return await _run(lambda: service.stop_session(auth.username, session_id))
 
 
+@router.get("/chat/active-runs")
+async def active_chat_runs(
+    auth: AuthContext = Depends(require_chat_scope),
+    service: ChatService = Depends(get_service),
+):
+    """Report whether the caller owns a chat run that is still executing.
+
+    The dashboard's update prompt polls this before showing a modal so it never
+    interrupts an agent turn the user started, including turns that keep
+    running after the user leaves ChatUI.
+
+    Returns:
+        ok({"running": bool}) scoped to the authenticated account.
+    """
+    return ok(
+        {
+            "running": any(
+                run.username == auth.username for run in service.chat_runs.values()
+            )
+        }
+    )
+
+
 @router.post("/chat/subagent-follow-up")
 async def post_subagent_follow_up(
     payload: ChatSubagentFollowUpRequest,

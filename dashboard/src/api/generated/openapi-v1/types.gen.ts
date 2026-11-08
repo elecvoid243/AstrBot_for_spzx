@@ -2965,6 +2965,10 @@ export type ListChatSessionsResponse = (SuccessEnvelope);
 
 export type ListChatSessionsError = unknown;
 
+export type ActiveChatRunsResponse = (SuccessEnvelope);
+
+export type ActiveChatRunsError = unknown;
+
 export type GetFileAccessModeData = {
     query: {
         umo: string;

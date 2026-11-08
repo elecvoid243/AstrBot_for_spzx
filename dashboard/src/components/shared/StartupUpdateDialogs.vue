@@ -1,12 +1,34 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { MarkdownRender } from "markstream-vue";
-import { pluginApi, updatesApi } from "@/api/v1";
+import { chatApi, pluginApi, updatesApi } from "@/api/v1";
 import { useCommonStore } from "@/stores/common";
 import { useAuthStore } from "@/stores/auth";
 import { useI18n } from "@/i18n/composables";
 import { normalizeStr } from "@/utils/pluginSearch";
 import { getDesktopRuntimeInfo } from "@/utils/desktopRuntime";
+
+// 2026-11-08 (elecvoid243): dismissals are scoped to one backend process and
+// one release, so a restart re-announces the same version while a newer
+// release surfaces even if the older one was closed.
+const DISMISSED_KEY = "astrbot:update:dismissed";
+// Long enough that a burst of clicks or typing never gets a modal on top of
+// it, short enough that an idle reader still learns about the update.
+const IDLE_MS = 30_000;
+// While a chat run is in flight the prompt only re-arms; it must never
+// interrupt the task the user is waiting on.
+const ACTIVE_RUN_RECHECK_MS = 15_000;
+// Release checks hit GitHub and the plugin market, so a running instance
+// refreshes at this cadence instead of on every start_time tick.
+const CHECK_INTERVAL_MS = 10 * 60_000;
+const ACTIVITY_EVENTS = [
+  "pointerdown",
+  "pointermove",
+  "keydown",
+  "wheel",
+  "touchstart",
+];
+const ACTIVITY_OPTIONS = { passive: true, capture: true };
 
 const store = useCommonStore();
 const auth = useAuthStore();
@@ -22,15 +44,83 @@ const message = ref("");
 const progress = ref(null);
 const coreDone = ref(false);
 const desktop = ref(false);
+const runtime = ref(null);
+const dismissed = ref({ core: "", plugins: {} });
 const proxy = () =>
   localStorage.getItem("githubProxyRadioValue") === "1"
     ? localStorage.getItem("selectedGitHubProxy") || ""
     : "";
 
 let timer;
+let openTimer;
 let checking = false;
 let disposed = false;
 let checkedStart = null;
+let lastCheckAt = 0;
+let lastActivity = Date.now();
+
+function loadDismissed(start) {
+  try {
+    const saved = JSON.parse(localStorage.getItem(DISMISSED_KEY) || "null");
+    if (saved && String(saved.runtime) === String(start))
+      return { core: String(saved.core || ""), plugins: saved.plugins || {} };
+  } catch {
+    // Corrupted entry: behave as if nothing was dismissed.
+  }
+  return { core: "", plugins: {} };
+}
+
+function rememberDismissed() {
+  if (runtime.value === null) return;
+  localStorage.setItem(
+    DISMISSED_KEY,
+    JSON.stringify({
+      runtime: String(runtime.value),
+      core: dismissed.value.core,
+      plugins: dismissed.value.plugins,
+    }),
+  );
+}
+
+async function tryOpen() {
+  if (disposed || busy.value || coreOpen.value || pluginsOpen.value) return;
+  if (!release.value && !plugins.value.length) return;
+  if (Date.now() - lastActivity < IDLE_MS) return scheduleOpen();
+  // A hidden tab is not "idle but present": wait for visibilitychange so the
+  // modal does not ambush the user when they come back.
+  if (document.visibilityState !== "visible") return;
+  try {
+    const result = await chatApi.activeRuns();
+    if (result.data?.data?.running) return scheduleOpen(ACTIVE_RUN_RECHECK_MS);
+  } catch (error) {
+    console.warn("Failed to check active chat runs:", error);
+    return scheduleOpen(ACTIVE_RUN_RECHECK_MS);
+  }
+  if (disposed || busy.value || coreOpen.value || pluginsOpen.value) return;
+  if (Date.now() - lastActivity < IDLE_MS) return scheduleOpen();
+  if (release.value) coreOpen.value = true;
+  else if (plugins.value.length) pluginsOpen.value = true;
+}
+
+function scheduleOpen(delay = 0) {
+  clearTimeout(openTimer);
+  openTimer = null;
+  if (disposed || (!release.value && !plugins.value.length)) return;
+  const wait = Math.max(delay, IDLE_MS - (Date.now() - lastActivity));
+  openTimer = setTimeout(() => {
+    openTimer = null;
+    void tryOpen();
+  }, wait);
+}
+
+function markActivity() {
+  lastActivity = Date.now();
+  if (openTimer) scheduleOpen();
+}
+
+function onVisibilityChange() {
+  if (document.visibilityState === "visible") scheduleOpen();
+}
 
 async function checkStartup() {
   if (
@@ -44,17 +134,21 @@ async function checkStartup() {
   checking = true;
   try {
     const start = await store.fetchStartTime();
-    if (!start || start === -1 || checkedStart === start) return;
-    release.value = null;
-    plugins.value = [];
-    coreDone.value = false;
-    progress.value = null;
-    message.value = "";
+    if (!start || start === -1) return;
+    // The 30s tick exists to notice a backend restart; full release checks
+    // are throttled because they call GitHub and the plugin market.
+    if (start === checkedStart && Date.now() - lastCheckAt < CHECK_INTERVAL_MS)
+      return;
+    lastCheckAt = Date.now();
+    runtime.value = start;
+    dismissed.value = loadDismissed(start);
     desktop.value = (await getDesktopRuntimeInfo()).isDesktopRuntime;
     const [coreResult, listResult] = await Promise.allSettled([
       updatesApi.check(),
       pluginApi.list(),
     ]);
+    let nextRelease = null;
+    const nextPlugins = [];
     let complete = true;
     if (
       coreResult.status === "fulfilled" &&
@@ -65,13 +159,8 @@ async function checkStartup() {
         const match = String(result.message || "").match(
           /\n\nVersion: (.+?) \| Published at: [^\n]*\s*$/,
         );
-        if (
-          match &&
-          !localStorage.getItem(
-            `astrbot:update:core:${encodeURIComponent(match[1])}`,
-          )
-        )
-          release.value = {
+        if (match && dismissed.value.core !== match[1])
+          nextRelease = {
             version: match[1],
             body: result.message.slice(0, match.index).trim(),
           };
@@ -151,13 +240,9 @@ async function checkStartup() {
             if (
               (cmp < 0 ||
                 (cmp === 0 && local.includes("-") && !remote.includes("-"))) &&
-              !localStorage.getItem(
-                `astrbot:update:plugin:${encodeURIComponent(
-                  item.name,
-                )}:${encodeURIComponent(remote)}`,
-              )
+              dismissed.value.plugins[item.name] !== remote
             ) {
-              plugins.value.push({
+              nextPlugins.push({
                 ...item,
                 onlineVersion: remote,
                 error: "",
@@ -171,11 +256,15 @@ async function checkStartup() {
         }
       }
     } else complete = false;
-    selected.value = plugins.value.map((p) => p.name);
     if (disposed) return;
-    if (complete || release.value || plugins.value.length) checkedStart = start;
-    if (release.value) coreOpen.value = true;
-    else if (plugins.value.length) pluginsOpen.value = true;
+    if (complete || nextRelease || nextPlugins.length) checkedStart = start;
+    release.value = nextRelease;
+    plugins.value = nextPlugins;
+    selected.value = nextPlugins.map((p) => p.name);
+    coreDone.value = false;
+    progress.value = null;
+    message.value = "";
+    scheduleOpen();
   } catch (error) {
     console.warn("Failed to check startup updates:", error);
   } finally {
@@ -184,35 +273,42 @@ async function checkStartup() {
 }
 
 onMounted(() => {
+  for (const type of ACTIVITY_EVENTS)
+    window.addEventListener(type, markActivity, ACTIVITY_OPTIONS);
+  document.addEventListener("visibilitychange", onVisibilityChange);
   void checkStartup();
   timer = setInterval(checkStartup, 30000);
 });
 onBeforeUnmount(() => {
   disposed = true;
   clearInterval(timer);
+  clearTimeout(openTimer);
+  for (const type of ACTIVITY_EVENTS)
+    window.removeEventListener(type, markActivity, ACTIVITY_OPTIONS);
+  document.removeEventListener("visibilitychange", onVisibilityChange);
 });
 
 function closeCore() {
-  if (release.value)
-    localStorage.setItem(
-      `astrbot:update:core:${encodeURIComponent(release.value.version)}`,
-      "1",
-    );
+  if (release.value) {
+    dismissed.value.core = release.value.version;
+    rememberDismissed();
+  }
   coreOpen.value = false;
   message.value = "";
+  // Drop the pending candidate so focus/visibility changes cannot re-arm a
+  // prompt the user just closed.
+  release.value = null;
   if (plugins.value.length) pluginsOpen.value = true;
 }
 
 function closePlugins() {
   for (const item of plugins.value) {
-    localStorage.setItem(
-      `astrbot:update:plugin:${encodeURIComponent(
-        item.name,
-      )}:${encodeURIComponent(item.onlineVersion)}`,
-      "1",
-    );
+    dismissed.value.plugins[item.name] = item.onlineVersion;
   }
+  rememberDismissed();
   pluginsOpen.value = false;
+  plugins.value = [];
+  selected.value = [];
 }
 
 async function updateCore() {
@@ -239,6 +335,13 @@ async function updateCore() {
       if (task?.status === "error") throw new Error(task.message);
       if (task?.status === "success") {
         coreDone.value = true;
+        // The new files are on disk but the process still reports the old
+        // version until restart; remember the dismissal so a re-check while
+        // it is still running does not offer the same release again.
+        if (release.value) {
+          dismissed.value.core = release.value.version;
+          rememberDismissed();
+        }
         break;
       }
     }
@@ -259,6 +362,8 @@ async function updatePlugins() {
       const result = await pluginApi.update(item.name, { proxy: proxy() });
       if (result.data.status === "error") throw new Error(result.data.message);
       item.updated = true;
+      dismissed.value.plugins[item.name] = item.onlineVersion;
+      rememberDismissed();
       selected.value = selected.value.filter((name) => name !== item.name);
     } catch (error) {
       item.error = error?.message || String(error);

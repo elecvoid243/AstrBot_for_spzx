@@ -2861,6 +2861,16 @@ paths:
         "200":
           $ref: "#/components/responses/Ok"
 
+  /api/v1/chat/active-runs:
+    get:
+      tags: [Chat]
+      summary: Report whether the caller has a chat run in flight
+      operationId: activeChatRuns
+      x-astrbot-scope: chat
+      responses:
+        "200":
+          $ref: "#/components/responses/Ok"
+
   /api/v1/chat/file-access-mode:
     get:
       tags: [Chat]

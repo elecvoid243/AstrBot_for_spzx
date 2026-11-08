@@ -3,7 +3,7 @@
     <!-- 2026-08-11 file-change visibility: pinned per-file change cards
          above the timeline so users see edits/writes at a glance. The
          timeline entries below stay unchanged (full process record). -->
-    <div v-if="fileChanges.length" class="file-change-pinned">
+    <div v-if="!inert && fileChanges.length" class="file-change-pinned">
       <FileChangeCard
         v-for="change in fileChanges"
         :key="change.callId"
@@ -30,8 +30,13 @@
           <span class="reasoning-step-title">{{ entry.title }}</span>
         </div>
 
+        <MarkdownMessagePart
+          v-if="inert && entry.kind === 'think' && !thinkCollapsed(entry)"
+          :content="entry.think || ''" :refs="null" :is-dark="Boolean(isDark)"
+          :custom-html-tags="[]" :is-streaming="isStreaming" inert
+        />
         <MarkdownRender
-          v-if="entry.kind === 'think' && !thinkCollapsed(entry)"
+          v-else-if="entry.kind === 'think' && !thinkCollapsed(entry)"
           :content="entry.think || ''"
           class="chat-markdown reasoning-text markdown-content"
           :final="!isStreaming"
@@ -78,7 +83,7 @@
         </div>
 
         <div v-else-if="entry.tool" class="reasoning-tool-call-block">
-          <ToolCallItem v-if="isIPythonToolCall(entry.tool)" :is-dark="isDark">
+          <ToolCallItem v-if="!inert && isIPythonToolCall(entry.tool)" :is-dark="isDark">
             <template #label>
               <v-icon size="16">mdi-code-json</v-icon>
               <span>{{ entry.tool.name || "python" }}</span>
@@ -95,7 +100,7 @@
               />
             </template>
           </ToolCallItem>
-          <ToolCallCard v-else :tool-call="entry.tool" :is-dark="isDark" :is-active="isStreaming" />
+          <ToolCallCard v-else :tool-call="entry.tool" :is-dark="isDark" :is-active="isStreaming" :inert="inert" />
         </div>
 
         <button
@@ -126,6 +131,7 @@ import {
 } from "@/components/chat/markdownRenderConfig";
 import IPythonToolBlock from "@/components/chat/message_list_comps/IPythonToolBlock.vue";
 import ToolCallCard from "@/components/chat/message_list_comps/ToolCallCard.vue";
+import MarkdownMessagePart from "./MarkdownMessagePart.vue";
 import ToolCallItem from "@/components/chat/message_list_comps/ToolCallItem.vue";
 import FileChangeCard from "@/components/chat/message_list_comps/FileChangeCard.vue";
 import { collectFileChanges } from "@/utils/fileChangeTool";
@@ -138,6 +144,7 @@ const props = defineProps<{
   reasoning?: string;
   isDark?: boolean;
   isStreaming?: boolean;
+  inert?: boolean;
   /**
    * Collapse long think entries to a short preview (subagent run blocks).
    * The currently streaming entry stays expanded so live thinking remains

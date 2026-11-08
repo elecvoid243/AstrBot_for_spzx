@@ -1,56 +1,153 @@
 <template>
-  <section class="remote-conversation">
-    <header class="pa-4">
-      <strong
-        >{{ connection.name }} ·
-        {{ session.display_name || session.session_id }}</strong
-      >
-      <div class="text-caption">
-        {{ connection.base_url }} · {{ tm("remoteConnections.execution") }}
+  <section class="remote-conversation" :class="{ 'is-dark': isDark }">
+    <header class="remote-header">
+      <div class="remote-header__identity">
+        <strong>{{ session.display_name || session.session_id }}</strong>
+        <span class="remote-connection-chip" :title="connection.base_url"
+          ><span class="remote-status-dot" :class="{ connected: ready }" />{{
+            connection.name
+          }}</span
+        >
       </div>
-      <v-btn variant="text" size="small" @click="refresh">{{
+      <v-btn variant="text" size="small" :disabled="loading" @click="refresh">{{
         tm("remoteConnections.refresh")
       }}</v-btn>
     </header>
-    <v-alert v-if="error" type="error" variant="tonal" class="ma-4">{{
+    <v-alert v-if="error" type="error" variant="tonal" class="remote-alert">{{
       tm(`remoteConnections.status.${error}`)
     }}</v-alert>
     <v-progress-linear v-if="loading" indeterminate />
     <div ref="historyEl" class="remote-history">
-      <ChatMessageList
-        :messages="[...messages, ...liveMessages]"
-        :is-dark="isDark"
-        remote-history
-        :remote-scope="resourceScope"
-        :remote-ready="ready"
-        :history-has-more="hasMore"
-        :history-loading-older="loading"
-        @load-older="load(true)"
-      />
+      <div class="messages-list-shell">
+        <ChatMessageList
+          :messages="[...messages, ...liveMessages]"
+          :is-dark="isDark"
+          :is-streaming="running"
+          remote-history
+          :remote-scope="resourceScope"
+          :remote-ready="ready"
+          :history-has-more="hasMore"
+          :history-loading-older="loading"
+          @load-older="load(true)"
+        />
+      </div>
     </div>
-    <form class="pa-4 remote-composer" @submit.prevent="send">
-      <v-alert v-if="uncertain" type="warning" variant="tonal" class="mb-2">
-        {{ tm("remoteConnections.unknown") }}
-        <v-btn
+    <form
+      class="input-area remote-composer"
+      :class="{ 'is-dark': isDark }"
+      @submit.prevent="send"
+      @dragover.prevent
+      @drop.prevent="uploadFiles(Array.from($event.dataTransfer?.files || []))"
+    >
+      <div class="remote-composer-status">
+        <span role="status"
+          ><span class="remote-status-dot" :class="{ connected: ready }" />{{
+            tm(running ? "remoteConnections.running" : "remoteConnections.idle")
+          }}</span
+        >
+      </div>
+      <v-alert
+        v-if="uncertain"
+        type="warning"
+        variant="tonal"
+        class="remote-uncertain"
+      >
+        {{ tm("remoteConnections.unknown")
+        }}<v-btn
           variant="text"
           :disabled="!ready || sending"
           @click="checkReceipt"
           >{{ tm("remoteConnections.checked") }}</v-btn
         >
       </v-alert>
-      <div role="status" class="text-caption mb-2">
-        {{
-          tm(running ? "remoteConnections.running" : "remoteConnections.idle")
-        }}
+      <div class="input-container">
+        <div v-if="attachments.length" class="remote-attachments">
+          <div
+            v-for="(file, index) in attachments"
+            :key="file.attachment_id"
+            class="remote-attachment"
+          >
+            <v-icon size="16">mdi-paperclip</v-icon
+            ><span>{{ file.filename }}</span>
+            <v-btn
+              icon="mdi-close"
+              variant="text"
+              size="x-small"
+              :aria-label="tm('remoteConnections.removeAttachment')"
+              :disabled="sending || uncertain"
+              @click="attachments.splice(index, 1)"
+            />
+          </div>
+        </div>
+        <div class="composer-row">
+          <div class="input-field-shell">
+            <textarea
+              ref="textareaEl"
+              v-model="draft"
+              class="chat-textarea"
+              rows="1"
+              :aria-label="tm('remoteConnections.message')"
+              :placeholder="tm('input.placeholder')"
+              :disabled="sending || uncertain"
+              @keydown="onKeydown"
+              @paste="
+                $event.clipboardData?.files.length &&
+                  ($event.preventDefault(),
+                  uploadFiles(Array.from($event.clipboardData.files)))
+              "
+            />
+          </div>
+          <div class="composer-toolbar">
+            <div class="composer-toolbar__left">
+              <v-btn
+                icon="mdi-plus"
+                variant="text"
+                class="composer-ghost-btn"
+                :aria-label="tm('remoteConnections.attach')"
+                :loading="uploading"
+                :disabled="!ready || sending || uncertain || uploading"
+                @click="fileInput?.click()"
+              />
+              <span class="remote-model-hint">{{
+                tm("remoteConnections.execution")
+              }}</span>
+            </div>
+            <div class="composer-toolbar__right">
+              <v-btn
+                v-if="running"
+                icon="mdi-stop"
+                variant="text"
+                class="composer-ghost-btn"
+                :aria-label="tm('remoteConnections.stop')"
+                :loading="stopping"
+                :disabled="!ready || stopping"
+                @click="stop"
+              />
+              <v-btn
+                type="submit"
+                icon="mdi-arrow-up"
+                variant="flat"
+                class="input-action-btn"
+                :loading="sending"
+                :aria-label="
+                  tm(
+                    running
+                      ? 'remoteConnections.followUp'
+                      : 'remoteConnections.send',
+                  )
+                "
+                :disabled="
+                  !ready ||
+                  sending ||
+                  uncertain ||
+                  uploading ||
+                  (!draft.trim() && !attachments.length)
+                "
+              />
+            </div>
+          </div>
+        </div>
       </div>
-      <v-textarea
-        v-model="draft"
-        :label="tm('remoteConnections.message')"
-        rows="2"
-        auto-grow
-        hide-details
-        :disabled="sending || uncertain"
-      />
       <input
         ref="fileInput"
         type="file"
@@ -59,52 +156,6 @@
         :disabled="!ready || sending || uncertain || uploading"
         @change="uploadFiles"
       />
-      <div
-        v-for="(file, index) in attachments"
-        :key="file.attachment_id"
-        class="d-flex align-center ga-2"
-      >
-        <span>{{ file.filename }}</span>
-        <v-btn
-          variant="text"
-          size="small"
-          :disabled="sending || uncertain"
-          @click="attachments.splice(index, 1)"
-          >{{ tm("remoteConnections.removeAttachment") }}</v-btn
-        >
-      </div>
-      <div class="d-flex ga-2 mt-2">
-        <v-btn
-          variant="text"
-          :loading="uploading"
-          :disabled="!ready || sending || uncertain || uploading"
-          @click="fileInput?.click()"
-          >{{ tm("remoteConnections.attach") }}</v-btn
-        >
-        <v-btn
-          type="submit"
-          variant="tonal"
-          :disabled="
-            !ready ||
-            sending ||
-            uncertain ||
-            uploading ||
-            (!draft.trim() && !attachments.length)
-          "
-          >{{
-            tm(
-              running ? "remoteConnections.followUp" : "remoteConnections.send",
-            )
-          }}</v-btn
-        >
-        <v-btn
-          v-if="running"
-          variant="text"
-          :disabled="!ready || stopping"
-          @click="stop"
-          >{{ tm("remoteConnections.stop") }}</v-btn
-        >
-      </div>
     </form>
   </section>
 </template>
@@ -126,6 +177,7 @@ const props = defineProps<{
   connection: RemoteConnection;
   session: RemoteSession;
   isDark: boolean;
+  sendShortcut?: "enter" | "shift_enter";
 }>();
 const emit = defineEmits<{ unavailable: [] }>();
 const { tm } = useModuleI18n("features/chat");
@@ -142,6 +194,48 @@ const liveMessages = ref<ChatRecord[]>([]),
   ready = ref(false),
   requestId = ref("");
 const historyEl = ref<HTMLElement>();
+const textareaEl = ref<HTMLTextAreaElement>();
+watch(draft, async () => {
+  await nextTick();
+  if (!textareaEl.value) return;
+  textareaEl.value.style.height = "auto";
+  textareaEl.value.style.height = `${textareaEl.value.scrollHeight}px`;
+});
+function onKeydown(event: KeyboardEvent) {
+  if (
+    event.isComposing ||
+    event.keyCode === 229 ||
+    event.key !== "Enter" ||
+    event.ctrlKey ||
+    event.metaKey ||
+    event.altKey
+  )
+    return;
+  if ((props.sendShortcut === "shift_enter") !== event.shiftKey) return;
+  event.preventDefault();
+  void send();
+}
+// Pages, persisted active rows and transient snapshots use the same display shape.
+function normalizeRecord(row: ChatRecord, live = false): ChatRecord {
+  const content = (row.content || {
+    type: row.sender_id === "bot" ? "bot" : "user",
+    message: [],
+  }) as ChatRecord["content"] & { agent_stats?: unknown };
+  const parts = normalizeMessageParts(content.message || []) as MessagePart[];
+  if (content.reasoning && !parts.some((part) => part.type === "think"))
+    parts.unshift({ type: "think", think: content.reasoning });
+  return {
+    ...row,
+    isStreaming: live,
+    content: {
+      ...content,
+      type: content.type || (row.sender_id === "bot" ? "bot" : "user"),
+      message: parts,
+      agentStats: content.agentStats || content.agent_stats,
+      isLoading: live && !parts.length && !content.reasoning,
+    },
+  };
+}
 const fileInput = ref<HTMLInputElement>();
 const attachments = ref<RemoteUpload[]>([]);
 const uploading = ref(false);
@@ -150,14 +244,18 @@ const resourceScope = computed(() => ({
   revision: props.connection.revision,
   sessionId: props.session.session_id,
 }));
-async function uploadFiles(event: Event) {
-  const input = event.target as HTMLInputElement;
-  const files = Array.from(input.files || []);
+async function uploadFiles(event: Event | File[]) {
+  if (!ready.value || sending.value || uncertain.value || uploading.value)
+    return;
+  const input = Array.isArray(event)
+    ? null
+    : (event.target as HTMLInputElement);
+  const files = Array.isArray(event) ? event : Array.from(input?.files || []);
   const target = identity(),
     current = generation;
   if (attachments.value.length + files.length > 20) {
     error.value = "remote_attachment_limit";
-    input.value = "";
+    if (input) input.value = "";
     return;
   }
   uploading.value = true;
@@ -176,7 +274,7 @@ async function uploadFiles(event: Event) {
   } finally {
     if (identity() === target && generation === current)
       uploading.value = false;
-    input.value = "";
+    if (input) input.value = "";
   }
 }
 watch(
@@ -249,19 +347,15 @@ async function load(older: boolean) {
     );
     if (identity() !== target || current !== generation) return;
     const page = response.data.data;
-    const rows = page.history.map((row) => ({
-      ...row,
-      content: {
-        ...row.content,
-        type: row.content?.type || (row.sender_id === "bot" ? "bot" : "user"),
-        message: normalizeMessageParts(
-          row.content?.message || [],
-        ) as MessagePart[],
-      },
-    }));
+    const rows = page.history.map((row) => normalizeRecord(row));
     messages.value = older ? [...rows, ...messages.value] : rows;
     cursor = page.next_before_id ?? undefined;
     hasMore.value = page.has_more && cursor !== undefined;
+    if (!older)
+      await nextTick(() => {
+        if (historyEl.value)
+          historyEl.value.scrollTop = historyEl.value.scrollHeight;
+      });
   } catch (err: any) {
     if (identity() !== target || current !== generation) return;
     // Any failed admission clears the transcript, including previously loaded pages.
@@ -304,15 +398,9 @@ async function subscribe(target: string, current: number) {
           throwAccess("remote_protocol_error");
           return;
         }
-        const rows = state.history.map((row: ChatRecord) => ({
-          ...row,
-          content: {
-            ...row.content,
-            message: normalizeMessageParts(
-              row.content?.message || [],
-            ) as MessagePart[],
-          },
-        }));
+        const rows = state.history.map((row: ChatRecord) =>
+          normalizeRecord(row),
+        );
         const first = rows[0]?.id;
         messages.value = [
           ...messages.value.filter(
@@ -325,11 +413,10 @@ async function subscribe(target: string, current: number) {
             (row) => row.id === run.history_record_id,
           );
           if (row)
-            row.content = {
-              ...run.content,
-              type: "bot",
-              message: normalizeMessageParts(run.content?.message || []),
-            };
+            Object.assign(
+              row,
+              normalizeRecord({ ...row, content: run.content }, true),
+            );
         }
         if (cursor === undefined) {
           cursor = first;
@@ -343,15 +430,15 @@ async function subscribe(target: string, current: number) {
                 (row: ChatRecord) => row.id === run.history_record_id,
               ),
           )
-          .map((run: any, index: number) => ({
-            id: -(index + 1),
-            content: {
-              ...run.content,
-              type: "bot",
-              message: normalizeMessageParts(run.content?.message || []),
-            },
-            isStreaming: true,
-          }));
+          .map((run: any, index: number) =>
+            normalizeRecord(
+              {
+                id: `remote-run:${run.run_id || index}`,
+                content: run.content || { type: "bot", message: [] },
+              },
+              true,
+            ),
+          );
         running.value = state.is_running || state.active_runs.length > 0;
         ready.value = true;
         error.value = "";
@@ -545,6 +632,7 @@ onBeforeUnmount(() => {
   messages.value = [];
 });
 </script>
+<style scoped src="./chatComposer.css"></style>
 <style scoped>
 .remote-conversation {
   height: 100%;
@@ -552,16 +640,136 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   width: 100%;
+  overflow: hidden;
+}
+.remote-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 24px;
+  border-bottom: 1px solid
+    var(--chat-border, rgba(var(--v-theme-on-surface), 0.08));
+}
+.remote-header__identity {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+.remote-header strong {
+  font-size: 0.9rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.remote-connection-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: rgba(var(--v-theme-on-surface), 0.04);
+  color: rgba(var(--v-theme-on-surface), 0.65);
+  font-size: 0.75rem;
+}
+.remote-status-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: rgba(var(--v-theme-on-surface), 0.35);
+  margin-right: 5px;
+}
+.remote-status-dot.connected {
+  background: #30c785;
+}
+.remote-alert,
+.remote-uncertain {
+  width: var(--chat-content-width, 80%);
+  max-width: var(--chat-content-max-width, 960px);
+  margin: 8px auto;
+  flex-shrink: 0;
+}
+.remote-history {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-anchor: none;
+  scrollbar-gutter: stable;
+  padding: 24px 0 0;
+}
+.messages-list-shell {
+  width: var(--chat-content-width, 80%);
+  max-width: var(--chat-content-max-width, 960px);
+  margin: 0 auto;
+}
+.remote-composer {
+  container-type: inline-size;
+  flex-shrink: 0;
+  padding: 0 16px 16px;
+}
+.remote-composer-status {
+  width: var(--chat-content-width, 80%);
+  max-width: var(--chat-content-max-width, 960px);
+  margin: 0 auto;
+  padding: 6px;
+  font-size: 0.75rem;
+  color: rgba(var(--v-theme-on-surface), 0.6);
+}
+.remote-model-hint {
+  font-size: 0.75rem;
+  color: rgba(var(--v-theme-on-surface), 0.56);
 }
 .remote-file-input {
   display: none;
 }
-.remote-history {
-  flex: 1;
-  overflow: auto;
-  padding: 16px;
+.remote-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 12px 0;
 }
-header {
-  border-bottom: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
+.remote-attachment {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
+  border-radius: 10px;
+  padding-left: 8px;
+  font-size: 0.8rem;
+}
+.remote-attachment span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+@media (max-width: 768px) {
+  .messages-list-shell,
+  .remote-composer-status,
+  .remote-alert,
+  .remote-uncertain {
+    width: calc(100% - 24px);
+  }
+  .remote-header {
+    padding: 8px 12px;
+  }
+  .remote-header__identity {
+    gap: 6px;
+  }
+  .remote-composer {
+    padding: 0;
+  }
+  .input-container {
+    width: calc(100% - 20px) !important;
+  }
+  .remote-model-hint {
+    max-width: 45vw;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
 }
 </style>

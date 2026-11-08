@@ -69,8 +69,12 @@
 
       <!-- ── Result ────────────────────────────────────────── -->
       <!-- apply_patch: one DiffPreview per file so every block carries its path -->
+      <div v-if="inert" class="tool-call-detail-row">
+        <span class="detail-label">Result:</span>
+        <pre class="detail-value">{{ typeof toolCall.result === 'string' ? toolCall.result : JSON.stringify(toolCall.result, null, 2) }}</pre>
+      </div>
       <div
-        v-if="applyPatchFiles.length"
+        v-else-if="applyPatchFiles.length"
         class="tool-call-detail-row"
       >
         <span class="detail-label">Result:</span>
@@ -164,6 +168,10 @@ const props = defineProps({
     default: false,
   },
   isActive: {
+    type: Boolean,
+    default: false,
+  },
+  inert: {
     type: Boolean,
     default: false,
   },

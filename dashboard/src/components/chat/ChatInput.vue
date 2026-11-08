@@ -2754,6 +2754,7 @@ defineExpose({
 });
 </script>
 
+<style scoped src="./chatComposer.css"></style>
 <style scoped>
 .input-area {
   container-type: inline-size;
@@ -2803,23 +2804,8 @@ defineExpose({
   display: contents;
 }
 
-.input-action-btn {
-  width: 32px !important;
-  height: 32px !important;
-  min-width: 32px !important;
-  border-radius: 50% !important;
-  background: #5594c6 !important;
-  color: #fff !important;
-}
 
-.input-action-btn:hover {
-  background: #4c86b3 !important;
-}
 
-.input-action-btn:disabled {
-  background: rgba(85, 148, 198, 0.24) !important;
-  color: rgba(255, 255, 255, 0.72) !important;
-}
 
 .token-usage-indicator {
   width: 24px;
@@ -3040,147 +3026,6 @@ defineExpose({
   background: rgba(var(--v-theme-on-surface), 0.86) !important;
 }
 
-.input-area.is-dark .input-action-btn:disabled {
-  background: rgba(var(--v-theme-on-surface), 0.14) !important;
-  color: rgba(var(--v-theme-on-surface), 0.4) !important;
-}
-
-.input-container {
-  display: flex;
-  flex-direction: column;
-  padding: 6px 8px 8px !important;
-  border-color: #f0f0f0 !important;
-  border-radius: 24px !important;
-  background: #fff !important;
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.06) !important;
-}
-
-.input-area.is-dark .input-container {
-  border: 1px solid rgba(255, 255, 255, 0.12) !important;
-  background: #2d2d2d !important;
-  box-shadow: none !important;
-}
-
-.reply-preview,
-.attachments-preview {
-  width: 100%;
-  flex: 0 0 auto;
-}
-
-/* 2026-10-03 stacked composer (elecvoid243): field row on top, ghost
-   toolbar below. The old grid squeezed left/field/right onto one line. */
-.composer-row {
-  width: 100%;
-  display: flex;
-  flex-direction: column;
-}
-
-.input-field-shell {
-  width: 100%;
-  min-width: 0;
-  display: flex;
-  align-items: flex-start;
-  padding: 8px 12px 0;
-}
-
-.chat-text-input,
-.chat-textarea {
-  display: block;
-  width: 100%;
-  box-sizing: border-box;
-  min-width: 0;
-  min-height: 28px !important;
-  margin: 0;
-  padding: 2px 0 !important;
-  border: 0 !important;
-  border-radius: 0 !important;
-  background: transparent !important;
-  box-shadow: none !important;
-  resize: none;
-  outline: none;
-  font-family: inherit;
-  font-size: 16px !important;
-}
-
-.chat-text-input {
-  height: 28px !important;
-  line-height: 24px !important;
-  overflow: hidden;
-}
-
-.chat-textarea {
-  max-height: min(48vh, 420px) !important;
-  overflow-y: auto;
-  overflow-wrap: break-word;
-  line-height: 24px !important;
-  transition: height 0.16s ease;
-}
-
-.chat-text-input::placeholder,
-.chat-textarea::placeholder {
-  color: rgba(var(--v-theme-on-surface), 0.56);
-  opacity: 1;
-}
-
-.composer-toolbar {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  padding: 4px 6px 0;
-}
-
-.composer-toolbar__left {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  min-width: 0;
-  overflow: visible;
-}
-
-.composer-toolbar__left--user {
-  flex: 1;
-  flex-wrap: wrap;
-}
-
-.composer-toolbar__left--user > * {
-  flex-shrink: 0;
-}
-
-.composer-toolbar__divider {
-  width: 1px;
-  height: 18px;
-  flex: 0 0 auto;
-  margin: 0 6px;
-  background: var(--sp-ghost-divider, rgba(var(--v-theme-on-surface), 0.1));
-}
-
-.composer-toolbar__right {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 4px;
-  margin-left: auto;
-  flex-shrink: 0;
-}
-
-/* Ghost icon button ("+", mic): borderless 30px circle, hover wash. */
-.composer-ghost-btn {
-  width: 30px !important;
-  height: 30px !important;
-  min-width: 30px !important;
-  border-radius: 50% !important;
-  box-shadow: none !important;
-  color: rgba(var(--v-theme-on-surface), 0.65) !important;
-}
-
-.composer-ghost-btn:hover,
-.composer-ghost-btn:focus-visible {
-  background: var(
-    --sp-ghost-hover-bg,
-    rgba(var(--v-theme-on-surface), 0.055)
-  ) !important;
-  color: rgb(var(--v-theme-on-surface)) !important;
-}
 
 @container (max-width: 560px) {
   .input-area__status-row {
@@ -3280,19 +3125,8 @@ defineExpose({
   }
 }
 
-.input-area:not(.is-dark) .input-action-btn {
-  background: #8fcfb4 !important;
-  color: #fff !important;
-}
 
-.input-area:not(.is-dark) .input-action-btn:hover {
-  background: #7fc4a8 !important;
-}
 
-.input-area:not(.is-dark) .input-action-btn:disabled {
-  background: #f2f5f3 !important;
-  color: rgba(0, 0, 0, 0.18) !important;
-}
 
 .reply-preview {
   display: flex;

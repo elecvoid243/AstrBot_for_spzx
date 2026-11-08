@@ -253,6 +253,7 @@ export interface MessageDisplayBlock {
 }
 
 export interface ChatRecord {
+  isStreaming?: boolean;
   id?: string | number;
   content: ChatContent;
   created_at?: string;

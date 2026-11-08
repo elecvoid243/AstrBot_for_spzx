@@ -73,3 +73,5 @@
 
 - Combine remote resources/human answers with direct Agent messaging and creation while preserving the latest local ChatUI. Existing navigation mapping remains This instance / Remote connections; attachment and choice actions stay in the selected remote conversation. Refresh English/Chinese screenshots and document compatible APIs and limit hints.
 - Verify creation into selected exposure retains attachment and human-answer authorization, including creation and Agent switches disabled after creation and live exposure withdrawal.
+
+- ChatUI remote sessions now share local message and composer styling, collapsible reasoning and read-only tool cards, with incremental run snapshots and live activity indicators. Text actions move to the +, send arrow and stop buttons; remote authorization and attachment/choice routing remain scoped to the connection.

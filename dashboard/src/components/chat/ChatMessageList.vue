@@ -61,21 +61,7 @@
         </div>
 
         <div class="message-stack">
-          <div v-if="remoteHistory" class="message-bubble" :class="{ user: isUserMessage(msg), bot: !isUserMessage(msg) }">
-            <div v-if="messageContent(msg).agent_source" class="plain-content">{{ tm('message.agentSource') }} · {{ messageContent(msg).agent_source?.display_name || messageContent(msg).agent_source?.session_id }}</div>
-            <pre v-if="messageContent(msg).reasoning" class="plain-content">{{ messageContent(msg).reasoning }}</pre>
-            <template v-for="(part, index) in messageParts(msg)" :key="index">
-              <MarkdownMessagePart v-if="part.type === 'plain'" :content="part.text || ''" :refs="null" :is-dark="isDark" :custom-html-tags="[]" inert />
-              <RemoteMessageResource
-                v-else-if="remoteScope && ((['image', 'file', 'record', 'audio', 'video'].includes(part.type) && part.attachment_id) || validateInteractiveChoice(part))"
-                :key="JSON.stringify(remoteScope) + index"
-                :scope="remoteScope" :part="part" :enabled="remoteReady === true"
-              />
-              <pre v-else class="plain-content">{{ formatJson(part) }}</pre>
-            </template>
-          </div>
-          <template v-else>
-          <div v-if="isBranchDivider(msg)" class="branch-divider">
+          <div v-if="!remoteHistory && isBranchDivider(msg)" class="branch-divider">
             <button
               type="button"
               class="branch-divider-toggle"
@@ -93,13 +79,13 @@
           </div>
           <template v-else>
             <div
-              v-if="messageContent(msg).agent_source?.remote"
+              v-if="messageContent(msg).agent_source && (remoteHistory || messageContent(msg).agent_source?.remote)"
               class="agent-message-source"
               :title="messageContent(msg).agent_source!.session_id"
             >
               <span class="agent-message-source-copy">
-                <span class="agent-message-source-title">{{ messageContent(msg).agent_source!.display_name }}</span>
-                <span class="agent-message-source-meta">{{ tm('message.agentSource') }} · {{ messageContent(msg).agent_source!.connection_name }} · {{ messageContent(msg).agent_source!.session_id }}</span>
+                <span class="agent-message-source-title">{{ messageContent(msg).agent_source!.display_name || messageContent(msg).agent_source!.session_id }}</span>
+                <span class="agent-message-source-meta">{{ tm('message.agentSource') }} · {{ messageContent(msg).agent_source!.connection_name || messageContent(msg).agent_source!.login_name }} · {{ messageContent(msg).agent_source!.session_id }}</span>
               </span>
             </div>
             <RouterLink
@@ -162,12 +148,12 @@
                  separates the disclosure from the message it describes.
                  2026-10-18: the trigger is the bubble's top-right marker. -->
             <LlmRequestInjectionsPanel
-              v-if="injectionTrailOpen(msg, msgIndex)"
+              v-if="!remoteHistory && injectionTrailOpen(msg, msgIndex)"
               :items="injectionItems(msg)"
             />
 
             <div
-              v-if="isUserMessage(msg) && userAttachmentParts(msg).length"
+              v-if="!remoteHistory && isUserMessage(msg) && userAttachmentParts(msg).length"
               class="sent-attachments"
               :class="{
                 'images-only': hasImageOnlyAttachments(msg),
@@ -361,7 +347,8 @@
                         blockIndex,
                       )
                     "
-                    :open-in-sidebar="variant === 'main'"
+                    :open-in-sidebar="!remoteHistory && variant === 'main'"
+                    :inert="remoteHistory"
                     @open="
                       (openPayload) =>
                         emit('openReasoning', {
@@ -379,8 +366,13 @@
                       v-for="(part, partIndex) in entry.block.parts"
                       :key="`${entry.index}-${partIndex}-${part.type}`"
                     >
+                      <RemoteMessageResource
+                        v-if="remoteHistory && remoteScope && ((['image', 'file', 'record', 'audio', 'video'].includes(part.type) && part.attachment_id) || validateInteractiveChoice(part))"
+                        :key="JSON.stringify(remoteScope) + entry.index + partIndex"
+                        :scope="remoteScope" :part="part" :enabled="remoteReady === true"
+                      />
                       <button
-                        v-if="part.type === 'reply'"
+                        v-else-if="!remoteHistory && part.type === 'reply'"
                         class="reply-quote"
                         type="button"
                         @click="scrollToMessage(part.message_id)"
@@ -391,14 +383,16 @@
                         }}</span>
                       </button>
 
+                      <div v-else-if="remoteHistory && part.type === 'plain' && isUserMessage(msg)" class="plain-content">{{ part.text || '' }}</div>
+
                       <UserPlainMessagePart
-                        v-else-if="part.type === 'plain' && isUserMessage(msg)"
+                        v-else-if="!remoteHistory && part.type === 'plain' && isUserMessage(msg)"
                         :text="part.text || ''"
                       />
 
                       <div
                         v-else-if="
-                          part.type === 'plain' && messageThreads(msg).length
+                          !remoteHistory && part.type === 'plain' && messageThreads(msg).length
                         "
                         class="threaded-message-content"
                       >
@@ -420,7 +414,13 @@
                         :is-dark="isDark"
                         :custom-html-tags="customMarkdownTags"
                         :is-streaming="isMessageStreaming(msg, msgIndex)"
+                        :inert="remoteHistory"
                       />
+
+                      <ToolCallCard v-else-if="remoteHistory && part.type === 'subagent_run'"
+                        :tool-call="{ name: part.agent_name || 'subagent', result: part.summary || formatJson(part) }"
+                        :is-dark="isDark" inert />
+                      <pre v-else-if="remoteHistory && part.type !== 'tool_call'" class="plain-content">{{ formatJson(part) }}</pre>
 
                       <button
                         v-else-if="part.type === 'image'"
@@ -495,7 +495,7 @@
                           :key="tool.id || tool.name"
                         >
                           <ToolCallItem
-                            v-if="isIPythonToolCall(tool)"
+                            v-if="!remoteHistory && isIPythonToolCall(tool)"
                             :is-dark="isDark"
                           >
                             <template #label>
@@ -519,6 +519,7 @@
                             :tool-call="normalizeToolCall(tool)"
                             :is-dark="isDark"
                             :is-active="isMessageStreaming(msg, msgIndex)"
+                            :inert="remoteHistory"
                           />
                         </template>
                       </div>
@@ -549,7 +550,7 @@
                 </template>
 
                 <FileChangeSummaryCard
-                  v-if="messageContent(msg).fileChangeSummary?.length"
+                  v-if="!remoteHistory && messageContent(msg).fileChangeSummary?.length"
                   :files="messageContent(msg).fileChangeSummary || []"
                   :session-id="sessionId"
                   :message-id="msg.id"
@@ -569,7 +570,7 @@
                    It is rendered last so the first content block keeps its
                    `:first-child` margin reset. -->
               <v-tooltip
-                v-if="!isUserMessage(msg) && injectionItems(msg).length"
+                v-if="!remoteHistory && !isUserMessage(msg) && injectionItems(msg).length"
                 location="top end"
                 max-width="240"
               >
@@ -697,7 +698,7 @@
                 </v-card>
               </v-menu>
               <StyledMenu
-                v-if="messageThreads(msg).length"
+                v-if="!remoteHistory && messageThreads(msg).length"
                 location="bottom"
                 transition="none"
                 no-border
@@ -729,7 +730,7 @@
                   </v-list-item-title>
                 </v-list-item>
               </StyledMenu>
-              <div v-if="messageRefs(msg).length" class="message-meta-refs">
+              <div v-if="!remoteHistory && messageRefs(msg).length" class="message-meta-refs">
                 <ActionRef
                   :refs="resolvedMessageRefs(msg)"
                   @open-refs="handleOpenRefs"
@@ -737,13 +738,12 @@
               </div>
             </div>
           </template>
-          </template>
         </div>
       </div>
     </div>
 
     <RefsSidebar
-      v-if="manageRefsSidebar"
+      v-if="!remoteHistory && manageRefsSidebar"
       v-model="refsSidebarOpen"
       :refs="selectedRefs"
     />
@@ -1349,6 +1349,7 @@ function hasImageOnlyAttachments(message: ChatRecord) {
 }
 
 function bubbleParts(message: ChatRecord) {
+  if (props.remoteHistory) return messageParts(message);
   if (!isUserMessage(message))
     return displayMessageParts(messageContent(message));
   return messageParts(message).filter((part) => !isAttachmentPart(part));
@@ -1364,6 +1365,9 @@ function shouldShowMessageBubble(message: ChatRecord) {
 }
 
 function isMessageStreaming(message: ChatRecord, messageIndex: number) {
+  if (props.remoteHistory) {
+    return props.isStreaming && !isUserMessage(message) && Boolean(message.isStreaming);
+  }
   return (
     props.isStreaming &&
     !isUserMessage(message) &&
@@ -1630,6 +1634,11 @@ function agentWorkPillVisible(message: ChatRecord, messageIndex: number) {
   }
   // Terminal boxes need no live render; the box itself decides with the same
   // three flags (see `InteractiveChoiceBox`'s state machine).
+  if (
+    props.remoteHistory && messageParts(message).some((part) =>
+      isInteractiveChoicePayload(part) && !part.answer && !part.resolved && !part.cancelled
+    )
+  ) return false;
   if (!props.currentUmo || isInteractiveChoiceIgnored(message)) return true;
   for (const part of messageParts(message)) {
     if (!isInteractiveChoicePayload(part)) continue;

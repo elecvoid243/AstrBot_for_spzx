@@ -73,6 +73,7 @@
         :reasoning="reasoning"
         :is-dark="isDark"
         :is-streaming="isStreaming"
+        :inert="inert"
       />
     </div>
 
@@ -113,6 +114,7 @@ const props = defineProps<{
   isStreaming?: boolean;
   hasNonReasoningContent?: boolean;
   openInSidebar?: boolean;
+  inert?: boolean;
 }>();
 
 const emit = defineEmits<{

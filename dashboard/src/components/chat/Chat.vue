@@ -736,7 +736,7 @@
         </div>
       </transition>
       <template v-if="remoteConnectionId">
-        <RemoteConversation v-if="activeRemoteConnection && activeRemoteSession" :key="remoteIdentity" :connection="activeRemoteConnection" :session="activeRemoteSession" :is-dark="isDark" @unavailable="remote.refreshConnection(remoteConnectionId)" />
+        <RemoteConversation v-if="activeRemoteConnection && activeRemoteSession" :key="remoteIdentity" :connection="activeRemoteConnection" :session="activeRemoteSession" :is-dark="isDark" :send-shortcut="sendShortcut" @unavailable="remote.refreshConnection(remoteConnectionId)" />
         <div v-else class="pa-6" role="status">{{ tm(`remoteConnections.status.${remote.enabled.value ? remote.status[remoteConnectionId] || 'remote_unavailable' : 'disabled'}`) }}</div>
       </template>
       <section v-else-if="isProviderWorkspace" class="provider-workspace-shell">

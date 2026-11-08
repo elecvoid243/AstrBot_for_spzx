@@ -51,7 +51,7 @@ const make = () =>
       plugins: [createPinia()],
       stubs: {
         ChatMessageList: {
-          props: ["messages", "historyHasMore"],
+          props: ["messages", "historyHasMore", "isStreaming"],
           template: "<div>{{ JSON.stringify(messages) }}</div>",
         },
       },
@@ -142,7 +142,19 @@ it("renders remote Markdown without local links, images or custom capabilities",
     wrapper.findAll("a, img, file-reference").map((el) => el.html()),
   ).toEqual([]);
 });
-it("reuses the message list without local resource or interactive controls", () => {
+it("keeps remote user file references as text instead of local file controls", () => {
+  const wrapper = mount(ChatMessageList, {
+    props: { remoteHistory: true, messages: [{ id: 1, content: { type: "user", message: [
+      { type: "plain", text: "Review this\n[Referenced files]\nLocal path\n- `C:/private/secret.txt`" },
+    ] } }] },
+    global: { plugins: [createPinia()], stubs: { GenerationIndicator: true, RefsSidebar: true } },
+  });
+  expect(wrapper.findComponent({ name: "UserPlainMessagePart" }).exists()).toBe(false);
+  expect(wrapper.findAll("a, button, file-reference")).toHaveLength(0);
+  expect(wrapper.text()).toContain("C:/private/secret.txt");
+  wrapper.unmount();
+});
+it("reuses message styling with read-only reasoning and tool disclosures", async () => {
   const wrapper = mount(ChatMessageList, {
     props: {
       remoteHistory: true,
@@ -174,9 +186,14 @@ it("reuses the message list without local resource or interactive controls", () 
       },
     },
   });
-  expect(wrapper.findAll("a, img[src], button, input")).toHaveLength(0);
+  expect(wrapper.findAll("a, img[src], input")).toHaveLength(0);
+  expect(wrapper.findComponent({ name: "SubAgentRunBlock" }).exists()).toBe(false);
+  await wrapper.find(".reasoning-header").trigger("click");
+  const card = wrapper.findAllComponents({ name: "ToolCallCard" })
+    .find((component) => component.props("toolCall").name === "read_file")!;
+  expect(card.props("inert")).toBe(true);
+  await card.find(".tool-call-header").trigger("click");
   expect(wrapper.text()).toContain("complete result");
-  expect(wrapper.findComponent({ name: "ToolCallCard" }).exists()).toBe(false);
   wrapper.unmount();
 });
 
@@ -331,5 +348,36 @@ it("limits cumulative uploads and keeps definitely rejected input editable", asy
   expect(vm.uncertain).toBe(false);
   expect(vm.draft).toBe("Keep the draft");
   expect(vm.attachments).toHaveLength(20);
+  wrapper.unmount();
+});
+
+it("renders successive run snapshots before completion, including persisted active rows", async () => {
+  let controller!: ReadableStreamDefaultController<Uint8Array>;
+  const body = new ReadableStream<Uint8Array>({ start(value) { controller = value; } });
+  vi.mocked(remoteConnectionsApi.events).mockResolvedValueOnce({ ok: true, body } as Response);
+  vi.mocked(remoteConnectionsApi.history).mockResolvedValueOnce(page("earlier") as any);
+  const wrapper = make();
+  await settle();
+  const publish = (text: string, active: boolean) => controller.enqueue(new TextEncoder().encode(
+    "data: " + JSON.stringify({ type: "snapshot", data: {
+      history: [{ id: 2, content: { type: "bot", message: [{ type: "plain", text }], agent_stats: { duration: 3 } } }],
+      active_runs: active ? [{ run_id: "live", history_record_id: 2, content: { type: "bot", reasoning: "Checking now", message: [{ type: "plain", text }] } }] : [],
+      is_running: active, has_more: false,
+    } }) + "\n\n"));
+  publish("first token", true);
+  await settle();
+  let list = wrapper.findComponent(ChatMessageList);
+  expect(list.props("isStreaming")).toBe(true);
+  expect(list.props("messages")?.find((message: any) => message.id === 2)?.isStreaming).toBe(true);
+  expect(wrapper.text()).toContain("first token");
+  publish("first token and later tokens", true);
+  await settle();
+  expect(wrapper.text()).toContain("later tokens");
+  publish("finished reply", false);
+  await settle();
+  list = wrapper.findComponent(ChatMessageList);
+  expect(list.props("isStreaming")).toBe(false);
+  expect(list.props("messages")?.find((message: any) => message.id === 2)?.content.agentStats).toEqual({ duration: 3 });
+  controller.close();
   wrapper.unmount();
 });

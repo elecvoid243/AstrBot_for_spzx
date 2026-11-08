@@ -51,7 +51,7 @@
           {{ tm("shellSession.indicator.title") }}
         </div>
         <button
-          v-if="finishedCount > 0"
+          v-if="!readOnly && finishedCount > 0"
           type="button"
           class="clear-all"
           :class="{ confirm: cleanupConfirmId === CLEAR_ALL_KEY }"
@@ -120,7 +120,7 @@
             >exit {{ s.exit_code }}</span
           >
           <button
-            v-if="s.status !== 'running'"
+            v-if="!readOnly && s.status !== 'running'"
             class="row-cleanup"
             :class="{ confirm: cleanupConfirmId === s.session_id }"
             :title="
@@ -175,6 +175,7 @@ import { getShellSessionStatusMeta } from "./message_list_comps/shell_session_to
 const props = defineProps<{
   /** Active conversation id; cleanup calls are scoped to it. */
   conversationId: string | null;
+  readOnly?: boolean;
 }>();
 
 const chatHeader = useChatHeaderStore();

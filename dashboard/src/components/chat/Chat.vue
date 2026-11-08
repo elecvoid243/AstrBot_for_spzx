@@ -736,7 +736,7 @@
         </div>
       </transition>
       <template v-if="remoteConnectionId">
-        <RemoteConversation v-if="activeRemoteConnection && activeRemoteSession" :key="remoteIdentity" :connection="activeRemoteConnection" :session="activeRemoteSession" :is-dark="isDark" :send-shortcut="sendShortcut" @unavailable="remote.refreshConnection(remoteConnectionId)" />
+        <RemoteConversation v-if="activeRemoteConnection && activeRemoteSession" :key="remoteIdentity" :connection="activeRemoteConnection" :session="activeRemoteSession" :is-dark="isDark" :send-shortcut="sendShortcut" @presentation="remotePresentation = $event; chatHeader.informationOnly = true" @unavailable="remote.refreshConnection(remoteConnectionId)" />
         <div v-else class="pa-6" role="status">{{ tm(`remoteConnections.status.${remote.enabled.value ? remote.status[remoteConnectionId] || 'remote_unavailable' : 'disabled'}`) }}</div>
       </template>
       <section v-else-if="isProviderWorkspace" class="provider-workspace-shell">
@@ -1258,6 +1258,7 @@ import {
 } from "@/api/v1";
 import { useSessionGoal } from "@/composables/useSessionGoal";
 import { useShellSessions } from "@/composables/useShellSessions";
+import "./chatScrollControls.css";
 import ShellSessionWindow from "@/components/chat/ShellSessionWindow.vue";
 import { useSpcodeProjectStatus } from "@/composables/useSpcodeProjectStatus";
 import { provideSpcodeSession } from "@/composables/useSpcodeSession";
@@ -1655,6 +1656,14 @@ const {
 } = useProviderModelSelection(currSessionId);
 const commandSending = ref(false);
 const messagesContainer = ref<HTMLElement | null>(null);
+const remotePresentation = ref<{
+  goal: import("@/api/v1").SessionGoalState | null;
+  todo: import("@/composables/useMessages").TodoSnapshot | null;
+}>({ goal: null, todo: null });
+watch(remoteIdentity, () => {
+  remotePresentation.value = { goal: null, todo: null };
+  chatHeader.informationOnly = Boolean(remoteConnectionId.value);
+});
 const subagentPageOpen = ref(false);
 const subagentPagesRef = ref<InstanceType<typeof SubagentPages> | null>(null);
 const messagesListShell = ref<HTMLElement | null>(null);
@@ -5534,6 +5543,7 @@ async function toggleGitDiffSidebar(): Promise<void> {
  * key 可能是 undefined (新会话还没 todo) → 读出 undefined → 转为 null 给 UI。
  */
 const currentTodoSnapshot = computed(() => {
+  if (remoteConnectionId.value) return remotePresentation.value.todo;
   const sid = currSessionId.value;
   if (!sid) return null;
   return latestTodoSnapshotBySession.value[sid] ?? null;
@@ -5589,7 +5599,7 @@ watch(refsSidebarOpen, (open) => {
 // record is gone (never set, session switch to a goal-less session, or a
 // live /goal clear).
 watch(
-  currentGoal,
+  () => remoteConnectionId.value ? remotePresentation.value.goal : currentGoal.value,
   (goal) => {
     chatHeader.SET_GOAL_BADGE(
       goal
@@ -5611,7 +5621,7 @@ watch(
 watch(
   shellSessions,
   (sessions) => {
-    chatHeader.SET_SHELL_SESSIONS(sessions.length ? [...sessions] : null);
+    if (!remoteConnectionId.value) chatHeader.SET_SHELL_SESSIONS(sessions.length ? [...sessions] : null);
   },
   { immediate: true },
 );
@@ -7682,141 +7692,6 @@ function toggleTheme() {
    composer, which is why no measured composer height is involved. The button
    is centred rather than right-aligned: the bottom-right corner of the panel
    already carries the context-injection marker, and the two overlapped. */
-.jump-to-bottom-row {
-  position: relative;
-  height: 0;
-  width: var(--chat-content-width);
-  max-width: var(--chat-content-max-width);
-  margin: 0 auto;
-  display: flex;
-  justify-content: center;
-  pointer-events: none;
-  z-index: 6;
-}
-
-.jump-to-bottom {
-  position: absolute;
-  left: 50%;
-  bottom: 14px;
-  transform: translateX(-50%);
-  display: grid;
-  place-items: center;
-  width: 34px;
-  height: 34px;
-  padding: 0;
-  border: 1px solid rgba(var(--v-theme-on-surface), 0.14);
-  border-radius: 999px;
-  background: rgb(var(--v-theme-surface));
-  color: rgb(var(--v-theme-on-surface));
-  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.14);
-  cursor: pointer;
-  pointer-events: auto;
-}
-
-.jump-to-bottom:hover {
-  background: rgba(var(--v-theme-on-surface), 0.06);
-}
-
-.jump-to-bottom:focus-visible {
-  outline: 2px solid rgb(var(--v-theme-primary));
-  outline-offset: 2px;
-}
-
-/* Touch: keep the tap target near the platform minimum. */
-@media (pointer: coarse) {
-  .jump-to-bottom {
-    width: 40px;
-    height: 40px;
-  }
-}
-
-/* 2026-11-07 (elecvoid243): output is still arriving while the reader is away,
-   so the button face becomes the "still writing" dots. The arrow stays in the
-   DOM and returns on hover/focus, so the control's meaning and hit target never
-   change — only its face does, which is what the corner pip used to tell. */
-.jump-to-bottom-arrow {
-  transition: opacity 0.12s ease;
-}
-
-.jump-to-bottom--live .jump-to-bottom-arrow {
-  opacity: 0;
-}
-
-.jump-to-bottom--live:hover .jump-to-bottom-arrow,
-.jump-to-bottom--live:focus-visible .jump-to-bottom-arrow {
-  opacity: 1;
-}
-
-.jump-to-bottom-typing {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 3px;
-  pointer-events: none;
-  transition: opacity 0.12s ease;
-}
-
-.jump-to-bottom--live:hover .jump-to-bottom-typing,
-.jump-to-bottom--live:focus-visible .jump-to-bottom-typing {
-  opacity: 0;
-}
-
-.jump-to-bottom-typing span {
-  width: 4px;
-  height: 4px;
-  border-radius: 999px;
-  background: rgb(var(--v-theme-primary));
-  animation: jump-to-bottom-bounce 1.1s ease-in-out infinite;
-}
-
-.jump-to-bottom-typing span:nth-child(2) {
-  animation-delay: 0.15s;
-}
-
-.jump-to-bottom-typing span:nth-child(3) {
-  animation-delay: 0.3s;
-}
-
-@keyframes jump-to-bottom-bounce {
-  0%,
-  80%,
-  100% {
-    transform: translateY(0);
-    opacity: 0.45;
-  }
-  40% {
-    transform: translateY(-3px);
-    opacity: 1;
-  }
-}
-
-.jump-to-bottom-enter-active,
-.jump-to-bottom-leave-active {
-  transition:
-    opacity 0.16s ease,
-    transform 0.16s ease;
-}
-
-.jump-to-bottom-enter-from,
-.jump-to-bottom-leave-to {
-  opacity: 0;
-  transform: translateY(6px);
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .jump-to-bottom-enter-active,
-  .jump-to-bottom-leave-active {
-    transition: none;
-  }
-
-  .jump-to-bottom-typing span {
-    animation: none;
-    opacity: 1;
-  }
-}
-
 .center-state,
 .welcome-state {
   height: 100%;

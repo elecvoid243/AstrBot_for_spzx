@@ -6405,3 +6405,119 @@ export type ListHistoryApiV1AgentHistoryGetData = {
 export type ListHistoryApiV1AgentHistoryGetResponse = (unknown);
 
 export type ListHistoryApiV1AgentHistoryGetError = (HTTPValidationError);
+
+export type RemoteFileDiffApiV1RemoteChatSessionsSessionIdFileDiffGetData = {
+    path: {
+        session_id: string;
+    };
+    query: {
+        message_id?: (number | null);
+        path: string;
+        run_id?: (string | null);
+    };
+};
+
+export type RemoteFileDiffApiV1RemoteChatSessionsSessionIdFileDiffGetResponse = (unknown);
+
+export type RemoteFileDiffApiV1RemoteChatSessionsSessionIdFileDiffGetError = (HTTPValidationError);
+
+export type RemoteShellOutputApiV1RemoteChatSessionsSessionIdShellSessionsShellSessionIdOutputGetData = {
+    path: {
+        session_id: string;
+        shell_session_id: string;
+    };
+    query?: {
+        cursor?: number;
+    };
+};
+
+export type RemoteShellOutputApiV1RemoteChatSessionsSessionIdShellSessionsShellSessionIdOutputGetResponse = (unknown);
+
+export type RemoteShellOutputApiV1RemoteChatSessionsSessionIdShellSessionsShellSessionIdOutputGetError = (HTTPValidationError);
+
+export type ConnectionFileDiffApiV1ChatRemoteConnectionsConnectionIdSessionsSessionIdFileDiffGetData = {
+    path: {
+        connection_id: string;
+        session_id: string;
+    };
+    query: {
+        message_id?: (number | null);
+        path: string;
+        revision: string;
+        run_id?: (string | null);
+    };
+};
+
+export type ConnectionFileDiffApiV1ChatRemoteConnectionsConnectionIdSessionsSessionIdFileDiffGetResponse = (unknown);
+
+export type ConnectionFileDiffApiV1ChatRemoteConnectionsConnectionIdSessionsSessionIdFileDiffGetError = (HTTPValidationError);
+
+export type ConnectionShellOutputApiV1ChatRemoteConnectionsConnectionIdSessionsSessionIdShellSessionsShellSessionIdOutputGetData = {
+    path: {
+        connection_id: string;
+        session_id: string;
+        shell_session_id: string;
+    };
+    query: {
+        cursor?: number;
+        revision: string;
+    };
+};
+
+export type ConnectionShellOutputApiV1ChatRemoteConnectionsConnectionIdSessionsSessionIdShellSessionsShellSessionIdOutputGetResponse = (unknown);
+
+export type ConnectionShellOutputApiV1ChatRemoteConnectionsConnectionIdSessionsSessionIdShellSessionsShellSessionIdOutputGetError = (HTTPValidationError);
+
+export type RemoteSubagentEventsApiV1RemoteChatSessionsSessionIdSubagentRunsEventsGetData = {
+    path: {
+        session_id: string;
+    };
+    query?: {
+        run_id?: (string | null);
+    };
+};
+
+export type RemoteSubagentEventsApiV1RemoteChatSessionsSessionIdSubagentRunsEventsGetResponse = (unknown);
+
+export type RemoteSubagentEventsApiV1RemoteChatSessionsSessionIdSubagentRunsEventsGetError = (HTTPValidationError);
+
+export type RemoteSubagentConfigurationApiV1RemoteChatSessionsSessionIdSubagentRunsRunIdConfigurationGetData = {
+    path: {
+        run_id: string;
+        session_id: string;
+    };
+};
+
+export type RemoteSubagentConfigurationApiV1RemoteChatSessionsSessionIdSubagentRunsRunIdConfigurationGetResponse = (unknown);
+
+export type RemoteSubagentConfigurationApiV1RemoteChatSessionsSessionIdSubagentRunsRunIdConfigurationGetError = (HTTPValidationError);
+
+export type ConnectionSubagentEventsApiV1ChatRemoteConnectionsConnectionIdSessionsSessionIdSubagentRunsEventsGetData = {
+    path: {
+        connection_id: string;
+        session_id: string;
+    };
+    query: {
+        revision: string;
+        run_id?: (string | null);
+    };
+};
+
+export type ConnectionSubagentEventsApiV1ChatRemoteConnectionsConnectionIdSessionsSessionIdSubagentRunsEventsGetResponse = (unknown);
+
+export type ConnectionSubagentEventsApiV1ChatRemoteConnectionsConnectionIdSessionsSessionIdSubagentRunsEventsGetError = (HTTPValidationError);
+
+export type ConnectionSubagentConfigurationApiV1ChatRemoteConnectionsConnectionIdSessionsSessionIdSubagentRunsRunIdConfigurationGetData = {
+    path: {
+        connection_id: string;
+        run_id: string;
+        session_id: string;
+    };
+    query: {
+        revision: string;
+    };
+};
+
+export type ConnectionSubagentConfigurationApiV1ChatRemoteConnectionsConnectionIdSessionsSessionIdSubagentRunsRunIdConfigurationGetResponse = (unknown);
+
+export type ConnectionSubagentConfigurationApiV1ChatRemoteConnectionsConnectionIdSessionsSessionIdSubagentRunsRunIdConfigurationGetError = (HTTPValidationError);

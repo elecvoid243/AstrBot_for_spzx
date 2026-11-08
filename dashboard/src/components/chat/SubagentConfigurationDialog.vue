@@ -120,12 +120,17 @@
 
 <script setup lang="ts">
 import { ref, watch } from "vue";
+import {
+  remoteConnectionsApi,
+  type RemoteResourceScope,
+} from "@/api/remoteConnections";
 import { chatApi } from "@/api/v1";
 import { accountSessionRevision } from "@/utils/accountSession";
 import { useModuleI18n } from "@/i18n/composables";
 
 const props = defineProps<{
   sessionId: string;
+  remoteScope?: RemoteResourceScope;
   run: { subagent_run_id: string; agent_name: string };
 }>();
 const emit = defineEmits<{ close: [] }>();
@@ -149,6 +154,7 @@ watch(
     () => props.sessionId,
     () => props.run.subagent_run_id,
     accountSessionRevision,
+    () => JSON.stringify(props.remoteScope),
   ],
   async ([sessionId, runId], _, onCleanup) => {
     const controller = new AbortController();
@@ -157,11 +163,17 @@ watch(
     loading.value = true;
     failed.value = false;
     try {
-      const response = await chatApi.getSubagentConfiguration(
-        String(sessionId),
-        String(runId),
-        { signal: controller.signal },
-      );
+      const response = props.remoteScope
+        ? await remoteConnectionsApi.subagentConfiguration(
+            props.remoteScope,
+            String(runId),
+            controller.signal,
+          )
+        : await chatApi.getSubagentConfiguration(
+            String(sessionId),
+            String(runId),
+            { signal: controller.signal },
+          );
       if (controller.signal.aborted) return;
       if (response.data?.status !== "ok")
         throw new Error("Configuration unavailable");

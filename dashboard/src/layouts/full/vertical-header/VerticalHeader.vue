@@ -133,7 +133,9 @@ const desktopUpdateHasNewVersion = ref(false);
 const desktopUpdateCurrentVersion = ref("-");
 const desktopUpdateLatestVersion = ref("-");
 const desktopUpdateStatus = ref("");
-const desktopDownloadProgress = ref<AstrBotDesktopAppUpdateProgress | null>(null);
+const desktopDownloadProgress = ref<AstrBotDesktopAppUpdateProgress | null>(
+  null,
+);
 const isChatPath = computed(
   () => route.path === "/chat" || route.path.startsWith("/chat/"),
 );
@@ -1260,14 +1262,28 @@ onMounted(async () => {
         variant="text"
         size="small"
         rounded="sm"
-        :title="`${tm('goal.editTitle')} · ${tm(`goal.status_${chatHeader.goalBadge.status}`)}`"
-        :aria-label="`${tm('goal.editTitle')} · ${tm(`goal.status_${chatHeader.goalBadge.status}`)}`"
-        @click="chatHeader.SET_GOAL_EDIT_OPEN(true)"
+        :title="
+          chatHeader.informationOnly
+            ? tm(`goal.status_${chatHeader.goalBadge.status}`)
+            : `${tm('goal.editTitle')} · ${tm(
+                `goal.status_${chatHeader.goalBadge.status}`,
+              )}`
+        "
+        :aria-label="
+          chatHeader.informationOnly
+            ? tm(`goal.status_${chatHeader.goalBadge.status}`)
+            : `${tm('goal.editTitle')} · ${tm(
+                `goal.status_${chatHeader.goalBadge.status}`,
+              )}`
+        "
+        @click="
+          !chatHeader.informationOnly && chatHeader.SET_GOAL_EDIT_OPEN(true)
+        "
       >
         <v-icon size="18" :color="goalStatusColor">{{
-          chatHeader.goalBadge.status === 'done'
-            ? 'mdi-check-circle-outline'
-            : 'mdi-target'
+          chatHeader.goalBadge.status === "done"
+            ? "mdi-check-circle-outline"
+            : "mdi-target"
         }}</v-icon>
         <span class="goal-trigger-count">
           {{ chatHeader.goalBadge.turnsUsed }}/{{ chatHeader.goalBadge.maxTurns }}

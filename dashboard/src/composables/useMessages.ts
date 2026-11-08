@@ -66,6 +66,7 @@ import { applySubAgentEvent } from "./subagentRunReducer";
 // switch (leaf module — see todoHistoryReplay.ts header).
 import {
   TODO_TOOL_NAMES,
+  parseTodoToolResult,
   replayTodoSnapshotFromHistory,
 } from "./todoHistoryReplay";
 
@@ -2056,65 +2057,6 @@ export function useMessages(options: UseMessagesOptions) {
    * 展开顶栏的 todo 菜单；后续更新不再弹出，避免打断阅读。
    */
   const todoCreateTickBySession = ref<Record<string, number>>({});
-
-  /**
-   * 从 tool.result(JSON 字符串)中解析出 TodoSnapshot。
-   *
-   * 返回值语义:
-   * - `TodoSnapshot` 对象:write 进去,bar/sidebar 立即刷新。
-   * - `null`:显式清空(todo_clear 成功路径)。
-   * - `undefined`:保持现状 — 用于失败/无法解析的情况,避免覆盖已有快照。
-   *
-   * 协议参考:spcode 插件 `tools/_helpers.py` 中的 `unwrap()` —
-   * 成功路径输出 `{"ok": true, "data": {list, stats, attention_items}, ...}`,
-   * 失败路径输出 `{"ok": false, "error": "..."}`(或 err_json)。
-   * 部分响应可能携带 `proposal` / `options` 字段,这些不影响 data 段。
-   */
-  function parseTodoToolResult(
-    toolName: string,
-    resultJson: string,
-  ): TodoSnapshot | null | undefined {
-    if (!resultJson || typeof resultJson !== "string") return undefined;
-    let parsed: any;
-    try {
-      parsed = JSON.parse(resultJson);
-    } catch {
-      return undefined;
-    }
-    if (!parsed || typeof parsed !== "object") return undefined;
-
-    // 失败路径 → 保持现状,不动快照
-    if (parsed.ok === false) return undefined;
-
-    // todo_clear 成功 → 显式置空(让 bar 立即消失)
-    if (toolName === "todo_clear") {
-      return null;
-    }
-
-    // 拆 envelope:{"ok": true, "data": {...}} → 取 data
-    // 也兼容少数情况(老 todo_list 工具、proposal 路径等)data 直接挂在根上
-    const data =
-      parsed.ok === true && parsed.data && typeof parsed.data === "object"
-        ? parsed.data
-        : parsed;
-
-    const list = data?.list;
-    const stats = data?.stats;
-    if (!list || typeof list !== "object") return undefined;
-    if (!stats || typeof stats !== "object") return undefined;
-
-    const attentionRaw = data?.attention_items;
-    const attentionItems: number[] = Array.isArray(attentionRaw)
-      ? attentionRaw.filter((n) => typeof n === "number")
-      : [];
-
-    return {
-      list: list as TodoList,
-      stats: stats as TodoStats,
-      attentionItems,
-      updatedAt: Date.now(),
-    };
-  }
 
   /**
    * 在 record 的 tool_call parts 中按 id 找到对应的 tool 调用项。

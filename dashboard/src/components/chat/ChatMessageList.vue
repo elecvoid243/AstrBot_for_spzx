@@ -84,8 +84,18 @@
               :title="messageContent(msg).agent_source!.session_id"
             >
               <span class="agent-message-source-copy">
-                <span class="agent-message-source-title">{{ messageContent(msg).agent_source!.display_name || messageContent(msg).agent_source!.session_id }}</span>
-                <span class="agent-message-source-meta">{{ tm('message.agentSource') }} · {{ messageContent(msg).agent_source!.connection_name || messageContent(msg).agent_source!.login_name }} · {{ messageContent(msg).agent_source!.session_id }}</span>
+                <span class="agent-message-source-title">{{
+                  messageContent(msg).agent_source!.display_name ||
+                  messageContent(msg).agent_source!.session_id
+                }}</span>
+                <span class="agent-message-source-meta"
+                  >{{ tm("message.agentSource") }} ·
+                  {{
+                    messageContent(msg).agent_source!.connection_name ||
+                    messageContent(msg).agent_source!.login_name
+                  }}
+                  · {{ messageContent(msg).agent_source!.session_id }}</span
+                >
               </span>
             </div>
             <RouterLink
@@ -148,7 +158,7 @@
                  separates the disclosure from the message it describes.
                  2026-10-18: the trigger is the bubble's top-right marker. -->
             <LlmRequestInjectionsPanel
-              v-if="!remoteHistory && injectionTrailOpen(msg, msgIndex)"
+              v-if="injectionTrailOpen(msg, msgIndex)"
               :items="injectionItems(msg)"
             />
 
@@ -347,7 +357,10 @@
                         blockIndex,
                       )
                     "
-                    :open-in-sidebar="!remoteHistory && variant === 'main'"
+                    :open-in-sidebar="
+                      variant === 'main' &&
+                      (!remoteHistory || Boolean(remoteScope))
+                    "
                     :inert="remoteHistory"
                     @open="
                       (openPayload) =>
@@ -367,12 +380,28 @@
                       :key="`${entry.index}-${partIndex}-${part.type}`"
                     >
                       <RemoteMessageResource
-                        v-if="remoteHistory && remoteScope && ((['image', 'file', 'record', 'audio', 'video'].includes(part.type) && part.attachment_id) || validateInteractiveChoice(part))"
-                        :key="JSON.stringify(remoteScope) + entry.index + partIndex"
-                        :scope="remoteScope" :part="part" :enabled="remoteReady === true"
+                        v-if="
+                          remoteHistory &&
+                          remoteScope &&
+                          (([
+                            'image',
+                            'file',
+                            'record',
+                            'audio',
+                            'video',
+                          ].includes(part.type) &&
+                            part.attachment_id) ||
+                            validateInteractiveChoice(part))
+                        "
+                        :key="
+                          JSON.stringify(remoteScope) + entry.index + partIndex
+                        "
+                        :scope="remoteScope"
+                        :part="part"
+                        :enabled="remoteReady === true"
                       />
                       <button
-                        v-else-if="!remoteHistory && part.type === 'reply'"
+                        v-else-if="part.type === 'reply'"
                         class="reply-quote"
                         type="button"
                         @click="scrollToMessage(part.message_id)"
@@ -383,7 +412,16 @@
                         }}</span>
                       </button>
 
-                      <div v-else-if="remoteHistory && part.type === 'plain' && isUserMessage(msg)" class="plain-content">{{ part.text || '' }}</div>
+                      <div
+                        v-else-if="
+                          remoteHistory &&
+                          part.type === 'plain' &&
+                          isUserMessage(msg)
+                        "
+                        class="plain-content"
+                      >
+                        {{ part.text || "" }}
+                      </div>
 
                       <UserPlainMessagePart
                         v-else-if="!remoteHistory && part.type === 'plain' && isUserMessage(msg)"
@@ -417,10 +455,21 @@
                         :inert="remoteHistory"
                       />
 
-                      <ToolCallCard v-else-if="remoteHistory && part.type === 'subagent_run'"
-                        :tool-call="{ name: part.agent_name || 'subagent', result: part.summary || formatJson(part) }"
-                        :is-dark="isDark" inert />
-                      <pre v-else-if="remoteHistory && part.type !== 'tool_call'" class="plain-content">{{ formatJson(part) }}</pre>
+                      <SubAgentRunBlock
+                        v-else-if="
+                          remoteHistory &&
+                          part.type === 'subagent_run' &&
+                          remoteScope
+                        "
+                        :part="part"
+                        :is-dark="isDark"
+                        :session-id="remoteScope.sessionId"
+                      />
+                      <pre
+                        v-else-if="remoteHistory && part.type !== 'tool_call'"
+                        class="plain-content"
+                        >{{ formatJson(part) }}</pre
+                      >
 
                       <button
                         v-else-if="part.type === 'image'"
@@ -550,9 +599,11 @@
                 </template>
 
                 <FileChangeSummaryCard
-                  v-if="!remoteHistory && messageContent(msg).fileChangeSummary?.length"
+                  v-if="messageContent(msg).fileChangeSummary?.length"
                   :files="messageContent(msg).fileChangeSummary || []"
-                  :session-id="sessionId"
+                  :remote-scope="remoteScope"
+                  :read-only="remoteHistory"
+                  :session-id="remoteScope?.sessionId || sessionId"
                   :message-id="msg.id"
                   :run-id="messageContent(msg).fileChangeRunId"
                   :source-unavailable="
@@ -570,7 +621,7 @@
                    It is rendered last so the first content block keeps its
                    `:first-child` margin reset. -->
               <v-tooltip
-                v-if="!remoteHistory && !isUserMessage(msg) && injectionItems(msg).length"
+                v-if="!isUserMessage(msg) && injectionItems(msg).length"
                 location="top end"
                 max-width="240"
               >
@@ -730,7 +781,10 @@
                   </v-list-item-title>
                 </v-list-item>
               </StyledMenu>
-              <div v-if="!remoteHistory && messageRefs(msg).length" class="message-meta-refs">
+              <div
+                v-if="messageRefs(msg).length"
+                class="message-meta-refs"
+              >
                 <ActionRef
                   :refs="resolvedMessageRefs(msg)"
                   @open-refs="handleOpenRefs"
@@ -743,9 +797,9 @@
     </div>
 
     <RefsSidebar
-      v-if="!remoteHistory && manageRefsSidebar"
+      v-if="manageRefsSidebar"
       v-model="refsSidebarOpen"
-      :refs="selectedRefs"
+      :refs="selectedRefs" :inert="remoteHistory"
     />
 
     <v-overlay
@@ -946,6 +1000,13 @@ const customMarkdownTags = CHAT_MARKDOWN_CUSTOM_TAGS;
 const downloadingFiles = ref(new Set<string>());
 const imagePreview = reactive({ visible: false, url: "" });
 const refsSidebarOpen = ref(false);
+watch(() => [props.remoteReady, props.remoteScope], () => {
+  if (props.remoteHistory) {
+    refsSidebarOpen.value = false;
+    selectedRefs.value = null;
+  }
+}, { deep: true });
+
 const selectedRefs = ref<Record<string, unknown> | null>(null);
 const listRoot = ref<HTMLElement | null>(null);
 
@@ -1366,7 +1427,11 @@ function shouldShowMessageBubble(message: ChatRecord) {
 
 function isMessageStreaming(message: ChatRecord, messageIndex: number) {
   if (props.remoteHistory) {
-    return props.isStreaming && !isUserMessage(message) && Boolean(message.isStreaming);
+    return (
+      props.isStreaming &&
+      !isUserMessage(message) &&
+      Boolean(message.isStreaming)
+    );
   }
   return (
     props.isStreaming &&
@@ -1635,8 +1700,13 @@ function agentWorkPillVisible(message: ChatRecord, messageIndex: number) {
   // Terminal boxes need no live render; the box itself decides with the same
   // three flags (see `InteractiveChoiceBox`'s state machine).
   if (
-    props.remoteHistory && messageParts(message).some((part) =>
-      isInteractiveChoicePayload(part) && !part.answer && !part.resolved && !part.cancelled
+    props.remoteHistory &&
+    messageParts(message).some(
+      (part) =>
+        isInteractiveChoicePayload(part) &&
+        !part.answer &&
+        !part.resolved &&
+        !part.cancelled,
     )
   ) return false;
   if (!props.currentUmo || isInteractiveChoiceIgnored(message)) return true;
@@ -2010,7 +2080,7 @@ function normalizeRefItems(items: unknown[]) {
       title: item?.title || item?.url || tm("refs.title"),
       url: item?.url,
       snippet: item?.snippet,
-      favicon: item?.favicon,
+      favicon: props.remoteHistory ? undefined : item?.favicon,
     }))
     .filter((item) => item.url);
 }

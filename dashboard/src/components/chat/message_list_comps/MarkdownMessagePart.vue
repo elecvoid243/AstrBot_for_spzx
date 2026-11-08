@@ -1,12 +1,11 @@
 <template>
   <div class="markdown-content">
-    <div v-if="inert" class="chat-markdown" v-html="inertHtml" />
     <MarkdownRender
-      v-else
       class="chat-markdown"
-      custom-id="chat-message"
+      :custom-id="inert ? 'remote-message' : 'chat-message'"
+      :nodes="inert ? inertNodes : undefined"
       :content="content"
-      :custom-html-tags="customHtmlTags"
+      :custom-html-tags="inert ? [] : customHtmlTags"
       :is-dark="isDark"
       :final="!isStreaming"
       :smooth-streaming="isStreaming ? 'auto' : false"
@@ -20,8 +19,11 @@
 
 <script setup lang="ts">
 import { computed, provide } from "vue";
-import MarkdownIt from "markdown-it";
-import { MarkdownRender } from "markstream-vue";
+import {
+  MarkdownRender,
+  getMarkdown,
+  parseMarkdownToStructure,
+} from "markstream-vue";
 import {
   CHAT_MARKDOWN_HEADING_STYLE,
   MARKDOWN_RENDER_MAX_LIVE_NODES,
@@ -37,10 +39,24 @@ const props = defineProps<{
 }>();
 
 // Remote transcripts must not resolve links, images or custom tags against this instance.
-const inertMarkdown = new MarkdownIt({ html: false, linkify: false });
-inertMarkdown.disable(["link", "image", "autolink"]);
-const inertHtml = computed(() => props.inert
-  ? inertMarkdown.render(props.content) : "");
+const inertMarkdown = getMarkdown("remote-safe", {
+  markdownItOptions: { html: false, linkify: false },
+});
+inertMarkdown.disable([
+  "link",
+  "image",
+  "autolink",
+  "html_inline",
+  "html_block",
+]);
+const inertNodes = computed(() =>
+  props.inert
+    ? parseMarkdownToStructure(props.content, inertMarkdown, {
+        final: !props.isStreaming,
+        streamParse: false,
+      })
+    : undefined,
+);
 
 const isDarkRef = computed(() => props.isDark);
 const refsByIndex = computed(() => {
@@ -56,5 +72,9 @@ const refsByIndex = computed(() => {
 });
 
 provide("isDark", isDarkRef);
+provide(
+  "chatReadOnly",
+  computed(() => props.inert === true),
+);
 provide("webSearchResults", () => refsByIndex.value);
 </script>

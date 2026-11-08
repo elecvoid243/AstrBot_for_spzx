@@ -111,7 +111,7 @@
           </v-icon>
         </button>
 
-        <div class="fcs-actions">
+        <div v-if="!readOnly" class="fcs-actions">
           <div
             v-if="hasOpenActions(file)"
             class="fcs-open-group"
@@ -192,6 +192,7 @@
             :overlay-supported="canOverlay(file)"
             :is-dark="isDark"
             :max-lines="400"
+            :commentable="!readOnly"
           />
         </template>
       </div>
@@ -202,16 +203,25 @@
 <script setup lang="ts">
 import { computed, inject, onBeforeUnmount, reactive, ref, watch } from "vue";
 import DiffPreview from "./DiffPreview.vue";
+import {
+  remoteConnectionsApi,
+  type RemoteResourceScope,
+} from "@/api/remoteConnections";
 import { chatApi } from "@/api/v1";
 import { useModuleI18n } from "@/i18n/composables";
 import { useOpenOnDisk } from "@/composables/useOpenOnDisk";
 import { OPEN_FILE_REFERENCE } from "@/composables/fileReference";
 import { useToast } from "@/utils/toast";
-import { accountSessionRevision, assertCurrentAccount } from "@/utils/accountSession";
+import {
+  accountSessionRevision,
+  assertCurrentAccount,
+} from "@/utils/accountSession";
 import type { FileChangeSummaryFile } from "@/utils/fileChangeTool";
 
 const props = defineProps<{
   files: FileChangeSummaryFile[];
+  remoteScope?: RemoteResourceScope;
+  readOnly?: boolean;
   sessionId?: string;
   messageId?: string | number;
   runId?: string;
@@ -221,24 +231,32 @@ const props = defineProps<{
 
 const accountRevision = accountSessionRevision.value;
 const isAdmin = localStorage.getItem("role") === "admin";
-const hasSource = computed(() => Boolean(props.sessionId && (
-  (props.messageId != null && /^\d+$/.test(String(props.messageId))) || props.runId
-)));
+const hasSource = computed(() =>
+  Boolean(
+    props.sessionId &&
+      ((props.messageId != null && /^\d+$/.test(String(props.messageId))) ||
+        props.runId),
+  ),
+);
 const source = computed(() => ({
   session_id: props.sessionId,
   ...(props.messageId != null && /^\d+$/.test(String(props.messageId))
     ? { message_id: props.messageId }
     : { run_id: props.runId }),
 }));
-watch(accountSessionRevision, () => {
-  expanded.clear();
-  reverted.clear();
-  openGroupPath.value = "";
-  for (const cache of [diffs, baseContents, overlayModes]) {
-    for (const key of Object.keys(cache)) delete cache[key];
-  }
-  confirmingPath.value = "";
-}, { flush: "sync" });
+watch(
+  accountSessionRevision,
+  () => {
+    expanded.clear();
+    reverted.clear();
+    openGroupPath.value = "";
+    for (const cache of [diffs, baseContents, overlayModes]) {
+      for (const key of Object.keys(cache)) delete cache[key];
+    }
+    confirmingPath.value = "";
+  },
+  { flush: "sync" },
+);
 
 const { tm } = useModuleI18n("features/chat");
 const { openOnDisk, openFolder } = useOpenOnDisk("fileChange");
@@ -312,7 +330,13 @@ function isReverted(file: FileChangeSummaryFile): boolean {
 }
 
 function canExpand(file: FileChangeSummaryFile): boolean {
-  return hasSource.value && !props.sourceUnavailable && !!file.sha256 && file.diff_available && !isReverted(file);
+  return (
+    hasSource.value &&
+    !props.sourceUnavailable &&
+    !!file.sha256 &&
+    file.diff_available &&
+    !isReverted(file)
+  );
 }
 
 /** 叠加需要非空基准原文;created / 空基准没有可叠在下面的旧内容。 */
@@ -322,7 +346,11 @@ function canOverlay(file: FileChangeSummaryFile): boolean {
 
 /** Removals have no file to open (only the parent folder survives). */
 function canOpenFile(file: FileChangeSummaryFile): boolean {
-  return localStorage.getItem("role") === "admin" && file.runtime === "local" && file.kind !== "remove";
+  return (
+    localStorage.getItem("role") === "admin" &&
+    file.runtime === "local" &&
+    file.kind !== "remove"
+  );
 }
 
 function canOpenFolder(file: FileChangeSummaryFile): boolean {
@@ -380,7 +408,11 @@ function canUndo(file: FileChangeSummaryFile): boolean {
   if (props.sourceUnavailable || !hasSource.value) return false;
   if (file.kind === "remove") {
     // Recycle-bin restore does not depend on a baseline backup.
-    return file.runtime === "local" && file.restore_available === true && !statusPending.value;
+    return (
+      file.runtime === "local" &&
+      file.restore_available === true &&
+      !statusPending.value
+    );
   }
   return (
     file.runtime === "local" &&
@@ -404,12 +436,18 @@ function toggleRow(file: FileChangeSummaryFile) {
 async function loadDiff(file: FileChangeSummaryFile) {
   loadingPath.value = file.path;
   try {
-    const resp = await chatApi.fileChangeDiff(
-      file.path,
-      file.backup_id,
-      file.sha256,
-      source.value,
-    );
+    const resp = props.remoteScope
+      ? await remoteConnectionsApi.fileDiff(
+          props.remoteScope,
+          file.path,
+          source.value,
+        )
+      : await chatApi.fileChangeDiff(
+          file.path,
+          file.backup_id,
+          file.sha256,
+          source.value,
+        );
     assertCurrentAccount(accountRevision);
     const envelope = resp.data;
     if (envelope?.status === "error") {
@@ -447,7 +485,10 @@ async function undoFile(file: FileChangeSummaryFile) {
   try {
     let envelope: any;
     if (file.kind === "remove") {
-      const resp = await chatApi.restoreRemovedFileChange(file.path, source.value);
+      const resp = await chatApi.restoreRemovedFileChange(
+        file.path,
+        source.value,
+      );
       envelope = resp.data;
     } else {
       const resp = await chatApi.restoreFileChange(
@@ -464,9 +505,7 @@ async function undoFile(file: FileChangeSummaryFile) {
         envelope?.data?.stderr || envelope?.message || envelope?.data?.reason || "";
       toast.error(tm("fileChanges.undoFailed", { message }));
     } else {
-      toast.success(
-        tm("fileChanges.undoDone", { name: basename(file.path) }),
-      );
+      toast.success(tm("fileChanges.undoDone", { name: basename(file.path) }));
       // File reverted: collapse the row, drop the cached diff and badge it.
       markReverted(file.path);
     }
@@ -489,7 +528,7 @@ function markReverted(path: string) {
  * current bytes equal its baseline backup is reverted, however that
  * happened (our undo, the LLM's rollback tool, or a manual revert). */
 async function refreshRevertStatus() {
-  if (props.sourceUnavailable || !hasSource.value) return;
+  if (props.readOnly || props.sourceUnavailable || !hasSource.value) return;
   const candidates = props.files.filter(
     (f) => f.runtime === "local" && f.backup_id && !reverted.has(f.path),
   );

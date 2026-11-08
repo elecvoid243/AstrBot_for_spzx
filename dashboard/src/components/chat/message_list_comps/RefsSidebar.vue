@@ -20,7 +20,7 @@
         >
           <div class="ref-item-icon">
             <img
-              v-if="ref.favicon"
+              v-if="!inert && ref.favicon"
               :src="ref.favicon"
               class="ref-item-favicon"
               @error="(e) => (e.target.style.display = 'none')"
@@ -54,6 +54,7 @@ export default {
       type: Boolean,
       default: false,
     },
+    inert: { type: Boolean, default: false },
     refs: {
       type: Object,
       default: null,
@@ -113,8 +114,8 @@ export default {
     },
 
     openLink(url) {
-      if (url) {
-        window.open(url, "_blank");
+      if (url && (!this.inert || /^https?:\/\//i.test(url))) {
+        window.open(url, "_blank", "noopener,noreferrer");
       }
     },
   },

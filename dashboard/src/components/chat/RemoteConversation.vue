@@ -1,173 +1,316 @@
 <template>
   <section class="remote-conversation" :class="{ 'is-dark': isDark }">
-    <header class="remote-header">
-      <div class="remote-header__identity">
-        <strong>{{ session.display_name || session.session_id }}</strong>
-        <span class="remote-connection-chip" :title="connection.base_url"
-          ><span class="remote-status-dot" :class="{ connected: ready }" />{{
-            connection.name
-          }}</span
-        >
-      </div>
-      <v-btn variant="text" size="small" :disabled="loading" @click="refresh">{{
-        tm("remoteConnections.refresh")
-      }}</v-btn>
-    </header>
-    <v-alert v-if="error" type="error" variant="tonal" class="remote-alert">{{
-      tm(`remoteConnections.status.${error}`)
-    }}</v-alert>
-    <v-progress-linear v-if="loading" indeterminate />
-    <div ref="historyEl" class="remote-history">
-      <div class="messages-list-shell">
-        <ChatMessageList
-          :messages="[...messages, ...liveMessages]"
-          :is-dark="isDark"
-          :is-streaming="running"
-          remote-history
-          :remote-scope="resourceScope"
-          :remote-ready="ready"
-          :history-has-more="hasMore"
-          :history-loading-older="loading"
-          @load-older="load(true)"
-        />
-      </div>
-    </div>
-    <form
-      class="input-area remote-composer"
-      :class="{ 'is-dark': isDark }"
-      @submit.prevent="send"
-      @dragover.prevent
-      @drop.prevent="uploadFiles(Array.from($event.dataTransfer?.files || []))"
-    >
-      <div class="remote-composer-status">
-        <span role="status"
-          ><span class="remote-status-dot" :class="{ connected: ready }" />{{
-            tm(running ? "remoteConnections.running" : "remoteConnections.idle")
-          }}</span
-        >
-      </div>
-      <v-alert
-        v-if="uncertain"
-        type="warning"
-        variant="tonal"
-        class="remote-uncertain"
-      >
-        {{ tm("remoteConnections.unknown")
-        }}<v-btn
-          variant="text"
-          :disabled="!ready || sending"
-          @click="checkReceipt"
-          >{{ tm("remoteConnections.checked") }}</v-btn
-        >
-      </v-alert>
-      <div class="input-container">
-        <div v-if="attachments.length" class="remote-attachments">
-          <div
-            v-for="(file, index) in attachments"
-            :key="file.attachment_id"
-            class="remote-attachment"
+    <div class="remote-main">
+      <header class="remote-header">
+        <div class="remote-header__identity">
+          <strong>{{ session.display_name || session.session_id }}</strong>
+          <span class="remote-connection-chip" :title="connection.base_url"
+            ><span class="remote-status-dot" :class="{ connected: ready }" />{{
+              connection.name
+            }}</span
           >
-            <v-icon size="16">mdi-paperclip</v-icon
-            ><span>{{ file.filename }}</span>
-            <v-btn
-              icon="mdi-close"
-              variant="text"
-              size="x-small"
-              :aria-label="tm('remoteConnections.removeAttachment')"
-              :disabled="sending || uncertain"
-              @click="attachments.splice(index, 1)"
-            />
-          </div>
         </div>
-        <div class="composer-row">
-          <div class="input-field-shell">
-            <textarea
-              ref="textareaEl"
-              v-model="draft"
-              class="chat-textarea"
-              rows="1"
-              :aria-label="tm('remoteConnections.message')"
-              :placeholder="tm('input.placeholder')"
-              :disabled="sending || uncertain"
-              @keydown="onKeydown"
-              @paste="
-                $event.clipboardData?.files.length &&
-                  ($event.preventDefault(),
-                  uploadFiles(Array.from($event.clipboardData.files)))
-              "
-            />
-          </div>
-          <div class="composer-toolbar">
-            <div class="composer-toolbar__left">
-              <v-btn
-                icon="mdi-plus"
-                variant="text"
-                class="composer-ghost-btn"
-                :aria-label="tm('remoteConnections.attach')"
-                :loading="uploading"
-                :disabled="!ready || sending || uncertain || uploading"
-                @click="fileInput?.click()"
-              />
-              <span class="remote-model-hint">{{
-                tm("remoteConnections.execution")
-              }}</span>
-            </div>
-            <div class="composer-toolbar__right">
-              <v-btn
-                v-if="running"
-                icon="mdi-stop"
-                variant="text"
-                class="composer-ghost-btn"
-                :aria-label="tm('remoteConnections.stop')"
-                :loading="stopping"
-                :disabled="!ready || stopping"
-                @click="stop"
-              />
-              <v-btn
-                type="submit"
-                icon="mdi-arrow-up"
-                variant="flat"
-                class="input-action-btn"
-                :loading="sending"
-                :aria-label="
-                  tm(
-                    running
-                      ? 'remoteConnections.followUp'
-                      : 'remoteConnections.send',
-                  )
-                "
-                :disabled="
-                  !ready ||
-                  sending ||
-                  uncertain ||
-                  uploading ||
-                  (!draft.trim() && !attachments.length)
-                "
-              />
-            </div>
-          </div>
+        <div id="remote-session-navigation" class="remote-session-navigation" />
+        <v-btn
+          variant="text"
+          size="small"
+          :disabled="loading"
+          @click="refresh"
+          >{{ tm("remoteConnections.refresh") }}</v-btn
+        >
+      </header>
+      <SubagentPages
+        ref="subagentPagesRef"
+        :session-id="session.session_id"
+        :remote-scope="resourceScope"
+        :remote-ready="ready"
+        :is-dark="isDark"
+        toolbar-target="#remote-session-navigation"
+        @view-change="
+          subagentPageOpen = $event;
+          reasoningTarget = null;
+        "
+      />
+      <v-alert
+        v-if="error && (error !== 'remote_offline' || connectionWarningVisible)"
+        type="error"
+        variant="tonal"
+        class="remote-alert"
+        >{{ tm(`remoteConnections.status.${error}`) }}</v-alert
+      >
+      <v-progress-linear v-if="loading" indeterminate />
+      <div
+        v-show="!subagentPageOpen"
+        ref="historyEl"
+        class="remote-history"
+        @scroll="updateReadingPosition"
+      >
+        <div class="messages-list-shell">
+          <ChatMessageList
+            :messages="[...messages, ...liveMessages]"
+            :is-dark="isDark"
+            :is-streaming="running"
+            remote-history
+            :remote-scope="resourceScope"
+            :remote-ready="ready"
+            :history-has-more="hasMore"
+            :history-loading-older="loading"
+            @load-older="load(true)"
+            @open-reasoning="reasoningTarget = $event"
+          />
         </div>
       </div>
-      <input
-        ref="fileInput"
-        type="file"
-        multiple
-        class="remote-file-input"
-        :disabled="!ready || sending || uncertain || uploading"
-        @change="uploadFiles"
+      <ChatScrollMarkers
+        v-if="!subagentPageOpen && scrollMarkers.length"
+        :markers="scrollMarkers"
+        :container="historyEl || null"
+        :style="{top: `${historyEl?.offsetTop || 0}px`}"
+        :height="historyHeight"
+        :right="0"
+        :loading="loading"
+        :is-dark="isDark"
+        @jump="
+          historyEl
+            ?.querySelectorAll('.message-row')
+            [$event.messageIndex]?.scrollIntoView({
+              behavior: 'smooth',
+              block: 'center',
+            })
+        "
       />
-    </form>
+      <div
+        v-if="!subagentPageOpen && awayFromBottom"
+        class="jump-to-bottom-row"
+      >
+        <button
+          type="button"
+          class="jump-to-bottom"
+          :class="{ 'jump-to-bottom--live': running }"
+          :aria-label="tm('actions.scrollToBottom')"
+          @click="
+            historyEl?.scrollTo({
+              top: historyEl.scrollHeight,
+              behavior: 'smooth',
+            })
+          "
+        >
+          <v-icon class="jump-to-bottom-arrow" size="20"
+            >mdi-chevron-down</v-icon
+          >
+          <span v-if="running" class="jump-to-bottom-typing" aria-hidden="true"
+            ><span /><span /><span
+          /></span>
+        </button>
+      </div>
+      <form
+        v-show="!subagentPageOpen"
+        class="input-area remote-composer"
+        :class="{ 'is-dark': isDark }"
+        @submit.prevent="send"
+        @dragover.prevent
+        @drop.prevent="
+          uploadFiles(Array.from($event.dataTransfer?.files || []))
+        "
+      >
+        <GoalBar
+          v-if="goal"
+          :goal="goal"
+          :session-id="session.session_id"
+          :is-dark="isDark"
+          read-only
+        />
+        <div class="remote-composer-status">
+          <span role="status"
+            ><span class="remote-status-dot" :class="{ connected: ready }" />{{
+              tm(
+                running
+                  ? "remoteConnections.running"
+                  : "remoteConnections.idle",
+              )
+            }}</span
+          >
+        </div>
+        <v-alert
+          v-if="uncertain && connectionWarningVisible"
+          type="warning"
+          variant="tonal"
+          class="remote-uncertain"
+        >
+          {{ tm("remoteConnections.unknown")
+          }}<v-btn
+            variant="text"
+            :disabled="!ready || sending"
+            @click="checkReceipt"
+            >{{ tm("remoteConnections.checked") }}</v-btn
+          >
+        </v-alert>
+        <div class="input-container">
+          <div v-if="attachments.length" class="remote-attachments">
+            <div
+              v-for="(file, index) in attachments"
+              :key="file.attachment_id"
+              class="remote-attachment"
+            >
+              <v-icon size="16">mdi-paperclip</v-icon
+              ><span>{{ file.filename }}</span>
+              <v-btn
+                icon="mdi-close"
+                variant="text"
+                size="x-small"
+                :aria-label="tm('remoteConnections.removeAttachment')"
+                :disabled="sending || uncertain"
+                @click="attachments.splice(index, 1)"
+              />
+            </div>
+          </div>
+          <div class="composer-row">
+            <div class="input-field-shell">
+              <textarea
+                ref="textareaEl"
+                v-model="draft"
+                class="chat-textarea"
+                rows="1"
+                :aria-label="tm('remoteConnections.message')"
+                :placeholder="tm('input.placeholder')"
+                :disabled="sending || uncertain"
+                @keydown="onKeydown"
+                @paste="
+                  $event.clipboardData?.files.length &&
+                    ($event.preventDefault(),
+                    uploadFiles(Array.from($event.clipboardData.files)))
+                "
+              />
+            </div>
+            <div class="composer-toolbar">
+              <div class="composer-toolbar__left">
+                <v-btn
+                  icon="mdi-plus"
+                  variant="text"
+                  class="composer-ghost-btn"
+                  :aria-label="tm('remoteConnections.attach')"
+                  :loading="uploading"
+                  :disabled="!ready || sending || uncertain || uploading"
+                  @click="fileInput?.click()"
+                />
+                <span class="remote-model-hint">{{
+                  tm("remoteConnections.execution")
+                }}</span>
+              </div>
+              <div class="composer-toolbar__right">
+                <ChatContextUsage
+                  :token-usage="tokenUsage"
+                  :compression-notice="compressionNotice"
+                  :is-dark="isDark"
+                />
+                <ShellSessionIndicator
+                  :conversation-id="session.session_id"
+                  read-only
+                />
+                <v-btn
+                  v-if="running"
+                  icon="mdi-stop"
+                  variant="text"
+                  class="composer-ghost-btn"
+                  :aria-label="tm('remoteConnections.stop')"
+                  :loading="stopping"
+                  :disabled="!ready || stopping"
+                  @click="stop"
+                />
+                <v-btn
+                  type="submit"
+                  icon="mdi-arrow-up"
+                  variant="flat"
+                  class="input-action-btn"
+                  :loading="sending"
+                  :aria-label="
+                    tm(
+                      running
+                        ? 'remoteConnections.followUp'
+                        : 'remoteConnections.send',
+                    )
+                  "
+                  :disabled="
+                    !ready ||
+                    sending ||
+                    uncertain ||
+                    uploading ||
+                    (!draft.trim() && !attachments.length)
+                  "
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+        <input
+          ref="fileInput"
+          type="file"
+          multiple
+          class="remote-file-input"
+          :disabled="!ready || sending || uncertain || uploading"
+          @change="uploadFiles"
+        />
+      </form>
+    </div>
+    <ShellSessionWindow
+      v-for="(shellId, index) in chatHeader.openShellWindows"
+      :key="shellId"
+      :session-id="session.session_id"
+      :shell-session-id="shellId"
+      :z-index="2000 + index"
+      :remote-scope="resourceScope"
+    />
+    <ReasoningSidebar
+      :model-value="Boolean(reasoningTarget)"
+      :parts="reasoningParts"
+      :is-streaming="Boolean(reasoningMessage?.isStreaming)"
+      :is-dark="isDark"
+      inert
+      :focus-call-id="reasoningTarget?.callId"
+      @update:model-value="!$event && (reasoningTarget = null)"
+    />
   </section>
 </template>
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
+import {
+  computed,
+  nextTick,
+  onBeforeUnmount,
+  onMounted,
+  provide,
+  ref,
+  watch,
+} from "vue";
+import ChatContextUsage from "./ChatContextUsage.vue";
+import {
+  contextCompressionNoticeKey,
+  parseContextCompressionNotice,
+  type ContextCompressionEntry,
+} from "@/composables/contextCompressionNotice";
+import { formatTokenCount } from "@/utils/providerMetadata";
 import ChatMessageList from "./ChatMessageList.vue";
+import ChatScrollMarkers, {
+  type ChatScrollMarker,
+} from "./ChatScrollMarkers.vue";
+import "./chatScrollControls.css";
+import GoalBar from "./GoalBar.vue";
+import type { SessionGoalState } from "@/api/v1";
+import {
+  replayTodoSnapshotFromHistory,
+  parseTodoToolResult,
+} from "@/composables/todoHistoryReplay";
+import SubagentPages from "./SubagentPages.vue";
+import ReasoningSidebar from "./ReasoningSidebar.vue";
+import { messageBlocks } from "@/composables/useMessages";
 import {
   remoteConnectionsApi,
   type RemoteConnection,
   type RemoteSession,
   type RemoteUpload,
 } from "@/api/remoteConnections";
+import { parseLlmRequestInjections } from "@/composables/llmRequestInjections";
+import ShellSessionIndicator from "./ShellSessionIndicator.vue";
+import ShellSessionWindow from "./ShellSessionWindow.vue";
+import { useChatHeaderStore } from "@/stores/chatHeader";
 import { normalizeMessageParts } from "@/composables/normalizeMessageParts";
 import type { ChatRecord, MessagePart } from "@/composables/useMessages";
 import { accountSessionRevision } from "@/utils/accountSession";
@@ -179,8 +322,17 @@ const props = defineProps<{
   isDark: boolean;
   sendShortcut?: "enter" | "shift_enter";
 }>();
-const emit = defineEmits<{ unavailable: [] }>();
+const emit = defineEmits<{
+  unavailable: [];
+  presentation: [
+    value: {
+      goal: SessionGoalState | null;
+      todo: import("@/composables/useMessages").TodoSnapshot | null;
+    },
+  ];
+}>();
 const { tm } = useModuleI18n("features/chat");
+const chatHeader = useChatHeaderStore();
 const messages = ref<ChatRecord[]>([]),
   hasMore = ref(false),
   loading = ref(false),
@@ -193,8 +345,161 @@ const liveMessages = ref<ChatRecord[]>([]),
   running = ref(false),
   ready = ref(false),
   requestId = ref("");
+const subagentPagesRef = ref<InstanceType<typeof SubagentPages> | null>(null);
+const subagentPageOpen = ref(false);
+const reasoningTarget = ref<{
+  message: ChatRecord;
+  blockIndex: number;
+  callId?: string;
+} | null>(null);
+const reasoningMessage = computed(() =>
+  [...messages.value, ...liveMessages.value].find(
+    (row) => row.id === reasoningTarget.value?.message.id,
+  ),
+);
+const reasoningParts = computed(() => {
+  if (!reasoningTarget.value || !reasoningMessage.value) return [];
+  const block = messageBlocks(reasoningMessage.value.content)[
+    reasoningTarget.value.blockIndex
+  ];
+  return block?.kind === "thinking" ? block.parts : [];
+});
+provide("openSubagentRun", (part: Record<string, any>) => {
+  reasoningTarget.value = null;
+  void subagentPagesRef.value?.openRun(part, props.session.session_id);
+});
+provide(
+  "subagentRunMetadata",
+  (runId: string) => subagentPagesRef.value?.getRun(runId),
+);
+const connectionWarningVisible = ref(false);
+let warningTimer: ReturnType<typeof setTimeout> | undefined;
+watch([uncertain, sending, error], () => {
+  clearTimeout(warningTimer);
+  connectionWarningVisible.value = false;
+  if ((uncertain.value && !sending.value) || error.value === "remote_offline") {
+    warningTimer = setTimeout(() => {
+      connectionWarningVisible.value = true;
+    }, 5000);
+  }
+});
+const goal = ref<SessionGoalState | null>(null);
+const contextLimit = ref(0);
+const compressionNotice = ref<ContextCompressionEntry | null>(null);
+const tokenUsage = computed(() => {
+  const stats = [...messages.value, ...liveMessages.value]
+    .reverse()
+    .find((row) => row.content.type === "bot" && row.content.agentStats)
+    ?.content.agentStats;
+  const usage = stats?.token_usage;
+  const used = Number(
+    stats?.current_context_tokens ??
+      Number(usage?.input_other || 0) +
+        Number(usage?.input_cached || 0) +
+        Number(usage?.output || 0),
+  );
+  const limit = contextLimit.value;
+  if (
+    !Number.isFinite(used) ||
+    used <= 0 ||
+    !Number.isFinite(limit) ||
+    limit <= 0
+  )
+    return null;
+  const percent = (used / limit) * 100;
+  const cached = Number(usage?.input_cached || 0);
+  const cachePercent =
+    cached > 0
+      ? (cached / (cached + Number(usage?.input_other || 0))) * 100
+      : null;
+  return {
+    used,
+    limit,
+    percent: Math.min(100, percent),
+    tooltip: tm(
+      cachePercent === null
+        ? "tokenUsage.tooltip"
+        : "tokenUsage.tooltipWithCache",
+      {
+        used: formatTokenCount(used),
+        limit: formatTokenCount(limit),
+        percent: String(Math.round(percent * (percent >= 10 ? 1 : percent >= 1 ? 10 : 100)) / (percent >= 10 ? 1 : percent >= 1 ? 10 : 100)),
+        cachePercent: cachePercent?.toFixed(2) || "0",
+      },
+    ),
+  };
+});
+const todo = computed(
+  () =>
+    replayTodoSnapshotFromHistory(
+      [...messages.value, ...liveMessages.value],
+      parseTodoToolResult,
+    ) ?? null,
+);
+watch([goal, todo], () =>
+  emit("presentation", { goal: goal.value, todo: todo.value }),
+);
 const historyEl = ref<HTMLElement>();
 const textareaEl = ref<HTMLTextAreaElement>();
+const awayFromBottom = ref(false);
+const scrollMarkers = ref<ChatScrollMarker[]>([]);
+const historyHeight = ref(0);
+let historyObserver: ResizeObserver | undefined;
+function updateReadingPosition() {
+  const el = historyEl.value;
+  if (!el) return;
+  awayFromBottom.value = el.scrollHeight - el.clientHeight - el.scrollTop > 120;
+  historyHeight.value = el.clientHeight;
+  const rows = el.querySelectorAll<HTMLElement>(".message-row");
+  const records = [...messages.value, ...liveMessages.value];
+  let ordinal = 0;
+  scrollMarkers.value =
+    el.scrollHeight <= el.clientHeight
+      ? []
+      : records.flatMap((row, index) => {
+          if (row.content.type !== "user" || row.id == null) return [];
+          const preview = row.content.message
+            .filter((part) => part.type === "plain" || part.type === "text")
+            .map((part) => part.text || "")
+            .join(" ");
+          const reply = records
+            .slice(index + 1)
+            .find((record) => record.content.type === "bot");
+          return [
+            {
+              id: row.id,
+              index,
+              messageIndex: index,
+              ordinal: ++ordinal,
+              topPct: rows[index]
+                ? Math.max(
+                    0,
+                    Math.min(
+                      100,
+                      ((rows[index].getBoundingClientRect().top -
+                        el.getBoundingClientRect().top +
+                        el.scrollTop) /
+                        Math.max(1, el.scrollHeight - el.clientHeight)) *
+                        100,
+                    ),
+                  )
+                : 0,
+              preview,
+              replyPreview: reply?.content.message
+                .filter((part) => part.type === "plain")
+                .map((part) => part.text || "")
+                .join(" "),
+              inherited: false,
+            },
+          ];
+        });
+}
+onMounted(() => {
+  if (typeof ResizeObserver === "undefined") return;
+  historyObserver = new ResizeObserver(updateReadingPosition);
+  if (historyEl.value) historyObserver.observe(historyEl.value);
+});
+
 watch(draft, async () => {
   await nextTick();
   if (!textareaEl.value) return;
@@ -220,7 +525,12 @@ function normalizeRecord(row: ChatRecord, live = false): ChatRecord {
   const content = (row.content || {
     type: row.sender_id === "bot" ? "bot" : "user",
     message: [],
-  }) as ChatRecord["content"] & { agent_stats?: unknown };
+  }) as ChatRecord["content"] & {
+    agent_stats?: unknown;
+    file_changes?: { files: any[] };
+    _imported?: boolean;
+    llm_request_injections?: unknown;
+  };
   const parts = normalizeMessageParts(content.message || []) as MessagePart[];
   if (content.reasoning && !parts.some((part) => part.type === "think"))
     parts.unshift({ type: "think", think: content.reasoning });
@@ -232,6 +542,13 @@ function normalizeRecord(row: ChatRecord, live = false): ChatRecord {
       type: content.type || (row.sender_id === "bot" ? "bot" : "user"),
       message: parts,
       agentStats: content.agentStats || content.agent_stats,
+      fileChangeSummary:
+        content.fileChangeSummary || content.file_changes?.files,
+      fileChangeSourceUnavailable: Boolean(content._imported),
+      llmRequestInjections:
+        parseLlmRequestInjections(
+          content.llm_request_injections ?? content.llmRequestInjections,
+        ) ?? undefined,
       isLoading: live && !parts.length && !content.reasoning,
     },
   };
@@ -289,6 +606,7 @@ watch(
       void nextTick(() => {
         el.scrollTop = el.scrollHeight;
       });
+    void nextTick(updateReadingPosition);
   },
   { deep: true },
 );
@@ -358,12 +676,8 @@ async function load(older: boolean) {
       });
   } catch (err: any) {
     if (identity() !== target || current !== generation) return;
-    // Any failed admission clears the transcript, including previously loaded pages.
-    messages.value = [];
-    hasMore.value = false;
-    cursor = undefined;
-    error.value = err.response?.data?.data?.code || "remote_unavailable";
-    emit("unavailable");
+    // Failed admission also clears open informational views and live snapshots.
+    throwAccess(err.response?.data?.data?.code || "remote_unavailable");
   } finally {
     if (identity() === target && current === generation) loading.value = false;
   }
@@ -415,7 +729,13 @@ async function subscribe(target: string, current: number) {
           if (row)
             Object.assign(
               row,
-              normalizeRecord({ ...row, content: run.content }, true),
+              normalizeRecord(
+                {
+                  ...row,
+                  content: { ...run.content, fileChangeRunId: run.run_id },
+                },
+                true,
+              ),
             );
         }
         if (cursor === undefined) {
@@ -434,11 +754,23 @@ async function subscribe(target: string, current: number) {
             normalizeRecord(
               {
                 id: `remote-run:${run.run_id || index}`,
-                content: run.content || { type: "bot", message: [] },
+                content: {
+                  ...(run.content || { type: "bot", message: [] }),
+                  fileChangeRunId: run.run_id,
+                },
               },
               true,
             ),
           );
+        goal.value = state.goal || null;
+        contextLimit.value = Number(state.context_limit) || 0;
+        const notice = parseContextCompressionNotice(state.context_compression?.notice ?? state.context_compression);
+        if (notice)
+          compressionNotice.value = {
+            key: contextCompressionNoticeKey(state.context_compression?.run_id || props.session.session_id, notice),
+            notice,
+          };
+        chatHeader.SET_SHELL_SESSIONS(state.shell_sessions?.sessions || null);
         running.value = state.is_running || state.active_runs.length > 0;
         ready.value = true;
         error.value = "";
@@ -454,7 +786,14 @@ async function subscribe(target: string, current: number) {
 }
 function throwAccess(code: string) {
   error.value = code;
+  running.value = false;
   ready.value = false;
+  reasoningTarget.value = null;
+  goal.value = null;
+  contextLimit.value = 0;
+  compressionNotice.value = null;
+  chatHeader.SET_SHELL_SESSIONS(null);
+  chatHeader.openShellWindows = [];
   messages.value = [];
   liveMessages.value = [];
   cursor = undefined;
@@ -480,12 +819,7 @@ async function refresh() {
   await load(false);
   if (!error.value && identity() === target && generation === current)
     void subscribe(target, current);
-  else if (
-    error.value === "remote_offline" &&
-    identity() === target &&
-    generation === current
-  )
-    throwAccess("remote_offline");
+
 }
 async function send() {
   if (
@@ -596,6 +930,13 @@ watch(
   identity,
   () => {
     generation += 1;
+    reasoningTarget.value = null;
+    subagentPageOpen.value = false;
+    goal.value = null;
+    contextLimit.value = 0;
+    compressionNotice.value = null;
+    chatHeader.SET_SHELL_SESSIONS(null);
+    chatHeader.openShellWindows = [];
     controller?.abort();
     clearTimeout(retry);
     const saved = localStorage.getItem(draftKey());
@@ -626,6 +967,10 @@ watch(
   { immediate: true, flush: "sync" },
 );
 onBeforeUnmount(() => {
+  historyObserver?.disconnect();
+  chatHeader.SET_SHELL_SESSIONS(null);
+  chatHeader.openShellWindows = [];
+  clearTimeout(warningTimer);
   generation += 1;
   controller?.abort();
   clearTimeout(retry);
@@ -638,9 +983,22 @@ onBeforeUnmount(() => {
   height: 100%;
   min-height: 0;
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   width: 100%;
   overflow: hidden;
+}
+.remote-main {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+.remote-session-navigation {
+  display: flex;
+  flex: 1;
+  min-width: 0;
 }
 .remote-header {
   display: flex;
@@ -754,6 +1112,7 @@ onBeforeUnmount(() => {
     width: calc(100% - 24px);
   }
   .remote-header {
+    flex-wrap: wrap;
     padding: 8px 12px;
   }
   .remote-header__identity {

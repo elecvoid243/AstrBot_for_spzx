@@ -31,6 +31,7 @@
           :parts="parts"
           :reasoning="reasoning"
           :is-dark="isDark"
+          :inert="inert"
           :is-streaming="isStreaming"
         />
         <div v-else class="reasoning-sidebar-empty">
@@ -56,6 +57,7 @@ const props = defineProps<{
   parts: MessagePart[];
   reasoning?: string;
   isDark?: boolean;
+  inert?: boolean;
   isStreaming?: boolean;
   /**
    * 2026-08-11 file-change visibility: when set, the sidebar scrolls

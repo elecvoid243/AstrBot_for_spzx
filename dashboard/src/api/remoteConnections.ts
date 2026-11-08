@@ -99,6 +99,55 @@ export const remoteConnectionsApi = {
       )}/events?revision=${encodeURIComponent(revision)}`,
       { signal },
     ),
+  subagentEvents: (
+    scope: RemoteResourceScope,
+    runId: string | null,
+    signal: AbortSignal,
+  ) =>
+    fetchWithAuth(
+      `/api/v1${path(scope.connectionId)}/sessions/${encodeURIComponent(
+        scope.sessionId,
+      )}/subagent-runs/events?revision=${encodeURIComponent(scope.revision)}${
+        runId ? `&run_id=${encodeURIComponent(runId)}` : ""
+      }`,
+      { signal },
+    ),
+  subagentConfiguration: (
+    scope: RemoteResourceScope,
+    runId: string,
+    signal: AbortSignal,
+  ) =>
+    apiV1Client.get<ApiEnvelope<any>>(
+      `${path(scope.connectionId)}/sessions/${encodeURIComponent(
+        scope.sessionId,
+      )}/subagent-runs/${encodeURIComponent(runId)}/configuration`,
+      { params: { revision: scope.revision }, signal },
+    ),
+  fileDiff: (
+    scope: RemoteResourceScope,
+    filePath: string,
+    source: { message_id?: string | number; run_id?: string },
+  ) =>
+    apiV1Client.get<ApiEnvelope<any>>(
+      `${path(scope.connectionId)}/sessions/${encodeURIComponent(
+        scope.sessionId,
+      )}/file-diff`,
+      {
+        params: {
+          revision: scope.revision,
+          path: filePath,
+          message_id: source.message_id,
+          run_id: source.run_id,
+        },
+      },
+    ),
+  shellOutput: (scope: RemoteResourceScope, shellId: string, cursor: number) =>
+    apiV1Client.get<ApiEnvelope<any>>(
+      `${path(scope.connectionId)}/sessions/${encodeURIComponent(
+        scope.sessionId,
+      )}/shell-sessions/${encodeURIComponent(shellId)}/output`,
+      { params: { revision: scope.revision, cursor } },
+    ),
   upload: (scope: RemoteResourceScope, file: File) => {
     const data = new FormData();
     data.append("file", file);

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { flushPromises, mount } from "@vue/test-utils";
 import { defineComponent, h, ref } from "vue";
+import { remoteConnectionsApi } from "@/api/remoteConnections";
 import { fetchWithAuth } from "@/api/http";
 import SubagentPages from "./SubagentPages.vue";
 import ChatMessageList from "./ChatMessageList.vue";
@@ -12,6 +13,10 @@ vi.mock("./SubagentConfigurationDialog.vue", () => ({
     props: ["run", "sessionId"],
     template: '<div class="config-dialog" />',
   },
+}));
+
+vi.mock("@/api/remoteConnections", () => ({
+  remoteConnectionsApi: { subagentEvents: vi.fn() },
 }));
 
 vi.mock("@/api/http", () => ({ fetchWithAuth: vi.fn() }));
@@ -615,4 +620,51 @@ describe("Subagent conversation pages", () => {
     );
     expect(wrapper.find("input, textarea").exists()).toBe(false);
   });
+});
+
+it("reads remote subagent pages through the binding and clears traces on revocation", async () => {
+  const scope = {
+    connectionId: "machine",
+    sessionId: "session-1",
+    revision: "key-v1",
+  };
+  vi.mocked(remoteConnectionsApi.subagentEvents).mockImplementation(
+    (_scope, runId, signal) =>
+      fetchWithAuth(`/remote/${runId || "list"}`, { signal }),
+  );
+  const wrapper = mount(SubagentPages, {
+    props: { sessionId: "session-1", remoteScope: scope, remoteReady: true },
+    global: { stubs: { "v-icon": true, "v-menu": menuStub } },
+  });
+  wrappers.push(wrapper);
+  await flushPromises();
+  push("/remote/list", { type: "snapshot", data: [run] });
+  await flushPromises();
+  await (wrapper.vm as any).openRun(run);
+  await flushPromises();
+  push("/remote/run-1", {
+    type: "snapshot",
+    data: { ...snapshot, text: "Remote delegated output" },
+  });
+  await flushPromises();
+  expect(remoteConnectionsApi.subagentEvents).toHaveBeenCalledWith(
+    scope,
+    "run-1",
+    expect.any(AbortSignal),
+  );
+  expect(wrapper.findComponent(ChatMessageList).props("messages")).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        content: expect.objectContaining({
+          message: expect.arrayContaining([
+            expect.objectContaining({ text: "Remote delegated output" }),
+          ]),
+        }),
+      }),
+    ]),
+  );
+  push("/remote/run-1", { type: "access_error", code: "remote_unavailable" });
+  await flushPromises();
+  expect(wrapper.findComponent(ChatMessageList).exists()).toBe(false);
+  expect((wrapper.vm as any).getRun("run-1")).toBeUndefined();
 });

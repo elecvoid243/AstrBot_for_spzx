@@ -4,6 +4,7 @@
     :content="String((node as Record<string, unknown>).content ?? (node as Record<string, unknown>).code ?? '')"
     :is-dark="effectiveIsDark"
     :max-lines="30"
+    :commentable="!chatReadOnly"
   />
   <MarkdownCodeBlockNode
     v-else
@@ -57,6 +58,7 @@ function handleCopy(payload: MarkdownCodeBlockEmits["copy"][0]) {
   emit("copy", payload);
 }
 
+const chatReadOnly = inject<Ref<boolean> | boolean>("chatReadOnly", false);
 const injectedIsDark = inject<Ref<boolean> | boolean>("isDark");
 const effectiveIsDark = computed(
   () => props.isDark ?? (injectedIsDark instanceof Object && "value" in injectedIsDark ? injectedIsDark.value : injectedIsDark) ?? false,

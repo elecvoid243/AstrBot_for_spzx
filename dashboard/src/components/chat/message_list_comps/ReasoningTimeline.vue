@@ -3,11 +3,12 @@
     <!-- 2026-08-11 file-change visibility: pinned per-file change cards
          above the timeline so users see edits/writes at a glance. The
          timeline entries below stay unchanged (full process record). -->
-    <div v-if="!inert && fileChanges.length" class="file-change-pinned">
+    <div v-if="fileChanges.length" class="file-change-pinned">
       <FileChangeCard
         v-for="change in fileChanges"
         :key="change.callId"
         :entry="change"
+        :read-only="inert"
         :is-dark="isDark"
       />
     </div>
@@ -204,10 +205,13 @@ function toggleThink(key: string): void {
  * the user just clicked) at the same viewport position — the block shrinks
  * upward, so the line under the user's eyes does not jump away.
  */
-async function collapseThinkAnchored(event: MouseEvent, key: string): Promise<void> {
-  const stepEl = (event.currentTarget as HTMLElement | null)?.closest<HTMLElement>(
-    ".reasoning-step",
-  );
+async function collapseThinkAnchored(
+  event: MouseEvent,
+  key: string,
+): Promise<void> {
+  const stepEl = (
+    event.currentTarget as HTMLElement | null
+  )?.closest<HTMLElement>(".reasoning-step");
   const beforeBottom = stepEl?.getBoundingClientRect().bottom ?? null;
   toggleThink(key);
   if (!stepEl || beforeBottom === null) return;

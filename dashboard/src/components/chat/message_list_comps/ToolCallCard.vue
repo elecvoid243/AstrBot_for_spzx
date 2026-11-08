@@ -59,9 +59,11 @@
           >
             <span class="args-key"></span>
             <span class="args-value args-more-text">
-              {{ showAllArgs
-                ? 'Show fewer'
-                : `+${argEntries.length - maxVisibleArgs} more` }}
+              {{
+                showAllArgs
+                  ? "Show fewer"
+                  : `+${argEntries.length - maxVisibleArgs} more`
+              }}
             </span>
           </div>
         </div>
@@ -69,14 +71,7 @@
 
       <!-- ── Result ────────────────────────────────────────── -->
       <!-- apply_patch: one DiffPreview per file so every block carries its path -->
-      <div v-if="inert" class="tool-call-detail-row">
-        <span class="detail-label">Result:</span>
-        <pre class="detail-value">{{ typeof toolCall.result === 'string' ? toolCall.result : JSON.stringify(toolCall.result, null, 2) }}</pre>
-      </div>
-      <div
-        v-else-if="applyPatchFiles.length"
-        class="tool-call-detail-row"
-      >
+      <div v-if="applyPatchFiles.length" class="tool-call-detail-row">
         <span class="detail-label">Result:</span>
         <div class="apply-patch-result">
           <div v-if="applyPatchSummary" class="apply-patch-summary">
@@ -92,12 +87,15 @@
               :summary="''"
               :is-dark="isDark"
               :max-lines="25"
+              :commentable="!inert"
               :collapsible="true"
             />
             <div
               v-else
               class="apply-patch-file-row"
-              :class="{ 'apply-patch-file-row--remove': file.kind === 'remove' }"
+              :class="{
+                'apply-patch-file-row--remove': file.kind === 'remove',
+              }"
             >
               <v-icon size="14">mdi-delete-outline</v-icon>
               <span class="apply-patch-file-path">{{ file.filePath }}</span>
@@ -120,6 +118,7 @@
           :summary="editToolSummary"
           :is-dark="isDark"
           :max-lines="25"
+          :commentable="!inert"
           :collapsible="false"
         />
         <div v-if="editToolNotice" class="edit-tool-notice">{{ editToolNotice }}</div>
@@ -143,12 +142,21 @@
 <script setup>
 import { computed, onUnmounted, reactive, ref, watch } from "vue";
 import { useModuleI18n } from "@/i18n/composables";
-import { parseFileEditResult, parseApplyPatchArgs, parseApplyPatchDisplay, parseApplyPatchResult, APPLY_PATCH_TOOL_NAME } from "@/utils/fileChangeTool";
+import {
+  parseFileEditResult,
+  parseApplyPatchArgs,
+  parseApplyPatchDisplay,
+  parseApplyPatchResult,
+  APPLY_PATCH_TOOL_NAME,
+} from "@/utils/fileChangeTool";
 import DiffPreview from "./DiffPreview.vue";
 import ToolResultView from "./ToolResultView.vue";
 import CopyableText from "./__shared__/CopyableText.vue";
 import { SPCODE_ICONS } from "./spcode_tools/icons";
-import { getVivadoIcon, VIVADO_TOOL_TITLES } from "./spcode_tools/vivado/vivadoIcons";
+import {
+  getVivadoIcon,
+  VIVADO_TOOL_TITLES,
+} from "./spcode_tools/vivado/vivadoIcons";
 import {
   SHELL_SESSION_TOOL_NAME,
   getShellSessionActionIcon,
@@ -320,9 +328,7 @@ const editToolNotice = computed(() => editToolParsed.value?.notice ?? null);
 
 const editToolDiff = computed(() => editToolParsed.value?.diff ?? "");
 
-const editToolFilePath = computed(
-  () => editToolParsed.value?.filePath ?? "",
-);
+const editToolFilePath = computed(() => editToolParsed.value?.filePath ?? "");
 
 const editToolSummary = computed(() => editToolParsed.value?.summary ?? "");
 

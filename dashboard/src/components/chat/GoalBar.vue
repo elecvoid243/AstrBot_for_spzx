@@ -25,7 +25,7 @@
         tm("goal.turnsLine", { used: goal.turns_used, max: goal.max_turns })
       }}
     </span>
-    <div class="goal-bar__actions">
+    <div v-if="!readOnly" class="goal-bar__actions">
       <button
         v-if="goal.status === 'active'"
         type="button"
@@ -69,7 +69,7 @@
       </button>
     </div>
 
-    <v-dialog v-model="editOpen" max-width="460">
+    <v-dialog v-if="!readOnly" v-model="editOpen" max-width="460">
       <v-card class="goal-edit-card">
         <v-card-title class="text-h3 pa-4 pb-0 pl-6">
           {{ tm("goal.editTitle") }}
@@ -142,6 +142,7 @@ const props = withDefaults(
     goal: SessionGoalState;
     sessionId: string;
     isDark?: boolean;
+    readOnly?: boolean;
   }>(),
   { isDark: false },
 );

@@ -3,12 +3,15 @@
 // peek endpoint guarantees that — these tests pin the client half).
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("@/api/remoteConnections", () => ({remoteConnectionsApi:{shellOutput:vi.fn()}}));
+
 vi.mock("@/api/v1", () => ({
   chatApi: {
     getShellSessionOutput: vi.fn(),
   },
 }));
 
+import { remoteConnectionsApi } from "@/api/remoteConnections";
 import { chatApi } from "@/api/v1";
 import { useShellSessionOutput } from "../useShellSessionOutput";
 import { resetAccountSession } from "@/utils/accountSession";
@@ -127,4 +130,16 @@ describe("useShellSessionOutput", () => {
     expect(getOutput).toHaveBeenCalledTimes(1);
     expect(out.outputText.value).toBe("a");
   });
+});
+
+
+it("uses a binding-scoped independent output cursor and clears remote output on grant failure", async () => {
+  const scope={connectionId:"machine",sessionId:"remote",revision:"key-v1"};
+  vi.mocked(remoteConnectionsApi.shellOutput).mockResolvedValueOnce(peek("remote log",10) as any).mockRejectedValueOnce(new Error("Grant revoked"));
+  const output=useShellSessionOutput("remote","remote-process",scope);
+  await output.start();
+  expect(remoteConnectionsApi.shellOutput).toHaveBeenNthCalledWith(1,scope,"remote-process",0);
+  expect(remoteConnectionsApi.shellOutput).toHaveBeenNthCalledWith(2,scope,"remote-process",10);
+  expect(output.outputText.value).toBe("");
+  expect(output.sessionClosed.value).toBe(true);
 });

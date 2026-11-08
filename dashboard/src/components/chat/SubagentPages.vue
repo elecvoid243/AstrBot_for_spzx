@@ -271,6 +271,9 @@
             :is-dark="isDark"
             :is-streaming="selectedPart.status === 'running'"
             :session-id="detailSessionId"
+            :remote-history="Boolean(remoteScope)"
+            :remote-scope="remoteScope"
+            :remote-ready="remoteReady"
             @open-reasoning="reasoningTarget = $event"
           />
         </div>
@@ -278,6 +281,7 @@
       <ReasoningSidebar
         :model-value="Boolean(reasoningTarget)"
         :parts="reasoningParts"
+        :inert="Boolean(remoteScope)"
         :is-dark="isDark"
         :is-streaming="selectedPart?.status === 'running'"
         :focus-call-id="reasoningTarget?.callId"
@@ -287,6 +291,7 @@
     <SubagentConfigurationDialog
       v-if="configurationRun"
       :session-id="sessionId"
+      :remote-scope="remoteScope"
       :run="configurationRun"
       @close="configurationRun = null"
     />
@@ -302,6 +307,10 @@ import {
   shallowRef,
   watch,
 } from "vue";
+import {
+  remoteConnectionsApi,
+  type RemoteResourceScope,
+} from "@/api/remoteConnections";
 import { chatApi } from "@/api/v1";
 import { fetchWithAuth } from "@/api/http";
 import { accountSessionRevision } from "@/utils/accountSession";
@@ -341,6 +350,8 @@ type AgentEntry = {
 };
 const props = defineProps<{
   sessionId: string;
+  remoteScope?: RemoteResourceScope;
+  remoteReady?: boolean;
   toolbarTarget?: string;
   beforeNavigate?: () => Promise<boolean>;
   isDark?: boolean;
@@ -530,6 +541,7 @@ const messages = computed<ChatRecord[]>(() => {
   if (part.text) bot.content.message.push({ type: "plain", text: part.text });
   if (part.error)
     bot.content.message.push({ type: "plain", text: String(part.error) });
+  bot.isStreaming = part.status === "running";
   bot.content.isLoading =
     part.status === "running" && bot.content.message.length === 0;
   return records;
@@ -591,18 +603,30 @@ async function listen(
   let attempt = 0;
   while (!abort.signal.aborted) {
     try {
-      const response = await fetchWithAuth(
-        chatApi.subagentRunsStreamUrl(sessionId, runId || undefined),
-        {
-          headers: { Accept: "text/event-stream" },
-          signal: abort.signal,
-        },
-      );
+      const response = props.remoteScope
+        ? await remoteConnectionsApi.subagentEvents(
+            props.remoteScope,
+            runId,
+            abort.signal,
+          )
+        : await fetchWithAuth(
+            chatApi.subagentRunsStreamUrl(sessionId, runId || undefined),
+            {
+              headers: { Accept: "text/event-stream" },
+              signal: abort.signal,
+            },
+          );
       if (
         !response.ok ||
         !response.body ||
         !response.headers.get("content-type")?.includes("text/event-stream")
       ) {
+        if (props.remoteScope) {
+          entries.value = {};
+          selectedPart.value = null;
+          configurationRun.value = null;
+          reasoningTarget.value = null;
+        }
         if (runId && !abort.signal.aborted) {
           loading.value = false;
           error.value = tm("subagentPages.unavailable");
@@ -612,6 +636,16 @@ async function listen(
       attempt = 0;
       await readSseStream(response.body, (payload) => {
         if (abort.signal.aborted) return;
+        if (payload.type === "access_error") {
+          entries.value = {};
+          selectedPart.value = null;
+          configurationRun.value = null;
+          reasoningTarget.value = null;
+          loading.value = false;
+          error.value = tm("subagentPages.unavailable");
+          abort.abort();
+          return;
+        }
         if (!runId) {
           if (payload.type === "snapshot" && Array.isArray(payload.data)) {
             entries.value = Object.fromEntries(
@@ -773,7 +807,12 @@ function endGesture() {
 }
 
 watch(
-  [() => props.sessionId, accountSessionRevision],
+  [
+    () => props.sessionId,
+    accountSessionRevision,
+    () => JSON.stringify(props.remoteScope),
+    () => props.remoteReady,
+  ],
   () => {
     listAbort?.abort();
     showMain();
@@ -782,7 +821,7 @@ watch(
     cleanedOpen.value = false;
     expandedAgents.value = {};
     menuOpen.value = false;
-    if (props.sessionId) {
+    if (props.sessionId && (!props.remoteScope || props.remoteReady)) {
       listAbort = new AbortController();
       void listen(props.sessionId, null, listAbort);
     }

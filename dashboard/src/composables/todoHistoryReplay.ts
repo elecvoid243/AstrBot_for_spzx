@@ -1,3 +1,4 @@
+import type { TodoSnapshot, TodoList, TodoStats } from "./useMessages";
 // Author: elecvoid243
 // Date: 2026-08-28
 //
@@ -91,4 +92,50 @@ export function replayTodoSnapshotFromHistory<TodoSnapshot>(
     }
   }
   return latest;
+}
+
+/** Parse the ordinary Todo tool result for live and replayed conversation displays. */
+export function parseTodoToolResult(
+  toolName: string,
+  resultJson: string,
+): TodoSnapshot | null | undefined {
+  if (!resultJson || typeof resultJson !== "string") return undefined;
+  let parsed: any;
+  try {
+    parsed = JSON.parse(resultJson);
+  } catch {
+    return undefined;
+  }
+  if (!parsed || typeof parsed !== "object") return undefined;
+
+  // Failed results leave the previous snapshot unchanged.
+  if (parsed.ok === false) return undefined;
+
+  // Successful clearing removes the displayed list.
+  if (toolName === "todo_clear") {
+    return null;
+  }
+
+  // Accept the ordinary success envelope and legacy root-level results.
+  const data =
+    parsed.ok === true && parsed.data && typeof parsed.data === "object"
+      ? parsed.data
+      : parsed;
+
+  const list = data?.list;
+  const stats = data?.stats;
+  if (!list || typeof list !== "object") return undefined;
+  if (!stats || typeof stats !== "object") return undefined;
+
+  const attentionRaw = data?.attention_items;
+  const attentionItems: number[] = Array.isArray(attentionRaw)
+    ? attentionRaw.filter((n) => typeof n === "number")
+    : [];
+
+  return {
+    list: list as TodoList,
+    stats: stats as TodoStats,
+    attentionItems,
+    updatedAt: Date.now(),
+  };
 }

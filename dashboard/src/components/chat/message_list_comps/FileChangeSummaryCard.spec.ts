@@ -11,6 +11,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { flushPromises, mount, type VueWrapper } from "@vue/test-utils";
 import { defineComponent, h, provide } from "vue";
+import { remoteConnectionsApi } from "@/api/remoteConnections";
 import FileChangeSummaryCard from "./FileChangeSummaryCard.vue";
 import zh from "@/i18n/locales/zh-CN/features/chat.json";
 import {
@@ -23,6 +24,8 @@ const mocks = vi.hoisted(() => ({
   fileChangeStatus: vi.fn(),
   fileChangeDiff: vi.fn(),
 }));
+
+vi.mock("@/api/remoteConnections", () => ({remoteConnectionsApi:{fileDiff:vi.fn()}}));
 
 vi.mock("@/api/v1", () => ({
   chatApi: {
@@ -458,4 +461,22 @@ describe("FileChangeSummaryCard open group", () => {
       false,
     );
   });
+});
+
+
+it("shows remote diffs without local status, restore, comment or filesystem actions", async () => {
+  mocks.fileChangeStatus.mockClear();
+  mocks.fileChangeDiff.mockClear();
+  const scope={connectionId:"remote",sessionId:"remote-session",revision:"rev"};
+  vi.mocked(remoteConnectionsApi.fileDiff).mockResolvedValue({data:{status:"ok",data:{diff:"@@ -1 +1 @@\n-old\n+remote",base_content:"old"}}} as any);
+  const wrapper=mount(FileChangeSummaryCard,{props:{files:FILES,sessionId:"remote-session",messageId:42,remoteScope:scope,readOnly:true},global:{stubs:STUBS}});
+  await flushPromises();
+  expect(mocks.fileChangeStatus).not.toHaveBeenCalled();
+  expect(wrapper.find(".fcs-actions").exists()).toBe(false);
+  await wrapper.find(".fcs-file").trigger("click");
+  await flushPromises();
+  expect(remoteConnectionsApi.fileDiff).toHaveBeenCalledWith(scope, FILES[0].path, {session_id:"remote-session",message_id:42});
+  expect(mocks.fileChangeDiff).not.toHaveBeenCalled();
+  expect(wrapper.findComponent(STUBS.DiffPreview).props("commentable")).toBe(false);
+  wrapper.unmount();
 });

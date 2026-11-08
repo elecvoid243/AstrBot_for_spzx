@@ -104,6 +104,7 @@
 
       <!-- apply_patch: per-file unified diff (Update / Add / Move) -->
       <DiffPreview
+        :commentable="!readOnly"
         v-else-if="entry.diff"
         :content="entry.diff"
         :file-path="entry.filePath"
@@ -118,6 +119,7 @@
 
       <!-- edit: standard diff preview -->
       <DiffPreview
+        :commentable="!readOnly"
         v-else-if="entry.kind === 'edit'"
         :content="editParsed.diff"
         :file-path="editParsed.filePath || entry.filePath"
@@ -128,7 +130,15 @@
       />
 
       <!-- remove: no content to show — just the outcome text -->
-      <pre v-else-if="entry.kind === 'remove'" class="file-change-remove-note">{{ entry.diff !== undefined ? entry.filePath : (toolResult || entry.filePath) }}</pre>
+      <pre
+        v-else-if="entry.kind === 'remove'"
+        class="file-change-remove-note"
+        >{{
+          entry.diff !== undefined
+            ? entry.filePath
+            : toolResult || entry.filePath
+        }}</pre
+      >
 
       <!-- write: the content passed to the write tool -->
       <CopyableText
@@ -172,6 +182,7 @@ import CopyableText from "./__shared__/CopyableText.vue";
 
 const props = defineProps<{
   entry: FileChangeEntry;
+  readOnly?: boolean;
   isDark?: boolean;
 }>();
 
@@ -189,15 +200,14 @@ const { opening, openOnDisk, openFolder } = useOpenOnDisk("fileChange");
  * disk never has; the card keeps showing it (basename / title) but the
  * API must receive the clean path.
  */
-const openPath = computed(() =>
-  stripWriteEncodingMarker(props.entry.filePath),
-);
+const openPath = computed(() => stripWriteEncodingMarker(props.entry.filePath));
 
 /** Removals delete the file and a running call may not have flushed
  *  yet, so the open action only makes sense for finished edit/write
  *  entries with a resolved path. */
 const canOpenOnDisk = computed(
   () =>
+    !props.readOnly &&
     Boolean(openPath.value) &&
     props.entry.kind !== "remove" &&
     props.entry.status !== "running",
@@ -206,7 +216,10 @@ const canOpenOnDisk = computed(
 /** The containing folder survives a removal, so it can be opened for
  *  every finished entry kind; only running calls are excluded. */
 const canOpenFolder = computed(
-  () => Boolean(openPath.value) && props.entry.status !== "running",
+  () =>
+    !props.readOnly &&
+    Boolean(openPath.value) &&
+    props.entry.status !== "running",
 );
 
 const kindIcon = computed(() => {
@@ -261,7 +274,10 @@ const errorText = computed(() =>
 // ── Write content + Shiki highlighting ────────────────────────────
 
 const writeContent = computed(() =>
-  String(normalizeToolArgs(props.entry.tool.args ?? props.entry.tool.arguments).content ?? ""),
+  String(
+    normalizeToolArgs(props.entry.tool.args ?? props.entry.tool.arguments)
+      .content ?? "",
+  ),
 );
 
 // Language detection must use the clean path: the display marker

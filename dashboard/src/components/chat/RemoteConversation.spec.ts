@@ -15,6 +15,7 @@ vi.mock("@/api/remoteConnections", () => ({
     stop: vi.fn(),
     receipt: vi.fn(),
     upload: vi.fn(),
+    subagentEvents: vi.fn(() => new Promise(() => {})),
   },
 }));
 const connection = (id: string) => ({
@@ -144,12 +145,31 @@ it("renders remote Markdown without local links, images or custom capabilities",
 });
 it("keeps remote user file references as text instead of local file controls", () => {
   const wrapper = mount(ChatMessageList, {
-    props: { remoteHistory: true, messages: [{ id: 1, content: { type: "user", message: [
-      { type: "plain", text: "Review this\n[Referenced files]\nLocal path\n- `C:/private/secret.txt`" },
-    ] } }] },
-    global: { plugins: [createPinia()], stubs: { GenerationIndicator: true, RefsSidebar: true } },
+    props: {
+      remoteHistory: true,
+      messages: [
+        {
+          id: 1,
+          content: {
+            type: "user",
+            message: [
+              {
+                type: "plain",
+                text: "Review this\n[Referenced files]\nLocal path\n- `C:/private/secret.txt`",
+              },
+            ],
+          },
+        },
+      ],
+    },
+    global: {
+      plugins: [createPinia()],
+      stubs: { GenerationIndicator: true, RefsSidebar: true },
+    },
   });
-  expect(wrapper.findComponent({ name: "UserPlainMessagePart" }).exists()).toBe(false);
+  expect(wrapper.findComponent({ name: "UserPlainMessagePart" }).exists()).toBe(
+    false,
+  );
   expect(wrapper.findAll("a, button, file-reference")).toHaveLength(0);
   expect(wrapper.text()).toContain("C:/private/secret.txt");
   wrapper.unmount();
@@ -187,9 +207,12 @@ it("reuses message styling with read-only reasoning and tool disclosures", async
     },
   });
   expect(wrapper.findAll("a, img[src], input")).toHaveLength(0);
-  expect(wrapper.findComponent({ name: "SubAgentRunBlock" }).exists()).toBe(false);
+  expect(wrapper.findComponent({ name: "SubAgentRunBlock" }).exists()).toBe(
+    false,
+  );
   await wrapper.find(".reasoning-header").trigger("click");
-  const card = wrapper.findAllComponents({ name: "ToolCallCard" })
+  const card = wrapper
+    .findAllComponents({ name: "ToolCallCard" })
     .find((component) => component.props("toolCall").name === "read_file")!;
   expect(card.props("inert")).toBe(true);
   await card.find(".tool-call-header").trigger("click");
@@ -353,22 +376,65 @@ it("limits cumulative uploads and keeps definitely rejected input editable", asy
 
 it("renders successive run snapshots before completion, including persisted active rows", async () => {
   let controller!: ReadableStreamDefaultController<Uint8Array>;
-  const body = new ReadableStream<Uint8Array>({ start(value) { controller = value; } });
-  vi.mocked(remoteConnectionsApi.events).mockResolvedValueOnce({ ok: true, body } as Response);
-  vi.mocked(remoteConnectionsApi.history).mockResolvedValueOnce(page("earlier") as any);
+  const body = new ReadableStream<Uint8Array>({
+    start(value) {
+      controller = value;
+    },
+  });
+  vi.mocked(remoteConnectionsApi.events).mockResolvedValueOnce({
+    ok: true,
+    body,
+  } as Response);
+  vi.mocked(remoteConnectionsApi.history).mockResolvedValueOnce(
+    page("earlier") as any,
+  );
   const wrapper = make();
   await settle();
-  const publish = (text: string, active: boolean) => controller.enqueue(new TextEncoder().encode(
-    "data: " + JSON.stringify({ type: "snapshot", data: {
-      history: [{ id: 2, content: { type: "bot", message: [{ type: "plain", text }], agent_stats: { duration: 3 } } }],
-      active_runs: active ? [{ run_id: "live", history_record_id: 2, content: { type: "bot", reasoning: "Checking now", message: [{ type: "plain", text }] } }] : [],
-      is_running: active, has_more: false,
-    } }) + "\n\n"));
+  const publish = (text: string, active: boolean) =>
+    controller.enqueue(
+      new TextEncoder().encode(
+        "data: " +
+          JSON.stringify({
+            type: "snapshot",
+            data: {
+              history: [
+                {
+                  id: 2,
+                  content: {
+                    type: "bot",
+                    message: [{ type: "plain", text }],
+                    agent_stats: { duration: 3 },
+                  },
+                },
+              ],
+              active_runs: active
+                ? [
+                    {
+                      run_id: "live",
+                      history_record_id: 2,
+                      content: {
+                        type: "bot",
+                        reasoning: "Checking now",
+                        message: [{ type: "plain", text }],
+                      },
+                    },
+                  ]
+                : [],
+              is_running: active,
+              has_more: false,
+            },
+          }) +
+          "\n\n",
+      ),
+    );
   publish("first token", true);
   await settle();
   let list = wrapper.findComponent(ChatMessageList);
   expect(list.props("isStreaming")).toBe(true);
-  expect(list.props("messages")?.find((message: any) => message.id === 2)?.isStreaming).toBe(true);
+  expect(
+    list.props("messages")?.find((message: any) => message.id === 2)
+      ?.isStreaming,
+  ).toBe(true);
   expect(wrapper.text()).toContain("first token");
   publish("first token and later tokens", true);
   await settle();
@@ -377,7 +443,146 @@ it("renders successive run snapshots before completion, including persisted acti
   await settle();
   list = wrapper.findComponent(ChatMessageList);
   expect(list.props("isStreaming")).toBe(false);
-  expect(list.props("messages")?.find((message: any) => message.id === 2)?.content.agentStats).toEqual({ duration: 3 });
+  expect(
+    list.props("messages")?.find((message: any) => message.id === 2)?.content
+      .agentStats,
+  ).toEqual({ duration: 3 });
   controller.close();
+  wrapper.unmount();
+});
+
+it("delays the delivery warning and never flashes it during normal admission", async () => {
+  vi.mocked(remoteConnectionsApi.history).mockResolvedValue(
+    page("history") as any,
+  );
+  const wrapper = make();
+  await settle();
+  const vm = wrapper.vm as any;
+  vm.ready = true;
+  vm.draft = "Send once";
+  let accept!: (value: any) => void;
+  vi.mocked(remoteConnectionsApi.send).mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        accept = resolve;
+      }) as any,
+  );
+  vi.useFakeTimers();
+  try {
+    const sending = vm.send();
+    await nextTick();
+    await vi.advanceTimersByTimeAsync(6000);
+    expect(wrapper.find(".remote-uncertain").exists()).toBe(false);
+    accept({ data: { data: { status: "accepted" } } });
+    await sending;
+    await nextTick();
+    expect(wrapper.find(".remote-uncertain").exists()).toBe(false);
+    vm.draft = "Unknown delivery";
+    vi.mocked(remoteConnectionsApi.send).mockRejectedValueOnce(
+      new Error("Disconnected"),
+    );
+    await vm.send();
+    await nextTick();
+    await vi.advanceTimersByTimeAsync(4999);
+    expect(wrapper.find(".remote-uncertain").exists()).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(wrapper.find(".remote-uncertain").exists()).toBe(true);
+    expect(remoteConnectionsApi.send).toHaveBeenCalledTimes(2);
+  } finally {
+    wrapper.unmount();
+    vi.useRealTimers();
+  }
+});
+
+it("publishes remote Goal and Todo information and uses the shared reasoning sidebar", async () => {
+  let controller!: ReadableStreamDefaultController<Uint8Array>;
+  vi.mocked(remoteConnectionsApi.events).mockResolvedValueOnce(
+    new Response(
+      new ReadableStream({
+        start(value) {
+          controller = value;
+        },
+      }),
+    ),
+  );
+  vi.mocked(remoteConnectionsApi.history).mockResolvedValue(
+    page("history") as any,
+  );
+  const wrapper = make();
+  await settle();
+  const goal = {
+    goal: "Complete remote review",
+    status: "active",
+    turns_used: 2,
+    max_turns: 10,
+  };
+  const todo = {
+    list: {
+      title: "Remote release",
+      items: [{ id: 1, title: "Review", status: "in_progress" }],
+    },
+    stats: {
+      total: 1,
+      done: 0,
+      in_progress: 1,
+      pending: 0,
+      cancelled: 0,
+      effective_total: 1,
+      progress_pct: 0,
+    },
+  };
+  const message = {
+    id: 2,
+    content: {
+      type: "bot",
+      message: [
+        { type: "think", think: "Remote thought" },
+        {
+          type: "tool_call",
+          tool_calls: [
+            { id: "todo", name: "todo_list", result: JSON.stringify(todo) },
+          ],
+        },
+        { type: "plain", text: "Remote reply" },
+      ],
+    },
+  };
+  controller.enqueue(
+    new TextEncoder().encode(
+      "data: " +
+        JSON.stringify({
+          type: "snapshot",
+          data: {
+            history: [message],
+            active_runs: [],
+            is_running: false,
+            goal,
+            has_more: false,
+          },
+        }) +
+        "\n\n",
+    ),
+  );
+  await settle();
+  const presentation = wrapper.emitted("presentation")?.at(-1)?.[0] as any;
+  expect(presentation.goal.goal).toBe(goal.goal);
+  expect(presentation.todo.list.title).toBe("Remote release");
+  expect(wrapper.findComponent({ name: "GoalBar" }).props("readOnly")).toBe(
+    true,
+  );
+  wrapper
+    .findComponent(ChatMessageList)
+    .vm.$emit("openReasoning", { message, blockIndex: 0 });
+  await nextTick();
+  const sidebar = wrapper.findComponent({ name: "ReasoningSidebar" });
+  expect(sidebar.props("modelValue")).toBe(true);
+  expect(sidebar.props("parts")).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ think: "Remote thought" }),
+    ]),
+  );
+  expect(sidebar.props("inert")).toBe(true);
+  await wrapper.setProps({ connection: connection("b") });
+  expect(sidebar.props("modelValue")).toBe(false);
   wrapper.unmount();
 });

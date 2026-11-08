@@ -10,6 +10,9 @@ import ThemeAwareMarkdownCodeBlock from "@/components/shared/ThemeAwareMarkdownC
 export const CHAT_MARKDOWN_CUSTOM_TAGS: string[] = ["ref", "html-genui"];
 
 export function registerChatMarkdownComponents() {
+  setCustomComponents("remote-message", {
+    code_block: ThemeAwareMarkdownCodeBlock,
+  });
   setCustomComponents("chat-message", {
     link: FileReferenceLink,
     ref: RefNode,

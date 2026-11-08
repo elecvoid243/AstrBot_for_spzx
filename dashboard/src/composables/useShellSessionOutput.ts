@@ -1,5 +1,12 @@
 import { ref, watch, type Ref } from "vue";
-import { accountSessionRevision, assertCurrentAccount } from "@/utils/accountSession";
+import {
+  accountSessionRevision,
+  assertCurrentAccount,
+} from "@/utils/accountSession";
+import {
+  remoteConnectionsApi,
+  type RemoteResourceScope,
+} from "@/api/remoteConnections";
 import { chatApi } from "@/api/v1";
 import type { ShellSessionPollResult } from "@/components/chat/message_list_comps/shell_session_tools/format";
 
@@ -18,6 +25,7 @@ import type { ShellSessionPollResult } from "@/components/chat/message_list_comp
 export function useShellSessionOutput(
   sessionId: string,
   shellSessionId: string,
+  remoteScope?: RemoteResourceScope,
 ) {
   /** Retained-output cap; older text is dropped behind a trim marker. */
   const MAX_RETAINED_CHARS = 256 * 1024;
@@ -32,11 +40,15 @@ export function useShellSessionOutput(
   let cursor = 0;
   let stopped = false;
   const revision = accountSessionRevision.value;
-  watch(accountSessionRevision, () => {
-    stopped = true;
-    outputText.value = "";
-    sessionClosed.value = true;
-  }, { flush: "sync" });
+  watch(
+    accountSessionRevision,
+    () => {
+      stopped = true;
+      outputText.value = "";
+      sessionClosed.value = true;
+    },
+    { flush: "sync" },
+  );
 
   /**
    * Run the peek loop until the session closes, errors, or stop() is
@@ -46,14 +58,20 @@ export function useShellSessionOutput(
     stopped = false;
     while (!stopped && !sessionClosed.value) {
       try {
-        const resp = await chatApi.getShellSessionOutput(
-          sessionId,
-          shellSessionId,
-          { cursor, yieldTimeMs: 2000 },
-        );
+        const resp = remoteScope
+          ? await remoteConnectionsApi.shellOutput(
+              remoteScope,
+              shellSessionId,
+              cursor,
+            )
+          : await chatApi.getShellSessionOutput(sessionId, shellSessionId, {
+              cursor,
+              yieldTimeMs: 2000,
+            });
         // AstrBot business errors are HTTP 200 with {status:"error"} — axios
         // resolves them, so branch on the envelope, not on rejection.
         assertCurrentAccount(revision);
+        if (stopped && remoteScope) return;
         const envelope = resp.data as {
           status?: string;
           data?: ShellSessionPollResult;
@@ -71,8 +89,7 @@ export function useShellSessionOutput(
           // window's string without limit.
           if (outputText.value.length > MAX_RETAINED_CHARS) {
             outputText.value =
-              TRIM_MARKER +
-              outputText.value.slice(-MAX_RETAINED_CHARS);
+              TRIM_MARKER + outputText.value.slice(-MAX_RETAINED_CHARS);
           }
         }
         cursor = data.cursor ?? cursor;
@@ -82,6 +99,7 @@ export function useShellSessionOutput(
           break;
         }
       } catch {
+        if (remoteScope) outputText.value = "";
         // Network failure: same freeze-in-place behavior.
         sessionClosed.value = true;
         break;

@@ -86,6 +86,7 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
+import { type RemoteResourceScope } from "@/api/remoteConnections";
 import { chatApi } from "@/api/v1";
 import { useChatHeaderStore } from "@/stores/chatHeader";
 import { useModuleI18n } from "@/i18n/composables";
@@ -100,6 +101,7 @@ const props = defineProps<{
   /** Managed shell session id this window follows. */
   shellSessionId: string;
   zIndex: number;
+  remoteScope?: RemoteResourceScope;
 }>();
 
 const chatHeader = useChatHeaderStore();
@@ -114,7 +116,11 @@ const meta = ref(
 );
 
 const { outputText, status, sessionClosed, follow, start, stop } =
-  useShellSessionOutput(props.sessionId, props.shellSessionId);
+  useShellSessionOutput(
+    props.sessionId,
+    props.shellSessionId,
+    props.remoteScope,
+  );
 
 // Snapshot the owning conversation at mount: props.sessionId tracks the
 // LIVE conversation, which changes when the user switches sessions — but
@@ -126,7 +132,8 @@ const statusMeta = computed(() => getShellSessionStatusMeta(status.value));
 // Terminate only makes sense while the process is alive: completed /
 // failed / timed_out / terminated / already-reaped sessions hide it.
 const canTerminate = computed(
-  () => status.value === "running" && !sessionClosed.value,
+  () =>
+    !props.remoteScope && status.value === "running" && !sessionClosed.value,
 );
 const byteCount = computed(() => new Blob([outputText.value]).size);
 

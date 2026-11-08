@@ -11,6 +11,7 @@ export interface GoalBadge {
 
 export const useChatHeaderStore = defineStore("chatHeader", {
   state: () => ({
+    informationOnly: false,
     title: "",
     sessionId: "",
     subtitle: "",
@@ -104,6 +105,7 @@ export const useChatHeaderStore = defineStore("chatHeader", {
       ];
     },
     CLEAR_CONTEXT() {
+      this.informationOnly = false;
       this.title = "";
       this.sessionId = "";
       this.subtitle = "";

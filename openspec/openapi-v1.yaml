@@ -9385,6 +9385,403 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
       security:
       - BearerAuth: []
+  /api/v1/remote-chat/sessions/{session_id}/file-diff:
+    get:
+      tags:
+      - Remote Chat
+      summary: Remote File Diff
+      description: "Read only a file diff published by this exposed conversation.\n\
+        \nArgs:\n    session_id: Exposed parent conversation.\n    request: Current\
+        \ request carrying the dedicated credential.\n    path: Exact file path in\
+        \ a server-produced change card.\n    message_id: Persisted bot result containing\
+        \ the card.\n    run_id: Active run containing the card.\n    account: Credential\
+        \ owner.\n\nReturns:\n    Authorized diff and optional baseline text."
+      operationId: remote_file_diff_api_v1_remote_chat_sessions__session_id__file_diff_get
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Session Id
+      - name: path
+        in: query
+        required: true
+        schema:
+          type: string
+          maxLength: 32768
+          title: Path
+      - name: message_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+            minimum: 1
+          - type: 'null'
+          title: Message Id
+      - name: run_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            maxLength: 128
+          - type: 'null'
+          title: Run Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - RemoteSessionAuth: []
+  /api/v1/remote-chat/sessions/{session_id}/shell-sessions/{shell_session_id}/output:
+    get:
+      tags:
+      - Remote Chat
+      summary: Remote Shell Output
+      description: "Peek at output without consuming the remote agent's shell cursor.\n\
+        \nArgs:\n    session_id: Exposed conversation owning the shell process.\n\
+        \    shell_session_id: Managed process identifier.\n    request: Current request\
+        \ carrying the dedicated credential.\n    cursor: Browser's independent output\
+        \ cursor.\n    account: Credential owner.\n\nReturns:\n    Bounded shell output\
+        \ and its next cursor."
+      operationId: remote_shell_output_api_v1_remote_chat_sessions__session_id__shell_sessions__shell_session_id__output_get
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Session Id
+      - name: shell_session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Shell Session Id
+      - name: cursor
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: Cursor
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - RemoteSessionAuth: []
+  /api/v1/chat/remote-connections/{connection_id}/sessions/{session_id}/file-diff:
+    get:
+      tags:
+      - Remote Chat
+      summary: Connection File Diff
+      operationId: connection_file_diff_api_v1_chat_remote_connections__connection_id__sessions__session_id__file_diff_get
+      parameters:
+      - name: connection_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Connection Id
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Session Id
+      - name: revision
+        in: query
+        required: true
+        schema:
+          type: string
+          title: Revision
+      - name: path
+        in: query
+        required: true
+        schema:
+          type: string
+          maxLength: 32768
+          title: Path
+      - name: message_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+            minimum: 1
+          - type: 'null'
+          title: Message Id
+      - name: run_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            maxLength: 128
+          - type: 'null'
+          title: Run Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - BearerAuth: []
+  /api/v1/chat/remote-connections/{connection_id}/sessions/{session_id}/shell-sessions/{shell_session_id}/output:
+    get:
+      tags:
+      - Remote Chat
+      summary: Connection Shell Output
+      operationId: connection_shell_output_api_v1_chat_remote_connections__connection_id__sessions__session_id__shell_sessions__shell_session_id__output_get
+      parameters:
+      - name: connection_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Connection Id
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Session Id
+      - name: shell_session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Shell Session Id
+      - name: revision
+        in: query
+        required: true
+        schema:
+          type: string
+          title: Revision
+      - name: cursor
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: Cursor
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - BearerAuth: []
+  /api/v1/remote-chat/sessions/{session_id}/subagent-runs/events:
+    get:
+      tags:
+      - Remote Chat
+      summary: Remote Subagent Events
+      description: "Stream the selected exposed session's invocation list or execution\
+        \ trace.\n\nArgs:\n    session_id: Exposed parent session, never a caller-supplied\
+        \ child session.\n    request: Authenticated remote transport.\n    run_id:\
+        \ Invocation belonging to the parent, or None for navigation metadata.\n \
+        \   account: Account resolved from the dedicated connection credential.\n\n\
+        Returns:\n    Ordinary subagent events with continuous grant validation.\n\
+        \nRaises:\n    ApiError: The session or invocation is unavailable."
+      operationId: remote_subagent_events_api_v1_remote_chat_sessions__session_id__subagent_runs_events_get
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Session Id
+      - name: run_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            maxLength: 128
+          - type: 'null'
+          title: Run Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - RemoteSessionAuth: []
+  /api/v1/remote-chat/sessions/{session_id}/subagent-runs/{run_id}/configuration:
+    get:
+      tags:
+      - Remote Chat
+      summary: Remote Subagent Configuration
+      description: "Read a credential-free invocation configuration within an exposed\
+        \ parent.\n\nArgs:\n    session_id: Exposed ordinary parent session.\n   \
+        \ run_id: Invocation whose configuration is requested.\n    request: Dedicated\
+        \ remote transport.\n    account: Authenticated remote account.\n\nReturns:\n\
+        \    The ordinary sanitized configuration snapshot.\n\nRaises:\n    ApiError:\
+        \ Parent access or invocation membership is missing."
+      operationId: remote_subagent_configuration_api_v1_remote_chat_sessions__session_id__subagent_runs__run_id__configuration_get
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Session Id
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Run Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - RemoteSessionAuth: []
+  /api/v1/chat/remote-connections/{connection_id}/sessions/{session_id}/subagent-runs/events:
+    get:
+      tags:
+      - Remote Chat
+      summary: Connection Subagent Events
+      operationId: connection_subagent_events_api_v1_chat_remote_connections__connection_id__sessions__session_id__subagent_runs_events_get
+      parameters:
+      - name: connection_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Connection Id
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Session Id
+      - name: revision
+        in: query
+        required: true
+        schema:
+          type: string
+          title: Revision
+      - name: run_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            maxLength: 128
+          - type: 'null'
+          title: Run Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - BearerAuth: []
+  /api/v1/chat/remote-connections/{connection_id}/sessions/{session_id}/subagent-runs/{run_id}/configuration:
+    get:
+      tags:
+      - Remote Chat
+      summary: Connection Subagent Configuration
+      operationId: connection_subagent_configuration_api_v1_chat_remote_connections__connection_id__sessions__session_id__subagent_runs__run_id__configuration_get
+      parameters:
+      - name: connection_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Connection Id
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Session Id
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Run Id
+      - name: revision
+        in: query
+        required: true
+        schema:
+          type: string
+          title: Revision
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - BearerAuth: []
 components:
   securitySchemes:
     RemoteSessionAuth:

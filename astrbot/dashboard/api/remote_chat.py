@@ -7,7 +7,7 @@ import secrets
 import time
 from pathlib import Path
 from typing import Literal
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 from uuid import UUID, uuid4
 
 import anyio
@@ -26,6 +26,7 @@ from astrbot.core.db.po import (
     RemoteChatCredential,
 )
 from astrbot.core.platform.sources.webchat.webchat_queue_mgr import webchat_queue_mgr
+from astrbot.core.subagent_progress import subagent_progress
 from astrbot.core.tools.interactive_choice_registry import registry
 from astrbot.core.utils.webchat_access import (
     DashboardPrincipal,
@@ -40,7 +41,7 @@ from astrbot.dashboard.services.chat_service import (
 )
 from astrbot.dashboard.services.remote_chat_control import RemoteChainControl
 
-from .auth import require_dashboard_user
+from .auth import AuthContext, require_dashboard_user
 from .multipart import single_upload
 
 router = APIRouter(tags=["Remote Chat"])
@@ -1113,6 +1114,306 @@ async def stop_remote_session(
     return ok(await service.chat.stop_session(account.resource_owner, session_id))
 
 
+@router.get("/remote-chat/sessions/{session_id}/file-diff")
+async def remote_file_diff(
+    session_id: str,
+    request: Request,
+    path: str = Query(max_length=32768),
+    message_id: int | None = Query(default=None, ge=1),
+    run_id: str | None = Query(default=None, max_length=128),
+    account: DashboardAccount = Depends(require_remote_account),
+):
+    """Read only a file diff published by this exposed conversation.
+
+    Args:
+        session_id: Exposed parent conversation.
+        request: Current request carrying the dedicated credential.
+        path: Exact file path in a server-produced change card.
+        message_id: Persisted bot result containing the card.
+        run_id: Active run containing the card.
+        account: Credential owner.
+
+    Returns:
+        Authorized diff and optional baseline text.
+    """
+    from astrbot.dashboard.schemas import ChatFileChangeDiffRequest
+
+    from .chat import chat_file_change_diff
+
+    service = request.app.state.services.remote_chat
+    await service.require_session(account, session_id)
+    source = ChatFileChangeDiffRequest(
+        session_id=session_id, message_id=message_id, run_id=run_id, path=path
+    )
+    try:
+        entries = await service.chat.require_file_change_source(
+            account.resource_owner, source, [{"path": path}]
+        )
+    except (ChatServiceError, OSError, ValueError) as exc:
+        raise ApiError("File change is unavailable", status_code=404) from exc
+    source.backup_id = entries[0].get("backup_id") or ""
+    source.expect_sha256 = entries[0].get("sha256") or ""
+    result = await chat_file_change_diff(
+        source,
+        AuthContext(username=account.resource_owner, scopes=["chat"]),
+        service.chat,
+    )
+    await service.check_grant(
+        account, request.headers["Authorization"].partition(" ")[2].strip(), session_id
+    )
+    return result
+
+
+@router.get(
+    "/remote-chat/sessions/{session_id}/shell-sessions/{shell_session_id}/output"
+)
+async def remote_shell_output(
+    session_id: str,
+    shell_session_id: str,
+    request: Request,
+    cursor: int = Query(default=0, ge=0),
+    account: DashboardAccount = Depends(require_remote_account),
+):
+    """Peek at output without consuming the remote agent's shell cursor.
+
+    Args:
+        session_id: Exposed conversation owning the shell process.
+        shell_session_id: Managed process identifier.
+        request: Current request carrying the dedicated credential.
+        cursor: Browser's independent output cursor.
+        account: Credential owner.
+
+    Returns:
+        Bounded shell output and its next cursor.
+    """
+    service = request.app.state.services.remote_chat
+    await service.require_session(account, session_id)
+    try:
+        data = await service.chat.get_shell_session_output(
+            account.resource_owner,
+            session_id,
+            shell_session_id,
+            cursor=cursor,
+            yield_time_ms=1000,
+        )
+    except ChatServiceError as exc:
+        raise ApiError("Shell output is unavailable", status_code=404) from exc
+    await service.check_grant(
+        account, request.headers["Authorization"].partition(" ")[2].strip(), session_id
+    )
+    return ok(data)
+
+
+@router.get("/chat/remote-connections/{connection_id}/sessions/{session_id}/file-diff")
+async def connection_file_diff(
+    connection_id: str,
+    session_id: str,
+    request: Request,
+    revision: str = Query(),
+    path: str = Query(max_length=32768),
+    message_id: int | None = Query(default=None, ge=1),
+    run_id: str | None = Query(default=None, max_length=128),
+    _owner: str = Depends(require_dashboard_user),
+):
+    if session_id in {".", ".."} or "/" in session_id or "\\" in session_id:
+        raise ApiError("Session is unavailable", status_code=404)
+    query = {"path": path}
+    if message_id is not None:
+        query["message_id"] = str(message_id)
+    if run_id:
+        query["run_id"] = run_id
+    data = await request.app.state.services.remote_chat.read_connection(
+        request.state.dashboard_account,
+        connection_id,
+        "sessions/" + quote(session_id, safe="") + "/file-diff?" + urlencode(query),
+        revision=revision,
+    )
+    return JSONResponse(ok(data), headers={"Cache-Control": "no-store"})
+
+
+@router.get(
+    "/chat/remote-connections/{connection_id}/sessions/{session_id}/shell-sessions/{shell_session_id}/output"
+)
+async def connection_shell_output(
+    connection_id: str,
+    session_id: str,
+    shell_session_id: str,
+    request: Request,
+    revision: str = Query(),
+    cursor: int = Query(default=0, ge=0),
+    _owner: str = Depends(require_dashboard_user),
+):
+    if any(
+        value in {".", ".."} or "/" in value or "\\" in value
+        for value in (session_id, shell_session_id)
+    ):
+        raise ApiError("Session is unavailable", status_code=404)
+    data = await request.app.state.services.remote_chat.read_connection(
+        request.state.dashboard_account,
+        connection_id,
+        "sessions/"
+        + quote(session_id, safe="")
+        + "/shell-sessions/"
+        + quote(shell_session_id, safe="")
+        + "/output?cursor="
+        + str(cursor),
+        revision=revision,
+    )
+    return JSONResponse(ok(data), headers={"Cache-Control": "no-store"})
+
+
+@router.get("/remote-chat/sessions/{session_id}/subagent-runs/events")
+async def remote_subagent_events(
+    session_id: str,
+    request: Request,
+    run_id: str | None = Query(default=None, max_length=128),
+    account: DashboardAccount = Depends(require_remote_account),
+):
+    """Stream the selected exposed session's invocation list or execution trace.
+
+    Args:
+        session_id: Exposed parent session, never a caller-supplied child session.
+        request: Authenticated remote transport.
+        run_id: Invocation belonging to the parent, or None for navigation metadata.
+        account: Account resolved from the dedicated connection credential.
+
+    Returns:
+        Ordinary subagent events with continuous grant validation.
+
+    Raises:
+        ApiError: The session or invocation is unavailable.
+    """
+    service = request.app.state.services.remote_chat
+    raw_key = request.headers["Authorization"].partition(" ")[2].strip()
+    await service.require_session(account, session_id)
+    if run_id and await subagent_progress.get_run(session_id, run_id) is None:
+        raise ApiError("Invocation is unavailable", status_code=404)
+    await service.check_grant(account, raw_key, session_id)
+
+    async def events():
+        stream = subagent_progress.stream(session_id, run_id)
+        pending = None
+        try:
+            pending = asyncio.create_task(anext(stream))
+            while True:
+                await asyncio.wait({pending}, timeout=0.25)
+                with anyio.CancelScope(shield=True):
+                    await service.check_grant(account, raw_key, session_id)
+                if pending.done():
+                    try:
+                        payload = pending.result()
+                    except StopAsyncIteration:
+                        return
+                    yield "data: " + json.dumps(payload, ensure_ascii=False) + "\n\n"
+                    pending = asyncio.create_task(anext(stream))
+                else:
+                    yield ": heartbeat\n\n"
+        except ApiError:
+            yield 'data: {"type":"access_error","code":"remote_unavailable"}\n\n'
+        finally:
+            with anyio.CancelScope(shield=True):
+                if pending is not None:
+                    pending.cancel()
+                    await asyncio.gather(pending, return_exceptions=True)
+                await stream.aclose()
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+    )
+
+
+@router.get("/remote-chat/sessions/{session_id}/subagent-runs/{run_id}/configuration")
+async def remote_subagent_configuration(
+    session_id: str,
+    run_id: str,
+    request: Request,
+    account: DashboardAccount = Depends(require_remote_account),
+):
+    """Read a credential-free invocation configuration within an exposed parent.
+
+    Args:
+        session_id: Exposed ordinary parent session.
+        run_id: Invocation whose configuration is requested.
+        request: Dedicated remote transport.
+        account: Authenticated remote account.
+
+    Returns:
+        The ordinary sanitized configuration snapshot.
+
+    Raises:
+        ApiError: Parent access or invocation membership is missing.
+    """
+    service = request.app.state.services.remote_chat
+    await service.require_session(account, session_id)
+    configuration = await subagent_progress.get_configuration(session_id, run_id)
+    if configuration is None:
+        raise ApiError("Invocation is unavailable", status_code=404)
+    await service.check_grant(
+        account, request.headers["Authorization"].partition(" ")[2].strip(), session_id
+    )
+    return ok(configuration)
+
+
+@router.get(
+    "/chat/remote-connections/{connection_id}/sessions/{session_id}/subagent-runs/events"
+)
+async def connection_subagent_events(
+    connection_id: str,
+    session_id: str,
+    request: Request,
+    revision: str = Query(),
+    run_id: str | None = Query(default=None, max_length=128),
+    _owner: str = Depends(require_dashboard_user),
+):
+    if session_id in {".", ".."} or "/" in session_id or "\\" in session_id:
+        raise ApiError("Session is unavailable", status_code=404)
+    path = "sessions/" + quote(session_id, safe="") + "/subagent-runs/events"
+    if run_id:
+        path += "?run_id=" + quote(run_id, safe="")
+    stream = await request.app.state.services.remote_chat.read_connection(
+        request.state.dashboard_account,
+        connection_id,
+        path,
+        revision=revision,
+        stream=True,
+    )
+    return StreamingResponse(
+        stream,
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+    )
+
+
+@router.get(
+    "/chat/remote-connections/{connection_id}/sessions/{session_id}/subagent-runs/{run_id}/configuration"
+)
+async def connection_subagent_configuration(
+    connection_id: str,
+    session_id: str,
+    run_id: str,
+    request: Request,
+    revision: str = Query(),
+    _owner: str = Depends(require_dashboard_user),
+):
+    for value in (session_id, run_id):
+        if value in {".", ".."} or "/" in value or "\\" in value:
+            raise ApiError("Invocation is unavailable", status_code=404)
+    return ok(
+        await request.app.state.services.remote_chat.read_connection(
+            request.state.dashboard_account,
+            connection_id,
+            "sessions/"
+            + quote(session_id, safe="")
+            + "/subagent-runs/"
+            + quote(run_id, safe="")
+            + "/configuration",
+            revision=revision,
+        )
+    )
+
+
 @router.get("/remote-chat/sessions/{session_id}/events")
 async def remote_session_events(
     session_id: str,
@@ -1127,14 +1428,31 @@ async def remote_session_events(
         subscriptions = {}
         dirty = asyncio.Event()
 
+        compression = None
+        context_limit = 0
+        provider_refresh = 0.0
+
         async def observe(run_id):
             """Wake the session snapshot subscriber using ordinary run events."""
+            nonlocal compression
             try:
                 stream = await service.chat.build_chat_run_stream(
                     account.resource_owner, run_id
                 )
                 try:
-                    async for _ in stream:
+                    async for chunk in stream:
+                        for line in chunk.splitlines():
+                            if not line.startswith("data: "):
+                                continue
+                            try:
+                                event = json.loads(line[6:])
+                            except (ValueError, TypeError):
+                                continue
+                            if event.get("type") == "context_compression":
+                                compression = {
+                                    "run_id": run_id,
+                                    "notice": event.get("data"),
+                                }
                         dirty.set()
                 finally:
                     await stream.aclose()
@@ -1153,10 +1471,60 @@ async def remote_session_events(
                     state = await service.chat.get_session(
                         current.resource_owner, session_id, 50
                     )
-                data = {
-                    field: state[field]
-                    for field in ("history", "has_more", "active_runs", "is_running")
-                }
+                    data = {
+                        field: state[field]
+                        for field in (
+                            "history",
+                            "has_more",
+                            "active_runs",
+                            "is_running",
+                        )
+                    }
+                    if time.monotonic() - provider_refresh > 5:
+                        from astrbot.core.utils.llm_metadata import LLM_METADATAS
+
+                        context_limit = 0
+                        try:
+                            selection = await service.chat.session_selection(
+                                current.resource_owner, session_id
+                            )
+                            providers = (
+                                request.app.state.services.providers.list_providers(
+                                    capability="chat_completion", enabled=True
+                                )["providers"]
+                            )
+                            provider = next(
+                                (
+                                    item
+                                    for item in providers
+                                    if item["id"] == selection["selected_provider"]
+                                ),
+                                providers[0] if providers else {},
+                            )
+                            metadata = LLM_METADATAS.get(
+                                selection["selected_model"] or provider.get("model"), {}
+                            )
+                            context_limit = (
+                                provider.get("max_context_tokens")
+                                or metadata.get("limit", {}).get("context")
+                                or 0
+                            )
+                        except ChatServiceError:
+                            pass
+                        provider_refresh = time.monotonic()
+                    data["context_limit"] = context_limit
+                    data["context_compression"] = compression
+                    data["goal"] = (
+                        await service.chat.get_session_goal(
+                            current.resource_owner, session_id
+                        )
+                    )["goal"]
+                    data[
+                        "shell_sessions"
+                    ] = await service.chat.get_session_shell_sessions(
+                        current.resource_owner, session_id
+                    )
+                    await service.check_grant(account, raw_key, session_id)
                 # Only explicitly scoped remote resources may become interactive locally.
                 encoded = json.dumps(
                     {"type": "snapshot", "data": data}, ensure_ascii=False

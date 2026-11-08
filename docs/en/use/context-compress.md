@@ -2,20 +2,15 @@
 
 Starting from v4.11.0, AstrBot introduced an automatic context compression feature.
 
-On the `Config` page, select the profile to edit, open `AI → Advanced → Context Management Strategy`, set the compression strategy, and click `Save Configuration` at the bottom right.
+On the `Config` page, select the profile to edit, open `AI → Advanced → Context Management Strategy`, configure context management, and click `Save Configuration` at the bottom right.
 
-AstrBot checks context before every model request, including tool continuations. A positive provider `compress_threshold_tokens` overrides the normal trigger of 82% of the model window. Input estimation includes system instructions, messages, and tool definitions. Input plus the effective output budget must fit the window. Summaries can omit details.
+AstrBot checks context before every model request, including tool continuations. The trigger is `min(window × 0.8, window − output budget − headroom)`; a positive provider `compress_threshold_tokens` overrides it, but is still clamped to the same pressure budget. Input estimation includes system instructions, messages, and tool definitions. Input plus the effective output budget must fit the window. Summaries can omit details.
 
-Whether compression runs depends only on the token budget; history is no longer pre-truncated by a turn count. Turns only decide how much the truncate-by-turns strategy discards.
+## Compression method
 
-## Compression Strategies
+The default and only user-selectable method is an LLM-generated structured summary. Choose a summary model or leave it empty to try the session's chat model. The compression instruction is a built-in fixed template and is no longer configurable.
 
-There are currently two compression strategies:
-
-1. Truncate by conversation rounds, removing older complete rounds. Token-budget truncation targets 40% of the model window by default, retaining the latest round and identified summaries.
-2. LLM summaries, the default for new configurations. Choose a summary model or leave it empty to try the session's chat model. The compression instruction is a built-in fixed structured template and is no longer configurable.
-
-If pressure remains after compression, AstrBot removes the oldest ordinary rounds while preserving system messages, summaries, and the current complete round. Exceeding only the compression trigger does not force protected content to be removed. If protected content, tool definitions, and the output budget still exceed the model window, the request stops with an explicit capacity error. Reduce the current input, tool definitions, or output limit, or select a larger model window.
+Truncation by conversation rounds is no longer a separate strategy, and there is no "discard N turns / drop to 40%" setting. If pressure remains after the summary, AstrBot removes the oldest ordinary rounds one at a time, preserving system messages, summaries, and the current complete round. Exceeding only the compression trigger does not force protected content to be removed. If protected content, tool definitions, and the output budget still exceed the model window, the request stops with an explicit capacity error. Reduce the current input, tool definitions, or output limit, or select a larger model window.
 
 - AstrBot will invoke the compressor for checking before each conversation request.
 - A long round containing multiple tool batches can summarize earlier complete batches while retaining the current user request, latest tool batch, and recent exact content. Parallel calls and their results stay together. Unconfirmed outcomes and system instructions remain intact. Compression never executes a tool again.

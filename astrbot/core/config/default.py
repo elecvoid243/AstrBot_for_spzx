@@ -3070,7 +3070,7 @@ CONFIG_METADATA_2 = {
                     "compress_threshold_tokens": {
                         "description": "上下文压缩触发阈值",
                         "type": "int",
-                        "hint": "当上下文估算 Token 数超过该值时触发自动压缩，例如 256000 表示达到 256k 时压缩。为 0 时按上下文窗口大小的 82% 触发。",
+                        "hint": "当上下文估算 Token 数超过该值时触发自动压缩，例如 256000 表示达到 256k 时压缩。为 0 时按 min(窗口×0.8, 窗口−输出预算−headroom) 触发。",
                     },
                     "dify_api_key": {
                         "description": "API Key",
@@ -4260,23 +4260,6 @@ CONFIG_METADATA_3 = {
                 "description": "上下文管理策略",
                 "type": "object",
                 "items": {
-                    "agent_runner.config.compression.trim_turns": {
-                        "description": "按轮截断时一次至少丢弃轮数",
-                        "type": "int",
-                        "hint": "按对话轮数截断时，一次至少丢弃多少轮旧对话；启用按 Token 动态截断时（下方“截断时目标占用比例”> 0），该值作为最少丢弃轮数兜底。",
-                        "condition": {
-                            "agent_runner.runner_type": "local",
-                        },
-                    },
-                    "agent_runner.config.compression.target_usage_ratio": {
-                        "description": "截断时目标占用比例",
-                        "type": "float",
-                        "slider": {"min": 0, "max": 0.8, "step": 0.05},
-                        "hint": "按对话轮数截断时，从最旧对话轮开始丢弃，直到上下文 Token 占用低于 模型窗口 × 该比例。0.4 表示一次丢弃到 40% 以下，为后续对话留出缓冲空间，使 LLM 前缀缓存可以连续命中。设为 0 时退化为按“轮次超限时一次丢弃轮数”固定丢弃。",
-                        "condition": {
-                            "agent_runner.runner_type": "local",
-                        },
-                    },
                     "agent_runner.config.compression.overflow_strategy": {
                         "description": "历史超限或上下文接近上限时的处理方式",
                         "type": "string",
@@ -4285,13 +4268,13 @@ CONFIG_METADATA_3 = {
                         "condition": {
                             "agent_runner.runner_type": "local",
                         },
-                        "hint": "请求发送前，当上下文 Token 超过压缩阈值（提供方设置 compress_threshold_tokens，未设置时取模型窗口的 82%）或输入加输出预算超出模型窗口时执行该策略。",
+                        "hint": "请求发送前，当上下文 Token 超过压缩阈值（提供方 compress_threshold_tokens，未设置时取 min(窗口×0.8, 窗口−输出预算−headroom)）或输入加输出预算超出模型窗口时执行该策略。",
                     },
                     "agent_runner.config.compression.keep_recent_ratio": {
                         "description": "压缩时保留最近上下文比例",
                         "type": "float",
                         "slider": {"min": 0, "max": 0.3, "step": 0.01},
-                        "hint": "按当前上下文 token 数保留最近内容，范围 0-0.3。0.15 表示保留 15%；比例大于 0 时至少保留最后一轮。",
+                        "hint": "压缩时按消息预算保留最近原文的比例，范围 0-0.3。0.15 表示保留 15%；比例大于 0 时至少保留最后一轮。",
                         "condition": {
                             "agent_runner.config.compression.overflow_strategy": "llm_compress",
                             "agent_runner.runner_type": "local",
@@ -4301,7 +4284,7 @@ CONFIG_METADATA_3 = {
                         "description": "用于上下文压缩的模型提供商 ID",
                         "type": "string",
                         "_special": "select_provider",
-                        "hint": "留空时使用当前聊天模型进行压缩；如果模型不可用或压缩失败，将回退为“按对话轮数截断”的策略。",
+                        "hint": "留空时使用当前聊天模型进行压缩；如果模型不可用，将回退为内部逐轮裁剪。",
                         "condition": {
                             "agent_runner.config.compression.overflow_strategy": "llm_compress",
                             "agent_runner.runner_type": "local",

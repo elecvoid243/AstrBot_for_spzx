@@ -110,8 +110,6 @@ AGENT_RUNNER_CONFIG_DEFAULTS: dict[str, dict[str, Any]] = {
             ),
         },
         "compression": {
-            "trim_turns": 1,
-            "target_usage_ratio": 0.4,
             "overflow_strategy": "llm_compress",
             "keep_recent_ratio": 0.15,
             "provider_id": "",
@@ -211,7 +209,6 @@ def resolve_context_compression_config(
         Build arguments shared by chat, Cron and background-result wakeups.
         The input mapping is not modified.
     """
-    trim_turns = max(1, int(compression_config.get("trim_turns", 1) or 1))
     return {
         "context_limit_reached_strategy": compression_config.get(
             "overflow_strategy", "truncate_by_turns"
@@ -220,7 +217,6 @@ def resolve_context_compression_config(
             "keep_recent_ratio", 0.15
         ),
         "llm_compress_provider_id": compression_config.get("provider_id", ""),
-        "dequeue_context_length": trim_turns,
         "fallback_max_context_tokens": compression_config.get(
             "fallback_max_tokens", 128000
         ),
@@ -289,12 +285,6 @@ def normalize_agent_runner(agent_runner: object) -> dict[str, Any]:
             normalized["model"]["request_max_retries"] = 1
         if normalized["misc"]["max_steps"] < 1:
             normalized["misc"]["max_steps"] = 1
-        if normalized["compression"]["trim_turns"] < 1:
-            normalized["compression"]["trim_turns"] = 1
-        if normalized["compression"]["target_usage_ratio"] < 0.0:
-            normalized["compression"]["target_usage_ratio"] = 0.0
-        if normalized["compression"]["target_usage_ratio"] > 0.8:
-            normalized["compression"]["target_usage_ratio"] = 0.8
         timeout_seconds = normalized["ask_user_choice"]["timeout_seconds"]
         normalized["ask_user_choice"]["timeout_seconds"] = min(
             3600, max(30, timeout_seconds)

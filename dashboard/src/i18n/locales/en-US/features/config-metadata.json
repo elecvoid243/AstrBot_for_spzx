@@ -402,29 +402,21 @@
       "hint": "[Context Management](https://docs.astrbot.app/en/use/context-compress.html)",
       "description": "Context Management Strategy",
       "agent_runner": { "config": { "compression": {
-        "trim_turns": {
-          "description": "Minimum Turns to Discard When Truncating by Turns",
-          "hint": "When truncating by turns, discard at least this many oldest turns at once. When token-budget truncation is active (see 'Target Usage Ratio After Truncation' below), this value acts as the minimum drop."
-        },
-        "target_usage_ratio": {
-          "description": "Target Usage Ratio After Truncation",
-          "hint": "When truncating by turns, drop oldest rounds until the context token usage is below model window x this ratio. 0.4 means dropping to below 40% at once, leaving headroom so subsequent requests can hit the LLM prefix cache. Set to 0 to fall back to a fixed 'Turns to Discard When Limit Exceeded' drop."
-        },
         "overflow_strategy": {
           "description": "Handling for History Limits or Context Window Pressure",
           "labels": [
             "Truncate by Turns",
             "Compress by LLM"
           ],
-          "hint": "Before each request, this strategy runs when context tokens exceed the compression threshold (provider-level compress_threshold_tokens, or 82% of the model window when unset) or when input plus output budget would overflow the model window."
+          "hint": "Before each request, this strategy runs when context tokens exceed the compression threshold (provider compress_threshold_tokens, or min(window × 0.8, window − output budget − headroom) when unset) or when input plus output budget would overflow the model window."
         },
         "keep_recent_ratio": {
           "description": "Recent Context Token Ratio to Keep",
-          "hint": "Keep recent exact context by current context token ratio, from 0-0.3. 0.15 means keeping 15%; values above 0 keep at least the latest round."
+          "hint": "Keep recent exact content as a fraction of the message budget, from 0-0.3. 0.15 means keeping 15%; values above 0 keep at least the latest round."
         },
         "provider_id": {
           "description": "Model Provider ID for Context Compression",
-          "hint": "When left empty, the current chat model will be used for compression. If the model is unavailable or compression fails, AstrBot falls back to the 'Truncate by Turns' strategy."
+          "hint": "When left empty, the current chat model will be used for compression. If the model is unavailable, AstrBot falls back to internal round dropping."
         },
         "fallback_max_tokens": {
           "description": "Fallback context window size",
@@ -2000,7 +1992,7 @@
       },
       "compress_threshold_tokens": {
         "description": "Context compression trigger threshold",
-        "hint": "Automatic compression fires once the estimated context tokens exceed this value, e.g. 256000 triggers at 256k. When 0, compression triggers at 82% of the context window size."
+        "hint": "Automatic compression fires once the estimated context tokens exceed this value, e.g. 256000 triggers at 256k. When 0, the trigger is min(window × 0.8, window − output budget − headroom)."
       },
       "dify_api_key": {
         "description": "API Key",

@@ -162,8 +162,6 @@ def test_local_legacy_fields_are_fully_migrated():
                 ),
             },
             "compression": {
-                "trim_turns": 3,
-                "target_usage_ratio": 0.4,
                 "overflow_strategy": "truncate_by_turns",
                 "keep_recent_ratio": 0.2,
                 "provider_id": "compressor",
@@ -253,8 +251,6 @@ def test_local_migration_replaces_default_root_inserted_before_version_bump():
                 ),
             },
             "compression": {
-                "trim_turns": 4,
-                "target_usage_ratio": 0.4,
                 "overflow_strategy": "llm_compress",
                 "keep_recent_ratio": 0.15,
                 "provider_id": "compressor",

@@ -46,7 +46,6 @@ _LEGACY_AGENT_RUNNER_SETTING_KEYS = (
     "llm_compress_keep_recent_ratio",
     "llm_compress_provider_id",
     "max_context_length",
-    "dequeue_context_length",
     "fallback_max_context_tokens",
 )
 _LEGACY_PROVIDER_IDENTITY_FIELDS = {
@@ -219,7 +218,6 @@ def _migrate_agent_runner_config(
                 ),
             }
             runner_config["compression"] = {
-                "trim_turns": provider_settings.get("dequeue_context_length", 1),
                 "overflow_strategy": provider_settings.get(
                     "context_limit_reached_strategy", "llm_compress"
                 ),

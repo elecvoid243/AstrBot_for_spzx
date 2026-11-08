@@ -222,13 +222,6 @@ class MainAgentBuildConfig:
     """Percent of current context tokens to keep as exact recent context during llm_compress strategy."""
     llm_compress_provider_id: str = ""
     """The provider ID for the LLM used for context compression."""
-    dequeue_context_length: int = 10
-    """The number of oldest turns to remove when context length limit is reached.
-    Acts as the minimum drop when token-budget truncation is active."""
-    truncate_target_usage_ratio: float = 0.4
-    """Target usage ratio of the context window after turn-based truncation.
-    Older turns are dropped until remaining tokens are below
-    max_context_tokens * this ratio, keeping headroom for a stable prefix."""
     fallback_max_context_tokens: int = 128000
     """Fallback max context tokens. When max_context_tokens is 0 and the model is not in LLM_METADATAS, use this value."""
     llm_safety_mode: bool = True
@@ -2378,8 +2371,6 @@ async def build_main_agent(
             plugin_context,
             event,
         ),
-        truncate_turns=config.dequeue_context_length,
-        truncate_target_usage_ratio=config.truncate_target_usage_ratio,
         tool_schema_mode=config.tool_schema_mode,
         repeated_tool_notice_enabled=repeated_tool_notice_enabled,
         repeated_tool_notice_threshold=repeated_tool_notice_threshold,

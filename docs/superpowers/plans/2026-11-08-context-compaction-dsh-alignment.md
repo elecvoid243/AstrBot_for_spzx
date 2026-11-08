@@ -76,8 +76,9 @@
 |---|---|---|
 | provider | `max_context_tokens`、`compress_threshold_tokens` | 新增 `compress_threshold_ratio`（0.8）、`compaction_headroom_tokens`（16384） |
 | compression | `keep_recent_ratio`（0.15，按当前总量） | 改名 `retain_ratio`（0.16，按 `W−O`），迁移旧键 |
-| compression | `target_usage_ratio`（0.4，仅截断策略） | 保留；LLM 策略新增 `target_ratio`（0.55） |
-| compression | `trim_turns`、`overflow_strategy`、`provider_id`、`fallback_max_tokens` | 保留 |
+| compression | `target_usage_ratio`（0.4，仅截断策略） | 删除用户配置；仅保留内部兜底常量 |
+| compression | `trim_turns` | 删除用户配置；仅保留内部兜底常量 |
+| compression | `overflow_strategy`、`provider_id`、`fallback_max_tokens` | 保留 |
 | 代码常量 | `0.82` 出现在两个 compressor | 删除，统一走 spec |
 
 `max_summary_tokens`、`compaction_retries`（1）、`min_growth_tokens`（0.1W）、`min_yield_ratio`（0）先作为模块常量，不进 UI。

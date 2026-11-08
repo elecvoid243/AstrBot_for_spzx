@@ -2206,7 +2206,6 @@ class TestBuildMainAgent:
                             "overflow_strategy": "llm_compress",
                             "provider_id": "summary-model",
                             "keep_recent_ratio": 0.3,
-                            "trim_turns": 3,
                             "fallback_max_tokens": 16384,
                         }
                     ),
@@ -2218,7 +2217,6 @@ class TestBuildMainAgent:
         kwargs = runner.reset.await_args.kwargs
         assert kwargs["llm_compress_provider"] is compressor
         assert kwargs["llm_compress_keep_recent_ratio"] == 0.3
-        assert kwargs["truncate_turns"] == 3
         assert kwargs["provider"].provider_config["max_context_tokens"] == 16384
 
     @pytest.mark.asyncio

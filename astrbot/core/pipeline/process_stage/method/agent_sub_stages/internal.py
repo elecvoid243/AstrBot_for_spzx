@@ -185,12 +185,6 @@ class InternalAgentSubStage(Stage):
             "keep_recent_ratio", 0.15
         )
         self.llm_compress_provider_id: str = compression_config.get("provider_id", "")
-        self.dequeue_context_length: int = max(
-            1, int(compression_config.get("trim_turns", 1) or 1)
-        )
-        self.truncate_target_usage_ratio: float = min(
-            max(float(compression_config.get("target_usage_ratio", 0.4)), 0.0), 0.8
-        )
         self.fallback_max_context_tokens: int = compression_config.get(
             "fallback_max_tokens", 128000
         )
@@ -223,8 +217,6 @@ class InternalAgentSubStage(Stage):
             context_limit_reached_strategy=self.context_limit_reached_strategy,
             llm_compress_keep_recent_ratio=self.llm_compress_keep_recent_ratio,
             llm_compress_provider_id=self.llm_compress_provider_id,
-            dequeue_context_length=self.dequeue_context_length,
-            truncate_target_usage_ratio=self.truncate_target_usage_ratio,
             fallback_max_context_tokens=self.fallback_max_context_tokens,
             llm_safety_mode=self.llm_safety_mode,
             safety_mode_strategy=self.safety_mode_strategy,

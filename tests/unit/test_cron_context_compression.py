@@ -23,21 +23,23 @@ from astrbot.core.provider.entities import LLMResponse
 def test_explicit_build_settings_and_per_request_overrides_are_preserved():
     """Keep direct callers and dataclasses.replace independent of raw settings."""
     defaults = MainAgentBuildConfig(tool_call_timeout=60)
-    assert defaults.dequeue_context_length == 10
-    direct = MainAgentBuildConfig(tool_call_timeout=60, dequeue_context_length=2)
-    assert direct.dequeue_context_length == 2
+    assert defaults.llm_compress_provider_id == ""
+    direct = MainAgentBuildConfig(
+        tool_call_timeout=60, llm_compress_provider_id="summary-model"
+    )
+    assert direct.llm_compress_provider_id == "summary-model"
 
-    source = {"trim_turns": 3, "provider_id": "summary-model"}
+    source = {"provider_id": "summary-model", "keep_recent_ratio": 0.3}
     configured = MainAgentBuildConfig(
         tool_call_timeout=60, **resolve_context_compression_config(source)
     )
-    source["trim_turns"] = 99
+    source["provider_id"] = "other"
     per_request = replace(
-        configured, streaming_response=False, dequeue_context_length=8
+        configured, streaming_response=False, llm_compress_provider_id="override"
     )
-    assert configured.dequeue_context_length == 3
-    assert per_request.dequeue_context_length == 8
-    assert per_request.llm_compress_provider_id == "summary-model"
+    assert configured.llm_compress_provider_id == "summary-model"
+    assert configured.llm_compress_keep_recent_ratio == 0.3
+    assert per_request.llm_compress_provider_id == "override"
     assert per_request.streaming_response is False
 
 
@@ -51,47 +53,20 @@ def test_explicit_build_settings_and_per_request_overrides_are_preserved():
                 "overflow_strategy": "llm_compress",
                 "keep_recent_ratio": 0.3,
                 "provider_id": "summary-model",
-                "trim_turns": 3,
                 "fallback_max_tokens": 16384,
             },
-            (
-                "llm_compress",
-                0.3,
-                "summary-model",
-                3,
-                16384,
-            ),
+            ("llm_compress", 0.3, "summary-model", 16384),
             id="configured-summary-model",
         ),
         pytest.param(
             {},
-            ("truncate_by_turns", 0.15, "", 1, 128000),
+            ("truncate_by_turns", 0.15, "", 128000),
             id="empty-config",
         ),
         pytest.param(
             None,
-            ("truncate_by_turns", 0.15, "", 1, 128000),
+            ("truncate_by_turns", 0.15, "", 128000),
             id="missing-cron-compression-section",
-        ),
-        pytest.param(
-            {"trim_turns": 20},
-            ("truncate_by_turns", 0.15, "", 20, 128000),
-            id="trim-passes-through",
-        ),
-        pytest.param(
-            {"trim_turns": 0},
-            ("truncate_by_turns", 0.15, "", 1, 128000),
-            id="minimum-trim",
-        ),
-        pytest.param(
-            {"trim_turns": 5},
-            ("truncate_by_turns", 0.15, "", 5, 128000),
-            id="configured-trim",
-        ),
-        pytest.param(
-            {"trim_turns": -3},
-            ("truncate_by_turns", 0.15, "", 1, 128000),
-            id="negative-trim-minimum",
         ),
     ],
 )
@@ -194,7 +169,6 @@ async def test_wakeup_uses_same_compression_settings_as_chat(
         "context_limit_reached_strategy",
         "llm_compress_keep_recent_ratio",
         "llm_compress_provider_id",
-        "dequeue_context_length",
         "fallback_max_context_tokens",
     )
     assert tuple(getattr(wakeup_config, name) for name in fields) == expected

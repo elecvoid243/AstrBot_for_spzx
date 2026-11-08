@@ -72,7 +72,6 @@ AstrBot 默认配置如下：
         "default_personality": "default",
         "persona_pool": ["*"],
         "prompt_prefix": "{{prompt}}",
-        "dequeue_context_length": 1,
         "streaming_response": False,
         "show_tool_use_status": False,
         "streaming_segmented": False,
@@ -348,10 +347,6 @@ Firecrawl 搜索引擎的 API Key 列表。使用 `firecrawl` 作为网页搜索
 #### `provider_settings.prompt_prefix`
 
 用户提示词。可使用 `{{prompt}}` 作为用户输入的占位符。如果不输入占位符则代表添加在用户输入的前面。
-
-#### `provider_settings.dequeue_context_length`
-
-按对话轮数截断时，每次至少丢弃的对话轮数；启用按 Token 动态截断时，该值作为最少丢弃轮数兜底。
 
 #### `provider_settings.streaming_response`
 

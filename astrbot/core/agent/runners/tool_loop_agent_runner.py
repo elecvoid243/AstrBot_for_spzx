@@ -356,7 +356,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         min_yield_ratio: float = 0.0,
         max_summary_tokens: int = 0,
         compaction_retries: int = 1,
-        # truncate by turns compressor
+        # Internal no-provider fallback; not exposed in user config.
         truncate_turns: int = 1,
         truncate_target_usage_ratio: float = 0.4,
         # customize

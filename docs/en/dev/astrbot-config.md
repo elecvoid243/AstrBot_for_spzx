@@ -72,7 +72,6 @@ The default AstrBot configuration is as follows:
         "default_personality": "default",
         "persona_pool": ["*"],
         "prompt_prefix": "{{prompt}}",
-        "dequeue_context_length": 1,
         "streaming_response": False,
         "show_tool_use_status": False,
         "streaming_segmented": False,
@@ -348,10 +347,6 @@ ID of the default personality to use. Configure personalities in the WebUI.
 #### `provider_settings.prompt_prefix`
 
 User prompt. You can use `{{prompt}}` as a placeholder for user input. If no placeholder is provided, it's prepended to the user input.
-
-#### `provider_settings.dequeue_context_length`
-
-Number of conversation turns to discard at least when truncating by turns; also the minimum drop when token-budget truncation is active.
 
 #### `provider_settings.streaming_response`
 

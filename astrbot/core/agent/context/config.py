@@ -22,19 +22,17 @@ class ContextConfig:
     compressors' ratio-based trigger.
     """
     truncate_turns: int = 1
-    """Number of conversation turns to discard at once when truncation is triggered.
+    """Internal fallback: turns discarded per pass when no summary provider exists.
 
-    Used as the fixed drop count of the turn-based compressor and as the
-    minimum drop for token-budget truncation.
+    Kept out of the user-facing compression config; the fallback policy is
+    fixed unless a caller constructs ``ContextConfig`` directly.
     """
     truncate_target_usage_ratio: float = 0.4
-    """Target usage ratio of ``max_context_tokens`` after turn-based truncation.
+    """Internal fallback: target usage ratio for the no-provider truncator.
 
-    When token-budget truncation is active, the oldest turns are dropped until
-    the remaining estimated tokens are below ``max_context_tokens`` times this
-    ratio, giving the request headroom for a stable prefix (prefix cache).
-    ``<= 0`` disables token-budget truncation and falls back to a fixed
-    ``truncate_turns`` drop.
+    Older turns are dropped until the remaining tokens are below
+    ``max_context_tokens * this ratio``. ``<= 0`` disables token-budget
+    truncation and falls back to a fixed ``truncate_turns`` drop.
     """
     threshold_ratio: float = 0.8
     """Fraction of the context window that triggers compaction."""

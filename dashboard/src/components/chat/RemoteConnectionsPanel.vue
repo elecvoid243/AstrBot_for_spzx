@@ -75,45 +75,86 @@
         </details>
       </template>
     </details>
-    <v-dialog v-model="creating" max-width="560">
-      <v-card>
+    <v-dialog v-model="creating" max-width="480">
+      <v-card
+        class="rc-create"
+        :class="{ 'rc-create--denied': !createAllowed }"
+      >
         <v-card-title class="text-h3 pa-4 pb-0 pl-6">{{
           tm("remoteConnections.newSession")
         }}</v-card-title>
-        <v-card-text>
-          <p class="mb-3">
-            {{ createConnection?.name }} · {{ createConnection?.base_url }}
-          </p>
+        <v-card-text class="rc-create__body">
+          <div v-if="createConnection" class="rc-create__meta">
+            <span v-if="createConnection.name" class="rc-create__chip">{{
+              createConnection.name
+            }}</span>
+            <span class="rc-create__url">{{ createConnection.base_url }}</span>
+          </div>
+
           <v-alert
             v-if="createError"
             type="error"
             variant="tonal"
-            class="mb-3"
+            density="compact"
+            rounded="lg"
+            class="rc-create__error"
             >{{ createError }}</v-alert
           >
-          <p v-if="!createAllowed && !createLoading">
-            {{ tm("remoteConnections.creationDenied") }}
+
+          <!-- 2026-11-08 (elecvoid243): the denial used to be a bare <p> with
+               no margin, which glued it to the first field. It is a real
+               notice block now, so the eye reads "blocked" before "form". -->
+          <v-alert
+            v-if="!createAllowed && !createLoading"
+            type="warning"
+            variant="tonal"
+            density="compact"
+            rounded="lg"
+            class="rc-create__notice"
+            >{{ tm("remoteConnections.creationDenied") }}</v-alert
+          >
+
+          <div class="rc-create__form">
+            <div class="rc-create__field">
+              <div class="rc-create__label">
+                {{ tm("remoteConnections.sessionTitle") }}
+              </div>
+              <v-text-field
+                v-model="createTitle"
+                maxlength="255"
+                variant="outlined"
+                density="compact"
+                hide-details
+                :aria-label="tm('remoteConnections.sessionTitle')"
+                :disabled="!createAllowed || saving"
+              />
+            </div>
+            <div class="rc-create__field">
+              <div class="rc-create__label">
+                {{ tm("remoteConnections.project") }}
+              </div>
+              <v-select
+                v-model="createProject"
+                :items="[
+                  { title: tm('remoteConnections.noProject'), project_id: null },
+                  ...createProjectItems,
+                ]"
+                item-title="title"
+                item-value="project_id"
+                variant="outlined"
+                density="compact"
+                hide-details
+                :aria-label="tm('remoteConnections.project')"
+                :disabled="!createAllowed || saving"
+              />
+            </div>
+          </div>
+
+          <p class="rc-create__hint">
+            {{ tm("remoteConnections.creationHint") }}
           </p>
-          <v-text-field
-            v-model="createTitle"
-            :label="tm('remoteConnections.sessionTitle')"
-            maxlength="255"
-            :disabled="!createAllowed || saving"
-          />
-          <v-select
-            v-model="createProject"
-            :items="[
-              { title: tm('remoteConnections.noProject'), project_id: null },
-              ...createProjectItems,
-            ]"
-            item-title="title"
-            item-value="project_id"
-            :label="tm('remoteConnections.project')"
-            :disabled="!createAllowed || saving"
-          />
-          <p class="text-caption">{{ tm("remoteConnections.creationHint") }}</p>
         </v-card-text>
-        <v-card-actions>
+        <v-card-actions class="rc-create__actions">
           <v-spacer />
           <v-btn variant="text" :disabled="saving" @click="creating = false">{{
             t("core.common.cancel")
@@ -753,5 +794,91 @@ watch(
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+/* ── Create-session dialog (2026-11-08, elecvoid243) ───────────────
+   Title / meta / notice / form / hint / actions each own their vertical
+   rhythm instead of relying on Vuetify's 16px stack. Fields carry their
+   label outside the box: at this size the floating label read like an
+   unfilled placeholder and collided with the denial line above it. */
+.rc-create .rc-create__body {
+  padding: 4px 24px 0;
+}
+
+.rc-create__meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  margin-top: 4px;
+}
+
+.rc-create__chip {
+  flex: none;
+  padding: 0 6px;
+  border-radius: 4px;
+  background: rgba(var(--v-theme-on-surface), 0.06);
+  color: rgba(var(--v-theme-on-surface), 0.62);
+  font-size: 10.5px;
+  line-height: 16px;
+}
+
+.rc-create__url {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 11.5px;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+}
+
+.rc-create__error {
+  margin-top: 14px;
+  font-size: 12px;
+}
+
+.rc-create__notice {
+  margin-top: 18px;
+  font-size: 12px;
+}
+
+.rc-create__form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin-top: 20px;
+}
+
+.rc-create__label {
+  margin-bottom: 6px;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  color: rgba(var(--v-theme-on-surface), 0.6);
+}
+
+/* A denied host stays readable instead of fading to 38%: the dialog still
+   shows what would be filled in once the host allows creation. */
+.rc-create--denied .rc-create__label {
+  color: rgba(var(--v-theme-on-surface), 0.42);
+}
+
+.rc-create--denied :deep(.v-field) {
+  background: rgba(var(--v-theme-on-surface), 0.03);
+}
+
+.rc-create__hint {
+  margin: 16px 0 0;
+  font-size: 11.5px;
+  line-height: 1.65;
+  color: rgba(var(--v-theme-on-surface), 0.55);
+}
+
+.rc-create .rc-create__actions {
+  min-height: 0;
+  margin: 18px 24px 0;
+  padding: 14px 0 18px;
+  border-top: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
 }
 </style>

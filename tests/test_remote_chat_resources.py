@@ -1,12 +1,14 @@
 """Session-scoped remote resources over two production applications and databases."""
 
 import asyncio
+import io
 import time
 from pathlib import Path
 from uuid import uuid4
 
 import pytest
 import pytest_asyncio
+from PIL import Image
 
 from astrbot.core.platform.sources.webchat.webchat_queue_mgr import webchat_queue_mgr
 from astrbot.core.tools.interactive_choice_registry import registry
@@ -54,6 +56,48 @@ async def resources(connected_instances, tmp_path):
     ]["connections"][0]
     path = f"/api/v1/chat/remote-connections/{binding}/sessions/{session.session_id}"
     yield local, remote, observed, session, other, headers, row, path
+
+
+@pytest.mark.asyncio
+async def test_ico_preview_mime_and_original_download_are_preserved(resources):
+    local, remote, _, session, _, headers, binding, path = resources
+    client = local[0]
+    _, server, _, db, _, _ = remote
+    image = io.BytesIO()
+    Image.new("RGBA", (32, 32), (80, 140, 220, 255)).save(image, format="ICO")
+    ico = image.getvalue()
+    assert ico.startswith(b"\x00\x00\x01\x00")
+    for index, mime in enumerate(
+        ("image/x-icon", "image/vnd.microsoft.icon", "image/svg+xml")
+    ):
+        file = (
+            Path(server.asgi_app.state.services.chat.attachments_dir)
+            / f"preview-{index}.ico"
+        )
+        content = b"<svg onload='alert(1)'/>" if mime == "image/svg+xml" else ico
+        file.write_bytes(content)
+        attachment = await db.insert_attachment(str(file), "image", mime)
+        await db.insert_platform_message_history(
+            "webchat",
+            session.session_id,
+            {
+                "type": "user",
+                "message": [
+                    {"type": "image", "attachment_id": attachment.attachment_id}
+                ],
+            },
+        )
+        response = await client.get(
+            path + "/attachments/" + attachment.attachment_id,
+            headers=headers,
+            params={"revision": binding["revision"]},
+        )
+        assert response.status_code == 200, response.text
+        assert response.content == content
+        assert response.headers["content-type"] == (
+            "application/octet-stream" if mime == "image/svg+xml" else mime
+        )
+        assert response.headers["x-content-type-options"] == "nosniff"
 
 
 @pytest.mark.asyncio

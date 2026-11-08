@@ -1,5 +1,5 @@
 <template>
-  <div class="remote-resource">
+  <div :class="choice ? 'remote-resource' : 'remote-attachment-resource'">
     <template v-if="choice">
       <strong>{{ choice.title }}</strong>
       <p>{{ choice.prompt }}</p>
@@ -42,16 +42,15 @@
       </template>
     </template>
     <template v-else>
-      <img
-        v-if="imageUrl"
+      <MessageAttachment
+        :part="part"
         :src="imageUrl"
-        :alt="part.filename || tm('remoteConnections.attachment')"
-        class="remote-image"
+        :sent="sent"
+        :disabled="!enabled"
+        :busy="busy"
+        @download="download"
+        @preview="emit('preview', $event)"
       />
-      <div>{{ part.filename || tm("remoteConnections.attachment") }}</div>
-      <v-btn variant="text" :disabled="!enabled || busy" @click="download">{{
-        tm("remoteConnections.download")
-      }}</v-btn>
     </template>
     <p v-if="error" role="alert">
       {{ tm(`remoteConnections.status.${error}`) }}
@@ -59,6 +58,7 @@
   </div>
 </template>
 <script setup lang="ts">
+import MessageAttachment from "./MessageAttachment.vue";
 import { computed, onBeforeUnmount, ref, watch } from "vue";
 import {
   remoteConnectionsApi,
@@ -75,7 +75,9 @@ const props = defineProps<{
   scope: RemoteResourceScope;
   part: MessagePart;
   enabled: boolean;
+  sent?: boolean;
 }>();
+const emit = defineEmits<{ preview: [url: string] }>();
 const { tm } = useModuleI18n("features/chat");
 const imageUrl = ref(""),
   error = ref(""),
@@ -131,6 +133,8 @@ watch(
           "image/gif",
           "image/webp",
           "image/bmp",
+          "image/x-icon",
+          "image/vnd.microsoft.icon",
         ].includes(response.data.type)
       )
         imageUrl.value = URL.createObjectURL(response.data);
@@ -198,10 +202,8 @@ onBeforeUnmount(() => {
 });
 </script>
 <style scoped>
-.remote-image {
-  max-width: 100%;
-  max-height: 360px;
-  object-fit: contain;
+.remote-attachment-resource {
+  display: contents;
 }
 .remote-resource {
   margin: 8px 0;

@@ -952,7 +952,16 @@ async def download_connection_attachment(
     # Never relay remote headers or render active content from attachment origins.
     safe_mime = (
         mime
-        if mime in {"image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp"}
+        if mime
+        in {
+            "image/png",
+            "image/jpeg",
+            "image/gif",
+            "image/webp",
+            "image/bmp",
+            "image/x-icon",
+            "image/vnd.microsoft.icon",
+        }
         else "application/octet-stream"
     )
     return Response(

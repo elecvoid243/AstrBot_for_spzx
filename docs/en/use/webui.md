@@ -55,6 +55,10 @@ Closing the page or losing connectivity detaches the observer; accepted work con
 
 Revoking the key, removing exposure, disabling either instance switch or rebinding closes corresponding result streams (including idle streams) and rejects new access; accepted execution continues. The remote account can still view and stop it locally. Remote authorization failures preserve the local login. Drafts and receipt identities are scoped by local account, connection, binding revision and remote session.
 
+Remote images and files use the same attachment cards as local conversations, above the user text bubble. Click images, including ICO attachments, to enlarge them. Other files show their type icon, extension, filename and download action; downloads preserve the original bytes.
+
+![Remote image preview and file cards](./images/chat-remote-attachments.jpg)
+
 ### Create remote sessions and use Agent discovery
 
 Administrators can enable **Settings → Security → Remote session access → Allow creating sessions through connections**. This host permission defaults to off and is independent of the remote connections and Agent cross-session switches. Disabling creation preserves access and communication with exposed sessions. Navigation mapping: the existing remote connection list adds **New remote session** below each connection; local **New conversation** keeps its existing behavior.

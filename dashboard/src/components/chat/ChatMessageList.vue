@@ -163,7 +163,11 @@
             />
 
             <div
-              v-if="!remoteHistory && isUserMessage(msg) && userAttachmentParts(msg).length"
+              v-if="
+                (!remoteHistory || remoteScope) &&
+                isUserMessage(msg) &&
+                userAttachmentParts(msg).length
+              "
               class="sent-attachments"
               :class="{
                 'images-only': hasImageOnlyAttachments(msg),
@@ -176,71 +180,23 @@
                 v-for="(part, attachmentIndex) in userAttachmentParts(msg)"
                 :key="`attachment-${attachmentIndex}-${part.type}`"
               >
-                <button
-                  v-if="part.type === 'image'"
-                  class="sent-attachment-card sent-image-card"
-                  type="button"
-                  @click="openImage(partUrl(part))"
-                >
-                  <img :src="partUrl(part)" :alt="part.filename || 'image'" />
-                </button>
-
-                <div
+                <RemoteMessageResource
+                  v-if="remoteHistory && remoteScope"
+                  :scope="remoteScope"
+                  :part="part"
+                  :enabled="remoteReady === true"
+                  sent
+                  @preview="openImage($event)"
+                />
+                <MessageAttachment
                   v-else
-                  class="sent-attachment-card sent-file-card"
-                  :class="{
-                    'sent-media-card':
-                      part.type === 'record' || part.type === 'video',
-                  }"
-                >
-                  <div
-                    class="sent-attachment-icon"
-                    :style="{
-                      '--attachment-color': attachmentPresentation(part).color,
-                    }"
-                  >
-                    <v-icon
-                      class="sent-attachment-icon-symbol"
-                      :icon="attachmentPresentation(part).icon"
-                      size="24"
-                    />
-                    <span class="sent-attachment-ext">
-                      {{ attachmentPresentation(part).label }}
-                    </span>
-                  </div>
-                  <span class="sent-attachment-name">
-                    {{ attachmentName(part) }}
-                  </span>
-                  <v-btn
-                    icon="mdi-download"
-                    :aria-label="tm('workspaceFiles.download')"
-                    size="x-small"
-                    variant="text"
-                    :loading="
-                      downloadingFiles.has(
-                        part.attachment_id ||
-                          part.stored_filename ||
-                          part.filename ||
-                          '',
-                      )
-                    "
-                    @click="downloadPart(part)"
-                  />
-                  <audio
-                    v-if="part.type === 'record'"
-                    class="audio-part"
-                    controls
-                    preload="metadata"
-                    :src="partUrl(part)"
-                  />
-                  <video
-                    v-else-if="part.type === 'video'"
-                    class="video-part"
-                    controls
-                    preload="metadata"
-                    :src="partUrl(part)"
-                  />
-                </div>
+                  :part="part"
+                  :src="partUrl(part)"
+                  sent
+                  :busy="downloadingFiles.has(part.attachment_id || part.stored_filename || part.filename || '')"
+                  @preview="openImage($event)"
+                  @download="downloadPart(part)"
+                />
               </template>
             </div>
 
@@ -399,6 +355,7 @@
                         :scope="remoteScope"
                         :part="part"
                         :enabled="remoteReady === true"
+                        @preview="openImage($event)"
                       />
                       <button
                         v-else-if="part.type === 'reply'"
@@ -471,69 +428,14 @@
                         >{{ formatJson(part) }}</pre
                       >
 
-                      <button
-                        v-else-if="part.type === 'image'"
-                        class="image-part"
-                        type="button"
-                        @click="openImage(partUrl(part))"
-                      >
-                        <img
-                          :src="partUrl(part)"
-                          :alt="part.filename || 'image'"
-                        />
-                      </button>
-
-                      <audio
-                        v-else-if="part.type === 'record'"
-                        class="audio-part"
-                        controls
+                      <MessageAttachment
+                        v-else-if="isAttachmentPart(part)"
+                        :part="part"
                         :src="partUrl(part)"
+                        :busy="downloadingFiles.has(part.attachment_id || part.stored_filename || part.filename || '')"
+                        @preview="openImage($event)"
+                        @download="downloadPart(part)"
                       />
-
-                      <video
-                        v-else-if="part.type === 'video'"
-                        class="video-part"
-                        controls
-                        :src="partUrl(part)"
-                      />
-
-                      <div
-                        v-else-if="part.type === 'file'"
-                        class="file-part"
-                        :style="{
-                          '--attachment-color':
-                            attachmentPresentation(part).color,
-                        }"
-                      >
-                        <v-icon
-                          class="file-part-icon"
-                          :icon="attachmentPresentation(part).icon"
-                          size="24"
-                        />
-                        <div class="file-part-meta">
-                          <span class="file-part-name">
-                            {{ attachmentName(part) }}
-                          </span>
-                          <span class="file-part-kind">
-                            {{ attachmentPresentation(part).label }}
-                          </span>
-                        </div>
-                        <v-btn
-                          class="file-part-action"
-                          icon="mdi-download"
-                          size="x-small"
-                          variant="text"
-                          :loading="
-                            downloadingFiles.has(
-                              part.attachment_id ||
-                                part.stored_filename ||
-                                part.filename ||
-                                '',
-                            )
-                          "
-                          @click="downloadPart(part)"
-                        />
-                      </div>
 
                       <div
                         v-else-if="part.type === 'tool_call'"
@@ -803,7 +705,7 @@
     />
 
     <v-overlay
-      v-if="!remoteHistory"
+      v-if="!remoteHistory || Boolean(remoteScope)"
       v-model="imagePreview.visible"
       class="image-preview-overlay"
       scrim="rgba(0, 0, 0, 0.86)"
@@ -828,6 +730,7 @@ import { fileApi } from "@/api/v1";
 import RegenerateMenu, {
   type RegenerateModelSelection,
 } from "@/components/chat/RegenerateMenu.vue";
+import MessageAttachment from "./MessageAttachment.vue";
 import GenerationIndicator from "@/components/chat/GenerationIndicator.vue";
 import ThinkingIndicator from "@/components/chat/ThinkingIndicator.vue";
 import ThreadedMarkdownMessagePart from "@/components/chat/ThreadedMarkdownMessagePart.vue";
@@ -859,10 +762,6 @@ import {
   CHAT_MARKDOWN_CUSTOM_TAGS,
   registerChatMarkdownComponents,
 } from "@/components/chat/chatMarkdownComponents";
-import {
-  attachmentName,
-  attachmentPresentation,
-} from "@/components/chat/attachmentPresentation";
 import {
   displayParts as displayMessageParts,
   messageBlocks as buildMessageBlocks,
@@ -1004,6 +903,7 @@ watch(() => [props.remoteReady, props.remoteScope], () => {
   if (props.remoteHistory) {
     refsSidebarOpen.value = false;
     selectedRefs.value = null;
+    closeImage();
   }
 }, { deep: true });
 
@@ -1399,7 +1299,9 @@ function isAttachmentPart(part: MessagePart) {
 
 function userAttachmentParts(message: ChatRecord) {
   if (!isUserMessage(message)) return [];
-  return messageParts(message).filter(isAttachmentPart);
+  return messageParts(message).filter(
+    (part) => isAttachmentPart(part) && (!props.remoteHistory || Boolean(part.attachment_id)),
+  );
 }
 
 function hasImageOnlyAttachments(message: ChatRecord) {
@@ -1410,7 +1312,11 @@ function hasImageOnlyAttachments(message: ChatRecord) {
 }
 
 function bubbleParts(message: ChatRecord) {
-  if (props.remoteHistory) return messageParts(message);
+  if (props.remoteHistory) {
+    return isUserMessage(message) && props.remoteScope
+      ? messageParts(message).filter((part) => !isAttachmentPart(part) || !part.attachment_id)
+      : messageParts(message);
+  }
   if (!isUserMessage(message))
     return displayMessageParts(messageContent(message));
   return messageParts(message).filter((part) => !isAttachmentPart(part));
@@ -2470,111 +2376,8 @@ function formatDuration(seconds: number) {
   justify-content: flex-end;
 }
 
-.sent-attachment-card {
-  --attachment-color: #607d8b;
-  position: relative;
-  display: inline-flex;
-  flex: 0 0 auto;
-  align-items: center;
-  justify-content: flex-start;
-  gap: 8px;
-  height: 60px;
-  overflow: hidden;
-  border: 0;
-  border-radius: 8px;
-  background: rgba(var(--v-theme-on-surface), 0.055);
-  color: rgb(var(--v-theme-on-surface));
-}
-
-.sent-image-card {
-  width: 64px;
-  padding: 0;
-  border: 0;
-  cursor: zoom-in;
-}
-
-.sent-image-card img {
-  width: 100%;
-  height: 100%;
-  border-radius: 8px;
-  object-fit: cover;
-}
-
 .sent-attachments.images-only {
   max-width: min(420px, 100%);
-}
-
-.sent-attachments.images-only .sent-image-card {
-  width: 180px;
-  height: 180px;
-}
-
-.sent-attachments.images-only .sent-image-card img {
-  object-fit: cover;
-  background: rgba(var(--v-theme-on-surface), 0.04);
-}
-
-.sent-file-card {
-  width: 236px;
-  padding: 8px 10px;
-  background: rgba(var(--v-theme-on-surface), 0.055);
-  background: linear-gradient(
-    90deg,
-    color-mix(in srgb, var(--attachment-color) 14%, transparent),
-    rgba(var(--v-theme-on-surface), 0.055) 62%
-  );
-}
-
-.sent-file-card.sent-media-card {
-  display: grid;
-  align-self: flex-start;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  width: 320px;
-  max-width: 100%;
-  height: auto;
-}
-
-.sent-media-card .audio-part,
-.sent-media-card .video-part {
-  grid-column: 1 / -1;
-  width: 100%;
-  margin-top: 0;
-}
-
-.sent-attachment-icon {
-  display: inline-flex;
-  flex-shrink: 0;
-  min-width: 36px;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 1px;
-  color: var(--attachment-color);
-}
-
-.sent-attachment-icon-symbol {
-  color: var(--attachment-color);
-}
-
-.sent-attachment-ext {
-  max-width: 58px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 10px;
-  font-weight: 700;
-  line-height: 12px;
-  color: var(--attachment-color);
-}
-
-.sent-attachment-name {
-  min-width: 0;
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 13px;
-  line-height: 18px;
 }
 
 .message-bubble {
@@ -2702,95 +2505,6 @@ function formatDuration(seconds: number) {
   color: inherit;
   cursor: pointer;
   text-align: left;
-}
-
-.image-part {
-  display: block;
-  width: fit-content;
-  max-width: 100%;
-  border: 0;
-  padding: 0;
-  margin-top: 8px;
-  background: transparent;
-  cursor: zoom-in;
-  text-align: left;
-}
-
-.image-part img {
-  max-width: min(420px, 100%);
-  max-height: 360px;
-  border-radius: 8px;
-  object-fit: contain;
-}
-
-.audio-part,
-.video-part {
-  display: block;
-  max-width: 100%;
-  margin-top: 8px;
-}
-
-.video-part {
-  max-height: 360px;
-  border-radius: 8px;
-}
-
-.file-part {
-  --attachment-color: #607d8b;
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 10px;
-  width: min(420px, 100%);
-  margin-top: 8px;
-  padding: 9px 8px 9px 10px;
-  border: 0;
-  border-radius: 8px;
-  background: rgba(var(--v-theme-on-surface), 0.055);
-  background: linear-gradient(
-    90deg,
-    color-mix(in srgb, var(--attachment-color) 13%, transparent),
-    rgba(var(--v-theme-on-surface), 0.055) 58%
-  );
-}
-
-.file-part-icon {
-  color: var(--attachment-color);
-}
-
-.file-part-meta {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-}
-
-.file-part-name {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 14px;
-  font-weight: 500;
-  line-height: 20px;
-}
-
-.file-part-kind {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--attachment-color);
-  font-size: 11px;
-  font-weight: 700;
-  line-height: 14px;
-}
-
-.file-part-action {
-  color: rgb(var(--v-theme-on-surface));
-  opacity: 0.72;
-}
-
-.file-part:hover .file-part-action {
-  opacity: 1;
 }
 
 .tool-call-block {
@@ -3214,21 +2928,6 @@ function formatDuration(seconds: number) {
     max-width: 96%;
   }
 
-  .sent-file-card {
-    width: min(220px, calc(100vw - 28px));
-    height: 58px;
-  }
-
-  .sent-image-card {
-    width: 58px;
-    height: 58px;
-  }
-
-  .sent-attachments.images-only .sent-image-card {
-    width: min(180px, calc(100vw - 52px));
-    height: min(180px, calc(100vw - 52px));
-  }
-
   .message-bubble {
     padding: 9px 12px;
   }
@@ -3237,10 +2936,7 @@ function formatDuration(seconds: number) {
     padding: 10px 14px;
   }
 
-  .image-part img {
-    max-width: min(100%, calc(100vw - 36px));
-    max-height: 300px;
-  }
+
 
   .video-part {
     max-height: 300px;

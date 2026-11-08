@@ -116,6 +116,27 @@
           <span>{{ tm("actions.newChat") }}</span>
         </v-btn>
 
+        <!-- 2026-11-08: admin shortcut to scheduled tasks. A new tab keeps the
+             running conversation (and its stream) alive while configuring jobs. -->
+        <button
+          v-if="!isOrdinaryUser && isSidebarCollapsed"
+          class="new-chat-btn sidebar-cron-btn icon-only chat-sidebar-rail-btn"
+          type="button"
+          :title="t('core.navigation.cron')"
+          @click="openScheduledTasks"
+        >
+          <Clock :size="18" class="sidebar-action-icon" />
+        </button>
+        <v-btn
+          v-else-if="!isOrdinaryUser"
+          class="new-chat-btn sidebar-cron-btn"
+          variant="text"
+          @click="openScheduledTasks"
+        >
+          <Clock :size="18" class="sidebar-action-icon mr-2" />
+          <span>{{ t("core.navigation.cron") }}</span>
+        </v-btn>
+
         <!-- 2026-08-13 (elecvoid243): batch-manage and message-search moved
              to the top of the sidebar (above the project section). -->
         <div v-if="!isSidebarCollapsed" class="sidebar-top-actions">
@@ -1230,6 +1251,7 @@ import {
   Cable,
   Check,
   ChevronRight,
+  Clock,
   CornerUpLeft,
   GitBranch,
   Languages,
@@ -3096,6 +3118,15 @@ async function openProviderWorkspace() {
     await router.push(targetPath);
   }
   closeMobileSidebar();
+}
+
+/** Open the scheduled-task page in a new tab so the live chat stays mounted. */
+function openScheduledTasks(): void {
+  window.open(
+    router.resolve({ name: "CronJobs" }).href,
+    "_blank",
+    "noopener,noreferrer",
+  );
 }
 
 function sessionTitle(session: Session) {

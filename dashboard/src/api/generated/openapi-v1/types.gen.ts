@@ -1798,6 +1798,21 @@ export type AnswerConnectionHumanChoiceApiV1ChatRemoteConnectionsConnectionIdSes
 
 export type AnswerConnectionHumanChoiceApiV1ChatRemoteConnectionsConnectionIdSessionsSessionIdHumanChoicesRequestIdPostError = (unknown | HTTPValidationError);
 
+export type CancelConnectionHumanChoiceApiV1ChatRemoteConnectionsConnectionIdSessionsSessionIdHumanChoicesRequestIdDeleteData = {
+    path: {
+        connection_id: string;
+        request_id: string;
+        session_id: string;
+    };
+    query: {
+        revision: string;
+    };
+};
+
+export type CancelConnectionHumanChoiceApiV1ChatRemoteConnectionsConnectionIdSessionsSessionIdHumanChoicesRequestIdDeleteResponse = (unknown);
+
+export type CancelConnectionHumanChoiceApiV1ChatRemoteConnectionsConnectionIdSessionsSessionIdHumanChoicesRequestIdDeleteError = (HTTPValidationError);
+
 export type DownloadConnectionAttachmentApiV1ChatRemoteConnectionsConnectionIdSessionsSessionIdAttachmentsAttachmentIdGetData = {
     path: {
         attachment_id: string;
@@ -1841,6 +1856,17 @@ export type AnswerRemoteHumanChoiceApiV1RemoteChatSessionsSessionIdHumanChoicesR
 export type AnswerRemoteHumanChoiceApiV1RemoteChatSessionsSessionIdHumanChoicesRequestIdPostResponse = (unknown);
 
 export type AnswerRemoteHumanChoiceApiV1RemoteChatSessionsSessionIdHumanChoicesRequestIdPostError = (unknown | HTTPValidationError);
+
+export type CancelRemoteHumanChoiceApiV1RemoteChatSessionsSessionIdHumanChoicesRequestIdDeleteData = {
+    path: {
+        request_id: string;
+        session_id: string;
+    };
+};
+
+export type CancelRemoteHumanChoiceApiV1RemoteChatSessionsSessionIdHumanChoicesRequestIdDeleteResponse = (unknown);
+
+export type CancelRemoteHumanChoiceApiV1RemoteChatSessionsSessionIdHumanChoicesRequestIdDeleteError = (HTTPValidationError);
 
 export type DownloadRemoteAttachmentApiV1RemoteChatSessionsSessionIdAttachmentsAttachmentIdGetData = {
     path: {

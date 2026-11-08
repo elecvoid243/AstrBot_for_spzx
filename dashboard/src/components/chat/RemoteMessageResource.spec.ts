@@ -6,7 +6,11 @@ import { resetAccountSession } from "@/utils/accountSession";
 import { createPinia } from "pinia";
 import ChatMessageList from "./ChatMessageList.vue";
 vi.mock("@/api/remoteConnections", () => ({
-  remoteConnectionsApi: { attachment: vi.fn(), answer: vi.fn() },
+  remoteConnectionsApi: {
+    attachment: vi.fn(),
+    answer: vi.fn(),
+    cancelChoice: vi.fn(),
+  },
 }));
 const scope = { connectionId: "a", revision: "first", sessionId: "same" };
 const make = (part: any) =>
@@ -92,7 +96,7 @@ it.each(["image/x-icon", "image/vnd.microsoft.icon"])(
     wrapper.unmount();
   },
 );
-it("keeps active image content download-only", async () => {
+it("keeps active image content inert without download controls", async () => {
   vi.mocked(remoteConnectionsApi.attachment).mockResolvedValue({
     data: new Blob(["<svg onload='alert(1)'/>"], { type: "image/svg+xml" }),
   } as any);
@@ -100,7 +104,7 @@ it("keeps active image content download-only", async () => {
   await flushPromises();
   expect(wrapper.find("img").exists()).toBe(false);
   expect(URL.createObjectURL).not.toHaveBeenCalled();
-  expect(wrapper.find("button").exists()).toBe(true);
+  expect(wrapper.find("button").exists()).toBe(false);
   wrapper.unmount();
 });
 it("uses the local attachment cards above the remote user text bubble", async () => {
@@ -149,6 +153,7 @@ it("uses the local attachment cards above the remote user text bubble", async ()
   expect(wrapper.find(".sent-file-card .sent-attachment-ext").text()).toBe(
     "TXT",
   );
+  expect(wrapper.find(".sent-file-card button").exists()).toBe(false);
   expect(wrapper.find(".message-bubble.user").text()).toBe(
     "What is in these files?",
   );
@@ -184,15 +189,17 @@ it("submits a human answer through the binding and waits for success before disp
       }) as any,
   );
   const wrapper = make(choice);
-  await wrapper.find("button").trigger("click");
+  await wrapper.find(".choice-option-button").trigger("click");
   expect(remoteConnectionsApi.answer).toHaveBeenCalledWith(scope, "question", {
     choice_id: "A",
     free_text: "",
   });
-  expect(wrapper.findAll("button")).toHaveLength(3);
+  expect(wrapper.findAll(".choice-option-button")).toHaveLength(2);
   finish();
   await flushPromises();
-  expect(wrapper.findAll("button")).toHaveLength(0);
+  expect(wrapper.find(".interactive-choice-box.is-submitted").exists()).toBe(
+    true,
+  );
   expect(remoteConnectionsApi.attachment).not.toHaveBeenCalled();
   wrapper.unmount();
 });
@@ -201,14 +208,70 @@ it("keeps rejected answers reviewable and scopes persisted terminal answers", as
     response: { data: { data: { code: "remote_rejected" } } },
   });
   const wrapper = make(choice);
-  await wrapper.find("button").trigger("click");
+  await wrapper.find(".choice-option-button").trigger("click");
   await flushPromises();
   expect(wrapper.find('[role="alert"]').exists()).toBe(true);
-  expect(wrapper.findAll("button")).toHaveLength(3);
+  expect(wrapper.findAll(".choice-option-button")).toHaveLength(2);
   await wrapper.setProps({
     part: { ...choice, answer: { choice_id: "B", free_text: "Later" } },
   });
-  expect(wrapper.text()).toContain("Later");
-  expect(wrapper.findAll("button")).toHaveLength(0);
+  expect(wrapper.text()).toContain("Wait");
+  expect(wrapper.find(".interactive-choice-box.is-submitted").exists()).toBe(
+    true,
+  );
   wrapper.unmount();
 });
+
+it("cancels a remote choice only after the scoped server accepts it", async () => {
+  vi.mocked(remoteConnectionsApi.cancelChoice).mockResolvedValue({} as any);
+  const wrapper = make(choice);
+  await wrapper.find(".choice-cancel-button").trigger("click");
+  await flushPromises();
+  expect(remoteConnectionsApi.cancelChoice).toHaveBeenCalledWith(
+    scope,
+    "question",
+  );
+  expect(wrapper.find(".interactive-choice-box.is-cancelled").exists()).toBe(
+    true,
+  );
+  wrapper.unmount();
+});
+
+it("preserves a rejected cancellation and clears its error after a successful retry", async () => {
+  vi.mocked(remoteConnectionsApi.cancelChoice)
+    .mockRejectedValueOnce({
+      response: { data: { data: { code: "remote_rejected" } } },
+    })
+    .mockResolvedValueOnce({} as any);
+  const wrapper = make(choice);
+  await wrapper.find(".choice-cancel-button").trigger("click");
+  await flushPromises();
+  expect(wrapper.find(".interactive-choice-box.is-pending").exists()).toBe(
+    true,
+  );
+  expect(wrapper.find('[role="alert"]').exists()).toBe(true);
+  await wrapper.find(".choice-cancel-button").trigger("click");
+  await flushPromises();
+  expect(wrapper.find(".interactive-choice-box.is-cancelled").exists()).toBe(
+    true,
+  );
+  expect(wrapper.find('[role="alert"]').exists()).toBe(false);
+  wrapper.unmount();
+});
+
+it.each([
+  ["record", "audio/wav", "audio"],
+  ["video", "video/mp4", "video"],
+])(
+  "renders remote %s with native playback controls",
+  async (type, mime, tag) => {
+    vi.mocked(remoteConnectionsApi.attachment).mockResolvedValue({
+      data: new Blob(["media"], { type: mime }),
+    } as any);
+    const wrapper = make({ type, attachment_id: "remote-media" });
+    await flushPromises();
+    expect(wrapper.find(tag).attributes("src")).toBe("blob:safe");
+    expect(wrapper.find(tag).attributes()).toHaveProperty("controls");
+    wrapper.unmount();
+  },
+);

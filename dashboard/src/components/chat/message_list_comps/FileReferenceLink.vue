@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, inject } from "vue";
+import { computed, inject, unref, type Ref } from "vue";
 import { FileText } from "@lucide/vue";
 import { LinkNode } from "markstream-vue";
 import {
@@ -20,6 +20,8 @@ const props = defineProps<{
   indexKey: number | string;
   customId?: string;
 }>();
+const injectedReadOnly = inject<Ref<boolean> | boolean>("chatReadOnly", false);
+const readOnly = computed(() => Boolean(unref(injectedReadOnly)));
 const open = inject(OPEN_FILE_REFERENCE, undefined);
 // Link nodes exclude code blocks and inline code. Raw syntax excludes autolinks
 // and the parser's repaired, unfinished streaming links.
@@ -69,7 +71,7 @@ const reference = computed(() => {
     class="file-reference-link"
     :title="reference.location"
     :aria-label="`${reference.name} — ${reference.location}`"
-    @click.stop.prevent="open?.(target)"
+    @click.stop.prevent="!readOnly && open?.(target)"
   >
     <FileText
       class="file-reference-icon"
@@ -90,7 +92,11 @@ const reference = computed(() => {
       >{{ reference.lines }}</span
     >
   </a>
-  <LinkNode v-else v-bind="props" />
+  <LinkNode
+    v-else-if="!readOnly || /^(https?:|mailto:)/i.test(node.href)"
+    v-bind="props"
+  />
+  <span v-else>{{ node.text }}</span>
 </template>
 
 <style scoped>

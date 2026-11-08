@@ -3,6 +3,7 @@
 import asyncio
 import io
 import time
+import wave
 from pathlib import Path
 from uuid import uuid4
 
@@ -98,6 +99,95 @@ async def test_ico_preview_mime_and_original_download_are_preserved(resources):
             "application/octet-stream" if mime == "image/svg+xml" else mime
         )
         assert response.headers["x-content-type-options"] == "nosniff"
+
+
+@pytest.mark.asyncio
+async def test_remote_audio_preserves_playable_mime_and_bytes(resources):
+    local, remote, _, session, _, headers, binding, path = resources
+    _, server, _, db, _, _ = remote
+    stream = io.BytesIO()
+    with wave.open(stream, "wb") as audio:
+        audio.setnchannels(1)
+        audio.setsampwidth(2)
+        audio.setframerate(8000)
+        audio.writeframes(b"\x00\x00" * 8000)
+    file = Path(server.asgi_app.state.services.chat.attachments_dir) / "sample.wav"
+    file.write_bytes(stream.getvalue())
+    attachment = await db.insert_attachment(str(file), "record", "audio/wav")
+    await db.insert_platform_message_history(
+        "webchat",
+        session.session_id,
+        {
+            "type": "bot",
+            "message": [{"type": "record", "attachment_id": attachment.attachment_id}],
+        },
+    )
+    response = await local[0].get(
+        path + "/attachments/" + attachment.attachment_id,
+        headers=headers,
+        params={"revision": binding["revision"]},
+    )
+    assert response.status_code == 200, response.text
+    assert response.content == stream.getvalue()
+    assert response.headers["content-type"] == "audio/wav"
+
+
+@pytest.mark.asyncio
+async def test_remote_human_choice_cancellation_checks_its_parent_and_grant(resources):
+    local, remote, _, session, other, headers, binding, path = resources
+    client = local[0]
+    target, _, _, _, admin, _ = remote
+    request_id = str(uuid4())
+    future = asyncio.get_running_loop().create_future()
+    registry.add(
+        request_id,
+        build_webchat_unified_msg_origin(session),
+        future,
+        {"prompt": "Review remotely"},
+        time.time(),
+        time.time() + 60,
+        sse_message_id="remote-choice-run",
+    )
+    params = {"revision": binding["revision"]}
+    try:
+        assert (
+            await client.delete(
+                path.replace(session.session_id, other.session_id)
+                + "/human-choices/"
+                + request_id,
+                headers=headers,
+                params=params,
+            )
+        ).status_code == 404
+        assert not future.done()
+        await target.put(
+            "/api/v1/chat/remote-access/exposure",
+            headers={"Authorization": "Bearer " + admin["token"]},
+            json={"mode": "selected", "session_ids": []},
+        )
+        assert (
+            await client.delete(
+                path + "/human-choices/" + request_id, headers=headers, params=params
+            )
+        ).status_code == 404
+        assert not future.done()
+        await target.put(
+            "/api/v1/chat/remote-access/exposure",
+            headers={"Authorization": "Bearer " + admin["token"]},
+            json={"mode": "selected", "session_ids": [session.session_id]},
+        )
+        response = await client.delete(
+            path + "/human-choices/" + request_id, headers=headers, params=params
+        )
+        assert response.status_code == 200, response.text
+        assert future.cancelled()
+        event = await webchat_queue_mgr.get_or_create_back_queue(
+            "remote-choice-run", session.session_id
+        ).get()
+        assert event["type"] == "interactive_choice_resolved"
+        assert event["data"]["reason"] == "cancelled"
+    finally:
+        registry.remove(request_id)
 
 
 @pytest.mark.asyncio

@@ -25,6 +25,7 @@ const props = defineProps({
 });
 
 const slots = useSlots();
+const readOnly = inject("chatReadOnly", false);
 const injectedIsDark = inject("isDark", false);
 const webSearchResults = inject("webSearchResults", () => ({}));
 
@@ -44,7 +45,10 @@ const resultData = computed(() => {
   return results?.[refIndex.value] || null;
 });
 
-const url = computed(() => resultData.value?.url || "");
+const url = computed(() => {
+  const value = resultData.value?.url || "";
+  return unref(readOnly) && !/^https?:/i.test(value) ? undefined : value;
+});
 
 const domain = computed(() => {
   if (!url.value) return "";

@@ -61,7 +61,7 @@
         </div>
 
         <div class="message-stack">
-          <div v-if="!remoteHistory && isBranchDivider(msg)" class="branch-divider">
+          <div v-if="isBranchDivider(msg)" class="branch-divider">
             <button
               type="button"
               class="branch-divider-toggle"
@@ -172,7 +172,7 @@
               :class="{
                 'images-only': hasImageOnlyAttachments(msg),
                 'has-media': userAttachmentParts(msg).some(
-                  (part) => part.type === 'record' || part.type === 'video',
+                  (part) => ['record', 'audio', 'video'].includes(part.type),
                 ),
               }"
             >
@@ -355,6 +355,8 @@
                         :scope="remoteScope"
                         :part="part"
                         :enabled="remoteReady === true"
+                        :is-dark="isDark"
+                        :is-ignored="isInteractiveChoiceIgnored(msg)"
                         @preview="openImage($event)"
                       />
                       <button
@@ -369,19 +371,8 @@
                         }}</span>
                       </button>
 
-                      <div
-                        v-else-if="
-                          remoteHistory &&
-                          part.type === 'plain' &&
-                          isUserMessage(msg)
-                        "
-                        class="plain-content"
-                      >
-                        {{ part.text || "" }}
-                      </div>
-
                       <UserPlainMessagePart
-                        v-else-if="!remoteHistory && part.type === 'plain' && isUserMessage(msg)"
+                        v-else-if="part.type === 'plain' && isUserMessage(msg)"
                         :text="part.text || ''"
                       />
 
@@ -422,14 +413,8 @@
                         :is-dark="isDark"
                         :session-id="remoteScope.sessionId"
                       />
-                      <pre
-                        v-else-if="remoteHistory && part.type !== 'tool_call'"
-                        class="plain-content"
-                        >{{ formatJson(part) }}</pre
-                      >
-
                       <MessageAttachment
-                        v-else-if="isAttachmentPart(part)"
+                        v-else-if="!remoteHistory && isAttachmentPart(part)"
                         :part="part"
                         :src="partUrl(part)"
                         :busy="downloadingFiles.has(part.attachment_id || part.stored_filename || part.filename || '')"
@@ -446,7 +431,7 @@
                           :key="tool.id || tool.name"
                         >
                           <ToolCallItem
-                            v-if="!remoteHistory && isIPythonToolCall(tool)"
+                            v-if="isIPythonToolCall(tool)"
                             :is-dark="isDark"
                           >
                             <template #label>
@@ -476,7 +461,7 @@
                       </div>
 
                       <InteractiveChoiceBox
-                        v-else-if="part.type === 'interactive_choice'"
+                        v-else-if="validateInteractiveChoice(part)"
                         :key="(part as InteractiveChoicePart).request_id"
                         :part="part as unknown as InteractiveChoicePart"
                         :umo="props.currentUmo"
@@ -487,7 +472,7 @@
                       />
 
                       <SubAgentRunBlock
-                        v-else-if="part.type === 'subagent_run'"
+                        v-else-if="!remoteHistory && part.type === 'subagent_run'"
                         :part="part"
                         :is-dark="isDark"
                         :session-id="sessionId"
@@ -722,7 +707,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, reactive, ref, watch } from "vue";
+import { computed, nextTick, provide, onMounted, reactive, ref, watch } from "vue";
 import { RouterLink } from "vue-router";
 import { Check, ChevronDown } from "@lucide/vue";
 import axios from "axios";
@@ -896,6 +881,9 @@ registerChatMarkdownComponents();
 const { t } = useI18n();
 const { tm } = useModuleI18n("features/chat");
 const customMarkdownTags = CHAT_MARKDOWN_CUSTOM_TAGS;
+provide("remoteChatScope", computed(() => props.remoteScope));
+provide("remoteChatReady", computed(() => props.remoteReady === true));
+provide("openMessageImage", openImage);
 const downloadingFiles = ref(new Set<string>());
 const imagePreview = reactive({ visible: false, url: "" });
 const refsSidebarOpen = ref(false);
@@ -1214,7 +1202,7 @@ watch(
  * 数组顺序的推导,作为消息流变化时的即时判定。
  */
 function isInteractiveChoiceIgnored(message: ChatRecord): boolean {
-  if (!props.currentUmo) return false;
+  if (!props.currentUmo && !props.remoteHistory) return false;
   // 1) Persisted wins: if any interactive_choice request_id on this
   //    bot message was already marked "passed over by a user message"
   //    by a previous render pass, treat the whole box as ignored —
@@ -1225,6 +1213,7 @@ function isInteractiveChoiceIgnored(message: ChatRecord): boolean {
     if (
       isInteractiveChoicePayload(part) &&
       typeof part.request_id === "string" &&
+      !props.remoteHistory && props.currentUmo &&
       interactiveChoiceStore.isIgnored(props.currentUmo, part.request_id)
     ) {
       return true;
@@ -1294,7 +1283,7 @@ function messageParts(message: ChatRecord): MessagePart[] {
 }
 
 function isAttachmentPart(part: MessagePart) {
-  return ["image", "record", "video", "file"].includes(part.type);
+  return ["image", "record", "audio", "video", "file"].includes(part.type);
 }
 
 function userAttachmentParts(message: ChatRecord) {
@@ -1986,7 +1975,7 @@ function normalizeRefItems(items: unknown[]) {
       title: item?.title || item?.url || tm("refs.title"),
       url: item?.url,
       snippet: item?.snippet,
-      favicon: props.remoteHistory ? undefined : item?.favicon,
+      favicon: item?.favicon,
     }))
     .filter((item) => item.url);
 }

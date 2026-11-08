@@ -39,7 +39,7 @@
     </template>
     <template v-else>
       <MarkdownRender
-        :custom-id="customId"
+        :custom-id="remoteScope ? 'remote-message' : customId"
         :content="renderableContent"
         :is-dark="isDark"
         :final="true"
@@ -66,13 +66,15 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, inject, ref, type Ref } from "vue";
 import { MarkdownRender } from "markstream-vue";
 import "markstream-vue/index.css";
 import { MARKDOWN_RENDER_MAX_LIVE_NODES } from "@/components/chat/markdownRenderConfig";
 import { EXTRA_CONTENT_FOLD_THRESHOLD } from "@/composables/parseInteractiveChoice";
 import { useModuleI18n } from "@/i18n/composables";
 
+const scope = inject<Ref<unknown> | null>("remoteChatScope", null);
+const remoteScope = computed(() => Boolean(scope?.value));
 const props = defineProps<{
   /**
    * LLM 在 spec.extra_content 写的 Markdown 文本。

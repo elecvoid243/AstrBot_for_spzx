@@ -896,6 +896,79 @@ async def answer_remote_human_choice(
     return ok({"request_id": request_id, "resolved_at": time.time()})
 
 
+@router.delete("/remote-chat/sessions/{session_id}/human-choices/{request_id}")
+async def cancel_remote_human_choice(
+    session_id: str,
+    request_id: str,
+    request: Request,
+    account: DashboardAccount = Depends(require_remote_account),
+):
+    """Cancel a human choice belonging to the exposed conversation.
+
+    Args:
+        session_id: Exposed ordinary session.
+        request_id: Pending choice whose origin must match the session.
+        request: Dedicated authenticated remote request.
+        account: Credential owner.
+
+    Returns:
+        Cancellation metadata after the waiting tool has been released.
+    """
+    service = request.app.state.services.remote_chat
+    await service.require_session(account, session_id)
+    pending = registry._pending.get(request_id)
+    if pending is None or pending.future.done():
+        raise ApiError("Interactive choice not found or expired", status_code=404)
+    session = await service.db.get_platform_session_by_id(session_id)
+    if pending.umo != build_webchat_unified_msg_origin(session):
+        raise ApiError("Interactive choice is unavailable", status_code=404)
+    raw_key = request.headers["Authorization"].partition(" ")[2].strip()
+    await service.check_grant(account, raw_key, session_id)
+    registry.remove(request_id)
+    if pending.sse_message_id:
+        webchat_queue_mgr.get_or_create_back_queue(
+            pending.sse_message_id, session_id
+        ).put_nowait(
+            {
+                "type": "interactive_choice_resolved",
+                "data": {
+                    "request_id": request_id,
+                    "reason": "cancelled",
+                    "umo": pending.umo,
+                },
+                "message_id": pending.sse_message_id,
+            }
+        )
+    return ok({"request_id": request_id, "cancelled_at": time.time()})
+
+
+@router.delete(
+    "/chat/remote-connections/{connection_id}/sessions/{session_id}/human-choices/{request_id}"
+)
+async def cancel_connection_human_choice(
+    connection_id: str,
+    session_id: str,
+    request_id: str,
+    request: Request,
+    revision: str = Query(),
+    _owner: str = Depends(require_dashboard_user),
+):
+    for value in (session_id, request_id):
+        if value in {".", ".."} or "/" in value or "\\" in value:
+            raise ApiError("Interactive choice is unavailable", status_code=404)
+    data = await request.app.state.services.remote_chat.read_connection(
+        request.state.dashboard_account,
+        connection_id,
+        "sessions/"
+        + quote(session_id, safe="")
+        + "/human-choices/"
+        + quote(request_id, safe=""),
+        revision=revision,
+        method="DELETE",
+    )
+    return ok(data)
+
+
 @router.post(
     "/chat/remote-connections/{connection_id}/sessions/{session_id}/attachments"
 )
@@ -962,6 +1035,7 @@ async def download_connection_attachment(
             "image/x-icon",
             "image/vnd.microsoft.icon",
         }
+        or mime.startswith(("audio/", "video/"))
         else "application/octet-stream"
     )
     return Response(

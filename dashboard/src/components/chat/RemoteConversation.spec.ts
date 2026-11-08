@@ -143,7 +143,7 @@ it("renders remote Markdown without local links, images or custom capabilities",
     wrapper.findAll("a, img, file-reference").map((el) => el.html()),
   ).toEqual([]);
 });
-it("keeps remote user file references as text instead of local file controls", () => {
+it("renders remote file-reference cards without local file controls", () => {
   const wrapper = mount(ChatMessageList, {
     props: {
       remoteHistory: true,
@@ -168,7 +168,7 @@ it("keeps remote user file references as text instead of local file controls", (
     },
   });
   expect(wrapper.findComponent({ name: "UserPlainMessagePart" }).exists()).toBe(
-    false,
+    true,
   );
   expect(wrapper.findAll("a, button, file-reference")).toHaveLength(0);
   expect(wrapper.text()).toContain("C:/private/secret.txt");

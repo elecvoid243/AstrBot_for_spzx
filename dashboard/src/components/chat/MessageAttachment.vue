@@ -8,15 +8,17 @@
     <img :src="src" :alt="attachmentName(part)" />
   </button>
   <audio
-    v-else-if="!sent && part.type === 'record' && src"
+    v-else-if="!sent && ['record', 'audio'].includes(part.type) && src"
     class="audio-part"
     controls
+    :controlslist="downloadable === false ? 'nodownload' : undefined"
     :src="src"
   />
   <video
     v-else-if="!sent && part.type === 'video' && src"
     class="video-part"
     controls
+    :controlslist="downloadable === false ? 'nodownload' : undefined"
     :src="src"
   />
   <div
@@ -28,7 +30,8 @@
             'sent-file-card',
             {
               'sent-media-card':
-                part.type === 'record' || part.type === 'video',
+                ['record', 'audio'].includes(part.type) ||
+                part.type === 'video',
             },
           ]
         : 'file-part'
@@ -52,6 +55,7 @@
       <span class="file-part-kind">{{ presentation.label }}</span>
     </div>
     <v-btn
+      v-if="downloadable !== false"
       :class="{ 'file-part-action': !sent }"
       icon="mdi-download"
       :aria-label="tm('workspaceFiles.download')"
@@ -62,9 +66,10 @@
       @click="emit('download')"
     />
     <audio
-      v-if="sent && part.type === 'record' && src"
+      v-if="sent && ['record', 'audio'].includes(part.type) && src"
       class="audio-part"
       controls
+      :controlslist="downloadable === false ? 'nodownload' : undefined"
       preload="metadata"
       :src="src"
     />
@@ -72,6 +77,7 @@
       v-else-if="sent && part.type === 'video' && src"
       class="video-part"
       controls
+      :controlslist="downloadable === false ? 'nodownload' : undefined"
       preload="metadata"
       :src="src"
     />
@@ -91,6 +97,7 @@ const props = defineProps<{
   sent?: boolean;
   busy?: boolean;
   disabled?: boolean;
+  downloadable?: boolean;
 }>();
 const emit = defineEmits<{ preview: [url: string]; download: [] }>();
 const { tm } = useModuleI18n("features/chat");

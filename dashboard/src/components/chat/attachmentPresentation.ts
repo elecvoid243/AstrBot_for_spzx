@@ -105,7 +105,7 @@ export function attachmentPresentation(
   if (part.type === "image") {
     return { color: "#c1467a", icon: "mdi-file-image", label: "IMAGE" };
   }
-  if (part.type === "record") {
+  if (part.type === "record" || part.type === "audio") {
     return { color: "#00897b", icon: "mdi-file-music-outline", label: "AUDIO" };
   }
   if (part.type === "video") {

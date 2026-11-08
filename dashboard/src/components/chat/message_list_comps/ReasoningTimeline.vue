@@ -84,7 +84,7 @@
         </div>
 
         <div v-else-if="entry.tool" class="reasoning-tool-call-block">
-          <ToolCallItem v-if="!inert && isIPythonToolCall(entry.tool)" :is-dark="isDark">
+          <ToolCallItem v-if="isIPythonToolCall(entry.tool)" :is-dark="isDark">
             <template #label>
               <v-icon size="16">mdi-code-json</v-icon>
               <span>{{ entry.tool.name || "python" }}</span>

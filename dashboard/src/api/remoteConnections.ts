@@ -177,6 +177,13 @@ export const remoteConnectionsApi = {
       )}/human-choices/${encodeURIComponent(id)}`,
       { ...answer, revision: scope.revision },
     ),
+  cancelChoice: (scope: RemoteResourceScope, id: string) =>
+    apiV1Client.delete(
+      `${path(scope.connectionId)}/sessions/${encodeURIComponent(
+        scope.sessionId,
+      )}/human-choices/${encodeURIComponent(id)}`,
+      { params: { revision: scope.revision } },
+    ),
   sessions: (id: string) =>
     apiV1Client.get<ApiEnvelope<RemoteSession[]>>(`${path(id)}/sessions`),
   history: (id: string, session: string, before?: number, limit = 50) =>

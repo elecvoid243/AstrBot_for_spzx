@@ -48,11 +48,12 @@
            visual) and POSTs DELETE to the backend so the LLM tool's
            awaiting Future unblocks via asyncio.CancelledError. -->
       <button
-        v-if="state === 'pending' && umo"
+        v-if="state === 'pending' && interactive"
         type="button"
         class="choice-cancel-button"
         :aria-label="tm('interactiveChoice.cancelAria')"
         :title="tm('interactiveChoice.cancelAria')"
+        :disabled="disabled"
         @click="onCancelClick"
       >
         <v-icon size="16">mdi-close</v-icon>
@@ -114,7 +115,7 @@
     </div>
 
     <!-- Pending: prose 段(帮用户决策)+ 选项按钮 + 自由输入 -->
-    <template v-if="state === 'pending' && umo">
+    <template v-if="state === 'pending' && interactive">
       <InteractiveChoiceProse
         v-if="part.extra_content"
         :content="part.extra_content"
@@ -128,6 +129,7 @@
           type="button"
           class="choice-option-button"
           :aria-label="ariaLabelForOption(opt)"
+          :disabled="disabled"
           @click="onOptionClick(opt)"
         >
           <span class="choice-option-label" :title="opt.label">
@@ -162,6 +164,7 @@
       <div class="choice-input-row">
         <textarea
           v-model="freeText"
+          :disabled="disabled"
           class="choice-input"
           :placeholder="inputPlaceholderResolved"
           rows="2"
@@ -172,7 +175,7 @@
           color="primary"
           variant="tonal"
           size="small"
-          :disabled="!freeText.trim()"
+          :disabled="disabled || !freeText.trim()"
           @click="onInputSubmit"
         >
           {{ tm("interactiveChoice.submit") }}
@@ -204,7 +207,7 @@
          without exposing live actions. Persisted answers retain their selection. -->
     <div
       v-if="
-        (state !== 'pending' || !umo) &&
+        (state !== 'pending' || !interactive) &&
         (part.options.length || part.extra_content)
       "
       class="choice-options-collapse"
@@ -302,12 +305,14 @@ import InteractiveChoiceProse from "@/components/chat/message_list_comps/Interac
 const props = defineProps<{
   part: InteractiveChoicePart;
   /**
-   * Live conversation UMO. An empty value renders a read-only transcript:
-   * history stamps still apply, but session state and actions are unavailable.
+   * Live local UMO. Empty values render history unless managed externally.
    */
   umo: string;
   isDark?: boolean;
   isIgnored?: boolean;
+  /** Use parent-managed remote actions without reading or mutating local state. */
+  managed?: boolean;
+  disabled?: boolean;
 }>();
 
 // v1.0 提交协议:emit (requestId, payload),由 ChatMessageList 冒泡到 Chat.vue
@@ -332,7 +337,12 @@ const { tm } = useModuleI18n("features/chat");
 // 局部 ref,父组件 v-for 在 bot message 推入新 part 时可能重新挂载本组件,
 // 局部 ref 全部丢失,'已选择' 退回 '待选择'。把状态搬到 store 后,即便
 // 整个 InteractiveChoiceBox 被重建,也能从 store 读回用户的提交意图。
-const interactiveChoiceStore = useInteractiveChoiceStore();
+const interactiveChoiceStore = props.managed
+  ? null
+  : useInteractiveChoiceStore();
+const interactive = computed(
+  () => Boolean(props.umo) || props.managed === true,
+);
 
 // Reactively reads the submission state for this choice's request_id.
 // Bug Y1 fix: scope reads by the supplied UMO so a submission
@@ -345,7 +355,7 @@ const interactiveChoiceStore = useInteractiveChoiceStore();
 const submissionState = computed(
   () =>
     (props.umo
-      ? interactiveChoiceStore.getSubmissionState(
+      ? interactiveChoiceStore?.getSubmissionState(
           props.umo,
           props.part.request_id,
         )
@@ -361,7 +371,7 @@ const submissionState = computed(
 const cancelledState = computed(
   () =>
     (props.umo &&
-      interactiveChoiceStore.isCancelled(props.umo, props.part.request_id)) ||
+      interactiveChoiceStore?.isCancelled(props.umo, props.part.request_id)) ||
     // 2026-09-29: same history-first fallback as `submissionState` — the
     // backend stamps `resolved` onto the persisted part when the request is
     // cancelled or times out.
@@ -474,7 +484,7 @@ const collapseItemCount = computed<number>(() => {
 });
 
 function onOptionClick(opt: InteractiveChoiceOption) {
-  if (!props.umo) return;
+  if (!interactive.value || props.disabled) return;
   // eslint-disable-next-line no-console
   console.log("[InteractiveChoiceBox] onOptionClick", {
     requestId: props.part.request_id,
@@ -486,31 +496,33 @@ function onOptionClick(opt: InteractiveChoiceOption) {
   // 先写 store,再 emit——保证父组件拿到的 requestId 与本次选项匹配,
   // 也保证即便 emit 之后父组件立刻触发重渲染,store 状态已就位。
   // Bug Y1 fix: write to this UMO's bucket only.
-  interactiveChoiceStore.markSubmitted(
-    props.umo,
-    props.part.request_id,
-    "option",
-    {
-      optionId: opt.id,
-    },
-  );
+  if (props.umo)
+    interactiveChoiceStore?.markSubmitted(
+      props.umo,
+      props.part.request_id,
+      "option",
+      {
+        optionId: opt.id,
+      },
+    );
   emit("submit", props.part.request_id, { choice_id: opt.id, free_text: "" });
 }
 
 function onInputSubmit() {
-  if (!props.umo) return;
+  if (!interactive.value || props.disabled) return;
   const text = freeText.value.trim();
   if (!text || state.value !== "pending") return;
   // 自由文本提交:choice_id 用哨兵值 "__free_text__" 标识,真实文本放在 free_text
   // Bug Y1 fix: write to this UMO's bucket only.
-  interactiveChoiceStore.markSubmitted(
-    props.umo,
-    props.part.request_id,
-    "input",
-    {
-      freeText: text,
-    },
-  );
+  if (props.umo)
+    interactiveChoiceStore?.markSubmitted(
+      props.umo,
+      props.part.request_id,
+      "input",
+      {
+        freeText: text,
+      },
+    );
   emit("submit", props.part.request_id, {
     choice_id: "__free_text__",
     free_text: text,
@@ -523,7 +535,7 @@ function onInputSubmit() {
 // submit / onInputSubmit 的对偶(symmetric)与「网络细节集中在
 // store」的分层原则。
 function onCancelClick() {
-  if (!props.umo) return;
+  if (!interactive.value || props.disabled) return;
   if (state.value !== "pending") return;
   emit("cancel", props.part.request_id);
 }

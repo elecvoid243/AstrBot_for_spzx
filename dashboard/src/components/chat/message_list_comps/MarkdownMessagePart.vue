@@ -3,9 +3,9 @@
     <MarkdownRender
       class="chat-markdown"
       :custom-id="inert ? 'remote-message' : 'chat-message'"
-      :nodes="inert ? inertNodes : undefined"
+      :nodes="inert && !richRemote ? inertNodes : undefined"
       :content="content"
-      :custom-html-tags="inert ? [] : customHtmlTags"
+      :custom-html-tags="inert && !richRemote ? [] : customHtmlTags"
       :is-dark="isDark"
       :final="!isStreaming"
       :smooth-streaming="isStreaming ? 'auto' : false"
@@ -18,7 +18,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, provide } from "vue";
+import { computed, inject, provide, type Ref } from "vue";
 import {
   MarkdownRender,
   getMarkdown,
@@ -29,6 +29,10 @@ import {
   MARKDOWN_RENDER_MAX_LIVE_NODES,
 } from "@/components/chat/markdownRenderConfig";
 
+const remoteScope = inject<Ref<
+  import("@/api/remoteConnections").RemoteResourceScope | undefined
+> | null>("remoteChatScope", null);
+const richRemote = computed(() => Boolean(remoteScope?.value));
 const props = defineProps<{
   content: string;
   inert?: boolean;

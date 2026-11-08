@@ -1,65 +1,35 @@
 <template>
   <div :class="choice ? 'remote-resource' : 'remote-attachment-resource'">
-    <template v-if="choice">
-      <strong>{{ choice.title }}</strong>
-      <p>{{ choice.prompt }}</p>
-      <pre v-if="choice.extra_content" class="plain-content">{{
-        choice.extra_content
-      }}</pre>
-      <p v-if="choice.answer || answer">
-        {{ tm("interactiveChoice.alreadyChosen") }}:
-        {{ (choice.answer || answer)?.choice_id }}
-        {{ (choice.answer || answer)?.free_text }}
-      </p>
-      <p v-else-if="choice.resolved || expired">
-        {{ tm("interactiveChoice.cancelled") }}
-      </p>
-      <template v-else>
-        <div v-for="option in choice.options" :key="option.id" class="my-2">
-          <v-btn
-            variant="tonal"
-            :disabled="!enabled || busy"
-            @click="submit(option.id, '')"
-            >{{ option.label }}</v-btn
-          >
-          <p v-if="option.description">{{ option.description }}</p>
-        </div>
-        <v-textarea
-          v-model="freeText"
-          :label="
-            choice.input_placeholder ||
-            tm('interactiveChoice.defaultPlaceholder')
-          "
-          rows="2"
-          :disabled="!enabled || busy"
-        />
-        <v-btn
-          variant="tonal"
-          :disabled="!enabled || busy || !freeText.trim()"
-          @click="submit('__free_text__', freeText)"
-          >{{ tm("interactiveChoice.submit") }}</v-btn
-        >
-      </template>
-    </template>
-    <template v-else>
-      <MessageAttachment
-        :part="part"
-        :src="imageUrl"
-        :sent="sent"
-        :disabled="!enabled"
-        :busy="busy"
-        @download="download"
-        @preview="emit('preview', $event)"
-      />
-    </template>
+    <InteractiveChoiceBox
+      v-if="displayChoice"
+      :part="displayChoice"
+      umo=""
+      managed
+      :is-dark="isDark"
+      :is-ignored="isIgnored"
+      :disabled="!enabled || busy"
+      @submit="(_id, payload) => submit(payload.choice_id, payload.free_text)"
+      @cancel="cancel"
+    />
+    <MessageAttachment
+      v-else
+      :part="part"
+      :src="previewUrl"
+      :sent="sent"
+      :disabled="!enabled"
+      :busy="busy"
+      :downloadable="false"
+      @preview="emit('preview', $event)"
+    />
     <p v-if="error" role="alert">
       {{ tm(`remoteConnections.status.${error}`) }}
     </p>
   </div>
 </template>
 <script setup lang="ts">
+import InteractiveChoiceBox from "./message_list_comps/InteractiveChoiceBox.vue";
 import MessageAttachment from "./MessageAttachment.vue";
-import { computed, onBeforeUnmount, ref, watch } from "vue";
+import { computed, onBeforeUnmount, provide, ref, watch } from "vue";
 import {
   remoteConnectionsApi,
   type RemoteResourceScope,
@@ -76,13 +46,16 @@ const props = defineProps<{
   part: MessagePart;
   enabled: boolean;
   sent?: boolean;
+  isDark?: boolean;
+  isIgnored?: boolean;
 }>();
+provide("chatReadOnly", true);
 const emit = defineEmits<{ preview: [url: string] }>();
 const { tm } = useModuleI18n("features/chat");
-const imageUrl = ref(""),
+const previewUrl = ref(""),
   error = ref(""),
-  busy = ref(false),
-  freeText = ref("");
+  busy = ref(false);
+const cancelled = ref(false);
 const answer = ref<{ choice_id: string; free_text: string }>();
 const choice = computed(() =>
   validateInteractiveChoice(props.part)
@@ -90,7 +63,30 @@ const choice = computed(() =>
     : null,
 );
 const expired = computed(
-  () => choice.value?.expires_at && choice.value.expires_at < Date.now() / 1000,
+  () =>
+    !choice.value?.answer &&
+    !answer.value &&
+    !choice.value?.resolved &&
+    choice.value?.expires_at &&
+    choice.value.expires_at < Date.now() / 1000,
+);
+const displayChoice = computed(() =>
+  choice.value
+    ? {
+        ...choice.value,
+        ...(answer.value
+          ? { answer: { ...answer.value, answered_at: Date.now() / 1000 } }
+          : {}),
+        ...(cancelled.value || expired.value
+          ? {
+              resolved: {
+                reason: "cancelled" as const,
+                resolved_at: Date.now() / 1000,
+              },
+            }
+          : {}),
+      }
+    : null,
 );
 const identity = () =>
   JSON.stringify([
@@ -108,14 +104,15 @@ watch(
     const current = ++generation;
     abort?.abort();
     abort = new AbortController();
-    if (imageUrl.value) URL.revokeObjectURL(imageUrl.value);
-    imageUrl.value = "";
+    if (previewUrl.value) URL.revokeObjectURL(previewUrl.value);
+    previewUrl.value = "";
     answer.value = undefined;
+    cancelled.value = false;
     busy.value = false;
     error.value = "";
     if (
       !props.enabled ||
-      props.part.type !== "image" ||
+      !["image", "record", "audio", "video"].includes(props.part.type) ||
       !props.part.attachment_id
     )
       return;
@@ -127,42 +124,48 @@ watch(
       );
       if (current !== generation) return;
       if (
-        [
-          "image/png",
-          "image/jpeg",
-          "image/gif",
-          "image/webp",
-          "image/bmp",
-          "image/x-icon",
-          "image/vnd.microsoft.icon",
-        ].includes(response.data.type)
+        (props.part.type === "image" &&
+          [
+            "image/png",
+            "image/jpeg",
+            "image/gif",
+            "image/webp",
+            "image/bmp",
+            "image/x-icon",
+            "image/vnd.microsoft.icon",
+          ].includes(response.data.type)) ||
+        (["record", "audio"].includes(props.part.type) &&
+          response.data.type.startsWith("audio/")) ||
+        (props.part.type === "video" && response.data.type.startsWith("video/"))
       )
-        imageUrl.value = URL.createObjectURL(response.data);
+        previewUrl.value = URL.createObjectURL(response.data);
     } catch {
       if (current === generation) error.value = "remote_unavailable";
     }
   },
   { immediate: true, flush: "sync" },
 );
-async function download() {
-  if (!props.enabled || busy.value || !props.part.attachment_id) return;
+async function cancel() {
+  if (
+    !props.enabled ||
+    busy.value ||
+    !choice.value ||
+    displayChoice.value?.answer ||
+    displayChoice.value?.resolved
+  )
+    return;
   const current = generation;
   busy.value = true;
+  error.value = "";
   try {
-    const response = await remoteConnectionsApi.attachment(
+    await remoteConnectionsApi.cancelChoice(
       props.scope,
-      props.part.attachment_id,
+      choice.value.request_id,
     );
-    if (current !== generation) return;
-    const url = URL.createObjectURL(response.data),
-      link = document.createElement("a");
-    link.href = url;
-    link.download = props.part.filename || "attachment";
-    link.click();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    if (current === generation) cancelled.value = true;
   } catch (err: any) {
     if (current === generation)
-      error.value = err.response?.data?.data?.code || "remote_unavailable";
+      error.value = err.response?.data?.data?.code || "remote_rejected";
   } finally {
     if (current === generation) busy.value = false;
   }
@@ -178,6 +181,7 @@ async function submit(choice_id: string, free_text: string) {
     return;
   const current = generation;
   busy.value = true;
+  error.value = "";
   try {
     await remoteConnectionsApi.answer(
       props.scope,
@@ -198,7 +202,7 @@ async function submit(choice_id: string, free_text: string) {
 onBeforeUnmount(() => {
   generation++;
   abort?.abort();
-  if (imageUrl.value) URL.revokeObjectURL(imageUrl.value);
+  if (previewUrl.value) URL.revokeObjectURL(previewUrl.value);
 });
 </script>
 <style scoped>

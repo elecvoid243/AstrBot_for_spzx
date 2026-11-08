@@ -20,7 +20,7 @@
         >
           <div class="ref-item-icon">
             <img
-              v-if="!inert && ref.favicon"
+              v-if="ref.favicon"
               :src="ref.favicon"
               class="ref-item-favicon"
               @error="(e) => (e.target.style.display = 'none')"
@@ -83,13 +83,28 @@ export default {
         : [];
 
       return used
-        .map((ref) => ({
-          index: ref?.index,
-          title: ref?.title || ref?.url || "Reference",
-          url: ref?.url,
-          snippet: ref?.snippet,
-          favicon: ref?.favicon,
-        }))
+        .map((ref) => {
+          let favicon = ref?.favicon;
+          if (this.inert) {
+            try {
+              const url = new URL(favicon);
+              if (
+                !/^https?:$/.test(url.protocol) ||
+                url.origin === window.location.origin
+              )
+                favicon = undefined;
+            } catch {
+              favicon = undefined;
+            }
+          }
+          return {
+            index: ref?.index,
+            title: ref?.title || ref?.url || "Reference",
+            url: ref?.url,
+            snippet: ref?.snippet,
+            favicon,
+          };
+        })
         .filter((ref) => ref.url);
     },
   },

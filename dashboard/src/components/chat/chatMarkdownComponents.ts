@@ -1,5 +1,7 @@
 import { setCustomComponents } from "markstream-vue";
 import "markstream-vue/index.css";
+import RemoteMarkdownImage from "./message_list_comps/RemoteMarkdownImage.vue";
+import RemoteHtmlNode from "./message_list_comps/RemoteHtmlNode.vue";
 import HtmlGenUiNode from "@/components/chat/message_list_comps/HtmlGenUiNode.vue";
 import RefNode from "@/components/chat/message_list_comps/RefNode.vue";
 import ThreadNode from "@/components/chat/message_list_comps/ThreadNode.vue";
@@ -11,6 +13,12 @@ export const CHAT_MARKDOWN_CUSTOM_TAGS: string[] = ["ref", "html-genui"];
 
 export function registerChatMarkdownComponents() {
   setCustomComponents("remote-message", {
+    link: FileReferenceLink,
+    ref: RefNode,
+    "html-genui": HtmlGenUiNode,
+    image: RemoteMarkdownImage,
+    html_block: RemoteHtmlNode,
+    html_inline: RemoteHtmlNode,
     code_block: ThemeAwareMarkdownCodeBlock,
   });
   setCustomComponents("chat-message", {

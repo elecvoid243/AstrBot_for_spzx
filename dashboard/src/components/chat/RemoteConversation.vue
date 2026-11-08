@@ -561,6 +561,8 @@ const resourceScope = computed(() => ({
   revision: props.connection.revision,
   sessionId: props.session.session_id,
 }));
+provide("remoteChatScope", resourceScope);
+provide("remoteChatReady", ready);
 async function uploadFiles(event: Event | File[]) {
   if (!ready.value || sending.value || uncertain.value || uploading.value)
     return;

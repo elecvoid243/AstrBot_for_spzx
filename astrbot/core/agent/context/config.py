@@ -40,7 +40,7 @@ class ContextConfig:
     """Fraction of the context window that triggers compaction."""
     headroom_tokens: int = 16384
     """Space kept free above the trigger for compaction work."""
-    retain_ratio: float = 0.16
+    retain_ratio: float = 0.15
     """Fraction of the message budget kept verbatim during compaction."""
     target_ratio: float = 0.55
     """Desired post-compaction usage; <= 0 disables the target."""

@@ -83,7 +83,7 @@ def resolve_compaction_spec(
     threshold_ratio: float = 0.8,
     headroom_tokens: int = 16384,
     absolute_threshold_tokens: int = 0,
-    retain_ratio: float = 0.16,
+    retain_ratio: float = 0.15,
     target_ratio: float = 0.55,
     max_summary_tokens: int = 0,
     compaction_retries: int = 1,
@@ -155,7 +155,7 @@ def resolve_compaction_spec(
         threshold = min(absolute, pressure_budget)
     threshold = max(2, threshold)
 
-    retain = int(message_budget * _coerce_ratio(retain_ratio, 0.16))
+    retain = int(message_budget * _coerce_ratio(retain_ratio, 0.15))
     retain = max(1, min(retain, threshold - 1))
 
     target = int(window * _coerce_ratio(target_ratio, 0.55))

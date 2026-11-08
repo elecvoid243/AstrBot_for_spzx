@@ -23,7 +23,7 @@ AstrBot 在每次模型请求前检查上下文，包括工具执行后的后续
 ## 阈值、目标与重试
 
 - 触发阈值：`min(窗口 × 0.8, 窗口 − 输出预算 − headroom)`。提供方的 `compress_threshold_tokens` 仍可覆盖，但会被钳制到同一压力预算内。
-- 保留尾部：按消息预算的 `keep_recent_ratio`（默认 `0.16`）保留原文；只会落在工具调用/结果的平衡边界，不会拆开一个批次。
+- 保留尾部：按消息预算的 `keep_recent_ratio`（默认 `0.15`）保留原文；只会落在工具调用/结果的平衡边界，不会拆开一个批次。
 - 目标水位：压缩后尽量降到窗口的 `55%`。一次摘要不够时，同一步最多再压一次；仍不达标会在压缩报告中标记为不足，并回落到逐轮丢弃或容量错误。
 - 全文压缩的 checkpoint 是一条带 preamble 与 `<compacted-summary>` 标签的 user 消息；轮内压缩保留 assistant checkpoint，当前用户请求原文不动。
 - 提供方级 `compaction_headroom_tokens`（默认 `16384`，会按窗口大小收敛）与 `compress_threshold_ratio`（默认 `0.8`）用于控制触发位置。

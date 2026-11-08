@@ -23,7 +23,7 @@ If pressure remains after compression, AstrBot removes the oldest ordinary round
 ## Threshold, target, and retries
 
 - Trigger: `min(window × 0.8, window − output budget − headroom)`. A provider-level `compress_threshold_tokens` still overrides it, but is clamped to the same pressure budget.
-- Retained tail: `keep_recent_ratio` (default `0.16`) of the message budget, always on a balanced tool-call/result boundary; a batch is never split.
+- Retained tail: `keep_recent_ratio` (default `0.15`) of the message budget, always on a balanced tool-call/result boundary; a batch is never split.
 - Target: compaction aims at 55% of the window. If one summary is not enough, the same step retries once; a remaining gap is reported as insufficient and falls back to round dropping or a capacity error.
 - The full-history checkpoint is a single user message carrying the preamble and `<compacted-summary>` tags; in-round compaction keeps an assistant checkpoint so the exact current user request stays untouched.
 - Provider-level `compaction_headroom_tokens` (default `16384`, scaled down for small windows) and `compress_threshold_ratio` (default `0.8`) control the trigger position.

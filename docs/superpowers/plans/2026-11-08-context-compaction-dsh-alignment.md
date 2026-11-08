@@ -425,6 +425,8 @@ git commit -m "feat(agent): compact long-horizon turns toward a target water lev
 
 ### Task 6: 溢出恢复（P2，可独立回退）
 
+> **状态（2026-11-08，elecvoid243）：决定不做。** 保留现有 provider 侧 `pop_record` 与预发送容量校验；只有在真实日志出现服务端 `maximum context length` 且现有兜底破坏工具配对时，才按本节实施。
+
 **Files:**
 - Modify: `astrbot/core/provider/provider.py`、`astrbot/core/provider/sources/openai_source.py`、`astrbot/core/agent/runners/tool_loop_agent_runner.py`、`astrbot/core/agent/context/manager.py`
 - Test: `tests/test_tool_loop_context_recovery.py`、`tests/test_tool_loop_context_budget.py`

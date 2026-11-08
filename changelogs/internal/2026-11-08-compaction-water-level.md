@@ -7,4 +7,4 @@
 - 新增目标水位（窗口的 55%）与一次重试：一次摘要不够时在同一步再压一次，仍不达标则报告 `insufficient` 并回落到逐轮丢弃或容量错误。
 - 全文压缩的 checkpoint 改为单条 user 消息（preamble + `<compacted-summary>`），轮内压缩保留 assistant checkpoint；摘要必须在输出上限内、非空、且严格小于被替换区间才会落库。
 - 压缩报告新增 `shadowed_tokens`、`checkpoint_tokens`、`yield_ratio`、`passes`、`reason`、`threshold_tokens`、`retain_tokens`、`target_tokens` 等字段，供 ChatUI 后续展示。
-- 本轮尚未做：面板暴露 `target_ratio` / `compaction_headroom_tokens` / `compress_threshold_ratio`，provider 级溢出恢复（P2），以及 ChatUI 的收益/次数展示。
+- provider 级溢出恢复（P2）已评估，决定不做，保留现有 `pop_record` 与预发送容量校验；面板尚未暴露 `target_ratio` / `compaction_headroom_tokens` / `compress_threshold_ratio`，ChatUI 也还未展示压缩收益/次数。

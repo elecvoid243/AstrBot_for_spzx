@@ -73,20 +73,88 @@ class SessionManagementService:
     async def get_umo_alias_map(self, umos: list[str]) -> dict:
         return build_umo_alias_map(await self.db_helper.get_umo_aliases(umos))
 
-    def build_umo_info(self, umo: str | None, alias_map: dict) -> dict:
+    def build_umo_info(
+        self,
+        umo: str | None,
+        alias_map: dict,
+        webchat_title: str = "",
+    ) -> dict:
         umo_str = umo or ""
-        return {
+        info = {
             "umo": umo_str,
             **parse_umo(umo_str),
             **serialize_umo_alias(alias_map.get(umo_str), umo_str),
+        }
+        if webchat_title:
+            info["webchat_title"] = webchat_title
+        return info
+
+    @staticmethod
+    def _webchat_session_id(umo: str) -> str:
+        """Extract the ChatUI conversation id from a WebChat origin.
+
+        Args:
+            umo: Unified message origin such as
+                ``webchat:FriendMessage:webchat!creator!session_id``.
+
+        Returns:
+            The trailing conversation id, or an empty string for origins that
+            do not carry one.
+        """
+        if not umo.startswith("webchat:"):
+            return ""
+        return umo.rsplit("!", 1)[-1] if "!" in umo else ""
+
+    async def _get_webchat_titles(self, umos: list[str]) -> dict[str, str]:
+        """Resolve ChatUI sidebar titles for WebChat origins.
+
+        The user-facing name of a WebChat conversation lives on its platform
+        session (the ChatUI sidebar title), not in the UMO alias table, so UMO
+        pickers would otherwise fall back to the raw origin string. A failed
+        lookup only drops the readable name; it never fails the caller.
+
+        Args:
+            umos: Unified message origins to resolve.
+
+        Returns:
+            Mapping from origin to its stored title. Origins without a title
+            are omitted so callers keep their existing display fallback.
+        """
+        session_ids = {
+            umo: session_id
+            for umo in umos
+            if (session_id := self._webchat_session_id(umo))
+        }
+        if not session_ids:
+            return {}
+        try:
+            sessions = await self.db_helper.get_platform_sessions_by_ids(
+                list(set(session_ids.values())),
+            )
+        except Exception as exc:
+            logger.warning(f"查询 WebChat 会话标题失败: {exc!s}")
+            return {}
+        titles = {
+            session.session_id: session.display_name.strip()
+            for session in sessions
+            if session.platform_id == "webchat" and session.display_name
+        }
+        return {
+            umo: titles[session_id]
+            for umo, session_id in session_ids.items()
+            if session_id in titles
         }
 
     async def list_active_umos(self) -> dict:
         umos = await self.list_known_umos()
         alias_map = await self.get_umo_alias_map(umos)
+        webchat_titles = await self._get_webchat_titles(umos)
         return {
             "umos": umos,
-            "umo_infos": [self.build_umo_info(umo, alias_map) for umo in umos],
+            "umo_infos": [
+                self.build_umo_info(umo, alias_map, webchat_titles.get(umo, ""))
+                for umo in umos
+            ],
         }
 
     async def get_umos_by_scope(

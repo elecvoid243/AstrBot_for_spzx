@@ -383,6 +383,7 @@
                   clearable
                   hide-details
                   :no-data-text="tm('form.noUmos')"
+                  :custom-filter="filterUmos"
                   @focus="loadUmos()"
                 >
                   <template #item="{ props, item }">
@@ -505,6 +506,8 @@ type UmoInfo = {
   auto_name?: string;
   user_alias?: string;
   display_name?: string;
+  /** ChatUI sidebar title for WebChat conversations. */
+  webchat_title?: string;
 };
 
 const newJob = ref({
@@ -553,8 +556,8 @@ const jobUmoFilterOptions = computed(() => [
       ]
     : []),
   ...Array.from(new Set(jobs.value.map(getJobSession).filter(Boolean)))
-    .sort((a, b) => a.localeCompare(b))
-    .map((umo) => ({ label: umo, value: umo })),
+    .map((umo) => ({ label: getUmoSelectionText(umo) || umo, value: umo }))
+    .sort((a, b) => a.label.localeCompare(b.label)),
 ]);
 
 const filteredJobs = computed(() => {
@@ -662,7 +665,8 @@ function getJobSession(job: any): string {
 }
 
 function deliveryTargetText(item: any): string {
-  return getJobSession(item) || tm("card.noDeliveryTarget");
+  const umo = getJobSession(item);
+  return umo ? getUmoSelectionText(umo) || umo : tm("card.noDeliveryTarget");
 }
 
 function nextRunText(item: any): string {
@@ -812,7 +816,9 @@ function getUmoDisplayProps(umo: string) {
     platform: info.platform || "",
     messageType: info.message_type || "",
     sessionId: info.session_id || "",
-    autoName: info.auto_name || "",
+    // A WebChat conversation's readable name is its ChatUI sidebar title; the
+    // UMO alias fields stay empty until a manual `/name` alias is recorded.
+    autoName: info.webchat_title || info.auto_name || "",
     userAlias: info.user_alias || "",
   };
 }
@@ -832,11 +838,22 @@ function getUmoSelectionText(value?: string | null): string {
   if (!value) return "";
   const info = getUmoInfo(value);
   const aliasName = info.user_alias || "";
-  const autoName = info.auto_name || "";
+  const autoName = info.webchat_title || info.auto_name || "";
   if (aliasName && autoName && aliasName !== autoName) {
     return `${aliasName}（${autoName}）`;
   }
   return aliasName || autoName || value || info.display_name || "";
+}
+
+/** Match either the raw origin or its readable name while picking a target. */
+function filterUmos(value: string, query: string): boolean {
+  const needle = query.trim().toLowerCase();
+  if (!needle) return true;
+  const umo = String(value || "");
+  return (
+    umo.toLowerCase().includes(needle) ||
+    (getUmoSelectionText(umo) || "").toLowerCase().includes(needle)
+  );
 }
 
 async function loadUmos(force = false) {
@@ -1369,7 +1386,9 @@ async function submitJob() {
 }
 
 onMounted(() => {
-  loadJobs();
+  // Jobs first: their rows seed the UMO map with raw origins, and the UMO
+  // response then upgrades WebChat rows to their conversation titles.
+  loadJobs().then(() => loadUmos());
   loadPlatforms();
 });
 </script>

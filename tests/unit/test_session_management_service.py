@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from astrbot.core import sp
+from astrbot.core.db.po import PlatformSession
 from astrbot.dashboard.services.session_management_service import (
     SessionManagementService,
 )
@@ -38,3 +39,46 @@ async def test_save_groups_preserves_legacy_preference_scope(monkeypatch):
         "session_groups",
         groups,
     )
+
+
+@pytest.mark.asyncio
+async def test_list_active_umos_exposes_webchat_session_titles():
+    db = MagicMock()
+    db.get_platform_sessions_by_ids = AsyncMock(
+        return_value=[
+            PlatformSession(
+                session_id="chat-1",
+                creator="alice",
+                display_name="Weekly report",
+            )
+        ]
+    )
+    service = SessionManagementService(MagicMock(), db)
+    service.list_known_umos = AsyncMock(
+        return_value=[
+            "webchat:FriendMessage:webchat!alice!chat-1",
+            "telegram:FriendMessage:42",
+        ]
+    )
+    service.get_umo_alias_map = AsyncMock(return_value={})
+
+    data = await service.list_active_umos()
+
+    assert data["umo_infos"][0]["webchat_title"] == "Weekly report"
+    assert "webchat_title" not in data["umo_infos"][1]
+    db.get_platform_sessions_by_ids.assert_awaited_once_with(["chat-1"])
+
+
+@pytest.mark.asyncio
+async def test_list_active_umos_keeps_raw_umo_when_title_lookup_fails():
+    db = MagicMock()
+    db.get_platform_sessions_by_ids = AsyncMock(side_effect=RuntimeError("db down"))
+    service = SessionManagementService(MagicMock(), db)
+    service.list_known_umos = AsyncMock(
+        return_value=["webchat:FriendMessage:webchat!alice!chat-1"]
+    )
+    service.get_umo_alias_map = AsyncMock(return_value={})
+
+    data = await service.list_active_umos()
+
+    assert "webchat_title" not in data["umo_infos"][0]

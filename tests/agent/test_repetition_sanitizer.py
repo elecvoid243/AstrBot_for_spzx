@@ -1,3 +1,6 @@
+import json
+from pathlib import Path
+
 from astrbot.core.agent.context.repetition import (
     RepetitionSanitizeConfig,
     sanitize_history_think_parts,
@@ -229,3 +232,74 @@ def test_history_skips_encrypted_think():
     assert part["think"] == REPEATED
     assert "think_original" not in part
     assert "think_sanitized" not in part
+
+
+FIXTURE = (
+    Path(__file__).parent.parent / "fixtures" / "context_sanitizer" / "d40_think.json"
+)
+FILLER = {
+    "OK.",
+    "Let me write.",
+    "Let me go.",
+    "OK — writing.",
+    "OK — writing now.",
+    "Let me write it.",
+    "Hmm — writing now.",
+    "Let me be efficient ✓.",
+    "Let me be quick.",
+    "Let me do it.",
+    "Let me do it ✓.",
+    "```",
+}
+
+
+def _d40_think() -> dict[int, str]:
+    items = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    return {item["id"]: item["think"] for item in items}
+
+
+def _meaningful_lines(text: str) -> list[str]:
+    return sorted(
+        {
+            line.strip()
+            for line in text.splitlines()
+            if line.strip() and line.strip() not in FILLER
+        }
+    )
+
+
+def _max_identical_run(text: str) -> int:
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    longest = 0
+    current = 1
+    for index in range(1, len(lines)):
+        if lines[index] == lines[index - 1]:
+            current += 1
+        else:
+            current = 1
+        longest = max(longest, current)
+    return longest
+
+
+def test_d40_2503_collapses_loop():
+    original = _d40_think()[2503]
+    result = sanitize_repetitive_text(original, RepetitionSanitizeConfig())
+
+    assert result.changed is True
+    assert result.text.count("Let me go.") <= 120
+    assert result.collapsed_lines >= 1300
+    assert _max_identical_run(result.text) < 8
+    for line in _meaningful_lines(original):
+        assert line in result.text
+
+
+def test_d40_2314_collapses_loop():
+    original = _d40_think()[2314]
+    result = sanitize_repetitive_text(original, RepetitionSanitizeConfig())
+
+    assert result.changed is True
+    assert result.text.count("Let me go.") <= 100
+    assert result.collapsed_lines >= 6800
+    assert _max_identical_run(result.text) < 8
+    for line in _meaningful_lines(original):
+        assert line in result.text

@@ -59,8 +59,11 @@
 ```python
 from astrbot.core.agent.context.repetition import (
     RepetitionSanitizeConfig,
+    sanitize_history_think_parts,
     sanitize_repetitive_text,
+    sanitize_think_part,
 )
+from astrbot.core.agent.message import ThinkPart
 
 REPEATED = ("OK.\nLet me write.\nLet me go.\nLet me go.\n") * 20
 
@@ -99,7 +102,8 @@ def test_short_text_is_noop():
 
 
 def test_period_two_is_not_collapsed():
-    text = ("Let me go.\nLet me go.\n") * 30
+    # Distinct lines make the true period 2, not 1.
+    text = ("alpha alpha\nbeta beta\n") * 30
     # Keep the fallback out of the way so this test isolates the block scanner.
     cfg = RepetitionSanitizeConfig(fallback_dup_ratio=1.0)
     result = sanitize_repetitive_text(text, cfg)
@@ -109,7 +113,7 @@ def test_period_two_is_not_collapsed():
 
 
 def test_period_nine_is_not_collapsed():
-    block = "".join(f"line {index}\n" for index in range(9))
+    block = "".join(f"unique long line {index}\n" for index in range(9))
     text = block * 10
     cfg = RepetitionSanitizeConfig(fallback_dup_ratio=1.0)
     result = sanitize_repetitive_text(text, cfg)
@@ -127,13 +131,33 @@ def test_three_line_loop_is_collapsed():
     assert "19 x 3-line repeated block" in result.text
 
 
+def test_is_idempotent_with_multiple_blocks():
+    blocks = [
+        "".join(
+            f"block {index} line {suffix}\n"
+            for suffix in ("alpha", "beta", "gamma")
+        )
+        for index in range(5)
+    ]
+    text = "".join(block * 10 for block in blocks)
+
+    first = sanitize_repetitive_text(text, RepetitionSanitizeConfig())
+    second = sanitize_repetitive_text(first.text, RepetitionSanitizeConfig())
+
+    assert first.changed is True
+    assert second.changed is False
+    assert second.text == first.text
+
+
 def test_fallback_for_pure_loop_when_scan_is_skipped():
     text = ("alpha alpha alpha\nbeta beta beta\n") * 30
     cfg = RepetitionSanitizeConfig(max_scan_lines=10)
     result = sanitize_repetitive_text(text, cfg)
 
+    original_lines = len([line for line in text.splitlines() if line.strip()])
     assert result.changed is True
     assert "collapsed repetitive reasoning" in result.text
+    assert result.collapsed_lines == original_lines - 1
 
 
 def test_max_scan_lines_uses_fallback_only():
@@ -213,6 +237,53 @@ def test_provider_config_clamps_values():
     assert cfg.max_period == 9
     assert cfg.min_repeats == 2
     assert cfg.fallback_dup_ratio == 1.0
+
+
+def test_provider_config_parses_string_booleans():
+    assert (
+        RepetitionSanitizeConfig.from_provider_config({"enabled": "false"}).enabled
+        is False
+    )
+    assert (
+        RepetitionSanitizeConfig.from_provider_config({"enabled": "true"}).enabled
+        is True
+    )
+
+
+def test_sanitize_think_part_skips_encrypted():
+    part = ThinkPart(think=REPEATED, encrypted="signed-state")
+
+    assert sanitize_think_part(part, RepetitionSanitizeConfig()) is part
+
+
+def test_sanitize_think_part_preserves_private_marker():
+    part = ThinkPart(think=REPEATED)
+    part._no_save = True
+
+    sanitized = sanitize_think_part(part, RepetitionSanitizeConfig())
+
+    assert sanitized.think.count("Let me go.") == 2
+    assert sanitized._no_save is True
+
+
+def test_history_skips_encrypted_think():
+    history = [
+        {
+            "content": {
+                "type": "bot",
+                "message": [
+                    {"type": "think", "think": REPEATED, "encrypted": "sig"}
+                ],
+            }
+        }
+    ]
+
+    sanitize_history_think_parts(history, RepetitionSanitizeConfig())
+
+    part = history[0]["content"]["message"][0]
+    assert part["think"] == REPEATED
+    assert "think_original" not in part
+    assert "think_sanitized" not in part
 ```
 
 - [ ] **Step 2: 运行测试确认失败**
@@ -237,6 +308,7 @@ from __future__ import annotations
 import logging
 from collections import Counter
 from dataclasses import dataclass
+from math import gcd
 from typing import Any
 
 from astrbot.core.agent.message import Message, ThinkPart
@@ -251,7 +323,7 @@ DEFAULT_MIN_CHARS = 512
 DEFAULT_MAX_SCAN_LINES = 20_000
 DEFAULT_FALLBACK_DUP_RATIO = 0.8
 DEFAULT_FALLBACK_MAX_UNIQUE_LINES = 8
-MAX_SANITIZE_PASSES = 4
+MAX_SANITIZE_PASSES = 16
 
 
 @dataclass(frozen=True, slots=True)
@@ -294,9 +366,21 @@ class RepetitionSanitizeConfig:
                 return default
             return min(1.0, max(0.0, value))
 
+        def _bool(name: str, default: bool) -> bool:
+            value = raw.get(name, default)
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, str):
+                lowered = value.strip().lower()
+                if lowered in {"true", "1", "yes", "on"}:
+                    return True
+                if lowered in {"false", "0", "no", "off"}:
+                    return False
+            return default
+
         min_period = _int("min_period", DEFAULT_MIN_PERIOD, 2)
         return cls(
-            enabled=bool(raw.get("enabled", True)),
+            enabled=_bool("enabled", True),
             min_period=min_period,
             max_period=_int("max_period", DEFAULT_MAX_PERIOD, min_period),
             min_repeats=_int("min_repeats", DEFAULT_MIN_REPEATS, 2),
@@ -327,6 +411,21 @@ def _duplicate_ratio(lines: list[str]) -> float:
     counts = Counter(meaningful)
     duplicated = sum(count for count in counts.values() if count > 1)
     return duplicated / len(meaningful)
+
+
+def _common_stride(starts: list[int]) -> int:
+    """Return the greatest common stride between consecutive occurrences.
+
+    Args:
+        starts: Non-overlapping occurrence start indices.
+
+    Returns:
+        The common stride in lines; 0 when fewer than two starts exist.
+    """
+    stride = 0
+    for index in range(len(starts) - 1):
+        stride = gcd(stride, starts[index + 1] - starts[index])
+    return stride
 
 
 def _find_dominant_block(
@@ -363,6 +462,8 @@ def _find_dominant_block(
                 selected.append(start)
                 last = start + period
             if len(selected) < cfg.min_repeats:
+                continue
+            if _common_stride(selected) > cfg.max_period:
                 continue
             removed = (len(selected) - 1) * period
             if best is None or removed > best[0]:
@@ -474,7 +575,7 @@ def sanitize_repetitive_text(
                     f"({len(non_empty)} lines, {original_chars} chars)]"
                 ),
                 collapsed_blocks=max(1, collapsed_blocks),
-                collapsed_lines=len(non_empty),
+                collapsed_lines=max(0, len(non_empty) - 1),
                 original_chars=original_chars,
                 changed=True,
             )
@@ -509,7 +610,7 @@ def sanitize_think_part(
     result = sanitize_repetitive_text(part.think, cfg)
     if not result.changed:
         return part
-    return ThinkPart(think=result.text, encrypted=part.encrypted)
+    return part.model_copy(update={"think": result.text})
 
 
 def sanitize_message_think_parts(
@@ -568,6 +669,8 @@ def sanitize_history_think_parts(
             continue
         for part in message:
             if not isinstance(part, dict) or part.get("type") != "think":
+                continue
+            if part.get("encrypted"):
                 continue
             original = part.get("think")
             if not isinstance(original, str):
@@ -860,6 +963,11 @@ from astrbot.core.agent.context.repetition import (
         Returns:
             A ThinkPart with folded text and the original encrypted signature.
         """
+        if llm_resp.reasoning_signature:
+            return ThinkPart(
+                think=llm_resp.reasoning_content or "",
+                encrypted=llm_resp.reasoning_signature,
+            )
         cfg = self.get_repetition_sanitize_config()
         result = sanitize_repetitive_text(
             llm_resp.reasoning_content or "", cfg
@@ -874,10 +982,7 @@ from astrbot.core.agent.context.repetition import (
                 result.original_chars,
                 len(result.text),
             )
-        return ThinkPart(
-            think=result.text,
-            encrypted=llm_resp.reasoning_signature,
-        )
+        return ThinkPart(think=result.text)
 ```
 
 把 `_complete_with_assistant_response()` 里的：

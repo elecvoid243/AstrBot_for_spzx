@@ -219,14 +219,39 @@ def _remove_block_occurrences(
     return "".join(out), len(starts) - 1
 
 
+def _long_run_lines(text: str, min_repeats: int) -> set[str]:
+    """Return line texts that already form long runs in the original text.
+
+    Args:
+        text: Original reasoning text.
+        min_repeats: Minimum run length.
+
+    Returns:
+        Stripped line texts whose original consecutive run is long enough.
+    """
+    lines = text.splitlines()
+    preserved: set[str] = set()
+    index = 0
+    while index < len(lines):
+        key = lines[index].strip()
+        end = index + 1
+        while end < len(lines) and lines[end].strip() == key:
+            end += 1
+        if key and end - index >= min_repeats:
+            preserved.add(key)
+        index = end
+    return preserved
+
+
 def _collapse_identical_runs(
-    text: str, cfg: RepetitionSanitizeConfig
+    text: str, cfg: RepetitionSanitizeConfig, preserved_lines: set[str]
 ) -> tuple[str, int]:
-    """Collapse consecutive identical non-empty lines.
+    """Collapse consecutive identical runs created by block removal.
 
     Args:
         text: Current reasoning text.
         cfg: Sanitizer thresholds.
+        preserved_lines: Line texts that already had long runs in the original.
 
     Returns:
         ``(new_text, collapsed_runs)``.
@@ -241,7 +266,7 @@ def _collapse_identical_runs(
         while end < len(lines) and lines[end].strip() == key:
             end += 1
         run = end - index
-        if key and run >= cfg.min_repeats:
+        if key and run >= cfg.min_repeats and key not in preserved_lines:
             out.append(lines[index])
             out.append(f"[context sanitizer: collapsed {run - 1} x repeated line]\n")
             collapsed += 1
@@ -272,6 +297,7 @@ def sanitize_repetitive_text(
         if len(non_empty) < cfg.min_lines:
             return SanitizeResult(text=text, original_chars=original_chars)
 
+        preserved_lines = _long_run_lines(text, cfg.min_repeats)
         collapsed_blocks = 0
         if len(all_lines) <= cfg.max_scan_lines:
             for _ in range(MAX_SANITIZE_PASSES):
@@ -284,7 +310,7 @@ def sanitize_repetitive_text(
                 if removed == 0:
                     break
 
-        text, run_blocks = _collapse_identical_runs(text, cfg)
+        text, run_blocks = _collapse_identical_runs(text, cfg, preserved_lines)
         collapsed_blocks += run_blocks
 
         remaining = [line.strip() for line in text.splitlines() if line.strip()]

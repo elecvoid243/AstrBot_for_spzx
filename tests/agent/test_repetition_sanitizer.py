@@ -7,7 +7,8 @@ from astrbot.core.agent.context.repetition import (
     sanitize_repetitive_text,
     sanitize_think_part,
 )
-from astrbot.core.agent.message import ThinkPart
+from astrbot.core.agent.context.truncator import ContextTruncator
+from astrbot.core.agent.message import Message, ThinkPart
 
 REPEATED = ("OK.\nLet me write.\nLet me go.\nLet me go.\n") * 20
 
@@ -73,13 +74,26 @@ def test_three_line_loop_is_collapsed():
     assert "19 x 3-line repeated block" in result.text
 
 
-def test_collapses_consecutive_identical_runs():
+def test_preserves_original_identical_runs():
     text = ("unique long filler line\n") * 50
-    result = sanitize_repetitive_text(text, RepetitionSanitizeConfig())
+    cfg = RepetitionSanitizeConfig(fallback_dup_ratio=1.0)
+    result = sanitize_repetitive_text(text, cfg)
 
-    assert result.changed is True
-    assert result.text.count("unique long filler line") == 1
-    assert "49 x repeated line" in result.text
+    assert result.changed is False
+    assert result.text == text
+
+
+def test_preserves_original_code_and_table_runs():
+    code = "".join(f"int value_{index} = {index};\n" for index in range(20))
+    code += "}\n" * 8
+    table = "".join(f"| row {index} | value {index} |\n" for index in range(10))
+    table += "|---|---|\n" * 8
+    text = code + table
+    cfg = RepetitionSanitizeConfig(fallback_dup_ratio=1.0)
+    result = sanitize_repetitive_text(text, cfg)
+
+    assert result.changed is False
+    assert result.text == text
 
 
 def test_is_idempotent_with_multiple_blocks():
@@ -303,3 +317,15 @@ def test_d40_2314_collapses_loop():
     assert _max_identical_run(result.text) < 8
     for line in _meaningful_lines(original):
         assert line in result.text
+
+
+def test_d40_2503_result_passes_truncator_fix_messages():
+    original = _d40_think()[2503]
+    result = sanitize_repetitive_text(original, RepetitionSanitizeConfig())
+    messages = [Message(role="assistant", content=[ThinkPart(think=result.text)])]
+
+    fixed = ContextTruncator().fix_messages(messages)
+
+    assert len(fixed) == 1
+    assert fixed[0].role == "assistant"
+    assert fixed[0].content[0].think == result.text

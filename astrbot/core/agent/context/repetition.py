@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from collections import Counter
 from dataclasses import dataclass
+from math import gcd
 from typing import Any
 
 from astrbot.core.agent.message import Message, ThinkPart
@@ -19,7 +20,7 @@ DEFAULT_MIN_CHARS = 512
 DEFAULT_MAX_SCAN_LINES = 20_000
 DEFAULT_FALLBACK_DUP_RATIO = 0.8
 DEFAULT_FALLBACK_MAX_UNIQUE_LINES = 8
-MAX_SANITIZE_PASSES = 4
+MAX_SANITIZE_PASSES = 16
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,9 +63,21 @@ class RepetitionSanitizeConfig:
                 return default
             return min(1.0, max(0.0, value))
 
+        def _bool(name: str, default: bool) -> bool:
+            value = raw.get(name, default)
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, str):
+                lowered = value.strip().lower()
+                if lowered in {"true", "1", "yes", "on"}:
+                    return True
+                if lowered in {"false", "0", "no", "off"}:
+                    return False
+            return default
+
         min_period = _int("min_period", DEFAULT_MIN_PERIOD, 2)
         return cls(
-            enabled=bool(raw.get("enabled", True)),
+            enabled=_bool("enabled", True),
             min_period=min_period,
             max_period=_int("max_period", DEFAULT_MAX_PERIOD, min_period),
             min_repeats=_int("min_repeats", DEFAULT_MIN_REPEATS, 2),
@@ -93,6 +106,21 @@ def _duplicate_ratio(lines: list[str]) -> float:
     counts = Counter(meaningful)
     duplicated = sum(count for count in counts.values() if count > 1)
     return duplicated / len(meaningful)
+
+
+def _common_stride(starts: list[int]) -> int:
+    """Return the greatest common stride between consecutive occurrences.
+
+    Args:
+        starts: Non-overlapping occurrence start indices.
+
+    Returns:
+        The common stride in lines; 0 when fewer than two starts exist.
+    """
+    stride = 0
+    for index in range(len(starts) - 1):
+        stride = gcd(stride, starts[index + 1] - starts[index])
+    return stride
 
 
 def _find_dominant_block(
@@ -129,6 +157,8 @@ def _find_dominant_block(
                 selected.append(start)
                 last = start + period
             if len(selected) < cfg.min_repeats:
+                continue
+            if _common_stride(selected) > cfg.max_period:
                 continue
             removed = (len(selected) - 1) * period
             if best is None or removed > best[0]:
@@ -235,7 +265,7 @@ def sanitize_repetitive_text(
                     f"({len(non_empty)} lines, {original_chars} chars)]"
                 ),
                 collapsed_blocks=max(1, collapsed_blocks),
-                collapsed_lines=len(non_empty),
+                collapsed_lines=max(0, len(non_empty) - 1),
                 original_chars=original_chars,
                 changed=True,
             )
@@ -266,7 +296,7 @@ def sanitize_think_part(part: ThinkPart, cfg: RepetitionSanitizeConfig) -> Think
     result = sanitize_repetitive_text(part.think, cfg)
     if not result.changed:
         return part
-    return ThinkPart(think=result.text, encrypted=part.encrypted)
+    return part.model_copy(update={"think": result.text})
 
 
 def sanitize_message_think_parts(
@@ -325,6 +355,8 @@ def sanitize_history_think_parts(
             continue
         for part in message:
             if not isinstance(part, dict) or part.get("type") != "think":
+                continue
+            if part.get("encrypted"):
                 continue
             original = part.get("think")
             if not isinstance(original, str):

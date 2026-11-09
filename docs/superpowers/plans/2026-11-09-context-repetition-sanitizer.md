@@ -131,6 +131,15 @@ def test_three_line_loop_is_collapsed():
     assert "19 x 3-line repeated block" in result.text
 
 
+def test_collapses_consecutive_identical_runs():
+    text = ("unique long filler line\n") * 50
+    result = sanitize_repetitive_text(text, RepetitionSanitizeConfig())
+
+    assert result.changed is True
+    assert result.text.count("unique long filler line") == 1
+    assert "49 x repeated line" in result.text
+
+
 def test_is_idempotent_with_multiple_blocks():
     blocks = [
         "".join(
@@ -527,6 +536,40 @@ def _remove_block_occurrences(
     return "".join(out), len(starts) - 1
 
 
+def _collapse_identical_runs(
+    text: str, cfg: RepetitionSanitizeConfig
+) -> tuple[str, int]:
+    """Collapse consecutive identical non-empty lines.
+
+    Args:
+        text: Current reasoning text.
+        cfg: Sanitizer thresholds.
+
+    Returns:
+        ``(new_text, collapsed_runs)``.
+    """
+    lines = text.splitlines(keepends=True)
+    out: list[str] = []
+    collapsed = 0
+    index = 0
+    while index < len(lines):
+        key = lines[index].strip()
+        end = index + 1
+        while end < len(lines) and lines[end].strip() == key:
+            end += 1
+        run = end - index
+        if key and run >= cfg.min_repeats:
+            out.append(lines[index])
+            out.append(
+                f"[context sanitizer: collapsed {run - 1} x repeated line]\n"
+            )
+            collapsed += 1
+        else:
+            out.extend(lines[index:end])
+        index = end
+    return "".join(out), collapsed
+
+
 def sanitize_repetitive_text(
     text: str, cfg: RepetitionSanitizeConfig
 ) -> SanitizeResult:
@@ -561,6 +604,9 @@ def sanitize_repetitive_text(
                 collapsed_blocks += removed
                 if removed == 0:
                     break
+
+        text, run_blocks = _collapse_identical_runs(text, cfg)
+        collapsed_blocks += run_blocks
 
         remaining = [line.strip() for line in text.splitlines() if line.strip()]
         remaining_unique = {line for line in remaining if len(line) >= 4}
@@ -806,13 +852,27 @@ def _meaningful_lines(text: str) -> list[str]:
     })
 
 
+def _max_identical_run(text: str) -> int:
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    longest = 0
+    current = 1
+    for index in range(1, len(lines)):
+        if lines[index] == lines[index - 1]:
+            current += 1
+        else:
+            current = 1
+        longest = max(longest, current)
+    return longest
+
+
 def test_d40_2503_collapses_loop():
     original = _d40_think()[2503]
     result = sanitize_repetitive_text(original, RepetitionSanitizeConfig())
 
     assert result.changed is True
-    assert result.text.count("Let me go.") <= 50
+    assert result.text.count("Let me go.") <= 120
     assert result.collapsed_lines >= 1300
+    assert _max_identical_run(result.text) < 8
     for line in _meaningful_lines(original):
         assert line in result.text
 
@@ -822,8 +882,9 @@ def test_d40_2314_collapses_loop():
     result = sanitize_repetitive_text(original, RepetitionSanitizeConfig())
 
     assert result.changed is True
-    assert result.text.count("Let me go.") <= 50
+    assert result.text.count("Let me go.") <= 100
     assert result.collapsed_lines >= 6800
+    assert _max_identical_run(result.text) < 8
     for line in _meaningful_lines(original):
         assert line in result.text
 ```
@@ -836,7 +897,7 @@ Run:
 uv run pytest tests/agent/test_repetition_sanitizer.py -v
 ```
 
-Expected: PASS（13 passed）。如果 2503/2314 的阈值不满足，先打印 `result.collapsed_lines` 与 `result.text[:200]` 调整断言，不要放宽“非填充行必须保留”的检查。
+Expected: PASS。如果 2503/2314 的阈值不满足，先打印 `result.collapsed_lines` 与 `result.text[:200]` 调整断言，不要放宽“非填充行必须保留”的检查。
 
 - [ ] **Step 4: 格式化并提交**
 

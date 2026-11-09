@@ -32,6 +32,10 @@ from astrbot.core.agent.call_checkpoint import (
     dump_call_response,
     load_call_response,
 )
+from astrbot.core.agent.context.repetition import (
+    RepetitionSanitizeConfig,
+    sanitize_repetitive_text,
+)
 from astrbot.core.agent.message import (
     AudioURLPart,
     ContentPart,
@@ -248,6 +252,43 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         event = getattr(self.run_context.context, "event", None)
         return extract_persona_custom_error_message_from_event(event)
 
+    def get_repetition_sanitize_config(self) -> RepetitionSanitizeConfig:
+        """Read the provider-level repetition sanitizer configuration.
+
+        Returns:
+            The configured thresholds, or conservative defaults when absent.
+        """
+        return RepetitionSanitizeConfig.from_provider_config(
+            self.provider.provider_config.get("context_sanitizer")
+        )
+
+    def _build_think_part(self, llm_resp: LLMResponse) -> ThinkPart:
+        """Build the assistant ThinkPart after folding repeated reasoning.
+
+        Args:
+            llm_resp: Provider response carrying reasoning content.
+
+        Returns:
+            A ThinkPart with folded text and the original encrypted signature.
+        """
+        if llm_resp.reasoning_signature:
+            return ThinkPart(
+                think=llm_resp.reasoning_content or "",
+                encrypted=llm_resp.reasoning_signature,
+            )
+        cfg = self.get_repetition_sanitize_config()
+        result = sanitize_repetitive_text(llm_resp.reasoning_content or "", cfg)
+        if result.changed:
+            log = logger.info if result.collapsed_lines >= 200 else logger.debug
+            log(
+                "context sanitizer: collapsed %d blocks / %d lines (%d -> %d chars)",
+                result.collapsed_blocks,
+                result.collapsed_lines,
+                result.original_chars,
+                len(result.text),
+            )
+        return ThinkPart(think=result.text)
+
     async def _complete_with_assistant_response(self, llm_resp: LLMResponse) -> None:
         """Finalize the current step as a plain assistant response with no tool calls."""
         self.final_llm_resp = llm_resp
@@ -256,12 +297,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
 
         parts = []
         if llm_resp.reasoning_content is not None or llm_resp.reasoning_signature:
-            parts.append(
-                ThinkPart(
-                    think=llm_resp.reasoning_content or "",
-                    encrypted=llm_resp.reasoning_signature,
-                )
-            )
+            parts.append(self._build_think_part(llm_resp))
         if llm_resp.completion_text:
             parts.append(TextPart(text=llm_resp.completion_text))
         if len(parts) == 0:
@@ -2939,12 +2975,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             # 将结果添加到上下文中
             parts = []
             if llm_resp.reasoning_content is not None or llm_resp.reasoning_signature:
-                parts.append(
-                    ThinkPart(
-                        think=llm_resp.reasoning_content or "",
-                        encrypted=llm_resp.reasoning_signature,
-                    )
-                )
+                parts.append(self._build_think_part(llm_resp))
             if llm_resp.completion_text:
                 parts.append(TextPart(text=llm_resp.completion_text))
             if len(parts) == 0:

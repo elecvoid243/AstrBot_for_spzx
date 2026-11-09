@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 from astrbot.core.agent.agent import Agent
 from astrbot.core.agent.handoff import HandoffTool
 from astrbot.core.agent.hooks import BaseAgentRunHooks
-from astrbot.core.agent.message import ImageURLPart, Message, TextPart
+from astrbot.core.agent.message import ImageURLPart, Message, TextPart, ThinkPart
 from astrbot.core.agent.run_context import ContextWrapper
 from astrbot.core.agent.runners.tool_loop_agent_runner import ToolLoopAgentRunner
 from astrbot.core.agent.tool import FunctionTool, ToolSet
@@ -612,7 +612,9 @@ async def test_max_step_final_request_includes_limit_prompt(
         streaming=False,
     )
 
-    async def snapshot_context_manager(messages, trusted_token_usage=0, func_tool=None, **kwargs):
+    async def snapshot_context_manager(
+        messages, trusted_token_usage=0, func_tool=None, **kwargs
+    ):
         return list(messages)
 
     runner.request_context_manager.process = snapshot_context_manager
@@ -643,7 +645,9 @@ async def test_denied_tool_call_returns_error_without_execution(
         streaming=False,
     )
 
-    async def snapshot_context_manager(messages, trusted_token_usage=0, func_tool=None, **kwargs):
+    async def snapshot_context_manager(
+        messages, trusted_token_usage=0, func_tool=None, **kwargs
+    ):
         return list(messages)
 
     runner.request_context_manager.process = snapshot_context_manager
@@ -680,7 +684,9 @@ async def test_context_scoped_denied_tools_are_enforced(
         streaming=False,
     )
 
-    async def snapshot_context_manager(messages, trusted_token_usage=0, func_tool=None, **kwargs):
+    async def snapshot_context_manager(
+        messages, trusted_token_usage=0, func_tool=None, **kwargs
+    ):
         return list(messages)
 
     runner.request_context_manager.process = snapshot_context_manager
@@ -711,7 +717,9 @@ async def test_tool_loop_next_request_includes_tool_result(
         streaming=False,
     )
 
-    async def snapshot_context_manager(messages, trusted_token_usage=0, func_tool=None, **kwargs):
+    async def snapshot_context_manager(
+        messages, trusted_token_usage=0, func_tool=None, **kwargs
+    ):
         return list(messages)
 
     runner.request_context_manager.process = snapshot_context_manager
@@ -3053,22 +3061,26 @@ async def test_pairing_actual_tool_loop(streaming, scenario):
 async def test_pairing_historical_requests_preserve_original_records(
     streaming, scenario
 ):
-    calls = lambda ids: {
-        "role": "assistant",
-        "tool_calls": [
-            {
-                "id": call_id,
-                "type": "function",
-                "function": {"name": "probe", "arguments": "{}"},
-            }
-            for call_id in ids
-        ],
-    }
-    result = lambda call_id, text: {
-        "role": "tool",
-        "tool_call_id": call_id,
-        "content": text,
-    }
+    def calls(ids):
+        return {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": call_id,
+                    "type": "function",
+                    "function": {"name": "probe", "arguments": "{}"},
+                }
+                for call_id in ids
+            ],
+        }
+
+    def result(call_id, text):
+        return {
+            "role": "tool",
+            "tool_call_id": call_id,
+            "content": text,
+        }
+
     if scenario == "partial":
         history = [calls(["A", "B"]), result("A", "real A")]
         expected = [("A", "real A"), ("B", None)]
@@ -3318,6 +3330,7 @@ async def test_pairing_invalid_live_plan_never_executes_tools(invalid):
 @pytest.mark.parametrize("unknown", [False, True])
 async def test_pairing_retains_authoritative_execution_evidence(unknown):
     from mcp.types import CallToolResult, TextContent
+
     from astrbot.core.agent_team_execution import (
         CheckpointRecoveryError,
         NodeExecutionBinding,
@@ -3500,3 +3513,51 @@ async def test_pairing_unsafe_live_result_fails_before_next_request():
             pass
     assert provider.call_count == 1
     assert executor.calls == ["probe"]
+
+
+REPEATED_REASONING = ("OK.\nLet me write.\nLet me go.\nLet me go.\n") * 20
+
+
+def test_build_think_part_sanitizes_repetition():
+    runner = object.__new__(ToolLoopAgentRunner)
+    runner.provider = SimpleNamespace(provider_config={})
+    response = LLMResponse(
+        role="assistant",
+        reasoning_content=REPEATED_REASONING,
+    )
+
+    part = runner._build_think_part(response)
+
+    assert isinstance(part, ThinkPart)
+    assert part.think.count("Let me go.") == 2
+    assert "[context sanitizer:" in part.think
+
+
+def test_build_think_part_keeps_encrypted_reasoning():
+    runner = object.__new__(ToolLoopAgentRunner)
+    runner.provider = SimpleNamespace(provider_config={})
+    response = LLMResponse(
+        role="assistant",
+        reasoning_content=REPEATED_REASONING,
+        reasoning_signature="signed-state",
+    )
+
+    part = runner._build_think_part(response)
+
+    assert part.think == REPEATED_REASONING
+    assert part.encrypted == "signed-state"
+
+
+def test_build_think_part_respects_provider_switch():
+    runner = object.__new__(ToolLoopAgentRunner)
+    runner.provider = SimpleNamespace(
+        provider_config={"context_sanitizer": {"enabled": False}}
+    )
+    response = LLMResponse(
+        role="assistant",
+        reasoning_content=REPEATED_REASONING,
+    )
+
+    part = runner._build_think_part(response)
+
+    assert part.think == REPEATED_REASONING

@@ -279,7 +279,9 @@
     "thinkSummary": "思考 {count} 回",
     "toolSummary": "ツール使用 {count} 回",
     "think": "思考",
-    "toolUsed": "ツールを使用"
+    "toolUsed": "ツールを使用",
+    "showOriginal": "原文を表示",
+    "showSanitized": "原文を隠す"
   },
   "history": {
     "loadFailed": "メッセージを読み込めませんでした",

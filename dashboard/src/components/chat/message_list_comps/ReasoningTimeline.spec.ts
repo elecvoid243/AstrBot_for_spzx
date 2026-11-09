@@ -13,6 +13,10 @@ import { reactive } from "vue";
 import { mount } from "@vue/test-utils";
 import ReasoningTimeline from "./ReasoningTimeline.vue";
 
+vi.mock("@/i18n/composables", () => ({
+  useModuleI18n: () => ({ tm: (key: string) => key }),
+}));
+
 const anchorBottomMock = vi.hoisted(() => vi.fn());
 vi.mock("@/utils/scrollAnchor", () => ({
   anchorBottom: anchorBottomMock,
@@ -239,5 +243,40 @@ describe("ReasoningTimeline think live preview", () => {
     expect(
       wrapper.find("[data-testid='think-collapse-toggle']").exists(),
     ).toBe(false);
+  });
+});
+
+describe("ReasoningTimeline sanitized think", () => {
+  const ORIGINAL = ("OK.\nLet me write.\nLet me go.\nLet me go.\n").repeat(20);
+
+  it("shows the folded text and expands the original on demand", async () => {
+    const wrapper = mountTimeline([
+      {
+        type: "think",
+        think: "folded text",
+        think_original: ORIGINAL,
+        think_sanitized: true,
+        think_collapsed_lines: 76,
+      },
+    ]);
+
+    expect(wrapper.text()).toContain("folded text");
+    expect(wrapper.text()).not.toContain("Let me go.");
+
+    const toggle = wrapper.get('[data-testid="think-original-toggle"]');
+    expect(toggle.text()).toBe("reasoning.showOriginal");
+
+    await toggle.trigger("click");
+
+    expect(wrapper.text()).toContain("Let me go.");
+    expect(toggle.text()).toBe("reasoning.showSanitized");
+  });
+
+  it("does not show the toggle for untouched think parts", () => {
+    const wrapper = mountTimeline([{ type: "think", think: "plain thought" }]);
+
+    expect(wrapper.find('[data-testid="think-original-toggle"]').exists()).toBe(
+      false,
+    );
   });
 });

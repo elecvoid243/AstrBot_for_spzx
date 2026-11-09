@@ -588,6 +588,8 @@
     "toolUsed": "使用工具",
     "expandThink": "展开",
     "collapseThink": "收起",
+    "showOriginal": "查看原文",
+    "showSanitized": "收起原文",
     "userMessage": "你",
     "userMessageRelayed": "未送达子代理 · 已转达主 Agent"
   },

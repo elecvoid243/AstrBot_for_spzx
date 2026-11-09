@@ -33,12 +33,12 @@
 
         <MarkdownMessagePart
           v-if="inert && entry.kind === 'think' && !thinkCollapsed(entry)"
-          :content="entry.think || ''" :refs="null" :is-dark="Boolean(isDark)"
+          :content="displayedThink(entry)" :refs="null" :is-dark="Boolean(isDark)"
           :custom-html-tags="[]" :is-streaming="isStreaming" inert
         />
         <MarkdownRender
           v-else-if="entry.kind === 'think' && !thinkCollapsed(entry)"
-          :content="entry.think || ''"
+          :content="displayedThink(entry)"
           class="chat-markdown reasoning-text markdown-content"
           :final="!isStreaming"
           :smooth-streaming="isStreaming ? 'auto' : false"
@@ -103,6 +103,20 @@
           </ToolCallItem>
           <ToolCallCard v-else :tool-call="entry.tool" :is-dark="isDark" :is-active="isStreaming" :inert="inert" />
         </div>
+
+        <button
+          v-if="entry.kind === 'think' && entry.thinkSanitized"
+          class="think-collapse-toggle"
+          data-testid="think-original-toggle"
+          type="button"
+          @click="toggleOriginalThink(entry.key)"
+        >
+          {{
+            showOriginalThink.has(entry.key)
+              ? tm("reasoning.showSanitized")
+              : tm("reasoning.showOriginal")
+          }}
+        </button>
 
         <button
           v-if="
@@ -187,7 +201,7 @@ function thinkCollapsed(entry: TimelineEntry): boolean {
 }
 
 function thinkExpandable(entry: TimelineEntry): boolean {
-  return entry.kind === "think" && tailPreview(entry.think).truncated;
+  return entry.kind === "think" && tailPreview(displayedThink(entry)).truncated;
 }
 
 function toggleThink(key: string): void {
@@ -270,6 +284,8 @@ type TimelineEntry =
       kind: "think";
       title: string;
       think: string;
+      thinkOriginal?: string;
+      thinkSanitized?: boolean;
     }
   | {
       key: string;
@@ -308,6 +324,11 @@ const timelineEntries = computed<TimelineEntry[]>(() => {
         title:
           part.type === "think" ? tm("reasoning.think") : tm("reasoning.reply"),
         think,
+        thinkOriginal:
+          typeof part.think_original === "string"
+            ? part.think_original
+            : undefined,
+        thinkSanitized: part.think_sanitized === true,
       });
       return;
     }
@@ -343,6 +364,23 @@ const timelineEntries = computed<TimelineEntry[]>(() => {
   return entries;
 });
 
+const showOriginalThink = ref(new Set<string>());
+
+function displayedThink(entry: TimelineEntry): string {
+  if (entry.kind !== "think") return "";
+  if (entry.thinkSanitized && showOriginalThink.value.has(entry.key)) {
+    return entry.thinkOriginal ?? entry.think;
+  }
+  return entry.think;
+}
+
+function toggleOriginalThink(key: string): void {
+  const next = new Set(showOriginalThink.value);
+  if (next.has(key)) next.delete(key);
+  else next.add(key);
+  showOriginalThink.value = next;
+}
+
 // Live preview throttle (same cadence as the main agent's ReasoningBlock):
 // while streaming, the last think entry's preview only refreshes on a 2s
 // tick, so fast token output swaps text without per-delta flicker. The fixed
@@ -354,7 +392,7 @@ function updateLiveThinkPreview(): void {
   const entries = timelineEntries.value;
   const last = entries[entries.length - 1];
   liveThinkPreview.value =
-    last && last.kind === "think" ? tailPreview(last.think).text : "";
+    last && last.kind === "think" ? tailPreview(displayedThink(last)).text : "";
 }
 
 function stopLivePreviewTimer(): void {
@@ -394,7 +432,7 @@ function thinkPreviewText(entry: TimelineEntry, index: number): string {
   ) {
     return liveThinkPreview.value;
   }
-  return entry.kind === "think" ? tailPreview(entry.think).text : "";
+  return entry.kind === "think" ? tailPreview(displayedThink(entry)).text : "";
 }
 
 function normalizeToolCall(tool: Record<string, unknown>) {

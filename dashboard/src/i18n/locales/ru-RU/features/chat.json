@@ -552,6 +552,8 @@
     "toolUsed": "Использование инструмента",
     "expandThink": "Развернуть",
     "collapseThink": "Свернуть",
+    "showOriginal": "Показать оригинал",
+    "showSanitized": "Скрыть оригинал",
     "userMessage": "Вы",
     "userMessageRelayed": "Не доставлено субагенту · передано основному агенту"
   },

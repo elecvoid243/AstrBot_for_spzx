@@ -588,6 +588,8 @@
     "toolUsed": "Using Tool",
     "expandThink": "Expand",
     "collapseThink": "Collapse",
+    "showOriginal": "Show original",
+    "showSanitized": "Hide original",
     "userMessage": "You",
     "userMessageRelayed": "Not delivered to the subagent · relayed to the main agent"
   },

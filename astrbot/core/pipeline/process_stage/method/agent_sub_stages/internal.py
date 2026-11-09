@@ -6,6 +6,10 @@ from collections.abc import AsyncGenerator
 from dataclasses import replace
 
 from astrbot.core import db_helper, logger
+from astrbot.core.agent.context.repetition import (
+    RepetitionSanitizeConfig,
+    sanitize_message_think_parts,
+)
 from astrbot.core.agent.message import (
     CheckpointData,
     CheckpointMessageSegment,
@@ -532,6 +536,7 @@ class InternalAgentSubStage(Stage):
                                 agent_runner.run_context.messages,
                                 agent_runner.stats,
                                 user_aborted=agent_runner.was_aborted(),
+                                repetition_cfg=agent_runner.get_repetition_sanitize_config(),
                             )
 
                     elif streaming_response and not stream_to_general:
@@ -607,6 +612,7 @@ class InternalAgentSubStage(Stage):
                             agent_runner.run_context.messages,
                             agent_runner.stats,
                             user_aborted=agent_runner.was_aborted(),
+                            repetition_cfg=agent_runner.get_repetition_sanitize_config(),
                         )
 
                     asyncio.create_task(
@@ -669,6 +675,7 @@ class InternalAgentSubStage(Stage):
         all_messages: list[Message],
         runner_stats: AgentStats | None,
         user_aborted: bool = False,
+        repetition_cfg: RepetitionSanitizeConfig | None = None,
     ) -> None:
         if not req or not req.conversation:
             return
@@ -682,6 +689,11 @@ class InternalAgentSubStage(Stage):
             if message.role in ["assistant", "user"] and message._no_save:
                 continue
             messages_to_save.append(message)
+
+        messages_to_save = sanitize_message_think_parts(
+            messages_to_save,
+            repetition_cfg or RepetitionSanitizeConfig(),
+        )
 
         checkpoint_id = event.get_extra("llm_checkpoint_id")
         has_checkpoint = isinstance(checkpoint_id, str) and bool(checkpoint_id)

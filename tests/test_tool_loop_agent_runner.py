@@ -3561,3 +3561,92 @@ def test_build_think_part_respects_provider_switch():
     part = runner._build_think_part(response)
 
     assert part.think == REPEATED_REASONING
+
+
+class RepeatedReasoningProvider(MockProvider):
+    """Return a plain assistant response carrying repeated reasoning."""
+
+    async def text_chat(self, **kwargs) -> LLMResponse:
+        self.call_count += 1
+        return LLMResponse(
+            role="assistant",
+            completion_text="done",
+            reasoning_content=REPEATED_REASONING,
+            usage=TokenUsage(input_other=10, output=5),
+        )
+
+
+class RepeatedReasoningToolProvider(MockProvider):
+    """Return one tool call with repeated reasoning, then a plain response."""
+
+    async def text_chat(self, **kwargs) -> LLMResponse:
+        self.call_count += 1
+        if self.call_count == 1:
+            return LLMResponse(
+                role="assistant",
+                completion_text="",
+                reasoning_content=REPEATED_REASONING,
+                tools_call_name=["test_tool"],
+                tools_call_args=[{"query": "test"}],
+                tools_call_ids=["call_repeated_reasoning"],
+                usage=TokenUsage(input_other=10, output=5),
+            )
+        return LLMResponse(
+            role="assistant",
+            completion_text="done",
+            usage=TokenUsage(input_other=10, output=5),
+        )
+
+
+@pytest.mark.asyncio
+async def test_plain_response_write_point_sanitizes_reasoning(
+    runner, provider_request, mock_tool_executor, mock_hooks
+):
+    """The plain assistant write point must use the sanitized ThinkPart."""
+    provider = RepeatedReasoningProvider()
+    await runner.reset(
+        provider=provider,
+        request=provider_request,
+        run_context=ContextWrapper(context=None),
+        tool_executor=mock_tool_executor,
+        agent_hooks=mock_hooks,
+        streaming=False,
+    )
+
+    async for _ in runner.step():
+        pass
+
+    assistant = runner.run_context.messages[-1]
+    assert assistant.role == "assistant"
+    think = next(part for part in assistant.content if isinstance(part, ThinkPart))
+    assert think.think.count("Let me go.") == 2
+    assert "[context sanitizer:" in think.think
+
+
+@pytest.mark.asyncio
+async def test_tool_call_write_point_sanitizes_reasoning(
+    runner, provider_request, mock_tool_executor, mock_hooks
+):
+    """The tool-call write point must use the sanitized ThinkPart."""
+    provider = RepeatedReasoningToolProvider()
+    await runner.reset(
+        provider=provider,
+        request=provider_request,
+        run_context=ContextWrapper(context=None),
+        tool_executor=mock_tool_executor,
+        agent_hooks=mock_hooks,
+        streaming=False,
+    )
+
+    async for _ in runner.step_until_done(5):
+        pass
+
+    assistant = next(
+        message
+        for message in runner.run_context.messages
+        if message.role == "assistant"
+        and any(isinstance(part, ThinkPart) for part in message.content)
+    )
+    think = next(part for part in assistant.content if isinstance(part, ThinkPart))
+    assert think.think.count("Let me go.") == 2
+    assert "[context sanitizer:" in think.think

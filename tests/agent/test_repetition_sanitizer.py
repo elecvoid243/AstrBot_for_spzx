@@ -70,6 +70,15 @@ def test_three_line_loop_is_collapsed():
     assert "19 x 3-line repeated block" in result.text
 
 
+def test_collapses_consecutive_identical_runs():
+    text = ("unique long filler line\n") * 50
+    result = sanitize_repetitive_text(text, RepetitionSanitizeConfig())
+
+    assert result.changed is True
+    assert result.text.count("unique long filler line") == 1
+    assert "49 x repeated line" in result.text
+
+
 def test_is_idempotent_with_multiple_blocks():
     blocks = [
         "".join(

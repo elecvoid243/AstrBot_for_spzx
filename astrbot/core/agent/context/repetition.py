@@ -219,6 +219,38 @@ def _remove_block_occurrences(
     return "".join(out), len(starts) - 1
 
 
+def _collapse_identical_runs(
+    text: str, cfg: RepetitionSanitizeConfig
+) -> tuple[str, int]:
+    """Collapse consecutive identical non-empty lines.
+
+    Args:
+        text: Current reasoning text.
+        cfg: Sanitizer thresholds.
+
+    Returns:
+        ``(new_text, collapsed_runs)``.
+    """
+    lines = text.splitlines(keepends=True)
+    out: list[str] = []
+    collapsed = 0
+    index = 0
+    while index < len(lines):
+        key = lines[index].strip()
+        end = index + 1
+        while end < len(lines) and lines[end].strip() == key:
+            end += 1
+        run = end - index
+        if key and run >= cfg.min_repeats:
+            out.append(lines[index])
+            out.append(f"[context sanitizer: collapsed {run - 1} x repeated line]\n")
+            collapsed += 1
+        else:
+            out.extend(lines[index:end])
+        index = end
+    return "".join(out), collapsed
+
+
 def sanitize_repetitive_text(
     text: str, cfg: RepetitionSanitizeConfig
 ) -> SanitizeResult:
@@ -251,6 +283,9 @@ def sanitize_repetitive_text(
                 collapsed_blocks += removed
                 if removed == 0:
                     break
+
+        text, run_blocks = _collapse_identical_runs(text, cfg)
+        collapsed_blocks += run_blocks
 
         remaining = [line.strip() for line in text.splitlines() if line.strip()]
         remaining_unique = {line for line in remaining if len(line) >= 4}

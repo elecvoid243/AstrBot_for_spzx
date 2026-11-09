@@ -22,6 +22,10 @@ from astrbot.builtin_stars.session_messages.tools import (
     SessionMessageChain,
 )
 from astrbot.core import logger, sp
+from astrbot.core.agent.context.repetition import (
+    RepetitionSanitizeConfig,
+    sanitize_history_think_parts,
+)
 from astrbot.core.agent.message import get_checkpoint_id, is_checkpoint_message
 from astrbot.core.core_lifecycle import AstrBotCoreLifecycle
 from astrbot.core.db import BaseDatabase
@@ -370,6 +374,7 @@ def _sanitize_history_bot_records(history_data: list[dict]) -> list[dict]:
         sanitized = _sanitize_ask_user_choice_tool_call_parts(message)
         if sanitized is not message:
             content["message"] = sanitized
+    sanitize_history_think_parts(history_data, RepetitionSanitizeConfig())
     return history_data
 
 
@@ -2358,9 +2363,7 @@ class ChatService:
                                 freeze_pending_tool_calls=False
                             )
                             saved = saved or run.history_record
-                            previous = (
-                                serialize_history_entry(saved) if saved else None
-                            )
+                            previous = serialize_history_entry(saved) if saved else None
                             if previous is not None:
                                 # Updates persist through a separate DB session;
                                 # the original row object still contains its

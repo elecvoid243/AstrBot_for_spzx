@@ -558,10 +558,7 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
 
         # Always add send_shared_context tool for shared context feature
         try:
-            from astrbot.core.subagent_manager import (
-                SEND_SHARED_CONTEXT_TOOL,
-                SubAgentManager,
-            )
+            from astrbot.core.subagent_tools import SEND_SHARED_CONTEXT_TOOL
 
             session_id = event.unified_msg_origin
             session = SubAgentManager.get_session(session_id)

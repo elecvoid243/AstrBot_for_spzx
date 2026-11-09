@@ -690,10 +690,15 @@ class InternalAgentSubStage(Stage):
                 continue
             messages_to_save.append(message)
 
-        messages_to_save = sanitize_message_think_parts(
-            messages_to_save,
-            repetition_cfg or RepetitionSanitizeConfig(),
-        )
+        cfg = repetition_cfg or RepetitionSanitizeConfig()
+        if cfg.enabled:
+            sanitized_messages = sanitize_message_think_parts(messages_to_save, cfg)
+            if sanitized_messages is not messages_to_save:
+                logger.info(
+                    "context sanitizer: folded repeated reasoning before saving conversation %s",
+                    req.conversation.cid,
+                )
+            messages_to_save = sanitized_messages
 
         checkpoint_id = event.get_extra("llm_checkpoint_id")
         has_checkpoint = isinstance(checkpoint_id, str) and bool(checkpoint_id)

@@ -131,13 +131,26 @@ def test_three_line_loop_is_collapsed():
     assert "19 x 3-line repeated block" in result.text
 
 
-def test_collapses_consecutive_identical_runs():
+def test_preserves_original_identical_runs():
     text = ("unique long filler line\n") * 50
-    result = sanitize_repetitive_text(text, RepetitionSanitizeConfig())
+    cfg = RepetitionSanitizeConfig(fallback_dup_ratio=1.0)
+    result = sanitize_repetitive_text(text, cfg)
 
-    assert result.changed is True
-    assert result.text.count("unique long filler line") == 1
-    assert "49 x repeated line" in result.text
+    assert result.changed is False
+    assert result.text == text
+
+
+def test_preserves_original_code_and_table_runs():
+    code = "".join(f"int value_{index} = {index};\n" for index in range(20))
+    code += "}\n" * 8
+    table = "".join(f"| row {index} | value {index} |\n" for index in range(10))
+    table += "|---|---|\n" * 8
+    text = code + table
+    cfg = RepetitionSanitizeConfig(fallback_dup_ratio=1.0)
+    result = sanitize_repetitive_text(text, cfg)
+
+    assert result.changed is False
+    assert result.text == text
 
 
 def test_is_idempotent_with_multiple_blocks():
@@ -536,14 +549,39 @@ def _remove_block_occurrences(
     return "".join(out), len(starts) - 1
 
 
+def _long_run_lines(text: str, min_repeats: int) -> set[str]:
+    """Return line texts that already form long runs in the original text.
+
+    Args:
+        text: Original reasoning text.
+        min_repeats: Minimum run length.
+
+    Returns:
+        Stripped line texts whose original consecutive run is long enough.
+    """
+    lines = text.splitlines()
+    preserved: set[str] = set()
+    index = 0
+    while index < len(lines):
+        key = lines[index].strip()
+        end = index + 1
+        while end < len(lines) and lines[end].strip() == key:
+            end += 1
+        if key and end - index >= min_repeats:
+            preserved.add(key)
+        index = end
+    return preserved
+
+
 def _collapse_identical_runs(
-    text: str, cfg: RepetitionSanitizeConfig
+    text: str, cfg: RepetitionSanitizeConfig, preserved_lines: set[str]
 ) -> tuple[str, int]:
-    """Collapse consecutive identical non-empty lines.
+    """Collapse consecutive identical runs created by block removal.
 
     Args:
         text: Current reasoning text.
         cfg: Sanitizer thresholds.
+        preserved_lines: Line texts that already had long runs in the original.
 
     Returns:
         ``(new_text, collapsed_runs)``.
@@ -558,7 +596,7 @@ def _collapse_identical_runs(
         while end < len(lines) and lines[end].strip() == key:
             end += 1
         run = end - index
-        if key and run >= cfg.min_repeats:
+        if key and run >= cfg.min_repeats and key not in preserved_lines:
             out.append(lines[index])
             out.append(
                 f"[context sanitizer: collapsed {run - 1} x repeated line]\n"
@@ -591,6 +629,7 @@ def sanitize_repetitive_text(
         if len(non_empty) < cfg.min_lines:
             return SanitizeResult(text=text, original_chars=original_chars)
 
+        preserved_lines = _long_run_lines(text, cfg.min_repeats)
         collapsed_blocks = 0
         if len(all_lines) <= cfg.max_scan_lines:
             for _ in range(MAX_SANITIZE_PASSES):
@@ -605,7 +644,7 @@ def sanitize_repetitive_text(
                 if removed == 0:
                     break
 
-        text, run_blocks = _collapse_identical_runs(text, cfg)
+        text, run_blocks = _collapse_identical_runs(text, cfg, preserved_lines)
         collapsed_blocks += run_blocks
 
         remaining = [line.strip() for line in text.splitlines() if line.strip()]
@@ -817,6 +856,9 @@ Expected: 打印 `tests/fixtures/context_sanitizer/d40_think.json` 及文件大�
 import json
 from pathlib import Path
 
+from astrbot.core.agent.context.truncator import ContextTruncator
+from astrbot.core.agent.message import Message
+
 FIXTURE = (
     Path(__file__).parent.parent
     / "fixtures"
@@ -887,6 +929,20 @@ def test_d40_2314_collapses_loop():
     assert _max_identical_run(result.text) < 8
     for line in _meaningful_lines(original):
         assert line in result.text
+
+
+def test_d40_2503_result_passes_truncator_fix_messages():
+    original = _d40_think()[2503]
+    result = sanitize_repetitive_text(original, RepetitionSanitizeConfig())
+    messages = [
+        Message(role="assistant", content=[ThinkPart(think=result.text)])
+    ]
+
+    fixed = ContextTruncator().fix_messages(messages)
+
+    assert len(fixed) == 1
+    assert fixed[0].role == "assistant"
+    assert fixed[0].content[0].think == result.text
 ```
 
 - [ ] **Step 3: 运行测试确认通过**

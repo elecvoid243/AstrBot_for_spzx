@@ -157,6 +157,14 @@ describe("ReasoningTimeline think live preview", () => {
     expect(preview.text()).not.toContain("UNIQUE-HEAD");
   });
 
+  it("does not show sanitizer markers in the collapsed preview", () => {
+    const text = `HEAD ${"h".repeat(120)}\n[context sanitizer: collapsed 7 x 5-line repeated block]\nTAIL ${"t".repeat(120)}`;
+    const wrapper = mountCollapsible([{ type: "think", think: text }]);
+    const preview = wrapper.find("[data-testid='think-preview']");
+    expect(preview.text()).toContain("TAIL");
+    expect(preview.text()).not.toContain("context sanitizer");
+  });
+
   it("keeps short think entries fully visible without an expand affordance", () => {
     const wrapper = mountCollapsible([{ type: "think", think: "short thought" }]);
     const preview = wrapper.find("[data-testid='think-preview']");
@@ -278,5 +286,19 @@ describe("ReasoningTimeline sanitized think", () => {
     expect(wrapper.find('[data-testid="think-original-toggle"]').exists()).toBe(
       false,
     );
+  });
+
+  it("renders sanitizer markers as fold rules", () => {
+    const wrapper = mountTimeline([
+      {
+        type: "think",
+        think: "before\n[context sanitizer: collapsed 7 x 5-line repeated block]\nafter",
+      },
+    ]);
+
+    expect(wrapper.find(".sanitizer-fold-rule").exists()).toBe(true);
+    expect(wrapper.text()).toContain("before");
+    expect(wrapper.text()).toContain("after");
+    expect(wrapper.text()).not.toContain("[context sanitizer:");
   });
 });

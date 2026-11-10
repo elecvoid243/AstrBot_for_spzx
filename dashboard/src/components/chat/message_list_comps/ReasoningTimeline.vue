@@ -31,22 +31,12 @@
           <span class="reasoning-step-title">{{ entry.title }}</span>
         </div>
 
-        <MarkdownMessagePart
-          v-if="inert && entry.kind === 'think' && !thinkCollapsed(entry)"
-          :content="displayedThink(entry)" :refs="null" :is-dark="Boolean(isDark)"
-          :custom-html-tags="[]" :is-streaming="isStreaming" inert
-        />
-        <MarkdownRender
-          v-else-if="entry.kind === 'think' && !thinkCollapsed(entry)"
+        <ReasoningThinkContent
+          v-if="entry.kind === 'think' && !thinkCollapsed(entry)"
           :content="displayedThink(entry)"
-          class="chat-markdown reasoning-text markdown-content"
-          :final="!isStreaming"
-          :smooth-streaming="isStreaming ? 'auto' : false"
-          :fade="false"
-          :typewriter="false"
+          :inert="inert"
           :is-dark="isDark"
-          :max-live-nodes="MARKDOWN_RENDER_MAX_LIVE_NODES"
-          :style="CHAT_MARKDOWN_HEADING_STYLE"
+          :is-streaming="isStreaming"
         />
 
         <div
@@ -139,14 +129,10 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
-import { MarkdownRender } from "markstream-vue";
-import {
-  CHAT_MARKDOWN_HEADING_STYLE,
-  MARKDOWN_RENDER_MAX_LIVE_NODES,
-} from "@/components/chat/markdownRenderConfig";
 import IPythonToolBlock from "@/components/chat/message_list_comps/IPythonToolBlock.vue";
 import ToolCallCard from "@/components/chat/message_list_comps/ToolCallCard.vue";
-import MarkdownMessagePart from "./MarkdownMessagePart.vue";
+import ReasoningThinkContent from "./ReasoningThinkContent.vue";
+import { isSanitizerMarkerLine } from "./reasoningSanitizer";
 import ToolCallItem from "@/components/chat/message_list_comps/ToolCallItem.vue";
 import FileChangeCard from "@/components/chat/message_list_comps/FileChangeCard.vue";
 import { collectFileChanges } from "@/utils/fileChangeTool";
@@ -184,7 +170,7 @@ function tailPreview(think: string): { text: string; truncated: boolean } {
   const lines = think
     .split(/\r?\n/)
     .map((line) => line.trim())
-    .filter(Boolean);
+    .filter((line) => Boolean(line) && !isSanitizerMarkerLine(line));
   const tail = lines.slice(-2).join(" ");
   if (tail.length <= THINK_PREVIEW_MAX_CHARS) {
     return { text: tail, truncated: false };

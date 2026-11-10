@@ -281,7 +281,17 @@
     "think": "思考",
     "toolUsed": "ツールを使用",
     "showOriginal": "原文を表示",
-    "showSanitized": "原文を隠す"
+    "showSanitized": "原文を隠す",
+    "sanitizerFolded": "折りたたみ",
+    "sanitizerTimes": "回の繰り返し",
+    "sanitizerRunTimes": "回の連続繰り返し行",
+    "sanitizerLinesPer": "行/回",
+    "sanitizerFallbackEyebrow": "全体フォールバック",
+    "sanitizerFallbackTitle": "繰り返し思考を折りたたみました",
+    "sanitizerLines": "行",
+    "sanitizerChars": "文字",
+    "sanitizerFoldTooltip": "最初の出現を残し、{period} 行の繰り返しを {repeats} 回削除しました。",
+    "sanitizerRunTooltip": "最初の出現を残し、連続する繰り返し行を {repeats} 回削除しました。"
   },
   "history": {
     "loadFailed": "メッセージを読み込めませんでした",

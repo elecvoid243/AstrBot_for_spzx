@@ -26,11 +26,32 @@ describe("parseThinkSegments", () => {
     ].join("\n");
 
     expect(parseThinkSegments(text)).toEqual([
-      { kind: "text", text: "a" },
       { kind: "run", repeats: 8 },
       { kind: "text", text: "b" },
       { kind: "fallback", lines: 1741, chars: 28231 },
       { kind: "text", text: "c" },
+    ]);
+  });
+
+  it("hides the kept first occurrence before a period marker", () => {
+    const text =
+      "intro\nblock 1\nblock 2\nblock 3\n[context sanitizer: collapsed 2 x 3-line repeated block]\nafter";
+
+    expect(parseThinkSegments(text)).toEqual([
+      { kind: "text", text: "intro" },
+      { kind: "period", repeats: 2, period: 3 },
+      { kind: "text", text: "after" },
+    ]);
+  });
+
+  it("hides the kept line before a run marker", () => {
+    const text =
+      "intro\nkeep\n[context sanitizer: collapsed 8 x repeated line]\nafter";
+
+    expect(parseThinkSegments(text)).toEqual([
+      { kind: "text", text: "intro" },
+      { kind: "run", repeats: 8 },
+      { kind: "text", text: "after" },
     ]);
   });
 

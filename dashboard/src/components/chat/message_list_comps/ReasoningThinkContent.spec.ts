@@ -54,6 +54,16 @@ describe("ReasoningThinkContent", () => {
     expect(wrapper.text()).not.toContain("[context sanitizer:");
   });
 
+  it("hides the kept first occurrence before a period marker", () => {
+    const wrapper = mountContent(
+      "intro\nblock 1\nblock 2\nblock 3\n[context sanitizer: collapsed 2 x 3-line repeated block]\nafter",
+    );
+
+    expect(wrapper.text()).toContain("intro");
+    expect(wrapper.text()).not.toContain("block 1");
+    expect(wrapper.text()).toContain("after");
+  });
+
   it("replaces a fallback marker with a fallback block", () => {
     const wrapper = mountContent(
       "[context sanitizer: collapsed repetitive reasoning (1741 lines, 28231 chars)]",

@@ -77,7 +77,7 @@ AstrBot 当前没有任何输出重复检测。流式路径只把 `reasoning_con
 - 发生折叠时：`think` 替换为折叠文本；保留 `think_original`（原文）；附加 `think_sanitized: true` 和 `think_collapsed_lines`。
 - `get_message_markers()` 的 `reply_snippet` 本来就排除 reasoning，不受影响；删除、导出、附件提取等非展示路径不调用 D。
 
-前端默认渲染 `think`（消毒版）。`ReasoningTimeline.vue`（`ReasoningBlock` 展开后复用它）对 `think_sanitized` 的片段显示“查看原文”控制；展开后渲染 `think_original`，再次点击回到消毒版。第一版不新增全局设置项：“默认打开”指默认渲染消毒版，用户通过单条展开查看原文。新增文案键 `reasoning.showOriginal` / `reasoning.showSanitized`，补齐四个 locale。
+前端默认渲染 `think`（消毒版），并隐藏后端保留的第一遍块，只显示折叠标记；模型上下文仍保留第一遍作为锚点。`ReasoningTimeline.vue`（`ReasoningBlock` 展开后复用它）对 `think_sanitized` 的片段显示“已折叠 x 次重复”控制；展开后渲染 `think_original`，再次点击回到消毒版。第一版不新增全局设置项：“默认打开”指默认渲染消毒版，用户通过单条展开查看原文。新增文案键 `reasoning.showOriginal` / `reasoning.showSanitized`，补齐四个 locale。
 
 实时流没有折叠：检测到周期块时前面的内容已经推送给前端，回滚或缓冲的复杂度不划算。因此同一轮对话在刷新前显示原始、刷新后显示消毒版；这是有意的行为差异，并在“查看原文”里保留完整证据。
 

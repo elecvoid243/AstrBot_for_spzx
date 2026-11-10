@@ -301,4 +301,37 @@ describe("ReasoningTimeline sanitized think", () => {
     expect(wrapper.text()).toContain("after");
     expect(wrapper.text()).not.toContain("[context sanitizer:");
   });
+
+  it("does not render the kept first occurrence before a marker", () => {
+    const wrapper = mountTimeline([
+      {
+        type: "think",
+        think: "intro\nblock 1\nblock 2\nblock 3\n[context sanitizer: collapsed 2 x 3-line repeated block]\nafter",
+      },
+    ]);
+
+    expect(wrapper.text()).toContain("intro");
+    expect(wrapper.text()).not.toContain("block 1");
+    expect(wrapper.text()).toContain("after");
+  });
+
+  it("labels the original toggle with the fold summary", async () => {
+    const wrapper = mountTimeline([
+      {
+        type: "think",
+        think: "intro\nblock 1\nblock 2\nblock 3\n[context sanitizer: collapsed 2 x 3-line repeated block]\nafter",
+        think_original: "original",
+        think_sanitized: true,
+      },
+    ]);
+
+    const toggle = wrapper.get('[data-testid="think-original-toggle"]');
+    expect(toggle.text()).toContain("reasoning.sanitizerFolded");
+    expect(toggle.text()).toContain("2");
+    expect(toggle.text()).toContain("reasoning.sanitizerTimes");
+
+    await toggle.trigger("click");
+
+    expect(toggle.text()).toBe("reasoning.showSanitized");
+  });
 });

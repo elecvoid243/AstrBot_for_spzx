@@ -29,6 +29,34 @@ export function isSanitizerMarkerLine(line: string): boolean {
 }
 
 /**
+ * Drop the kept first occurrence that precedes a fold marker.
+ *
+ * The backend keeps one occurrence as an anchor for the model, but the
+ * ChatUI should not display any of the folded block. The marker's period
+ * tells us how many trailing lines belong to that kept occurrence.
+ *
+ * Args:
+ *   segments: Segments parsed so far.
+ *   count: Number of trailing lines to hide.
+ */
+function trimKeptBlock(segments: ThinkSegment[], count: number): void {
+  if (count <= 0) return;
+  const last = segments[segments.length - 1];
+  if (!last || last.kind !== "text") return;
+  const lines = last.text.split("\n");
+  if (lines.length < count) return;
+  const remaining = lines.slice(0, -count);
+  while (remaining.length && !remaining[remaining.length - 1].trim()) {
+    remaining.pop();
+  }
+  if (remaining.length) {
+    last.text = remaining.join("\n");
+  } else {
+    segments.pop();
+  }
+}
+
+/**
  * Split a folded reasoning string into markdown text and marker segments.
  *
  * Args:
@@ -59,6 +87,7 @@ export function parseThinkSegments(text: string): ThinkSegment[] {
     const period = PERIOD_MARKER.exec(trimmed);
     if (period) {
       flush();
+      trimKeptBlock(segments, Number(period[2]));
       segments.push({
         kind: "period",
         repeats: Number(period[1]),
@@ -70,6 +99,7 @@ export function parseThinkSegments(text: string): ThinkSegment[] {
     const run = RUN_MARKER.exec(trimmed);
     if (run) {
       flush();
+      trimKeptBlock(segments, 1);
       segments.push({ kind: "run", repeats: Number(run[1]) });
       continue;
     }

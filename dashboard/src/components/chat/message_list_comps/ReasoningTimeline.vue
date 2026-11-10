@@ -99,13 +99,14 @@
           class="think-collapse-toggle"
           data-testid="think-original-toggle"
           type="button"
+          :title="
+            showOriginalThink.has(entry.key)
+              ? tm('reasoning.showSanitized')
+              : tm('reasoning.showOriginal')
+          "
           @click="toggleOriginalThink(entry.key)"
         >
-          {{
-            showOriginalThink.has(entry.key)
-              ? tm("reasoning.showSanitized")
-              : tm("reasoning.showOriginal")
-          }}
+          {{ originalToggleLabel(entry) }}
         </button>
 
         <button
@@ -132,7 +133,10 @@ import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import IPythonToolBlock from "@/components/chat/message_list_comps/IPythonToolBlock.vue";
 import ToolCallCard from "@/components/chat/message_list_comps/ToolCallCard.vue";
 import ReasoningThinkContent from "./ReasoningThinkContent.vue";
-import { isSanitizerMarkerLine } from "./reasoningSanitizer";
+import {
+  isSanitizerMarkerLine,
+  parseThinkSegments,
+} from "./reasoningSanitizer";
 import ToolCallItem from "@/components/chat/message_list_comps/ToolCallItem.vue";
 import FileChangeCard from "@/components/chat/message_list_comps/FileChangeCard.vue";
 import { collectFileChanges } from "@/utils/fileChangeTool";
@@ -365,6 +369,25 @@ function toggleOriginalThink(key: string): void {
   if (next.has(key)) next.delete(key);
   else next.add(key);
   showOriginalThink.value = next;
+}
+
+function foldedRepeatCount(entry: TimelineEntry): number {
+  if (entry.kind !== "think") return 0;
+  return parseThinkSegments(entry.think).reduce((total, segment) => {
+    if (segment.kind === "period" || segment.kind === "run") {
+      return total + segment.repeats;
+    }
+    return total;
+  }, 0);
+}
+
+function originalToggleLabel(entry: TimelineEntry): string {
+  if (showOriginalThink.value.has(entry.key)) {
+    return tm("reasoning.showSanitized");
+  }
+  const repeats = foldedRepeatCount(entry);
+  if (!repeats) return tm("reasoning.showOriginal");
+  return `${tm("reasoning.sanitizerFolded")} ${repeats.toLocaleString("en-US")} ${tm("reasoning.sanitizerTimes")}`;
 }
 
 // Live preview throttle (same cadence as the main agent's ReasoningBlock):

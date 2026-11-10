@@ -99,7 +99,10 @@ import {
 import { useModuleI18n } from "@/i18n/composables";
 import ThinkingIndicator from "@/components/chat/ThinkingIndicator.vue";
 import ReasoningTimeline from "@/components/chat/message_list_comps/ReasoningTimeline.vue";
-import { isSanitizerMarkerLine } from "./reasoningSanitizer";
+import {
+  isSanitizerMarkerLine,
+  lastTextSegment,
+} from "./reasoningSanitizer";
 import {
   collectFileChanges,
   fileBasename,
@@ -209,7 +212,7 @@ function handlePrimaryAction() {
 }
 
 function latestReasoningPreview() {
-  const lines = thinkingText.value
+  const lines = lastTextSegment(thinkingText.value)
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter((line) => Boolean(line) && !isSanitizerMarkerLine(line));

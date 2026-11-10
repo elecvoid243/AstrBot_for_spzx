@@ -121,3 +121,21 @@ export function parseThinkSegments(text: string): ThinkSegment[] {
   flush();
   return segments;
 }
+
+/**
+ * Return the last text segment, excluding all marker and folded-block content.
+ *
+ * Args:
+ *   text: Reasoning content, possibly containing sanitizer marker lines.
+ *
+ * Returns:
+ *   The text after the last marker, or the whole text when there is none.
+ */
+export function lastTextSegment(text: string): string {
+  const segments = parseThinkSegments(text);
+  for (let index = segments.length - 1; index >= 0; index -= 1) {
+    const segment = segments[index];
+    if (segment.kind === "text") return segment.text;
+  }
+  return "";
+}

@@ -135,6 +135,7 @@ import ToolCallCard from "@/components/chat/message_list_comps/ToolCallCard.vue"
 import ReasoningThinkContent from "./ReasoningThinkContent.vue";
 import {
   isSanitizerMarkerLine,
+  lastTextSegment,
   parseThinkSegments,
 } from "./reasoningSanitizer";
 import ToolCallItem from "@/components/chat/message_list_comps/ToolCallItem.vue";
@@ -171,7 +172,7 @@ const expandedThinkKeys = ref(new Set<string>());
  * thinking rather than the head.
  */
 function tailPreview(think: string): { text: string; truncated: boolean } {
-  const lines = think
+  const lines = lastTextSegment(think)
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter((line) => Boolean(line) && !isSanitizerMarkerLine(line));

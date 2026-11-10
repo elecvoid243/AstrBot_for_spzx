@@ -165,6 +165,14 @@ describe("ReasoningTimeline think live preview", () => {
     expect(preview.text()).not.toContain("context sanitizer");
   });
 
+  it("does not show the kept block in the collapsed preview", () => {
+    const text = `HEAD ${"h".repeat(120)}\nblock 1\nblock 2\nblock 3\n[context sanitizer: collapsed 2 x 3-line repeated block]\nTAIL ${"t".repeat(120)}`;
+    const wrapper = mountCollapsible([{ type: "think", think: text }]);
+    const preview = wrapper.find("[data-testid='think-preview']");
+    expect(preview.text()).toContain("TAIL");
+    expect(preview.text()).not.toContain("block 1");
+  });
+
   it("keeps short think entries fully visible without an expand affordance", () => {
     const wrapper = mountCollapsible([{ type: "think", think: "short thought" }]);
     const preview = wrapper.find("[data-testid='think-preview']");

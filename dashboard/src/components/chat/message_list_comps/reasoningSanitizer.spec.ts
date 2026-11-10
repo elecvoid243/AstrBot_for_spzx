@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   isSanitizerMarkerLine,
+  lastTextSegment,
   parseThinkSegments,
 } from "./reasoningSanitizer";
 
@@ -105,5 +106,18 @@ describe("isSanitizerMarkerLine", () => {
         "prefix [context sanitizer: collapsed 7 x 5-line repeated block]",
       ),
     ).toBe(false);
+  });
+});
+
+describe("lastTextSegment", () => {
+  it("returns the text after the last marker, excluding the kept block", () => {
+    const text =
+      "intro\nblock 1\nblock 2\nblock 3\n[context sanitizer: collapsed 2 x 3-line repeated block]\nafter";
+
+    expect(lastTextSegment(text)).toBe("after");
+  });
+
+  it("returns the whole text when there is no marker", () => {
+    expect(lastTextSegment("plain thought")).toBe("plain thought");
   });
 });

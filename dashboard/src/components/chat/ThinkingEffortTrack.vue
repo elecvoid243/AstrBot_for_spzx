@@ -181,7 +181,7 @@ function selectStop(value: string): void {
   left: 0;
   right: 0;
   top: 50%;
-  height: 6px;
+  height: 12px;
   overflow: hidden;
   border-radius: 999px;
   background: rgba(var(--v-theme-on-surface), 0.12);
@@ -194,7 +194,8 @@ function selectStop(value: string): void {
   border-radius: inherit;
   background: linear-gradient(
     90deg,
-    rgb(var(--v-theme-primary)),
+    rgba(var(--v-theme-primary), 0.4) 0%,
+    rgb(var(--v-theme-primary)) 50%,
     rgb(var(--v-theme-darkprimary))
   );
   transition: clip-path 160ms cubic-bezier(0.2, 0.8, 0.2, 1);

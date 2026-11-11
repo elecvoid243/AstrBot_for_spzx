@@ -241,7 +241,7 @@ function openEditor(): void {
 .effort-chip-readout__value {
   overflow: hidden;
   color: var(--sp-text-primary);
-  font-size: 26px;
+  font-size: 22px;
   font-weight: 600;
   line-height: 1.1;
   letter-spacing: -0.02em;

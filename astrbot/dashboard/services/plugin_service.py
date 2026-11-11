@@ -1072,11 +1072,16 @@ class PluginService:
             urls = [custom_url]
         else:
             cache_file = os.path.join(data_dir, "plugins.json")
-            md5_url = "https://api.soulter.top/astrbot/plugins-md5"
-            urls = [
-                "https://api.soulter.top/astrbot/plugins",
-                "https://github.com/AstrBotDevs/AstrBot_Plugins_Collection/raw/refs/heads/main/plugin_cache_original.json",
-            ]
+            # Offline deployment: the public plugin registry is unreachable, so
+            # the outbound requests are disabled and only the local cache is used.
+            # Uncomment the lines below to restore the requests.
+            md5_url = None
+            urls = []
+            # md5_url = "https://api.soulter.top/astrbot/plugins-md5"
+            # urls = [
+            #     "https://api.soulter.top/astrbot/plugins",
+            #     "https://github.com/AstrBotDevs/AstrBot_Plugins_Collection/raw/refs/heads/main/plugin_cache_original.json",
+            # ]
         return RegistrySource(urls=urls, cache_file=cache_file, md5_url=md5_url)
 
     @staticmethod

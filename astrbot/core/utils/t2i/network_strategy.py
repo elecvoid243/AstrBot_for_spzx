@@ -103,8 +103,11 @@ class NetworkRenderStrategy(RenderStrategy):
         self.template_manager = TemplateManager()
 
     async def initialize(self) -> None:
-        if self.BASE_RENDER_URL == ASTRBOT_T2I_DEFAULT_ENDPOINT:
-            asyncio.create_task(self.get_official_endpoints())
+        # Offline deployment: the official endpoint list request is disabled, so
+        # rendering only uses BASE_RENDER_URL. Uncomment to restore the request.
+        # if self.BASE_RENDER_URL == ASTRBOT_T2I_DEFAULT_ENDPOINT:
+        #     asyncio.create_task(self.get_official_endpoints())
+        pass
 
     async def get_template(self, name: str = "base") -> str:
         """通过名称获取文转图 HTML 模板"""

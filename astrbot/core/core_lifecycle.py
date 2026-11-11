@@ -40,7 +40,7 @@ from astrbot.core.updater import AstrBotUpdater
 from astrbot.core.utils.event_loop_diagnostics import (
     create_event_loop_diagnostic_tasks,
 )
-from astrbot.core.utils.llm_metadata import update_llm_metadata
+from astrbot.core.utils.llm_metadata import update_llm_metadata  # noqa: F401
 from astrbot.core.utils.migra_helper import migra
 from astrbot.core.utils.temp_dir_cleaner import TempDirCleaner
 
@@ -301,7 +301,9 @@ class AstrBotCoreLifecycle:
         # 初始化关闭控制面板的事件
         self.dashboard_shutdown_event = asyncio.Event()
 
-        asyncio.create_task(update_llm_metadata())
+        # Offline deployment: skip fetching https://models.dev/api.json etc.
+        # update_llm_metadata stays imported for tests that patch it.
+        # asyncio.create_task(update_llm_metadata())
 
     def _load(self) -> None:
         """加载事件总线和任务并初始化."""

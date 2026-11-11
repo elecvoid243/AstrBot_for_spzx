@@ -232,20 +232,27 @@ class AstrBotConfigManager:
         self,
         config: dict = DEFAULT_CONFIG,
         name: str | None = None,
+        conf_id: str | None = None,
     ) -> str:
         """Create and persist a configuration profile.
 
         Args:
             config: Initial profile configuration.
             name: Optional display name.
+            conf_id: Optional explicit profile ID, used when importing a package.
 
         Returns:
-            The generated configuration profile ID.
+            The created configuration profile ID.
+
+        Raises:
+            ValueError: If ``conf_id`` is already registered.
         """
         async with self._abconf_lock:
-            conf_uuid = str(uuid.uuid4())
+            conf_uuid = conf_id or str(uuid.uuid4())
             conf_file_name = f"abconf_{conf_uuid}.json"
             conf_path = os.path.join(get_astrbot_config_path(), conf_file_name)
+            if conf_uuid in (self.abconf_data or {}):
+                raise ValueError(f"Config profile {conf_uuid} already exists")
             conf = AstrBotConfig(config_path=conf_path, default_config=config)
             conf.save_config()
             await self._save_conf_mapping(

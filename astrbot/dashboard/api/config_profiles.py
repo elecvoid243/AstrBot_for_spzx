@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import tempfile
+from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, Query, Request, Response
 
+from astrbot.core.utils.upload import UploadTooLargeError
 from astrbot.dashboard.responses import error, ok
 from astrbot.dashboard.schemas import (
     ConfigContentRequest,
@@ -19,9 +22,14 @@ from astrbot.dashboard.services.config_service import (
     ConfigProfileService,
     ConfigRoutingService,
 )
+from astrbot.dashboard.services.config_transfer_service import (
+    MAX_PACKAGE_BYTES,
+    ConfigTransferError,
+    ConfigTransferService,
+)
 
 from .auth import AuthContext, ScopeDependency
-from .multipart import multipart_parts
+from .multipart import multipart_parts, single_upload
 
 router = APIRouter(tags=["Config Profiles"])
 legacy_router = APIRouter(
@@ -48,6 +56,10 @@ def get_display_service(request: Request) -> ConfigDisplayService:
 
 def get_file_service(request: Request) -> ConfigFileService:
     return request.app.state.services.config_files
+
+
+def get_transfer_service(request: Request) -> ConfigTransferService:
+    return request.app.state.services.config_transfer
 
 
 async def _json_or_empty(request: Request) -> dict:
@@ -96,6 +108,81 @@ async def list_config_profiles(
     service: ConfigProfileService = Depends(get_service),
 ):
     return ok(service.list_profiles())
+
+
+@router.get("/config-profiles/export")
+async def export_config_profiles(
+    ids: str | None = Query(default=None),
+    include_default: bool = Query(default=False),
+    _auth: AuthContext = Depends(require_config_scope),
+    service: ConfigTransferService = Depends(get_transfer_service),
+):
+    selected = [item.strip() for item in (ids or "").split(",") if item.strip()]
+    try:
+        content, media_type, filename = service.export_profiles(
+            selected,
+            include_default,
+        )
+    except ConfigTransferError as exc:
+        return error(str(exc))
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.post(
+    "/config-profiles/import",
+    openapi_extra={"x-astrbot-sensitive-scopes": [CONFIG_EDIT_ADMIN_SCOPE]},
+)
+async def import_config_profiles(
+    request: Request,
+    dry_run: bool = Query(default=True),
+    conflict: str = Query(default="overwrite"),
+    apply_default: bool = Query(default=False),
+    auth: AuthContext = Depends(require_config_scope),
+    service: ConfigTransferService = Depends(get_transfer_service),
+):
+    upload = await single_upload(request, field_name="file")
+    if upload is None:
+        return error("缺少上传文件。")
+    with tempfile.TemporaryDirectory(prefix="astrbot-config-import-") as temp_dir:
+        target = Path(temp_dir) / "package"
+        try:
+            await upload.save(target, max_bytes=MAX_PACKAGE_BYTES)
+        except UploadTooLargeError:
+            return error("配置文件包不能超过 20 MB。")
+        raw = target.read_bytes()
+        filename = upload.filename or "package.zip"
+    try:
+        if dry_run:
+            return ok(
+                service.preview_import(
+                    raw,
+                    filename,
+                    conflict_mode=conflict,
+                    apply_default=apply_default,
+                )
+            )
+        data = await service.import_package(
+            raw,
+            filename,
+            conflict_mode=conflict,
+            apply_default=apply_default,
+            allow_admin_id_change=_can_edit_admin_ids(auth),
+        )
+    except ConfigTransferError as exc:
+        return error(str(exc))
+
+    summary = data.get("summary", {})
+    message = (
+        f"导入完成：覆盖 {summary.get('overwrite', 0)} 个，"
+        f"新建 {summary.get('create', 0)} 个。"
+    )
+    if summary.get("failed"):
+        message += f" 失败 {summary['failed']} 个。"
+    return ok(data, message)
 
 
 @router.post(

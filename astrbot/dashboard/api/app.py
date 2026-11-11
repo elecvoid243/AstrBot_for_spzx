@@ -44,6 +44,9 @@ from astrbot.dashboard.services.config_service import (
     ConfigRoutingService,
     ProviderConfigService,
 )
+from astrbot.dashboard.services.config_transfer_service import (
+    ConfigTransferService,
+)
 from astrbot.dashboard.services.conversation_service import ConversationService
 from astrbot.dashboard.services.cron_service import CronService
 from astrbot.dashboard.services.file_service import FileService
@@ -200,6 +203,10 @@ def create_dashboard_asgi_app(
     core_lifecycle.plugin_manager.context.session_message_service = chat
     services = SimpleNamespace(
         config_profiles=ConfigProfileService(core_lifecycle, db, runtime=stats.runtime),
+        config_transfer=ConfigTransferService(
+            core_lifecycle,
+            runtime=stats.runtime,
+        ),
         config_display=ConfigDisplayService(core_lifecycle),
         config_files=ConfigFileService(core_lifecycle),
         config_routes=ConfigRoutingService(core_lifecycle),

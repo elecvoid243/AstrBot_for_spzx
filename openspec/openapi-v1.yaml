@@ -1918,6 +1918,85 @@ paths:
         "200":
           $ref: "#/components/responses/Ok"
 
+  /api/v1/config-profiles/export:
+    get:
+      tags: [Config Profiles]
+      summary: Export configuration profiles
+      description: >-
+        Export one profile as a wrapped JSON document, or several profiles as a
+        ZIP package containing manifest.json and profiles/abconf_*.json.
+      operationId: exportConfigProfiles
+      x-astrbot-scope: config
+      parameters:
+        - name: ids
+          in: query
+          required: false
+          description: Comma-separated profile IDs. Empty exports every profile.
+          schema:
+            type: string
+        - name: include_default
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: false
+      responses:
+        "200":
+          description: A wrapped JSON profile or a ZIP package.
+          content:
+            application/json:
+              schema:
+                type: object
+            application/zip:
+              schema:
+                type: string
+                format: binary
+
+  /api/v1/config-profiles/import:
+    post:
+      tags: [Config Profiles]
+      summary: Import a configuration package
+      operationId: importConfigProfiles
+      x-astrbot-scope: config
+      x-astrbot-sensitive-scopes: ["config:edit_admin"]
+      parameters:
+        - name: dry_run
+          in: query
+          required: false
+          description: Preview the plan without writing anything.
+          schema:
+            type: boolean
+            default: true
+        - name: conflict
+          in: query
+          required: false
+          description: Overwrite matching profiles or rename incoming ones.
+          schema:
+            type: string
+            enum: [overwrite, rename]
+            default: overwrite
+        - name: apply_default
+          in: query
+          required: false
+          description: Also replace cmd_config.json, keeping protected keys local.
+          schema:
+            type: boolean
+            default: false
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        "200":
+          $ref: "#/components/responses/Ok"
+
   /api/v1/config-profiles/{config_id}:
     get:
       tags: [Config Profiles]

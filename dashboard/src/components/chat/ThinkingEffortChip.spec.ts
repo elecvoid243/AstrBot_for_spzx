@@ -82,6 +82,17 @@ describe("ThinkingEffortChip (unified track)", () => {
     expect(wrapper.emitted("update:modelValue")?.[0]).toEqual(["max"]);
   });
 
+  it("clips the gradient fill at the active stop", () => {
+    const wrapper = mountChip({
+      mode: "levels",
+      modelValue: "high",
+      levels: LEVELS,
+    });
+    expect(wrapper.find(".effort-track__fill").attributes("style")).toContain(
+      "inset(0 50%",
+    );
+  });
+
   it("jumps to a level when its label is clicked", async () => {
     const wrapper = mountChip({
       mode: "levels",

@@ -91,7 +91,7 @@ function selectStop(value: string): void {
       >
         <div
           class="effort-track__fill"
-          :style="{ width: `${view.percent}%` }"
+          :style="{ clipPath: `inset(0 ${100 - view.percent}% 0 0)` }"
         ></div>
       </div>
       <div class="effort-track__stops" aria-hidden="true">
@@ -181,7 +181,7 @@ function selectStop(value: string): void {
   left: 0;
   right: 0;
   top: 50%;
-  height: 4px;
+  height: 6px;
   overflow: hidden;
   border-radius: 999px;
   background: rgba(var(--v-theme-on-surface), 0.12);
@@ -189,10 +189,15 @@ function selectStop(value: string): void {
 }
 
 .effort-track__fill {
+  width: 100%;
   height: 100%;
   border-radius: inherit;
-  background: rgb(var(--v-theme-primary));
-  transition: width 160ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  background: linear-gradient(
+    90deg,
+    rgb(var(--v-theme-primary)),
+    rgb(var(--v-theme-darkprimary))
+  );
+  transition: clip-path 160ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
 .effort-track__line--dragging .effort-track__fill,

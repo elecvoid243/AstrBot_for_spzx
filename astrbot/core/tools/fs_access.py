@@ -89,23 +89,23 @@ _READONLY_BLOCKED_TOOLS_KEY = "file_access_readonly_blocked_tools"
 # system prompt) so it travels with the conversation and survives history
 # truncation. Kept platform-neutral: the same text is used everywhere, and the
 # readonly wording only claims a sandbox "where the platform supports it".
+#
+_WORKSPACE_HEADER = "[File access mode: workspace write access]"
+
 _MODE_GUIDANCE: dict[FileAccessMode, str] = {
     FileAccessMode.FULL: (
         "[File access mode: full permissions]\n"
         "You may read and write files without file-access restrictions."
     ),
-    FileAccessMode.WORKSPACE: (
-        "[File access mode: workspace write access]\n"
-        "You may read files freely. Write operations are limited to the current "
-        "session workspace, temporary directories, and configured extra roots. "
-        "Writes outside those locations are rejected."
-    ),
+    # Marker only: ``mode_guidance`` appends the concrete roots per request so
+    # the model always sees the current whitelist.
+    FileAccessMode.WORKSPACE: _WORKSPACE_HEADER,
     FileAccessMode.READONLY: (
         "[File access mode: read-only]\n"
-        "You may read files freely, but every write is blocked. File-writing "
-        "tools are disabled, and shell/Python execution runs under a "
-        "write-restricted sandbox on platforms that support it. Do not attempt "
-        "to modify files through any tool."
+        "Every write is blocked. File-writing tools are disabled, and "
+        "shell/Python execution runs under a write-restricted sandbox on "
+        "platforms that support it. Do not attempt to modify files through any "
+        "tool."
     ),
 }
 
@@ -148,17 +148,29 @@ def readonly_blocked_tools(cfg: dict) -> tuple[str, ...]:
     return tuple(str(item).strip() for item in raw if str(item).strip())
 
 
-def mode_guidance(mode: FileAccessMode) -> str:
+def mode_guidance(
+    mode: FileAccessMode, *, writable_roots: Sequence[Path | str] = ()
+) -> str:
     """Return the LLM-facing guidance text for a file access mode.
 
     Args:
         mode: Effective file access mode for the conversation.
+        writable_roots: Workspace-mode writable roots, rendered into the text
+            so the model sees the exact whitelist. Ignored for other modes.
 
     Returns:
         Guidance text whose first line is a stable marker
         (``[File access mode: ...]``) used to avoid duplicate injection.
     """
-    return _MODE_GUIDANCE[mode]
+    if mode is not FileAccessMode.WORKSPACE:
+        return _MODE_GUIDANCE[mode]
+    lines = [
+        _WORKSPACE_HEADER,
+        "Write operations are restricted to these paths:",
+    ]
+    lines.extend(f"- {root}" for root in writable_roots)
+    lines.append("Writes outside these paths are rejected.")
+    return "\n".join(lines)
 
 
 def get_mode_for_umo(

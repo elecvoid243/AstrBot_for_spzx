@@ -10,6 +10,7 @@ import pytest
 from astrbot.builtin_stars.astrbot.file_access_guidance import (
     inject_file_access_guidance,
 )
+from astrbot.builtin_stars.astrbot import file_access_guidance as guidance_mod
 from astrbot.builtin_stars.builtin_commands.commands import file_access as cmd_mod
 from astrbot.builtin_stars.builtin_commands.commands.file_access import (
     FileAccessCommands,
@@ -101,6 +102,25 @@ def test_mode_guidance_has_stable_markers():
     assert fs_access.mode_guidance(FileAccessMode.READONLY).splitlines()[0] == (
         "[File access mode: read-only]"
     )
+
+
+def test_mode_guidance_never_claims_unrestricted_reads():
+    """Read access is not mode-dependent, so the guidance must not imply it."""
+    for mode in FileAccessMode:
+        assert "read files freely" not in fs_access.mode_guidance(mode)
+
+
+def test_workspace_guidance_lists_roots():
+    text = fs_access.mode_guidance(
+        FileAccessMode.WORKSPACE, writable_roots=["D:/a", "C:/b"]
+    )
+    assert text.splitlines() == [
+        "[File access mode: workspace write access]",
+        "Write operations are restricted to these paths:",
+        "- D:/a",
+        "- C:/b",
+        "Writes outside these paths are rejected.",
+    ]
 
 
 # ── guidance injection ────────────────────────────────────────────
@@ -218,3 +238,105 @@ async def test_mode_command_same_mode_is_noop(monkeypatch: pytest.MonkeyPatch):
     await FileAccessCommands(_ctx()).set_mode(_event(), "readonly")
 
     shutdown.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_workspace_injects_stored_guidance_with_paths(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    fs_access.set_mode_for_umo(UMO, FileAccessMode.WORKSPACE)
+    monkeypatch.setattr(
+        guidance_mod,
+        "_workspace_writable_roots",
+        AsyncMock(return_value=("D:/ws", "C:/tmp")),
+    )
+    req = ProviderRequest(prompt="hi")
+
+    await inject_file_access_guidance(_ctx(), _event(), req)
+
+    assert len(req.extra_user_content_parts) == 1
+    part = req.extra_user_content_parts[0]
+    assert part._no_save is False  # stored with the conversation
+    assert part.text.splitlines()[0] == "[File access mode: workspace write access]"
+    assert "- D:/ws" in part.text
+    assert "- C:/tmp" in part.text
+
+
+@pytest.mark.asyncio
+async def test_workspace_paths_follow_whitelist_edits(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A whitelist edit must appear on the very next request."""
+    fs_access.set_mode_for_umo(UMO, FileAccessMode.WORKSPACE)
+    roots = AsyncMock(return_value=("D:/a",))
+    monkeypatch.setattr(guidance_mod, "_workspace_writable_roots", roots)
+
+    first = ProviderRequest(prompt="hi")
+    await inject_file_access_guidance(_ctx(), _event(), first)
+    assert "- D:/a" in first.extra_user_content_parts[0].text
+
+    roots.return_value = ("D:/a", "D:/b")
+    second = ProviderRequest(prompt="next")
+    await inject_file_access_guidance(_ctx(), _event(), second)
+    assert "- D:/b" in second.extra_user_content_parts[0].text
+
+
+@pytest.mark.asyncio
+async def test_history_declaration_prevents_duplicate():
+    """On later turns the declaration lives in contexts, not the new request."""
+    stored = fs_access.mode_guidance(FileAccessMode.FULL)
+    req = ProviderRequest(
+        prompt="hi",
+        contexts=[
+            {"role": "user", "content": [{"type": "text", "text": stored}]}
+        ],
+    )
+
+    await inject_file_access_guidance(_ctx(), _event(), req)
+
+    assert req.extra_user_content_parts == []
+
+
+@pytest.mark.asyncio
+async def test_workspace_guidance_not_duplicated_when_whitelist_unchanged(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Identical paths must not be appended again: keeps the prefix cache warm."""
+    fs_access.set_mode_for_umo(UMO, FileAccessMode.WORKSPACE)
+    monkeypatch.setattr(
+        guidance_mod, "_workspace_writable_roots", AsyncMock(return_value=("D:/a",))
+    )
+    stored = fs_access.mode_guidance(
+        FileAccessMode.WORKSPACE, writable_roots=["D:/a"]
+    )
+    req = ProviderRequest(
+        prompt="hi",
+        contexts=[
+            {"role": "user", "content": [{"type": "text", "text": stored}]}
+        ],
+    )
+
+    await inject_file_access_guidance(_ctx(), _event(), req)
+
+    assert req.extra_user_content_parts == []
+
+
+@pytest.mark.asyncio
+async def test_workspace_roots_include_custom_roots(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+):
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    extra = tmp_path / "extra"
+    monkeypatch.setattr(
+        guidance_mod,
+        "resolve_workspace_root_for_umo",
+        AsyncMock(return_value=workspace),
+    )
+    await fs_access.set_custom_roots(UMO, [str(extra)])
+
+    roots = await guidance_mod._workspace_writable_roots(CFG, UMO)
+
+    assert str(workspace.resolve()) in roots
+    assert str(extra.resolve()) in roots
+    assert len(roots) == len(set(roots))

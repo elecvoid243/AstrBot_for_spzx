@@ -160,6 +160,31 @@ async def test_export_all_builds_manifest_and_strips_dashboard(transfer) -> None
 
 
 @pytest.mark.asyncio
+async def test_export_default_only_produces_importable_package(transfer) -> None:
+    service, acm, _ = transfer
+    await _add_profile(acm, "软件开发")
+
+    content, media_type, _ = service.export_profiles(["default"], False)
+
+    assert media_type == "application/zip"
+    with zipfile.ZipFile(io.BytesIO(content)) as archive:
+        names = set(archive.namelist())
+        manifest = json.loads(archive.read("manifest.json"))
+    assert manifest["profiles"] == []
+    assert manifest["includes_default"] is True
+    assert "cmd_config.json" in names
+
+    plan = service.preview_import(
+        content,
+        "default.zip",
+        conflict_mode="overwrite",
+        apply_default=True,
+    )
+    assert plan["items"] == []
+    assert plan["default"]["action"] == "overwrite"
+
+
+@pytest.mark.asyncio
 async def test_preview_matches_uuid_before_name(transfer) -> None:
     service, acm, _ = transfer
     conf_id = await _add_profile(acm, "旧名字")

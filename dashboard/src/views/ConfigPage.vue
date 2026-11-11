@@ -177,10 +177,6 @@
             {{ tm('configManagement.importPackage') }}
           </v-btn>
         </div>
-        <v-checkbox v-model="includeDefaultOnExport"
-          :label="tm('configManagement.includeDefault')" hide-details density="compact"
-          class="mb-2" />
-
         <!-- Config List -->
         <v-list lines="two">
           <v-list-item
@@ -191,14 +187,12 @@
           >
             <template v-slot:prepend>
               <v-checkbox
-                v-if="config.id !== 'default'"
                 :model-value="selectedConfigIds.includes(config.id)"
                 hide-details
                 density="compact"
                 class="mr-2"
                 @update:model-value="toggleConfigSelection(config.id, $event)"
               />
-              <v-icon v-else class="mr-2" size="18">mdi-cog-outline</v-icon>
             </template>
             <template v-slot:append>
               <div class="d-flex align-center" style="gap: 8px;">
@@ -446,7 +440,6 @@ export default {
       configManageDialog: false,
       configImportDialog: false,
       selectedConfigIds: [],
-      includeDefaultOnExport: false,
       showConfigForm: false,
       isEditingConfig: false,
       isCopyingConfig: false,
@@ -970,13 +963,13 @@ export default {
       await this.downloadConfigPackage(this.selectedConfigIds);
     },
     async exportAllConfigs() {
-      await this.downloadConfigPackage([]);
+      await this.downloadConfigPackage([], true);
     },
-    async downloadConfigPackage(ids) {
+    async downloadConfigPackage(ids, includeDefault = ids.includes('default')) {
       try {
         const response = await configProfileApi.exportProfiles(
           ids,
-          this.includeDefaultOnExport,
+          includeDefault,
         );
         const blob = response.data;
         const disposition = response.headers?.['content-disposition'] || '';
@@ -988,7 +981,7 @@ export default {
         }
         const match = /filename="?([^";]+)"?/.exec(disposition);
         const fallback =
-          ids.length === 1 && !this.includeDefaultOnExport
+          ids.length === 1 && !includeDefault
             ? 'astrbot-config.json'
             : 'astrbot-configs.zip';
         this.saveBlob(blob, match?.[1] || fallback);

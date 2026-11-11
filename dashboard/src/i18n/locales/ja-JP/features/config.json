@@ -163,7 +163,6 @@
     "updateFailed": "設定ファイルを更新できませんでした。",
     "exportSelected": "選択項目をエクスポート",
     "exportAll": "すべてエクスポート",
-    "includeDefault": "デフォルト設定を含める",
     "exportSuccess": "設定をエクスポートしました",
     "exportFailed": "設定のエクスポートに失敗しました",
     "importPackage": "設定パッケージをインポート…",

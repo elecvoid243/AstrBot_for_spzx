@@ -163,7 +163,6 @@
     "updateFailed": "Failed to update configuration",
     "exportSelected": "Export selected",
     "exportAll": "Export all",
-    "includeDefault": "Include the default configuration",
     "exportSuccess": "Configuration exported",
     "exportFailed": "Failed to export configuration",
     "importPackage": "Import configuration package...",

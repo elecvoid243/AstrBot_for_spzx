@@ -114,6 +114,7 @@ class ConfigTransferService:
             unknown = [conf_id for conf_id in ids if conf_id not in infos]
             if unknown:
                 raise ConfigTransferError(f"配置文件不存在: {', '.join(unknown)}")
+            include_default = include_default or "default" in ids
             selected = [conf_id for conf_id in ids if conf_id != "default"]
         else:
             selected = [conf_id for conf_id in infos if conf_id != "default"]

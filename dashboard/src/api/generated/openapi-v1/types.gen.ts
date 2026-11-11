@@ -2404,6 +2404,46 @@ export type CreateConfigProfileResponse = (SuccessEnvelope);
 
 export type CreateConfigProfileError = unknown;
 
+export type ExportConfigProfilesData = {
+    query?: {
+        /**
+         * Comma-separated profile IDs. Empty exports every profile.
+         */
+        ids?: string;
+        include_default?: boolean;
+    };
+};
+
+export type ExportConfigProfilesResponse = ({
+    [key: string]: unknown;
+});
+
+export type ExportConfigProfilesError = unknown;
+
+export type ImportConfigProfilesData = {
+    body: {
+        file: (Blob | File);
+    };
+    query?: {
+        /**
+         * Also replace cmd_config.json, keeping protected keys local.
+         */
+        apply_default?: boolean;
+        /**
+         * Overwrite matching profiles or rename incoming ones.
+         */
+        conflict?: 'overwrite' | 'rename';
+        /**
+         * Preview the plan without writing anything.
+         */
+        dry_run?: boolean;
+    };
+};
+
+export type ImportConfigProfilesResponse = (SuccessEnvelope);
+
+export type ImportConfigProfilesError = unknown;
+
 export type GetConfigProfileData = {
     path: {
         config_id: string;

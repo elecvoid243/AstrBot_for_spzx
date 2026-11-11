@@ -126,11 +126,13 @@ type SessionMarkers = {
 /**
  * Per-message "thinking effort" value sent with each chat request. "auto"
  * keeps the provider-level static config; "off" disables thinking where the
- * provider supports it. Any other string is passed through to OpenAI-family
- * `reasoning_effort` verbatim (values differ per model / engine, e.g. "max"
- * on deepseek-v4 official API, "xhigh" on llama.cpp-hosted Qwen, or a bare
- * number such as "37" from the ChatUI slider for models that accept a
- * continuous range).
+ * provider supports it. Any other string is passed through verbatim (values
+ * differ per model / engine, e.g. "max" on deepseek-v4 official API, "xhigh"
+ * on llama.cpp-hosted Qwen, or a bare number such as "37" from the ChatUI
+ * slider for models that accept a continuous range). OpenAI-family providers
+ * receive it as `reasoning_effort`, or as `chat_template_kwargs.reasoning_effort`
+ * when the provider config declares that channel (vLLM-style engines only
+ * accept continuous values there).
  */
 export type ThinkingEffort = "auto" | "off" | (string & {});
 

@@ -178,6 +178,34 @@ async def test_openai_thinking_effort_maps_to_reasoning_effort(monkeypatch):
         assert "reasoning_effort" not in payloads
 
 
+@pytest.mark.asyncio
+async def test_openai_thinking_effort_routes_to_ctk_when_provider_declares_it(
+    monkeypatch,
+):
+    provider = _make_openai_provider(
+        monkeypatch,
+        {"custom_extra_body": {"chat_template_kwargs": {"enable_thinking": True}}},
+    )
+
+    # Continuous values must land in the template channel as integers.
+    payloads, _ = await provider._prepare_chat_payload(
+        prompt="hello",
+        contexts=[],
+        llm_params={"thinking_effort": "37"},
+    )
+    # Sibling template args are merged from the static config in _query.
+    assert payloads["chat_template_kwargs"] == {"reasoning_effort": 37}
+    assert "reasoning_effort" not in payloads
+
+    # Enum strings keep their type in the template channel.
+    payloads, _ = await provider._prepare_chat_payload(
+        prompt="hello",
+        contexts=[],
+        llm_params={"thinking_effort": "max"},
+    )
+    assert payloads["chat_template_kwargs"]["reasoning_effort"] == "max"
+
+
 def test_openai_ollama_override_preserves_explicit_reasoning_effort(monkeypatch):
     provider = _make_openai_provider(
         monkeypatch,

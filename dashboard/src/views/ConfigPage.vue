@@ -20,6 +20,7 @@
               :disabled="initialConfigId !== null"
               @select="onConfigSelect"
               @manage="configManageDialog = true"
+              @import="configImportDialog = true"
             />
           </div>
 
@@ -157,11 +158,28 @@
 
       <v-card-text>
         <small>{{ tm('configManagement.description') }}</small>
-        <div class="mt-6 mb-4">
+        <div class="mt-6 mb-4 d-flex flex-wrap align-center" style="gap: 8px;">
           <v-btn prepend-icon="mdi-plus" @click="startCreateConfig" variant="tonal" color="primary">
             {{ tm('configManagement.newConfig') }}
           </v-btn>
+          <v-spacer />
+          <v-btn variant="text" prepend-icon="mdi-file-export-outline"
+            :disabled="!selectedConfigIds.length"
+            @click="exportSelectedConfigs">
+            {{ tm('configManagement.exportSelected') }}
+          </v-btn>
+          <v-btn variant="text" prepend-icon="mdi-file-export-outline"
+            @click="exportAllConfigs">
+            {{ tm('configManagement.exportAll') }}
+          </v-btn>
+          <v-btn variant="text" prepend-icon="mdi-file-import-outline"
+            @click="configImportDialog = true">
+            {{ tm('configManagement.importPackage') }}
+          </v-btn>
         </div>
+        <v-checkbox v-model="includeDefaultOnExport"
+          :label="tm('configManagement.includeDefault')" hide-details density="compact"
+          class="mb-2" />
 
         <!-- Config List -->
         <v-list lines="two">
@@ -171,6 +189,17 @@
             :title="configDisplayName(config)"
             :subtitle="config.id"
           >
+            <template v-slot:prepend>
+              <v-checkbox
+                v-if="config.id !== 'default'"
+                :model-value="selectedConfigIds.includes(config.id)"
+                hide-details
+                density="compact"
+                class="mr-2"
+                @update:model-value="toggleConfigSelection(config.id, $event)"
+              />
+              <v-icon v-else class="mr-2" size="18">mdi-cog-outline</v-icon>
+            </template>
             <template v-slot:append>
               <div class="d-flex align-center" style="gap: 8px;">
                 <v-btn icon="mdi-content-copy" size="small" variant="text" color="primary"
@@ -208,6 +237,11 @@
       </v-card-text>
     </v-card>
   </v-dialog>
+
+  <ConfigImportDialog
+    v-model="configImportDialog"
+    @imported="onConfigImportCompleted"
+  />
 
   <v-snackbar :timeout="3000" elevation="6" :color="save_message_success" v-model="save_message_snack">
     {{ save_message }}
@@ -260,6 +294,7 @@
 import { configProfileApi, systemConfigApi } from '@/api/v1';
 import AstrBotCoreConfigWrapper from '@/components/config/AstrBotCoreConfigWrapper.vue';
 import ConfigProfileMenu from '@/components/config/ConfigProfileMenu.vue';
+import ConfigImportDialog from '@/components/config/ConfigImportDialog.vue';
 import StandaloneChat from '@/components/chat/StandaloneChat.vue';
 import { LazyMonacoEditor as VueMonacoEditor } from '@/components/shared/LazyMonacoEditor';
 import { useI18n, useModuleI18n } from '@/i18n/composables';
@@ -276,6 +311,7 @@ export default {
   components: {
     AstrBotCoreConfigWrapper,
     ConfigProfileMenu,
+    ConfigImportDialog,
     VueMonacoEditor,
     StandaloneChat,
     UnsavedChangesConfirmDialog,
@@ -408,6 +444,9 @@ export default {
     return {
       codeEditorDialog: false,
       configManageDialog: false,
+      configImportDialog: false,
+      selectedConfigIds: [],
+      includeDefaultOnExport: false,
       showConfigForm: false,
       isEditingConfig: false,
       isCopyingConfig: false,
@@ -917,6 +956,70 @@ export default {
         this.save_message_snack = true;
         this.save_message_success = "error";
       });
+    },
+    toggleConfigSelection(configId, selected) {
+      const next = new Set(this.selectedConfigIds);
+      if (selected) {
+        next.add(configId);
+      } else {
+        next.delete(configId);
+      }
+      this.selectedConfigIds = [...next];
+    },
+    async exportSelectedConfigs() {
+      await this.downloadConfigPackage(this.selectedConfigIds);
+    },
+    async exportAllConfigs() {
+      await this.downloadConfigPackage([]);
+    },
+    async downloadConfigPackage(ids) {
+      try {
+        const response = await configProfileApi.exportProfiles(
+          ids,
+          this.includeDefaultOnExport,
+        );
+        const blob = response.data;
+        const disposition = response.headers?.['content-disposition'] || '';
+        if (!disposition) {
+          const payload = JSON.parse(await blob.text());
+          throw new Error(
+            payload.message || this.tm('configManagement.exportFailed'),
+          );
+        }
+        const match = /filename="?([^";]+)"?/.exec(disposition);
+        const fallback =
+          ids.length === 1 && !this.includeDefaultOnExport
+            ? 'astrbot-config.json'
+            : 'astrbot-configs.zip';
+        this.saveBlob(blob, match?.[1] || fallback);
+        this.save_message = this.tm('configManagement.exportSuccess');
+        this.save_message_success = 'success';
+        this.save_message_snack = true;
+      } catch (err) {
+        this.save_message =
+          err?.message || this.tm('configManagement.exportFailed');
+        this.save_message_success = 'error';
+        this.save_message_snack = true;
+      }
+    },
+    saveBlob(blob, filename) {
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    },
+    onConfigImportCompleted(payload) {
+      const summary = payload?.data?.summary || {};
+      this.save_message =
+        payload?.message ||
+        `导入完成：覆盖 ${summary.overwrite || 0} 个，新建 ${summary.create || 0} 个。`;
+      this.save_message_success = summary.failed ? 'warning' : 'success';
+      this.save_message_snack = true;
+      this.getConfigInfoList(this.selectedConfigID || 'default');
     },
     updateConfigInfo(configName) {
       configProfileApi.rename(this.editingConfigId, configName).then((res) => {

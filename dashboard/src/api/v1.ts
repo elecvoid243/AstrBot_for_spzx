@@ -425,6 +425,34 @@ export const configProfileApi = {
       openApiV1.deleteConfigProfile({ path: { config_id: configId } }),
     );
   },
+  exportProfiles(ids: string[], includeDefault = false) {
+    return openApiV1.exportConfigProfiles({
+      query: {
+        ids: ids.length ? ids.join(',') : undefined,
+        include_default: includeDefault,
+      },
+      responseType: 'blob',
+    });
+  },
+  importProfiles(
+    file: File,
+    options: {
+      dryRun?: boolean;
+      conflict?: 'overwrite' | 'rename';
+      applyDefault?: boolean;
+    } = {},
+  ) {
+    return typed<any>(
+      openApiV1.importConfigProfiles({
+        query: {
+          dry_run: options.dryRun ?? true,
+          conflict: options.conflict ?? 'overwrite',
+          apply_default: options.applyDefault ?? false,
+        },
+        body: { file },
+      }),
+    );
+  },
 };
 
 export const systemConfigApi = {

@@ -64,6 +64,10 @@
         </div>
 
         <v-divider class="config-profile-menu__divider" />
+        <button type="button" class="config-profile-menu__manage" @click="openImport">
+          <v-icon size="17">mdi-file-import-outline</v-icon>
+          <span>{{ tm('configSelection.importPackage') }}</span>
+        </button>
         <button type="button" class="config-profile-menu__manage" @click="openManager">
           <v-icon size="17">mdi-cog-outline</v-icon>
           <span>{{ tm('configManagement.manageConfigs') }}</span>
@@ -92,7 +96,7 @@ const props = defineProps({
   }
 });
 
-const emit = defineEmits(['select', 'manage']);
+const emit = defineEmits(['select', 'manage', 'import']);
 const { tm } = useModuleI18n('features/config');
 const menuOpen = ref(false);
 const searchQuery = ref('');
@@ -139,6 +143,11 @@ function selectProfile(id) {
 
 function openManager() {
   emit('manage');
+  menuOpen.value = false;
+}
+
+function openImport() {
+  emit('import');
   menuOpen.value = false;
 }
 </script>

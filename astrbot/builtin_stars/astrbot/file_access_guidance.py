@@ -24,42 +24,64 @@ from astrbot.core.provider.entities import ProviderRequest
 from astrbot.core.tools import fs_access
 from astrbot.core.workspace import resolve_workspace_root_for_umo
 
+_MODE_MARKER = "[File access mode: "
 
-def _already_injected(req: ProviderRequest, text: str) -> bool:
-    """Return whether this exact guidance text is already present.
 
-    Both the current request and the persisted history are checked: the
-    guidance is stored with the conversation, so on later turns it only appears
-    in ``req.contexts``. Matching the whole text (not just the marker) is what
-    makes a whitelist edit take effect: unchanged text is skipped, edited text
-    is appended once.
+def _iter_text_blocks(content: object):
+    """Yield the text blocks of a persisted message content value."""
+    if isinstance(content, str):
+        yield content
+    elif isinstance(content, list):
+        for block in content:
+            if isinstance(block, dict):
+                text = block.get("text")
+                if isinstance(text, str):
+                    yield text
+
+
+def _last_guidance_text(req: ProviderRequest) -> str | None:
+    """Return the most recently injected file-access guidance text.
+
+    Guidance is persisted with the conversation, so blocks written for earlier
+    modes stay in history. Only the newest block describes the mode in effect
+    now; comparing against older ones would suppress a legitimate re-injection
+    when the user goes readonly -> workspace -> readonly.
 
     Args:
         req: Request about to be handed to the agent runner.
-        text: Guidance text generated for the current mode and whitelist.
 
     Returns:
-        True when the same text already exists in the request or its history.
+        The newest guidance text, or None when nothing was injected yet.
     """
-    for part in req.extra_user_content_parts:
-        if isinstance(part, dict):
-            part_text = part.get("text")
-        else:
-            part_text = getattr(part, "text", None)
-        if part_text == text:
-            return True
-    for message in req.contexts:
+    for part in reversed(req.extra_user_content_parts):
+        part_text = (
+            part.get("text") if isinstance(part, dict) else getattr(part, "text", None)
+        )
+        if isinstance(part_text, str) and _MODE_MARKER in part_text:
+            return part_text
+    for message in reversed(req.contexts):
         if not isinstance(message, dict):
             continue
-        content = message.get("content")
-        if isinstance(content, str):
-            if text in content:
-                return True
-        elif isinstance(content, list):
-            for block in content:
-                if isinstance(block, dict) and text in str(block.get("text") or ""):
-                    return True
-    return False
+        for candidate in _iter_text_blocks(message.get("content")):
+            if _MODE_MARKER in candidate:
+                return candidate
+    return None
+
+
+def _already_injected(req: ProviderRequest, text: str) -> bool:
+    """Return whether the newest injected guidance already equals ``text``.
+
+    Args:
+        req: Request about to be handed to the agent runner.
+        text: Guidance generated for the current mode and whitelist.
+
+    Returns:
+        True when the most recent guidance block is this text.
+    """
+    last = _last_guidance_text(req)
+    if last is None:
+        return False
+    return last == text or text in last
 
 
 async def _workspace_writable_roots(cfg: dict, umo: str) -> tuple[str, ...]:

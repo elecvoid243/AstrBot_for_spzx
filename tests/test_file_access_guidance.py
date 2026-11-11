@@ -164,6 +164,68 @@ async def test_guidance_is_not_duplicated():
 
 
 @pytest.mark.asyncio
+async def test_readonly_reinjected_after_workspace_round_trip():
+    """readonly -> workspace -> readonly must inject the readonly block again.
+
+    Guidance is persisted with the conversation, so an older readonly block is
+    still in history. Only the newest block may be compared, otherwise the
+    third step would be skipped and the model would keep seeing "workspace".
+    """
+    readonly = fs_access.mode_guidance(FileAccessMode.READONLY)
+    workspace = fs_access.mode_guidance(
+        FileAccessMode.WORKSPACE, writable_roots=["D:/ws"]
+    )
+    req = ProviderRequest(prompt="hi")
+    req.contexts = [
+        {"role": "user", "content": readonly},
+        {"role": "assistant", "content": "ok"},
+        {"role": "user", "content": workspace},
+        {"role": "assistant", "content": "ok"},
+    ]
+
+    fs_access.set_mode_for_umo(UMO, FileAccessMode.READONLY)
+    await inject_file_access_guidance(_ctx(), _event(), req)
+
+    assert len(req.extra_user_content_parts) == 1
+    assert "read-only" in req.extra_user_content_parts[0].text
+
+
+@pytest.mark.asyncio
+async def test_guidance_skipped_when_newest_block_matches():
+    """An unchanged newest block is not appended again."""
+    readonly = fs_access.mode_guidance(FileAccessMode.READONLY)
+    req = ProviderRequest(prompt="hi")
+    req.contexts = [
+        {"role": "user", "content": readonly},
+        {"role": "assistant", "content": "ok"},
+    ]
+
+    fs_access.set_mode_for_umo(UMO, FileAccessMode.READONLY)
+    await inject_file_access_guidance(_ctx(), _event(), req)
+
+    assert req.extra_user_content_parts == []
+
+
+@pytest.mark.asyncio
+async def test_guidance_marker_found_in_block_list_content():
+    """Persisted content may be a list of blocks instead of a plain string."""
+    readonly = fs_access.mode_guidance(FileAccessMode.READONLY)
+    req = ProviderRequest(prompt="hi")
+    req.contexts = [
+        {
+            "role": "user",
+            "content": [{"type": "text", "text": readonly}],
+        },
+        {"role": "assistant", "content": "ok"},
+    ]
+
+    fs_access.set_mode_for_umo(UMO, FileAccessMode.READONLY)
+    await inject_file_access_guidance(_ctx(), _event(), req)
+
+    assert req.extra_user_content_parts == []
+
+
+@pytest.mark.asyncio
 async def test_config_failure_leaves_request_untouched():
     def _boom(umo=None):
         raise RuntimeError("config unavailable")

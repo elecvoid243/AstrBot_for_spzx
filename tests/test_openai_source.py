@@ -1490,6 +1490,150 @@ async def test_query_injects_reasoning_effort_none_for_ollama(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_query_per_request_effort_wins_over_custom_extra_body(monkeypatch):
+    provider = _make_provider(
+        {"custom_extra_body": {"reasoning_effort": "max", "temperature": 0.1}}
+    )
+    try:
+        captured_kwargs = {}
+
+        async def fake_create(**kwargs):
+            captured_kwargs.update(kwargs)
+            return ChatCompletion.model_validate(
+                {
+                    "id": "chatcmpl-test",
+                    "object": "chat.completion",
+                    "created": 0,
+                    "model": "gpt-4o-mini",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {"role": "assistant", "content": "ok"},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                    "usage": {
+                        "prompt_tokens": 1,
+                        "completion_tokens": 1,
+                        "total_tokens": 2,
+                    },
+                }
+            )
+
+        monkeypatch.setattr(provider.client.chat.completions, "create", fake_create)
+
+        await provider._query(
+            payloads={
+                "model": "gpt-4o-mini",
+                "messages": [{"role": "user", "content": "hello"}],
+                "reasoning_effort": "high",
+            },
+            tools=None,
+        )
+
+        assert captured_kwargs["reasoning_effort"] == "high"
+        assert "reasoning_effort" not in captured_kwargs["extra_body"]
+        assert captured_kwargs["extra_body"]["temperature"] == 0.1
+    finally:
+        await provider.terminate()
+
+
+@pytest.mark.asyncio
+async def test_query_stream_per_request_effort_wins_over_custom_extra_body(
+    monkeypatch,
+):
+    provider = _make_provider(
+        {"custom_extra_body": {"reasoning_effort": "max", "temperature": 0.1}}
+    )
+    try:
+        captured_kwargs = {}
+
+        async def fake_stream():
+            yield ChatCompletionChunk.model_validate(
+                {
+                    "id": "chatcmpl-stream",
+                    "object": "chat.completion.chunk",
+                    "created": 0,
+                    "model": "gpt-4o-mini",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {"role": "assistant", "content": "ok"},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                }
+            )
+
+        async def fake_create(**kwargs):
+            captured_kwargs.update(kwargs)
+            return fake_stream()
+
+        monkeypatch.setattr(provider.client.chat.completions, "create", fake_create)
+
+        async for _ in provider._query_stream(
+            payloads={
+                "model": "gpt-4o-mini",
+                "messages": [{"role": "user", "content": "hello"}],
+                "reasoning_effort": "high",
+            },
+            tools=None,
+        ):
+            pass
+
+        assert captured_kwargs["reasoning_effort"] == "high"
+        assert "reasoning_effort" not in captured_kwargs["extra_body"]
+        assert captured_kwargs["extra_body"]["temperature"] == 0.1
+    finally:
+        await provider.terminate()
+
+
+@pytest.mark.asyncio
+async def test_query_keeps_custom_extra_body_effort_without_override(monkeypatch):
+    provider = _make_provider({"custom_extra_body": {"reasoning_effort": "max"}})
+    try:
+        captured_kwargs = {}
+
+        async def fake_create(**kwargs):
+            captured_kwargs.update(kwargs)
+            return ChatCompletion.model_validate(
+                {
+                    "id": "chatcmpl-test",
+                    "object": "chat.completion",
+                    "created": 0,
+                    "model": "gpt-4o-mini",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {"role": "assistant", "content": "ok"},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                    "usage": {
+                        "prompt_tokens": 1,
+                        "completion_tokens": 1,
+                        "total_tokens": 2,
+                    },
+                }
+            )
+
+        monkeypatch.setattr(provider.client.chat.completions, "create", fake_create)
+
+        await provider._query(
+            payloads={
+                "model": "gpt-4o-mini",
+                "messages": [{"role": "user", "content": "hello"}],
+            },
+            tools=None,
+        )
+
+        assert "reasoning_effort" not in captured_kwargs
+        assert captured_kwargs["extra_body"]["reasoning_effort"] == "max"
+    finally:
+        await provider.terminate()
+
+
+@pytest.mark.asyncio
 async def test_parse_openai_completion_raises_empty_model_output_error():
     provider = _make_provider()
     try:

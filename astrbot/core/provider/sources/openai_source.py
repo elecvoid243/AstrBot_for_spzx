@@ -599,6 +599,13 @@ class ProviderOpenAIOfficial(Provider):
         custom_extra_body = self.provider_config.get("custom_extra_body", {})
         if isinstance(custom_extra_body, dict):
             extra_body.update(custom_extra_body)
+
+        # The ChatUI thinking effort wins over the static custom body: the SDK
+        # merges extra_body last, so a same-named static key would otherwise
+        # overwrite the per-request value. Other custom-body fields keep their
+        # documented "applied after request fields" precedence.
+        if "reasoning_effort" in payloads:
+            extra_body.pop("reasoning_effort", None)
         self._apply_provider_specific_request_overrides(payloads, extra_body)
 
         self._sanitize_assistant_messages(payloads)
@@ -664,6 +671,10 @@ class ProviderOpenAIOfficial(Provider):
                 to_del.append(key)
         for key in to_del:
             del payloads[key]
+        # The ChatUI thinking effort wins over the static custom body (see
+        # _query).
+        if "reasoning_effort" in payloads:
+            extra_body.pop("reasoning_effort", None)
         self._apply_provider_specific_request_overrides(payloads, extra_body)
 
         self._sanitize_assistant_messages(payloads)

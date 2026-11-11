@@ -453,7 +453,11 @@ async function saveComputerAccessRuntime() {
 
 async function loadWelcomeAnnouncement() {
   try {
-    const res = await axios.get('https://cloud.astrbot.app/api/v1/announcement');
+    // The notice is cosmetic: a bounded timeout keeps an unreachable host from
+    // holding a socket for the whole DNS timeout.
+    const res = await axios.get('https://cloud.astrbot.app/api/v1/announcement', {
+      timeout: 3000,
+    });
     welcomeAnnouncementRaw.value = res?.data?.data?.notice?.welcome_page ?? null;
   } catch (e) {
     welcomeAnnouncementRaw.value = null;
@@ -462,7 +466,9 @@ async function loadWelcomeAnnouncement() {
 }
 
 onMounted(async () => {
-  await loadWelcomeAnnouncement();
+  // Fire-and-forget: the welcome notice must never gate the onboarding data
+  // below, which is what the page actually renders.
+  void loadWelcomeAnnouncement();
 
   try {
     await loadPlatformConfigBase();

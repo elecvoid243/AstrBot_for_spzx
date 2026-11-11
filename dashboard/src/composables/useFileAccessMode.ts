@@ -1,8 +1,8 @@
 // src/composables/useFileAccessMode.ts
 //
 // Singleton state for the per-session file access mode chip
-// (full / readonly / workspace). Mirrors `useSpcodePlanMode.ts`:
-// module-level ref + explicit mutation methods; soft-fail refresh.
+// (full / readonly / workspace): module-level ref + explicit mutation
+// methods; soft-fail refresh.
 //
 // Besides the mode itself the state carries the workspace-mode
 // whitelist (fixed implicit roots + per-session custom roots) that the

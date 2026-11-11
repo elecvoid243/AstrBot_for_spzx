@@ -2131,19 +2131,14 @@ function handleFileAccessModeChange(mode: FileAccessMode): void {
 
   const umo = currentSessionUmo.value;
   if (!umo) {
-    // No session yet → no umo. Only readonly has a command fallback.
-    if (mode === "readonly") {
-      emit("send-command", "/plan");
-    }
+    // No session yet → no umo to key the mode on; the chip keeps the
+    // optimistic value until a session exists.
     return;
   }
   void fileAccessMode.setMode(umo, mode).then((ok) => {
     if (!ok) {
-      // Resync on failure; readonly additionally falls back to /plan.
+      // Resync so the chip reflects the backend's actual mode.
       void fileAccessMode.refresh(umo);
-      if (mode === "readonly") {
-        emit("send-command", "/plan");
-      }
     }
   });
 }

@@ -82,6 +82,32 @@ _custom_roots_cache: dict[str, tuple[Path, ...]] = {}
 
 _CUSTOM_ROOTS_KEY = "fs_access_custom_roots"
 _MODE_KEY = "fs_access_mode"
+_READONLY_BLOCKED_TOOLS_KEY = "file_access_readonly_blocked_tools"
+
+
+# LLM-facing guidance for each mode. Injected as a user-content part (not a
+# system prompt) so it travels with the conversation and survives history
+# truncation. Kept platform-neutral: the same text is used everywhere, and the
+# readonly wording only claims a sandbox "where the platform supports it".
+_MODE_GUIDANCE: dict[FileAccessMode, str] = {
+    FileAccessMode.FULL: (
+        "[File access mode: full permissions]\n"
+        "You may read and write files without file-access restrictions."
+    ),
+    FileAccessMode.WORKSPACE: (
+        "[File access mode: workspace write access]\n"
+        "You may read files freely. Write operations are limited to the current "
+        "session workspace, temporary directories, and configured extra roots. "
+        "Writes outside those locations are rejected."
+    ),
+    FileAccessMode.READONLY: (
+        "[File access mode: read-only]\n"
+        "You may read files freely, but every write is blocked. File-writing "
+        "tools are disabled, and shell/Python execution runs under a "
+        "write-restricted sandbox on platforms that support it. Do not attempt "
+        "to modify files through any tool."
+    ),
+}
 
 
 def resolve_default(cfg: dict) -> FileAccessMode:
@@ -101,6 +127,38 @@ def resolve_default(cfg: dict) -> FileAccessMode:
         )
     except ValueError:
         return FileAccessMode.FULL
+
+
+def readonly_blocked_tools(cfg: dict) -> tuple[str, ...]:
+    """Return tool names that must be denied while in readonly mode.
+
+    Shell and Python execution are intentionally absent from the default list:
+    the Windows ACL sandbox already constrains their writes, and denying them
+    would needlessly reduce LLM capability.
+
+    Args:
+        cfg: A full config dict (or AstrBotConfig).
+
+    Returns:
+        Configured tool names, whitespace-trimmed, in declaration order.
+    """
+    raw = (cfg or {}).get("provider_settings", {}).get(
+        _READONLY_BLOCKED_TOOLS_KEY, []
+    ) or []
+    return tuple(str(item).strip() for item in raw if str(item).strip())
+
+
+def mode_guidance(mode: FileAccessMode) -> str:
+    """Return the LLM-facing guidance text for a file access mode.
+
+    Args:
+        mode: Effective file access mode for the conversation.
+
+    Returns:
+        Guidance text whose first line is a stable marker
+        (``[File access mode: ...]``) used to avoid duplicate injection.
+    """
+    return _MODE_GUIDANCE[mode]
 
 
 def get_mode_for_umo(

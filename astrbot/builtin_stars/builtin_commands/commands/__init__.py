@@ -2,6 +2,7 @@
 
 from .admin import AdminCommands
 from .conversation import ConversationCommands
+from .file_access import FileAccessCommands
 from .help import HelpCommand
 from .name import NameCommand
 from .provider import ProviderCommands
@@ -11,6 +12,7 @@ from .sid import SIDCommand
 __all__ = [
     "AdminCommands",
     "ConversationCommands",
+    "FileAccessCommands",
     "HelpCommand",
     "NameCommand",
     "ProviderCommands",

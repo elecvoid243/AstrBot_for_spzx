@@ -13,6 +13,7 @@ from astrbot.core.star.filter.command import GreedyStr
 from .commands import (
     AdminCommands,
     ConversationCommands,
+    FileAccessCommands,
     HelpCommand,
     NameCommand,
     ProviderCommands,
@@ -32,6 +33,7 @@ class Main(star.Star):
         self.provider_c = ProviderCommands(self.context)
         self.setunset_c = SetUnsetCommands(self.context)
         self.sid_c = SIDCommand(self.context)
+        self.file_access_c = FileAccessCommands(self.context)
 
     @filter.command("help")
     async def help(self, event: AstrMessageEvent) -> None:
@@ -181,6 +183,12 @@ class Main(star.Star):
     async def name(self, event: AstrMessageEvent, alias: GreedyStr) -> None:
         """Set display name for current UMO"""
         await self.name_c.name(event, alias)
+
+    @filter.command("mode")
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    async def mode(self, event: AstrMessageEvent, mode: str | None = None) -> None:
+        """查看或切换文件访问模式：full / readonly / workspace"""
+        await self.file_access_c.set_mode(event, mode)
 
     @filter.command("reset")
     @filter.permission_type(filter.PermissionType.SHARED_GROUP_ADMIN)

@@ -2012,15 +2012,6 @@
       "loadDiffFailed": "Не удалось загрузить diff",
       "fileDiffTruncated": "Diff файла слишком велик; показаны первые 256 КБ"
     },
-    "planModeChip": {
-      "activeLabel": "Plan",
-      "inactiveLabel": "Build",
-      "activeTooltip": "Режим Plan включён · Нажмите, чтобы переключиться на Build",
-      "inactiveTooltip": "Текущий режим Build · Нажмите, чтобы переключиться на Plan",
-      "activeTooltipMulti": "Режим Plan включён · {count} шагов сборки в этой беседе · Нажмите, чтобы переключиться на Build",
-      "activeSegment": "Режим Plan",
-      "inactiveSegment": "Режим Build"
-    },
     "webBrowser": {
       "fullscreen": "Полноэкранный просмотр",
       "exitFullscreen": "Выйти из полноэкранного режима",
@@ -2185,9 +2176,9 @@
     "nextPage": "Вперёд"
   },
   "fileAccessChip": {
-    "fullLabel": "Полный доступ",
+    "fullLabel": "Полные права",
     "readonlyLabel": "Режим только чтения",
-    "workspaceLabel": "Доступ к рабочей области",
+    "workspaceLabel": "Запись в рабочую область",
     "fullHint": "Разрешить агенту читать и записывать любые локальные файлы",
     "readonlyHint": "Только инструменты чтения — для изучения и планирования",
     "workspaceHint": "Запись возможна только в рабочей области",

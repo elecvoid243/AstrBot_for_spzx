@@ -3,7 +3,7 @@
 // Singleton state for the kernel skill-guide feature
 // (core API under `/api/v1/skill-guide/*`).
 //
-// Mirrors the pattern of `useSpcodePlanMode.ts`:
+// Follows the same pattern as the other chat singletons:
 //
 //   - one module-level ref set so every consumer (the hover menu
 //     button, the pending badges row in ChatInput) reads the same

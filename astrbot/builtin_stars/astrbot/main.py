@@ -19,6 +19,7 @@ from astrbot.core.utils.session_waiter import (
     session_waiter,
 )
 
+from .file_access_guidance import inject_file_access_guidance
 from .group_chat_context import GroupChatContext
 
 
@@ -331,6 +332,10 @@ class Main(star.Star):
         self, event: AstrMessageEvent, req: ProviderRequest
     ) -> None:
         """在请求 LLM 前注入人格信息、Identifier、时间、回复内容等 System Prompt"""
+        try:
+            await inject_file_access_guidance(self.context, event, req)
+        except BaseException as e:
+            logger.error(f"file access guidance: {e}")
         if self.group_chat_context and self.group_context_enabled(event):
             try:
                 await self.group_chat_context.on_req_llm(event, req)

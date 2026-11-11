@@ -1313,7 +1313,6 @@ import {
 } from "@/composables/useSpcodeProjectAutoLoad";
 import { useSpcodeCodegraphStatus } from "@/composables/useSpcodeCodegraphStatus";
 import { useSpcodeVivadoStatus } from "@/composables/useSpcodeVivadoStatus";
-import { useSpcodePlanMode } from "@/composables/useSpcodePlanMode";
 import { useFileAccessMode } from "@/composables/useFileAccessMode";
 // Author: elecvoid243
 // Date: 2026-10-08
@@ -1486,12 +1485,8 @@ const spcodeStatus = useSpcodeProjectStatus();
 const { silentLoad } = useSpcodeProjectAutoLoad();
 const codegraphStatus = useSpcodeCodegraphStatus();
 const vivadoStatus = useSpcodeVivadoStatus();
-// Plan/build mode singleton. Mirrors the spcodeStatus lifecycle so
-// both chips stay in sync across session switches and stream-ends.
-const spcodePlanMode = useSpcodePlanMode();
-// File access mode singleton (core-owned, per-umo). Refreshed in
-// lockstep with spcodePlanMode so the chip stays in sync across
-// session switches and stream-ends.
+// File access mode singleton (core-owned, per-umo). Refreshed on
+// session switches and stream-ends so the chip stays in sync.
 const fileAccessMode = useFileAccessMode();
 const confirmDialog = useConfirmDialog();
 const toast = useToast();
@@ -2231,18 +2226,10 @@ const {
       } else {
         spcodeStatus.reset();
       }
-      // Plan/build has the same race: an `/plan` or `/build`
-      // response is processed during stream-end, so the chip needs
-      // to be refreshed in lockstep to stay in sync with the bot's
-      // state of record. We re-query with the FULL unified_msg_origin
-      // (not the bare session id) so the backend's `_plan_mode[umo]`
-      // lookup actually hits the key the bot just wrote.
-      void spcodePlanMode.refresh(resolveCurrentUmo(currSessionId.value));
-      // File access mode is also per-umo and may have been changed by
-      // commands processed during the stream (e.g. /plan), so refresh
-      // it in lockstep with the plan/build state above. Unlike the
-      // plugin endpoints, the core route requires a umo — no bare
-      // refresh fallback — so guard with the resolved value.
+      // File access mode is per-umo and may have been changed by a
+      // command processed during the stream (e.g. `/mode readonly`),
+      // so refresh it at stream-end. The core route requires a umo —
+      // no bare refresh fallback — so guard with the resolved value.
       if (resolvedUmo && !isOrdinaryUser.value) {
         void fileAccessMode.refresh(resolvedUmo);
       } else {
@@ -2875,11 +2862,9 @@ watch(
   async (next) => {
     if (!next) {
       spcodeStatus.reset();
-      // Plan/build is strictly per-umo; clearing the session wipes
-      // its associated plan state too. We pass null so the backend
-      // returns the default build status (active=false), which the
-      // chip displays correctly until the next session is selected.
-      spcodePlanMode.reset();
+      // File access mode is strictly per-umo; clearing the session
+      // drops the chip back to the configured default.
+      fileAccessMode.reset();
       return;
     }
     // Close the Git Diff sidebar on session switch: the new session's
@@ -2913,22 +2898,10 @@ watch(
     } else {
       spcodeStatus.reset();
     }
-    // Same lifecycle for plan/build: the chip is per-umo, so it
-    // MUST be re-fetched on every session switch. We do not
-    // optimistically carry over the previous session's flag because
-    // plan/build is intentionally NOT shared between sessions (a
-    // user might want plan mode in one project while building in
-    // another).
-    //
-    // CRITICAL: refresh() requires the full unified_msg_origin string
-    // the backend keys per-session state on, NOT the bare session id
-    // (webchat conversation id). See :func:`resolveCurrentUmo` for the
-    // exact format.
-    await spcodePlanMode.refresh(resolveCurrentUmo(next));
-    // File access mode: same per-umo lifecycle — refetch on every
-    // session switch so the chip matches the core backend. The core
-    // route requires a umo, so mirror the guard above: reset in the
-    // unresolved-umo window rather than refresh bare.
+    // File access mode is per-umo: refetch on every session switch so
+    // the chip matches the core backend. The core route requires a
+    // full unified_msg_origin (see :func:`resolveCurrentUmo`), so
+    // reset in the unresolved-umo window rather than refresh bare.
     if (resolvedUmo && !isOrdinaryUser.value) {
       await fileAccessMode.refresh(resolvedUmo);
     } else {
@@ -3043,7 +3016,7 @@ watch(currSessionId, (next) => {
 /**
  * Build the unified message origin (umo) string for a session id,
  * matching the format the backend uses to key its per-session state
- * (e.g. spcode's ``_plan_mode[umo]`` dict).
+ * (e.g. the core file access mode dict).
  *
  * Why this exists:
  *   - The backend's webchat adapter sets
@@ -3052,16 +3025,13 @@ watch(currSessionId, (next) => {
  *     ``webchat:{FriendMessage|GroupMessage}:webchat!{user}!{cid}``.
  *   - The frontend's ``currentSession.session_id`` is the bare
  *     ``cid`` (the conversation id), not the full umo.
- *   - Passing the bare cid to ``spcodePlanMode.refresh()`` makes the
- *     backend's ``_plan_mode.get(bareCid, False)`` always miss, so
- *     ``active`` comes back ``False`` regardless of what /plan did.
- *     That is why the chip flashed plan-active for a frame then
- *     snapped back to build mode after every toggle.
+ *   - Passing the bare cid to ``fileAccessMode.refresh()`` makes the
+ *     backend's per-umo lookup always miss, so the chip falls back to
+ *     the configured default regardless of what `/mode` set.
  *
  * Returns the full umo, or ``null`` if the session is unknown (the
- * refresh caller treats ``null`` as "no umo → backend returns
- * build-state", which is the correct fallback for an unmapped
- * session).
+ * refresh caller treats ``null`` as "no umo → reset to the configured
+ * default", which is the correct fallback for an unmapped session).
  */
 function resolveCurrentUmo(sessionId: string): string | null {
   // 2026-08-11 bug fix (elecvoid243): delegate to the shared resolver,

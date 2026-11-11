@@ -2132,15 +2132,6 @@
       "loadDiffFailed": "diff 加载失败",
       "fileDiffTruncated": "该文件 diff 过大，已截断显示前 256KB"
     },
-    "planModeChip": {
-      "activeLabel": "Plan",
-      "inactiveLabel": "Build",
-      "activeTooltip": "Plan 模式已开启 · 点击切换到 Build",
-      "inactiveTooltip": "当前为 Build 模式 · 点击切换到 Plan",
-      "activeTooltipMulti": "Plan 模式已开启 · 本会话 {count} 次构建 · 点击切换到 Build",
-      "activeSegment": "Plan 模式",
-      "inactiveSegment": "Build 模式"
-    },
     "webBrowser": {
       "fullscreen": "全屏预览",
       "exitFullscreen": "退出全屏",
@@ -2383,9 +2374,9 @@
     "nextPage": "下一页"
   },
   "fileAccessChip": {
-    "fullLabel": "完全访问",
+    "fullLabel": "完全权限",
     "readonlyLabel": "只读模式",
-    "workspaceLabel": "工作区访问",
+    "workspaceLabel": "工作区写入",
     "fullHint": "允许Agent读写本机全部文件",
     "readonlyHint": "仅允许使用只读工具，适合信息探索或计划",
     "workspaceHint": "仅可在工作区执行写操作",

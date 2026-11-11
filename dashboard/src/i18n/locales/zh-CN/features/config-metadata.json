@@ -268,11 +268,11 @@
         "file_access_default_mode": {
           "description": "默认文件访问模式",
           "labels": [
-            "完全访问",
-            "只读(Plan)",
-            "工作区白名单"
+            "完全权限",
+            "只读模式",
+            "工作区写入"
           ],
-          "hint": "会话未显式选择模式时的默认值。readonly 即 plan 模式（禁止一切写入）；workspace 仅允许在会话工作区与白名单目录内写入。聊天输入框的模式切换按会话覆盖此默认值。"
+          "hint": "会话未显式选择模式时的默认值。readonly 即只读模式（禁止一切写入）；workspace 仅允许在会话工作区与白名单目录内写入。聊天输入框的模式切换按会话覆盖此默认值。"
         },
         "file_access_extra_roots": {
           "description": "工作区模式额外白名单目录",

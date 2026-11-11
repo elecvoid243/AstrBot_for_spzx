@@ -465,7 +465,6 @@ SPCODE_CHAT_PATHS = {
     "project-status",
     "project-load",
     "project-unload",
-    "plan-mode",
     "operation-progress",
     "terminal/start",
     "terminal/stream",

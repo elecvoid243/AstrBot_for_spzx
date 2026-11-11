@@ -1,7 +1,8 @@
 <!--
   FileAccessModeChip — compact dropdown file access mode switcher
-  (full / readonly / workspace). Replaces SpcodePlanModeChip: readonly
-  IS plan mode, with the state owned by AstrBot core (per-umo).
+  (full / readonly / workspace). Supersedes the old plugin-owned
+  plan/build toggle: readonly IS plan mode, with the state owned by
+  AstrBot core (per-umo).
 
   Dropdown form (was a 3-segment control): the three segments dominated
   the input status row's width, so the switcher collapses to a single

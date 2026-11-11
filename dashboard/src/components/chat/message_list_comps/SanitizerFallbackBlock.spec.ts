@@ -30,4 +30,14 @@ describe("SanitizerFallbackBlock", () => {
     expect(wrapper.text()).toContain("字符");
     expect(wrapper.attributes("title")).toBe("重复思考已折叠");
   });
+
+  it("is a toggle when interactive", async () => {
+    const wrapper = mount(SanitizerFallbackBlock, {
+      props: { lines: 1741, chars: 28231, interactive: true },
+    });
+
+    expect(wrapper.attributes("role")).toBe("button");
+    await wrapper.trigger("click");
+    expect(wrapper.emitted("toggle")).toHaveLength(1);
+  });
 });

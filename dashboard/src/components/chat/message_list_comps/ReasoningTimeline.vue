@@ -33,10 +33,14 @@
 
         <ReasoningThinkContent
           v-if="entry.kind === 'think' && !thinkCollapsed(entry)"
-          :content="displayedThink(entry)"
+          :content="entry.think"
+          :original-content="entry.thinkOriginal"
+          :show-original="showOriginalThink.has(entry.key)"
+          :interactive="Boolean(entry.thinkOriginal)"
           :inert="inert"
           :is-dark="isDark"
           :is-streaming="isStreaming"
+          @toggle-original="toggleOriginalThink(entry.key)"
         />
 
         <div
@@ -95,21 +99,6 @@
         </div>
 
         <button
-          v-if="entry.kind === 'think' && entry.thinkSanitized"
-          class="think-collapse-toggle"
-          data-testid="think-original-toggle"
-          type="button"
-          :title="
-            showOriginalThink.has(entry.key)
-              ? tm('reasoning.showSanitized')
-              : tm('reasoning.showOriginal')
-          "
-          @click="toggleOriginalThink(entry.key)"
-        >
-          {{ originalToggleLabel(entry) }}
-        </button>
-
-        <button
           v-if="
             collapseThink &&
             entry.kind === 'think' &&
@@ -136,7 +125,6 @@ import ReasoningThinkContent from "./ReasoningThinkContent.vue";
 import {
   isSanitizerMarkerLine,
   lastTextSegment,
-  parseThinkSegments,
 } from "./reasoningSanitizer";
 import ToolCallItem from "@/components/chat/message_list_comps/ToolCallItem.vue";
 import FileChangeCard from "@/components/chat/message_list_comps/FileChangeCard.vue";
@@ -192,7 +180,7 @@ function thinkCollapsed(entry: TimelineEntry): boolean {
 }
 
 function thinkExpandable(entry: TimelineEntry): boolean {
-  return entry.kind === "think" && tailPreview(displayedThink(entry)).truncated;
+  return entry.kind === "think" && tailPreview(entry.think).truncated;
 }
 
 function toggleThink(key: string): void {
@@ -276,7 +264,6 @@ type TimelineEntry =
       title: string;
       think: string;
       thinkOriginal?: string;
-      thinkSanitized?: boolean;
     }
   | {
       key: string;
@@ -319,7 +306,6 @@ const timelineEntries = computed<TimelineEntry[]>(() => {
           typeof part.think_original === "string"
             ? part.think_original
             : undefined,
-        thinkSanitized: part.think_sanitized === true,
       });
       return;
     }
@@ -357,38 +343,11 @@ const timelineEntries = computed<TimelineEntry[]>(() => {
 
 const showOriginalThink = ref(new Set<string>());
 
-function displayedThink(entry: TimelineEntry): string {
-  if (entry.kind !== "think") return "";
-  if (entry.thinkSanitized && showOriginalThink.value.has(entry.key)) {
-    return entry.thinkOriginal ?? entry.think;
-  }
-  return entry.think;
-}
-
 function toggleOriginalThink(key: string): void {
   const next = new Set(showOriginalThink.value);
   if (next.has(key)) next.delete(key);
   else next.add(key);
   showOriginalThink.value = next;
-}
-
-function foldedRepeatCount(entry: TimelineEntry): number {
-  if (entry.kind !== "think") return 0;
-  return parseThinkSegments(entry.think).reduce((total, segment) => {
-    if (segment.kind === "period" || segment.kind === "run") {
-      return total + segment.repeats;
-    }
-    return total;
-  }, 0);
-}
-
-function originalToggleLabel(entry: TimelineEntry): string {
-  if (showOriginalThink.value.has(entry.key)) {
-    return tm("reasoning.showSanitized");
-  }
-  const repeats = foldedRepeatCount(entry);
-  if (!repeats) return tm("reasoning.showOriginal");
-  return `${tm("reasoning.sanitizerFolded")} ${repeats.toLocaleString("en-US")} ${tm("reasoning.sanitizerTimes")}`;
 }
 
 // Live preview throttle (same cadence as the main agent's ReasoningBlock):
@@ -402,7 +361,7 @@ function updateLiveThinkPreview(): void {
   const entries = timelineEntries.value;
   const last = entries[entries.length - 1];
   liveThinkPreview.value =
-    last && last.kind === "think" ? tailPreview(displayedThink(last)).text : "";
+    last && last.kind === "think" ? tailPreview(last.think).text : "";
 }
 
 function stopLivePreviewTimer(): void {
@@ -442,7 +401,7 @@ function thinkPreviewText(entry: TimelineEntry, index: number): string {
   ) {
     return liveThinkPreview.value;
   }
-  return entry.kind === "think" ? tailPreview(displayedThink(entry)).text : "";
+  return entry.kind === "think" ? tailPreview(entry.think).text : "";
 }
 
 function normalizeToolCall(tool: Record<string, unknown>) {

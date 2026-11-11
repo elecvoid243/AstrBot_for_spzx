@@ -1,8 +1,20 @@
 <template>
   <div
     class="sanitizer-fallback-block"
-    role="note"
-    :title="tm('reasoning.sanitizerFallbackTitle')"
+    :class="{ 'is-interactive': interactive, 'is-active': active }"
+    :role="interactive ? 'button' : 'note'"
+    :tabindex="interactive ? 0 : undefined"
+    :aria-pressed="interactive ? active : undefined"
+    :title="
+      interactive
+        ? active
+          ? tm('reasoning.showSanitized')
+          : tm('reasoning.showOriginal')
+        : tm('reasoning.sanitizerFallbackTitle')
+    "
+    @click="interactive && emit('toggle')"
+    @keydown.enter.prevent="interactive && emit('toggle')"
+    @keydown.space.prevent="interactive && emit('toggle')"
   >
     <svg
       class="sanitizer-fallback-block__icon"
@@ -40,8 +52,11 @@ import { useModuleI18n } from "@/i18n/composables";
 defineProps<{
   lines: number;
   chars: number;
+  interactive?: boolean;
+  active?: boolean;
 }>();
 
+const emit = defineEmits<{ toggle: [] }>();
 const { tm } = useModuleI18n("features/chat");
 
 function formatNumber(value: number): string {
@@ -60,6 +75,19 @@ function formatNumber(value: number): string {
   border-left: 2px solid rgba(var(--v-theme-on-surface), 0.2);
   border-radius: 8px;
   background: rgba(var(--v-theme-on-surface), 0.035);
+}
+
+.sanitizer-fallback-block.is-interactive {
+  cursor: pointer;
+}
+
+.sanitizer-fallback-block.is-interactive:hover {
+  border-color: rgba(var(--v-theme-on-surface), 0.2);
+  background: rgba(var(--v-theme-on-surface), 0.055);
+}
+
+.sanitizer-fallback-block.is-active {
+  border-left-color: rgba(var(--v-theme-on-surface), 0.35);
 }
 
 .sanitizer-fallback-block__icon {

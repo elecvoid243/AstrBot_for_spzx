@@ -35,9 +35,12 @@ const STUBS = {
   },
 };
 
-function mountContent(content: string, inert = false) {
+function mountContent(
+  content: string,
+  extra: Record<string, unknown> = {},
+) {
   return mount(ReasoningThinkContent, {
-    props: { content, inert },
+    props: { content, ...extra },
     global: { stubs: STUBS },
   });
 }
@@ -64,6 +67,36 @@ describe("ReasoningThinkContent", () => {
     expect(wrapper.text()).toContain("after");
   });
 
+  it("exposes the marker as a toggle when interactive", async () => {
+    const wrapper = mountContent(
+      "intro\nblock 1\nblock 2\nblock 3\n[context sanitizer: collapsed 2 x 3-line repeated block]\nafter",
+      { originalContent: "original", interactive: true },
+    );
+
+    const marker = wrapper.get(".sanitizer-fold-rule");
+    expect(marker.attributes("role")).toBe("button");
+    expect(marker.attributes("tabindex")).toBe("0");
+
+    await marker.trigger("click");
+
+    expect(wrapper.emitted("toggle-original")).toHaveLength(1);
+  });
+
+  it("keeps the marker summary visible in the original view", async () => {
+    const wrapper = mountContent(
+      "intro\nblock 1\nblock 2\nblock 3\n[context sanitizer: collapsed 2 x 3-line repeated block]\nafter",
+      { originalContent: "original text", showOriginal: true, interactive: true },
+    );
+
+    expect(wrapper.text()).toContain("original text");
+    const marker = wrapper.get(".sanitizer-fold-rule");
+    expect(marker.attributes("aria-pressed")).toBe("true");
+
+    await marker.trigger("click");
+
+    expect(wrapper.emitted("toggle-original")).toHaveLength(1);
+  });
+
   it("replaces a fallback marker with a fallback block", () => {
     const wrapper = mountContent(
       "[context sanitizer: collapsed repetitive reasoning (1741 lines, 28231 chars)]",
@@ -83,7 +116,7 @@ describe("ReasoningThinkContent", () => {
   });
 
   it("uses the inert markdown renderer when inert is set", () => {
-    const wrapper = mountContent("plain thought", true);
+    const wrapper = mountContent("plain thought", { inert: true });
 
     expect(wrapper.find(".markdown-message-part").exists()).toBe(true);
     expect(wrapper.find(".markdown-render").exists()).toBe(false);

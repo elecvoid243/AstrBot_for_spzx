@@ -45,4 +45,35 @@ describe("SanitizerFoldRule", () => {
     expect(wrapper.text()).toContain("次连续重复行");
     expect(wrapper.text()).not.toContain("行/次");
   });
+
+  it("is a keyboard-operable toggle when interactive", async () => {
+    const wrapper = mount(SanitizerFoldRule, {
+      props: { kind: "period", repeats: 7, period: 5, interactive: true },
+    });
+
+    expect(wrapper.attributes("role")).toBe("button");
+    expect(wrapper.attributes("tabindex")).toBe("0");
+    expect(wrapper.attributes("aria-pressed")).toBe("false");
+
+    await wrapper.trigger("click");
+    expect(wrapper.emitted("toggle")).toHaveLength(1);
+
+    await wrapper.trigger("keydown.enter");
+    expect(wrapper.emitted("toggle")).toHaveLength(2);
+  });
+
+  it("marks the expanded state", () => {
+    const wrapper = mount(SanitizerFoldRule, {
+      props: {
+        kind: "period",
+        repeats: 7,
+        period: 5,
+        interactive: true,
+        active: true,
+      },
+    });
+
+    expect(wrapper.attributes("aria-pressed")).toBe("true");
+    expect(wrapper.classes()).toContain("is-active");
+  });
 });

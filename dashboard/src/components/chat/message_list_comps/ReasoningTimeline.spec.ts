@@ -264,36 +264,43 @@ describe("ReasoningTimeline think live preview", () => {
 
 describe("ReasoningTimeline sanitized think", () => {
   const ORIGINAL = ("OK.\nLet me write.\nLet me go.\nLet me go.\n").repeat(20);
+  const SANITIZED =
+    "intro\nblock 1\nblock 2\nblock 3\n[context sanitizer: collapsed 2 x 3-line repeated block]\nafter";
 
-  it("shows the folded text and expands the original on demand", async () => {
+  it("uses the fold marker as the expand/collapse button", async () => {
     const wrapper = mountTimeline([
       {
         type: "think",
-        think: "folded text",
+        think: SANITIZED,
         think_original: ORIGINAL,
         think_sanitized: true,
-        think_collapsed_lines: 76,
       },
     ]);
 
-    expect(wrapper.text()).toContain("folded text");
+    expect(wrapper.text()).toContain("intro");
+    expect(wrapper.text()).not.toContain("block 1");
     expect(wrapper.text()).not.toContain("Let me go.");
 
-    const toggle = wrapper.get('[data-testid="think-original-toggle"]');
-    expect(toggle.text()).toBe("reasoning.showOriginal");
+    const marker = wrapper.get(".sanitizer-fold-rule");
+    expect(marker.attributes("role")).toBe("button");
+    expect(marker.attributes("tabindex")).toBe("0");
 
-    await toggle.trigger("click");
+    await marker.trigger("click");
 
     expect(wrapper.text()).toContain("Let me go.");
-    expect(toggle.text()).toBe("reasoning.showSanitized");
+    expect(wrapper.find(".sanitizer-fold-rule").exists()).toBe(true);
+
+    await wrapper.get(".sanitizer-fold-rule").trigger("click");
+
+    expect(wrapper.text()).not.toContain("Let me go.");
+    expect(wrapper.text()).toContain("intro");
   });
 
-  it("does not show the toggle for untouched think parts", () => {
+  it("does not show a fold control for untouched think parts", () => {
     const wrapper = mountTimeline([{ type: "think", think: "plain thought" }]);
 
-    expect(wrapper.find('[data-testid="think-original-toggle"]').exists()).toBe(
-      false,
-    );
+    expect(wrapper.find(".sanitizer-fold-rule").exists()).toBe(false);
+    expect(wrapper.find(".sanitizer-fallback-block").exists()).toBe(false);
   });
 
   it("renders sanitizer markers as fold rules", () => {
@@ -323,23 +330,21 @@ describe("ReasoningTimeline sanitized think", () => {
     expect(wrapper.text()).toContain("after");
   });
 
-  it("labels the original toggle with the fold summary", async () => {
+  it("uses the fold summary as the marker button label", () => {
     const wrapper = mountTimeline([
       {
         type: "think",
-        think: "intro\nblock 1\nblock 2\nblock 3\n[context sanitizer: collapsed 2 x 3-line repeated block]\nafter",
-        think_original: "original",
+        think: SANITIZED,
+        think_original: ORIGINAL,
         think_sanitized: true,
       },
     ]);
 
-    const toggle = wrapper.get('[data-testid="think-original-toggle"]');
-    expect(toggle.text()).toContain("reasoning.sanitizerFolded");
-    expect(toggle.text()).toContain("2");
-    expect(toggle.text()).toContain("reasoning.sanitizerTimes");
-
-    await toggle.trigger("click");
-
-    expect(toggle.text()).toBe("reasoning.showSanitized");
+    const marker = wrapper.get(".sanitizer-fold-rule");
+    expect(marker.text()).toContain("reasoning.sanitizerFolded");
+    expect(marker.text()).toContain("2");
+    expect(marker.text()).toContain("reasoning.sanitizerTimes");
+    expect(marker.text()).toContain("3");
+    expect(marker.text()).toContain("reasoning.sanitizerLinesPer");
   });
 });

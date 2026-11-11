@@ -270,7 +270,7 @@ async def test_agent_discovery_read_budget_creation_and_switches(remote_tools):
     assert not result.startswith("error:"), result
     created = json.loads(result)
     sid = created["session_id"]
-    rows = json.loads(await ListChatSessionsTool().call(context))
+    rows = json.loads(await ListChatSessionsTool().call(context))["sessions"]
     found = [row for row in rows if row.get("session_id") == sid]
     assert len(found) == 2 and len({row["target_id"] for row in found}) == 2
     assert all(
@@ -385,7 +385,7 @@ async def test_agent_discovery_read_budget_creation_and_switches(remote_tools):
     )
     assert not any(
         row.get("connection_id")
-        for row in json.loads(await ListChatSessionsTool().call(context))
+        for row in json.loads(await ListChatSessionsTool().call(context))["sessions"]
     )
     remote_core.astrbot_config["session_messages"]["enable"] = True
     core.astrbot_config["session_messages"]["enable"] = False
@@ -439,7 +439,9 @@ async def test_discovery_rechecks_source_after_remote_io(
     monkeypatch.setattr(service, "read_connection", change_after_response)
     result = await ListChatSessionsTool().call(context)
     if change == "remote":
-        assert all(row["connection_id"] is None for row in json.loads(result))
+        assert all(
+            row["connection_id"] is None for row in json.loads(result)["sessions"]
+        )
     else:
         assert result.startswith("error:")
 

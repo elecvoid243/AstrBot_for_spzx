@@ -3244,6 +3244,7 @@ class ChatService:
             "selected_provider",
             "selected_model",
             "thinking_effort",
+            "config_profile",
             "text",
         ):
             if key in payload and (
@@ -3295,7 +3296,35 @@ class ChatService:
                 project_name = (await projects.get_project(owner, project_id))["title"]
         except ChatUIProjectServiceError as exc:
             raise ChatServiceError(str(exc)) from exc
-        config_id = (await self.session_config(owner, source_id))["config_id"]
+        manager = self.core_lifecycle.astrbot_config_mgr
+        profiles = [
+            {"id": info["id"], "name": info.get("name") or info["id"]}
+            for info in manager.get_conf_list()
+            if info["id"] in manager.confs
+        ]
+        if "config_profile" in payload:
+            # Display names are not unique: match exactly and report both failure modes.
+            matches = [
+                info["id"]
+                for info in profiles
+                if info["name"] == payload["config_profile"]
+            ]
+            if not matches:
+                raise ChatServiceError(
+                    "Config profile not found; available display names: "
+                    + json.dumps(
+                        [info["name"] for info in profiles], ensure_ascii=False
+                    )
+                )
+            if len(matches) > 1:
+                raise ChatServiceError(
+                    "Config profile name is ambiguous; use one of these IDs: "
+                    + json.dumps(sorted(matches), ensure_ascii=False)
+                )
+            config_id = matches[0]
+        else:
+            # Absent keeps the existing inheritance from the source session.
+            config_id = (await self.session_config(owner, source_id))["config_id"]
         selection = dict(effective_selection)
         if "selected_provider" in payload:
             selection["selected_provider"] = payload["selected_provider"]
@@ -3333,6 +3362,10 @@ class ChatService:
             "project_id": project_id,
             "project_name": project_name,
             "config_id": config_id,
+            "config_name": next(
+                (info["name"] for info in profiles if info["id"] == config_id),
+                config_id,
+            ),
             "selection": saved_selection,
             "detail_path": f"/#/chat/{session_id}",
         }

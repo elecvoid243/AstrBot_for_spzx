@@ -608,7 +608,8 @@ async def test_list_tool_returns_folder_titles_without_per_session_project_queri
         AsyncMock(side_effect=AssertionError("Discovery must reuse joined titles")),
     )
     result = json.loads(await ListChatSessionsTool().call(context))
-    by_id = {item["session_id"]: item for item in result}
+    assert result["config_profiles"] == [{"id": "default", "name": "default"}]
+    by_id = {item["session_id"]: item for item in result["sessions"]}
     assert set(by_id) == {m.ids[1], plain.session_id, stale.session_id}
     assert by_id[m.ids[1]] == {
         "session_id": m.ids[1],
@@ -625,6 +626,105 @@ async def test_list_tool_returns_folder_titles_without_per_session_project_queri
     assert foreign_session.session_id not in by_id
     assert foreign["project_id"] not in json.dumps(result)
     assert "Private foreign folder" not in json.dumps(result)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "selector,expected_config,expected_error",
+    [
+        ("运维配置", "profile-ops", None),
+        ("default", "default", None),
+        ("缺失配置", None, "available display names"),
+        ("研究配置", None, "ambiguous"),
+    ],
+)
+async def test_create_selects_config_profile_by_display_name(
+    creation, selector, expected_config, expected_error
+):
+    """Resolve a profile by exact display name and reject missing or duplicated names.
+
+    Args:
+        creation: Real SQLite, config manager and trusted creation tool.
+        selector: Model-supplied config profile display name.
+        expected_config: Bound profile ID on success, or None on rejection.
+        expected_error: Required error fragment on rejection.
+    """
+    m, context, invoke = creation
+    owner = m.user["resource_owner"]
+    manager = m.core.astrbot_config_mgr
+    for conf_id, name in (
+        ("profile-research-a", "研究配置"),
+        ("profile-research-b", "研究配置"),
+        ("profile-ops", "运维配置"),
+    ):
+        manager.abconf_data[conf_id] = {
+            "path": f"abconf_{conf_id}.json",
+            "name": name,
+        }
+        manager.confs[conf_id] = dict(m.core.astrbot_config)
+    await m.service.session_config(owner, m.ids[0], "profile-ops")
+    listed = json.loads(await ListChatSessionsTool().call(context))
+    assert {"id": "profile-ops", "name": "运维配置"} in listed["config_profiles"]
+    result = await invoke({"title": "Profile B", "config_profile": selector})
+    if expected_error:
+        assert result.startswith("error:"), result
+        assert expected_error in result
+        assert len(await m.service.get_sessions(owner, "webchat")) == 2
+        return
+    assert result["status"] == "created", result
+    m.ids.append(result["session_id"])
+    assert result["config_id"] == expected_config
+    assert result["config_name"] == selector
+    assert (await m.service.session_config(owner, result["session_id"]))[
+        "config_id"
+    ] == expected_config
+
+
+@pytest.mark.asyncio
+async def test_create_without_config_profile_inherits_source_binding(creation):
+    """Omitting config_profile keeps inheriting the source session's profile.
+
+    Args:
+        creation: Real SQLite, config manager and trusted creation tool.
+    """
+    m, context, invoke = creation
+    owner = m.user["resource_owner"]
+    manager = m.core.astrbot_config_mgr
+    manager.abconf_data["profile-ops"] = {
+        "path": "abconf_profile-ops.json",
+        "name": "运维配置",
+    }
+    manager.confs["profile-ops"] = dict(m.core.astrbot_config)
+    await m.service.session_config(owner, m.ids[0], "profile-ops")
+    result = await invoke({"title": "Inherited B"})
+    assert result["status"] == "created", result
+    m.ids.append(result["session_id"])
+    assert result["config_id"] == "profile-ops"
+    assert result["config_name"] == "运维配置"
+    assert (await m.service.session_config(owner, result["session_id"]))[
+        "config_id"
+    ] == "profile-ops"
+
+
+@pytest.mark.asyncio
+async def test_remote_creation_rejects_config_profile_selection(creation):
+    """Remote creation refuses a local profile name before any network call.
+
+    Args:
+        creation: Trusted execution and creation tool.
+    """
+    _, _, invoke = creation
+    result = await invoke(
+        {
+            "title": "Remote profile",
+            "connection_id": "connection",
+            "connection_revision": "revision",
+            "project_id": None,
+            "config_profile": "运维配置",
+        }
+    )
+    assert result.startswith("error:"), result
+    assert "config_profile" in result
 
 
 @pytest.mark.asyncio
@@ -819,7 +919,9 @@ async def test_listed_project_name_preserves_title_whitespace(creation, plain_na
     if plain_namesake:
         plain = await projects.create_project(owner, {"title": "Research folder"})
     listed = json.loads(await ListChatSessionsTool().call(context))
-    entry = next(item for item in listed if item["session_id"] == m.ids[1])
+    entry = next(
+        item for item in listed["sessions"] if item["session_id"] == m.ids[1]
+    )
     assert entry["project_name"] == " Research folder "
     result = await invoke(
         {"title": "Copied title B", "project_name": entry["project_name"]}

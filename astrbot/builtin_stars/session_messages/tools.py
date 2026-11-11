@@ -254,12 +254,13 @@ class AgentMessageSource:
 class ListChatSessionsTool(FunctionTool[AstrAgentContext]):
     name: str = "list_chat_sessions"
     description: str = (
-        "Discover local and directly bound remote ordinary ChatUI sessions. Remote entries "
-        "include connection_id, connection_revision and stable target_id; copy both connection fields for reads/creation. "
+        "Discover local and directly bound remote ordinary ChatUI sessions and the local "
+        "config profiles available to create_chat_session. Remote entries include "
+        "connection_id, connection_revision and stable target_id; copy both connection fields for reads/creation. "
         "project_name is the project directory title. Only directly authorized instances are included. "
-        "Discover existing ordinary ChatUI sessions owned by the current account, "
-        "including project sessions. Each entry returns project_id and project_name "
-        "(the ChatUI sidebar folder title, null for no project). Archived, side and "
+        "Each session returns project_id and project_name (the ChatUI sidebar folder title, "
+        "null for no project). config_profiles lists local profile id and display name; "
+        "pass a display name as config_profile when creating. Archived, side and "
         "hidden team chats are excluded. Use read_chat_session to inspect saved history."
     )
     parameters: dict = field(
@@ -284,10 +285,21 @@ class ListChatSessionsTool(FunctionTool[AstrAgentContext]):
         if service is None:
             return "error: ChatUI session messaging is unavailable"
         try:
-            return json.dumps(
+            rows = (
                 await service.remote_chat.agent_sessions(context.context.event)
                 if getattr(service, "remote_chat", None) is not None
-                else await service.list_message_sessions(context.context.event),
+                else await service.list_message_sessions(context.context.event)
+            )
+            manager = service.core_lifecycle.astrbot_config_mgr
+            return json.dumps(
+                {
+                    "sessions": rows,
+                    "config_profiles": [
+                        {"id": info["id"], "name": info.get("name") or info["id"]}
+                        for info in manager.get_conf_list()
+                        if info["id"] in manager.confs
+                    ],
+                },
                 ensure_ascii=False,
             )
         except (ChatServiceError, ValueError) as exc:
@@ -736,9 +748,11 @@ class CreateChatSessionTool(FunctionTool[AstrAgentContext]):
     description: str = (
         "Create a local or directly bound remote ordinary ChatUI session. For remote creation, "
         "copy connection_id and connection_revision from discovery and explicitly choose project_id "
-        "(null for no project) or project_name. Remote settings default on the target instance; remote text sending is unavailable. "
+        "(null for no project) or project_name. Remote settings default on the target instance; "
+        "remote text sending and config_profile selection are unavailable. "
         "Create an independent ordinary ChatUI session with empty history. Omitted "
-        "project and settings inherit this execution's effective values. Select an existing "
+        "project and model settings inherit this execution's effective values; an omitted "
+        "config profile keeps the source session's profile. Select an existing "
         "owned project directly with project_name (exact ChatUI sidebar folder title, "
         "not a filesystem path), or project_id. These parameters are mutually exclusive. "
         "project_id=null explicitly chooses no project. Ambiguous names require an ID. "
@@ -778,6 +792,10 @@ class CreateChatSessionTool(FunctionTool[AstrAgentContext]):
                 "thinking_effort": {
                     "type": "string",
                     "description": "Thinking effort, budget, or auto.",
+                },
+                "config_profile": {
+                    "type": "string",
+                    "description": "Exact local config profile display name from list_chat_sessions config_profiles. Omit to inherit the source session's profile. Unavailable for remote creation.",
                 },
                 "text": {
                     "type": "string",
@@ -827,6 +845,8 @@ class CreateChatSessionTool(FunctionTool[AstrAgentContext]):
                 return "error: Remote creation requires connection_id and connection_revision"
             if "text" in kwargs:
                 return "error: Remote Agent first-message sending is unavailable; create without text"
+            if "config_profile" in kwargs:
+                return "error: Remote config profile selection is unavailable; create without config_profile"
             if "project_id" not in kwargs and "project_name" not in kwargs:
                 return "error: Remote creation requires explicit project_id (or null) or project_name"
             try:

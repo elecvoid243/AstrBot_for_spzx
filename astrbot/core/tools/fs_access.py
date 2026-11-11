@@ -411,12 +411,44 @@ async def write_roots(
     from .computer_tools.util import workspace_root_for_context
 
     root = current_workspace_root or await workspace_root_for_context(context)
-    return (
-        Path(root).resolve(strict=False),
-        Path(get_astrbot_system_tmp_path()).resolve(strict=False),
-        Path(get_astrbot_temp_path()).resolve(strict=False),
-        *await extra_write_roots(context),
-    )
+    return compose_workspace_roots(root, extra=await extra_write_roots(context))
+
+
+def compose_workspace_roots(
+    workspace: Path | str | None,
+    *,
+    extra: Sequence[Path | str] = (),
+) -> tuple[Path, ...]:
+    """Compose the workspace-mode writable roots from every source.
+
+    Single source of truth for the three consumers that must agree: the
+    tool-layer whitelist (:func:`write_roots`), the OS sandbox grants
+    (:func:`sandbox_spec_for_context`), and the LLM-facing guidance. Roots that
+    do not exist are dropped, so the advertised whitelist never promises a
+    directory the sandbox cannot grant. The session workspace is kept
+    unconditionally because the caller validates it.
+
+    Args:
+        workspace: Session workspace root, or None when unknown.
+        extra: Configured, plugin-dynamic, and per-umo custom roots.
+
+    Returns:
+        Absolute roots in display order, deduplicated case-insensitively.
+    """
+    candidates: list[Path | str] = []
+    if workspace is not None:
+        candidates.append(workspace)
+    candidates.extend((get_astrbot_system_tmp_path(), get_astrbot_temp_path()))
+    candidates.extend(extra)
+
+    kept: list[Path | str] = []
+    for index, item in enumerate(candidates):
+        path = Path(item).expanduser()
+        # WHY: the native runner refuses to start when a --writable root is
+        # missing, so only existing directories may reach the whitelist.
+        if (index == 0 and workspace is not None) or path.is_dir():
+            kept.append(path)
+    return _normalize_roots(kept)
 
 
 def _is_within(path: Path, roots: tuple[Path, ...]) -> bool:
@@ -466,10 +498,14 @@ async def sandbox_spec_for_context(
     ).resolve(strict=False)
     writable_roots: tuple[Path, ...] = ()
     if mode is FileAccessMode.WORKSPACE:
+        # WHY: derive from the same composition as write_roots() so the OS
+        # grants exactly match the whitelist advertised to the model.
         writable_roots = tuple(
-            Path(root).resolve(strict=False)
-            for root in await extra_write_roots(context)
-            if Path(root).resolve(strict=False) != workspace
+            root
+            for root in compose_workspace_roots(
+                workspace, extra=await extra_write_roots(context)
+            )
+            if root != workspace
         )
     return SandboxSpec(
         workspace=workspace,

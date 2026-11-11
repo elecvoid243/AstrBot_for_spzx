@@ -329,3 +329,82 @@ def test_default_config_contains_file_access_keys():
     provider_settings = DEFAULT_CONFIG["provider_settings"]
     assert provider_settings["file_access_default_mode"] == "full"
     assert provider_settings["file_access_extra_roots"] == []
+
+
+def _pin_builtin_temp_roots(monkeypatch, base):
+    """Point the two built-in temp roots at real directories under ``base``."""
+    system_tmp = base / "system_tmp"
+    astrbot_tmp = base / "astrbot_tmp"
+    system_tmp.mkdir()
+    astrbot_tmp.mkdir()
+    monkeypatch.setattr(
+        fs_access, "get_astrbot_system_tmp_path", lambda: str(system_tmp)
+    )
+    monkeypatch.setattr(fs_access, "get_astrbot_temp_path", lambda: str(astrbot_tmp))
+    return system_tmp.resolve(), astrbot_tmp.resolve()
+
+
+@pytest.mark.asyncio
+async def test_sandbox_spec_grants_builtin_temp_roots(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+):
+    """Regression: the built-in temp roots were advertised but never granted.
+
+    The model was told it could write to the AstrBot temp directories while the
+    sandbox received only the extra roots, so those writes failed with
+    ``0x80070005`` at the OS layer.
+    """
+    monkeypatch.setattr(sys, "platform", "win32")
+    system_tmp, astrbot_tmp = _pin_builtin_temp_roots(monkeypatch, tmp_path)
+    fs_access.set_mode_for_umo(UMO, FileAccessMode.WORKSPACE)
+
+    spec = await fs_access.sandbox_spec_for_context(
+        _make_context(), current_workspace_root=tmp_path
+    )
+
+    assert spec is not None
+    assert system_tmp in spec.writable_roots
+    assert astrbot_tmp in spec.writable_roots
+
+
+@pytest.mark.asyncio
+async def test_sandbox_grants_match_advertised_whitelist(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+):
+    """Every advertised root except the workspace itself must be granted."""
+    monkeypatch.setattr(sys, "platform", "win32")
+    _pin_builtin_temp_roots(monkeypatch, tmp_path)
+    extra = tmp_path / "extra"
+    extra.mkdir()
+    fs_access.set_mode_for_umo(UMO, FileAccessMode.WORKSPACE)
+    fs_access.set_dynamic_roots(UMO, [extra])
+    context = _make_context()
+
+    advertised = await fs_access.write_roots(
+        context, current_workspace_root=tmp_path
+    )
+    spec = await fs_access.sandbox_spec_for_context(
+        context, current_workspace_root=tmp_path
+    )
+
+    assert spec is not None
+    assert set(spec.writable_roots) == set(advertised) - {tmp_path.resolve()}
+
+
+def test_compose_workspace_roots_drops_missing_directories(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+):
+    """The native runner refuses to start on a missing --writable root."""
+    existing = tmp_path / "existing"
+    existing.mkdir()
+    missing = tmp_path / "missing"
+    monkeypatch.setattr(
+        fs_access, "get_astrbot_system_tmp_path", lambda: str(missing)
+    )
+    monkeypatch.setattr(fs_access, "get_astrbot_temp_path", lambda: str(existing))
+
+    roots = fs_access.compose_workspace_roots(tmp_path / "ws", extra=(missing,))
+
+    assert existing.resolve() in roots
+    assert missing.resolve() not in roots
+    assert (tmp_path / "ws").resolve() in roots

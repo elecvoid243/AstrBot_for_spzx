@@ -17,18 +17,11 @@ persisted). This module adds the two things the mode needs at LLM-request time:
 
 from __future__ import annotations
 
-import os
-from pathlib import Path
-
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
 from astrbot.core.agent.message import TextPart
 from astrbot.core.provider.entities import ProviderRequest
 from astrbot.core.tools import fs_access
-from astrbot.core.utils.astrbot_path import (
-    get_astrbot_system_tmp_path,
-    get_astrbot_temp_path,
-)
 from astrbot.core.workspace import resolve_workspace_root_for_umo
 
 
@@ -93,24 +86,14 @@ async def _workspace_writable_roots(cfg: dict, umo: str) -> tuple[str, ...]:
         )
         return ()
 
-    candidates: list[Path | str] = [
-        workspace,
-        get_astrbot_system_tmp_path(),
-        get_astrbot_temp_path(),
+    extra = (
         *fs_access.configured_extra_roots(cfg),
         *fs_access.get_dynamic_roots(umo),
         *(await fs_access.get_custom_roots(umo)),
-    ]
-    seen: set[str] = set()
-    roots: list[str] = []
-    for item in candidates:
-        resolved = Path(item).expanduser().resolve(strict=False)
-        key = os.path.normcase(str(resolved))
-        if key in seen:
-            continue
-        seen.add(key)
-        roots.append(str(resolved))
-    return tuple(roots)
+    )
+    return tuple(
+        str(root) for root in fs_access.compose_workspace_roots(workspace, extra=extra)
+    )
 
 
 async def inject_file_access_guidance(
@@ -129,9 +112,7 @@ async def inject_file_access_guidance(
     except Exception:
         # Failing to read config must not break the request. The tool layer and
         # the OS sandbox still enforce the mode; only the prompt hint is lost.
-        logger.warning(
-            "[fs_access] failed to read config for %s", umo, exc_info=True
-        )
+        logger.warning("[fs_access] failed to read config for %s", umo, exc_info=True)
         return
 
     await fs_access.load_mode_for_umo(umo)

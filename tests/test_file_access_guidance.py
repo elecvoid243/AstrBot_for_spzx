@@ -328,6 +328,7 @@ async def test_workspace_roots_include_custom_roots(
     workspace = tmp_path / "ws"
     workspace.mkdir()
     extra = tmp_path / "extra"
+    extra.mkdir()
     monkeypatch.setattr(
         guidance_mod,
         "resolve_workspace_root_for_umo",
@@ -340,3 +341,24 @@ async def test_workspace_roots_include_custom_roots(
     assert str(workspace.resolve()) in roots
     assert str(extra.resolve()) in roots
     assert len(roots) == len(set(roots))
+
+
+@pytest.mark.asyncio
+async def test_workspace_roots_drop_missing_custom_root(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+):
+    """A root the sandbox cannot grant must not be advertised to the model."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    missing = tmp_path / "missing"
+    monkeypatch.setattr(
+        guidance_mod,
+        "resolve_workspace_root_for_umo",
+        AsyncMock(return_value=workspace),
+    )
+    await fs_access.set_custom_roots(UMO, [str(missing)])
+
+    roots = await guidance_mod._workspace_writable_roots(CFG, UMO)
+
+    assert str(workspace.resolve()) in roots
+    assert str(missing.resolve()) not in roots

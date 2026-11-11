@@ -37,16 +37,20 @@ def test_builtin_presets_round_trip():
         "deepseek-v4.1",
         "qwen-3.8",
     ]
-    assert settings["active_preset"] == "deepseek-v4"
+    assert settings["active_preset"] == "deepseek-v4.1"
     assert settings["value"] == BUILTIN["value"]
 
     v41 = settings["presets"][1]
-    assert v41["mode"] == "levels"
+    assert v41["mode"] == "slider"
     assert [level["value"] for level in v41["levels"]] == [
-        "none",
-        "minimal",
         "low",
-        "medium",
+        "high",
+        "xhigh",
+        "max",
+    ]
+    assert [snap["value"] for snap in v41["slider"]["snaps"]] == [25, 50, 75, 100]
+    assert [snap["name"] for snap in v41["slider"]["snaps"]] == [
+        "low",
         "high",
         "xhigh",
         "max",

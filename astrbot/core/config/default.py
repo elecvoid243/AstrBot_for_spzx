@@ -403,7 +403,7 @@ DEFAULT_CONFIG = {
         "remote_sessions_enabled": False,
         "remote_session_creation_enabled": False,
         "thinking_effort": {
-            "active_preset": "deepseek-v4",
+            "active_preset": "deepseek-v4.1",
             "value": "max",
             "presets": [
                 {
@@ -420,17 +420,24 @@ DEFAULT_CONFIG = {
                 {
                     "id": "deepseek-v4.1",
                     "name": "DeepSeek-V4.1",
-                    "mode": "levels",
+                    "mode": "slider",
                     "levels": [
-                        {"name": "关闭", "value": "none"},
-                        {"name": "极低", "value": "minimal"},
                         {"name": "低", "value": "low"},
-                        {"name": "中", "value": "medium"},
                         {"name": "高", "value": "high"},
                         {"name": "极高", "value": "xhigh"},
                         {"name": "最大", "value": "max"},
                     ],
-                    "slider": {"min": 1, "max": 100, "step": 1, "snaps": []},
+                    "slider": {
+                        "min": 1,
+                        "max": 100,
+                        "step": 1,
+                        "snaps": [
+                            {"name": "low", "value": 25},
+                            {"name": "high", "value": 50},
+                            {"name": "xhigh", "value": 75},
+                            {"name": "max", "value": 100},
+                        ],
+                    },
                 },
                 {
                     "id": "qwen-3.8",

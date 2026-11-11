@@ -58,7 +58,7 @@ def test_default_config_seeds_the_builtin_presets(tmp_path):
         "deepseek-v4.1",
         "qwen-3.8",
     ]
-    assert _stored_effort(config_path)["active_preset"] == "deepseek-v4"
+    assert _stored_effort(config_path)["active_preset"] == "deepseek-v4.1"
 
 
 def test_admin_preset_default_round_trip_writes_the_config_file(tmp_path):
@@ -192,4 +192,4 @@ def test_quick_messages_reject_invalid_payload_without_touching_siblings(tmp_pat
 
     stored = json.loads(config_path.read_text(encoding="utf-8-sig"))["chatui"]
     assert stored["quick_messages"]["items"] == []
-    assert stored["thinking_effort"]["active_preset"] == "deepseek-v4"
+    assert stored["thinking_effort"]["active_preset"] == "deepseek-v4.1"

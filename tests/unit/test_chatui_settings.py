@@ -41,8 +41,16 @@ def test_builtin_presets_round_trip():
     assert settings["value"] == BUILTIN["value"]
 
     v41 = settings["presets"][1]
-    assert v41["mode"] == "slider"
-    assert [snap["value"] for snap in v41["slider"]["snaps"]] == [20, 50, 75, 100]
+    assert v41["mode"] == "levels"
+    assert [level["value"] for level in v41["levels"]] == [
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+    ]
 
 
 def test_corrupt_entries_are_dropped_one_by_one():

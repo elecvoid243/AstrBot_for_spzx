@@ -2,8 +2,8 @@
 
 /**
  * Continuous "thinking effort" track for models whose reasoning_effort is a
- * free number instead of a fixed enum (DeepSeek-V4.1-Flash: 1-100, where
- * low / high / xhigh / max are plain aliases for 25 / 50 / 75 / 100).
+ * free number instead of a fixed enum. Named points are plain aliases for
+ * specific values on the track.
  *
  * The track is purely free-form: dragging never pulls the handle towards an
  * alias (that fought the pointer and made the handle jitter), the aliases are

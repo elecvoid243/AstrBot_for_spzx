@@ -156,7 +156,7 @@
     "thinkingEffortSaveFailed": "保存思考强度失败",
     "thinkingEffortModeLevels": "档位",
     "thinkingEffortModeSlider": "滑条",
-    "thinkingEffortSliderHint": "滑条模式适合支持任意数值的模型（如 DeepSeek-V4.1-Flash：reasoning_effort 可取 1-100 的整数）。拖动为无级调节，点击档位点可直接跳到对应数值。",
+    "thinkingEffortSliderHint": "滑条模式适合 reasoning_effort 接受任意数值的模型。拖动为无级调节，点击档位点可直接跳到对应数值。",
     "sliderMin": "最小值",
     "sliderMax": "最大值",
     "sliderStep": "步长",

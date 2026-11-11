@@ -6,8 +6,7 @@
   two controls sit together.
 
   Two shapes share the popup (2026-10-03): the fixed "levels" list, and a
-  "slider" track for models whose reasoning_effort is a free number
-  (DeepSeek-V4.1-Flash: 1-100 with low/high/xhigh/max as alias values).
+  "slider" track for models whose reasoning_effort accepts a free number.
   The slider is deliberately free-form — no snapping, so the handle never
   fights the pointer — while the aliases stay as labels and shortcuts.
 

@@ -156,7 +156,7 @@
     "thinkingEffortSaveFailed": "Failed to save thinking effort",
     "thinkingEffortModeLevels": "Levels",
     "thinkingEffortModeSlider": "Slider",
-    "thinkingEffortSliderHint": "Slider mode fits models that accept any number (e.g. DeepSeek-V4.1-Flash, whose reasoning_effort takes an integer from 1 to 100). Dragging is fully continuous, and clicking a named point jumps straight to its value.",
+    "thinkingEffortSliderHint": "Slider mode fits models whose reasoning_effort accepts a free number. Dragging is fully continuous, and clicking a named point jumps straight to its value.",
     "sliderMin": "Min",
     "sliderMax": "Max",
     "sliderStep": "Step",

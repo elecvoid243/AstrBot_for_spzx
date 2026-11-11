@@ -420,23 +420,17 @@ DEFAULT_CONFIG = {
                 {
                     "id": "deepseek-v4.1",
                     "name": "DeepSeek-V4.1",
-                    "mode": "slider",
+                    "mode": "levels",
                     "levels": [
+                        {"name": "关闭", "value": "none"},
+                        {"name": "极低", "value": "minimal"},
                         {"name": "低", "value": "low"},
+                        {"name": "中", "value": "medium"},
                         {"name": "高", "value": "high"},
+                        {"name": "极高", "value": "xhigh"},
                         {"name": "最大", "value": "max"},
                     ],
-                    "slider": {
-                        "min": 1,
-                        "max": 100,
-                        "step": 1,
-                        "snaps": [
-                            {"name": "低", "value": 25},
-                            {"name": "高", "value": 50},
-                            {"name": "极高", "value": 75},
-                            {"name": "最大", "value": 100},
-                        ],
-                    },
+                    "slider": {"min": 1, "max": 100, "step": 1, "snaps": []},
                 },
                 {
                     "id": "qwen-3.8",

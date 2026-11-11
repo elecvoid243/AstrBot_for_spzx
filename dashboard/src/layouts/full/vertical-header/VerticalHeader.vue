@@ -2401,7 +2401,12 @@ onMounted(async () => {
   display: flex;
   flex-direction: column;
   justify-content: center;
-  padding: 5px 18px 5px 0;
+  /* The app bar is 50px tall with a 1px bottom border, so this column gets
+     49px. Title row (24px + 2px) and subtitle (14px + 2px) leave 7px of
+     padding: 3px top and bottom. Do not grow it past that — a column flex
+     item with `overflow: hidden` loses its automatic minimum height and gets
+     shrunk below one line, which clips the subtitle's descenders. */
+  padding: 3px 18px 3px 0;
   overflow: hidden;
 }
 
@@ -2434,6 +2439,7 @@ onMounted(async () => {
 .chat-header-subtitle {
   min-width: 0;
   margin-top: 2px;
+  flex-shrink: 0;
   overflow: hidden;
   color: rgba(var(--v-theme-on-surface), 0.5);
   font-size: 11px;

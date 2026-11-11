@@ -120,10 +120,17 @@ export function buildThinkingEffortTrack(
 
   let numeric = Number(input.value);
   if (!Number.isFinite(numeric)) {
-    const alias = input.slider.snaps.find(
-      (snap) =>
-        snap.name.trim().toLowerCase() === input.value.trim().toLowerCase(),
-    );
+    const raw = input.value.trim().toLowerCase();
+    // A level value (e.g. "max") survives a switch to the numeric track by
+    // mapping through the level name onto the same-named snap.
+    const levelName = input.levels
+      .find((level) => level.value.trim().toLowerCase() === raw)
+      ?.name.trim()
+      .toLowerCase();
+    const alias = input.slider.snaps.find((snap) => {
+      const name = snap.name.trim().toLowerCase();
+      return name === raw || name === levelName;
+    });
     numeric = alias ? alias.value : min;
   }
   if (!Number.isFinite(numeric)) numeric = min;

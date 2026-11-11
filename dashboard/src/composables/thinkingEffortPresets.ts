@@ -106,8 +106,9 @@ export function findActivePreset(
 
 /**
  * Land a stored value on a preset: slider values are clamped onto the track,
- * aliases resolve to their numeric value, and level values pass through
- * untouched. Mirrors the fallback the input row applies on load.
+ * aliases resolve to their numeric value, and level values resolve through
+ * the level name onto the same-named snap. Mirrors the fallback the input row
+ * applies on load.
  */
 export function settleEffortValue(
   value: string,
@@ -126,9 +127,15 @@ export function settleEffortValue(
   if (trimmed !== "" && Number.isFinite(numeric)) {
     return String(Math.min(track.max, Math.max(track.min, numeric)));
   }
-  const alias = track.snaps.find(
-    (snap) => snap.name.toLowerCase() === trimmed.toLowerCase(),
-  );
+  const raw = trimmed.toLowerCase();
+  const levelName = preset.levels
+    .find((level) => level.value.trim().toLowerCase() === raw)
+    ?.name.trim()
+    .toLowerCase();
+  const alias = track.snaps.find((snap) => {
+    const name = snap.name.trim().toLowerCase();
+    return name === raw || name === levelName;
+  });
   if (alias) return String(alias.value);
   return trimmed === "" ? String(track.min) : trimmed;
 }

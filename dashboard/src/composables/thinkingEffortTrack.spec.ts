@@ -89,7 +89,7 @@ describe("buildThinkingEffortTrack (slider)", () => {
     expect(view.value).toBe(75);
     expect(view.percent).toBeCloseTo((74 / 99) * 100);
     expect(view.activeLabel).toBe("75");
-    expect(view.activeSubLabel).toBe("xhigh");
+    expect(view.activeSubLabel).toBe("极高");
     expect(view.positionLabel).toBe("1–100");
     expect(view.stops.map((stop) => stop.value)).toEqual([
       "25",
@@ -99,15 +99,26 @@ describe("buildThinkingEffortTrack (slider)", () => {
     ]);
   });
 
-  it("resolves a stored alias to its numeric value", () => {
-    const view = buildThinkingEffortTrack({
+  it("resolves stored aliases and legacy level values", () => {
+    for (const value of ["高", "high"]) {
+      const view = buildThinkingEffortTrack({
+        mode: "slider",
+        value,
+        levels: LEVELS,
+        slider: DEFAULT_THINKING_EFFORT_SLIDER,
+      });
+      expect(view.value).toBe(50);
+      expect(view.activeSubLabel).toBe("高");
+    }
+
+    const max = buildThinkingEffortTrack({
       mode: "slider",
-      value: "high",
+      value: "max",
       levels: LEVELS,
       slider: DEFAULT_THINKING_EFFORT_SLIDER,
     });
-    expect(view.value).toBe(50);
-    expect(view.activeSubLabel).toBe("high");
+    expect(max.value).toBe(100);
+    expect(max.activeSubLabel).toBe("最大");
   });
 
   it("clamps values to the configured range", () => {

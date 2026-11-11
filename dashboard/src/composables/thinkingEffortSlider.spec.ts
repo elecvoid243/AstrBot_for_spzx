@@ -38,14 +38,14 @@ describe("normalizeEffortValue", () => {
 describe("findEffortSnap / effortValueLabel", () => {
   it("resolves the alias a value sits on", () => {
     expect(findEffortSnap(50, DEFAULT_THINKING_EFFORT_SLIDER)).toEqual({
-      name: "high",
+      name: "高",
       value: 50,
     });
     expect(findEffortSnap(37, DEFAULT_THINKING_EFFORT_SLIDER)).toBeNull();
   });
 
   it("labels snapped values with the alias and free values with the bare number", () => {
-    expect(effortValueLabel(50, DEFAULT_THINKING_EFFORT_SLIDER)).toBe("high 50");
+    expect(effortValueLabel(50, DEFAULT_THINKING_EFFORT_SLIDER)).toBe("高 50");
     expect(effortValueLabel(37, DEFAULT_THINKING_EFFORT_SLIDER)).toBe("37");
   });
 });

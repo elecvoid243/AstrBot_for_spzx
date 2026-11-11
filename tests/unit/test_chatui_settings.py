@@ -50,10 +50,10 @@ def test_builtin_presets_round_trip():
     ]
     assert [snap["value"] for snap in v41["slider"]["snaps"]] == [25, 50, 75, 100]
     assert [snap["name"] for snap in v41["slider"]["snaps"]] == [
-        "low",
-        "high",
-        "xhigh",
-        "max",
+        "低",
+        "高",
+        "极高",
+        "最大",
     ]
 
 

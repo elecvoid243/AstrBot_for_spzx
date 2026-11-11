@@ -37,10 +37,10 @@ export const DEFAULT_THINKING_EFFORT_SLIDER: ThinkingEffortSliderConfig = {
   max: 100,
   step: 1,
   snaps: [
-    { name: "low", value: 25 },
-    { name: "high", value: 50 },
-    { name: "xhigh", value: 75 },
-    { name: "max", value: 100 },
+    { name: "低", value: 25 },
+    { name: "高", value: 50 },
+    { name: "极高", value: 75 },
+    { name: "最大", value: 100 },
   ],
 };
 

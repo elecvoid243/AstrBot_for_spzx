@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildOriginalSegments,
   isSanitizerMarkerLine,
   lastTextSegment,
   parseThinkSegments,
@@ -119,5 +120,56 @@ describe("lastTextSegment", () => {
 
   it("returns the whole text when there is no marker", () => {
     expect(lastTextSegment("plain thought")).toBe("plain thought");
+  });
+});
+
+describe("buildOriginalSegments", () => {
+  it("inserts a marker at its original position", () => {
+    const sanitized =
+      "intro\nblock 1\nblock 2\nblock 3\n[context sanitizer: collapsed 2 x 3-line repeated block]\nafter";
+    const original =
+      "intro\nblock 1\nblock 2\nblock 3\nblock 1\nblock 2\nblock 3\nblock 1\nblock 2\nblock 3\nafter";
+
+    expect(buildOriginalSegments(sanitized, original)).toEqual([
+      { kind: "text", text: "intro\nblock 1\nblock 2\nblock 3" },
+      { kind: "period", repeats: 2, period: 3 },
+      {
+        kind: "text",
+        text: "block 1\nblock 2\nblock 3\nblock 1\nblock 2\nblock 3\nafter",
+      },
+    ]);
+  });
+
+  it("keeps multiple markers in their original order", () => {
+    const sanitized = [
+      "a1",
+      "a2",
+      "[context sanitizer: collapsed 1 x 2-line repeated block]",
+      "b1",
+      "b2",
+      "[context sanitizer: collapsed 1 x 2-line repeated block]",
+      "end",
+    ].join("\n");
+    const original = [
+      "a1",
+      "a2",
+      "a1",
+      "a2",
+      "b1",
+      "b2",
+      "b1",
+      "b2",
+      "end",
+    ].join("\n");
+
+    const segments = buildOriginalSegments(sanitized, original);
+
+    expect(segments).toEqual([
+      { kind: "text", text: "a1\na2" },
+      { kind: "period", repeats: 1, period: 2 },
+      { kind: "text", text: "a1\na2\nb1\nb2" },
+      { kind: "period", repeats: 1, period: 2 },
+      { kind: "text", text: "b1\nb2\nend" },
+    ]);
   });
 });

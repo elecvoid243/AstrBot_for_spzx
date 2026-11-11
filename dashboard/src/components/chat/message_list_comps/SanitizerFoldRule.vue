@@ -25,12 +25,20 @@
         <path d="M4 9.5 8 13l4-3.5" />
       </svg>
       <template v-if="kind === 'run'">
-        <span>{{ tm("reasoning.sanitizerFolded") }}</span>
+        <span>{{
+          active
+            ? tm("reasoning.sanitizerExpanded")
+            : tm("reasoning.sanitizerFolded")
+        }}</span>
         <span class="sanitizer-fold-rule__count">{{ formatNumber(repeats) }}</span>
         <span>{{ tm("reasoning.sanitizerRunTimes") }}</span>
       </template>
       <template v-else>
-        <span>{{ tm("reasoning.sanitizerFolded") }}</span>
+        <span>{{
+          active
+            ? tm("reasoning.sanitizerExpanded")
+            : tm("reasoning.sanitizerFolded")
+        }}</span>
         <span class="sanitizer-fold-rule__count">{{ formatNumber(repeats) }}</span>
         <span>{{ tm("reasoning.sanitizerTimes") }}</span>
         <span class="sanitizer-fold-rule__separator" aria-hidden="true">·</span>

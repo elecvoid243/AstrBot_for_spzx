@@ -283,6 +283,7 @@
     "showOriginal": "原文を表示",
     "showSanitized": "原文を隠す",
     "sanitizerFolded": "折りたたみ",
+    "sanitizerExpanded": "展開済み",
     "sanitizerTimes": "回の繰り返し",
     "sanitizerRunTimes": "回の連続繰り返し行",
     "sanitizerLinesPer": "行/回",

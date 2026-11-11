@@ -591,6 +591,7 @@
     "showOriginal": "查看原文",
     "showSanitized": "收起原文",
     "sanitizerFolded": "已折叠",
+    "sanitizerExpanded": "已展开",
     "sanitizerTimes": "次重复",
     "sanitizerRunTimes": "次连续重复行",
     "sanitizerLinesPer": "行/次",

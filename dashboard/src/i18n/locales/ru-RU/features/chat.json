@@ -555,6 +555,7 @@
     "showOriginal": "Показать оригинал",
     "showSanitized": "Скрыть оригинал",
     "sanitizerFolded": "Свёрнуто",
+    "sanitizerExpanded": "Развёрнуто",
     "sanitizerTimes": "повторов",
     "sanitizerRunTimes": "подряд идущих повторов",
     "sanitizerLinesPer": "строк/повтор",

@@ -7,6 +7,7 @@ vi.mock("@/i18n/composables", () => ({
     tm: (key: string) => {
       const messages: Record<string, string> = {
         "reasoning.sanitizerFolded": "已折叠",
+        "reasoning.sanitizerExpanded": "已展开",
         "reasoning.sanitizerTimes": "次重复",
         "reasoning.sanitizerRunTimes": "次连续重复行",
         "reasoning.sanitizerLinesPer": "行/次",
@@ -82,15 +83,25 @@ describe("ReasoningThinkContent", () => {
     expect(wrapper.emitted("toggle-original")).toHaveLength(1);
   });
 
-  it("keeps the marker summary visible in the original view", async () => {
+  it("keeps the marker at its original position in the original view", async () => {
     const wrapper = mountContent(
       "intro\nblock 1\nblock 2\nblock 3\n[context sanitizer: collapsed 2 x 3-line repeated block]\nafter",
-      { originalContent: "original text", showOriginal: true, interactive: true },
+      {
+        originalContent:
+          "intro\nblock 1\nblock 2\nblock 3\nblock 1\nblock 2\nblock 3\nblock 1\nblock 2\nblock 3\nafter",
+        showOriginal: true,
+        interactive: true,
+      },
     );
 
-    expect(wrapper.text()).toContain("original text");
+    expect(wrapper.text()).toContain("after");
     const marker = wrapper.get(".sanitizer-fold-rule");
     expect(marker.attributes("aria-pressed")).toBe("true");
+    expect(marker.text()).toContain("已展开");
+    const html = wrapper.html();
+    expect(html.indexOf("intro")).toBeLessThan(
+      html.indexOf("sanitizer-fold-rule"),
+    );
 
     await marker.trigger("click");
 

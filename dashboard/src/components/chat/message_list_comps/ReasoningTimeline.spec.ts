@@ -263,9 +263,10 @@ describe("ReasoningTimeline think live preview", () => {
 });
 
 describe("ReasoningTimeline sanitized think", () => {
-  const ORIGINAL = ("OK.\nLet me write.\nLet me go.\nLet me go.\n").repeat(20);
   const SANITIZED =
     "intro\nblock 1\nblock 2\nblock 3\n[context sanitizer: collapsed 2 x 3-line repeated block]\nafter";
+  const ORIGINAL =
+    "intro\nblock 1\nblock 2\nblock 3\nblock 1\nblock 2\nblock 3\nblock 1\nblock 2\nblock 3\nafter";
 
   it("uses the fold marker as the expand/collapse button", async () => {
     const wrapper = mountTimeline([
@@ -279,7 +280,6 @@ describe("ReasoningTimeline sanitized think", () => {
 
     expect(wrapper.text()).toContain("intro");
     expect(wrapper.text()).not.toContain("block 1");
-    expect(wrapper.text()).not.toContain("Let me go.");
 
     const marker = wrapper.get(".sanitizer-fold-rule");
     expect(marker.attributes("role")).toBe("button");
@@ -287,12 +287,15 @@ describe("ReasoningTimeline sanitized think", () => {
 
     await marker.trigger("click");
 
-    expect(wrapper.text()).toContain("Let me go.");
+    expect(wrapper.text()).toContain("block 1");
     expect(wrapper.find(".sanitizer-fold-rule").exists()).toBe(true);
+    expect(wrapper.get(".sanitizer-fold-rule").text()).toContain(
+      "reasoning.sanitizerExpanded",
+    );
 
     await wrapper.get(".sanitizer-fold-rule").trigger("click");
 
-    expect(wrapper.text()).not.toContain("Let me go.");
+    expect(wrapper.text()).not.toContain("block 1");
     expect(wrapper.text()).toContain("intro");
   });
 

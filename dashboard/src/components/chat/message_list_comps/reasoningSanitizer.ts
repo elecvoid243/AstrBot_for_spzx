@@ -18,14 +18,41 @@ const RUN_MARKER = /^\[context sanitizer: collapsed (\d+) x repeated line\]$/;
 const FALLBACK_MARKER =
   /^\[context sanitizer: collapsed repetitive reasoning \((\d+) lines, (\d+) chars\)\]$/;
 
+type MarkerSegment = Exclude<ThinkSegment, { kind: "text" }>;
+
+/** Parse one marker line, or return null when it is ordinary text. */
+function parseMarkerLine(line: string): MarkerSegment | null {
+  const trimmed = line.trim();
+
+  const period = PERIOD_MARKER.exec(trimmed);
+  if (period) {
+    return {
+      kind: "period",
+      repeats: Number(period[1]),
+      period: Number(period[2]),
+    };
+  }
+
+  const run = RUN_MARKER.exec(trimmed);
+  if (run) {
+    return { kind: "run", repeats: Number(run[1]) };
+  }
+
+  const fallback = FALLBACK_MARKER.exec(trimmed);
+  if (fallback) {
+    return {
+      kind: "fallback",
+      lines: Number(fallback[1]),
+      chars: Number(fallback[2]),
+    };
+  }
+
+  return null;
+}
+
 /** Return true when a line is one of the known sanitizer markers. */
 export function isSanitizerMarkerLine(line: string): boolean {
-  const trimmed = line.trim();
-  return (
-    PERIOD_MARKER.test(trimmed) ||
-    RUN_MARKER.test(trimmed) ||
-    FALLBACK_MARKER.test(trimmed)
-  );
+  return parseMarkerLine(line) !== null;
 }
 
 /**
@@ -82,36 +109,12 @@ export function parseThinkSegments(text: string): ThinkSegment[] {
   };
 
   for (const line of text.split(/\r?\n/)) {
-    const trimmed = line.trim();
-
-    const period = PERIOD_MARKER.exec(trimmed);
-    if (period) {
+    const marker = parseMarkerLine(line);
+    if (marker) {
       flush();
-      trimKeptBlock(segments, Number(period[2]));
-      segments.push({
-        kind: "period",
-        repeats: Number(period[1]),
-        period: Number(period[2]),
-      });
-      continue;
-    }
-
-    const run = RUN_MARKER.exec(trimmed);
-    if (run) {
-      flush();
-      trimKeptBlock(segments, 1);
-      segments.push({ kind: "run", repeats: Number(run[1]) });
-      continue;
-    }
-
-    const fallback = FALLBACK_MARKER.exec(trimmed);
-    if (fallback) {
-      flush();
-      segments.push({
-        kind: "fallback",
-        lines: Number(fallback[1]),
-        chars: Number(fallback[2]),
-      });
+      if (marker.kind === "period") trimKeptBlock(segments, marker.period);
+      else if (marker.kind === "run") trimKeptBlock(segments, 1);
+      segments.push(marker);
       continue;
     }
 
@@ -119,6 +122,71 @@ export function parseThinkSegments(text: string): ThinkSegment[] {
   }
 
   flush();
+  return segments;
+}
+
+/**
+ * Rebuild the original view with each marker at its original position.
+ *
+ * The sanitized text is the original with repeated blocks removed, so its
+ * lines are an ordered subsequence of the original. Walking both line lists
+ * lets us insert each marker after the first occurrence it replaced, instead
+ * of collecting all markers at the top of the original text.
+ *
+ * Args:
+ *   sanitized: Folded reasoning text with marker lines.
+ *   original: Raw reasoning text without markers.
+ *
+ * Returns:
+ *   Original text segments interleaved with marker segments.
+ */
+export function buildOriginalSegments(
+  sanitized: string,
+  original: string,
+): ThinkSegment[] {
+  const sanitizedLines = sanitized.split(/\r?\n/);
+  const originalLines = original.split(/\r?\n/);
+  const insertions: { position: number; marker: MarkerSegment }[] = [];
+  let originalIndex = 0;
+
+  for (const line of sanitizedLines) {
+    const marker = parseMarkerLine(line);
+    if (marker) {
+      insertions.push({ position: originalIndex, marker });
+      continue;
+    }
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    let found = -1;
+    for (let index = originalIndex; index < originalLines.length; index += 1) {
+      if (originalLines[index].trim() === trimmed) {
+        found = index;
+        break;
+      }
+    }
+    if (found === -1) continue;
+    originalIndex = found + 1;
+  }
+
+  const segments: ThinkSegment[] = [];
+  let cursor = 0;
+  for (const insertion of insertions) {
+    const position = Math.min(insertion.position, originalLines.length);
+    if (position > cursor) {
+      segments.push({
+        kind: "text",
+        text: originalLines.slice(cursor, position).join("\n"),
+      });
+    }
+    segments.push(insertion.marker);
+    cursor = position;
+  }
+  if (cursor < originalLines.length) {
+    segments.push({
+      kind: "text",
+      text: originalLines.slice(cursor).join("\n"),
+    });
+  }
   return segments;
 }
 

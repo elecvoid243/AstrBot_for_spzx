@@ -7,6 +7,7 @@ vi.mock("@/i18n/composables", () => ({
     tm: (key: string) => {
       const messages: Record<string, string> = {
         "reasoning.sanitizerFolded": "已折叠",
+        "reasoning.sanitizerExpanded": "已展开",
         "reasoning.sanitizerTimes": "次重复",
         "reasoning.sanitizerRunTimes": "次连续重复行",
         "reasoning.sanitizerLinesPer": "行/次",
@@ -75,5 +76,6 @@ describe("SanitizerFoldRule", () => {
 
     expect(wrapper.attributes("aria-pressed")).toBe("true");
     expect(wrapper.classes()).toContain("is-active");
+    expect(wrapper.text()).toContain("已展开");
   });
 });

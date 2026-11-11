@@ -591,6 +591,7 @@
     "showOriginal": "Show original",
     "showSanitized": "Hide original",
     "sanitizerFolded": "Folded",
+    "sanitizerExpanded": "Expanded",
     "sanitizerTimes": "repeats",
     "sanitizerRunTimes": "consecutive repeated lines",
     "sanitizerLinesPer": "lines each",

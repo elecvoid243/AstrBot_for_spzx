@@ -63,15 +63,16 @@
           />
         </div>
 
-        <!-- Mode picker: the level list keeps the enum-style models working,
-             the slider serves models whose effort field is a free number. -->
+        <!-- Mode picker: both shapes render as the same track; this only
+             changes whether the handle snaps to stops or moves freely. -->
         <div class="pa-4 pb-0 pl-6">
           <v-btn-toggle
-            v-model="localMode"
+            :model-value="localMode"
             mandatory
             density="compact"
             variant="tonal"
             divided
+            @update:model-value="onModeChange"
           >
             <v-btn value="levels" size="small">
               {{ tm("input.thinkingEffortModeLevels") }}
@@ -83,6 +84,26 @@
         </div>
 
         <v-card-text class="pa-4">
+          <div class="effort-editor-preview">
+            <div class="effort-editor-preview__head">
+              <span class="effort-editor-preview__caption">
+                {{ tm("input.previewLabel") }}
+              </span>
+              <span class="effort-editor-preview__meta">{{ previewMeta }}</span>
+            </div>
+            <div class="effort-editor-preview__track">
+              <ThinkingEffortTrack
+                :model-value="localPreviewValue"
+                :levels="localLevels"
+                :mode="localMode"
+                :slider="draftSlider"
+                :aria-label="`${tm('input.previewLabel')} · ${tm('input.thinkingEffort')}`"
+                compact
+                @update:model-value="localPreviewValue = $event"
+              />
+            </div>
+          </div>
+
           <template v-if="localMode === 'slider'">
             <div class="thinking-effort-levels-hint mb-3">
               {{ tm("input.thinkingEffortSliderHint") }}
@@ -112,8 +133,11 @@
               />
             </div>
 
-            <div class="effort-slider-snaps-head">
-              {{ tm("input.sliderSnaps") }}
+            <div class="effort-rows-head">
+              <span>{{ tm("input.sliderSnaps") }}</span>
+              <span class="effort-rows-head__hint">
+                {{ tm("input.sliderMarkersHint") }}
+              </span>
             </div>
             <div
               v-for="(snap, index) in localSnaps"
@@ -137,8 +161,10 @@
               />
               <v-btn
                 icon
+                size="small"
                 variant="text"
                 color="error"
+                class="effort-level-delete"
                 :aria-label="tm('input.sliderSnapDeleteAria')"
                 @click="removeSnap(index)"
               >
@@ -148,11 +174,45 @@
           </template>
 
           <template v-else>
+            <div class="effort-rows-head">
+              <span>{{ tm("input.levelOrderLabel") }}</span>
+              <span class="effort-rows-head__hint">
+                {{ tm("input.levelOrderHint") }}
+              </span>
+            </div>
             <div
               v-for="(level, index) in localLevels"
               :key="index"
               class="effort-level-row"
+              :class="levelRowClass(index)"
+              @dragover.prevent="onLevelDragOver($event, index)"
+              @dragleave="onLevelDragLeave($event, index)"
+              @drop.prevent="onLevelDrop($event, index)"
             >
+              <button
+                ref="levelHandles"
+                type="button"
+                class="effort-level-handle"
+                draggable="true"
+                :aria-label="
+                  tm('input.levelReorderAria', {
+                    name: level.name || tm('input.levelName'),
+                  })
+                "
+                :title="
+                  tm('input.levelReorderAria', {
+                    name: level.name || tm('input.levelName'),
+                  })
+                "
+                @dragstart="onLevelDragStart($event, index)"
+                @dragend="onLevelDragEnd"
+                @keydown="onLevelHandleKeydown($event, index)"
+              >
+                <v-icon size="14">mdi-drag-vertical</v-icon>
+              </button>
+              <span class="effort-level-order">
+                {{ String(index + 1).padStart(2, "0") }}
+              </span>
               <v-text-field
                 v-model="level.name"
                 :label="tm('input.levelName')"
@@ -161,16 +221,19 @@
                 class="effort-level-name"
               />
               <v-text-field
-                v-model="level.value"
+                :model-value="level.value"
                 :label="tm('input.levelValue')"
                 density="compact"
                 hide-details
                 class="effort-level-value"
+                @update:model-value="onLevelValueChange(index, $event)"
               />
               <v-btn
                 icon
+                size="small"
                 variant="text"
                 color="error"
+                class="effort-level-delete"
                 :aria-label="tm('input.levelDeleteAria')"
                 @click="removeLevel(index)"
               >
@@ -231,7 +294,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, nextTick, ref, watch } from "vue";
 import { useModuleI18n } from "@/i18n/composables";
 import {
   DEFAULT_THINKING_EFFORT_SLIDER,
@@ -241,9 +304,11 @@ import {
 } from "@/composables/thinkingEffortSlider";
 import {
   createPresetId,
+  settleEffortValue,
   type ThinkingEffortLevel,
   type ThinkingEffortPreset,
 } from "@/composables/thinkingEffortPresets";
+import ThinkingEffortTrack from "./ThinkingEffortTrack.vue";
 
 export interface ThinkingEffortEditorPayload {
   presets: ThinkingEffortPreset[];
@@ -254,6 +319,8 @@ const props = defineProps<{
   modelValue: boolean;
   presets: ThinkingEffortPreset[];
   activePreset: string;
+  /** Current input-row selection, used as the preview starting point. */
+  value?: string;
 }>();
 
 const emit = defineEmits<{
@@ -277,6 +344,10 @@ const localMin = ref("1");
 const localMax = ref("100");
 const localStep = ref("1");
 const localSnaps = ref<{ name: string; value: string }[]>([]);
+const localPreviewValue = ref("");
+const levelHandles = ref<HTMLButtonElement[]>([]);
+const dragLevelIndex = ref<number | null>(null);
+const dropTarget = ref<{ index: number; after: boolean } | null>(null);
 
 const presetOptions = computed(() =>
   localPresets.value.map((preset) => ({ title: preset.name, value: preset.id })),
@@ -285,6 +356,30 @@ const presetOptions = computed(() =>
 const activeDraft = computed(
   () => localPresets.value.find((preset) => preset.id === localActiveId.value) ?? null,
 );
+
+const previewMeta = computed(() => {
+  if (localMode.value === "levels") {
+    return tm("input.previewLevelsMeta", { count: localLevels.value.length });
+  }
+  return tm("input.previewSliderMeta", {
+    min: localMin.value,
+    max: localMax.value,
+  });
+});
+
+const draftSlider = computed<ThinkingEffortSliderConfig>(() => ({
+  min: toNumber(localMin.value),
+  max: toNumber(localMax.value),
+  step: toNumber(localStep.value),
+  snaps: localSnaps.value.map((snap) => ({
+    name: snap.name,
+    value: toNumber(snap.value),
+  })),
+}));
+
+function toNumber(raw: string): number {
+  return raw.trim() === "" ? Number.NaN : Number(raw);
+}
 
 function clonePreset(preset: ThinkingEffortPreset): ThinkingEffortPreset {
   return {
@@ -301,7 +396,46 @@ function clonePreset(preset: ThinkingEffortPreset): ThinkingEffortPreset {
   };
 }
 
-function loadDraftFromPreset(preset: ThinkingEffortPreset | null): void {
+function previewPreset(): ThinkingEffortPreset | null {
+  const preset = activeDraft.value;
+  if (!preset) return null;
+  return {
+    id: preset.id,
+    name: localName.value.trim() || preset.name,
+    mode: localMode.value,
+    levels: localLevels.value.map((level) => ({ ...level })),
+    slider: draftSlider.value,
+  };
+}
+
+function previewCandidate(source?: string): string {
+  const explicit = source?.trim() ?? "";
+  if (explicit) return explicit;
+  const current = localPreviewValue.value.trim();
+  if (current) return current;
+  const fromProps = props.value?.trim() ?? "";
+  if (fromProps) return fromProps;
+  if (localMode.value === "slider") {
+    const min = toNumber(localMin.value);
+    const max = toNumber(localMax.value);
+    if (Number.isFinite(min) && Number.isFinite(max) && max > min) {
+      return String(Math.round((min + max) / 2));
+    }
+  }
+  return "";
+}
+
+function settlePreview(source?: string): void {
+  localPreviewValue.value = settleEffortValue(
+    previewCandidate(source),
+    previewPreset(),
+  );
+}
+
+function loadDraftFromPreset(
+  preset: ThinkingEffortPreset | null,
+  previewSource?: string,
+): void {
   localName.value = preset?.name ?? "";
   localMode.value = preset?.mode ?? "levels";
   localLevels.value = (preset?.levels ?? []).map((level) => ({ ...level }));
@@ -313,6 +447,7 @@ function loadDraftFromPreset(preset: ThinkingEffortPreset | null): void {
     name: snap.name,
     value: String(snap.value),
   }));
+  settlePreview(previewSource);
 }
 
 /** Push the editor fields onto the active draft (a no-op when none is selected). */
@@ -343,24 +478,10 @@ watch(
     )
       ? props.activePreset
       : (localPresets.value[0]?.id ?? "");
-    loadDraftFromPreset(activeDraft.value);
+    loadDraftFromPreset(activeDraft.value, props.value);
   },
   { immediate: true },
 );
-
-const draftSlider = computed<ThinkingEffortSliderConfig>(() => ({
-  min: toNumber(localMin.value),
-  max: toNumber(localMax.value),
-  step: toNumber(localStep.value),
-  snaps: localSnaps.value.map((snap) => ({
-    name: snap.name,
-    value: toNumber(snap.value),
-  })),
-}));
-
-function toNumber(raw: string): number {
-  return raw.trim() === "" ? Number.NaN : Number(raw);
-}
 
 const validationError = computed(() => {
   if (!activeDraft.value) return "";
@@ -400,7 +521,7 @@ const isValid = computed(() => {
 function onPresetChange(id: string): void {
   commitDraftToActive();
   localActiveId.value = id;
-  loadDraftFromPreset(activeDraft.value);
+  loadDraftFromPreset(activeDraft.value, props.value);
 }
 
 function addPreset(): void {
@@ -424,7 +545,7 @@ function addPreset(): void {
   };
   localPresets.value.push(preset);
   localActiveId.value = preset.id;
-  loadDraftFromPreset(preset);
+  loadDraftFromPreset(preset, localPreviewValue.value || props.value);
 }
 
 function removePreset(): void {
@@ -435,7 +556,81 @@ function removePreset(): void {
   localPresets.value.splice(index, 1);
   const next = localPresets.value[index] ?? localPresets.value[index - 1] ?? null;
   localActiveId.value = next?.id ?? "";
-  loadDraftFromPreset(next);
+  loadDraftFromPreset(next, props.value);
+}
+
+function onModeChange(mode: string): void {
+  if (mode !== "levels" && mode !== "slider") return;
+  if (localMode.value === mode) return;
+  localMode.value = mode;
+  settlePreview(localPreviewValue.value);
+}
+
+function moveLevel(from: number, to: number): void {
+  if (to < 0 || to >= localLevels.value.length || from === to) return;
+  const [level] = localLevels.value.splice(from, 1);
+  localLevels.value.splice(to, 0, level);
+  void nextTick(() => levelHandles.value[to]?.focus());
+}
+
+function onLevelDragStart(event: DragEvent, index: number): void {
+  dragLevelIndex.value = index;
+  dropTarget.value = null;
+  if (event.dataTransfer) {
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/plain", String(index));
+  }
+}
+
+function onLevelDragOver(event: DragEvent, index: number): void {
+  if (dragLevelIndex.value === null) return;
+  const row = event.currentTarget as HTMLElement | null;
+  if (!row) return;
+  const rect = row.getBoundingClientRect();
+  dropTarget.value = {
+    index,
+    after: event.clientY > rect.top + rect.height / 2,
+  };
+}
+
+function onLevelDragLeave(event: DragEvent, index: number): void {
+  const row = event.currentTarget as HTMLElement | null;
+  const related = event.relatedTarget as Node | null;
+  if (row && related && row.contains(related)) return;
+  if (dropTarget.value?.index === index) dropTarget.value = null;
+}
+
+function onLevelDrop(event: DragEvent, index: number): void {
+  if (dragLevelIndex.value === null) return;
+  const after =
+    dropTarget.value?.index === index ? dropTarget.value.after : false;
+  let to = index + (after ? 1 : 0);
+  if (dragLevelIndex.value < to) to -= 1;
+  const from = dragLevelIndex.value;
+  dragLevelIndex.value = null;
+  dropTarget.value = null;
+  moveLevel(from, to);
+}
+
+function onLevelDragEnd(): void {
+  dragLevelIndex.value = null;
+  dropTarget.value = null;
+}
+
+function onLevelHandleKeydown(event: KeyboardEvent, index: number): void {
+  if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+  event.preventDefault();
+  moveLevel(index, index + (event.key === "ArrowUp" ? -1 : 1));
+}
+
+function levelRowClass(index: number): Record<string, boolean> {
+  return {
+    "effort-level-row--dragging": dragLevelIndex.value === index,
+    "effort-level-row--drop-before":
+      dropTarget.value?.index === index && !dropTarget.value.after,
+    "effort-level-row--drop-after":
+      dropTarget.value?.index === index && dropTarget.value.after,
+  };
 }
 
 function addRow() {
@@ -453,10 +648,20 @@ function addRow() {
 
 function removeLevel(index: number) {
   localLevels.value.splice(index, 1);
+  settlePreview(localPreviewValue.value);
+}
+
+function onLevelValueChange(index: number, value: string): void {
+  const level = localLevels.value[index];
+  if (!level) return;
+  const previous = level.value;
+  level.value = value;
+  if (localPreviewValue.value === previous) localPreviewValue.value = value;
 }
 
 function removeSnap(index: number) {
   localSnaps.value.splice(index, 1);
+  settlePreview(localPreviewValue.value);
 }
 
 function restoreDefaults() {
@@ -469,13 +674,14 @@ function restoreDefaults() {
       name: snap.name,
       value: String(snap.value),
     }));
-    return;
+  } else {
+    localLevels.value = [
+      { name: tm("input.thinkingEffortOptions.low"), value: "low" },
+      { name: tm("input.thinkingEffortOptions.high"), value: "high" },
+      { name: tm("input.thinkingEffortOptions.max"), value: "max" },
+    ];
   }
-  localLevels.value = [
-    { name: tm("input.thinkingEffortOptions.low"), value: "low" },
-    { name: tm("input.thinkingEffortOptions.high"), value: "high" },
-    { name: tm("input.thinkingEffortOptions.max"), value: "max" },
-  ];
+  settlePreview(localPreviewValue.value);
 }
 
 function save() {
@@ -525,19 +731,135 @@ function save() {
   margin-left: 4px;
 }
 
+.effort-editor-preview {
+  margin: 0 0 12px;
+  padding: 10px 12px 7px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.1);
+  border-radius: 10px;
+  background: rgba(var(--v-theme-on-surface), 0.03);
+}
+
+.effort-editor-preview__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.effort-editor-preview__caption {
+  color: var(--sp-text-muted);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.effort-editor-preview__meta {
+  color: var(--sp-text-muted);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.effort-editor-preview__track {
+  margin-top: 6px;
+}
+
+.effort-rows-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 14px 0 6px;
+  color: var(--sp-text-primary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.effort-rows-head__hint {
+  color: var(--sp-text-muted);
+  font-size: 10.5px;
+  font-weight: 400;
+  text-align: right;
+}
+
 .effort-level-row {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-bottom: 8px;
+  gap: 6px;
+  margin-bottom: 6px;
+  padding: 2px 3px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  transition:
+    background-color 150ms ease,
+    opacity 150ms ease;
+}
+
+.effort-level-row:hover {
+  background: var(--sp-chip-hover-bg);
+}
+
+.effort-level-row--dragging {
+  opacity: 0.38;
+}
+
+.effort-level-row--drop-before {
+  box-shadow: inset 0 2px 0 rgb(var(--v-theme-primary));
+}
+
+.effort-level-row--drop-after {
+  box-shadow: inset 0 -2px 0 rgb(var(--v-theme-primary));
+}
+
+.effort-level-handle {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 22px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--sp-text-muted);
+  cursor: grab;
+}
+
+.effort-level-handle:hover {
+  background: var(--sp-chip-active-bg);
+  color: var(--sp-text-primary);
+}
+
+.effort-level-handle:active {
+  cursor: grabbing;
+}
+
+.effort-level-handle:focus-visible {
+  outline: 2px solid rgb(var(--v-theme-primary));
+  outline-offset: 1px;
+}
+
+.effort-level-order {
+  flex: 0 0 18px;
+  width: 18px;
+  color: var(--sp-text-muted);
+  font-size: 10px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 
 .effort-level-name {
-  flex: 1 1 45%;
+  flex: 1 1 48%;
+  min-width: 0;
 }
 
 .effort-level-value {
-  flex: 1 1 45%;
+  flex: 1 1 38%;
+  min-width: 0;
+}
+
+.effort-level-delete {
+  flex: 0 0 auto;
 }
 
 .effort-slider-fields {
@@ -546,16 +868,15 @@ function save() {
   gap: 8px;
 }
 
-.effort-slider-snaps-head {
-  margin: 14px 0 6px;
-  color: var(--sp-text-primary);
-  font-size: 13px;
-  font-weight: 600;
-}
-
 .effort-level-validation-error {
   color: rgb(var(--v-theme-error));
   font-size: 12px;
   margin-top: 4px;
+}
+
+@media (max-width: 600px) {
+  .effort-level-order {
+    display: none;
+  }
 }
 </style>

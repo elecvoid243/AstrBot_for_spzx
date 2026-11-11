@@ -155,6 +155,52 @@ describe("ThinkingEffortLevelsDialog", () => {
     expect(wrapper.find(".effort-slider-fields").exists()).toBe(false);
   });
 
+  it("renders a live track preview that follows the current selection", async () => {
+    const wrapper = await openDialog({ value: "high" });
+    expect(wrapper.find(".effort-editor-preview .effort-track").exists()).toBe(
+      true,
+    );
+    expect(
+      wrapper.find(".effort-editor-preview .effort-track__label--active").text(),
+    ).toBe("高");
+    expect(wrapper.find(".effort-editor-preview__meta").text()).toBe(
+      "档位 · 3 档",
+    );
+  });
+
+  it("shows markers in the continuous preview", async () => {
+    const wrapper = await openDialog({
+      presets: [makePreset({ mode: "slider" })],
+      value: "50",
+    });
+    expect(wrapper.find(".effort-editor-preview__meta").text()).toBe(
+      "连续值 · 1–100",
+    );
+    expect(
+      wrapper.findAll(".effort-editor-preview .effort-track__label"),
+    ).toHaveLength(4);
+  });
+
+  it("uses the continuous wording for the second mode", async () => {
+    const wrapper = await openDialog();
+    expect(wrapper.find(".v-btn-toggle").text()).toContain("连续值");
+  });
+
+  it("reorders levels from the handle and saves the new order", async () => {
+    const wrapper = await openDialog();
+    await wrapper
+      .findAll(".effort-level-handle")[0]
+      .trigger("keydown", { key: "ArrowDown" });
+    await saveButton(wrapper).trigger("click");
+
+    const payload = savePayload(wrapper);
+    expect(payload.presets[0].levels.map((level) => level.value)).toEqual([
+      "high",
+      "low",
+      "max",
+    ]);
+  });
+
   it("shows the track fields and snap rows in slider mode", async () => {
     const wrapper = await openDialog({
       presets: [makePreset({ mode: "slider" })],

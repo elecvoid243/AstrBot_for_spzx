@@ -783,6 +783,7 @@
       v-model="effortLevelsDialogOpen"
       :presets="effortSettings.presets"
       :active-preset="effortSettings.active_preset"
+      :value="thinkingEffort"
       @save="handleEffortEditorSave"
     />
 

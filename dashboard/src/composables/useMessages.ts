@@ -644,7 +644,9 @@ export function useMessages(options: UseMessagesOptions) {
               return;
             }
             if (payload?.type === "chat_session_created") {
-              void options.onSessionsChanged?.(payload.data?.project_id ?? null);
+              void options.onSessionsChanged?.(
+                payload.data?.project_id ?? null,
+              );
               return;
             }
             if (payload?.type === "goal_state_changed") {
@@ -720,9 +722,36 @@ export function useMessages(options: UseMessagesOptions) {
     finalizeSystemSession(systemStreamState, sessionId);
   }
 
+  /**
+   * Run ids currently streaming per session.
+   *
+   * Unified mode receives every owned run on one stream, including sessions
+   * this tab has not opened. The sidebar must still show those sessions as
+   * running, so the state cannot be derived from `activeConnections` alone.
+   */
+  const runningBySession = reactive<Record<string, string[]>>({});
+
+  function markRunRunning(sessionId: string, runId: string) {
+    const runs =
+      runningBySession[sessionId] || (runningBySession[sessionId] = []);
+    if (!runs.includes(runId)) runs.push(runId);
+  }
+
+  function markRunEnded(sessionId: string, runId: string) {
+    const runs = runningBySession[sessionId];
+    if (!runs) return;
+    const index = runs.indexOf(runId);
+    if (index >= 0) runs.splice(index, 1);
+    if (!runs.length) delete runningBySession[sessionId];
+  }
+
   function isSessionRunning(sessionId: string) {
+    if (unifiedMode) {
+      return (runningBySession[sessionId]?.length || 0) > 0;
+    }
     return Object.values(activeConnections).some(
-      (connection) => connection.sessionId === sessionId && !connection.completed,
+      (connection) =>
+        connection.sessionId === sessionId && !connection.completed,
     );
   }
 
@@ -1270,6 +1299,7 @@ export function useMessages(options: UseMessagesOptions) {
   function settleUnifiedConnection(connection: ActiveConnection) {
     if (connection.completed) return;
     connection.completed = true;
+    markRunEnded(connection.sessionId, connection.messageId);
     if (activeConnections[connection.messageId] === connection) {
       delete activeConnections[connection.messageId];
     }
@@ -1278,16 +1308,132 @@ export function useMessages(options: UseMessagesOptions) {
     options.onStreamEnd?.(connection.sessionId);
   }
 
+  /**
+   * Materialize a background run in a session this tab has already opened.
+   *
+   * Returns null when the session is not loaded: the unified stream still
+   * tracks its running state, but token frames must not create records for a
+   * conversation the user has never opened.
+   */
+  function ensureUnifiedRunConnection(
+    sessionId: string,
+    messageId: string,
+    input: any,
+  ): ActiveConnection | null {
+    const existing = activeConnections[messageId];
+    if (existing?.sessionId === sessionId) return existing;
+    const records = messagesBySession[sessionId];
+    if (!records) return null;
+    let userRecord: ChatRecord | undefined;
+    if (input?.id != null) {
+      userRecord = records.find(
+        (record) => String(record.id) === String(input.id),
+      );
+      if (!userRecord) {
+        userRecord = normalizeHistoryRecord(input);
+        records.push(userRecord);
+      }
+    }
+    let botRecord = records.find(
+      (record) => String(record.id) === `local-bot-${messageId}`,
+    );
+    if (!botRecord) {
+      botRecord = reactive<ChatRecord>({
+        id: `local-bot-${messageId}`,
+        created_at: new Date().toISOString(),
+        content: {
+          type: "bot",
+          message: [],
+          reasoning: "",
+          isLoading: true,
+        },
+      });
+      const userIndex = userRecord ? records.indexOf(userRecord) : -1;
+      if (userIndex >= 0) records.splice(userIndex + 1, 0, botRecord);
+      else records.push(botRecord);
+    }
+    const connection: ActiveConnection = {
+      sessionId,
+      messageId,
+      runId: messageId,
+      transport: "sse",
+      botRecord,
+      userRecord,
+      botVisible: true,
+      visibleRecords: records,
+      completed: false,
+    };
+    activeConnections[messageId] = connection;
+    return connection;
+  }
+
+  /**
+   * Apply control/attention frames for sessions that are not loaded.
+   *
+   * Token frames are intentionally ignored for those sessions; an
+   * interactive choice is the one control event that must still reach the
+   * store so the sidebar/notification can surface it.
+   */
+  function handleUnifiedControlFrame(
+    sessionId: string,
+    payload: any,
+    msgType: string,
+  ) {
+    const scratch = () =>
+      reactive<ChatRecord>({
+        id: `local-control-${sessionId}`,
+        created_at: new Date().toISOString(),
+        content: {
+          type: "bot",
+          message: [],
+          reasoning: "",
+          isLoading: false,
+        },
+      });
+    if (msgType === "interactive_choice") {
+      if (applyInteractiveChoiceSse(sessionId, scratch(), payload)) {
+        options.onInteractiveChoice?.(sessionId);
+      }
+      return;
+    }
+    if (msgType === "interactive_choice_resolved") {
+      applyInteractiveChoiceResolved(sessionId, payload);
+      return;
+    }
+    if (msgType === "plain" && payload.chain_type === "interactive_choice") {
+      const inner = parseJsonSafe(payload.data);
+      if (!inner || typeof inner !== "object") return;
+      if (
+        applyInteractiveChoiceSse(sessionId, scratch(), {
+          type: "interactive_choice",
+          data: inner,
+        })
+      ) {
+        options.onInteractiveChoice?.(sessionId);
+      }
+    }
+  }
+
   function handleUnifiedFrame(payload: any) {
     if (!payload || typeof payload !== "object") return;
     const sessionId = String(payload.session_id || "");
     if (!sessionId) return;
-    const messageId = String(
-      payload.message_id || payload.data?.run_id || "",
-    );
-    if (payload.type === "run_started") {
-      const connection = activeConnections[messageId];
-      if (!connection || connection.sessionId !== sessionId) return;
+    const messageId = String(payload.message_id || payload.data?.run_id || "");
+    if (!messageId) return;
+    const msgType = String(payload.type || payload.t || "");
+
+    if (msgType === "run_started") {
+      markRunRunning(sessionId, messageId);
+      let connection: ActiveConnection | null =
+        activeConnections[messageId] ?? null;
+      if (!connection || connection.sessionId !== sessionId) {
+        connection = ensureUnifiedRunConnection(
+          sessionId,
+          messageId,
+          payload.data?.input_message,
+        );
+      }
+      if (!connection) return;
       connection.runId = messageId;
       const input = payload.data?.input_message;
       if (input?.id != null && connection.userRecord) {
@@ -1298,17 +1444,21 @@ export function useMessages(options: UseMessagesOptions) {
       }
       return;
     }
+
     const connection = activeConnections[messageId];
-    if (!connection?.botRecord || connection.sessionId !== sessionId) return;
+    if (!connection?.botRecord || connection.sessionId !== sessionId) {
+      handleUnifiedControlFrame(sessionId, payload, msgType);
+      if (msgType === "end" || msgType === "error") {
+        markRunEnded(sessionId, messageId);
+        void options.onSessionsChanged?.();
+        options.onStreamEnd?.(sessionId);
+      }
+      return;
+    }
     const botRecord = connection.botRecord;
-    processStreamPayload(
-      botRecord,
-      payload,
-      connection.userRecord,
-      connection,
-    );
+    processStreamPayload(botRecord, payload, connection.userRecord, connection);
     options.onStreamUpdate?.(sessionId);
-    if (payload.type === "end" || payload.type === "error") {
+    if (msgType === "end" || msgType === "error") {
       settleUnifiedConnection(connection);
     }
   }
@@ -1383,6 +1533,7 @@ export function useMessages(options: UseMessagesOptions) {
       botVisible: messagesBySession[sessionId]?.includes(botRecord) ?? false,
     };
     activeConnections[messageId] = connection;
+    markRunRunning(sessionId, messageId);
 
     const payload = {
       mode: "send",
@@ -1430,6 +1581,7 @@ export function useMessages(options: UseMessagesOptions) {
         appendPlain(botRecord, `\n\n${String(error?.message || error)}`);
         markMessageStarted(botRecord);
         delete activeConnections[messageId];
+        markRunEnded(sessionId, messageId);
         options.onError?.(String(error?.message || error), sessionId);
         options.onStreamEnd?.(sessionId);
         void options.onSessionsChanged?.();
@@ -1706,6 +1858,9 @@ export function useMessages(options: UseMessagesOptions) {
 
   function cleanupConnections() {
     stopUnifiedStream();
+    Object.keys(runningBySession).forEach((sessionId) => {
+      delete runningBySession[sessionId];
+    });
     Object.values(activeConnections).forEach((connection) => {
       connection.abort?.abort();
     });
@@ -2429,13 +2584,15 @@ export function useMessages(options: UseMessagesOptions) {
         !Object.values(activeConnections).some(
           (candidate) =>
             candidate.sessionId === sessionId &&
-            (candidate.runId === targetRunId || candidate.messageId === targetRunId),
+            (candidate.runId === targetRunId ||
+              candidate.messageId === targetRunId),
         )
       )
         attachLiveRun(sessionId, targetRunId);
       return;
     }
-    if (connection?.followUpCaptured && msgType !== "user_message_saved") return;
+    if (connection?.followUpCaptured && msgType !== "user_message_saved")
+      return;
     if (msgType === "message_segment" && connection && sessionId) {
       const records = messagesBySession[sessionId] || [];
       const oldIndex = records.indexOf(botRecord);
@@ -2807,7 +2964,9 @@ export function useMessages(options: UseMessagesOptions) {
               // The source system stream may be closed while this run stays
               // active. Publish the new list entry as soon as creation returns.
               void options.onSessionsChanged?.(
-                typeof created.project_id === "string" ? created.project_id : null,
+                typeof created.project_id === "string"
+                  ? created.project_id
+                  : null,
               );
             }
           }

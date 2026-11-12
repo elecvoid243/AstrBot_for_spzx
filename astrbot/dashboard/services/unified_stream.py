@@ -95,10 +95,26 @@ class UnifiedStreamHub:
         for connection in list(self.connections.values()):
             if connection.username != username or connection.closed:
                 continue
-            seq = connection.seq_by_session.get(session_id, 0) + 1
-            connection.seq_by_session[session_id] = seq
-            frame = {**payload, "session_id": session_id, "seq": seq}
-            connection.queue.put_nowait(frame)
+            self.publish_to(connection, session_id, payload)
+
+    def publish_to(
+        self,
+        connection: UnifiedConnection,
+        session_id: str,
+        payload: dict[str, Any],
+    ) -> None:
+        """Queue one payload on a single connection.
+
+        Args:
+            connection: Target connection.
+            session_id: Chat session the payload belongs to.
+            payload: Existing ChatService payload; session_id/seq are added.
+        """
+        if connection.closed:
+            return
+        seq = connection.seq_by_session.get(session_id, 0) + 1
+        connection.seq_by_session[session_id] = seq
+        connection.queue.put_nowait({**payload, "session_id": session_id, "seq": seq})
 
     async def stream(self, connection: UnifiedConnection) -> AsyncIterator[str]:
         """Yield SSE frames for one connection until it closes.

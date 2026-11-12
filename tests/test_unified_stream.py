@@ -96,6 +96,7 @@ async def test_start_unified_chat_run_publishes_run_started_to_end():
             user_message_id=7,
         )
         service.chat_runs[message_id] = run
+        ChatService._publish_unified_run_started(service, run)
 
         async def stream():
             yield 'data: {"type": "session_id", "session_id": "s1"}\n\n'
@@ -133,6 +134,140 @@ async def test_start_unified_chat_run_publishes_run_started_to_end():
 
     hub.disconnect(connection)
     await stream.aclose()
+
+
+@pytest.mark.asyncio
+async def test_unified_initial_frames_replays_each_running_run_for_one_account():
+    service = ChatService.__new__(ChatService)
+    service.chat_runs = {}
+    for index in range(6):
+        run = ChatRunState(
+            run_id=f"run-{index}",
+            username="alice",
+            session_id=f"s{index}",
+            llm_checkpoint_id=f"ckpt-{index}",
+            platform_history_id="webchat",
+            back_queue=asyncio.Queue(),
+            unified_input_message={"id": index, "content": {"type": "user"}},
+        )
+        service.chat_runs[run.run_id] = run
+    finished = ChatRunState(
+        run_id="finished",
+        username="alice",
+        session_id="s-finished",
+        llm_checkpoint_id="ckpt-finished",
+        platform_history_id="webchat",
+        back_queue=asyncio.Queue(),
+    )
+    finished.status = "finished"
+    service.chat_runs[finished.run_id] = finished
+    other = ChatRunState(
+        run_id="bob-run",
+        username="bob",
+        session_id="s-bob",
+        llm_checkpoint_id="ckpt-bob",
+        platform_history_id="webchat",
+        back_queue=asyncio.Queue(),
+    )
+    service.chat_runs[other.run_id] = other
+
+    frames = service.unified_initial_frames("alice")
+    assert len(frames) == 12
+    assert [session_id for session_id, _ in frames] == [
+        f"s{index}" for index in range(6) for _ in range(2)
+    ]
+    assert [payload["type"] for _, payload in frames].count("run_started") == 6
+    assert [payload["type"] for _, payload in frames].count("run_snapshot") == 6
+    snapshots = [payload for _, payload in frames if payload["type"] == "run_snapshot"]
+    assert [snapshot["data"]["input_message"]["id"] for snapshot in snapshots] == list(
+        range(6)
+    )
+    started = [payload for _, payload in frames if payload["type"] == "run_started"]
+    assert [payload["message_id"] for payload in started] == [
+        f"run-{index}" for index in range(6)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_six_fake_runs_share_one_unified_connection():
+    hub = UnifiedStreamHub()
+    connection = hub.connect("alice")
+    runs = [
+        ChatRunState(
+            run_id=f"run-{index}",
+            username="alice",
+            session_id=f"s{index}",
+            llm_checkpoint_id=f"ckpt-{index}",
+            platform_history_id="webchat",
+            back_queue=asyncio.Queue(),
+        )
+        for index in range(6)
+    ]
+
+    async def publish_run(run: ChatRunState) -> None:
+        await asyncio.sleep(0)
+        hub.publish(
+            "alice",
+            run.session_id,
+            {
+                "type": "run_started",
+                "data": {"run_id": run.run_id},
+                "message_id": run.run_id,
+            },
+        )
+        hub.publish(
+            "alice",
+            run.session_id,
+            {"type": "plain", "data": "token", "message_id": run.run_id},
+        )
+        hub.publish(
+            "alice",
+            run.session_id,
+            {"type": "end", "data": None, "message_id": run.run_id},
+        )
+
+    await asyncio.gather(*(publish_run(run) for run in runs))
+    assert len(hub.connections) == 1
+    assert connection.queue.qsize() == 18
+    frames = [connection.queue.get_nowait() for _ in range(18)]
+    assert {frame["session_id"] for frame in frames} == {
+        f"s{index}" for index in range(6)
+    }
+    for index in range(6):
+        session_frames = [
+            frame for frame in frames if frame["session_id"] == f"s{index}"
+        ]
+        assert [frame["seq"] for frame in session_frames] == [1, 2, 3]
+        assert [frame["type"] for frame in session_frames] == [
+            "run_started",
+            "plain",
+            "end",
+        ]
+        assert all(frame["message_id"] == f"run-{index}" for frame in session_frames)
+
+
+@pytest.mark.asyncio
+async def test_synthetic_run_registration_broadcasts_run_started():
+    hub = UnifiedStreamHub()
+    connection = hub.connect("alice")
+    service = ChatService.__new__(ChatService)
+    service.unified_stream_hub = hub
+    service.chat_runs = {}
+    service.chat_runs_by_session = {}
+    service._consume_chat_run = AsyncMock()
+
+    await ChatService.register_synthetic_chat_run(
+        service,
+        "s-synth",
+        "synth-1",
+        "alice",
+    )
+    frame = connection.queue.get_nowait()
+    assert frame["type"] == "run_started"
+    assert frame["session_id"] == "s-synth"
+    assert frame["message_id"] == "synth-1"
+    assert frame["seq"] == 1
+    assert frame["data"]["input_message"] is None
 
 
 @pytest.mark.asyncio
@@ -184,9 +319,7 @@ async def test_unified_send_route_returns_receipt_and_http_error():
     assert sent["message_id"] == "m1"
 
     service = SimpleNamespace(
-        start_unified_chat_run=AsyncMock(
-            side_effect=ChatServiceError("rejected")
-        ),
+        start_unified_chat_run=AsyncMock(side_effect=ChatServiceError("rejected")),
     )
     response = await unified_send_chat(
         _JsonRequest(

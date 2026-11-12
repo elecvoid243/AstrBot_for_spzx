@@ -144,13 +144,10 @@ describe("unified chat stream", () => {
   it("settles the optimistic bubble when the send POST is rejected", async () => {
     localStorage.setItem("chat.streamMode", "unified");
     vi.mocked(fetchWithAuth).mockResolvedValue(
-      new Response(
-        JSON.stringify({ status: "error", message: "rejected" }),
-        {
-          status: 400,
-          headers: { "content-type": "application/json" },
-        },
-      ),
+      new Response(JSON.stringify({ status: "error", message: "rejected" }), {
+        status: 400,
+        headers: { "content-type": "application/json" },
+      }),
     );
     const onStreamEnd = vi.fn();
     const onError = vi.fn();
@@ -178,5 +175,107 @@ describe("unified chat stream", () => {
     expect(exchange.botRecord.content.isLoading).toBe(false);
     expect(onError).toHaveBeenCalledWith("rejected", "s1");
     expect(messages.isSessionRunning("s1")).toBe(false);
+  });
+
+  it("dispatches background runs by session and materializes only loaded sessions", async () => {
+    localStorage.setItem("chat.streamMode", "unified");
+    let streamController!: ReadableStreamDefaultController<Uint8Array>;
+    vi.mocked(fetchWithAuth).mockImplementation(async (url) => {
+      if (String(url).includes("/chat/stream")) {
+        return new Response(
+          new ReadableStream({
+            start(controller) {
+              streamController = controller;
+            },
+          }),
+          { headers: { "content-type": "text/event-stream" } },
+        );
+      }
+      return new Response(null, { status: 404 });
+    });
+    const onStreamEnd = vi.fn();
+    const messages = useMessages({
+      currentSessionId: ref("s1"),
+      onStreamEnd,
+    });
+    messages.startUnifiedStream();
+    await vi.waitFor(() => expect(streamController).toBeDefined());
+    pushSse(streamController, { type: "stream_ready", epoch: "e" });
+
+    messages.messagesBySession["s2"] = [];
+    const started = {
+      type: "run_started",
+      session_id: "s2",
+      seq: 1,
+      message_id: "m2",
+      data: {
+        run_id: "m2",
+        input_message: {
+          id: 52,
+          content: {
+            type: "user",
+            message: [{ type: "plain", text: "background" }],
+          },
+        },
+      },
+    };
+    pushSse(streamController, started);
+    pushSse(streamController, started);
+    await vi.waitFor(() => expect(messages.isSessionRunning("s2")).toBe(true));
+    await vi.waitFor(() =>
+      expect(
+        messages.messagesBySession["s2"].map((record) => String(record.id)),
+      ).toEqual(["52", "local-bot-m2"]),
+    );
+
+    pushSse(streamController, {
+      type: "plain",
+      session_id: "s2",
+      seq: 2,
+      message_id: "m2",
+      data: "background reply",
+    });
+    await vi.waitFor(() =>
+      expect(plainText(messages.messagesBySession["s2"][1])).toContain(
+        "background reply",
+      ),
+    );
+    pushSse(streamController, {
+      type: "end",
+      session_id: "s2",
+      seq: 3,
+      message_id: "m2",
+      data: { status: "completed" },
+    });
+    await vi.waitFor(() => expect(messages.isSessionRunning("s2")).toBe(false));
+    expect(onStreamEnd).toHaveBeenCalledWith("s2");
+
+    pushSse(streamController, {
+      type: "run_started",
+      session_id: "s3",
+      seq: 1,
+      message_id: "m3",
+      data: { run_id: "m3" },
+    });
+    await vi.waitFor(() => expect(messages.isSessionRunning("s3")).toBe(true));
+    expect(messages.messagesBySession["s3"]).toBeUndefined();
+    pushSse(streamController, {
+      type: "plain",
+      session_id: "s3",
+      seq: 2,
+      message_id: "m3",
+      data: "ignored token",
+    });
+    pushSse(streamController, {
+      type: "end",
+      session_id: "s3",
+      seq: 3,
+      message_id: "m3",
+      data: { status: "completed" },
+    });
+    await vi.waitFor(() => expect(messages.isSessionRunning("s3")).toBe(false));
+    expect(messages.messagesBySession["s3"]).toBeUndefined();
+    expect(onStreamEnd).toHaveBeenCalledWith("s3");
+    streamController.close();
   });
 });

@@ -2018,6 +2018,39 @@ class ChatService:
                         dropped,
                     )
 
+    def _build_run_snapshot(
+        self,
+        run: ChatRunState,
+        input_message: dict | None,
+    ) -> dict:
+        """Build the shared run snapshot payload.
+
+        Args:
+            run: Run to snapshot.
+            input_message: User message embedded in the snapshot.
+
+        Returns:
+            Snapshot payload consumed by the legacy and unified streams.
+        """
+        return {
+            "run_id": run.run_id,
+            "session_id": run.session_id,
+            "llm_checkpoint_id": run.llm_checkpoint_id,
+            "status": run.status,
+            "revision": run.revision,
+            "segment_id": run.segment_id,
+            "preceding_plain_text": run.preceding_plain_text,
+            "input_message": input_message,
+            "history_record_id": run.history_record.id if run.history_record else None,
+            "content": build_bot_history_content(
+                deepcopy(run.message_parts),
+                agent_stats=deepcopy(run.agent_stats),
+                file_changes=deepcopy(run.file_changes),
+                llm_request_injections=deepcopy(run.llm_request_injections),
+                refs=deepcopy(run.refs),
+            ),
+        }
+
     def _subscribe_chat_run(
         self,
         run: ChatRunState,
@@ -2041,26 +2074,7 @@ class ChatService:
         run.subscribers.add(subscriber)
         snapshot = None
         if include_snapshot:
-            snapshot = {
-                "run_id": run.run_id,
-                "session_id": run.session_id,
-                "llm_checkpoint_id": run.llm_checkpoint_id,
-                "status": run.status,
-                "revision": run.revision,
-                "segment_id": run.segment_id,
-                "preceding_plain_text": run.preceding_plain_text,
-                "input_message": run.input_message,
-                "history_record_id": run.history_record.id
-                if run.history_record
-                else None,
-                "content": build_bot_history_content(
-                    deepcopy(run.message_parts),
-                    agent_stats=deepcopy(run.agent_stats),
-                    file_changes=deepcopy(run.file_changes),
-                    llm_request_injections=deepcopy(run.llm_request_injections),
-                    refs=deepcopy(run.refs),
-                ),
-            }
+            snapshot = self._build_run_snapshot(run, run.input_message)
         snapshot_revision = run.revision
 
         async def stream():
@@ -2904,6 +2918,7 @@ class ChatService:
             self._consume_chat_run(run),
             name=f"webchat_run_{message_id}",
         )
+        self._publish_unified_run_started(run)
         # Announce to system-stream subscribers so a page with the session
         # open attaches to the run stream. The payload is flagged
         # `synthetic`: build_system_stream passes ONLY flagged announcements
@@ -4013,6 +4028,7 @@ class ChatService:
                         exc_info=True,
                     )
 
+            self._publish_unified_run_started(run)
             return stream
         except BaseException:
             if (
@@ -4044,6 +4060,70 @@ class ChatService:
                     await self.platform_history_mgr.delete_by_id(saved_user_record.id)
             raise
 
+    def _publish_unified_run_started(self, run: ChatRunState) -> None:
+        """Announce an accepted run to every unified stream of its owner.
+
+        Args:
+            run: Run whose input has just been accepted.
+        """
+        # Tests and partial service instances may not construct the hub.
+        hub = getattr(self, "unified_stream_hub", None)
+        if hub is None:
+            return
+        hub.publish(
+            run.username,
+            run.session_id,
+            {
+                "type": "run_started",
+                "data": {
+                    "run_id": run.run_id,
+                    "input_message": run.unified_input_message,
+                },
+                "message_id": run.run_id,
+            },
+        )
+
+    def unified_initial_frames(self, username: str) -> list[tuple[str, dict]]:
+        """Build replay frames for every running chat of one account.
+
+        Args:
+            username: Trusted account whose runs should be replayed.
+
+        Returns:
+            ``(session_id, payload)`` pairs: one run_started and one
+            run_snapshot per running run, in registration order.
+        """
+        frames: list[tuple[str, dict]] = []
+        for run in list(self.chat_runs.values()):
+            if run.username != username or run.status != "running":
+                continue
+            frames.append(
+                (
+                    run.session_id,
+                    {
+                        "type": "run_started",
+                        "data": {
+                            "run_id": run.run_id,
+                            "input_message": run.unified_input_message,
+                        },
+                        "message_id": run.run_id,
+                    },
+                )
+            )
+            frames.append(
+                (
+                    run.session_id,
+                    {
+                        "type": "run_snapshot",
+                        "data": self._build_run_snapshot(
+                            run, run.unified_input_message
+                        ),
+                        "message_id": run.run_id,
+                    },
+                )
+            )
+        return frames
+
     async def start_unified_chat_run(
         self,
         username: str,
@@ -4072,18 +4152,6 @@ class ChatService:
         run = self.chat_runs.get(message_id)
         if run is None:
             raise ChatServiceError("Chat run was not created")
-        self.unified_stream_hub.publish(
-            username,
-            run.session_id,
-            {
-                "type": "run_started",
-                "data": {
-                    "run_id": run.run_id,
-                    "input_message": run.unified_input_message,
-                },
-                "message_id": run.run_id,
-            },
-        )
         task = asyncio.create_task(
             self._publish_run_to_unified_stream(username, run, stream),
             name=f"unified_run_{message_id}",

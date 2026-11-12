@@ -188,6 +188,8 @@ async def unified_chat_stream(
         str(body.get("epoch") or ""),
         cursors if isinstance(cursors, dict) else {},
     )
+    for session_id, payload in service.unified_initial_frames(auth.username):
+        service.unified_stream_hub.publish_to(connection, session_id, payload)
     return StreamingResponse(
         service.unified_stream_hub.stream(connection),
         media_type="text/event-stream",

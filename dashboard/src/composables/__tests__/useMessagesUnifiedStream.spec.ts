@@ -19,6 +19,7 @@ vi.mock("@/api/http", () => ({ fetchWithAuth: vi.fn() }));
 
 import { chatApi } from "@/api/v1";
 import { fetchWithAuth } from "@/api/http";
+import { useInteractiveChoiceStore } from "@/stores/interactiveChoice";
 import { useMessages, type ChatRecord } from "../useMessages";
 
 function plainText(record: ChatRecord) {
@@ -584,6 +585,62 @@ describe("unified chat stream", () => {
       data: { status: "completed" },
     });
     await vi.waitFor(() => expect(onStreamEnd).toHaveBeenCalledWith("s1"));
+    streamController.close();
+    messages.cleanupConnections();
+  });
+
+  it("stores a choice for a session that is not loaded and notifies the page", async () => {
+    localStorage.setItem("chat.streamMode", "unified");
+    let streamController!: ReadableStreamDefaultController<Uint8Array>;
+    vi.mocked(fetchWithAuth).mockImplementation(async (url) => {
+      if (String(url).includes("/chat/stream")) {
+        return new Response(
+          new ReadableStream({
+            start(controller) {
+              streamController = controller;
+            },
+          }),
+          { headers: { "content-type": "text/event-stream" } },
+        );
+      }
+      return new Response(null, { status: 404 });
+    });
+    const onInteractiveChoice = vi.fn();
+    const messages = useMessages({
+      currentSessionId: ref("s1"),
+      onInteractiveChoice,
+    });
+    messages.startUnifiedStream();
+    await vi.waitFor(() => expect(streamController).toBeDefined());
+    pushSse(streamController, { type: "stream_ready", epoch: "e" });
+
+    pushSse(streamController, {
+      type: "plain",
+      chain_type: "interactive_choice",
+      session_id: "s9",
+      seq: 1,
+      message_id: "m9",
+      data: JSON.stringify({
+        request_id: "req-1",
+        spec: {
+          type: "interactive_choice",
+          prompt: "pick one",
+          options: [
+            { id: "a", label: "A" },
+            { id: "b", label: "B" },
+          ],
+        },
+        umo: "webchat:FriendMessage:webchat!u!s9",
+      }),
+    });
+
+    await vi.waitFor(() =>
+      expect(onInteractiveChoice).toHaveBeenCalledWith("s9"),
+    );
+    expect(
+      useInteractiveChoiceStore().activeChoices["s9"]?.["req-1"],
+    ).toBeTruthy();
+    expect(messages.messagesBySession["s9"]).toBeUndefined();
     streamController.close();
     messages.cleanupConnections();
   });

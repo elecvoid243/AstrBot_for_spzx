@@ -83,6 +83,50 @@ async def test_unified_hub_sequences_frames_per_session_and_account():
     await bob_stream.aclose()
 
 
+@pytest.mark.asyncio
+async def test_run_lifecycle_fans_out_to_both_tabs_of_one_account():
+    hub = UnifiedStreamHub()
+    tab_a = hub.connect("alice")
+    tab_b = hub.connect("alice")
+    other = hub.connect("bob")
+    streams = [hub.stream(tab_a), hub.stream(tab_b), hub.stream(other)]
+    for stream in streams:
+        assert _decode(await anext(stream))["type"] == "stream_ready"
+
+    hub.publish(
+        "alice",
+        "s1",
+        {"type": "run_started", "message_id": "m1", "data": {"run_id": "m1"}},
+    )
+    hub.publish(
+        "alice",
+        "s1",
+        {"type": "plain", "data": "token", "message_id": "m1"},
+    )
+    hub.publish(
+        "alice",
+        "s1",
+        {"type": "end", "message_id": "m1", "data": {"status": "completed"}},
+    )
+
+    for stream in streams[:2]:
+        frames = [_decode(await anext(stream)) for _ in range(3)]
+        assert [frame["type"] for frame in frames] == [
+            "run_started",
+            "plain",
+            "end",
+        ]
+        assert [frame["seq"] for frame in frames] == [1, 2, 3]
+        assert all(frame["session_id"] == "s1" for frame in frames)
+
+    assert not other.control_queues
+    assert not other.data_queues
+    for connection in (tab_a, tab_b, other):
+        hub.disconnect(connection)
+    for stream in streams:
+        await stream.aclose()
+
+
 def test_plain_frames_merge_and_structured_frames_do_not():
     hub = UnifiedStreamHub()
     connection = hub.connect("alice")

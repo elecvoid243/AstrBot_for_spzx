@@ -962,6 +962,7 @@
           :right="stripRightOffset"
           :loading="jumpInProgress"
           :is-dark="isDark"
+          :resolve-preview="resolveMarkerPreview"
           @jump="onDotClick"
         />
 
@@ -2113,6 +2114,7 @@ const {
   historyOffsetBySession,
   sessionMarkersBySession,
   activeMessages,
+  streamRevisionBySession,
   activeMessagePreviews,
   isSessionRunning,
   hasLiveSystemRecord,
@@ -2753,15 +2755,46 @@ watch(
   },
 );
 
+// Streaming text mutates the loaded records in place, so a deep watch here
+// traversed the whole session on every token. Follow the composable's
+// per-session content revision instead; structure (row ids) is a cheap
+// signature that only changes when the window is replaced or a row is added.
+const activeStreamRevision = computed(() =>
+  currSessionId.value
+    ? streamRevisionBySession[currSessionId.value] || 0
+    : 0,
+);
+const activeStructureKey = computed(() =>
+  activeMessages.value.map((message) => String(message.id ?? "")).join("|"),
+);
+
 watch(
-  activeMessages,
-  () => {
+  [activeStreamRevision, activeStructureKey],
+  ([stream, structure], [previousStream, previousStructure]) => {
     if (shouldStickToBottom(currSessionId.value)) {
       scrollToBottom();
     }
-    nextTick(() => updateScrollMarkers());
+    if (structure !== previousStructure) {
+      flushScrollMarkers();
+    } else if (stream !== previousStream) {
+      scheduleScrollMarkers();
+    }
   },
-  { deep: true },
+  { flush: "post" },
+);
+
+// The last token does not necessarily change the scroll height; flush the
+// rail once the turn settles so its previews stop lagging the final text.
+watch(
+  () =>
+    Boolean(
+      currSessionId.value &&
+        (isSessionRunning(currSessionId.value) ||
+          hasLiveSystemRecord(currSessionId.value)),
+    ),
+  (streaming) => {
+    if (!streaming) flushScrollMarkers();
+  },
 );
 
 // Observe content as well as the panel: async code blocks and media can change
@@ -2782,8 +2815,7 @@ watch(
       updateScrollMarkers();
       syncDistanceToBottom();
       markerResizeObserver = new ResizeObserver(() => {
-        updateScrollMarkers();
-        syncDistanceToBottom();
+        scheduleLayoutSync();
         // A switch still installing its viewport owns the panel: the fresh
         // window has just re-rendered (rows dropped or re-keyed), and the
         // remembered anchor must go back on screen before the browser paints
@@ -2810,7 +2842,7 @@ watch(
         historyLayoutObserver = new MutationObserver(() => {
           // Async markdown, media decode and prepends resize the document
           // without scrolling, so the tail distance is refreshed here too.
-          syncDistanceToBottom();
+          scheduleLayoutSync();
           if (pendingViewportSessionId) {
             installPendingViewport(pendingViewportSessionId);
             return;
@@ -2822,7 +2854,6 @@ watch(
         historyLayoutObserver.observe(content, {
           childList: true,
           subtree: true,
-          characterData: true,
           attributes: true,
           attributeFilter: [
             "style",
@@ -2845,8 +2876,7 @@ watch(
 watch(
   () =>
     currSessionId.value ? sessionMarkersBySession[currSessionId.value] : null,
-  () => nextTick(() => updateScrollMarkers()),
-  { deep: true },
+  () => nextTick(() => flushScrollMarkers()),
 );
 
 // Re-fetch the spcode status when the active session changes. Each
@@ -5047,6 +5077,46 @@ function onDotClick(marker: { id: string | number; index: number }) {
   }
 }
 
+let scrollMarkerTimer: ReturnType<typeof setTimeout> | null = null;
+let layoutSyncFrame = 0;
+
+/**
+ * Coalesce layout reads to one animation frame and refresh the marker rail at
+ * most once per 200ms. Streaming text changes height on every token, so the
+ * resize observer would otherwise run a full row measurement per token.
+ */
+function scheduleLayoutSync() {
+  if (layoutSyncFrame) return;
+  layoutSyncFrame = requestAnimationFrame(() => {
+    layoutSyncFrame = 0;
+    syncDistanceToBottom();
+    scheduleScrollMarkers();
+  });
+}
+
+/** Refresh the rail after a short delay; repeated calls share one timer. */
+function scheduleScrollMarkers(delay = 200) {
+  if (scrollMarkerTimer) return;
+  scrollMarkerTimer = setTimeout(() => {
+    scrollMarkerTimer = null;
+    updateScrollMarkers();
+  }, delay);
+}
+
+/** Refresh the rail now and cancel any pending throttled refresh. */
+function flushScrollMarkers() {
+  if (scrollMarkerTimer) {
+    clearTimeout(scrollMarkerTimer);
+    scrollMarkerTimer = null;
+  }
+  updateScrollMarkers();
+}
+
+onBeforeUnmount(() => {
+  if (scrollMarkerTimer) clearTimeout(scrollMarkerTimer);
+  if (layoutSyncFrame) cancelAnimationFrame(layoutSyncFrame);
+});
+
 function updateScrollMarkers() {
   const container = messagesContainer.value;
   if (!container) {
@@ -5085,32 +5155,30 @@ function updateScrollMarkers() {
       messageIndex: m.index,
       ordinal: 0,
       topPct: total > 1 ? (m.index / (total - 1)) * 100 : 0,
-      preview:
-        activeMessagePreviews.value.get(String(m.id))?.preview ||
-        m.snippet ||
-        "…",
-      replyPreview:
-        activeMessagePreviews.value.get(String(m.id))?.replyPreview ??
-        m.replySnippet,
-      replyLoading:
-        activeMessagePreviews.value.get(String(m.id))?.replyLoading ?? false,
+      preview: m.snippet || "…",
+      replyPreview: m.replySnippet,
+      replyLoading: false,
       inherited: m.inherited,
     }));
     const indexedIds = new Set(markers.map((m) => String(m.id)));
     // Include newly sent questions and older loaded turns beyond the index cap.
-    for (const [id, preview] of activeMessagePreviews.value) {
+    for (let index = 0; index < activeMessages.value.length; index += 1) {
+      const message = activeMessages.value[index];
+      if (!isUserMessage(message) || message.id == null) continue;
+      const id = String(message.id);
       if (indexedIds.has(id)) continue;
-      const localIndex = preview.messageIndex - historyOffset.value;
-      const message = activeMessages.value[localIndex];
-      if (message?.id == null) continue;
+      const messageIndex = historyOffset.value + index;
       markers.push({
-        ...preview,
         id: message.id,
-        index: preview.messageIndex,
+        index: messageIndex,
+        messageIndex,
         ordinal: 0,
-        topPct: total > 1 ? (preview.messageIndex / (total - 1)) * 100 : 0,
+        topPct: total > 1 ? (messageIndex / (total - 1)) * 100 : 0,
+        preview: truncate(plainTextFromMessage(message), 160),
+        replyPreview: "",
+        replyLoading: false,
         inherited:
-          rows[localIndex]?.classList.contains("inherited-row") ?? false,
+          rows[index]?.classList.contains("inherited-row") ?? false,
       });
     }
     scrollMarkers.value = markers
@@ -5141,14 +5209,27 @@ function updateScrollMarkers() {
       ordinal: markers.length + 1,
       topPct: (offsetTop / scrollable) * 100,
       preview: truncate(plainTextFromMessage(msg), 160),
-      replyPreview:
-        activeMessagePreviews.value.get(String(msg.id))?.replyPreview || "",
-      replyLoading:
-        activeMessagePreviews.value.get(String(msg.id))?.replyLoading ?? false,
+      replyPreview: "",
+      replyLoading: false,
       inherited: row.classList.contains("inherited-row"),
     });
   }
   scrollMarkers.value = markers;
+}
+
+/**
+ * Resolve the latest preview for a rail marker on demand. The rail asks for
+ * this only while its popover is open, so streaming does not rebuild every
+ * preview on every token.
+ */
+function resolveMarkerPreview(id: string | number) {
+  const preview = activeMessagePreviews.value.get(String(id));
+  if (!preview) return null;
+  return {
+    preview: preview.preview,
+    replyPreview: preview.replyPreview,
+    replyLoading: preview.replyLoading,
+  };
 }
 
 function onBranchToggle(collapsed: boolean) {

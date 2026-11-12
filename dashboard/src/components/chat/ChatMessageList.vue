@@ -1129,15 +1129,36 @@ onMounted(() => {
 // replaces the derivation with a deterministic, race-free trigger.
 // `recomputeIgnored` is still called once from `onMounted` below
 // so a fresh tab back-fills ignored state from chat history.
+// Streaming text mutates nested parts in place, so a deep watch on the whole
+// message array re-scans every row on every token. Only structure (row ids)
+// and interactive-choice state need this block; both are derived as cheap
+// signatures that ignore plain-text deltas.
+const structureRevision = computed(() =>
+  props.messages.map((message) => String(message.id ?? "")).join("|"),
+);
+const choiceRevision = computed(() => {
+  let signature = "";
+  for (const message of props.messages) {
+    for (const part of messageParts(message)) {
+      if (!isInteractiveChoicePayload(part)) continue;
+      signature += `${String(part.request_id ?? "")}:${part.answer ? 1 : 0}:${part.resolved ? 1 : 0}:${part.cancelled ? 1 : 0};`;
+    }
+  }
+  return signature;
+});
+
 watch(
-  () => props.messages,
-  (next) => {
+  [structureRevision, choiceRevision],
+  ([structure, choice], [previousStructure, previousChoice]) => {
     if (props.remoteHistory) return;
-    // Round-2 defensive migration runs first so a freshly arrived
-    // old-history batch (e.g. paginated load) is upgraded before
-    // the store mirror sees it.
-    migrateOldInteractiveChoiceText(next);
-    mirrorInteractiveChoiceParts(next);
+    if (structure !== previousStructure) {
+      // Round-2 defensive migration runs first so a freshly arrived
+      // old-history batch (e.g. paginated load) is upgraded before
+      // the store mirror sees it.
+      migrateOldInteractiveChoiceText(props.messages);
+    }
+    if (structure === previousStructure && choice === previousChoice) return;
+    mirrorInteractiveChoiceParts(props.messages);
     // 2026-09-29: history arrives after mount, so the reconcile in
     // `onMounted` usually ran against an empty list — the boxes it just
     // mirrored were never checked against the backend's pending list, and a
@@ -1147,7 +1168,7 @@ watch(
     // streaming run.
     if (props.currentUmo) {
       let choiceCount = 0;
-      for (const message of next) {
+      for (const message of props.messages) {
         for (const part of messageParts(message)) {
           if (isInteractiveChoicePayload(part)) choiceCount += 1;
         }
@@ -1158,7 +1179,6 @@ watch(
       }
     }
   },
-  { deep: true },
 );
 
 watch(
@@ -1320,6 +1340,16 @@ function shouldShowMessageBubble(message: ChatRecord) {
   );
 }
 
+// The last non-user row is the only assistant row that can still be streaming:
+// every row after it is an optimistic user follow-up. Precomputing that index
+// keeps the predicate O(1) instead of copying the tail on every template call.
+const lastNonUserIndex = computed(() => {
+  for (let index = props.messages.length - 1; index >= 0; index -= 1) {
+    if (!isUserMessage(props.messages[index])) return index;
+  }
+  return -1;
+});
+
 function isMessageStreaming(message: ChatRecord, messageIndex: number) {
   if (props.remoteHistory) {
     return (
@@ -1332,7 +1362,7 @@ function isMessageStreaming(message: ChatRecord, messageIndex: number) {
     props.isStreaming &&
     !isUserMessage(message) &&
     // An optimistic follow-up can sit after the assistant while its tool waits.
-    props.messages.slice(messageIndex + 1).every(isUserMessage)
+    messageIndex === lastNonUserIndex.value
   );
 }
 

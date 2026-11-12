@@ -312,6 +312,7 @@ interface ActiveConnection {
   completed?: boolean;
   errorShown?: boolean;
   botVisible?: boolean;
+  visibleRecords?: ChatRecord[];
   followUpCaptured?: boolean;
   precedingPlainText?: string;
 }
@@ -420,11 +421,32 @@ interface UseMessagesOptions {
   ) => void;
 }
 
+// Content-bearing payload types that should wake the chat view's tail-follow
+// and marker refresh. Control frames and persistence-only acknowledgements are
+// excluded so they never trigger a render pass on their own.
+const STREAM_REVISION_TYPES = new Set([
+  "plain",
+  "complete",
+  "tool_call",
+  "agent_stats",
+  "file_changes",
+  "llm_request_injections",
+  "message_saved",
+  "run_snapshot",
+  "message_segment",
+  "interactive_choice",
+  "interactive_choice_resolved",
+]);
+
 export function useMessages(options: UseMessagesOptions) {
   const accountRevision = accountSessionRevision.value;
   const loadingMessages = ref(false);
   const sending = ref(false);
   const messagesBySession = reactive<Record<string, ChatRecord[]>>({});
+  // Per-session content revision, bumped once per content-bearing payload.
+  // Chat.vue follows the tail from this signal instead of deep-watching the
+  // whole message array on every token.
+  const streamRevisionBySession = reactive<Record<string, number>>({});
   const loadedSessions = reactive<Record<string, boolean>>({});
   const activeConnections = reactive<Record<string, ActiveConnection>>({});
   const chatWebSockets: Record<string, WebSocket> = {};
@@ -644,7 +666,10 @@ export function useMessages(options: UseMessagesOptions) {
               messagesBySession[sessionId],
               payload,
             );
-            if (consumed) options.onStreamUpdate?.(sessionId);
+            if (consumed) {
+              bumpStreamRevision(sessionId);
+              options.onStreamUpdate?.(sessionId);
+            }
           });
         } catch (error) {
           if (
@@ -2110,16 +2135,25 @@ export function useMessages(options: UseMessagesOptions) {
   // independently.
   const filteredToolCallIds = new Set<string>();
 
+  function bumpStreamRevision(sessionId: string) {
+    streamRevisionBySession[sessionId] =
+      (streamRevisionBySession[sessionId] || 0) + 1;
+  }
+
   function ensureBotRecordVisible(connection: ActiveConnection) {
     const { botRecord, userRecord } = connection;
     if (!botRecord || connection.followUpCaptured) return;
     const records = messagesBySession[connection.sessionId] || [];
+    // Fast path: the record was visible and the session array has not been
+    // replaced since. A history reload swaps the array, which invalidates it.
+    if (connection.botVisible && connection.visibleRecords === records) return;
     // Compare by id, not by object identity: the array is reactive, so a raw
     // reference and its proxied element are different objects and an identity
     // check can report the record absent (or present) for the wrong reason.
     const botId = String(botRecord.id ?? "");
     if (records.some((r) => String(r.id) === botId)) {
       connection.botVisible = true;
+      connection.visibleRecords = records;
       return;
     }
     // No user record to anchor to: a resume connection (`restoreNextActiveRun`)
@@ -2135,6 +2169,7 @@ export function useMessages(options: UseMessagesOptions) {
       records.push(botRecord);
     }
     connection.botVisible = true;
+    connection.visibleRecords = records;
   }
 
   function processStreamPayload(
@@ -2152,6 +2187,13 @@ export function useMessages(options: UseMessagesOptions) {
     const msgType = normalized?.type || normalized?.t;
     const chainType = normalized?.chain_type;
     const data = normalized?.data ?? "";
+    if (
+      sessionId &&
+      (STREAM_REVISION_TYPES.has(String(msgType)) ||
+        STREAM_REVISION_TYPES.has(String(chainType)))
+    ) {
+      bumpStreamRevision(sessionId);
+    }
 
     if (msgType === "follow_up_captured") {
       if (!connection || !sessionId) return;
@@ -2638,6 +2680,7 @@ export function useMessages(options: UseMessagesOptions) {
     historyOffsetBySession,
     sessionMarkersBySession,
     activeMessages,
+    streamRevisionBySession,
     activeMessagePreviews,
     isSessionRunning,
     hasLiveSystemRecord,
@@ -3045,11 +3088,24 @@ export function appendReasoningPart(record: ChatRecord, text: string) {
   const content = record.content;
   const last = content.message[content.message.length - 1];
   if (last?.type === "think") {
-    last.think = `${String(last.think || "")}${text}`;
+    const previous = String(last.think || "");
+    last.think = `${previous}${text}`;
+    // Streaming fast path: `reasoning` is the concatenation of all think
+    // parts, so appending the delta is equivalent to re-extracting. Fall
+    // back when the cached value is missing or stale.
+    if (
+      typeof content.reasoning === "string" &&
+      content.reasoning.endsWith(previous)
+    ) {
+      content.reasoning = `${content.reasoning}${text}`;
+    } else {
+      content.reasoning = extractReasoningText(content.message);
+    }
   } else {
+    const previousReasoning = extractReasoningText(content.message);
     content.message.push({ type: "think", think: text });
+    content.reasoning = `${previousReasoning}${text}`;
   }
-  content.reasoning = extractReasoningText(content.message);
 }
 
 export function upsertToolCall(record: ChatRecord, toolCall: any) {

@@ -32,6 +32,9 @@ const functions = new Set([
   "shouldStickToBottom",
   "setStickToBottom",
   "syncDistanceToBottom",
+  "scheduleLayoutSync",
+  "scheduleScrollMarkers",
+  "flushScrollMarkers",
   "jumpToBottom",
   "scrollToBottom",
   "recordViewportAnchor",
@@ -84,6 +87,8 @@ const variables = new Set([
   "jumpLandingOnGesture",
   "markerResizeObserver",
   "historyLayoutObserver",
+  "scrollMarkerTimer",
+  "layoutSyncFrame",
 ]);
 const declarations = ast.statements
   .filter((node) => {

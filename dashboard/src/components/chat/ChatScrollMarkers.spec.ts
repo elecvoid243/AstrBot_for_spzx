@@ -94,6 +94,25 @@ describe("conversation scroll markers", () => {
     expect(geometry.writes).toBe(0);
   });
 
+  it("resolves the live preview on demand when the popover opens", async () => {
+    const { wrapper } = mountMarkers();
+    const resolvePreview = vi.fn((id: string | number) => ({
+      preview: `Live question ${id}`,
+      replyPreview: `Live answer ${id}`,
+      replyLoading: false,
+    }));
+    await wrapper.setProps({ resolvePreview });
+    await wrapper.findAll(".scroll-marker-dot")[3].trigger("mouseenter");
+    await nextTick();
+    expect(resolvePreview).toHaveBeenCalledWith("question-3");
+    expect(wrapper.get(".marker-preview-title").text()).toBe(
+      "Live question question-3",
+    );
+    expect(wrapper.get(".marker-preview-reply").text()).toBe(
+      "Live answer question-3",
+    );
+  });
+
   it("shows the current question and reply when its tick represents a dense group", async () => {
     const { wrapper, container, geometry } = mountMarkers(1200, 244);
     geometry.top = 55 * 160;

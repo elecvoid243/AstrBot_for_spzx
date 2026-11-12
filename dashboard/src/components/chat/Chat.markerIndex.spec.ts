@@ -22,6 +22,14 @@ const declaration = ast.statements.find(
 const code = ts.transpileModule(declaration.getText(ast), {
   compilerOptions: { target: ts.ScriptTarget.ES2022 },
 }).outputText;
+const resolveDeclaration = ast.statements.find(
+  (node) =>
+    ts.isFunctionDeclaration(node) &&
+    node.name?.text === "resolveMarkerPreview",
+)!;
+const resolveCode = ts.transpileModule(resolveDeclaration.getText(ast), {
+  compilerOptions: { target: ts.ScriptTarget.ES2022 },
+}).outputText;
 
 function projectMarkers(indexed = true) {
   const container = document.createElement("div");
@@ -91,18 +99,27 @@ function projectMarkers(indexed = true) {
     ...Object.keys(context),
     `${code}; updateScrollMarkers();`,
   );
-  return { context, rows, update: () => update(...Object.values(context)) };
+  const resolve = new Function(
+    ...Object.keys(context),
+    `${resolveCode}; return resolveMarkerPreview;`,
+  );
+  return {
+    context,
+    rows,
+    update: () => update(...Object.values(context)),
+    resolve: () => resolve(...Object.values(context)),
+  };
 }
 
 describe("chat marker index projection", () => {
-  it("replaces saved previews with live loaded reply text", () => {
+  it("uses saved previews for indexed markers and leaves live text to the resolver", () => {
     const { context, update } = projectMarkers();
     update();
     expect(context.scrollMarkers.value[0]).toMatchObject({
       id: 1,
-      preview: "Loaded question",
-      replyPreview: "Live answer",
-      replyLoading: true,
+      preview: "Saved question",
+      replyPreview: "Saved answer",
+      replyLoading: false,
       index: 100,
     });
   });
@@ -113,7 +130,7 @@ describe("chat marker index projection", () => {
     update();
     expect(context.scrollMarkers.value.map((m) => m.id)).toEqual([99, 1]);
     expect(context.scrollMarkers.value[0].replyPreview).toBe("Saved answer");
-    expect(context.scrollMarkers.value[1].replyPreview).toBe("Live answer");
+    expect(context.scrollMarkers.value[1].replyPreview).toBe("");
   });
   it("adds loaded turns beyond the capped index and still honors inherited-history collapse", () => {
     const { context, rows, update } = projectMarkers();
@@ -133,8 +150,17 @@ describe("chat marker index projection", () => {
       id: 1,
       index: -1,
       messageIndex: 100,
+      replyPreview: "",
+      replyLoading: false,
+    });
+  });
+  it("resolves the live preview on demand instead of rebuilding every marker", () => {
+    const { resolve } = projectMarkers();
+    expect(resolve()(1)).toEqual({
+      preview: "Loaded question",
       replyPreview: "Live answer",
       replyLoading: true,
     });
+    expect(resolve()(99)).toBeNull();
   });
 });

@@ -109,19 +109,28 @@
       </div>
       <template v-if="!selectionOpen">
         <div class="marker-preview-heading">
-          <div class="marker-preview-title">{{ previewMarker?.preview }}</div>
+          <div class="marker-preview-title">
+            {{ resolvedPreview?.preview ?? previewMarker?.preview }}
+          </div>
           <span v-if="previewMarker?.inherited" class="marker-origin">{{
             tm("markers.inherited")
           }}</span>
         </div>
         <div class="marker-preview-reply">
           {{
-            previewMarker?.replyPreview ||
-            tm(
-              previewMarker?.replyLoading
-                ? "markers.replyLoading"
-                : "markers.noReply",
-            )
+            resolvedPreview
+              ? resolvedPreview.replyPreview ||
+                tm(
+                  resolvedPreview.replyLoading
+                    ? "markers.replyLoading"
+                    : "markers.noReply",
+                )
+              : previewMarker?.replyPreview ||
+                tm(
+                  previewMarker?.replyLoading
+                    ? "markers.replyLoading"
+                    : "markers.noReply",
+                )
           }}
         </div>
       </template>
@@ -222,6 +231,13 @@ const props = defineProps<{
   right: number;
   loading: boolean;
   isDark: boolean;
+  resolvePreview?: (
+    id: string | number,
+  ) => {
+    preview?: string;
+    replyPreview?: string;
+    replyLoading?: boolean;
+  } | null;
 }>();
 const emit = defineEmits<{ (event: "jump", marker: ChatScrollMarker): void }>();
 const { tm } = useModuleI18n("features/chat");
@@ -281,6 +297,42 @@ const previewMarker = computed(
     activeGroup.value?.markers.find((m) => m.id === currentId.value) ??
     activeGroup.value?.markers[0],
 );
+const resolvedPreview = ref<{
+  preview?: string;
+  replyPreview?: string;
+  replyLoading?: boolean;
+} | null>(null);
+let previewTimer = 0;
+
+function refreshResolvedPreview() {
+  const marker = previewMarker.value;
+  resolvedPreview.value =
+    marker && props.resolvePreview ? props.resolvePreview(marker.id) : null;
+}
+
+watch(
+  [activeSlot, selectionOpen],
+  () => {
+    if (previewTimer) {
+      window.clearInterval(previewTimer);
+      previewTimer = 0;
+    }
+    refreshResolvedPreview();
+    if (
+      activeSlot.value != null &&
+      !selectionOpen.value &&
+      props.resolvePreview
+    ) {
+      previewTimer = window.setInterval(refreshResolvedPreview, 200);
+    }
+  },
+  { immediate: true },
+);
+
+onBeforeUnmount(() => {
+  if (previewTimer) window.clearInterval(previewTimer);
+});
+
 const selectionPageCount = computed(() =>
   Math.ceil((activeGroup.value?.markers.length ?? 0) / 20),
 );

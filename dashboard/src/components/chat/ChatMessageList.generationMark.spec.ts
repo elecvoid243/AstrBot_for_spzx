@@ -132,4 +132,30 @@ describe("ChatMessageList generation mark", () => {
     expect(railMark(wrapper).exists()).toBe(true);
     expect(railMark(wrapper).classes()).toContain("is-off");
   });
+
+  it("keeps the last assistant streaming with several optimistic user rows after it", () => {
+    const wrapper = mountList(
+      [
+        botRecord("b1", { message: [{ type: "plain", text: "streaming" }] }),
+        { id: "u1", content: { type: "user", message: [] } } as ChatRecord,
+        { id: "u2", content: { type: "user", message: [] } } as ChatRecord,
+      ],
+      true,
+    );
+    expect(railMark(wrapper).classes()).toContain("is-slow");
+  });
+
+  it("stops the mark at a branch divider after the assistant row", () => {
+    const wrapper = mountList(
+      [
+        botRecord("b1", { message: [{ type: "plain", text: "old" }] }),
+        {
+          id: "divider",
+          content: { type: "branch_info", message: [] },
+        } as unknown as ChatRecord,
+      ],
+      true,
+    );
+    expect(railMark(wrapper).classes()).toContain("is-off");
+  });
 });

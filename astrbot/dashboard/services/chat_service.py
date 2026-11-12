@@ -4040,6 +4040,12 @@ class ChatService:
                         "Failed to announce an accepted Agent message run",
                         exc_info=True,
                     )
+                # Agent/cross-session messages hand their per-run stream back
+                # to the caller, so start_unified_chat_run never creates a
+                # unified publisher for them. Mirror the run onto the hub here;
+                # otherwise every tab gets run_started and never an end, and
+                # the sidebar keeps spinning after the run has finished.
+                self._start_unified_run_forwarder(run)
 
             self._publish_unified_run_started(run)
             return stream
@@ -4582,6 +4588,80 @@ class ChatService:
             if not saw_end:
                 self.unified_stream_hub.publish(
                     username,
+                    run.session_id,
+                    {"type": "end", "data": None, "message_id": run.run_id},
+                )
+
+    def _start_unified_run_forwarder(self, run: ChatRunState) -> None:
+        """Mirror an agent-started run onto the unified stream.
+
+        Cross-session Agent messages return their per-run SSE stream to the
+        caller, so they never go through ``start_unified_chat_run`` and have
+        no unified publisher. The hub still announces ``run_started`` for
+        them, which leaves every dashboard tab with a running marker that
+        never clears; this forwarder supplies the frames and the terminal
+        ``end``.
+
+        Args:
+            run: Run accepted by the agent-message path.
+        """
+        hub = getattr(self, "unified_stream_hub", None)
+        if hub is None:
+            return
+        # Subscribe synchronously so no frame produced between here and the
+        # task's first step is lost.
+        subscriber: asyncio.Queue = asyncio.Queue(
+            maxsize=CHAT_RUN_SUBSCRIBER_QUEUE_SIZE
+        )
+        run.subscribers.add(subscriber)
+        task = asyncio.create_task(
+            self._forward_run_to_unified(run, subscriber),
+            name=f"unified_agent_run_{run.run_id}",
+        )
+        self._unified_publish_tasks.add(task)
+        task.add_done_callback(self._unified_publish_tasks.discard)
+
+    async def _forward_run_to_unified(
+        self,
+        run: ChatRunState,
+        subscriber: asyncio.Queue,
+    ) -> None:
+        """Forward one agent run's frames to the unified hub.
+
+        Args:
+            run: Run whose frames should be mirrored.
+            subscriber: Queue already registered on ``run.subscribers``.
+        """
+        saw_end = False
+        try:
+            while True:
+                item = await subscriber.get()
+                # _publish_chat_run enqueues (revision, payload) tuples so SSE
+                # consumers can report a cursor; unwrap before forwarding.
+                payload = item[1] if isinstance(item, tuple) else item
+                if not isinstance(payload, dict):
+                    continue
+                if payload.get("type") == "session_id":
+                    continue
+                forwarded = {**payload}
+                forwarded.setdefault("message_id", run.run_id)
+                forwarded = self._out_of_band_payload(run, forwarded)
+                if forwarded.get("type") == "end":
+                    saw_end = True
+                self.unified_stream_hub.publish(
+                    run.username,
+                    run.session_id,
+                    forwarded,
+                )
+                if saw_end:
+                    return
+        except asyncio.CancelledError:
+            raise
+        finally:
+            run.subscribers.discard(subscriber)
+            if not saw_end:
+                self.unified_stream_hub.publish(
+                    run.username,
                     run.session_id,
                     {"type": "end", "data": None, "message_id": run.run_id},
                 )

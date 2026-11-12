@@ -918,3 +918,51 @@ async def test_large_frame_read_routes_reject_foreign_owners():
     )
     response = await unified_run_tool_result("run", "call", auth, allowed)
     assert response["data"]["result"] == "full"
+
+
+@pytest.mark.asyncio
+async def test_agent_started_run_forwards_frames_and_end():
+    """Agent/cross-session runs must reach the hub's terminal end frame.
+
+    They return their per-run stream to the caller instead of going through
+    start_unified_chat_run, so the forwarder is the only source of frames
+    after run_started. Without it every tab keeps a running marker forever.
+    """
+    hub = UnifiedStreamHub()
+    service = ChatService.__new__(ChatService)
+    service.unified_stream_hub = hub
+    service._unified_publish_tasks = set()
+    service._out_of_band_payload = lambda run, payload: payload
+    run = ChatRunState(
+        run_id="agent-run-1",
+        username="alice",
+        session_id="s1",
+        llm_checkpoint_id="ckpt",
+        platform_history_id="webchat",
+        back_queue=asyncio.Queue(),
+    )
+    connection = hub.connect("alice")
+    stream = hub.stream(connection)
+    assert _decode(await anext(stream))["type"] == "stream_ready"
+
+    ChatService._start_unified_run_forwarder(service, run)
+    hub.publish(
+        "alice",
+        "s1",
+        {"type": "run_started", "message_id": run.run_id, "data": {}},
+    )
+    await asyncio.sleep(0)
+    for subscriber in list(run.subscribers):
+        # _publish_chat_run enqueues (revision, payload) tuples.
+        subscriber.put_nowait((1, {"type": "plain", "data": "hi"}))
+        subscriber.put_nowait((2, {"type": "end", "data": {"status": "completed"}}))
+
+    frames = [_decode(await anext(stream)) for _ in range(3)]
+    assert [frame["type"] for frame in frames] == ["run_started", "plain", "end"]
+    for _ in range(20):
+        if not run.subscribers:
+            break
+        await asyncio.sleep(0.01)
+    assert not run.subscribers
+    hub.disconnect(connection)
+    await stream.aclose()

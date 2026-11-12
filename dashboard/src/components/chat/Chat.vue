@@ -2124,6 +2124,7 @@ const {
   loadOlderMessages,
   createLocalExchange,
   sendMessageStream,
+  startUnifiedStream,
   editMessage,
   continueEditedMessage,
   regenerateMessage,
@@ -2637,6 +2638,7 @@ watch(
 );
 
 onMounted(async () => {
+  startUnifiedStream();
   window.addEventListener("pointerup", endMessagesScrollGesture);
   window.addEventListener("pointercancel", endMessagesScrollGesture);
   window.addEventListener("touchend", endMessagesScrollGesture);

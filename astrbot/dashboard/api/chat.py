@@ -6,6 +6,7 @@ import json
 import os
 import sys
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -161,6 +162,106 @@ async def _send_chat(
             "Transfer-Encoding": "chunked",
             "Connection": "keep-alive",
         },
+    )
+
+
+@router.post("/chat/stream")
+async def unified_chat_stream(
+    request: Request,
+    auth: AuthContext = Depends(require_chat_scope),
+    service: ChatService = Depends(get_service),
+):
+    """Open the per-tab unified chat stream.
+
+    Args:
+        request: Request carrying optional epoch/cursors.
+        auth: Authenticated dashboard account.
+        service: Chat service owning the stream hub.
+
+    Returns:
+        SSE response for every owned running chat run.
+    """
+    body = await _json_or_empty(request)
+    cursors = body.get("cursors")
+    connection = service.unified_stream_hub.connect(
+        auth.username,
+        str(body.get("epoch") or ""),
+        cursors if isinstance(cursors, dict) else {},
+    )
+    return StreamingResponse(
+        service.unified_stream_hub.stream(connection),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Transfer-Encoding": "chunked",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@router.post("/chat/send")
+async def unified_send_chat(
+    request: Request,
+    auth: AuthContext = Depends(require_chat_scope),
+    service: ChatService = Depends(get_service),
+):
+    """Accept a chat message and stream its output over /chat/stream.
+
+    Args:
+        request: Request carrying the message payload.
+        auth: Authenticated dashboard account.
+        service: Chat service that starts the run.
+
+    Returns:
+        JSON receipt with run/message identifiers, or an HTTP error.
+    """
+    post_data = await _json_or_none(request)
+    if post_data is None:
+        return JSONResponse(error("Missing JSON body"), status_code=400)
+    if post_data.get("mode", "send") != "send":
+        return JSONResponse(error("Unsupported send mode"), status_code=400)
+    content = post_data.get("content")
+    session_id = post_data.get("session_id")
+    if content is None or not session_id:
+        return JSONResponse(
+            error("Missing session_id or content"),
+            status_code=400,
+        )
+    message_id = str(post_data.get("message_id") or uuid.uuid4())
+    payload = {
+        "session_id": session_id,
+        "message": content,
+        "message_id": message_id,
+    }
+    for key in ("config_id", "selected_provider", "selected_model", "thinking_effort"):
+        value = post_data.get(key)
+        if value is not None:
+            payload[key] = value
+    for key in (
+        "flags",
+        "_skip_user_history",
+        "_llm_checkpoint_id",
+        "selected_stt_provider",
+        "selected_tts_provider",
+        "persona_prompt",
+        "show_reasoning",
+    ):
+        if key in post_data:
+            payload[key] = post_data[key]
+    try:
+        run = await service.start_unified_chat_run(auth.username, payload)
+    except ChatServiceError as exc:
+        return JSONResponse(error(str(exc)), status_code=400)
+    return ok(
+        {
+            "status": "accepted",
+            "session_id": run.session_id,
+            "message_id": message_id,
+            "run_id": run.run_id,
+            "input_message_id": run.user_message_id,
+            "detail_path": f"/#/chat/{run.session_id}",
+        }
     )
 
 

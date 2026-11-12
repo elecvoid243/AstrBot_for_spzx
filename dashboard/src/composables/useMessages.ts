@@ -449,6 +449,26 @@ export function useMessages(options: UseMessagesOptions) {
   const streamRevisionBySession = reactive<Record<string, number>>({});
   const loadedSessions = reactive<Record<string, boolean>>({});
   const activeConnections = reactive<Record<string, ActiveConnection>>({});
+  // One stream per tab in unified mode. Tests default to legacy so the
+  // existing per-send SSE specs keep their transport; the unified spec opts
+  // in with localStorage["chat.streamMode"] = "unified".
+  function resolveChatStreamMode(): "unified" | "legacy" {
+    try {
+      const query = new URLSearchParams(window.location.search).get("stream");
+      if (query === "legacy" || query === "unified") return query;
+      const stored = localStorage.getItem("chat.streamMode");
+      if (stored === "legacy" || stored === "unified") return stored;
+    } catch {
+      // Ignore storage/URL failures and fall through to the default.
+    }
+    return import.meta.env.MODE === "test" ? "legacy" : "unified";
+  }
+
+  const unifiedMode = resolveChatStreamMode() === "unified";
+  const unifiedSeqBySession: Record<string, number> = {};
+  let unifiedAbort: AbortController | null = null;
+  let unifiedStreamStarted = false;
+  let unifiedEpoch = "";
   const chatWebSockets: Record<string, WebSocket> = {};
   const closingChatWebSockets = new WeakSet<WebSocket>();
   const attachmentBlobCache = new Map<string, Promise<string>>();
@@ -571,7 +591,7 @@ export function useMessages(options: UseMessagesOptions) {
   );
 
   function startSystemStream(sessionId: string) {
-    if (!sessionId || systemConnections[sessionId]) return;
+    if (unifiedMode || !sessionId || systemConnections[sessionId]) return;
     const abort = new AbortController();
     systemConnections[sessionId] = abort;
 
@@ -1247,6 +1267,176 @@ export function useMessages(options: UseMessagesOptions) {
     };
   }
 
+  function settleUnifiedConnection(connection: ActiveConnection) {
+    if (connection.completed) return;
+    connection.completed = true;
+    if (activeConnections[connection.messageId] === connection) {
+      delete activeConnections[connection.messageId];
+    }
+    void options.onSessionsChanged?.();
+    void loadSessionMarkers(connection.sessionId);
+    options.onStreamEnd?.(connection.sessionId);
+  }
+
+  function handleUnifiedFrame(payload: any) {
+    if (!payload || typeof payload !== "object") return;
+    const sessionId = String(payload.session_id || "");
+    if (!sessionId) return;
+    const messageId = String(
+      payload.message_id || payload.data?.run_id || "",
+    );
+    if (payload.type === "run_started") {
+      const connection = activeConnections[messageId];
+      if (!connection || connection.sessionId !== sessionId) return;
+      connection.runId = messageId;
+      const input = payload.data?.input_message;
+      if (input?.id != null && connection.userRecord) {
+        connection.userRecord.id = input.id;
+        if (input.created_at) {
+          connection.userRecord.created_at = input.created_at;
+        }
+      }
+      return;
+    }
+    const connection = activeConnections[messageId];
+    if (!connection?.botRecord || connection.sessionId !== sessionId) return;
+    const botRecord = connection.botRecord;
+    processStreamPayload(
+      botRecord,
+      payload,
+      connection.userRecord,
+      connection,
+    );
+    options.onStreamUpdate?.(sessionId);
+    if (payload.type === "end" || payload.type === "error") {
+      settleUnifiedConnection(connection);
+    }
+  }
+
+  function startUnifiedStream() {
+    if (!unifiedMode || unifiedStreamStarted) return;
+    unifiedStreamStarted = true;
+    const abort = new AbortController();
+    unifiedAbort = abort;
+    void (async () => {
+      try {
+        const response = await fetchWithAuth(chatApi.unifiedStreamUrl(), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            epoch: unifiedEpoch,
+            cursors: unifiedSeqBySession,
+          }),
+          signal: abort.signal,
+        });
+        if (!response.ok || !response.body) {
+          throw new Error(`Unified stream failed: ${response.status}`);
+        }
+        await readSseStream(response.body, (payload) => {
+          if (payload?.type === "stream_ready") {
+            unifiedEpoch = String(payload.epoch || "");
+            return;
+          }
+          if (payload?.session_id && payload?.seq != null) {
+            unifiedSeqBySession[String(payload.session_id)] = Number(
+              payload.seq,
+            );
+          }
+          handleUnifiedFrame(payload);
+        });
+      } catch (error) {
+        if (abort.signal.aborted) return;
+        console.error("Unified chat stream failed:", error);
+      }
+    })();
+  }
+
+  function stopUnifiedStream() {
+    unifiedAbort?.abort();
+    unifiedAbort = null;
+    unifiedStreamStarted = false;
+  }
+
+  function startUnifiedSend({
+    configId,
+    sessionId,
+    messageId,
+    parts,
+    enableStreaming = true,
+    selectedProvider = "",
+    selectedModel = "",
+    thinkingEffort,
+    botRecord,
+    userRecord,
+  }: Omit<
+    SendMessageStreamOptions,
+    "transport" | "skipUserHistory" | "llmCheckpointId"
+  >) {
+    const abort = new AbortController();
+    const connection: ActiveConnection = {
+      sessionId,
+      messageId,
+      transport: "sse",
+      abort,
+      botRecord,
+      userRecord,
+      botVisible: messagesBySession[sessionId]?.includes(botRecord) ?? false,
+    };
+    activeConnections[messageId] = connection;
+
+    const payload = {
+      mode: "send",
+      session_id: sessionId,
+      message_id: messageId,
+      content: parts.map(partToPayload),
+      config_id: configId,
+      selected_provider: selectedProvider,
+      selected_model: selectedModel,
+      thinking_effort: thinkingEffort,
+      ...(options.accountRole === "user"
+        ? {}
+        : { flags: buildChatRequestFlags(enableStreaming) }),
+    };
+
+    fetchWithAuth(chatApi.sendMessageUrl(), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      signal: abort.signal,
+    })
+      .then(async (response) => {
+        const body = await response.json().catch(() => null);
+        if (!response.ok || body?.status === "error") {
+          throw new Error(
+            body?.message ||
+              body?.data?.message ||
+              `Send failed: ${response.status}`,
+          );
+        }
+        const data = body?.data || {};
+        if (data.run_id) connection.runId = String(data.run_id);
+        if (data.input_message_id != null && userRecord) {
+          userRecord.id = data.input_message_id;
+        }
+      })
+      .catch((error) => {
+        if (
+          abort.signal.aborted ||
+          accountRevision !== accountSessionRevision.value
+        ) {
+          return;
+        }
+        ensureBotRecordVisible(connection);
+        appendPlain(botRecord, `\n\n${String(error?.message || error)}`);
+        markMessageStarted(botRecord);
+        delete activeConnections[messageId];
+        options.onError?.(String(error?.message || error), sessionId);
+        options.onStreamEnd?.(sessionId);
+        void options.onSessionsChanged?.();
+        console.error("Unified chat send failed:", error);
+      });
+  }
+
   function sendMessageStream({
     configId,
     sessionId,
@@ -1262,6 +1452,26 @@ export function useMessages(options: UseMessagesOptions) {
     skipUserHistory = false,
     llmCheckpointId = null,
   }: SendMessageStreamOptions) {
+    if (
+      unifiedMode &&
+      transport !== "websocket" &&
+      !skipUserHistory &&
+      !llmCheckpointId
+    ) {
+      startUnifiedSend({
+        configId,
+        sessionId,
+        messageId,
+        parts,
+        enableStreaming,
+        selectedProvider,
+        selectedModel,
+        thinkingEffort,
+        botRecord,
+        userRecord,
+      });
+      return;
+    }
     if (transport === "websocket") {
       startWebSocketStream(
         sessionId,
@@ -1495,6 +1705,7 @@ export function useMessages(options: UseMessagesOptions) {
   }
 
   function cleanupConnections() {
+    stopUnifiedStream();
     Object.values(activeConnections).forEach((connection) => {
       connection.abort?.abort();
     });
@@ -2692,6 +2903,7 @@ export function useMessages(options: UseMessagesOptions) {
     loadOlderMessages,
     createLocalExchange,
     sendMessageStream,
+    startUnifiedStream,
     editMessage,
     continueEditedMessage,
     regenerateMessage,

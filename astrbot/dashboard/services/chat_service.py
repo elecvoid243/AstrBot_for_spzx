@@ -83,6 +83,7 @@ from astrbot.dashboard.services.chunked_upload_service import (
     ChunkedUploadError,
     ChunkedUploadService,
 )
+from astrbot.dashboard.services.unified_stream import UnifiedStreamHub
 
 SSE_HEARTBEAT = ": heartbeat\n\n"
 CHAT_RUN_SUBSCRIBER_QUEUE_SIZE = 256
@@ -1246,6 +1247,8 @@ class ChatRunState:
     platform_history_id: str
     back_queue: asyncio.Queue
     input_message: dict | None = None
+    unified_input_message: dict | None = None
+    user_message_id: int | None = None
     subscribers: set[asyncio.Queue] = field(default_factory=set)
     message_parts: list[dict] = field(default_factory=list)
     agent_stats: dict = field(default_factory=dict)
@@ -1285,6 +1288,8 @@ class ChatService:
         self.running_convs: dict[str, bool] = {}
         self.chat_runs: dict[str, ChatRunState] = {}
         self.chat_runs_by_session: dict[str, set[str]] = {}
+        self.unified_stream_hub = UnifiedStreamHub()
+        self._unified_publish_tasks: set[asyncio.Task[None]] = set()
         self.session_message_chains: WeakSet[SessionMessageChain] = WeakSet()
         self.session_message_stop_revisions: dict[str, int] = {}
         self.chunked_uploads = ChunkedUploadService(
@@ -3827,6 +3832,10 @@ class ChatService:
                 input_message=serialize_history_entry(saved_user_record)
                 if agent_source is not None and saved_user_record
                 else None,
+                unified_input_message=serialize_history_entry(saved_user_record)
+                if saved_user_record
+                else None,
+                user_message_id=saved_user_record.id if saved_user_record else None,
             )
             self.chat_runs[message_id] = run
             self.chat_runs_by_session.setdefault(webchat_conv_id, set()).add(message_id)
@@ -4034,6 +4043,105 @@ class ChatService:
                 if saved_user_record is not None:
                     await self.platform_history_mgr.delete_by_id(saved_user_record.id)
             raise
+
+    async def start_unified_chat_run(
+        self,
+        username: str,
+        post_data: dict,
+    ) -> ChatRunState:
+        """Start a chat run and publish its frames to the unified stream.
+
+        Args:
+            username: Trusted resource owner.
+            post_data: Chat payload; ``message_id`` is reused as the run ID.
+
+        Returns:
+            The started run.
+
+        Raises:
+            ChatServiceError: Input admission failed.
+        """
+        message_id = str(post_data.get("message_id") or uuid.uuid4())
+        payload = {**post_data, "message_id": message_id}
+        payload.setdefault("_client_message_id", message_id)
+        stream = await self.build_chat_stream(
+            username,
+            payload,
+            message_id=message_id,
+        )
+        run = self.chat_runs.get(message_id)
+        if run is None:
+            raise ChatServiceError("Chat run was not created")
+        self.unified_stream_hub.publish(
+            username,
+            run.session_id,
+            {
+                "type": "run_started",
+                "data": {
+                    "run_id": run.run_id,
+                    "input_message": run.unified_input_message,
+                },
+                "message_id": run.run_id,
+            },
+        )
+        task = asyncio.create_task(
+            self._publish_run_to_unified_stream(username, run, stream),
+            name=f"unified_run_{message_id}",
+        )
+        self._unified_publish_tasks.add(task)
+        task.add_done_callback(self._unified_publish_tasks.discard)
+        return run
+
+    async def _publish_run_to_unified_stream(
+        self,
+        username: str,
+        run: ChatRunState,
+        stream: AsyncIterator[str],
+    ) -> None:
+        """Forward one run's SSE payloads to the unified stream hub.
+
+        Args:
+            username: Trusted resource owner.
+            run: Run whose frames are being forwarded.
+            stream: Existing per-run SSE iterator.
+        """
+        saw_end = False
+        try:
+            async for chunk in stream:
+                if not chunk.startswith("data: "):
+                    continue
+                try:
+                    payload = json.loads(chunk[6:].strip())
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(payload, dict):
+                    continue
+                if payload.get("type") == "session_id":
+                    continue
+                payload.setdefault("message_id", run.run_id)
+                if payload.get("type") == "end":
+                    saw_end = True
+                self.unified_stream_hub.publish(username, run.session_id, payload)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning(
+                "Unified run publisher failed for %s",
+                run.run_id,
+                exc_info=True,
+            )
+            self.unified_stream_hub.publish(
+                username,
+                run.session_id,
+                {"type": "error", "data": str(exc), "message_id": run.run_id},
+            )
+        finally:
+            if not saw_end:
+                self.unified_stream_hub.publish(
+                    username,
+                    run.session_id,
+                    {"type": "end", "data": None, "message_id": run.run_id},
+                )
 
     async def stop_session(self, username: str, session_id: str) -> dict:
         session = await self.require_owned_chat_session(username, session_id)

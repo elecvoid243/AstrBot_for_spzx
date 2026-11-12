@@ -951,6 +951,12 @@ export const chatApi = {
   sendStreamUrl() {
     return '/api/v1/chat';
   },
+  unifiedStreamUrl() {
+    return '/api/v1/chat/stream';
+  },
+  sendMessageUrl() {
+    return '/api/v1/chat/send';
+  },
   resumeRunStreamUrl(runId: string) {
     return `/api/v1/chat/runs/${encodeURIComponent(runId)}/stream`;
   },

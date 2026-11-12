@@ -841,4 +841,122 @@ describe("unified chat stream", () => {
     streamController.close();
     messages.cleanupConnections();
   });
+
+  it("rebuilds the running set from the reconnect snapshot", async () => {
+    localStorage.setItem("chat.streamMode", "unified");
+    let streamController!: ReadableStreamDefaultController<Uint8Array>;
+    vi.mocked(fetchWithAuth).mockImplementation(async (url) => {
+      if (String(url).includes("/chat/stream")) {
+        return new Response(
+          new ReadableStream({
+            start(controller) {
+              streamController = controller;
+            },
+          }),
+          { headers: { "content-type": "text/event-stream" } },
+        );
+      }
+      return new Response(null, { status: 404 });
+    });
+    const messages = useMessages({ currentSessionId: ref("s1") });
+    messages.messagesBySession["s1"] = [];
+    messages.startUnifiedStream();
+    await vi.waitFor(() => expect(streamController).toBeDefined());
+    pushSse(streamController, { type: "stream_ready", epoch: "e1" });
+    pushSse(streamController, {
+      type: "run_started",
+      session_id: "s1",
+      message_id: "m1",
+      data: { input_message: null },
+    });
+    await vi.waitFor(() => expect(messages.isSessionRunning("s1")).toBe(true));
+
+    // Reconnect with no re-announcement: the run ended while the stream was
+    // down, so its end frame was lost. The stale marker must not survive.
+    pushSse(streamController, { type: "stream_ready", epoch: "e2" });
+    await vi.waitFor(() => expect(messages.isSessionRunning("s1")).toBe(false));
+
+    // A run that is still executing is re-announced by the connect snapshot.
+    pushSse(streamController, {
+      type: "run_started",
+      session_id: "s1",
+      message_id: "m2",
+      data: { input_message: null },
+    });
+    await vi.waitFor(() => expect(messages.isSessionRunning("s1")).toBe(true));
+    streamController.close();
+    messages.cleanupConnections();
+  });
+
+  it("carries the file change summary across a segment boundary", async () => {
+    localStorage.setItem("chat.streamMode", "unified");
+    let streamController!: ReadableStreamDefaultController<Uint8Array>;
+    vi.mocked(fetchWithAuth).mockImplementation(async (url) => {
+      if (String(url).includes("/chat/stream")) {
+        return new Response(
+          new ReadableStream({
+            start(controller) {
+              streamController = controller;
+            },
+          }),
+          { headers: { "content-type": "text/event-stream" } },
+        );
+      }
+      return new Response(null, { status: 404 });
+    });
+    const messages = useMessages({ currentSessionId: ref("s1") });
+    messages.messagesBySession["s1"] = [];
+    messages.startUnifiedStream();
+    await vi.waitFor(() => expect(streamController).toBeDefined());
+    pushSse(streamController, { type: "stream_ready", epoch: "e1" });
+    pushSse(streamController, {
+      type: "run_started",
+      session_id: "s1",
+      message_id: "m1",
+      data: { input_message: null },
+    });
+    await vi.waitFor(() =>
+      expect(messages.messagesBySession["s1"].length).toBeGreaterThan(0),
+    );
+    pushSse(streamController, {
+      type: "file_changes",
+      session_id: "s1",
+      message_id: "m1",
+      data: { files: [{ path: "a.py", kind: "edit", adds: 1, dels: 0 }] },
+    });
+    await vi.waitFor(() => {
+      const records = messages.messagesBySession["s1"];
+      expect(
+        records[records.length - 1].content.fileChangeSummary?.length,
+      ).toBe(1);
+    });
+
+    pushSse(streamController, {
+      type: "message_segment",
+      session_id: "s1",
+      message_id: "m1",
+      data: {
+        segment_id: "seg-2",
+        content: {
+          type: "bot",
+          message: [{ type: "plain", text: "second" }],
+        },
+        previous: {
+          id: 9001,
+          content: { type: "bot", message: [{ type: "plain", text: "first" }] },
+        },
+        preceding_plain_text: "",
+      },
+    });
+    await vi.waitFor(() => {
+      const records = messages.messagesBySession["s1"];
+      const last = records[records.length - 1];
+      expect(last.content.fileChangeSummary?.length).toBe(1);
+      expect(
+        records[records.length - 2]?.content?.fileChangeSummary,
+      ).toBeUndefined();
+    });
+    streamController.close();
+    messages.cleanupConnections();
+  });
 });

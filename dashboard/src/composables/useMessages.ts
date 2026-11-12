@@ -1709,6 +1709,14 @@ export function useMessages(options: UseMessagesOptions) {
             }
             unifiedEpoch = epoch;
             unifiedReconnectAttempt = 0;
+            // A reconnect is authoritative: the server re-announces every
+            // live run right after this frame. Anything still marked running
+            // but not re-announced is a run whose terminal frame was lost in
+            // the disconnect window; dropping the markers here keeps the
+            // sidebar from spinning forever.
+            for (const sessionId of Object.keys(runningBySession)) {
+              delete runningBySession[sessionId];
+            }
             return;
           }
           if (payload?.session_id && payload?.seq != null) {
@@ -2928,6 +2936,14 @@ export function useMessages(options: UseMessagesOptions) {
     if (msgType === "message_segment" && connection && sessionId) {
       const records = messagesBySession[sessionId] || [];
       const oldIndex = records.indexOf(botRecord);
+      // The end-of-turn file change summary is turn-scoped, but the stream
+      // may deliver it before the final segment boundary. History persists it
+      // on the last record, so carry it across the boundary instead of
+      // leaving it on the segment above (which reads as "summary at the
+      // top" once the turn continues in a new bubble).
+      const carriedFileChanges = messageContent(botRecord).fileChangeSummary;
+      const carriedFileChangeRunId =
+        messageContent(botRecord).fileChangeRunId;
       // Retain the reactive handle for subsequent chunks. History may already
       // contain the closed segment; replace it once at the confirmed boundary.
       if (oldIndex >= 0) records.splice(oldIndex, 1);
@@ -2974,6 +2990,10 @@ export function useMessages(options: UseMessagesOptions) {
       botRecord.content = normalizeHistoryRecord({
         content: data.content || { type: "bot", message: [] },
       }).content;
+      if (carriedFileChanges?.length) {
+        botRecord.content.fileChangeSummary = carriedFileChanges;
+        botRecord.content.fileChangeRunId = carriedFileChangeRunId;
+      }
       botRecord.content.isLoading = botRecord.content.message.length === 0;
       let userIndex = boundaryUser
         ? records.indexOf(boundaryUser)

@@ -190,7 +190,15 @@ async def unified_chat_stream(
     )
     snapshot_sessions: list[str] = []
     for session_id, payload in service.unified_initial_frames(auth.username):
-        if session_id in connection.replayed_sessions:
+        # A cursor replay is not guaranteed to contain the original
+        # run_started (the cursor can sit past it after a lost terminal
+        # frame). Re-announce every live run so the client can rebuild its
+        # running set from this snapshot; only the heavier run_snapshot is
+        # skipped when the replay already covered the session.
+        if (
+            session_id in connection.replayed_sessions
+            and payload.get("type") != "run_started"
+        ):
             continue
         service.unified_stream_hub.publish_to(connection, session_id, payload)
         if session_id not in snapshot_sessions:

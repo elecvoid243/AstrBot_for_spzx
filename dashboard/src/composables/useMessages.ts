@@ -173,6 +173,28 @@ export function resolveChatStreamMode(search?: string): "unified" | "legacy" {
   return import.meta.env.MODE === "test" ? "legacy" : "unified";
 }
 
+/** Frames the unified stream must apply immediately, ahead of buffered text. */
+const UNIFIED_CONTROL_TYPES = new Set([
+  "stream_ready",
+  "run_started",
+  "end",
+  "error",
+  "interactive_choice",
+  "interactive_choice_resolved",
+  "goal_state_changed",
+  "shell_sessions_changed",
+  "chat_session_created",
+  "session_state",
+  "resync_required",
+]);
+
+/** Chain types that must never be text-merged with a neighbour. */
+const UNIFIED_NO_MERGE_CHAINS = new Set([
+  "tool_call",
+  "interactive_choice",
+  "context_compression",
+]);
+
 export interface MessagePart {
   type: string;
   text?: string;
@@ -1595,6 +1617,75 @@ export function useMessages(options: UseMessagesOptions) {
     unifiedAbort = abort;
     void (async () => {
       let frameChain: Promise<void> = Promise.resolve();
+      // Token frames are buffered for one animation frame and merged before
+      // they reach the message list. Without this the renderer re-parses the
+      // growing markdown once per SSE frame, which is O(n²) over a reply.
+      // Control frames flush the buffer first (order matters) and then run
+      // immediately so stop/choice/end never wait behind text.
+      let pendingFrames: any[] = [];
+      let flushRaf: number | null = null;
+      let flushTimer: ReturnType<typeof setTimeout> | null = null;
+      const cancelFlush = () => {
+        if (flushRaf != null) {
+          cancelAnimationFrame(flushRaf);
+          flushRaf = null;
+        }
+        if (flushTimer != null) {
+          clearTimeout(flushTimer);
+          flushTimer = null;
+        }
+      };
+      const chainFrame = (payload: any) => {
+        frameChain = frameChain
+          .then(() => {
+            if (abort.signal.aborted) return;
+            return handleUnifiedFrame(payload, abort);
+          })
+          .catch((error) => {
+            console.error("Unified chat frame failed:", error);
+          });
+      };
+      const flushFrames = () => {
+        cancelFlush();
+        if (!pendingFrames.length) return;
+        const batch = pendingFrames;
+        pendingFrames = [];
+        const merged: any[] = [];
+        for (const payload of batch) {
+          const last = merged[merged.length - 1];
+          if (
+            last &&
+            payload?.type === "plain" &&
+            last.type === "plain" &&
+            payload.session_id === last.session_id &&
+            payload.message_id === last.message_id &&
+            (payload.chain_type || "") === (last.chain_type || "") &&
+            typeof payload.data === "string" &&
+            typeof last.data === "string" &&
+            !UNIFIED_NO_MERGE_CHAINS.has(payload.chain_type)
+          ) {
+            last.data += payload.data;
+            last.seq = payload.seq;
+            continue;
+          }
+          merged.push({ ...payload });
+        }
+        for (const payload of merged) chainFrame(payload);
+      };
+      const scheduleFlush = () => {
+        if (flushRaf != null || flushTimer != null) return;
+        if (typeof requestAnimationFrame === "function") {
+          flushRaf = requestAnimationFrame(() => {
+            flushRaf = null;
+            flushFrames();
+          });
+        }
+        // Background tabs never run rAF; keep the stream flowing anyway.
+        flushTimer = setTimeout(() => {
+          flushTimer = null;
+          flushFrames();
+        }, 100);
+      };
       try {
         const response = await fetchWithAuth(chatApi.unifiedStreamUrl(), {
           method: "POST",
@@ -1627,20 +1718,21 @@ export function useMessages(options: UseMessagesOptions) {
               unifiedSeqBySession[sessionId] = seq;
             }
           }
-          frameChain = frameChain
-            .then(() => {
-              if (abort.signal.aborted) return;
-              return handleUnifiedFrame(payload, abort);
-            })
-            .catch((error) => {
-              console.error("Unified chat frame failed:", error);
-            });
+          if (UNIFIED_CONTROL_TYPES.has(String(payload?.type || ""))) {
+            flushFrames();
+            chainFrame(payload);
+            return;
+          }
+          pendingFrames.push(payload);
+          scheduleFlush();
         });
+        flushFrames();
         await frameChain;
       } catch (error) {
         if (abort.signal.aborted) return;
         console.error("Unified chat stream failed:", error);
       } finally {
+        flushFrames();
         await frameChain.catch(() => {});
         if (unifiedAbort !== abort) return;
         unifiedAbort = null;

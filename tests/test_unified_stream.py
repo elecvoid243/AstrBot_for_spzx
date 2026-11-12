@@ -1,11 +1,13 @@
 import asyncio
 import json
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 
 from astrbot.dashboard.api.chat import unified_send_chat
+from astrbot.dashboard.services import unified_stream
 from astrbot.dashboard.services.chat_service import (
     ChatRunState,
     ChatService,
@@ -60,7 +62,8 @@ async def test_unified_hub_sequences_frames_per_session_and_account():
         "session_id": "s1",
         "seq": 1,
     }
-    assert bob.queue.qsize() == 0
+    assert not bob.control_queues
+    assert not bob.data_queues
 
     hub.publish(
         "alice",
@@ -73,6 +76,204 @@ async def test_unified_hub_sequences_frames_per_session_and_account():
     hub.disconnect(bob)
     await alice_stream.aclose()
     await bob_stream.aclose()
+
+
+def test_plain_frames_merge_and_structured_frames_do_not():
+    hub = UnifiedStreamHub()
+    connection = hub.connect("alice")
+
+    hub.publish("alice", "s1", {"type": "plain", "data": "a", "message_id": "m1"})
+    hub.publish("alice", "s1", {"type": "plain", "data": "b", "message_id": "m1"})
+    hub.publish(
+        "alice",
+        "s1",
+        {"type": "plain", "data": "c", "chain_type": "reasoning", "message_id": "m1"},
+    )
+    hub.publish(
+        "alice",
+        "s1",
+        {"type": "plain", "data": "d", "chain_type": "tool_call", "message_id": "m1"},
+    )
+
+    queue = connection.data_queues["s1"]
+    assert [frame.payload["data"] for frame in queue] == ["ab", "c", "d"]
+    assert [frame.seq for frame in queue] == [2, 3, 4]
+    assert len(hub.rings["s1"].frames) == 4
+
+
+@pytest.mark.asyncio
+async def test_control_priority_keeps_terminal_after_data():
+    hub = UnifiedStreamHub()
+    connection = hub.connect("alice")
+    stream = hub.stream(connection)
+    assert _decode(await anext(stream))["type"] == "stream_ready"
+
+    hub.publish(
+        "alice",
+        "s1",
+        {"type": "plain", "data": "token", "message_id": "m1"},
+    )
+    hub.publish(
+        "alice",
+        "s1",
+        {"type": "interactive_choice", "data": {}, "message_id": "m1"},
+    )
+    hub.publish("alice", "s1", {"type": "end", "data": None, "message_id": "m1"})
+
+    frames = [_decode(await anext(stream)) for _ in range(3)]
+    assert [frame["type"] for frame in frames] == [
+        "interactive_choice",
+        "plain",
+        "end",
+    ]
+    assert [frame["seq"] for frame in frames] == [2, 1, 3]
+    hub.disconnect(connection)
+    await stream.aclose()
+
+
+def test_data_overflow_drops_oldest_and_emits_one_resync(monkeypatch):
+    monkeypatch.setattr(unified_stream, "_DATA_MAX_FRAMES", 2)
+    monkeypatch.setattr(unified_stream, "_DATA_MAX_BYTES", 10_000_000)
+    hub = UnifiedStreamHub()
+    connection = hub.connect("alice")
+
+    for index in range(4):
+        hub.publish(
+            "alice",
+            "s1",
+            {"type": "plain", "data": f"t{index}", "message_id": f"m{index}"},
+        )
+
+    queue = connection.data_queues["s1"]
+    assert [frame.payload["message_id"] for frame in queue] == ["m2", "m3"]
+    assert connection.dropped["s1"] == 2
+    assert len(connection.control_queues["s1"]) == 1
+    resync = connection.control_queues["s1"][0].payload
+    assert resync["type"] == "resync_required"
+    assert resync["from_seq"] == 1
+
+    hub.publish(
+        "alice",
+        "s1",
+        {"type": "plain", "data": "t4", "message_id": "m4"},
+    )
+    assert connection.dropped["s1"] == 3
+    assert len(connection.control_queues["s1"]) == 1
+
+    hub._next_batch(connection)
+    assert not connection.data_queues.get("s1")
+
+    for index in range(5, 8):
+        hub.publish(
+            "alice",
+            "s1",
+            {"type": "plain", "data": f"t{index}", "message_id": f"m{index}"},
+        )
+    assert connection.dropped["s1"] == 4
+    assert len(connection.control_queues["s1"]) == 1
+    assert connection.control_queues["s1"][0].payload["from_seq"] == 6
+
+
+def test_ring_buffer_replay_and_snapshot_fallback(monkeypatch):
+    hub = UnifiedStreamHub()
+    for index in range(3):
+        hub.publish(
+            "alice",
+            "s1",
+            {"type": "plain", "data": f"t{index}", "message_id": f"m{index}"},
+        )
+    assert hub.rings["s1"].min_seq == 1
+
+    replayed = hub.connect("alice", hub.epoch, {"s1": 1})
+    assert "s1" in replayed.replayed_sessions
+    assert [frame.seq for frame in replayed.data_queues["s1"]] == [2, 3]
+
+    fallback = hub.connect("alice", hub.epoch, {"s1": 0})
+    assert "s1" not in fallback.replayed_sessions
+    assert not fallback.data_queues
+
+    stale_epoch = hub.connect("alice", "stale", {"s1": 1})
+    assert "s1" not in stale_epoch.replayed_sessions
+    assert not stale_epoch.data_queues
+
+    monkeypatch.setattr(unified_stream, "_RING_MAX_FRAMES", 3)
+    hub.publish(
+        "alice",
+        "s1",
+        {"type": "plain", "data": "t3", "message_id": "m3"},
+    )
+    assert hub.rings["s1"].min_seq == 2
+
+    stale = hub.connect("alice", hub.epoch, {"s1": 1})
+    assert "s1" not in stale.replayed_sessions
+
+    covered = hub.connect("alice", hub.epoch, {"s1": 2})
+    assert "s1" in covered.replayed_sessions
+    assert [frame.seq for frame in covered.data_queues["s1"]] == [3, 4]
+
+
+def test_publish_to_is_stored_for_replay():
+    hub = UnifiedStreamHub()
+    first = hub.connect("alice")
+    hub.publish(
+        "alice",
+        "s1",
+        {"type": "plain", "data": "before", "message_id": "m1"},
+    )
+    hub.publish_to(
+        first,
+        "s1",
+        {"type": "run_snapshot", "data": {"content": {}}, "message_id": "m1"},
+    )
+    assert hub.rings["s1"].min_seq == 1
+
+    replayed = hub.connect("alice", hub.epoch, {"s1": 1})
+    assert "s1" in replayed.replayed_sessions
+    assert [frame.seq for frame in replayed.data_queues["s1"]] == [2]
+    assert replayed.data_queues["s1"][0].payload["type"] == "run_snapshot"
+
+
+def test_ring_buffer_evicts_by_bytes_and_age(monkeypatch):
+    monkeypatch.setattr(unified_stream, "_RING_MAX_BYTES", 250)
+    hub = UnifiedStreamHub()
+    for index in range(3):
+        hub.publish(
+            "alice",
+            "s1",
+            {"type": "plain", "data": "x" * 40, "message_id": f"m{index}"},
+        )
+    ring = hub.rings["s1"]
+    assert ring.bytes <= 250
+    assert ring.min_seq is not None and ring.min_seq > 1
+
+    monkeypatch.setattr(unified_stream, "_RING_MAX_AGE_SECONDS", 0.01)
+    aged = UnifiedStreamHub()
+    aged.publish(
+        "alice",
+        "s2",
+        {"type": "plain", "data": "old", "message_id": "m1"},
+    )
+    time.sleep(0.02)
+    aged.publish(
+        "alice",
+        "s2",
+        {"type": "plain", "data": "new", "message_id": "m2"},
+    )
+    assert aged.rings["s2"].min_seq == 2
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_when_idle(monkeypatch):
+    monkeypatch.setattr(unified_stream, "_HEARTBEAT_SECONDS", 0.01)
+    hub = UnifiedStreamHub()
+    connection = hub.connect("alice")
+    stream = hub.stream(connection)
+    assert _decode(await anext(stream))["type"] == "stream_ready"
+    assert (
+        await asyncio.wait_for(anext(stream), timeout=1) == unified_stream.SSE_HEARTBEAT
+    )
+    hub.disconnect(connection)
+    await stream.aclose()
 
 
 @pytest.mark.asyncio
@@ -226,10 +427,13 @@ async def test_six_fake_runs_share_one_unified_connection():
             {"type": "end", "data": None, "message_id": run.run_id},
         )
 
+    stream = hub.stream(connection)
+    ready = _decode(await anext(stream))
+    assert ready["type"] == "stream_ready"
+
     await asyncio.gather(*(publish_run(run) for run in runs))
     assert len(hub.connections) == 1
-    assert connection.queue.qsize() == 18
-    frames = [connection.queue.get_nowait() for _ in range(18)]
+    frames = [_decode(await anext(stream)) for _ in range(18)]
     assert {frame["session_id"] for frame in frames} == {
         f"s{index}" for index in range(6)
     }
@@ -244,6 +448,8 @@ async def test_six_fake_runs_share_one_unified_connection():
             "end",
         ]
         assert all(frame["message_id"] == f"run-{index}" for frame in session_frames)
+    hub.disconnect(connection)
+    await stream.aclose()
 
 
 @pytest.mark.asyncio
@@ -256,18 +462,24 @@ async def test_synthetic_run_registration_broadcasts_run_started():
     service.chat_runs_by_session = {}
     service._consume_chat_run = AsyncMock()
 
+    stream = hub.stream(connection)
+    ready = _decode(await anext(stream))
+    assert ready["type"] == "stream_ready"
+
     await ChatService.register_synthetic_chat_run(
         service,
         "s-synth",
         "synth-1",
         "alice",
     )
-    frame = connection.queue.get_nowait()
+    frame = _decode(await anext(stream))
     assert frame["type"] == "run_started"
     assert frame["session_id"] == "s-synth"
     assert frame["message_id"] == "synth-1"
     assert frame["seq"] == 1
     assert frame["data"]["input_message"] is None
+    hub.disconnect(connection)
+    await stream.aclose()
 
 
 @pytest.mark.asyncio
@@ -289,6 +501,25 @@ async def test_start_unified_chat_run_propagates_admission_error():
             "alice",
             {"message_id": "run-1", "session_id": "s1", "message": "hi"},
         )
+
+
+@pytest.mark.asyncio
+async def test_unified_session_state_packages_goal_and_shell():
+    service = ChatService.__new__(ChatService)
+
+    async def fake_goal(username, session_id):
+        return {"goal": {"text": "goal"}}
+
+    async def fake_shell(username, session_id):
+        return {"sessions": [{"id": "shell"}]}
+
+    service.get_session_goal = fake_goal
+    service.get_session_shell_sessions = fake_shell
+    frame = await service.unified_session_state("alice", "s1")
+    assert frame == {
+        "type": "session_state",
+        "data": {"goal": {"text": "goal"}, "sessions": [{"id": "shell"}]},
+    }
 
 
 @pytest.mark.asyncio

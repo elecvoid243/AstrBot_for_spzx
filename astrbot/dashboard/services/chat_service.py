@@ -4124,6 +4124,30 @@ class ChatService:
             )
         return frames
 
+    async def unified_session_state(
+        self,
+        username: str,
+        session_id: str,
+    ) -> dict:
+        """Build the goal/shell state used by a reconnect snapshot.
+
+        Args:
+            username: Trusted account that owns the session.
+            session_id: Chat session identifier.
+
+        Returns:
+            A ``session_state`` frame payload.
+        """
+        goal = await self.get_session_goal(username, session_id)
+        shell = await self.get_session_shell_sessions(username, session_id)
+        return {
+            "type": "session_state",
+            "data": {
+                "goal": goal.get("goal"),
+                "sessions": shell.get("sessions", []),
+            },
+        }
+
     async def start_unified_chat_run(
         self,
         username: str,

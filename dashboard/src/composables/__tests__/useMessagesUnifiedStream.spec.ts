@@ -139,6 +139,7 @@ describe("unified chat stream", () => {
     expect(exchange.userRecord.id).toBe(42);
     expect(messages.isSessionRunning("s1")).toBe(false);
     streamController.close();
+    messages.cleanupConnections();
   });
 
   it("settles the optimistic bubble when the send POST is rejected", async () => {
@@ -277,5 +278,154 @@ describe("unified chat stream", () => {
     expect(messages.messagesBySession["s3"]).toBeUndefined();
     expect(onStreamEnd).toHaveBeenCalledWith("s3");
     streamController.close();
+    messages.cleanupConnections();
+  });
+
+  it("reconnects with the last cursors and applies replayed frames", async () => {
+    localStorage.setItem("chat.streamMode", "unified");
+    const controllers: ReadableStreamDefaultController<Uint8Array>[] = [];
+    const bodies: any[] = [];
+    vi.mocked(fetchWithAuth).mockImplementation(async (url, init) => {
+      if (String(url).includes("/chat/stream")) {
+        bodies.push(
+          JSON.parse(String((init as RequestInit | undefined)?.body || "{}")),
+        );
+        return new Response(
+          new ReadableStream({
+            start(controller) {
+              controllers.push(controller);
+            },
+          }),
+          { headers: { "content-type": "text/event-stream" } },
+        );
+      }
+      return new Response(null, { status: 404 });
+    });
+    const messages = useMessages({ currentSessionId: ref("s1") });
+    messages.messagesBySession["s1"] = [];
+    messages.startUnifiedStream();
+    await vi.waitFor(() => expect(controllers).toHaveLength(1));
+    pushSse(controllers[0], { type: "stream_ready", epoch: "e1" });
+    pushSse(controllers[0], {
+      type: "run_started",
+      session_id: "s1",
+      seq: 1,
+      message_id: "m1",
+      data: { run_id: "m1" },
+    });
+    pushSse(controllers[0], {
+      type: "plain",
+      session_id: "s1",
+      seq: 2,
+      message_id: "m1",
+      data: "hello",
+    });
+    await vi.waitFor(() =>
+      expect(plainText(messages.messagesBySession["s1"][0])).toContain("hello"),
+    );
+
+    controllers[0].close();
+    await vi.waitFor(() => expect(controllers).toHaveLength(2), {
+      timeout: 3000,
+    });
+    expect(bodies[1]).toEqual({ epoch: "e1", cursors: { s1: 2 } });
+
+    pushSse(controllers[1], { type: "stream_ready", epoch: "e1" });
+    pushSse(controllers[1], {
+      type: "plain",
+      session_id: "s1",
+      seq: 3,
+      message_id: "m1",
+      data: " world",
+    });
+    pushSse(controllers[1], {
+      type: "end",
+      session_id: "s1",
+      seq: 4,
+      message_id: "m1",
+      data: { status: "completed" },
+    });
+    await vi.waitFor(() =>
+      expect(plainText(messages.messagesBySession["s1"][0])).toContain(
+        "hello world",
+      ),
+    );
+    expect(messages.isSessionRunning("s1")).toBe(false);
+    messages.cleanupConnections();
+  });
+
+  it("reconnects when the server asks for a resync", async () => {
+    localStorage.setItem("chat.streamMode", "unified");
+    const controllers: ReadableStreamDefaultController<Uint8Array>[] = [];
+    const bodies: any[] = [];
+    vi.mocked(fetchWithAuth).mockImplementation(async (url, init) => {
+      if (String(url).includes("/chat/stream")) {
+        bodies.push(
+          JSON.parse(String((init as RequestInit | undefined)?.body || "{}")),
+        );
+        return new Response(
+          new ReadableStream({
+            start(controller) {
+              controllers.push(controller);
+            },
+          }),
+          { headers: { "content-type": "text/event-stream" } },
+        );
+      }
+      return new Response(null, { status: 404 });
+    });
+    const messages = useMessages({ currentSessionId: ref("s1") });
+    messages.startUnifiedStream();
+    await vi.waitFor(() => expect(controllers).toHaveLength(1));
+    pushSse(controllers[0], { type: "stream_ready", epoch: "e1" });
+    pushSse(controllers[0], {
+      type: "resync_required",
+      session_id: "s1",
+      from_seq: 5,
+    });
+    await vi.waitFor(() => expect(controllers).toHaveLength(2), {
+      timeout: 2000,
+    });
+    expect(bodies[1]).toEqual({ epoch: "e1", cursors: {} });
+    messages.cleanupConnections();
+  });
+
+  it("applies goal and shell state from the reconnect snapshot", async () => {
+    localStorage.setItem("chat.streamMode", "unified");
+    let streamController!: ReadableStreamDefaultController<Uint8Array>;
+    vi.mocked(fetchWithAuth).mockImplementation(async (url) => {
+      if (String(url).includes("/chat/stream")) {
+        return new Response(
+          new ReadableStream({
+            start(controller) {
+              streamController = controller;
+            },
+          }),
+          { headers: { "content-type": "text/event-stream" } },
+        );
+      }
+      return new Response(null, { status: 404 });
+    });
+    const onGoal = vi.fn();
+    const onShell = vi.fn();
+    const messages = useMessages({
+      currentSessionId: ref("s1"),
+      onGoalStateChanged: onGoal,
+      onShellSessionsChanged: onShell,
+    });
+    messages.startUnifiedStream();
+    await vi.waitFor(() => expect(streamController).toBeDefined());
+    pushSse(streamController, { type: "stream_ready", epoch: "e1" });
+    pushSse(streamController, {
+      type: "session_state",
+      session_id: "s1",
+      seq: 1,
+      data: { goal: { text: "goal" }, sessions: [{ id: "shell" }] },
+    });
+    await vi.waitFor(() =>
+      expect(onGoal).toHaveBeenCalledWith("s1", { text: "goal" }),
+    );
+    expect(onShell).toHaveBeenCalledWith("s1", [{ id: "shell" }]);
+    messages.cleanupConnections();
   });
 });

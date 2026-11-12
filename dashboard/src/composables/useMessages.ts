@@ -469,6 +469,9 @@ export function useMessages(options: UseMessagesOptions) {
   let unifiedAbort: AbortController | null = null;
   let unifiedStreamStarted = false;
   let unifiedEpoch = "";
+  let unifiedReconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  let unifiedReconnectAttempt = 0;
+  let unifiedStreamStopped = false;
   const chatWebSockets: Record<string, WebSocket> = {};
   const closingChatWebSockets = new WeakSet<WebSocket>();
   const attachmentBlobCache = new Map<string, Promise<string>>();
@@ -1203,7 +1206,12 @@ export function useMessages(options: UseMessagesOptions) {
     const run = activeRuns.find(
       (candidate) => candidate.run_id && candidate.llm_checkpoint_id,
     );
-    if (!run || isSessionRunning(sessionId)) return;
+    if (!run) return;
+    if (unifiedMode) {
+      if (activeConnections[run.run_id]) return;
+    } else if (isSessionRunning(sessionId)) {
+      return;
+    }
 
     const checkpointId = run.llm_checkpoint_id || null;
     const records = (messagesBySession[sessionId] || []).filter((record) => {
@@ -1227,6 +1235,20 @@ export function useMessages(options: UseMessagesOptions) {
     const restoredRecords = messagesBySession[sessionId];
     const reactiveBotRecord = restoredRecords[restoredRecords.length - 1];
     await resolveRecordMedia([reactiveBotRecord]);
+    if (unifiedMode) {
+      activeConnections[run.run_id] = {
+        sessionId,
+        messageId: run.run_id,
+        runId: run.run_id,
+        transport: "sse",
+        botRecord: reactiveBotRecord,
+        botVisible: true,
+        visibleRecords: restoredRecords,
+        completed: false,
+      };
+      markRunRunning(sessionId, run.run_id);
+      return;
+    }
     startResumeStream(sessionId, run.run_id, reactiveBotRecord);
   }
 
@@ -1418,9 +1440,19 @@ export function useMessages(options: UseMessagesOptions) {
     if (!payload || typeof payload !== "object") return;
     const sessionId = String(payload.session_id || "");
     if (!sessionId) return;
+    const msgType = String(payload.type || payload.t || "");
+    if (msgType === "session_state") {
+      const data = payload.data || {};
+      options.onGoalStateChanged?.(sessionId, data.goal ?? null);
+      options.onShellSessionsChanged?.(sessionId, data.sessions ?? []);
+      return;
+    }
+    if (msgType === "resync_required") {
+      scheduleUnifiedReconnect(100);
+      return;
+    }
     const messageId = String(payload.message_id || payload.data?.run_id || "");
     if (!messageId) return;
-    const msgType = String(payload.type || payload.t || "");
 
     if (msgType === "run_started") {
       markRunRunning(sessionId, messageId);
@@ -1463,8 +1495,24 @@ export function useMessages(options: UseMessagesOptions) {
     }
   }
 
+  function scheduleUnifiedReconnect(delay = -1) {
+    if (!unifiedMode || unifiedStreamStopped) return;
+    if (unifiedReconnectTimer) return;
+    const wait =
+      delay >= 0 ? delay : Math.min(500 * 2 ** unifiedReconnectAttempt, 10000);
+    unifiedReconnectAttempt += 1;
+    unifiedReconnectTimer = setTimeout(() => {
+      unifiedReconnectTimer = null;
+      if (unifiedStreamStopped) return;
+      unifiedAbort?.abort();
+      unifiedAbort = null;
+      unifiedStreamStarted = false;
+      startUnifiedStream();
+    }, wait);
+  }
+
   function startUnifiedStream() {
-    if (!unifiedMode || unifiedStreamStarted) return;
+    if (!unifiedMode || unifiedStreamStarted || unifiedStreamStopped) return;
     unifiedStreamStarted = true;
     const abort = new AbortController();
     unifiedAbort = abort;
@@ -1484,24 +1532,45 @@ export function useMessages(options: UseMessagesOptions) {
         }
         await readSseStream(response.body, (payload) => {
           if (payload?.type === "stream_ready") {
-            unifiedEpoch = String(payload.epoch || "");
+            const epoch = String(payload.epoch || "");
+            if (unifiedEpoch && epoch && epoch !== unifiedEpoch) {
+              Object.keys(unifiedSeqBySession).forEach((sessionId) => {
+                delete unifiedSeqBySession[sessionId];
+              });
+            }
+            unifiedEpoch = epoch;
+            unifiedReconnectAttempt = 0;
             return;
           }
           if (payload?.session_id && payload?.seq != null) {
-            unifiedSeqBySession[String(payload.session_id)] = Number(
-              payload.seq,
-            );
+            const sessionId = String(payload.session_id);
+            const seq = Number(payload.seq);
+            if (seq > (unifiedSeqBySession[sessionId] || 0)) {
+              unifiedSeqBySession[sessionId] = seq;
+            }
           }
           handleUnifiedFrame(payload);
         });
       } catch (error) {
         if (abort.signal.aborted) return;
         console.error("Unified chat stream failed:", error);
+      } finally {
+        if (unifiedAbort !== abort) return;
+        unifiedAbort = null;
+        if (!unifiedStreamStopped) {
+          unifiedStreamStarted = false;
+          scheduleUnifiedReconnect();
+        }
       }
     })();
   }
 
   function stopUnifiedStream() {
+    unifiedStreamStopped = true;
+    if (unifiedReconnectTimer) {
+      clearTimeout(unifiedReconnectTimer);
+      unifiedReconnectTimer = null;
+    }
     unifiedAbort?.abort();
     unifiedAbort = null;
     unifiedStreamStarted = false;

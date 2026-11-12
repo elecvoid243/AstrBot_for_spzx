@@ -188,8 +188,24 @@ async def unified_chat_stream(
         str(body.get("epoch") or ""),
         cursors if isinstance(cursors, dict) else {},
     )
+    snapshot_sessions: list[str] = []
     for session_id, payload in service.unified_initial_frames(auth.username):
+        if session_id in connection.replayed_sessions:
+            continue
         service.unified_stream_hub.publish_to(connection, session_id, payload)
+        if session_id not in snapshot_sessions:
+            snapshot_sessions.append(session_id)
+    for session_id in snapshot_sessions:
+        try:
+            state = await service.unified_session_state(auth.username, session_id)
+        except Exception:
+            logger.warning(
+                "Failed to build unified session state for %s",
+                session_id,
+                exc_info=True,
+            )
+            continue
+        service.unified_stream_hub.publish_to(connection, session_id, state)
     return StreamingResponse(
         service.unified_stream_hub.stream(connection),
         media_type="text/event-stream",

@@ -644,4 +644,50 @@ describe("unified chat stream", () => {
     streamController.close();
     messages.cleanupConnections();
   });
+
+  it("ignores a persisted websocket transport in unified mode", async () => {
+    localStorage.setItem("chat.streamMode", "unified");
+    const socket = vi
+      .spyOn(globalThis, "WebSocket")
+      .mockImplementation(() => {
+        throw new Error("unified mode must not open a websocket");
+      });
+    vi.mocked(fetchWithAuth).mockImplementation(async (url) => {
+      if (String(url).includes("/chat/send")) {
+        return new Response(
+          JSON.stringify({
+            status: "ok",
+            data: { run_id: "m1", input_message_id: 1 },
+          }),
+          { headers: { "content-type": "application/json" } },
+        );
+      }
+      return new Response(null, { status: 404 });
+    });
+    const messages = useMessages({ currentSessionId: ref("s1") });
+    messages.messagesBySession["s1"] = [];
+    const parts = [{ type: "plain" as const, text: "hello" }];
+    const exchange = messages.createLocalExchange({
+      sessionId: "s1",
+      messageId: "m1",
+      parts,
+    });
+    messages.sendMessageStream({
+      sessionId: "s1",
+      messageId: "m1",
+      parts,
+      transport: "websocket",
+      ...exchange,
+    });
+
+    await vi.waitFor(() =>
+      expect(fetchWithAuth).toHaveBeenCalledWith(
+        "/api/v1/chat/send",
+        expect.anything(),
+      ),
+    );
+    expect(socket).not.toHaveBeenCalled();
+    socket.mockRestore();
+    messages.cleanupConnections();
+  });
 });

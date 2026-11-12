@@ -602,6 +602,7 @@
               <v-list-item-title>{{ tm('remoteAccess.title') }}</v-list-item-title>
             </v-list-item>
             <v-menu
+              v-if="!unifiedStreamMode"
               location="end"
               offset="8"
               :open-on-hover="!isTouchDevice"
@@ -1383,6 +1384,7 @@ import {
 import { resolveSessionUmo } from "@/utils/resolveSessionUmo";
 import {
   messageBlocks as buildMessageBlocks,
+  resolveChatStreamMode,
   useMessages,
   type ChatRecord,
   type ChatThread,
@@ -2307,8 +2309,13 @@ const transportStorageKey = `chat.transportMode:${
 const storedTransportMode =
   localStorage.getItem(transportStorageKey) ??
   (!isOrdinaryUser.value ? localStorage.getItem("chat.transportMode") : null);
+// Unified stream owns the transport: the WS option is hidden and a stale
+// persisted "websocket" must not open a second connection next to it.
+const unifiedStreamMode = resolveChatStreamMode() === "unified";
 const transportMode = ref<TransportMode>(
-  storedTransportMode === "websocket" ? "websocket" : "sse",
+  !unifiedStreamMode && storedTransportMode === "websocket"
+    ? "websocket"
+    : "sse",
 );
 
 const pointerMediaQuery = window.matchMedia("(pointer: coarse)");
@@ -2321,13 +2328,19 @@ onBeforeUnmount(() => {
   pointerMediaQuery.removeEventListener("change", handlePointerChange);
 });
 
-const transportOptions: Array<{ value: TransportMode; labelKey: string }> = [
-  { value: "sse", labelKey: "transport.sse" },
-  { value: "websocket", labelKey: "transport.websocket" },
-];
+const transportOptions = computed<
+  Array<{ value: TransportMode; labelKey: string }>
+>(() =>
+  unifiedStreamMode
+    ? [{ value: "sse", labelKey: "transport.sse" }]
+    : [
+        { value: "sse", labelKey: "transport.sse" },
+        { value: "websocket", labelKey: "transport.websocket" },
+      ],
+);
 const currentTransportLabel = computed(() =>
   tm(
-    transportOptions.find((item) => item.value === transportMode.value)
+    transportOptions.value.find((item) => item.value === transportMode.value)
       ?.labelKey || "transport.sse",
   ),
 );

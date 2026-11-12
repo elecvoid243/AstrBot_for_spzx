@@ -144,6 +144,35 @@ export function buildChatRequestFlags(enableStreaming = true) {
   };
 }
 
+/**
+ * Resolve the chat transport mode for this page load.
+ *
+ * Query param wins over the stored preference so `?stream=legacy` can
+ * diagnose a broken unified stream without editing localStorage. Tests
+ * default to legacy so the existing per-send SSE specs keep their
+ * transport; unified specs opt in explicitly.
+ *
+ * Args:
+ *   search: Location search string; defaults to the current page URL. Kept
+ *     injectable because jsdom cannot navigate between query strings.
+ *
+ * Returns:
+ *   "unified" for the single-stream transport, "legacy" for per-send streams.
+ */
+export function resolveChatStreamMode(search?: string): "unified" | "legacy" {
+  try {
+    const query = new URLSearchParams(search ?? window.location.search).get(
+      "stream",
+    );
+    if (query === "legacy" || query === "unified") return query;
+    const stored = localStorage.getItem("chat.streamMode");
+    if (stored === "legacy" || stored === "unified") return stored;
+  } catch {
+    // Ignore storage/URL failures and fall through to the default.
+  }
+  return import.meta.env.MODE === "test" ? "legacy" : "unified";
+}
+
 export interface MessagePart {
   type: string;
   text?: string;
@@ -449,21 +478,6 @@ export function useMessages(options: UseMessagesOptions) {
   const streamRevisionBySession = reactive<Record<string, number>>({});
   const loadedSessions = reactive<Record<string, boolean>>({});
   const activeConnections = reactive<Record<string, ActiveConnection>>({});
-  // One stream per tab in unified mode. Tests default to legacy so the
-  // existing per-send SSE specs keep their transport; the unified spec opts
-  // in with localStorage["chat.streamMode"] = "unified".
-  function resolveChatStreamMode(): "unified" | "legacy" {
-    try {
-      const query = new URLSearchParams(window.location.search).get("stream");
-      if (query === "legacy" || query === "unified") return query;
-      const stored = localStorage.getItem("chat.streamMode");
-      if (stored === "legacy" || stored === "unified") return stored;
-    } catch {
-      // Ignore storage/URL failures and fall through to the default.
-    }
-    return import.meta.env.MODE === "test" ? "legacy" : "unified";
-  }
-
   const unifiedMode = resolveChatStreamMode() === "unified";
   const unifiedSeqBySession: Record<string, number> = {};
   let unifiedAbort: AbortController | null = null;
@@ -1748,7 +1762,6 @@ export function useMessages(options: UseMessagesOptions) {
   }: SendMessageStreamOptions) {
     if (
       unifiedMode &&
-      transport !== "websocket" &&
       !skipUserHistory &&
       !llmCheckpointId
     ) {

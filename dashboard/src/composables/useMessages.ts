@@ -1436,7 +1436,67 @@ export function useMessages(options: UseMessagesOptions) {
     }
   }
 
-  function handleUnifiedFrame(payload: any) {
+  async function resolveLargeUnifiedFrame(
+    payload: any,
+    abort?: AbortController,
+  ): Promise<boolean> {
+    const msgType = String(payload?.type || payload?.t || "");
+    if (msgType === "run_snapshot") {
+      const data = payload.data;
+      const ref = data?.content?.snapshot_ref ?? data?.snapshot_ref;
+      if (!ref?.run_id) return true;
+      try {
+        const response = await fetchWithAuth(
+          chatApi.runSnapshotUrl(String(ref.run_id)),
+          { signal: abort?.signal },
+        );
+        const body = await response.json().catch(() => null);
+        const content = body?.data?.content;
+        if (!response.ok || body?.status === "error" || !content) {
+          console.error(
+            "Failed to load unified snapshot:",
+            body?.message || response.status,
+          );
+          return false;
+        }
+        payload.data = { ...data, content };
+        return true;
+      } catch (error) {
+        console.error("Failed to load unified snapshot:", error);
+        return false;
+      }
+    }
+    if (msgType === "complete") {
+      const ref = payload?.data?.text_ref;
+      if (!ref?.run_id) return true;
+      try {
+        const response = await fetchWithAuth(
+          chatApi.runSnapshotUrl(String(ref.run_id)),
+          { signal: abort?.signal },
+        );
+        const body = await response.json().catch(() => null);
+        const content = body?.data?.content;
+        if (!response.ok || body?.status === "error" || !content) {
+          console.error(
+            "Failed to load unified final text:",
+            body?.message || response.status,
+          );
+          return false;
+        }
+        payload.data = (Array.isArray(content.message) ? content.message : [])
+          .filter((part: any) => part?.type === "plain")
+          .map((part: any) => String(part?.text || ""))
+          .join("");
+        return true;
+      } catch (error) {
+        console.error("Failed to load unified final text:", error);
+        return false;
+      }
+    }
+    return true;
+  }
+
+  async function handleUnifiedFrame(payload: any, abort?: AbortController) {
     if (!payload || typeof payload !== "object") return;
     const sessionId = String(payload.session_id || "");
     if (!sessionId) return;
@@ -1476,6 +1536,9 @@ export function useMessages(options: UseMessagesOptions) {
       }
       return;
     }
+
+    if (!(await resolveLargeUnifiedFrame(payload, abort))) return;
+    if (abort?.signal.aborted) return;
 
     const connection = activeConnections[messageId];
     if (!connection?.botRecord || connection.sessionId !== sessionId) {
@@ -1517,6 +1580,7 @@ export function useMessages(options: UseMessagesOptions) {
     const abort = new AbortController();
     unifiedAbort = abort;
     void (async () => {
+      let frameChain: Promise<void> = Promise.resolve();
       try {
         const response = await fetchWithAuth(chatApi.unifiedStreamUrl(), {
           method: "POST",
@@ -1549,12 +1613,21 @@ export function useMessages(options: UseMessagesOptions) {
               unifiedSeqBySession[sessionId] = seq;
             }
           }
-          handleUnifiedFrame(payload);
+          frameChain = frameChain
+            .then(() => {
+              if (abort.signal.aborted) return;
+              return handleUnifiedFrame(payload, abort);
+            })
+            .catch((error) => {
+              console.error("Unified chat frame failed:", error);
+            });
         });
+        await frameChain;
       } catch (error) {
         if (abort.signal.aborted) return;
         console.error("Unified chat stream failed:", error);
       } finally {
+        await frameChain.catch(() => {});
         if (unifiedAbort !== abort) return;
         unifiedAbort = null;
         if (!unifiedStreamStopped) {
@@ -3577,7 +3650,9 @@ export function finishToolCall(record: ChatRecord, result: any) {
     if (part.type !== "tool_call" || !Array.isArray(part.tool_calls)) continue;
     const tool = part.tool_calls.find((item) => item.id === targetId);
     if (tool) {
-      tool.result = result.result;
+      if (result.result !== undefined) tool.result = result.result;
+      if (result.result_ref) tool.result_ref = result.result_ref;
+      if (result.result_preview) tool.result_preview = result.result_preview;
       tool.finished_ts = result.ts || Date.now() / 1000;
       return;
     }
@@ -3588,6 +3663,10 @@ export function finishToolCall(record: ChatRecord, result: any) {
       {
         id: targetId,
         result: result.result,
+        ...(result.result_ref ? { result_ref: result.result_ref } : {}),
+        ...(result.result_preview
+          ? { result_preview: result.result_preview }
+          : {}),
         finished_ts: result.ts || Date.now() / 1000,
       },
     ],

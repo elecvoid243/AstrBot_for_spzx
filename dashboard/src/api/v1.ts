@@ -960,6 +960,15 @@ export const chatApi = {
   resumeRunStreamUrl(runId: string) {
     return `/api/v1/chat/runs/${encodeURIComponent(runId)}/stream`;
   },
+  runToolResultUrl(runId: string, toolCallId: string) {
+    return `/api/v1/chat/runs/${encodeURIComponent(runId)}/tool-results/${encodeURIComponent(toolCallId)}`;
+  },
+  messageToolResultUrl(messageId: string | number, toolCallId: string) {
+    return `/api/v1/chat/messages/${encodeURIComponent(String(messageId))}/tool-results/${encodeURIComponent(toolCallId)}`;
+  },
+  runSnapshotUrl(runId: string) {
+    return `/api/v1/chat/runs/${encodeURIComponent(runId)}/snapshot`;
+  },
   systemStreamUrl(sessionId: string) {
     return `/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/system-stream`;
   },

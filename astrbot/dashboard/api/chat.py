@@ -283,6 +283,85 @@ async def unified_send_chat(
     )
 
 
+@router.get("/chat/runs/{run_id}/tool-results/{tool_call_id}")
+async def unified_run_tool_result(
+    run_id: str,
+    tool_call_id: str,
+    auth: AuthContext = Depends(require_chat_scope),
+    service: ChatService = Depends(get_service),
+):
+    """Read a large tool result while its run is still tracked.
+
+    Args:
+        run_id: Run that produced the tool call.
+        tool_call_id: Provider tool call identifier.
+        auth: Authenticated dashboard account.
+        service: Chat service owning the out-of-band payload cache.
+
+    Returns:
+        The full tool result, or an HTTP error.
+    """
+    try:
+        return ok(
+            await service.get_unified_tool_result(auth.username, run_id, tool_call_id)
+        )
+    except ChatServiceError as exc:
+        status_code = 403 if "Permission denied" in str(exc) else 404
+        return JSONResponse(error(str(exc)), status_code=status_code)
+
+
+@router.get("/chat/messages/{message_id}/tool-results/{tool_call_id}")
+async def unified_message_tool_result(
+    message_id: int,
+    tool_call_id: str,
+    auth: AuthContext = Depends(require_chat_scope),
+    service: ChatService = Depends(get_service),
+):
+    """Read a large tool result from persisted history after a run ended.
+
+    Args:
+        message_id: Persisted bot message row identifier.
+        tool_call_id: Provider tool call identifier.
+        auth: Authenticated dashboard account.
+        service: Chat service owning the history database.
+
+    Returns:
+        The full tool result, or an HTTP error.
+    """
+    try:
+        return ok(
+            await service.get_message_tool_result(
+                auth.username, message_id, tool_call_id
+            )
+        )
+    except ChatServiceError as exc:
+        status_code = 403 if "Permission denied" in str(exc) else 404
+        return JSONResponse(error(str(exc)), status_code=status_code)
+
+
+@router.get("/chat/runs/{run_id}/snapshot")
+async def unified_run_snapshot(
+    run_id: str,
+    auth: AuthContext = Depends(require_chat_scope),
+    service: ChatService = Depends(get_service),
+):
+    """Read the full snapshot referenced by ``snapshot_ref``/``text_ref``.
+
+    Args:
+        run_id: Run whose accumulated content is requested.
+        auth: Authenticated dashboard account.
+        service: Chat service owning the run and payload cache.
+
+    Returns:
+        The full snapshot content, or an HTTP error.
+    """
+    try:
+        return ok(await service.get_unified_snapshot(auth.username, run_id))
+    except ChatServiceError as exc:
+        status_code = 403 if "Permission denied" in str(exc) else 404
+        return JSONResponse(error(str(exc)), status_code=status_code)
+
+
 async def _file_access_fixed_roots(request: Request, umo: str) -> list[dict]:
     """Implicit workspace-mode roots: session workspace + AstrBot temp dirs.
 

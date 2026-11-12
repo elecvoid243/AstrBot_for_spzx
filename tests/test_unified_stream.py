@@ -6,7 +6,12 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from astrbot.dashboard.api.chat import unified_send_chat
+from astrbot.dashboard.api.chat import (
+    unified_message_tool_result,
+    unified_run_snapshot,
+    unified_run_tool_result,
+    unified_send_chat,
+)
 from astrbot.dashboard.services import unified_stream
 from astrbot.dashboard.services.chat_service import (
     ChatRunState,
@@ -310,6 +315,7 @@ async def test_start_unified_chat_run_publishes_run_started_to_end():
     service._publish_run_to_unified_stream = (
         ChatService._publish_run_to_unified_stream.__get__(service)
     )
+    service._out_of_band_payload = ChatService._out_of_band_payload.__get__(service)
     connection = hub.connect("alice")
     stream = hub.stream(connection)
     assert _decode(await anext(stream))["type"] == "stream_ready"
@@ -566,3 +572,225 @@ async def test_unified_send_route_returns_receipt_and_http_error():
     )
     assert response.status_code == 400
     assert json.loads(response.body)["message"] == "rejected"
+
+
+@pytest.mark.asyncio
+async def test_large_tool_result_is_ref_and_does_not_block_small_frames():
+    hub = UnifiedStreamHub()
+    service = ChatService.__new__(ChatService)
+    service.unified_stream_hub = hub
+    service.unified_large_frames = {}
+    service.unified_large_frame_bytes = 0
+    service.chat_runs = {}
+    run = ChatRunState(
+        run_id="run-1",
+        username="alice",
+        session_id="s1",
+        llm_checkpoint_id="ckpt",
+        platform_history_id="webchat",
+        back_queue=asyncio.Queue(),
+    )
+    service.chat_runs[run.run_id] = run
+    connection = hub.connect("alice")
+    stream = hub.stream(connection)
+    assert _decode(await anext(stream))["type"] == "stream_ready"
+
+    hub.publish(
+        "alice",
+        "s2",
+        {"type": "plain", "data": "other", "message_id": "run-2"},
+    )
+    large = "x" * 70000
+
+    async def source():
+        yield (
+            "data: "
+            + json.dumps(
+                {
+                    "type": "plain",
+                    "chain_type": "tool_call_result",
+                    "data": json.dumps({"id": "call-1", "result": large}),
+                    "message_id": run.run_id,
+                }
+            )
+            + "\n\n"
+        )
+        yield (
+            "data: "
+            + json.dumps(
+                {
+                    "type": "plain",
+                    "data": "small",
+                    "message_id": run.run_id,
+                }
+            )
+            + "\n\n"
+        )
+        yield (
+            "data: "
+            + json.dumps(
+                {
+                    "type": "end",
+                    "data": None,
+                    "message_id": run.run_id,
+                }
+            )
+            + "\n\n"
+        )
+
+    await service._publish_run_to_unified_stream("alice", run, source())
+    frames = [_decode(await anext(stream)) for _ in range(4)]
+    tool_frame = next(
+        frame for frame in frames if frame.get("chain_type") == "tool_call_result"
+    )
+    tool_payload = json.loads(tool_frame["data"])
+    assert "result" not in tool_payload
+    assert tool_payload["result_ref"] == {
+        "run_id": run.run_id,
+        "tool_call_id": "call-1",
+        "bytes": 70000,
+    }
+    assert tool_payload["result_preview"] == "x" * 4096
+    assert len(json.dumps(tool_frame, ensure_ascii=False).encode()) < 64 * 1024
+    assert {frame["session_id"] for frame in frames} == {"s1", "s2"}
+    assert any(frame.get("data") == "small" for frame in frames)
+    assert any(frame.get("data") == "other" for frame in frames)
+    assert frames[-1]["type"] == "end"
+
+    full = await service.get_unified_tool_result("alice", run.run_id, "call-1")
+    assert full["result"] == large
+    with pytest.raises(ChatServiceError, match="Permission denied"):
+        await service.get_unified_tool_result("bob", run.run_id, "call-1")
+
+    hub.disconnect(connection)
+    await stream.aclose()
+
+
+@pytest.mark.asyncio
+async def test_large_snapshot_and_complete_emit_refs_and_snapshot_reads():
+    service = ChatService.__new__(ChatService)
+    service.unified_large_frames = {}
+    service.unified_large_frame_bytes = 0
+    service.chat_runs = {}
+    run = ChatRunState(
+        run_id="run-snap",
+        username="alice",
+        session_id="s1",
+        llm_checkpoint_id="ckpt",
+        platform_history_id="webchat",
+        back_queue=asyncio.Queue(),
+    )
+    content = {
+        "type": "bot",
+        "message": [{"type": "plain", "text": "y" * 70000}],
+    }
+    payload = {
+        "type": "run_snapshot",
+        "data": {"content": content, "input_message": {"id": 1}},
+        "message_id": run.run_id,
+    }
+    transformed = service._out_of_band_payload(run, payload)
+    assert transformed["data"]["content"]["snapshot_ref"] == {
+        "run_id": run.run_id,
+        "bytes": len(json.dumps(content, ensure_ascii=False).encode()),
+    }
+    assert transformed["data"]["input_message"] == {"id": 1}
+    snapshot = await service.get_unified_snapshot("alice", run.run_id)
+    assert snapshot["content"] == content
+    with pytest.raises(ChatServiceError, match="Snapshot not found"):
+        await service.get_unified_snapshot("bob", run.run_id)
+
+    text_run = ChatRunState(
+        run_id="run-text",
+        username="alice",
+        session_id="s2",
+        llm_checkpoint_id="ckpt",
+        platform_history_id="webchat",
+        back_queue=asyncio.Queue(),
+    )
+    complete = {
+        "type": "complete",
+        "data": "z" * 70000,
+        "message_id": text_run.run_id,
+    }
+    transformed = service._out_of_band_payload(text_run, complete)
+    assert transformed["data"]["text_ref"] == {
+        "run_id": text_run.run_id,
+        "message_id": text_run.run_id,
+        "bytes": 70000,
+    }
+    text_snapshot = await service.get_unified_snapshot("alice", text_run.run_id)
+    assert text_snapshot["content"]["message"][0]["text"] == "z" * 70000
+
+    small = {"type": "plain", "data": "ok", "message_id": run.run_id}
+    assert service._out_of_band_payload(run, small) is small
+
+
+@pytest.mark.asyncio
+async def test_message_tool_result_reads_history_and_checks_owner():
+    service = ChatService.__new__(ChatService)
+    service.db = AsyncMock()
+    record = SimpleNamespace(
+        platform_id="webchat",
+        user_id="s1",
+        content={
+            "type": "bot",
+            "message": [
+                {
+                    "type": "tool_call",
+                    "tool_calls": [{"id": "call-1", "result": "full"}],
+                }
+            ],
+        },
+    )
+    service.db.get_platform_message_history_by_id.return_value = record
+    service.require_owned_chat_session = AsyncMock()
+
+    result = await service.get_message_tool_result("alice", 7, "call-1")
+    assert result == {"result": "full"}
+    service.require_owned_chat_session.assert_awaited_once_with(
+        "alice", "s1", allow_thread=True
+    )
+
+    service.require_owned_chat_session.side_effect = ChatServiceError(
+        "Permission denied"
+    )
+    with pytest.raises(ChatServiceError, match="Permission denied"):
+        await service.get_message_tool_result("bob", 7, "call-1")
+
+    service.db.get_platform_message_history_by_id.return_value = None
+    with pytest.raises(ChatServiceError, match="Message not found"):
+        await service.get_message_tool_result("alice", 8, "call-1")
+
+
+@pytest.mark.asyncio
+async def test_large_frame_read_routes_reject_foreign_owners():
+    auth = SimpleNamespace(username="bob")
+    denied = SimpleNamespace(
+        get_unified_tool_result=AsyncMock(
+            side_effect=ChatServiceError("Permission denied")
+        ),
+        get_message_tool_result=AsyncMock(
+            side_effect=ChatServiceError("Permission denied")
+        ),
+        get_unified_snapshot=AsyncMock(
+            side_effect=ChatServiceError("Permission denied")
+        ),
+    )
+    for response in (
+        await unified_run_tool_result("run", "call", auth, denied),
+        await unified_message_tool_result(7, "call", auth, denied),
+        await unified_run_snapshot("run", auth, denied),
+    ):
+        assert response.status_code == 403
+        assert json.loads(response.body)["status"] == "error"
+
+    allowed = SimpleNamespace(
+        get_unified_tool_result=AsyncMock(return_value={"result": "full"}),
+        get_message_tool_result=AsyncMock(return_value={"result": "full"}),
+        get_unified_snapshot=AsyncMock(
+            return_value={"content": {"type": "bot", "message": []}}
+        ),
+    )
+    response = await unified_run_tool_result("run", "call", auth, allowed)
+    assert response["data"]["result"] == "full"

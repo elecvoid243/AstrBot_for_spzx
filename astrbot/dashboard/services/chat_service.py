@@ -104,6 +104,13 @@ MAX_HISTORY_PAGE_SIZE = 200
 # capped scan pages so a pathological session cannot run away.
 MESSAGE_MARKER_PAGE_SIZE = 500
 MAX_MESSAGE_MARKERS = 1000
+# Unified stream out-of-band payloads: a frame whose serialized form exceeds
+# 64KB is replaced by a ref so one large tool result cannot delay other
+# sessions sharing the same SSE connection.
+UNIFIED_LARGE_FRAME_THRESHOLD_BYTES = 64 * 1024
+UNIFIED_LARGE_FRAME_PREVIEW_CHARS = 4096
+UNIFIED_LARGE_FRAME_STORE_LIMIT_BYTES = 64 * 1024 * 1024
+UNIFIED_LARGE_FRAME_TTL_SECONDS = 600
 WEBCHAT_IMAGE_MIME_TYPES = {
     ".jpg": "image/jpeg",
     ".jpeg": "image/jpeg",
@@ -1289,6 +1296,12 @@ class ChatService:
         self.chat_runs: dict[str, ChatRunState] = {}
         self.chat_runs_by_session: dict[str, set[str]] = {}
         self.unified_stream_hub = UnifiedStreamHub()
+        # Full payloads referenced by result_ref/snapshot_ref/text_ref. The
+        # store is a short-lived transport cache; ownership is checked on every
+        # read and entries expire so a long-lived dashboard process cannot grow
+        # without bound.
+        self.unified_large_frames: dict[str, dict] = {}
+        self.unified_large_frame_bytes = 0
         self._unified_publish_tasks: set[asyncio.Task[None]] = set()
         self.session_message_chains: WeakSet[SessionMessageChain] = WeakSet()
         self.session_message_stop_revisions: dict[str, int] = {}
@@ -4083,6 +4096,333 @@ class ChatService:
             },
         )
 
+    def _store_unified_large_frame(self, key: str, entry: dict) -> None:
+        """Store one out-of-band payload for authenticated reads.
+
+        Args:
+            key: Stable lookup key, for example ``tool:<run>:<call>``.
+            entry: Payload metadata including ``username`` and ``bytes``.
+        """
+        if not hasattr(self, "unified_large_frames"):
+            self.unified_large_frames = {}
+            self.unified_large_frame_bytes = 0
+        entry["created_at"] = time.time()
+        previous = self.unified_large_frames.pop(key, None)
+        if previous is not None:
+            self.unified_large_frame_bytes -= int(previous.get("bytes") or 0)
+        self.unified_large_frames[key] = entry
+        self.unified_large_frame_bytes += int(entry.get("bytes") or 0)
+
+        now = entry["created_at"]
+        for old_key, old_entry in list(self.unified_large_frames.items()):
+            if old_key == key:
+                continue
+            if (
+                now - float(old_entry.get("created_at") or 0)
+                > UNIFIED_LARGE_FRAME_TTL_SECONDS
+            ):
+                self.unified_large_frames.pop(old_key, None)
+                self.unified_large_frame_bytes -= int(old_entry.get("bytes") or 0)
+
+        while (
+            self.unified_large_frame_bytes > UNIFIED_LARGE_FRAME_STORE_LIMIT_BYTES
+            and len(self.unified_large_frames) > 1
+        ):
+            oldest_key = next(iter(self.unified_large_frames))
+            if oldest_key == key:
+                oldest_key = next(
+                    candidate
+                    for candidate in self.unified_large_frames
+                    if candidate != key
+                )
+            oldest = self.unified_large_frames.pop(oldest_key)
+            self.unified_large_frame_bytes -= int(oldest.get("bytes") or 0)
+
+    def _get_unified_large_frame(self, key: str, username: str) -> dict | None:
+        """Return a live out-of-band payload owned by ``username``.
+
+        Args:
+            key: Stable lookup key used by the ref.
+            username: Authenticated account requesting the payload.
+
+        Returns:
+            The stored entry, or ``None`` when missing, expired, or foreign.
+        """
+        frames = getattr(self, "unified_large_frames", None)
+        if not frames:
+            return None
+        entry = frames.get(key)
+        if entry is None:
+            return None
+        if (
+            time.time() - float(entry.get("created_at") or 0)
+            > UNIFIED_LARGE_FRAME_TTL_SECONDS
+        ):
+            frames.pop(key, None)
+            self.unified_large_frame_bytes -= int(entry.get("bytes") or 0)
+            return None
+        if entry.get("username") != username:
+            return None
+        return entry
+
+    def _out_of_band_payload(self, run: ChatRunState, payload: dict) -> dict:
+        """Replace oversized unified-stream fields with authenticated refs.
+
+        Args:
+            run: Run that owns the frame.
+            payload: Serialized SSE payload about to enter the unified hub.
+
+        Returns:
+            The original payload when its serialized form is at most 64KB;
+            otherwise a ref stub with a short preview where applicable.
+        """
+        try:
+            encoded = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        except (TypeError, ValueError):
+            return payload
+        if len(encoded) <= UNIFIED_LARGE_FRAME_THRESHOLD_BYTES:
+            return payload
+
+        frame_type = payload.get("type")
+        data = payload.get("data")
+        message_id = run.history_record.id if run.history_record else None
+
+        if frame_type == "run_snapshot" and isinstance(data, dict):
+            content = data.get("content")
+            if content is None:
+                return payload
+            content_bytes = len(json.dumps(content, ensure_ascii=False).encode("utf-8"))
+            self._store_unified_large_frame(
+                f"snapshot:{run.run_id}",
+                {
+                    "kind": "snapshot",
+                    "username": run.username,
+                    "run_id": run.run_id,
+                    "message_id": message_id,
+                    "value": content,
+                    "bytes": content_bytes,
+                },
+            )
+            return {
+                **payload,
+                "data": {
+                    **data,
+                    "content": {
+                        "snapshot_ref": {
+                            "run_id": run.run_id,
+                            "bytes": content_bytes,
+                        }
+                    },
+                },
+            }
+
+        if frame_type == "complete":
+            text = data if isinstance(data, str) else None
+            if text is None and isinstance(data, dict):
+                text = data.get("text")
+            if not isinstance(text, str):
+                return payload
+            text_bytes = len(text.encode("utf-8"))
+            self._store_unified_large_frame(
+                f"text:{run.run_id}",
+                {
+                    "kind": "text",
+                    "username": run.username,
+                    "run_id": run.run_id,
+                    "message_id": message_id,
+                    "value": text,
+                    "bytes": text_bytes,
+                },
+            )
+            return {
+                **payload,
+                "data": {
+                    "text_ref": {
+                        "run_id": run.run_id,
+                        "message_id": message_id or run.run_id,
+                        "bytes": text_bytes,
+                    }
+                },
+            }
+
+        if frame_type == "plain" and payload.get("chain_type") in (
+            "tool_call",
+            "tool_call_result",
+        ):
+            raw = data if isinstance(data, str) else None
+            if raw is None:
+                return payload
+            try:
+                tool_payload = json.loads(raw)
+            except json.JSONDecodeError:
+                return payload
+            if not isinstance(tool_payload, dict):
+                return payload
+            result = tool_payload.get("result")
+            if result is None:
+                return payload
+            result_text = (
+                result
+                if isinstance(result, str)
+                else json.dumps(result, ensure_ascii=False)
+            )
+            result_bytes = len(result_text.encode("utf-8"))
+            tool_call_id = str(tool_payload.get("id") or "")
+            self._store_unified_large_frame(
+                f"tool:{run.run_id}:{tool_call_id}",
+                {
+                    "kind": "tool",
+                    "username": run.username,
+                    "run_id": run.run_id,
+                    "message_id": message_id,
+                    "tool_call_id": tool_call_id,
+                    "value": result,
+                    "bytes": result_bytes,
+                },
+            )
+            tool_payload.pop("result", None)
+            tool_payload["result_ref"] = {
+                "run_id": run.run_id,
+                "tool_call_id": tool_call_id,
+                "bytes": result_bytes,
+            }
+            tool_payload["result_preview"] = result_text[
+                :UNIFIED_LARGE_FRAME_PREVIEW_CHARS
+            ]
+            return {
+                **payload,
+                "data": json.dumps(tool_payload, ensure_ascii=False),
+            }
+
+        return payload
+
+    @staticmethod
+    def _find_tool_result(
+        message_parts: list[dict],
+        tool_call_id: str,
+    ) -> Any:
+        """Find one tool result in display/history message parts.
+
+        Args:
+            message_parts: Display parts containing ``tool_call`` entries.
+            tool_call_id: Provider tool call identifier.
+
+        Returns:
+            The stored result, or ``None`` when the call is absent.
+        """
+        for part in message_parts:
+            if not isinstance(part, dict) or part.get("type") != "tool_call":
+                continue
+            for call in part.get("tool_calls") or []:
+                if isinstance(call, dict) and str(call.get("id")) == str(tool_call_id):
+                    return call.get("result")
+        return None
+
+    async def get_unified_tool_result(
+        self,
+        username: str,
+        run_id: str,
+        tool_call_id: str,
+    ) -> dict:
+        """Read one large tool result referenced by the unified stream.
+
+        Args:
+            username: Authenticated account requesting the result.
+            run_id: Run that produced the tool call.
+            tool_call_id: Provider tool call identifier.
+
+        Returns:
+            ``{"result": ...}`` for the requested call.
+
+        Raises:
+            ChatServiceError: If the run is foreign or the result is missing.
+        """
+        entry = self._get_unified_large_frame(f"tool:{run_id}:{tool_call_id}", username)
+        if entry is not None:
+            return {"result": entry["value"], "bytes": entry["bytes"]}
+        run = self.chat_runs.get(run_id)
+        if run is not None:
+            if run.username != username:
+                raise ChatServiceError("Permission denied")
+            result = self._find_tool_result(run.message_parts, tool_call_id)
+            if result is not None:
+                return {"result": result}
+        raise ChatServiceError("Tool result not found")
+
+    async def get_message_tool_result(
+        self,
+        username: str,
+        message_id: int,
+        tool_call_id: str,
+    ) -> dict:
+        """Read one tool result from a persisted bot message.
+
+        Args:
+            username: Authenticated account requesting the result.
+            message_id: Persisted platform message row identifier.
+            tool_call_id: Provider tool call identifier.
+
+        Returns:
+            ``{"result": ...}`` for the requested call.
+
+        Raises:
+            ChatServiceError: If the message is foreign or the call is missing.
+        """
+        record = await self.db.get_platform_message_history_by_id(message_id)
+        if record is None or record.platform_id != "webchat":
+            raise ChatServiceError("Message not found")
+        await self.require_owned_chat_session(
+            username, record.user_id, allow_thread=True
+        )
+        content = record.content if isinstance(record.content, dict) else {}
+        result = self._find_tool_result(content.get("message") or [], tool_call_id)
+        if result is None:
+            raise ChatServiceError("Tool result not found")
+        return {"result": result}
+
+    async def get_unified_snapshot(self, username: str, run_id: str) -> dict:
+        """Read the full snapshot referenced by ``snapshot_ref``/``text_ref``.
+
+        Args:
+            username: Authenticated account requesting the snapshot.
+            run_id: Run whose accumulated content is requested.
+
+        Returns:
+            ``{"content": ..., "run_id": ..., "message_id": ...}``.
+
+        Raises:
+            ChatServiceError: If the run is foreign or no snapshot is stored.
+        """
+        run = self.chat_runs.get(run_id)
+        if run is not None:
+            if run.username != username:
+                raise ChatServiceError("Permission denied")
+            snapshot = self._build_run_snapshot(run, run.unified_input_message)
+            return {
+                "content": snapshot.get("content"),
+                "run_id": run.run_id,
+                "message_id": run.run_id,
+                "status": run.status,
+            }
+        entry = self._get_unified_large_frame(f"snapshot:{run_id}", username)
+        if entry is not None:
+            return {
+                "content": entry["value"],
+                "run_id": run_id,
+                "message_id": entry.get("message_id"),
+            }
+        text_entry = self._get_unified_large_frame(f"text:{run_id}", username)
+        if text_entry is not None:
+            return {
+                "content": {
+                    "type": "bot",
+                    "message": [{"type": "plain", "text": text_entry["value"]}],
+                },
+                "run_id": run_id,
+                "message_id": text_entry.get("message_id"),
+            }
+        raise ChatServiceError("Snapshot not found")
+
     def unified_initial_frames(self, username: str) -> list[tuple[str, dict]]:
         """Build replay frames for every running chat of one account.
 
@@ -4100,26 +4440,32 @@ class ChatService:
             frames.append(
                 (
                     run.session_id,
-                    {
-                        "type": "run_started",
-                        "data": {
-                            "run_id": run.run_id,
-                            "input_message": run.unified_input_message,
+                    self._out_of_band_payload(
+                        run,
+                        {
+                            "type": "run_started",
+                            "data": {
+                                "run_id": run.run_id,
+                                "input_message": run.unified_input_message,
+                            },
+                            "message_id": run.run_id,
                         },
-                        "message_id": run.run_id,
-                    },
+                    ),
                 )
             )
             frames.append(
                 (
                     run.session_id,
-                    {
-                        "type": "run_snapshot",
-                        "data": self._build_run_snapshot(
-                            run, run.unified_input_message
-                        ),
-                        "message_id": run.run_id,
-                    },
+                    self._out_of_band_payload(
+                        run,
+                        {
+                            "type": "run_snapshot",
+                            "data": self._build_run_snapshot(
+                                run, run.unified_input_message
+                            ),
+                            "message_id": run.run_id,
+                        },
+                    ),
                 )
             )
         return frames
@@ -4211,6 +4557,7 @@ class ChatService:
                 if payload.get("type") == "session_id":
                     continue
                 payload.setdefault("message_id", run.run_id)
+                payload = self._out_of_band_payload(run, payload)
                 if payload.get("type") == "end":
                     saw_end = True
                 self.unified_stream_hub.publish(username, run.session_id, payload)

@@ -20,34 +20,42 @@
             </div>
 
             <!-- Result Section (matches ToolResultView result-code style) -->
-            <div v-if="result" class="result-section">
+            <div v-if="result || resultLoading || resultError" class="result-section">
                 <div class="result-label">
                     {{ tm('ipython.output') }}:
                 </div>
-                <CopyableText
-                    :value="formattedResult"
-                    mode="block"
-                    :multiline="true"
-                    bare
-                >
-                    <pre class="result-content">{{ formattedResult }}</pre>
-                </CopyableText>
-                <CopyableText
-                    v-if="resultNotice"
-                    :value="resultNotice"
-                    mode="block"
-                    :multiline="true"
-                    bare
-                    class="result-suffix"
-                />
+                <div v-if="resultLoading" class="result-status">Loading…</div>
+                <div v-else-if="resultError" class="result-status result-status--error">
+                    {{ resultError }}
+                </div>
+                <template v-else>
+                    <CopyableText
+                        :value="formattedResult"
+                        mode="block"
+                        :multiline="true"
+                        bare
+                    >
+                        <pre class="result-content">{{ formattedResult }}</pre>
+                    </CopyableText>
+                    <CopyableText
+                        v-if="resultNotice"
+                        :value="resultNotice"
+                        mode="block"
+                        :multiline="true"
+                        bare
+                        class="result-suffix"
+                    />
+                </template>
             </div>
         </div>
     </div>
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue';
+import { ref, computed, onMounted, watch } from 'vue';
 import { useModuleI18n } from '@/i18n/composables';
+import { fetchWithAuth } from '@/api/http';
+import { chatApi } from '@/api/v1';
 import { ensureShikiLanguages, escapeHtml, renderShikiCode } from '@/utils/shiki';
 import { findSystemNoticeIndex } from '@/utils/systemNotice';
 import CopyableText from "./__shared__/CopyableText.vue";
@@ -72,6 +80,10 @@ const props = defineProps({
     forceExpanded: {
         type: Boolean,
         default: null
+    },
+    messageId: {
+        type: [String, Number],
+        default: null
     }
 });
 
@@ -79,6 +91,9 @@ const { tm } = useModuleI18n('features/chat');
 const isExpanded = ref(props.initialExpanded);
 const shikiHighlighter = ref(null);
 const shikiReady = ref(false);
+const resolvedResult = ref('');
+const resultLoading = ref(false);
+const resultError = ref('');
 
 const code = computed(() => {
     try {
@@ -91,7 +106,14 @@ const code = computed(() => {
     return null;
 });
 
-const result = computed(() => props.toolCall.result);
+// Ticket 05: a >64KB result arrives as an out-of-band reference, so fetch the
+// full text once the block is visible instead of rendering an empty output.
+const resultRef = computed(() => {
+    const ref = props.toolCall.result_ref;
+    return ref && typeof ref === 'object' ? ref : null;
+});
+
+const result = computed(() => resolvedResult.value || props.toolCall.result);
 
 const formattedResult = computed(() => {
     if (!result.value) return '';
@@ -138,6 +160,45 @@ const displayExpanded = computed(() => {
     }
     return props.forceExpanded;
 });
+
+const loadFullResult = async () => {
+    const ref = resultRef.value;
+    if (!ref?.run_id || !ref?.tool_call_id) return;
+    if (resolvedResult.value || resultLoading.value) return;
+    resultLoading.value = true;
+    resultError.value = '';
+    try {
+        let response = await fetchWithAuth(
+            chatApi.runToolResultUrl(String(ref.run_id), String(ref.tool_call_id))
+        );
+        let body = await response.json().catch(() => null);
+        // The run may be gone (history reload); fall back to the persisted message.
+        if ((!response.ok || body?.status === 'error') && props.messageId != null) {
+            response = await fetchWithAuth(
+                chatApi.messageToolResultUrl(props.messageId, String(ref.tool_call_id))
+            );
+            body = await response.json().catch(() => null);
+        }
+        if (!response.ok || body?.status === 'error') {
+            throw new Error(body?.message || `Load failed (${response.status})`);
+        }
+        const text = body?.data?.result;
+        resolvedResult.value =
+            typeof text === 'string' ? text : JSON.stringify(text ?? '');
+    } catch (err) {
+        resultError.value = String(err?.message || err);
+    } finally {
+        resultLoading.value = false;
+    }
+};
+
+watch(
+    displayExpanded,
+    (expanded) => {
+        if (expanded) void loadFullResult();
+    },
+    { immediate: true }
+);
 
 onMounted(async () => {
     try {
@@ -227,6 +288,15 @@ onMounted(async () => {
     color: rgba(var(--v-theme-on-surface), 0.55);
     margin-bottom: 4px;
     opacity: 0.8;
+}
+
+.result-status {
+    font-size: 12px;
+    color: rgba(var(--v-theme-on-surface), 0.55);
+}
+
+.result-status--error {
+    color: rgb(var(--v-theme-error));
 }
 
 .result-content {

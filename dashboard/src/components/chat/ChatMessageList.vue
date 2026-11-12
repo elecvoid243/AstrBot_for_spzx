@@ -444,6 +444,7 @@
                             <template #details>
                               <IPythonToolBlock
                                 :tool-call="normalizeToolCall(tool)"
+                                :message-id="msg.id"
                                 :is-dark="isDark"
                                 :show-header="false"
                                 :force-expanded="true"
@@ -453,6 +454,7 @@
                           <ToolCallCard
                             v-else
                             :tool-call="normalizeToolCall(tool)"
+                            :message-id="msg.id"
                             :is-dark="isDark"
                             :is-active="isMessageStreaming(msg, msgIndex)"
                             :inert="remoteHistory"

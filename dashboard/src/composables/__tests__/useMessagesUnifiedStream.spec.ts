@@ -7,6 +7,7 @@ vi.mock("@/api/v1", () => ({
     sendStreamUrl: () => "/api/v1/chat",
     unifiedStreamUrl: () => "/api/v1/chat/stream",
     sendMessageUrl: () => "/api/v1/chat/send",
+    runSnapshotUrl: (runId: string) => `/api/v1/chat/runs/${runId}/snapshot`,
     systemStreamUrl: () => "/api/v1/chat/sessions/s1/system-stream",
     getSession: vi.fn(),
     getHistory: vi.fn(),
@@ -80,6 +81,7 @@ describe("unified chat stream", () => {
       currentSessionId: ref("s1"),
       onStreamEnd,
     });
+    messages.messagesBySession["s1"] = [];
     messages.startUnifiedStream();
     await vi.waitFor(() => expect(streamController).toBeDefined());
     pushSse(streamController, { type: "stream_ready", epoch: "server-epoch" });
@@ -199,6 +201,7 @@ describe("unified chat stream", () => {
       currentSessionId: ref("s1"),
       onStreamEnd,
     });
+    messages.messagesBySession["s1"] = [];
     messages.startUnifiedStream();
     await vi.waitFor(() => expect(streamController).toBeDefined());
     pushSse(streamController, { type: "stream_ready", epoch: "e" });
@@ -375,6 +378,7 @@ describe("unified chat stream", () => {
       return new Response(null, { status: 404 });
     });
     const messages = useMessages({ currentSessionId: ref("s1") });
+    messages.messagesBySession["s1"] = [];
     messages.startUnifiedStream();
     await vi.waitFor(() => expect(controllers).toHaveLength(1));
     pushSse(controllers[0], { type: "stream_ready", epoch: "e1" });
@@ -413,6 +417,7 @@ describe("unified chat stream", () => {
       onGoalStateChanged: onGoal,
       onShellSessionsChanged: onShell,
     });
+    messages.messagesBySession["s1"] = [];
     messages.startUnifiedStream();
     await vi.waitFor(() => expect(streamController).toBeDefined());
     pushSse(streamController, { type: "stream_ready", epoch: "e1" });
@@ -426,6 +431,160 @@ describe("unified chat stream", () => {
       expect(onGoal).toHaveBeenCalledWith("s1", { text: "goal" }),
     );
     expect(onShell).toHaveBeenCalledWith("s1", [{ id: "shell" }]);
+    messages.cleanupConnections();
+  });
+
+  it("fetches a large run_snapshot ref before rendering", async () => {
+    localStorage.setItem("chat.streamMode", "unified");
+    let streamController!: ReadableStreamDefaultController<Uint8Array>;
+    vi.mocked(fetchWithAuth).mockImplementation(async (url) => {
+      const target = String(url);
+      if (target.includes("/chat/stream")) {
+        return new Response(
+          new ReadableStream({
+            start(controller) {
+              streamController = controller;
+            },
+          }),
+          { headers: { "content-type": "text/event-stream" } },
+        );
+      }
+      if (target.includes("/chat/runs/run-snap/snapshot")) {
+        return new Response(
+          JSON.stringify({
+            status: "ok",
+            data: {
+              content: {
+                type: "bot",
+                message: [{ type: "plain", text: "full snapshot" }],
+              },
+            },
+          }),
+          { headers: { "content-type": "application/json" } },
+        );
+      }
+      return new Response(null, { status: 404 });
+    });
+    const onStreamEnd = vi.fn();
+    const messages = useMessages({
+      currentSessionId: ref("s1"),
+      onStreamEnd,
+    });
+    messages.messagesBySession["s1"] = [];
+    messages.startUnifiedStream();
+    await vi.waitFor(() => expect(streamController).toBeDefined());
+    pushSse(streamController, { type: "stream_ready", epoch: "e1" });
+    pushSse(streamController, {
+      type: "run_started",
+      session_id: "s1",
+      seq: 1,
+      message_id: "run-snap",
+      data: { run_id: "run-snap" },
+    });
+    pushSse(streamController, {
+      type: "run_snapshot",
+      session_id: "s1",
+      seq: 2,
+      message_id: "run-snap",
+      data: {
+        content: {
+          snapshot_ref: { run_id: "run-snap", bytes: 70000 },
+        },
+      },
+    });
+    await vi.waitFor(() =>
+      expect(fetchWithAuth).toHaveBeenCalledWith(
+        "/api/v1/chat/runs/run-snap/snapshot",
+        expect.anything(),
+      ),
+    );
+    await vi.waitFor(() =>
+      expect(
+        plainText(messages.messagesBySession["s1"].at(-1) as ChatRecord),
+      ).toContain("full snapshot"),
+    );
+    pushSse(streamController, {
+      type: "end",
+      session_id: "s1",
+      seq: 3,
+      message_id: "run-snap",
+      data: { status: "completed" },
+    });
+    await vi.waitFor(() => expect(onStreamEnd).toHaveBeenCalledWith("s1"));
+    streamController.close();
+    messages.cleanupConnections();
+  });
+
+  it("fetches a large complete text_ref before settling the reply", async () => {
+    localStorage.setItem("chat.streamMode", "unified");
+    let streamController!: ReadableStreamDefaultController<Uint8Array>;
+    vi.mocked(fetchWithAuth).mockImplementation(async (url) => {
+      const target = String(url);
+      if (target.includes("/chat/stream")) {
+        return new Response(
+          new ReadableStream({
+            start(controller) {
+              streamController = controller;
+            },
+          }),
+          { headers: { "content-type": "text/event-stream" } },
+        );
+      }
+      if (target.includes("/chat/runs/m1/snapshot")) {
+        return new Response(
+          JSON.stringify({
+            status: "ok",
+            data: {
+              content: {
+                type: "bot",
+                message: [{ type: "plain", text: "final text" }],
+              },
+            },
+          }),
+          { headers: { "content-type": "application/json" } },
+        );
+      }
+      return new Response(null, { status: 404 });
+    });
+    const onStreamEnd = vi.fn();
+    const messages = useMessages({
+      currentSessionId: ref("s1"),
+      onStreamEnd,
+    });
+    messages.messagesBySession["s1"] = [];
+    messages.startUnifiedStream();
+    await vi.waitFor(() => expect(streamController).toBeDefined());
+    pushSse(streamController, { type: "stream_ready", epoch: "e1" });
+    pushSse(streamController, {
+      type: "run_started",
+      session_id: "s1",
+      seq: 1,
+      message_id: "m1",
+      data: { run_id: "m1" },
+    });
+    pushSse(streamController, {
+      type: "complete",
+      session_id: "s1",
+      seq: 2,
+      message_id: "m1",
+      data: {
+        text_ref: { run_id: "m1", message_id: "m1", bytes: 70000 },
+      },
+    });
+    await vi.waitFor(() =>
+      expect(
+        plainText(messages.messagesBySession["s1"].at(-1) as ChatRecord),
+      ).toContain("final text"),
+    );
+    pushSse(streamController, {
+      type: "end",
+      session_id: "s1",
+      seq: 3,
+      message_id: "m1",
+      data: { status: "completed" },
+    });
+    await vi.waitFor(() => expect(onStreamEnd).toHaveBeenCalledWith("s1"));
+    streamController.close();
     messages.cleanupConnections();
   });
 });

@@ -15,6 +15,13 @@
       </v-icon>
     </button>
 
+    <div
+      v-if="!isExpanded && collapsedResultPreview"
+      class="tool-call-result-preview"
+    >
+      {{ collapsedResultPreview }}
+    </div>
+
     <div v-if="isExpanded" class="tool-call-details">
       <div v-if="toolCall.id" class="tool-call-detail-row">
         <span class="detail-label">ID:</span>
@@ -70,8 +77,17 @@
       </div>
 
       <!-- ── Result ────────────────────────────────────────── -->
+      <div v-if="resultLoading" class="tool-call-detail-row tool-result-status">
+        Loading…
+      </div>
+      <div
+        v-else-if="resultError"
+        class="tool-call-detail-row tool-result-status tool-result-error"
+      >
+        {{ resultError }}
+      </div>
       <!-- apply_patch: one DiffPreview per file so every block carries its path -->
-      <div v-if="applyPatchFiles.length" class="tool-call-detail-row">
+      <div v-else-if="applyPatchFiles.length" class="tool-call-detail-row">
         <span class="detail-label">Result:</span>
         <div class="apply-patch-result">
           <div v-if="applyPatchSummary" class="apply-patch-summary">
@@ -125,13 +141,13 @@
       </div>
 
       <div
-        v-else-if="toolCall.result"
+        v-else-if="hasResult"
         class="tool-call-detail-row"
       >
         <span class="detail-label">Result:</span>
         <ToolResultView
           :tool-name="toolCall.name ?? ''"
-          :result="toolCall.result ?? ''"
+          :result="displayResult"
           :tool-args="toolCall.args"
         />
       </div>
@@ -142,6 +158,8 @@
 <script setup>
 import { computed, onUnmounted, reactive, ref, watch } from "vue";
 import { useModuleI18n } from "@/i18n/composables";
+import { fetchWithAuth } from "@/api/http";
+import { chatApi } from "@/api/v1";
 import {
   parseFileEditResult,
   parseApplyPatchArgs,
@@ -171,6 +189,10 @@ const props = defineProps({
     type: Boolean,
     default: false,
   },
+  messageId: {
+    type: [String, Number],
+    default: null,
+  },
   initialExpanded: {
     type: Boolean,
     default: false,
@@ -187,13 +209,37 @@ const props = defineProps({
 
 const { tm } = useModuleI18n("features/chat");
 const isExpanded = ref(props.initialExpanded);
+const resolvedResult = ref("");
+const resultLoading = ref(false);
+const resultError = ref("");
+// Ticket 05: large tool results arrive as an out-of-band reference instead of
+// an inline `result`, so the card shows a preview and fetches on expand.
+const resultRef = computed(() => {
+  const ref = props.toolCall.result_ref;
+  return ref && typeof ref === "object" ? ref : null;
+});
+const resultPreview = computed(() => String(props.toolCall.result_preview || ""));
+const displayResult = computed(
+  () => resolvedResult.value || String(props.toolCall.result ?? ""),
+);
+const hasResult = computed(
+  () =>
+    Boolean(props.toolCall.result) ||
+    Boolean(resultRef.value) ||
+    Boolean(resolvedResult.value),
+);
+const collapsedResultPreview = computed(() => {
+  const text = resultPreview.value.trim();
+  return text.length > 240 ? `${text.slice(0, 240)}…` : text;
+});
 const currentTime = ref(Date.now() / 1000);
 let timer = null;
 const isRunning = computed(
   () =>
     props.isActive &&
     !props.toolCall.finished_ts &&
-    (props.toolCall.result === undefined || props.toolCall.status === "running") &&
+    ((props.toolCall.result === undefined && !props.toolCall.result_ref) ||
+      props.toolCall.status === "running") &&
     props.toolCall.status !== "interrupted",
 );
 
@@ -252,12 +298,12 @@ const isApplyPatchTool = computed(
 
 const applyPatchSummary = computed(() => {
   if (!isApplyPatchTool.value) return "";
-  return parseApplyPatchDisplay(props.toolCall.result ?? "")?.summary ?? "";
+  return parseApplyPatchDisplay(displayResult.value)?.summary ?? "";
 });
 
 const applyPatchFiles = computed(() => {
   if (!isApplyPatchTool.value) return [];
-  return parseApplyPatchResult(props.toolCall.result ?? "");
+  return parseApplyPatchResult(displayResult.value);
 });
 
 const argEntries = computed(() => {
@@ -320,7 +366,7 @@ const isEditTool = computed(
 // notice-like text inside the edited file's diff content.
 const editToolParsed = computed(() =>
   isEditTool.value
-    ? parseFileEditResult(props.toolCall.result ?? "")
+    ? parseFileEditResult(displayResult.value)
     : null,
 );
 
@@ -338,7 +384,9 @@ const toolCallDuration = computed(() => {
   if (props.toolCall.status === "interrupted") return tm("toolStatus.interrupted");
   if (!props.toolCall.finished_ts && !isRunning.value) {
     return tm(
-      props.toolCall.result === undefined ? "toolStatus.interrupted" : "toolStatus.done",
+      props.toolCall.result === undefined && !props.toolCall.result_ref
+        ? "toolStatus.interrupted"
+        : "toolStatus.done",
     );
   }
   const startTime = Number(props.toolCall.ts);
@@ -361,6 +409,45 @@ const formatDuration = (seconds) => {
     return `${minutes}m ${secs}s`;
   }
 };
+
+const loadFullResult = async () => {
+  const ref = resultRef.value;
+  if (!ref?.run_id || !ref?.tool_call_id) return;
+  if (resolvedResult.value || resultLoading.value) return;
+  resultLoading.value = true;
+  resultError.value = "";
+  try {
+    let response = await fetchWithAuth(
+      chatApi.runToolResultUrl(String(ref.run_id), String(ref.tool_call_id)),
+    );
+    let body = await response.json().catch(() => null);
+    // The run may be gone (history reload); fall back to the persisted message.
+    if ((!response.ok || body?.status === "error") && props.messageId != null) {
+      response = await fetchWithAuth(
+        chatApi.messageToolResultUrl(props.messageId, String(ref.tool_call_id)),
+      );
+      body = await response.json().catch(() => null);
+    }
+    if (!response.ok || body?.status === "error") {
+      throw new Error(body?.message || `Load failed (${response.status})`);
+    }
+    const result = body?.data?.result;
+    resolvedResult.value =
+      typeof result === "string" ? result : JSON.stringify(result ?? "");
+  } catch (error) {
+    resultError.value = String(error?.message || error);
+  } finally {
+    resultLoading.value = false;
+  }
+};
+
+watch(
+  isExpanded,
+  (expanded) => {
+    if (expanded) void loadFullResult();
+  },
+  { immediate: true },
+);
 
 const toggleExpanded = () => {
   isExpanded.value = !isExpanded.value;
@@ -455,6 +542,27 @@ onUnmounted(() => {
   margin-top: 8px;
   padding-left: 26px;
   animation: fadeIn 0.2s ease-in-out;
+}
+
+.tool-call-result-preview {
+  margin: 4px 0 0 24px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+}
+
+.tool-result-status {
+  font-size: 12px;
+  color: rgba(var(--v-theme-on-surface), 0.55);
+}
+
+.tool-result-error {
+  color: rgb(var(--v-theme-error));
 }
 
 .edit-tool-notice {

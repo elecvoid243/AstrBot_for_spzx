@@ -152,6 +152,7 @@
                             <template #details>
                               <IPythonToolBlock
                                 :tool-call="normalizeToolCall(tool)"
+                                :message-id="msg.id"
                                 :is-dark="isDark"
                                 :show-header="false"
                                 :force-expanded="true"
@@ -161,6 +162,7 @@
                           <ToolCallCard
                             v-else
                             :tool-call="normalizeToolCall(tool)"
+                            :message-id="msg.id"
                             :is-dark="isDark"
                             :is-active="Boolean(currSessionId && isSessionRunning(currSessionId) && activeMessages.slice(msgIndex + 1).every(isUserMessage))"
                           />

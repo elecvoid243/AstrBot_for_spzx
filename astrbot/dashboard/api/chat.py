@@ -237,37 +237,56 @@ async def unified_send_chat(
     post_data = await _json_or_none(request)
     if post_data is None:
         return JSONResponse(error("Missing JSON body"), status_code=400)
-    if post_data.get("mode", "send") != "send":
+    mode = str(post_data.get("mode") or "send")
+    if mode not in ("send", "regenerate"):
         return JSONResponse(error("Unsupported send mode"), status_code=400)
-    content = post_data.get("content")
     session_id = post_data.get("session_id")
-    if content is None or not session_id:
-        return JSONResponse(
-            error("Missing session_id or content"),
-            status_code=400,
-        )
-    message_id = str(post_data.get("message_id") or uuid.uuid4())
-    payload = {
-        "session_id": session_id,
-        "message": content,
-        "message_id": message_id,
-    }
-    for key in ("config_id", "selected_provider", "selected_model", "thinking_effort"):
-        value = post_data.get(key)
-        if value is not None:
-            payload[key] = value
-    for key in (
-        "flags",
-        "_skip_user_history",
-        "_llm_checkpoint_id",
-        "selected_stt_provider",
-        "selected_tts_provider",
-        "persona_prompt",
-        "show_reasoning",
-    ):
-        if key in post_data:
-            payload[key] = post_data[key]
+    run_id = str(post_data.get("run_id") or "")
     try:
+        if mode == "regenerate":
+            if not session_id or post_data.get("message_id") is None:
+                return JSONResponse(
+                    error("Missing session_id or message_id"),
+                    status_code=400,
+                )
+            payload = await service.prepare_regenerate_message_payload(
+                auth.username,
+                post_data,
+            )
+            payload["run_id"] = run_id or str(uuid.uuid4())
+        else:
+            content = post_data.get("content")
+            if content is None or not session_id:
+                return JSONResponse(
+                    error("Missing session_id or content"),
+                    status_code=400,
+                )
+            message_id = run_id or str(post_data.get("message_id") or uuid.uuid4())
+            payload = {
+                "session_id": session_id,
+                "message": content,
+                "message_id": message_id,
+            }
+            for key in (
+                "config_id",
+                "selected_provider",
+                "selected_model",
+                "thinking_effort",
+            ):
+                value = post_data.get(key)
+                if value is not None:
+                    payload[key] = value
+            for key in (
+                "flags",
+                "_skip_user_history",
+                "_llm_checkpoint_id",
+                "selected_stt_provider",
+                "selected_tts_provider",
+                "persona_prompt",
+                "show_reasoning",
+            ):
+                if key in post_data:
+                    payload[key] = post_data[key]
         run = await service.start_unified_chat_run(auth.username, payload)
     except ChatServiceError as exc:
         return JSONResponse(error(str(exc)), status_code=400)
@@ -275,7 +294,7 @@ async def unified_send_chat(
         {
             "status": "accepted",
             "session_id": run.session_id,
-            "message_id": message_id,
+            "message_id": run.run_id,
             "run_id": run.run_id,
             "input_message_id": run.user_message_id,
             "detail_path": f"/#/chat/{run.session_id}",

@@ -690,4 +690,155 @@ describe("unified chat stream", () => {
     socket.mockRestore();
     messages.cleanupConnections();
   });
+
+  it("regenerates through the unified endpoint and reuses the optimistic record", async () => {
+    localStorage.setItem("chat.streamMode", "unified");
+    let streamController!: ReadableStreamDefaultController<Uint8Array>;
+    vi.mocked(fetchWithAuth).mockImplementation(async (url) => {
+      const target = String(url);
+      if (target.includes("/chat/stream")) {
+        return new Response(
+          new ReadableStream({
+            start(controller) {
+              streamController = controller;
+            },
+          }),
+          { headers: { "content-type": "text/event-stream" } },
+        );
+      }
+      if (target.includes("/chat/send")) {
+        return new Response(JSON.stringify({ status: "ok", data: {} }), {
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response(null, { status: 404 });
+    });
+    const onStreamEnd = vi.fn();
+    const messages = useMessages({
+      currentSessionId: ref("s1"),
+      onStreamEnd,
+    });
+    const botRecord: ChatRecord = {
+      id: 5,
+      created_at: "2026-11-12T00:00:00Z",
+      content: {
+        type: "bot",
+        message: [{ type: "plain", text: "old answer" }],
+      },
+    };
+    messages.messagesBySession["s1"] = [botRecord];
+    messages.startUnifiedStream();
+    await vi.waitFor(() => expect(streamController).toBeDefined());
+    pushSse(streamController, { type: "stream_ready", epoch: "e" });
+
+    await messages.regenerateMessage("s1", botRecord, "", "", true, undefined, "default");
+
+    const sendCall = vi
+      .mocked(fetchWithAuth)
+      .mock.calls.find(([url]) => String(url).includes("/chat/send"));
+    expect(sendCall).toBeTruthy();
+    const body = JSON.parse(String(sendCall?.[1]?.body));
+    expect(body.mode).toBe("regenerate");
+    expect(body.session_id).toBe("s1");
+    expect(body.message_id).toBe(5);
+    expect(body.run_id).toBeTruthy();
+    expect(messages.isSessionRunning("s1")).toBe(true);
+
+    pushSse(streamController, {
+      type: "run_started",
+      session_id: "s1",
+      seq: 1,
+      message_id: body.run_id,
+      data: { run_id: body.run_id },
+    });
+    pushSse(streamController, {
+      type: "plain",
+      session_id: "s1",
+      seq: 2,
+      message_id: body.run_id,
+      data: "new answer",
+    });
+    pushSse(streamController, {
+      type: "end",
+      session_id: "s1",
+      seq: 3,
+      message_id: body.run_id,
+      data: { status: "completed" },
+    });
+
+    await vi.waitFor(() => expect(onStreamEnd).toHaveBeenCalledWith("s1"));
+    expect(plainText(botRecord)).toContain("new answer");
+    expect(messages.messagesBySession["s1"]).toHaveLength(1);
+    expect(messages.isSessionRunning("s1")).toBe(false);
+    streamController.close();
+    messages.cleanupConnections();
+  });
+
+  it("continues an edited message over the unified endpoint", async () => {
+    localStorage.setItem("chat.streamMode", "unified");
+    let streamController!: ReadableStreamDefaultController<Uint8Array>;
+    vi.mocked(fetchWithAuth).mockImplementation(async (url) => {
+      const target = String(url);
+      if (target.includes("/chat/stream")) {
+        return new Response(
+          new ReadableStream({
+            start(controller) {
+              streamController = controller;
+            },
+          }),
+          { headers: { "content-type": "text/event-stream" } },
+        );
+      }
+      if (target.includes("/chat/send")) {
+        return new Response(JSON.stringify({ status: "ok", data: {} }), {
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response(null, { status: 404 });
+    });
+    const messages = useMessages({ currentSessionId: ref("s1") });
+    const sourceRecord: ChatRecord = {
+      id: 3,
+      created_at: "2026-11-12T00:00:00Z",
+      llm_checkpoint_id: "ckpt-1",
+      content: {
+        type: "user",
+        message: [{ type: "plain", text: "edited question" }],
+      },
+    };
+    messages.messagesBySession["s1"] = [sourceRecord];
+    messages.startUnifiedStream();
+    await vi.waitFor(() => expect(streamController).toBeDefined());
+    pushSse(streamController, { type: "stream_ready", epoch: "e" });
+
+    messages.continueEditedMessage({
+      sessionId: "s1",
+      sourceRecord,
+      configId: "default",
+    });
+
+    await vi.waitFor(() =>
+      expect(
+        vi
+          .mocked(fetchWithAuth)
+          .mock.calls.some(([url]) => String(url).includes("/chat/send")),
+      ).toBe(true),
+    );
+    const sendCall = vi
+      .mocked(fetchWithAuth)
+      .mock.calls.find(([url]) => String(url).includes("/chat/send"));
+    const body = JSON.parse(String(sendCall?.[1]?.body));
+    expect(body.mode).toBe("send");
+    expect(body._skip_user_history).toBe(true);
+    expect(body._llm_checkpoint_id).toBe("ckpt-1");
+    expect(body.content).toEqual([{ type: "plain", text: "edited question" }]);
+    expect(
+      vi
+        .mocked(fetchWithAuth)
+        .mock.calls.some(([url]) => String(url) === "/api/v1/chat"),
+    ).toBe(false);
+    expect(messages.isSessionRunning("s1")).toBe(true);
+    streamController.close();
+    messages.cleanupConnections();
+  });
 });

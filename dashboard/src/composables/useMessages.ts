@@ -1674,10 +1674,11 @@ export function useMessages(options: UseMessagesOptions) {
     thinkingEffort,
     botRecord,
     userRecord,
+    extraPayload = {},
   }: Omit<
     SendMessageStreamOptions,
     "transport" | "skipUserHistory" | "llmCheckpointId"
-  >) {
+  > & { extraPayload?: Record<string, unknown> }) {
     const abort = new AbortController();
     const connection: ActiveConnection = {
       sessionId,
@@ -1703,6 +1704,7 @@ export function useMessages(options: UseMessagesOptions) {
       ...(options.accountRole === "user"
         ? {}
         : { flags: buildChatRequestFlags(enableStreaming) }),
+      ...extraPayload,
     };
 
     fetchWithAuth(chatApi.sendMessageUrl(), {
@@ -1885,6 +1887,28 @@ export function useMessages(options: UseMessagesOptions) {
     });
     messagesBySession[sessionId].push(botRecord);
 
+    if (unifiedMode) {
+      // Edited continuation over the unified endpoint: reuse the latest saved
+      // user turn (skip_user_history) and resume from its checkpoint, so this
+      // run's frames land on the single stream instead of a per-send one.
+      startUnifiedSend({
+        configId,
+        sessionId,
+        messageId,
+        parts,
+        enableStreaming,
+        selectedProvider,
+        selectedModel,
+        thinkingEffort,
+        botRecord,
+        extraPayload: {
+          _skip_user_history: true,
+          _llm_checkpoint_id: sourceRecord.llm_checkpoint_id || null,
+        },
+      });
+      return;
+    }
+
     startSseStream(
       sessionId,
       messageId,
@@ -1923,6 +1947,67 @@ export function useMessages(options: UseMessagesOptions) {
       reasoning: "",
       isLoading: true,
     };
+
+    if (unifiedMode) {
+      // Regeneration over the unified endpoint. The run id is client-chosen
+      // so this optimistic record is already registered when run_started
+      // arrives; otherwise the stream would materialize a second bubble.
+      const runId = crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`;
+      botRecord.id = `local-regenerate-${runId}`;
+      const abort = new AbortController();
+      const connection: ActiveConnection = {
+        sessionId,
+        messageId: runId,
+        runId,
+        transport: "sse",
+        abort,
+        botRecord,
+        botVisible: true,
+      };
+      activeConnections[runId] = connection;
+      markRunRunning(sessionId, runId);
+      fetchWithAuth(chatApi.sendMessageUrl(), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          mode: "regenerate",
+          run_id: runId,
+          session_id: sessionId,
+          message_id: targetMessageId,
+          config_id: configId,
+          selected_provider: selectedProvider || undefined,
+          selected_model: selectedModel || undefined,
+          thinking_effort: thinkingEffort,
+          ...(options.accountRole === "user"
+            ? {}
+            : { flags: buildChatRequestFlags(enableStreaming) }),
+        }),
+        signal: abort.signal,
+      })
+        .then(async (response) => {
+          const body = await response.json().catch(() => null);
+          if (!response.ok || body?.status === "error") {
+            throw new Error(
+              body?.message || `Regenerate failed: ${response.status}`,
+            );
+          }
+          botRecord.threads = [];
+        })
+        .catch((error) => {
+          if (accountRevision !== accountSessionRevision.value) return;
+          Object.assign(botRecord, originalRecord);
+          if (!("created_at" in originalRecord)) delete botRecord.created_at;
+          delete activeConnections[runId];
+          markRunEnded(sessionId, runId);
+          options.onError?.(
+            String((error as Error)?.message || error),
+            sessionId,
+          );
+          options.onStreamEnd?.(sessionId);
+          console.error("Regenerate failed:", error);
+        });
+      return;
+    }
 
     const abort = new AbortController();
     const connection: ActiveConnection = {

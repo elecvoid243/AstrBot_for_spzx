@@ -4503,7 +4503,9 @@ class ChatService:
 
         Args:
             username: Trusted resource owner.
-            post_data: Chat payload; ``message_id`` is reused as the run ID.
+            post_data: Chat payload. A client ``run_id`` wins over
+                ``message_id`` so callers (regenerate) can pre-register the
+                optimistic record under the id the frames will carry.
 
         Returns:
             The started run.
@@ -4511,7 +4513,9 @@ class ChatService:
         Raises:
             ChatServiceError: Input admission failed.
         """
-        message_id = str(post_data.get("message_id") or uuid.uuid4())
+        message_id = str(
+            post_data.get("run_id") or post_data.get("message_id") or uuid.uuid4()
+        )
         payload = {**post_data, "message_id": message_id}
         payload.setdefault("_client_message_id", message_id)
         stream = await self.build_chat_stream(

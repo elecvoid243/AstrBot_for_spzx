@@ -619,6 +619,86 @@ async def test_unified_send_route_returns_receipt_and_http_error():
 
 
 @pytest.mark.asyncio
+async def test_unified_send_route_accepts_regenerate_with_client_run_id():
+    run = SimpleNamespace(session_id="s1", run_id="run-9", user_message_id=None)
+    service = SimpleNamespace(
+        prepare_regenerate_message_payload=AsyncMock(
+            return_value={
+                "session_id": "s1",
+                "message": [{"type": "plain", "text": "hello"}],
+                "flags": {},
+                "_skip_user_history": True,
+                "_llm_checkpoint_id": "ckpt-1",
+            }
+        ),
+        start_unified_chat_run=AsyncMock(return_value=run),
+    )
+    auth = SimpleNamespace(username="alice")
+
+    response = await unified_send_chat(
+        _JsonRequest(
+            {
+                "mode": "regenerate",
+                "session_id": "s1",
+                "message_id": 77,
+                "run_id": "run-9",
+            }
+        ),
+        auth,
+        service,
+    )
+
+    assert response["data"]["run_id"] == "run-9"
+    service.prepare_regenerate_message_payload.assert_awaited_once()
+    sent = service.start_unified_chat_run.await_args.args[1]
+    assert sent["run_id"] == "run-9"
+    assert sent["_skip_user_history"] is True
+    assert sent["_llm_checkpoint_id"] == "ckpt-1"
+
+
+@pytest.mark.asyncio
+async def test_start_unified_chat_run_prefers_client_run_id():
+    service = SimpleNamespace(
+        unified_stream_hub=UnifiedStreamHub(),
+        chat_runs={},
+        _unified_publish_tasks=set(),
+    )
+    seen: dict = {}
+
+    async def fake_build(username, post_data, *, message_id=None):
+        seen["message_id"] = message_id
+        service.chat_runs[message_id] = SimpleNamespace(run_id=message_id)
+
+        async def empty():
+            if False:
+                yield ""
+
+        return empty()
+
+    async def fake_publish(username, run, stream):
+        return None
+
+    service.build_chat_stream = fake_build
+    service._publish_run_to_unified_stream = fake_publish
+
+    run = await ChatService.start_unified_chat_run(
+        service,
+        "alice",
+        {
+            "run_id": "run-9",
+            "message_id": "77",
+            "session_id": "s1",
+            "message": [{"type": "plain", "text": "hi"}],
+        },
+    )
+
+    assert seen["message_id"] == "run-9"
+    assert run.run_id == "run-9"
+    for task in list(service._unified_publish_tasks):
+        task.cancel()
+
+
+@pytest.mark.asyncio
 async def test_large_tool_result_is_ref_and_does_not_block_small_frames():
     hub = UnifiedStreamHub()
     service = ChatService.__new__(ChatService)

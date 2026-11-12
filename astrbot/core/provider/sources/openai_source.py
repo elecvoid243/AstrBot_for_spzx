@@ -1116,19 +1116,33 @@ class ProviderOpenAIOfficial(Provider):
             # on llama.cpp-hosted Qwen). "auto" / "off" keep the provider
             # default since they cannot be expressed via this field.
             if effort and effort not in ("auto", "off"):
+                # DeepSeek-V4.1 accepts a 1-100 numeric reasoning effort, but
+                # only as chat_template_kwargs.reasoning_effort; the request-level
+                # reasoning_effort field is rejected. Numeric values therefore
+                # always take the template channel, regardless of the provider
+                # config. Enum values (e.g. "low" / "max") keep the previous
+                # behavior and only use the template channel when the provider
+                # declares it.
+                numeric_effort = None
+                if isinstance(effort, str) and effort.isdigit():
+                    numeric_effort = int(effort)
+                elif isinstance(effort, int) and not isinstance(effort, bool):
+                    numeric_effort = effort
                 custom_extra_body = self.provider_config.get("custom_extra_body")
-                if isinstance(custom_extra_body, dict) and isinstance(
-                    custom_extra_body.get("chat_template_kwargs"), dict
-                ):
+                use_template_channel = numeric_effort is not None or (
+                    isinstance(custom_extra_body, dict)
+                    and isinstance(custom_extra_body.get("chat_template_kwargs"), dict)
+                )
+                if use_template_channel:
                     # Declaring chat_template_kwargs opts the provider into the
                     # template channel. vLLM-style engines accept continuous
                     # effort values (1-100) only there, and only as integers.
                     existing_ctk = payloads.get("chat_template_kwargs")
                     payloads["chat_template_kwargs"] = {
                         **(existing_ctk if isinstance(existing_ctk, dict) else {}),
-                        "reasoning_effort": int(effort)
-                        if isinstance(effort, str) and effort.isdigit()
-                        else effort,
+                        "reasoning_effort": (
+                            numeric_effort if numeric_effort is not None else effort
+                        ),
                     }
                 else:
                     payloads["reasoning_effort"] = effort

@@ -206,6 +206,32 @@ async def test_openai_thinking_effort_routes_to_ctk_when_provider_declares_it(
     assert payloads["chat_template_kwargs"]["reasoning_effort"] == "max"
 
 
+@pytest.mark.asyncio
+async def test_openai_numeric_effort_always_routes_to_ctk(monkeypatch):
+    # DeepSeek-V4.1 accepts 1-100 only through the template channel, so a
+    # numeric value must not fall back to the request-level field even when
+    # the provider config does not declare chat_template_kwargs.
+    provider = _make_openai_provider(monkeypatch)
+
+    for effort in ("37", 37):
+        payloads, _ = await provider._prepare_chat_payload(
+            prompt="hello",
+            contexts=[],
+            llm_params={"thinking_effort": effort},
+        )
+        assert payloads["chat_template_kwargs"] == {"reasoning_effort": 37}
+        assert "reasoning_effort" not in payloads
+
+    # Enum values keep the previous behavior: request-level by default.
+    payloads, _ = await provider._prepare_chat_payload(
+        prompt="hello",
+        contexts=[],
+        llm_params={"thinking_effort": "max"},
+    )
+    assert payloads["reasoning_effort"] == "max"
+    assert "chat_template_kwargs" not in payloads
+
+
 def test_openai_ollama_override_preserves_explicit_reasoning_effort(monkeypatch):
     provider = _make_openai_provider(
         monkeypatch,

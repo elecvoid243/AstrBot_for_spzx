@@ -1815,6 +1815,51 @@ async def test_query_keeps_custom_ctk_without_override(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_query_numeric_effort_forces_ctk_without_custom_body(monkeypatch):
+    provider = _make_provider()
+    try:
+        captured_kwargs = {}
+
+        async def fake_create(**kwargs):
+            captured_kwargs.update(kwargs)
+            return ChatCompletion.model_validate(
+                {
+                    "id": "chatcmpl-test",
+                    "object": "chat.completion",
+                    "created": 0,
+                    "model": "gpt-4o-mini",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {"role": "assistant", "content": "ok"},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                    "usage": {
+                        "prompt_tokens": 1,
+                        "completion_tokens": 1,
+                        "total_tokens": 2,
+                    },
+                }
+            )
+
+        monkeypatch.setattr(provider.client.chat.completions, "create", fake_create)
+
+        payloads, _ = await provider._prepare_chat_payload(
+            prompt="hello",
+            contexts=[],
+            llm_params={"thinking_effort": "37"},
+        )
+        await provider._query(payloads=payloads, tools=None)
+
+        extra_body = captured_kwargs["extra_body"]
+        assert extra_body["chat_template_kwargs"] == {"reasoning_effort": 37}
+        assert "reasoning_effort" not in extra_body
+    finally:
+        await provider.terminate()
+
+
+@pytest.mark.asyncio
 async def test_parse_openai_completion_raises_empty_model_output_error():
     provider = _make_provider()
     try:

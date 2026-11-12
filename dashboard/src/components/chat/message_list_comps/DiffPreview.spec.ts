@@ -42,7 +42,7 @@ function buildDiffContent(totalLines: number): string {
 
 /**
  * Build a diff large enough that its raw text length exceeds the
- * default `maxChars` (2000) so the `truncated` computed becomes
+ * default `maxChars` (3000) so the `truncated` computed becomes
  * `true`. Each line carries a padding string to inflate the byte
  * count without changing the parse-count of lines / hunks.
  */
@@ -78,12 +78,12 @@ function mountDiff(totalLines = 100): VueWrapper {
 
 /**
  * Mount variant that produces a diff whose raw text is long enough
- * (>2000 chars) to engage the `truncated` computed, so the
+ * (>3000 chars) to engage the `truncated` computed, so the
  * truncation-warning v-if has something to assert against.
  */
 function mountLongDiff(): VueWrapper {
   // 300 lines × ~30 chars per padded line ≈ >9 KB. Plenty beyond
-  // the 2000-char default `maxChars`, so `truncated === true`.
+  // the 3000-char default `maxChars`, so `truncated === true`.
   return mount(DiffPreview, {
     props: {
       content: buildLongDiffContent(300, "abcdefghijklmnopqrstuvwxyz"),
@@ -235,7 +235,11 @@ describe("DiffPreview truncation warning visibility", () => {
 
     const warnings = wrapper.findAll(".diff-truncation-warning");
     expect(warnings.length).toBe(1);
-    expect(warnings[0].text()).toContain("Diff truncated");
+    // The banner text is localized; assert against the zh-CN string
+    // minus its `{n}` placeholder so a wording change stays in one place.
+    expect(warnings[0].text()).toContain(
+      zh.diffPreview.truncated.split("{n}")[0].trim(),
+    );
   });
 
   it("hides the warning after the user clicks 'Show all' inline", async () => {

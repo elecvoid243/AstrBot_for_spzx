@@ -791,8 +791,8 @@ def _format_result(
 
     if result.diff:
         diff_preview = result.diff
-        if len(diff_preview) > 2000:
-            diff_preview = diff_preview[:2000] + "\n... (diff truncated)"
+        if len(diff_preview) > 3000:
+            diff_preview = diff_preview[:3000] + "\n... (diff truncated)"
         lines.append("")
         lines.append("Diff:")
         lines.append("```diff")

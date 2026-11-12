@@ -831,7 +831,8 @@
       "expandLines": "Expand {n} lines",
       "unavailable": "No base revision is available in this view — overlay unavailable",
       "collapse": "Collapse"
-    }
+    },
+    "truncated": "⚠ Diff truncated (showing first {n} characters)"
   },
   "spcodeProjectLoad": {
     "menuItem": "Load Project Directory",

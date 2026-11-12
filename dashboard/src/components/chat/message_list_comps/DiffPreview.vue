@@ -113,8 +113,7 @@
     <!-- Diff hunks — hidden when collapsed -->
     <div v-if="!isCollapsed" class="diff-body">
       <div v-if="showTruncationWarning" class="diff-truncation-warning">
-        ⚠ Diff truncated (showing first
-        {{ maxChars.toLocaleString() }} characters)
+        {{ tm("diffPreview.truncated", { n: maxChars.toLocaleString() }) }}
       </div>
 
       <!-- Unified mode: the original single-column layout.
@@ -710,8 +709,7 @@
           <!-- Diff body -->
           <div v-if="!isCollapsed" class="diff-body">
             <div v-if="showTruncationWarning" class="diff-truncation-warning">
-              ⚠ Diff truncated (showing first
-              {{ maxChars.toLocaleString() }} characters)
+              {{ tm("diffPreview.truncated", { n: maxChars.toLocaleString() }) }}
             </div>
 
             <!-- Unified mode (fullscreen copy) -->
@@ -1284,7 +1282,7 @@ const props = withDefaults(
     overlayUnavailable: "",
     overlaySupported: false,
     maxLines: 30,
-    maxChars: 2000,
+    maxChars: 3000,
     collapsible: true,
     isDark: false,
     commentable: true,

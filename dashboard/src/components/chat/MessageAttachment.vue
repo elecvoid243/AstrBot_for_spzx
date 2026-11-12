@@ -55,7 +55,7 @@
       <span class="file-part-kind">{{ presentation.label }}</span>
     </div>
     <v-btn
-      v-if="downloadable !== false"
+      v-if="downloadable"
       :class="{ 'file-part-action': !sent }"
       icon="mdi-download"
       :aria-label="tm('workspaceFiles.download')"
@@ -91,14 +91,22 @@ import {
   attachmentPresentation,
 } from "./attachmentPresentation";
 import { useModuleI18n } from "@/i18n/composables";
-const props = defineProps<{
-  part: MessagePart;
-  src?: string;
-  sent?: boolean;
-  busy?: boolean;
-  disabled?: boolean;
-  downloadable?: boolean;
-}>();
+const props = withDefaults(
+  defineProps<{
+    part: MessagePart;
+    src?: string;
+    sent?: boolean;
+    busy?: boolean;
+    disabled?: boolean;
+    downloadable?: boolean;
+  }>(),
+  {
+    // Vue casts an absent Boolean prop to false. Default to true so local
+    // attachments keep their download action; remote resources opt out
+    // explicitly with :downloadable="false".
+    downloadable: true,
+  },
+);
 const emit = defineEmits<{ preview: [url: string]; download: [] }>();
 const { tm } = useModuleI18n("features/chat");
 const presentation = computed(() => attachmentPresentation(props.part));

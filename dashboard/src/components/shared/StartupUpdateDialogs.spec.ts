@@ -27,9 +27,11 @@ const mocks = vi.hoisted(() => ({
   market: vi.fn(),
   start: vi.fn(),
   activeRuns: vi.fn(),
+  core: vi.fn(),
+  progress: vi.fn(),
 }));
 vi.mock("@/api/v1", () => ({
-  updatesApi: { check: mocks.check },
+  updatesApi: { check: mocks.check, core: mocks.core, progress: mocks.progress },
   pluginApi: { list: mocks.list, update: mocks.update },
   chatApi: { activeRuns: mocks.activeRuns },
 }));
@@ -91,6 +93,7 @@ describe("startup update dialogs", () => {
 
   afterEach(() => {
     vi.useRealTimers();
+    vi.restoreAllMocks();
   });
 
   async function settle() {
@@ -268,18 +271,38 @@ describe("startup update dialogs", () => {
     wrapper.unmount();
   });
 
-  it("waits for the user to be idle before prompting", async () => {
+  it("prompts immediately on the first dashboard entry after a backend start", async () => {
     mocks.list.mockResolvedValue({ data: { status: "ok", data: [] } });
     const wrapper = shallowMount(StartupUpdateDialogs);
     await settle();
     const vm = wrapper.vm as any;
-    expect(vm.coreOpen).toBe(false);
+    expect(vm.coreOpen).toBe(true);
+    wrapper.unmount();
+  });
 
-    await vi.advanceTimersByTimeAsync(29_000);
-    expect(vm.coreOpen).toBe(false);
+  it("waits for the user to be idle before prompting on a later check", async () => {
+    mocks.list.mockResolvedValue({ data: { status: "ok", data: [] } });
+    const wrapper = shallowMount(StartupUpdateDialogs);
+    await settle();
+    const vm = wrapper.vm as any;
+    expect(vm.coreOpen).toBe(true);
+    vm.closeCore();
 
+    // A newer release surfaces on the next throttled check. The user is active
+    // right before it runs, so this one must wait out the idle window.
+    mocks.check.mockResolvedValue({
+      data: {
+        status: "success",
+        data: { has_new_version: true },
+        message: "\nChanges\n\nVersion: v3.0.0 | Published at: today",
+      },
+    });
+    await vi.advanceTimersByTimeAsync(10 * 60_000 - 1_000);
     window.dispatchEvent(new Event("pointerdown"));
-    await vi.advanceTimersByTimeAsync(29_000);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(vm.coreOpen).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(28_000);
     expect(vm.coreOpen).toBe(false);
 
     await vi.advanceTimersByTimeAsync(1_000);
@@ -333,7 +356,47 @@ describe("startup update dialogs", () => {
     for (const dialog of dialogs) {
       // A bare boolean prop renders as an empty attribute; false renders "false".
       expect(dialog.attributes("persistent")).not.toBe("false");
+      // Scrollable pins the action row so the close button never scrolls out
+      // of view behind a long changelog.
+      expect(dialog.attributes("scrollable")).not.toBe("false");
     }
+    wrapper.unmount();
+  });
+
+  it("reboots after updating and reloads once the new process is up", async () => {
+    mocks.list.mockResolvedValue({ data: { status: "ok", data: [] } });
+    mocks.core.mockResolvedValue({ data: { status: "ok" } });
+    mocks.progress.mockResolvedValue({
+      data: {
+        status: "ok",
+        data: {
+          status: "running",
+          stage: "restart",
+          overall_percent: 98,
+          message: "更新成功，正在准备重启...",
+        },
+      },
+    });
+    // The old process reports 123; the restarted one reports 456.
+    mocks.start.mockResolvedValueOnce(123).mockResolvedValue(456);
+    const replace = vi
+      .spyOn(window.location, "replace")
+      .mockImplementation(() => undefined);
+
+    const wrapper = shallowMount(StartupUpdateDialogs);
+    await settle();
+    const vm = wrapper.vm as any;
+    expect(vm.coreOpen).toBe(true);
+
+    void vm.updateCore();
+    await vi.advanceTimersByTimeAsync(1_000);
+    await vi.advanceTimersByTimeAsync(1_000);
+    await settle();
+
+    expect(mocks.core).toHaveBeenCalledWith(
+      expect.objectContaining({ reboot: true }),
+    );
+    expect(replace).toHaveBeenCalled();
     wrapper.unmount();
   });
 });

@@ -21,6 +21,9 @@ const ACTIVE_RUN_RECHECK_MS = 15_000;
 // Release checks hit GitHub and the plugin market, so a running instance
 // refreshes at this cadence instead of on every start_time tick.
 const CHECK_INTERVAL_MS = 10 * 60_000;
+// A reboot:true update replaces the process; the page reloads once the new
+// process reports a different start_time. Allow a cold start this long.
+const RESTART_TIMEOUT_MS = 90_000;
 const ACTIVITY_EVENTS = [
   "pointerdown",
   "pointermove",
@@ -43,6 +46,7 @@ const busy = ref(false);
 const message = ref("");
 const progress = ref(null);
 const coreDone = ref(false);
+const restarting = ref(false);
 const desktop = ref(false);
 const runtime = ref(null);
 const dismissed = ref({ core: "", plugins: {} });
@@ -58,6 +62,11 @@ let disposed = false;
 let checkedStart = null;
 let lastCheckAt = 0;
 let lastActivity = Date.now();
+// The first dashboard entry after a backend start announces immediately
+// instead of waiting for the idle window. Consumed by the first completed
+// check so a later release still respects the idle gate.
+let initialEntryPending = true;
+let promptImmediately = false;
 
 function loadDismissed(start) {
   try {
@@ -85,7 +94,8 @@ function rememberDismissed() {
 async function tryOpen() {
   if (disposed || busy.value || coreOpen.value || pluginsOpen.value) return;
   if (!release.value && !plugins.value.length) return;
-  if (Date.now() - lastActivity < IDLE_MS) return scheduleOpen();
+  if (!promptImmediately && Date.now() - lastActivity < IDLE_MS)
+    return scheduleOpen();
   // A hidden tab is not "idle but present": wait for visibilitychange so the
   // modal does not ambush the user when they come back.
   if (document.visibilityState !== "visible") return;
@@ -97,7 +107,9 @@ async function tryOpen() {
     return scheduleOpen(ACTIVE_RUN_RECHECK_MS);
   }
   if (disposed || busy.value || coreOpen.value || pluginsOpen.value) return;
-  if (Date.now() - lastActivity < IDLE_MS) return scheduleOpen();
+  if (!promptImmediately && Date.now() - lastActivity < IDLE_MS)
+    return scheduleOpen();
+  promptImmediately = false;
   if (release.value) coreOpen.value = true;
   else if (plugins.value.length) pluginsOpen.value = true;
 }
@@ -106,7 +118,9 @@ function scheduleOpen(delay = 0) {
   clearTimeout(openTimer);
   openTimer = null;
   if (disposed || (!release.value && !plugins.value.length)) return;
-  const wait = Math.max(delay, IDLE_MS - (Date.now() - lastActivity));
+  const wait = promptImmediately
+    ? delay
+    : Math.max(delay, IDLE_MS - (Date.now() - lastActivity));
   openTimer = setTimeout(() => {
     openTimer = null;
     void tryOpen();
@@ -258,6 +272,16 @@ async function checkStartup() {
     } else complete = false;
     if (disposed) return;
     if (complete || nextRelease || nextPlugins.length) checkedStart = start;
+    // First entry into the dashboard for this backend process: skip the idle
+    // wait. A dismissal stored for this runtime means the prompt already
+    // surfaced once, so the usual idle gate applies instead.
+    const alreadyPrompted =
+      !!dismissed.value.core || Object.keys(dismissed.value.plugins).length > 0;
+    promptImmediately =
+      initialEntryPending &&
+      !alreadyPrompted &&
+      !!(nextRelease || nextPlugins.length);
+    initialEntryPending = false;
     release.value = nextRelease;
     plugins.value = nextPlugins;
     selected.value = nextPlugins.map((p) => p.name);
@@ -311,44 +335,105 @@ function closePlugins() {
   selected.value = [];
 }
 
+// Poll the new process until it reports a different start_time, then reload so
+// the freshly written dashboard assets are actually served.
+async function waitForRestart(initialStartTime) {
+  restarting.value = true;
+  message.value = zh.value
+    ? "更新完成，正在重启 AstrBot..."
+    : "Update applied. Restarting AstrBot...";
+  const deadline = Date.now() + RESTART_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    try {
+      const next = await store.fetchStartTime();
+      if (next && next !== -1 && String(next) !== String(initialStartTime)) {
+        const url = new URL(window.location.href);
+        url.searchParams.set("_r", Date.now().toString());
+        window.location.replace(url.toString());
+        return;
+      }
+    } catch (_error) {
+      // The backend is still shutting down or booting; keep waiting.
+    }
+  }
+  // Nothing left to do automatically: hand the restart back to the user.
+  coreDone.value = false;
+  throw new Error(
+    zh.value
+      ? "更新已完成，但后端未在预期时间内重启，请手动重启 AstrBot。"
+      : "The update was applied, but the backend did not restart in time. Restart AstrBot manually.",
+  );
+}
+
 async function updateCore() {
   busy.value = true;
+  restarting.value = false;
   message.value = "";
+  const initialStartTime = runtime.value;
   const id =
     globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`;
   try {
     const response = await updatesApi.core({
       version: release.value.version,
-      reboot: false,
+      // Apply the new files immediately instead of asking for a manual restart.
+      reboot: true,
       proxy: proxy(),
       progress_id: id,
     });
     if (response.data.status === "error")
       throw new Error(response.data.message);
+    let sawProgress = false;
+    let waitForReboot = false;
     while (true) {
       await new Promise((resolve) => setTimeout(resolve, 1000));
-      const result = await updatesApi.progress(id);
+      let result;
+      try {
+        result = await updatesApi.progress(id);
+      } catch (error) {
+        // The backend drops HTTP while it replaces the process.
+        if (!sawProgress) throw error;
+        waitForReboot = true;
+        break;
+      }
       if (result.data.status === "error") throw new Error(result.data.message);
       const task = result.data.data;
+      // A backend restart drops the progress entry, so polling would answer
+      // "idle" forever and `busy` would never clear — leaving the dialog with
+      // a permanently disabled close button.
+      if (task?.status === "idle" && sawProgress) {
+        waitForReboot = true;
+        break;
+      }
+      sawProgress = true;
       progress.value = task?.overall_percent ?? 0;
       message.value = task?.message || "";
       if (task?.status === "error") throw new Error(task.message);
+      if (task?.stage === "restart") {
+        waitForReboot = true;
+        break;
+      }
       if (task?.status === "success") {
-        coreDone.value = true;
         // The new files are on disk but the process still reports the old
-        // version until restart; remember the dismissal so a re-check while
-        // it is still running does not offer the same release again.
+        // version until it restarts; remember the dismissal so a re-check
+        // while it is still running does not offer the same release again.
         if (release.value) {
           dismissed.value.core = release.value.version;
           rememberDismissed();
         }
+        waitForReboot = true;
         break;
       }
+    }
+    if (waitForReboot) {
+      coreDone.value = true;
+      await waitForRestart(initialStartTime);
     }
   } catch (error) {
     message.value = error?.message || String(error);
   } finally {
     busy.value = false;
+    restarting.value = false;
   }
 }
 
@@ -378,6 +463,7 @@ async function updatePlugins() {
     :model-value="coreOpen"
     max-width="680"
     persistent
+    scrollable
   >
     <v-card rounded="xl">
       <v-card-title class="text-h3 pa-4 pb-0 pl-6"
@@ -399,7 +485,13 @@ async function updatePlugins() {
           />
         </div>
         <v-progress-linear
-          v-if="busy"
+          v-if="restarting"
+          indeterminate
+          color="primary"
+          class="mt-4"
+        />
+        <v-progress-linear
+          v-else-if="busy"
           :model-value="progress"
           color="primary"
           class="mt-4"
@@ -438,6 +530,7 @@ async function updatePlugins() {
     :model-value="pluginsOpen"
     max-width="640"
     persistent
+    scrollable
   >
     <v-card rounded="xl">
       <v-card-title class="text-h3 pa-4 pb-0 pl-6"
@@ -452,7 +545,7 @@ async function updatePlugins() {
               : "Select plugins to update. They will be installed one at a time."
           }}
         </p>
-        <div class="plugin-list">
+        <div>
           <div v-for="item in plugins" :key="item.name" class="plugin-row">
             <v-checkbox
               v-model="selected"
@@ -503,15 +596,9 @@ async function updatePlugins() {
 
 <style scoped>
 .update-notes {
-  max-height: min(70vh, calc(100dvh - 210px));
-  overflow-y: auto;
   padding: 16px;
   border-radius: 12px;
   background: rgba(var(--v-theme-on-surface), 0.04);
-}
-.plugin-list {
-  max-height: min(64vh, calc(100dvh - 230px));
-  overflow-y: auto;
 }
 .plugin-row {
   display: flex;

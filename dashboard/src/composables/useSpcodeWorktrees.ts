@@ -141,6 +141,47 @@ export interface UseSpcodeWorktrees {
 const DEFAULT_POLL_MS = 30_000
 
 /**
+ * In-flight coalescing for the worktree list (v3.10, 2026-11-13).
+ *
+ * Three components instantiate this composable independently
+ * (`FileAccessModeChip`, `SpcodeProjectIndicator`, `GitDiffSidebar`), so a
+ * single session switch used to fire 5-6 identical `GET /spcode/git-worktrees`
+ * requests within ~70ms. Each cold call costs two git subprocesses on the
+ * backend, so the burst is pure waste. Concurrent callers now share one
+ * request; the entry is dropped as soon as it settles, so a later refresh
+ * (polling, sidebar open, mutations) still gets fresh data.
+ *
+ * Per-instance abort semantics are preserved by checking each caller's own
+ * AbortController after the shared promise resolves — a superseded instance
+ * simply ignores the result instead of cancelling it for everyone.
+ */
+let sharedWorktreesInflight: {
+  key: string
+  promise: ReturnType<
+    typeof pluginExtensionApi.get<SpcodeGitWorktreesRawResponse>
+  >
+} | null = null
+
+function fetchWorktreesShared(
+  umo: string,
+): ReturnType<typeof pluginExtensionApi.get<SpcodeGitWorktreesRawResponse>> {
+  if (sharedWorktreesInflight && sharedWorktreesInflight.key === umo) {
+    return sharedWorktreesInflight.promise
+  }
+  const promise = pluginExtensionApi.get<SpcodeGitWorktreesRawResponse>(
+    'spcode/git-worktrees',
+    { params: { umo } },
+  )
+  const entry = { key: umo, promise }
+  sharedWorktreesInflight = entry
+  const clear = () => {
+    if (sharedWorktreesInflight === entry) sharedWorktreesInflight = null
+  }
+  void promise.then(clear, clear)
+  return promise
+}
+
+/**
  * Composable for the worktree list.
  *
  * Per spec §3.3, this composable does NOT watch umo — it operates on the
@@ -181,23 +222,18 @@ export function useSpcodeWorktrees(): UseSpcodeWorktrees {
     if (!umo) return
 
     abortController?.abort()
-    abortController = new AbortController()
+    const ctrl = new AbortController()
+    abortController = ctrl
     const isFirst = state.value.kind !== 'ok'
     if (isFirst) state.value = { kind: 'loading' }
     try {
-      const resp = await pluginExtensionApi.get<SpcodeGitWorktreesRawResponse>(
-        'spcode/git-worktrees',
-        {
-          params: { umo },
-          signal: abortController.signal,
-        },
-      )
-      if (!isMounted) return
+      const resp = await fetchWorktreesShared(umo)
+      if (!isMounted || ctrl.signal.aborted) return
       const data = resp.data?.data
       if (!data) throw new Error('empty response data')
       state.value = { kind: 'ok', snapshot: parseSpcodeGitWorktrees(data) }
     } catch (err) {
-      if (!isMounted) return
+      if (!isMounted || ctrl.signal.aborted) return
       if ((err as { name?: string })?.name === 'CanceledError') return
       const prev = state.value.kind === 'ok' ? state.value.snapshot : undefined
       state.value = {

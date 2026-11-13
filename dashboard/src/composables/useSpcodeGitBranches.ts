@@ -5,7 +5,7 @@
 // for the read path (state / refresh / polling / dispose). Mutation
 // methods (switch / create / delete) are added in Task 4.
 
-import { ref, watch, type Ref } from "vue";
+import { ref, toValue, watch, type MaybeRef, type Ref } from "vue";
 import { pluginExtensionApi } from "@/api/v1";
 import { useSpcodeSession } from "@/composables/useSpcodeSession";
 import {
@@ -96,7 +96,9 @@ const RETRYABLE_REASONS: readonly string[] = [
   "directory_missing",
 ];
 
-export function useSpcodeGitBranches(): UseSpcodeGitBranches {
+export function useSpcodeGitBranches(
+  enabled: MaybeRef<boolean> = true,
+): UseSpcodeGitBranches {
   const state = ref<BranchesFetchState>({ kind: "idle" });
   const session = useSpcodeSession({ requireScoped: true });
   let abortController: AbortController | null = null;
@@ -245,6 +247,8 @@ export function useSpcodeGitBranches(): UseSpcodeGitBranches {
     () => session.umo.value,
     (newUmo, oldUmo) => {
       if (!isMounted) return;
+      // v3.10: 侧栏关闭时不跟会话切换发请求(GitDiffSidebar 打开时会主动 refresh)。
+      if (!toValue(enabled)) return;
       // 2026-08-13: project switches defer the fetch ~500ms instead of
       // firing the instant the umo flips (rapid switches coalesce).
       if (newUmo && newUmo !== oldUmo) refreshDelayed();
@@ -261,6 +265,7 @@ export function useSpcodeGitBranches(): UseSpcodeGitBranches {
     () => session.directory.value,
     (newDir, oldDir) => {
       if (!isMounted) return;
+      if (!toValue(enabled)) return;
       if (newDir && newDir !== oldDir) refreshDelayed();
     },
   );

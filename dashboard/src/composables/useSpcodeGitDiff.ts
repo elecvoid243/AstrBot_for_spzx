@@ -51,6 +51,7 @@ const DEFAULT_POLL_MS = 10_000;
 export function useSpcodeGitDiff(
   worktreeRef: MaybeRef<string | null> = null,
   scopeRef: MaybeRef<GitDiffScope> = DEFAULT_SCOPE,
+  enabled: MaybeRef<boolean> = true,
 ): UseSpcodeGitDiff {
   const state = ref<GitDiffFetchState>({ kind: "idle" });
   const session = useSpcodeSession();
@@ -178,7 +179,7 @@ export function useSpcodeGitDiff(
   watch(
     [() => toValue(worktreeRef), () => toValue(scopeRef)],
     () => {
-      if (isMounted) void refresh();
+      if (isMounted && toValue(enabled)) void refresh();
     },
     { flush: "post" },
   );
@@ -187,6 +188,8 @@ export function useSpcodeGitDiff(
     () => session.umo.value,
     (newUmo, oldUmo) => {
       if (!isMounted) return;
+      // v3.10: 侧栏关闭时不跟会话切换发请求(GitDiffSidebar 打开时会主动 refresh)。
+      if (!toValue(enabled)) return;
       if (newUmo && newUmo !== oldUmo) {
         void refresh();
       }
@@ -196,6 +199,7 @@ export function useSpcodeGitDiff(
     () => session.directory.value,
     (newDir, oldDir) => {
       if (!isMounted) return;
+      if (!toValue(enabled)) return;
       if (newDir && newDir !== oldDir && session.umo.value) {
         void refresh();
       }

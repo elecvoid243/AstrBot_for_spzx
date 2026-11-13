@@ -51,6 +51,7 @@ function classifyThrown(err: unknown): string {
 
 export function useSpcodeGitConflict(
   worktreeRef: MaybeRef<string | null> = null,
+  enabled: MaybeRef<boolean> = true,
 ): UseSpcodeGitConflict {
   const state = ref<ConflictFetchState>({ kind: "idle" });
   const session = useSpcodeSession({ requireScoped: true });
@@ -120,6 +121,8 @@ export function useSpcodeGitConflict(
     [() => session.umo.value, () => toValue(worktreeRef)],
     () => {
       if (!isMounted) return;
+      // v3.10: 侧栏关闭时不跟会话切换发请求(GitDiffSidebar 打开时会主动 refresh)。
+      if (!toValue(enabled)) return;
       etagMap.clear();
       void refresh();
     },

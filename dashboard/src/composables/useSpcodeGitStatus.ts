@@ -44,6 +44,7 @@ const DEFAULT_POLL_MS = 10_000;
 
 export function useSpcodeGitStatus(
   worktreeRef: MaybeRef<string | null> = null,
+  enabled: MaybeRef<boolean> = true,
 ): UseSpcodeGitStatus {
   const state = ref<GitStatusFetchState>({ kind: "idle" });
   const session = useSpcodeSession();
@@ -115,7 +116,7 @@ export function useSpcodeGitStatus(
   watch(
     () => toValue(worktreeRef),
     () => {
-      if (isMounted) void refresh();
+      if (isMounted && toValue(enabled)) void refresh();
     },
     { flush: "post" },
   );
@@ -128,6 +129,8 @@ export function useSpcodeGitStatus(
     () => session.umo.value,
     (newUmo, oldUmo) => {
       if (!isMounted) return;
+      // v3.10: 侧栏关闭时不跟会话切换发请求(GitDiffSidebar 打开时会主动 refresh)。
+      if (!toValue(enabled)) return;
       if (newUmo && newUmo !== oldUmo) {
         void refresh();
       }
@@ -137,6 +140,7 @@ export function useSpcodeGitStatus(
     () => session.directory.value,
     (newDir, oldDir) => {
       if (!isMounted) return;
+      if (!toValue(enabled)) return;
       if (newDir && newDir !== oldDir && session.umo.value) {
         void refresh();
       }

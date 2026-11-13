@@ -519,8 +519,16 @@ if (_persistedWorktree !== null && _persistedWorktree !== "null") {
 }
 
 const worktreesComposable = useSpcodeWorktrees();
+
+// v3.10 (2026-11-13): the sidebar stays mounted while closed, so its
+// composables used to fire git-status / git-diff / git-branches /
+// git-conflict on every session switch even though nothing was visible.
+// Those four are sidebar-only consumers, so gate their umo/directory
+// watchers on visibility; the modelValue watchers below still refresh
+// everything explicitly when the sidebar opens.
+const sidebarActive = computed(() => props.modelValue);
 const worktreeDropdownTarget = ref<HTMLElement | null>(null);
-const branchesComposable = useSpcodeGitBranches();
+const branchesComposable = useSpcodeGitBranches(sidebarActive);
 const branchList = computed(() => {
   const s = branchesComposable.state.value;
   return s.kind === "ok" ? s.snapshot.branches : [];
@@ -900,14 +908,18 @@ watch(fileBrowserCurrentPath, (newPath) => {
 // is attached immediately after `currentRoot` is declared (further down),
 // because Vue's analyser hoists variable usage but TypeScript does not.
 
-const composable = useSpcodeGitDiff(selectedWorktree, selectedScope);
+const composable = useSpcodeGitDiff(
+  selectedWorktree,
+  selectedScope,
+  sidebarActive,
+);
 const fileDiff = useSpcodeFileDiff();
 // git-status is fetched alongside git-diff ONLY for the unstaged view.
 // The endpoint is complementary (branch / untracked / intent-to-add)
 // and is not relevant to staged or all-scope views. Lifecycle
 // (refresh + 10s polling + dispose) is wired in the modelValue / viewMode
 // watcher and onBeforeUnmount below.
-const gitStatus = useSpcodeGitStatus(selectedWorktree);
+const gitStatus = useSpcodeGitStatus(selectedWorktree, sidebarActive);
 const expandedSet = ref<Set<string>>(new Set());
 
 // ── Git workflow composables (spec 2026-06-24 §3.2) ──────────────
@@ -948,7 +960,7 @@ const gitRemoteSync = useSpcodeGitRemoteSync();
 // 2026-08-21 git-stash: stash dialog owns list + push; worktree is read
 // from selectedWorktree at call time (dialog-driven fetch, no polling).
 const gitStash = useSpcodeGitStash(selectedWorktree);
-const gitConflict = useSpcodeGitConflict(selectedWorktree);
+const gitConflict = useSpcodeGitConflict(selectedWorktree, sidebarActive);
 
 // ── .gitignore editor overlay (2026-07-17, latency rework 2026-07-18) ─
 // Spec: docs/superpowers/specs/2026-07-17-gitignore-editor-design.md

@@ -50,6 +50,19 @@ _UTF_BOMS = (
     b"\xff\xfe\x00\x00",
     b"\x00\x00\xfe\xff",
 )
+# Longest BOM first: UTF-32-LE starts with the UTF-16-LE BOM bytes.
+_BOM_PREFIXES: tuple[tuple[bytes, str], ...] = (
+    (b"\x00\x00\xfe\xff", "utf-32-be"),
+    (b"\xff\xfe\x00\x00", "utf-32-le"),
+    (b"\xef\xbb\xbf", "utf-8"),
+    (b"\xfe\xff", "utf-16-be"),
+    (b"\xff\xfe", "utf-16-le"),
+)
+# Legacy CJK encodings whose byte ranges overlap. Detection decodes with each
+# candidate and keeps the most plausible text (see _encoding_plausibility).
+# EUC-KR is intentionally absent: GBK text decodes to Hangul under EUC-KR, so
+# it cannot be told apart without language detection and would shadow GBK.
+_DETECT_ENCODINGS = ("utf-8", "gb18030", "big5", "shift_jis", "cp1252")
 _ZIP_MAGIC_PREFIXES = (
     b"PK\x03\x04",
     b"PK\x05\x06",
@@ -204,6 +217,136 @@ def detect_text_encoding(sample: bytes) -> str | None:
             return encoding
 
     return None
+
+
+def split_bom_prefix(raw_bytes: bytes) -> tuple[bytes, str]:
+    """Split a leading byte-order mark from file bytes.
+
+    Args:
+        raw_bytes: Raw file bytes, or a leading sample.
+
+    Returns:
+        A tuple of (BOM prefix, codec). Returns ``(b"", "")`` when no BOM is
+        present. The codec keeps the explicit endianness variant so that
+        re-encoding reproduces the original BOM instead of the platform default.
+    """
+    for prefix, codec in _BOM_PREFIXES:
+        if raw_bytes.startswith(prefix):
+            return prefix, codec
+    return b"", ""
+
+
+def _decode_candidate(
+    raw_bytes: bytes,
+    encoding: str,
+    *,
+    allow_tail_truncation: bool,
+) -> str | None:
+    """Decode bytes with one codec, optionally tolerating a cut sample tail."""
+    try:
+        return raw_bytes.decode(encoding)
+    except (UnicodeDecodeError, LookupError) as exc:
+        if not allow_tail_truncation or not isinstance(exc, UnicodeDecodeError):
+            return None
+        # A sniff sample can end in the middle of a multibyte sequence.
+        if exc.start >= len(raw_bytes) - 4:
+            for trim_bytes in range(1, min(4, len(raw_bytes)) + 1):
+                try:
+                    return raw_bytes[:-trim_bytes].decode(encoding)
+                except UnicodeDecodeError:
+                    continue
+        return None
+
+
+def _encoding_plausibility(text: str) -> float:
+    """Score decoded text to disambiguate overlapping legacy CJK encodings.
+
+    A successful decode alone cannot separate GBK, Big5 and Shift-JIS because
+    their byte ranges overlap. Kana strongly indicates Japanese, private-use
+    characters indicate Big5 bytes misread as GB18030, and halfwidth kana or
+    control characters indicate a wrong decode.
+
+    Args:
+        text: Decoded text.
+
+    Returns:
+        A per-character plausibility score; higher is more plausible.
+    """
+    if not text:
+        return 0.0
+    score = 0.0
+    for char in text:
+        code = ord(char)
+        if 0x3040 <= code <= 0x30FF:
+            score += 2.0
+        elif 0xE000 <= code <= 0xF8FF:
+            score -= 3.0
+        elif 0xFF61 <= code <= 0xFF9F:
+            score -= 2.0
+        elif code < 32 and char not in "\n\r\t\f\b":
+            score -= 3.0
+    return score / len(text)
+
+
+def detect_encoding_with_bom(
+    raw_bytes: bytes,
+    *,
+    allow_tail_truncation: bool = False,
+) -> tuple[str, bytes] | None:
+    """Detect a text encoding while preserving the original BOM variant.
+
+    Args:
+        raw_bytes: Whole file bytes, or a leading sample for sniffing.
+        allow_tail_truncation: Tolerate a multibyte character cut off at the
+            end of a sample. Keep false when decoding a whole file.
+
+    Returns:
+        ``(codec, bom_prefix)`` when the bytes look like text, otherwise None.
+        ``bom_prefix`` must be written back verbatim to preserve the original
+        BOM, including UTF-16/32 endianness.
+    """
+    if _looks_like_known_binary(raw_bytes):
+        return None
+
+    bom, bom_codec = split_bom_prefix(raw_bytes)
+    if bom:
+        body = raw_bytes[len(bom) :]
+        if (
+            _decode_candidate(
+                body, bom_codec, allow_tail_truncation=allow_tail_truncation
+            )
+            is None
+        ):
+            return None
+        return bom_codec, bom
+
+    if not raw_bytes:
+        return "utf-8", b""
+
+    # UTF-8 is by far the common case; check it first and skip the other
+    # candidates when it decodes cleanly.
+    decoded = _decode_candidate(
+        raw_bytes, "utf-8", allow_tail_truncation=allow_tail_truncation
+    )
+    if decoded is not None and _looks_like_text(decoded):
+        return "utf-8", b""
+
+    best_encoding: str | None = None
+    best_score = 0.0
+    for encoding in _DETECT_ENCODINGS:
+        if encoding == "utf-8":
+            continue
+        decoded = _decode_candidate(
+            raw_bytes, encoding, allow_tail_truncation=allow_tail_truncation
+        )
+        if decoded is None or not _looks_like_text(decoded):
+            continue
+        score = _encoding_plausibility(decoded)
+        if best_encoding is None or score > best_score:
+            best_encoding, best_score = encoding, score
+    if best_encoding is None:
+        return None
+    return best_encoding, b""
 
 
 def read_local_text_range_sync(

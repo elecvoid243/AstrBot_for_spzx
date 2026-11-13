@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from astrbot.core.computer.file_read_utils import detect_encoding_with_bom
 from astrbot.core.tools.computer_tools.edit_engine import (
     adjusted_replacement,
     bytes_edit_file,
@@ -126,6 +127,59 @@ def test_bytes_edit_file_reports_contents_and_diff():
     assert result.old_content == "a\nb\n"
     assert result.new_content == "a\nB\n"
     assert "+B" in result.diff
+
+
+def test_bytes_edit_file_auto_detects_gbk_and_keeps_encoding():
+    raw = "你好世界\nabc\n".encode("gbk")
+
+    out, result = bytes_edit_file(raw, "abc", "xyz")
+
+    assert result.encoding == "gb18030"
+    assert out == "你好世界\nxyz\n".encode("gbk")
+
+
+def test_bytes_edit_file_auto_detects_big5():
+    raw = "這是一個測試檔案\nabc\n".encode("big5")
+
+    out, result = bytes_edit_file(raw, "abc", "xyz")
+
+    assert result.encoding == "big5"
+    assert out == "這是一個測試檔案\nxyz\n".encode("big5")
+
+
+def test_bytes_edit_file_preserves_utf16_bom_and_endianness():
+    raw = "你好世界\r\nabc\r\n".encode("utf-16")
+
+    out, result = bytes_edit_file(raw, "abc", "xyz")
+
+    assert result.encoding.startswith("utf-16")
+    assert out == "你好世界\r\nxyz\r\n".encode("utf-16")
+
+
+def test_bytes_edit_file_rejects_undetectable_binary():
+    with pytest.raises(ValueError, match="unable to detect"):
+        bytes_edit_file(b"\x00\x01\x02\xff\xfe\x00", "a", "b")
+
+
+def test_bytes_edit_file_explicit_encoding_overrides_detection():
+    raw = "你好世界\nabc\n".encode("gbk")
+
+    out, result = bytes_edit_file(raw, "abc", "xyz", encoding="gbk")
+
+    assert result.encoding == "gbk"
+    assert out == "你好世界\nxyz\n".encode("gbk")
+
+
+def test_detect_encoding_with_bom_preserves_bom_variant():
+    assert detect_encoding_with_bom(b"\xef\xbb\xbfabc") == ("utf-8", b"\xef\xbb\xbf")
+    assert detect_encoding_with_bom("你好".encode("utf-16")) == (
+        "utf-16-le",
+        b"\xff\xfe",
+    )
+    assert detect_encoding_with_bom(b"\xfe\xff" + "你好".encode("utf-16-be")) == (
+        "utf-16-be",
+        b"\xfe\xff",
+    )
 
 
 def test_decode_text_bytes_strips_bom_and_normalizes_crlf():

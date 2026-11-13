@@ -1435,3 +1435,61 @@ class TestChangedFilesRecording:
             assert history == f"No edit history found for: {target}"
         else:
             assert "Total: 1 backup(s)." in history
+
+
+@pytest.mark.asyncio
+async def test_file_edit_tool_preserves_gbk_encoding(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+):
+    from astrbot.core.tools.computer_tools.edit_history import EditHistoryManager
+
+    workspace = _setup_local_fs_tools(monkeypatch, tmp_path)
+    manager = EditHistoryManager(base_dir=tmp_path / "history")
+    monkeypatch.setattr(fs_tools, "get_history_manager", lambda: manager)
+    target = workspace / "gbk.txt"
+    target.write_bytes("你好世界\nabc\n".encode("gbk"))
+
+    result = await fs_tools.FileEditTool().call(
+        _make_context(), str(target), old="abc", new="xyz"
+    )
+
+    assert result.startswith(f"Edited {target}.")
+    assert "Encoding: gb18030 (preserved)." in result
+    assert target.read_bytes() == "你好世界\nxyz\n".encode("gbk")
+
+
+@pytest.mark.asyncio
+async def test_file_edit_tool_rejects_binary_file_without_writing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+):
+    from astrbot.core.tools.computer_tools.edit_history import EditHistoryManager
+
+    workspace = _setup_local_fs_tools(monkeypatch, tmp_path)
+    manager = EditHistoryManager(base_dir=tmp_path / "history")
+    monkeypatch.setattr(fs_tools, "get_history_manager", lambda: manager)
+    target = workspace / "binary.dat"
+    original = b"\x00\x01\x02\xff\xfe\x00"
+    target.write_bytes(original)
+
+    result = await fs_tools.FileEditTool().call(
+        _make_context(), str(target), old="a", new="b"
+    )
+
+    assert result.startswith("Error editing file:")
+    assert "unable to detect" in result
+    assert target.read_bytes() == original
+
+
+@pytest.mark.asyncio
+async def test_grep_tool_finds_gbk_text(monkeypatch: pytest.MonkeyPatch, tmp_path):
+    workspace = _setup_local_fs_tools(monkeypatch, tmp_path)
+    text_path = workspace / "gbk.txt"
+    text_path.write_bytes("你好世界\nabc\n".encode("gbk"))
+
+    result = await fs_tools.GrepTool().call(
+        _make_context(), pattern="你好", path="gbk.txt"
+    )
+
+    assert "你好世界" in result

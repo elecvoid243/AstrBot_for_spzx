@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import fnmatch
 import hashlib
 import locale
 import os
@@ -19,10 +20,12 @@ from typing import Any
 import psutil
 
 if sys.version_info < (3, 14):
+    from python_ripgrep import files as rg_files
     from python_ripgrep import search
 
 from astrbot.api import logger
 from astrbot.core.computer.file_read_utils import (
+    detect_encoding_with_bom,
     detect_text_encoding,
     read_local_text_range_sync,
 )
@@ -438,6 +441,216 @@ def _decode_bytes_with_fallback(
 
 def _decode_shell_output(output: bytes | None) -> str:
     return _decode_bytes_with_fallback(output, preferred_encoding="utf-8")
+
+
+_SEARCH_SNIFF_BYTES = 8192
+_SEARCH_MAX_FALLBACK_BYTES = 32 * 1024 * 1024
+_SEARCH_LINE_PATH_RE = re.compile(r"^(.*?)([:-])(\d+)([:-])")
+_SEARCH_WALK_LIMIT = 20000
+_SEARCH_WALK_SKIP_DIRS = {
+    ".git",
+    ".hg",
+    ".svn",
+    "__pycache__",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    "node_modules",
+    "venv",
+    ".venv",
+    "dist",
+    "build",
+}
+
+
+def _expand_glob_braces(pattern: str) -> list[str]:
+    """Expand ``*.{ts,tsx}``-style braces into individual glob patterns."""
+    match = re.search(r"\{([^{}]+)\}", pattern)
+    if match is None:
+        return [pattern]
+    prefix, suffix = pattern[: match.start()], pattern[match.end() :]
+    return [
+        expanded
+        for part in match.group(1).split(",")
+        for expanded in _expand_glob_braces(prefix + part + suffix)
+    ]
+
+
+def _matches_search_glob(file_path: str, root: str, glob: str | None) -> bool:
+    """Match a discovered path against rg's ``-g`` glob semantics."""
+    if not glob:
+        return True
+    base = root if os.path.isdir(root) else os.path.dirname(root)
+    try:
+        relative = os.path.relpath(file_path, base).replace(os.sep, "/")
+    except ValueError:
+        relative = file_path.replace(os.sep, "/")
+    for pattern in _expand_glob_braces(glob):
+        if fnmatch.fnmatch(relative, pattern) or fnmatch.fnmatch(
+            os.path.basename(relative), pattern
+        ):
+            return True
+    return False
+
+
+def _rg_listed_files(root: str) -> list[str]:
+    """List files with ripgrep so .gitignore and hidden-file rules are honoured."""
+    if sys.version_info < (3, 14):
+        try:
+            return list(rg_files(patterns=[], paths=[root]))
+        except Exception:
+            return []
+
+    rg_path = shutil.which("rg")
+    if not rg_path:
+        return []
+    try:
+        result = subprocess.run(
+            [rg_path, "--files", "--", root],
+            capture_output=True,
+            timeout=30,
+            **_NO_WINDOW_KWARGS,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if result.returncode != 0:
+        return []
+    return _decode_bytes_with_fallback(
+        result.stdout, preferred_encoding="utf-8"
+    ).splitlines()
+
+
+def _discover_search_files(root: str, glob: str | None) -> list[str]:
+    """List files under a search root, honouring ignore rules where possible."""
+    if os.path.isfile(root):
+        return [root] if _matches_search_glob(root, root, glob) else []
+
+    candidates = _rg_listed_files(root)
+    if not candidates:
+        # rg-based discovery failed (or rg is absent): walk with hard bounds so
+        # a large workspace cannot stall the search.
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = [
+                name
+                for name in dirnames
+                if name not in _SEARCH_WALK_SKIP_DIRS and not name.startswith(".")
+            ]
+            candidates.extend(os.path.join(dirpath, name) for name in filenames)
+            if len(candidates) >= _SEARCH_WALK_LIMIT:
+                candidates = candidates[:_SEARCH_WALK_LIMIT]
+                break
+    return [
+        candidate
+        for candidate in candidates
+        if _matches_search_glob(candidate, root, glob)
+    ]
+
+
+def _non_utf8_text_files(
+    root: str,
+    glob: str | None,
+) -> list[tuple[str, str, bytes]]:
+    """Find text files that ripgrep cannot search with its default UTF-8 mode.
+
+    Args:
+        root: File or directory to search.
+        glob: Optional rg-style glob filter.
+
+    Returns:
+        A list of (path, codec, BOM prefix) tuples for non-UTF-8 text files.
+    """
+    found: list[tuple[str, str, bytes]] = []
+    for file_path in _discover_search_files(root, glob):
+        try:
+            size = os.path.getsize(file_path)
+            if size > _SEARCH_MAX_FALLBACK_BYTES:
+                continue
+            with open(file_path, "rb") as handle:
+                samples = [handle.read(_SEARCH_SNIFF_BYTES)]
+                # An ASCII-only head says nothing about later lines: legacy
+                # encoded comments often sit below an English header.
+                if samples[0].isascii() and size > len(samples[0]):
+                    handle.seek(max(0, size - _SEARCH_SNIFF_BYTES))
+                    samples.append(handle.read(_SEARCH_SNIFF_BYTES))
+        except OSError:
+            continue
+        for sample in samples:
+            try:
+                sample.decode("utf-8")
+                continue
+            except UnicodeDecodeError:
+                pass
+            detected = detect_encoding_with_bom(sample, allow_tail_truncation=True)
+            if detected is not None and detected[0] != "utf-8":
+                found.append((file_path, detected[0], detected[1]))
+                break
+    return found
+
+
+def _scan_file_with_encoding(
+    file_path: str,
+    *,
+    pattern: str,
+    encoding: str,
+    bom_prefix: bytes,
+    after_context: int,
+    before_context: int,
+    include_path: bool,
+) -> str:
+    """Search one non-UTF-8 text file with Python and format rg-like output."""
+    try:
+        raw_bytes = Path(file_path).read_bytes()
+        text = raw_bytes[len(bom_prefix) :].decode(encoding)
+        regex = re.compile(pattern)
+    except (OSError, UnicodeDecodeError, re.error):
+        return ""
+
+    lines = text.splitlines(keepends=True)
+    match_indexes = [
+        index for index, line in enumerate(lines) if regex.search(line.rstrip("\r\n"))
+    ]
+    if not match_indexes:
+        return ""
+
+    groups: list[list] = []
+    for index in match_indexes:
+        start = max(0, index - before_context)
+        end = min(len(lines), index + after_context + 1)
+        if groups and start <= groups[-1][1]:
+            groups[-1][1] = max(groups[-1][1], end)
+            groups[-1][2].add(index)
+        else:
+            groups.append([start, end, {index}])
+
+    chunks: list[str] = []
+    for group_index, (start, end, matches) in enumerate(groups):
+        if group_index and (after_context or before_context):
+            chunks.append("--\n")
+        for index in range(start, end):
+            body = lines[index].rstrip("\r\n")
+            if include_path:
+                separator = ":" if index in matches else "-"
+                prefix = f"{file_path}{separator}{index + 1}{separator}"
+            else:
+                separator = ":" if index in matches else "-"
+                prefix = f"{index + 1}{separator}"
+            chunks.append(f"{prefix}{body}\n")
+    return "".join(chunks)
+
+
+def _drop_lines_for_paths(output: str, skip_paths: set[str]) -> str:
+    """Remove rg output lines belonging to files handled by the fallback."""
+    if not skip_paths:
+        return output
+    kept: list[str] = []
+    for line in output.splitlines(keepends=True):
+        match = _SEARCH_LINE_PATH_RE.match(line)
+        if match:
+            raw_path = match.group(1)
+            if os.path.normcase(os.path.abspath(raw_path)) in skip_paths:
+                continue
+        kept.append(line)
+    return "".join(kept)
 
 
 async def _cancel_task_bounded(task: asyncio.Task, timeout: float = 5) -> None:
@@ -1948,6 +2161,45 @@ class LocalFileSystemComponent(FileSystemComponent):
         before_context: int | None = None,
     ) -> dict[str, Any]:
         def _run() -> dict[str, Any]:
+            search_root = path or "."
+            try:
+                fallback_targets = _non_utf8_text_files(search_root, glob)
+            except Exception as exc:
+                logger.debug("Encoding-aware search discovery failed: %s", exc)
+                fallback_targets = []
+            skip_paths = {
+                os.path.normcase(os.path.abspath(target[0]))
+                for target in fallback_targets
+            }
+            after = after_context or 0
+            before = before_context or 0
+            include_path = not os.path.isfile(search_root)
+
+            def _fallback_output() -> str:
+                # rg cannot transcode legacy encodings (GBK/Big5/Shift-JIS),
+                # so those files are decoded and searched here instead.
+                return "".join(
+                    _scan_file_with_encoding(
+                        file_path,
+                        pattern=pattern,
+                        encoding=encoding,
+                        bom_prefix=bom_prefix,
+                        after_context=after,
+                        before_context=before,
+                        include_path=include_path,
+                    )
+                    for file_path, encoding, bom_prefix in fallback_targets
+                )
+
+            if os.path.isfile(search_root) and fallback_targets:
+                # A single non-UTF-8 file is fully handled by the fallback;
+                # skipping rg avoids duplicate matches (rg prints no path for
+                # single-file searches, so output cannot be de-duplicated).
+                return {
+                    "success": True,
+                    "content": _truncate_long_lines(_fallback_output()),
+                }
+
             if sys.version_info < (3, 14):
                 results = search(
                     patterns=[pattern],
@@ -1957,9 +2209,10 @@ class LocalFileSystemComponent(FileSystemComponent):
                     before_context=before_context,
                     line_number=True,
                 )
+                fast_output = _drop_lines_for_paths("".join(results), skip_paths)
                 return {
                     "success": True,
-                    "content": _truncate_long_lines("".join(results)),
+                    "content": _truncate_long_lines(fast_output + _fallback_output()),
                 }
 
             rg_path = shutil.which("rg")
@@ -2009,12 +2262,16 @@ class LocalFileSystemComponent(FileSystemComponent):
                 result.stdout, preferred_encoding="utf-8"
             )
             if result.returncode == 0:
+                stdout = _drop_lines_for_paths(stdout, skip_paths)
                 return {
                     "success": True,
-                    "content": _truncate_long_lines(stdout),
+                    "content": _truncate_long_lines(stdout + _fallback_output()),
                 }
             if result.returncode == 1:
-                return {"success": True, "content": ""}
+                return {
+                    "success": True,
+                    "content": _truncate_long_lines(_fallback_output()),
+                }
 
             stderr = _decode_bytes_with_fallback(
                 result.stderr, preferred_encoding="utf-8"

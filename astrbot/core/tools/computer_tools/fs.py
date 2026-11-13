@@ -787,6 +787,7 @@ def _format_result(
     lines = [
         f"Edited {path}.",
         f"Replaced {result.replacements} occurrence(s) using {mode_text} mode.",
+        f"Encoding: {result.encoding} (preserved).",
     ]
 
     if result.diff:
@@ -835,7 +836,8 @@ class FileEditTool(FunctionTool):
         "strip the leading `path:line:` first. "
         "Fails if `old` is not found, or if found multiple times when `replace_all` is false. "
         "Use `replace_all=true` for renaming across the file. "
-        "Automatically saves a backup before each edit.\n\n"
+        "Automatically saves a backup before each edit. The file's encoding is "
+        "auto-detected and preserved; pass `encoding` only to override detection.\n\n"
         "## Mode 2 — List history (only `path`, or `list_history=true`)\n"
         "Show all backups with timestamps and IDs for rollback.\n\n"
         "## Mode 3 — Rollback (`path` + `backup_id`, no `old`/`new`)\n"
@@ -875,6 +877,15 @@ class FileEditTool(FunctionTool):
                     ),
                     "default": True,
                 },
+                "encoding": {
+                    "type": "string",
+                    "description": (
+                        "[Edit Mode] Text encoding. Omit to auto-detect and preserve "
+                        "the file's existing encoding (UTF-8 with/without BOM, "
+                        "UTF-16/32 with BOM, GBK/GB18030, Big5, Shift-JIS). "
+                        "Set explicitly to override detection, e.g. `gbk`."
+                    ),
+                },
                 "backup_id": {
                     "type": "string",
                     "description": "[Rollback Mode] Backup ID to restore.",
@@ -899,6 +910,7 @@ class FileEditTool(FunctionTool):
         strict_indent: bool = True,
         backup_id: str | None = None,
         list_history: bool = False,
+        encoding: str | None = None,
     ) -> ToolExecResult:
         if fs_access.get_mode(context) is fs_access.FileAccessMode.READONLY:
             return _READONLY_WRITE_ERROR
@@ -965,6 +977,7 @@ class FileEditTool(FunctionTool):
                 strict_indent,
                 local_env,
                 history_mgr,
+                encoding,
             )
 
         except PermissionError as exc:
@@ -1074,6 +1087,7 @@ class FileEditTool(FunctionTool):
         strict_indent: bool,
         local_env: bool,
         history_mgr,
+        encoding: str | None = None,
     ) -> str:
         umo = str(context.context.event.unified_msg_origin)
 
@@ -1110,7 +1124,7 @@ class FileEditTool(FunctionTool):
                     new,
                     replace_all=replace_all,
                     strict_indent=strict_indent,
-                    encoding="utf-8",
+                    encoding=encoding,
                 )
             except ValueError as exc:
                 return f"Error editing file: {exc}"

@@ -13,13 +13,21 @@ Implements 9 fallback replacers to handle LLM-generated edits that may have:
 from __future__ import annotations
 
 import asyncio
+import codecs
 import difflib
+import locale
 import os
+import sys
 import weakref
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
+
+from astrbot.core.computer.file_read_utils import (
+    detect_encoding_with_bom,
+    split_bom_prefix,
+)
 
 Replacer = Callable[[str, str], Iterator[str]]
 
@@ -948,11 +956,63 @@ class EditResult:
     error: str = ""
     old_content: str = ""
     new_content: str = ""
+    encoding: str = "utf-8"
 
 
 # ---------------------------------------------------------------------------
 # Async file edit with locking and line-ending preservation (local runtime)
 # ---------------------------------------------------------------------------
+
+
+def resolve_edit_encoding(
+    encoding: str | None,
+    raw_bytes: bytes,
+) -> tuple[str, bytes]:
+    """Resolve the codec and BOM prefix used to decode and re-encode an edit.
+
+    Args:
+        encoding: Explicit codec name, or None to auto-detect from the file.
+        raw_bytes: Original file bytes.
+
+    Returns:
+        A tuple of (codec, BOM prefix). The BOM prefix must be written back
+        verbatim so UTF-8 BOMs and UTF-16/32 endianness survive the edit.
+
+    Raises:
+        ValueError: If auto-detection fails or the explicit name is unknown.
+    """
+    bom, bom_codec = split_bom_prefix(raw_bytes)
+    if encoding is None:
+        detected = detect_encoding_with_bom(raw_bytes)
+        if detected is None:
+            raise ValueError(
+                "unable to detect the file's text encoding; pass `encoding` "
+                "explicitly (e.g. 'gbk', 'big5', 'shift_jis')"
+            )
+        return detected
+
+    name = encoding.strip().lower().replace("_", "-")
+    if name in ("utf-8", "utf8"):
+        return "utf-8", bom if bom_codec == "utf-8" else b""
+    if name in ("utf-8-sig", "utf-8-bom", "utf8-sig", "utf8-bom", "utf-8 bom"):
+        return "utf-8", b"\xef\xbb\xbf"
+    if name == "ansi":
+        if sys.platform == "win32":
+            import ctypes
+
+            name = f"cp{ctypes.windll.kernel32.GetACP()}"
+        else:
+            name = locale.getpreferredencoding(False) or "utf-8"
+    if name in ("utf-16", "utf16"):
+        if bom_codec.startswith("utf-16"):
+            return bom_codec, bom
+        name = "utf-16"
+    elif name in ("utf-32", "utf32"):
+        if bom_codec.startswith("utf-32"):
+            return bom_codec, bom
+        name = "utf-32"
+    codecs.lookup(name)
+    return name, bom if name == bom_codec else b""
 
 
 def bytes_edit_file(
@@ -962,29 +1022,40 @@ def bytes_edit_file(
     *,
     replace_all: bool = False,
     strict_indent: bool = True,
-    encoding: str = "utf-8",
+    encoding: str | None = None,
 ) -> tuple[bytes, EditResult]:
     """
     Core line-ending-aware edit logic operating on raw bytes.
 
     Performs:
-    1. BOM detection and preservation
+    1. Encoding detection (or explicit override) and BOM preservation
     2. Line-ending detection (CRLF vs LF)
     3. Normalize to LF for matching (replacer chain works on LF)
     4. Execute robust_replace()
-    5. Convert back to original line endings
-    6. Re-attach BOM if present
+    5. Convert back to the original line endings and encoding
+    6. Re-attach the original BOM
+
+    Args:
+        raw_bytes: Original file bytes.
+        old_string: Text to replace.
+        new_string: Replacement text.
+        replace_all: Replace every match instead of the first one.
+        strict_indent: Preserve the file's indentation for fuzzy matches.
+        encoding: Explicit codec name. None auto-detects the file's encoding
+            and writes the result back in that same encoding.
 
     Returns:
         (output_bytes, EditResult) — the caller is responsible for writing
         *output_bytes* back to the file.
 
     Raises:
-        ValueError: If old_string cannot be found or is not unique.
+        ValueError: If the encoding cannot be detected, or old_string cannot
+            be found or is not unique.
     """
-    normalized_content, original_ending, has_bom = decode_text_bytes(
-        raw_bytes, encoding
-    )
+    resolved_encoding, bom_prefix = resolve_edit_encoding(encoding, raw_bytes)
+    text = raw_bytes[len(bom_prefix) :].decode(resolved_encoding)
+    original_ending = _detect_line_ending(text)
+    normalized_content = _normalize_line_endings(text)
     old_content = (
         _convert_to_line_ending(normalized_content, "\r\n")
         if original_ending == "\r\n"
@@ -1006,14 +1077,13 @@ def bytes_edit_file(
         strict_indent=strict_indent,
     )
 
-    # Convert back to original line endings for the result payload
+    # Convert back to original line endings for both the payload and the bytes.
     new_content = (
         _convert_to_line_ending(new_content_lf, "\r\n")
         if original_ending == "\r\n"
         else new_content_lf
     )
-
-    write_bytes = encode_text_bytes(new_content_lf, original_ending, has_bom, encoding)
+    write_bytes = bom_prefix + new_content.encode(resolved_encoding)
 
     # Generate unified diff
     diff = build_unified_diff("", old_content, new_content)
@@ -1024,6 +1094,7 @@ def bytes_edit_file(
         diff=diff,
         old_content=old_content,
         new_content=new_content,
+        encoding=resolved_encoding,
     )
     return write_bytes, result
 
@@ -1034,13 +1105,14 @@ async def edit_file(
     new_string: str,
     *,
     replace_all: bool = False,
-    encoding: str = "utf-8",
+    encoding: str | None = None,
 ) -> EditResult:
     """
     Edit a file using the robust multi-strategy replacer.
 
     Features:
     - File-level asyncio lock prevents concurrent edits
+    - Auto-detects the file encoding and writes back in the same encoding
     - Preserves original line endings (\\n vs \\r\\n)
     - Preserves BOM if present
     - Returns unified diff of changes

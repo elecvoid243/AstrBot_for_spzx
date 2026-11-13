@@ -90,7 +90,8 @@ def test_local_file_system_component_searches_with_rg_glob_and_context(monkeypat
     )
 
     assert result == {"success": True, "content": "src\\demo.py:4:needle\n"}
-    assert calls == [
+    # Discovery may run `rg --files` first; the search invocation is last.
+    assert calls[-1] == (
         (
             [
                 r"C:\tools\rg.exe",
@@ -114,7 +115,7 @@ def test_local_file_system_component_searches_with_rg_glob_and_context(monkeypat
                 **({"creationflags": 0x08000000} if sys.platform == "win32" else {}),
             },
         )
-    ]
+    )
 
 
 def test_local_file_system_component_treats_rg_no_match_as_success(monkeypatch):
@@ -283,3 +284,93 @@ def test_local_file_system_component_reports_rg_launch_error(monkeypatch):
         "content": "",
         "error": "Unable to start ripgrep: rg launch failed",
     }
+
+
+def test_local_file_system_component_searches_gbk_file(monkeypatch, tmp_path: Path):
+    target = tmp_path / "gbk.txt"
+    target.write_bytes("你好世界\nabc\n".encode("gbk"))
+    monkeypatch.setattr(local_booter.sys, "version_info", (3, 13))
+    monkeypatch.setattr(
+        local_booter,
+        "search",
+        lambda **_kwargs: pytest.fail("rg cannot search GBK text"),
+        raising=False,
+    )
+
+    result = asyncio.run(
+        LocalFileSystemComponent().search_files("你好", path=str(target))
+    )
+
+    assert result == {"success": True, "content": "1:你好世界\n"}
+
+
+def test_local_file_system_component_searches_mixed_encodings(
+    monkeypatch, tmp_path: Path
+):
+    utf8_path = tmp_path / "utf8.txt"
+    utf8_path.write_text("你好世界\n", encoding="utf-8")
+    gbk_path = tmp_path / "gbk.txt"
+    gbk_path.write_bytes("你好世界\n".encode("gbk"))
+    monkeypatch.setattr(local_booter.sys, "version_info", (3, 13))
+    monkeypatch.setattr(
+        local_booter,
+        "search",
+        lambda **_kwargs: [f"{utf8_path}:1:你好世界\n"],
+        raising=False,
+    )
+
+    result = asyncio.run(
+        LocalFileSystemComponent().search_files("你好", path=str(tmp_path))
+    )
+
+    assert result["success"] is True
+    assert "utf8.txt:1:你好世界" in result["content"]
+    assert "gbk.txt:1:你好世界" in result["content"]
+
+
+def test_local_file_system_component_search_glob_applies_to_fallback(
+    monkeypatch, tmp_path: Path
+):
+    (tmp_path / "gbk.txt").write_bytes("你好世界\n".encode("gbk"))
+    monkeypatch.setattr(local_booter.sys, "version_info", (3, 13))
+    monkeypatch.setattr(local_booter, "search", lambda **_kwargs: [], raising=False)
+
+    result = asyncio.run(
+        LocalFileSystemComponent().search_files("你好", path=str(tmp_path), glob="*.py")
+    )
+
+    assert result == {"success": True, "content": ""}
+
+
+def test_local_file_system_component_skips_binary_in_fallback(
+    monkeypatch, tmp_path: Path
+):
+    (tmp_path / "binary.dat").write_bytes(b"\x00\x01\x02\xff\xfe\x00")
+    monkeypatch.setattr(local_booter.sys, "version_info", (3, 13))
+    monkeypatch.setattr(local_booter, "search", lambda **_kwargs: [], raising=False)
+
+    result = asyncio.run(
+        LocalFileSystemComponent().search_files(".", path=str(tmp_path))
+    )
+
+    assert result == {"success": True, "content": ""}
+
+
+def test_local_file_system_component_searches_utf16_file_once(
+    monkeypatch, tmp_path: Path
+):
+    target = tmp_path / "utf16.txt"
+    target.write_bytes("你好世界\n".encode("utf-16"))
+    monkeypatch.setattr(local_booter.sys, "version_info", (3, 13))
+    monkeypatch.setattr(
+        local_booter,
+        "search",
+        lambda **_kwargs: pytest.fail("single non-UTF-8 file must use the fallback"),
+        raising=False,
+    )
+
+    result = asyncio.run(
+        LocalFileSystemComponent().search_files("你好", path=str(target))
+    )
+
+    assert result == {"success": True, "content": "1:你好世界\n"}

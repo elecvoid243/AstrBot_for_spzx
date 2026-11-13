@@ -145,6 +145,115 @@ describe("unified chat stream", () => {
     messages.cleanupConnections();
   });
 
+  it("clears both run markers when a human send is captured as a follow-up", async () => {
+    localStorage.setItem("chat.streamMode", "unified");
+    let streamController!: ReadableStreamDefaultController<Uint8Array>;
+    vi.mocked(fetchWithAuth).mockImplementation(async (url) => {
+      const target = String(url);
+      if (target.includes("/chat/stream")) {
+        return new Response(
+          new ReadableStream({
+            start(controller) {
+              streamController = controller;
+            },
+          }),
+          { headers: { "content-type": "text/event-stream" } },
+        );
+      }
+      if (target.includes("/chat/send")) {
+        return new Response(
+          JSON.stringify({
+            status: "ok",
+            data: { run_id: "m2", input_message_id: 2 },
+          }),
+          { headers: { "content-type": "application/json" } },
+        );
+      }
+      return new Response(null, { status: 404 });
+    });
+    const onStreamEnd = vi.fn();
+    const messages = useMessages({
+      currentSessionId: ref("s1"),
+      onStreamEnd,
+    });
+    messages.messagesBySession["s1"] = [];
+    messages.startUnifiedStream();
+    await vi.waitFor(() => expect(streamController).toBeDefined());
+    pushSse(streamController, { type: "stream_ready", epoch: "server-epoch" });
+    // Let `stream_ready` (which clears every running marker) settle before
+    // the runs below start, otherwise it wipes their markers retroactively.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const firstParts = [{ type: "plain" as const, text: "first" }];
+    const first = messages.createLocalExchange({
+      sessionId: "s1",
+      messageId: "m1",
+      parts: firstParts,
+    });
+    messages.sendMessageStream({
+      sessionId: "s1",
+      messageId: "m1",
+      parts: firstParts,
+      transport: "sse",
+      ...first,
+    });
+    pushSse(streamController, {
+      type: "run_started",
+      session_id: "s1",
+      seq: 1,
+      message_id: "m1",
+      data: { run_id: "m1", input_message: { id: 1 } },
+    });
+    await vi.waitFor(() => expect(messages.isSessionRunning("s1")).toBe(true));
+
+    // The user sends while the run is still active; the backend accepts the
+    // message as a follow-up instead of starting a second run.
+    const secondParts = [{ type: "plain" as const, text: "follow up" }];
+    const second = messages.createLocalExchange({
+      sessionId: "s1",
+      messageId: "m2",
+      parts: secondParts,
+    });
+    messages.sendMessageStream({
+      sessionId: "s1",
+      messageId: "m2",
+      parts: secondParts,
+      transport: "sse",
+      ...second,
+    });
+    await vi.waitFor(() => expect(fetchWithAuth).toHaveBeenCalledTimes(3));
+
+    pushSse(streamController, {
+      type: "follow_up_captured",
+      session_id: "s1",
+      seq: 2,
+      message_id: "m2",
+      data: { target_run_id: "m1" },
+    });
+    pushSse(streamController, {
+      type: "end",
+      session_id: "s1",
+      seq: 3,
+      message_id: "m2",
+      data: { status: "completed" },
+    });
+    // The original run keeps streaming after the follow-up is merged and
+    // ends on its own id.
+    pushSse(streamController, {
+      type: "end",
+      session_id: "s1",
+      seq: 4,
+      message_id: "m1",
+      data: { status: "completed" },
+    });
+    // The terminal frame for the original run must still retire both markers:
+    // the original run id and the captured follow-up's receipt id.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(messages.isSessionRunning("s1")).toBe(false);
+    streamController.close();
+    messages.cleanupConnections();
+  });
+
   it("settles the optimistic bubble when the send POST is rejected", async () => {
     localStorage.setItem("chat.streamMode", "unified");
     vi.mocked(fetchWithAuth).mockResolvedValue(

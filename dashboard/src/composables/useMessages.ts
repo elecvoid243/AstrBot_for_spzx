@@ -1355,9 +1355,14 @@ export function useMessages(options: UseMessagesOptions) {
   }
 
   function settleUnifiedConnection(connection: ActiveConnection) {
+    // Retire the running marker before the `completed` guard: a captured
+    // follow-up marks its connection completed in the `follow_up_captured`
+    // branch, yet the receipt's terminal frame still arrives afterwards.
+    // Skipping markRunEnded there left the receipt's run id in
+    // runningBySession forever (session spun until the next reconnect).
+    markRunEnded(connection.sessionId, connection.messageId);
     if (connection.completed) return;
     connection.completed = true;
-    markRunEnded(connection.sessionId, connection.messageId);
     if (activeConnections[connection.messageId] === connection) {
       delete activeConnections[connection.messageId];
     }

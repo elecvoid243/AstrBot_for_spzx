@@ -30,6 +30,7 @@ from astrbot.core.utils.media_utils import (
 )
 from astrbot.core.utils.network_utils import is_connection_error, log_connection_failure
 
+from .. import request_snapshot
 from ..headers import build_conversation_headers
 from ..register import register_provider_adapter
 from ..request_snapshot import request_snapshots
@@ -749,20 +750,23 @@ class ProviderGoogleGenAI(Provider):
                     llm_params=llm_params,
                 )
                 try:
-                    request_snapshots.capture(
-                        self,
-                        {
-                            "model": model,
-                            # The SDK call below still receives the original
-                            # Content/GenerateContentConfig objects; only the
-                            # snapshot gets the JSON view.
-                            "contents": _snapshot_json(conversation),
-                            "config": _snapshot_json(config),
-                            "stream": False,
-                        },
-                        adapter=self.SNAPSHOT_ADAPTER,
-                        tool_set=tools,
-                    )
+                    # The JSON dump is eager, so a disabled developer mode must
+                    # skip it entirely instead of paying for discarded copies.
+                    if request_snapshot.developer_mode_enabled():
+                        request_snapshots.capture(
+                            self,
+                            {
+                                "model": model,
+                                # The SDK call below still receives the original
+                                # Content/GenerateContentConfig objects; only the
+                                # snapshot gets the JSON view.
+                                "contents": _snapshot_json(conversation),
+                                "config": _snapshot_json(config),
+                                "stream": False,
+                            },
+                            adapter=self.SNAPSHOT_ADAPTER,
+                            tool_set=tools,
+                        )
                 except Exception:
                     logger.debug(
                         "Failed to capture the LLM request snapshot",
@@ -865,19 +869,21 @@ class ProviderGoogleGenAI(Provider):
                     llm_params=llm_params,
                 )
                 try:
-                    request_snapshots.capture(
-                        self,
-                        {
-                            "model": model,
-                            # See _query: the snapshot mirrors the wire payload
-                            # while the SDK keeps the original objects.
-                            "contents": _snapshot_json(conversation),
-                            "config": _snapshot_json(config),
-                            "stream": True,
-                        },
-                        adapter=self.SNAPSHOT_ADAPTER,
-                        tool_set=tools,
-                    )
+                    # See _query: skip the eager dump when developer mode is off.
+                    if request_snapshot.developer_mode_enabled():
+                        request_snapshots.capture(
+                            self,
+                            {
+                                "model": model,
+                                # The snapshot mirrors the wire payload while the
+                                # SDK keeps the original objects.
+                                "contents": _snapshot_json(conversation),
+                                "config": _snapshot_json(config),
+                                "stream": True,
+                            },
+                            adapter=self.SNAPSHOT_ADAPTER,
+                            tool_set=tools,
+                        )
                 except Exception:
                     logger.debug(
                         "Failed to capture the LLM request snapshot",

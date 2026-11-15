@@ -486,11 +486,18 @@ def _make_gemini_provider() -> ProviderGoogleGenAI:
     return provider
 
 
+def _enable_developer_mode(monkeypatch) -> None:
+    """Turn on the switch the Gemini hooks check before dumping SDK objects."""
+
+    monkeypatch.setattr(request_snapshot, "developer_mode_enabled", lambda: True)
+
+
 async def _run_gemini(
     monkeypatch, capture, sdk_calls: dict | None = None
 ) -> LLMResponse:
     """Run one Gemini request against a fake SDK client."""
 
+    _enable_developer_mode(monkeypatch)
     monkeypatch.setattr(request_snapshots, "capture", capture)
     provider = _make_gemini_provider()
 
@@ -508,6 +515,7 @@ async def _run_gemini_stream(
 ) -> list[LLMResponse]:
     """Run one streaming Gemini request against a fake SDK client."""
 
+    _enable_developer_mode(monkeypatch)
     monkeypatch.setattr(request_snapshots, "capture", capture)
     provider = _make_gemini_provider()
 
@@ -696,6 +704,7 @@ async def test_anthropic_stream_capture_uses_system_messages_and_tools(monkeypat
 async def test_gemini_capture_uses_contents_and_config(monkeypatch):
     """The Gemini hook captures a JSON view while the SDK keeps its objects."""
 
+    _enable_developer_mode(monkeypatch)
     spy = CaptureSpy()
     tools = _tool_set()
     monkeypatch.setattr(request_snapshots, "capture", spy)
@@ -753,6 +762,58 @@ async def test_gemini_stream_capture_uses_contents_and_config(monkeypatch):
     assert isinstance(sdk_calls["config"], genai_types.GenerateContentConfig)
     assert "stream" not in sdk_calls
     assert responses[-1].completion_text == "ok"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True], ids=["gemini", "gemini-stream"])
+async def test_gemini_skips_snapshot_dump_when_developer_mode_disabled(
+    monkeypatch, stream
+):
+    """Disabled developer mode never dumps the SDK objects for the snapshot."""
+
+    request_snapshots.reset()
+    monkeypatch.setattr(request_snapshot, "developer_mode_enabled", lambda: False)
+
+    dumps: list[object] = []
+    # Standing in for _snapshot_json: any call means the eager dump ran.
+    monkeypatch.setattr(gemini_source, "_snapshot_json", dumps.append)
+
+    provider = _make_gemini_provider()
+    sdk_calls: dict = {}
+
+    async def fake_generate_content(**kwargs):
+        sdk_calls.update(kwargs)
+        return _gemini_response()
+
+    async def fake_stream():
+        yield _gemini_stream_chunk()
+
+    async def fake_generate_content_stream(**kwargs):
+        sdk_calls.update(kwargs)
+        return fake_stream()
+
+    async def fake_retry(provider_name, request_factory, max_attempts=None):
+        return await request_factory()
+
+    provider.client.models.generate_content = fake_generate_content
+    provider.client.models.generate_content_stream = fake_generate_content_stream
+    monkeypatch.setattr(gemini_source, "retry_provider_request", fake_retry)
+
+    if stream:
+        responses = [
+            item
+            async for item in provider._query_stream(_gemini_payloads(), _tool_set())
+        ]
+        assert responses[-1].completion_text == "ok"
+    else:
+        response = await provider._query(_gemini_payloads(), _tool_set())
+        assert response.role == "assistant"
+
+    # The gate skips the dump, and the SDK still gets the original objects.
+    assert dumps == []
+    assert isinstance(sdk_calls["contents"], list)
+    assert all(isinstance(item, genai_types.Content) for item in sdk_calls["contents"])
+    assert isinstance(sdk_calls["config"], genai_types.GenerateContentConfig)
 
 
 @pytest.mark.asyncio

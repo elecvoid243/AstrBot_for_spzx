@@ -1414,7 +1414,9 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             id=uuid.uuid4().hex, seq=self.window_state.seq + 1
         )
 
-    def _inject_budget_notices(self, messages: list[Message]) -> list[Message]:
+    def _inject_budget_notices(
+        self, messages: list[Message], *, just_reset: bool = False
+    ) -> list[Message]:
         """Append the window's one-shot budget notice when one is due.
 
         The exhausted notice wins over the low-budget reminder: when the window
@@ -1422,6 +1424,9 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
 
         Args:
             messages: Model-visible history after compaction.
+            just_reset: True when this very request opened a new window. A
+                fresh window must not be announced as "running out of room";
+                only the exhausted notice can still apply.
 
         Returns:
             The same list, plus one internal notice when a notice is due.
@@ -1440,6 +1445,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             state.exhausted_sent = True
         elif (
             not state.reminder_sent
+            and not just_reset
             and manager.last_remaining_tokens is not None
             and manager.last_remaining_tokens <= config.reminder_tokens
         ):
@@ -1678,6 +1684,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                             break
             self.run_context.messages = checked
             self._context_usage_snapshot = None
+            reset_now = False
             if (
                 stage == "main"
                 and (self.request_context_manager.last_compression or {}).get(
@@ -1686,8 +1693,11 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                 == "token_budget"
             ):
                 self._on_context_reset()
+                reset_now = True
+        else:
+            reset_now = False
         if stage == "main":
-            checked = self._inject_budget_notices(checked)
+            checked = self._inject_budget_notices(checked, just_reset=reset_now)
             self.run_context.messages = checked
         contexts = self._sanitize_contexts_for_provider(checked)
         if contexts and isinstance(contexts[0], dict):

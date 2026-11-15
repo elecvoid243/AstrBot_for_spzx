@@ -65,6 +65,31 @@ def test_llm_compress_strategy_receives_no_notice():
     assert runner._inject_budget_notices(messages) == messages
 
 
+def test_no_reminder_on_the_request_that_reset_the_window():
+    runner = runner_factory(remaining=100)
+
+    injected = runner._inject_budget_notices(
+        [Message(role="user", content="hi")], just_reset=True
+    )
+
+    assert len(injected) == 1
+    assert runner.window_state.reminder_sent is False
+
+
+def test_exhausted_notice_still_fires_right_after_a_reset():
+    runner = runner_factory(
+        remaining=100,
+        last_compression={"strategy": "token_budget", "insufficient": True},
+    )
+
+    injected = runner._inject_budget_notices(
+        [Message(role="user", content="hi")], just_reset=True
+    )
+
+    assert injected[-1]._internal is True
+    assert "cannot be trimmed further" in injected[-1].content
+
+
 def test_range_selector_ignores_internal_notice():
     notice = Message(role="user", content="[context budget] ...")
     notice._internal = True

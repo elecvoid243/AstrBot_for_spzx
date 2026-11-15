@@ -343,6 +343,12 @@ class LLMRequestScope:
 
 `request_snapshot_scope(...)` 为 contextmanager；进入时 set，退出时 reset。默认 `kind="aux"`、`is_subagent=False`；未提供 `invocation_id` 时自动生成一个，供辅助调用回填响应使用。
 
+`session_id` 必须是 **ChatUI 平台会话 id**（WebChat UMO
+`webchat:<type>:webchat!<user>!<session_id>` 的最后一段），不是
+`Conversation.cid`；两者是不同的 UUID。runner 用
+`chatui_session_id_from_umo(req.session_id)` 取值，列表 API 用 ChatUI 的
+`currSessionId` 查询，二者必须同键。
+
 设置点：
 
 | 调用方 | kind | 附加 |

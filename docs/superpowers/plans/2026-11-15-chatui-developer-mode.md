@@ -468,7 +468,7 @@ git commit -m "feat(provider): capture final llm request payloads"
 - Test: `tests/unit/test_agent_runner_snapshot_scope.py`
 
 **Interfaces:**
-- Consumes: `request_snapshot_scope`, `request_snapshots.attach_response/attach_diagnostics/attach_injections/mark_error/metadata_for_invocation`, `read_injections`.
+- Consumes: `request_snapshot_scope`, `chatui_session_id_from_umo`, `request_snapshots.attach_response/attach_diagnostics/attach_injections/mark_error/metadata_for_invocation`, `read_injections`.
 - Produces:
   - `self._snapshot_turn_id` (uuid hex, set in `reset`) and `self._snapshot_fallback_index` (0 in `reset`, set to the fallback candidate index).
   - `self._snapshot_invocation_id` (set in `_iter_llm_responses`, consumed and cleared in `step()`).
@@ -533,7 +533,7 @@ In `_iter_llm_responses`, after `invocation_id` is known and before the stream/n
 
 ```python
 with request_snapshot_scope(
-    session_id=self.req.conversation.cid if self.req.conversation else None,
+    session_id=chatui_session_id_from_umo(self.req.session_id),
     umo=self.req.session_id,
     turn_id=self._snapshot_turn_id,
     invocation_id=invocation_id,

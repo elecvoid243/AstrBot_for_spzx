@@ -5685,7 +5685,7 @@ watch(
   { immediate: true },
 );
 
-/** 当前会话的 todo_create 成功计数（更新类工具不递增）。 */
+/** 当前会话的“新建清单”成功计数（action=create 才递增，更新类不递增）。 */
 const currentTodoCreateTick = computed(() => {
   const sid = currSessionId.value;
   return sid ? latestTodoCreateTickBySession.value[sid] ?? 0 : 0;
@@ -5693,7 +5693,7 @@ const currentTodoCreateTick = computed(() => {
 
 // 2026-11-07 (elecvoid243): the agent just created a todo list — reveal the
 // header menu once so the plan is visible without a click. Later updates must
-// not pop it again, so the trigger is the todo_create tick, not the snapshot.
+// not pop it again, so the trigger is the create-action tick, not the snapshot.
 // Watching both sources (not a baseline variable) keeps session switches
 // inert even when the tick happens to be unchanged: an older creation from
 // another session must not open the menu when the user comes back.

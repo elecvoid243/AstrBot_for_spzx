@@ -68,6 +68,7 @@ import {
   TODO_TOOL_NAMES,
   parseTodoToolResult,
   replayTodoSnapshotFromHistory,
+  resolveTodoAction,
 } from "./todoHistoryReplay";
 
 export type TransportMode = "sse" | "websocket";
@@ -2788,11 +2789,12 @@ export function useMessages(options: UseMessagesOptions) {
   );
 
   /**
-   * 每个 session 的 todo_create 成功计数（2026-11-07, elecvoid243）。
+   * 每个 session 的“新建清单”成功计数（2026-11-07, elecvoid243）。
    *
-   * 只有 todo_create 成功写入快照时才 +1；todo_add / update / delete /
-   * query 不递增。Chat.vue 监听当前会话的计数变化，在“创建列表”那一刻
-   * 展开顶栏的 todo 菜单；后续更新不再弹出，避免打断阅读。
+   * 只有 create 动作成功写入快照时才 +1（v2.35 后由 resolveTodoAction 判定
+   * todo_manage 的 action='create'，旧会话仍按 todo_create 名字判定）；
+   * add / update / delete / query 不递增。Chat.vue 监听当前会话的计数变化，
+   * 在“创建列表”那一刻展开顶栏的 todo 菜单；后续更新不再弹出，避免打断阅读。
    */
   const todoCreateTickBySession = ref<Record<string, number>>({});
 
@@ -3332,14 +3334,18 @@ export function useMessages(options: UseMessagesOptions) {
             TODO_TOOL_NAMES.has(toolName) &&
             typeof (parsed as any).result === "string"
           ) {
+            // `todo_manage` carries its operation in `args.action`; the
+            // legacy standalone names encode it in the name itself.
+            const todoAction = resolveTodoAction(toolName, matched?.args);
             const snapshot = parseTodoToolResult(
               toolName,
               (parsed as any).result,
+              matched?.args,
             );
             // undefined → 保持现状;null → 清空;对象 → 写入。
             if (snapshot !== undefined) {
               writeTodoSnapshot(sessionId, snapshot);
-              if (toolName === "todo_create" && snapshot) {
+              if (todoAction === "create" && snapshot) {
                 todoCreateTickBySession.value = {
                   ...todoCreateTickBySession.value,
                   [sessionId]:

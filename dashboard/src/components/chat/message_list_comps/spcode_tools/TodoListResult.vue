@@ -1,9 +1,9 @@
 <template>
     <div class="todo-list-result">
         <!--
-          v2.12:旧 todo_modify 工具被进一步拆为 3 个独立工具 (todo_add /
-          todo_update / todo_delete)。本组件按 toolName 优先推断渲染分支;
-          旧 todo_list / todo_modify 工具的兼容路径通过 data 字段形状兜底。
+          v2.35:6 个独立 todo 工具合并为单一 todo_manage(action=...)，
+          动作由 resolveTodoAction(toolName, args) 统一解析;
+          旧 todo_list / todo_modify(无 mode) 的兼容路径通过 data 形状兜底。
         -->
 
         <!-- A) todo_create / 旧 list(创建) -->
@@ -131,23 +131,30 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import TodoListPanel from "./TodoListPanel.vue";
+import { resolveTodoAction } from "@/composables/todoHistoryReplay";
 
 /**
- * 渲染 todo_* 工具的返回结果。父组件 (SpcodeToolResultView) 负责按
+ * 渲染 todo 工具的返回结果。父组件 (SpcodeToolResultView) 负责按
  * toolName 分发到本组件。
  *
  * 支持的工具:
+ *   - v2.35+ 单一工具:todo_manage(action=create/query/add/update/delete/clear)
  *   - v2.12+ 6 个独立工具:todo_create / todo_query / todo_add /
  *     todo_update / todo_delete / todo_clear
  *   - legacy (v2.12 之前):todo_modify(add/update/delete 三合一)
  *   - legacy (v2.2.0 之前):todo_list
  *
  * actionType 推断优先级:
- *   1) 工具名(新工具最稳)         : toolName 直接决定
- *   2) args.mode (legacy modify)  : 仅 todo_modify 需要
+ *   1) toolName + args            : resolveTodoAction(单一真源,见
+ *                                   composables/todoHistoryReplay.ts)
+ *                                   - todo_manage → args.action
+ *                                   - 6 个独立工具名 → 名字即动作
+ *                                   - legacy todo_modify → args.mode
+ *   2) legacy 无 mode 的形状兜底   : todo_modify / todo_list 只能反推
  *   3) data 字段形状(老 todo_list): 兜底,保持历史会话可读
  *
  * @author elecvoid243 / 2026-06-14 (refactored 2026-06-23: 支持 v2.12 拆分)
+ * @author elecvoid243 / 2026-11-15 (支持 v2.35 合并为 todo_manage)
  */
 
 type ActionType =
@@ -168,22 +175,16 @@ const props = defineProps<{
 
 const actionType = computed<ActionType>(() => {
     if (!props.data) return "error";
-    const tn = props.toolName;
-    const mode = props.args?.mode;
+    const tn = props.toolName ?? "";
 
-    // 1) 新工具(v2.12+):按 toolName 直接决定
-    if (tn === "todo_create") return "create";
-    if (tn === "todo_query") return "query";
-    if (tn === "todo_clear") return "clear";
-    if (tn === "todo_add") return "add";
-    if (tn === "todo_update") return "update";
-    if (tn === "todo_delete") return "delete";
+    // 1) 统一解析:todo_manage 看 args.action,旧独立工具名即动作,
+    //    legacy todo_modify 看 args.mode。集合与解析只维护在
+    //    composables/todoHistoryReplay.ts 一处。
+    const resolved = resolveTodoAction(tn, props.args);
+    if (resolved) return resolved;
 
-    // 2) legacy (v2.12 之前) todo_modify:add/update/delete 通过 args.mode 区分
-    //    (后端在 modify() 中也是用同一 args.mode 分发的)
+    // 2) legacy 兜底:没有可解析动作时,只能按 data 字段形状反推。
     if (tn === "todo_modify") {
-        if (mode === "add" || mode === "update" || mode === "delete") return mode;
-        // 兜底:从 data 字段反推
         if (props.data.deleted !== undefined) return "delete";
         // args.items 列表存在 → add(批量)
         // 注意:后端 TodoModifyTool schema 只声明了 `items` (array, minItems=1),

@@ -4,7 +4,9 @@
  * todo 工具演进:
  *   - v2.2.0:把 todo_list 拆为 4 个独立工具 (create / query / modify / clear)
  *   - v2.12:把 todo_modify 进一步拆为 add / update / delete 3 个独立工具
- * 现在共 6 个 todo_* 工具,各自分配了语义化图标:
+ *   - v2.35:6 个工具重新合并为单一 todo_manage(action=...)
+ * 合并后的 todo_manage 用中性的清单图标(action 语义由结果卡显示);
+ * 旧工具名保留原图标,兼容老会话历史记录:
  *   - todo_create :  mdi-format-list-checks   (新建清单)
  *   - todo_query  :  mdi-format-list-checks   (读取清单)
  *   - todo_add    :  mdi-plus-circle-outline  (追加 item)
@@ -29,6 +31,9 @@ export const SPCODE_ICONS: Record<string, string> = {
     // `<pre class="result-raw">` 原始 JSON,看不到样式化结果卡。
     astrbot_file_remove: "mdi-trash-can-outline",
     astrbot_file_compare: "mdi-vector-difference",
+    // v2.35 合并后的单一 todo 工具(必须在这里,否则 isSpcodeTool 为假,
+    // 结果会退化成原始 JSON)
+    todo_manage: "mdi-format-list-checks",
     // v2.12 拆分后的 6 个 todo 工具
     todo_create: "mdi-format-list-checks",
     todo_query: "mdi-format-list-checks",
@@ -47,6 +52,7 @@ export function getSpcodeIcon(toolName: string): string {
 }
 
 /** spcode 工具的合法名称集合
+ *  - v2.35+ 合并工具:todo_manage(action=create/query/add/update/delete/clear)
  *  - v2.12+ 6 个 todo_* 工具(create / query / add / update / delete / clear)
  *  - legacy:todo_modify(v2.12 之前)、todo_list(v2.2.0 之前)
  */

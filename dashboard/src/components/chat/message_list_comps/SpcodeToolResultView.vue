@@ -34,6 +34,7 @@ import FileDiffResult from "./spcode_tools/FileDiffResult.vue";
 import TodoListResult from "./spcode_tools/TodoListResult.vue";
 import VivadoToolResultView from "./spcode_tools/vivado/VivadoToolResultView.vue";
 import { isVivadoToolName } from "./spcode_tools/vivado/vivadoIcons";
+import { TODO_TOOL_NAMES } from "@/composables/todoHistoryReplay";
 
 /**
  * spcode_toolkit 工具的渲染分发入口。
@@ -44,20 +45,8 @@ const props = defineProps<{
     args?: Record<string, any>;
 }>();
 
-/** todo_* 工具统一识别。
- *  - v2.12+ 6 个独立工具:create / query / add / update / delete / clear
- *  - 兼容:v2.12 之前 todo_modify、v2.2.0 之前 todo_list
- */
-const TODO_TOOL_NAMES: ReadonlySet<string> = new Set([
-    "todo_create",
-    "todo_query",
-    "todo_add",
-    "todo_update",
-    "todo_delete",
-    "todo_clear",
-    "todo_modify", // legacy (v2.12 之前)
-    "todo_list", // legacy (v2.2.0 之前)
-]);
+/** todo 工具统一识别 —— 集合本身只认一份(todoHistoryReplay.ts),
+ *  含 v2.35 合并后的 todo_manage 与三代 legacy 名字。 */
 const isTodoTool = computed(() => TODO_TOOL_NAMES.has(props.toolName));
 
 /** vivado-mcp 30 个工具（mcp_vivado__ 前缀） */

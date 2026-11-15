@@ -54,10 +54,14 @@ describe("todo summary entry lives in the app bar", () => {
     expect(storeSource).toMatch(/if \(!snapshot\) this\.todoMenuOpen = false;/);
   });
 
-  it("auto-opens the menu for todo_create only, never for updates", () => {
+  it("auto-opens the menu for the create action only, never for updates", () => {
     const messagesSource = readSource("../../composables/useMessages.ts");
-    // The tick is bumped at the write site, gated on the create tool.
-    expect(messagesSource).toMatch(/toolName === "todo_create" && snapshot/);
+    // The tick is bumped at the write site, gated on the create action
+    // (resolved from todo_manage's args.action or a legacy name).
+    expect(messagesSource).toMatch(
+      /resolveTodoAction\(toolName, matched\?\.args\)/,
+    );
+    expect(messagesSource).toMatch(/todoAction === "create" && snapshot/);
     expect(messagesSource).toMatch(
       /latestTodoCreateTickBySession: todoCreateTickBySession/,
     );

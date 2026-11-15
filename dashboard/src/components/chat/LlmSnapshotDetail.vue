@@ -147,6 +147,14 @@
       </div>
     </section>
 
+    <div v-if="cacheMissWarning" class="cache-miss-warning" role="status">
+      <span class="cache-miss-mark" aria-hidden="true">!</span>
+      <div class="cache-miss-copy">
+        <div class="cache-miss-title">{{ tm("devMode.cacheMiss.title") }}</div>
+        <div class="cache-miss-body">{{ cacheMissText }}</div>
+      </div>
+    </div>
+
     <section
       class="sec sec-response"
       :class="{ collapsed: !isOpen('response') }"
@@ -597,6 +605,16 @@ const cache = computed(() => asRecord(diagnostics.value.cache));
 const budget = computed(() => asRecord(diagnostics.value.budget));
 const retries = computed(() => asRecord(diagnostics.value.retries));
 
+const cacheMissWarning = computed(() => cache.value.miss_warning === true);
+const cacheMissText = computed(() => {
+  const hit = num(cache.value, "hit_ratio");
+  return tm("devMode.cacheMiss.body", {
+    prefix: formatRatio(num(cache.value, "prefix_match_ratio")),
+    hit:
+      hit === null ? tm("devMode.cacheMiss.unknown") : formatRatio(hit),
+  });
+});
+
 const view = computed(() => (props.snapshot.view ?? {}) as SnapshotView);
 const system = computed(() => asRecord(view.value.system));
 const messages = computed(() =>
@@ -722,6 +740,18 @@ const diagnosticsRows = computed(() => [
     value: diagnosticValue(compression.value.tokens_after),
   },
   { label: "cache.hit_ratio", value: formatRatio(num(cache.value, "hit_ratio")) },
+  {
+    label: "cache.prefix_match_ratio",
+    value: formatRatio(num(cache.value, "prefix_match_ratio")),
+  },
+  {
+    label: "cache.prefix_warn_ratio",
+    value: formatRatio(num(cache.value, "prefix_warn_ratio")),
+  },
+  {
+    label: "cache.miss_warning",
+    value: diagnosticValue(cache.value.miss_warning),
+  },
   {
     label: "cache.system_changed",
     value: diagnosticValue(cache.value.system_changed),
@@ -1211,6 +1241,38 @@ onBeforeUnmount(() => {
 
 .truncated-note {
   color: rgb(var(--v-theme-warning));
+}
+
+.cache-miss-warning {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  margin: 0 12px;
+  padding: 8px 10px;
+  border-left: 2px solid rgb(var(--v-theme-warning));
+  background: rgba(var(--v-theme-warning), 0.06);
+}
+
+.cache-miss-mark {
+  color: rgb(var(--v-theme-warning));
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono",
+    monospace;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+.cache-miss-title {
+  color: rgb(var(--v-theme-on-surface));
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.cache-miss-body {
+  margin-top: 2px;
+  color: var(--sd-muted);
+  font-size: 10.5px;
+  line-height: 1.45;
 }
 
 .sec-diff.is-warning .sec-head {

@@ -47,10 +47,10 @@ import { useLlmSnapshots } from "./useLlmSnapshots";
 import { useMessages } from "./useMessages";
 
 const LIMITS: LlmSnapshotLimits = {
-  max_bytes_per_snapshot: 524288,
+  max_bytes_per_snapshot: 1572864,
   max_snapshots_per_session: 128,
-  max_bytes_per_session: 16777216,
-  max_total_bytes: 67108864,
+  max_bytes_per_session: 67108864,
+  max_total_bytes: 268435456,
   max_message_bindings: 1024,
   ttl_seconds: 7200,
 };

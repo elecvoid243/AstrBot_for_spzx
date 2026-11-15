@@ -50,6 +50,10 @@ const COPY = vi.hoisted(() => ({
   "devMode.rail.compression": "压缩",
   "devMode.truncated": "已截断，原始大小 {size}",
   "devMode.provenance.approx": "近似定位",
+  "devMode.cacheMiss.title": "缓存未命中",
+  "devMode.cacheMiss.body":
+    "前缀匹配率 {prefix}，服务端缓存命中率 {hit}。本次请求可能没有复用上一次的前缀缓存。",
+  "devMode.cacheMiss.unknown": "未返回",
   "devMode.copy.failed": "复制失败",
   "devMode.tool.searchPlaceholder": "搜索工具名称、描述或来源",
   "devMode.tool.empty": "没有匹配的工具",
@@ -139,6 +143,9 @@ function snapshot(overrides: Record<string, unknown> = {}): LlmSnapshotDetail {
         },
         cache: {
           hit_ratio: 0.202,
+          prefix_match_ratio: 0.4,
+          prefix_warn_ratio: 0.8,
+          miss_warning: false,
           system_changed: false,
           tools_changed: true,
           divergence_index: 6,
@@ -274,6 +281,41 @@ describe("LlmSnapshotDetail", () => {
     expect(chips[1].classes()).toContain("is-approx");
     expect(chips[1].text()).toContain("△");
     expect(wrapper.find(".badge-truncated").text()).toContain("已截断");
+  });
+
+  it("shows a cache-miss warning only when the recorder flags a miss", () => {
+    const miss = snapshot();
+    miss.envelope.diagnostics = {
+      ...(miss.envelope.diagnostics ?? {}),
+      cache: {
+        hit_ratio: 0.1,
+        prefix_match_ratio: 0.2,
+        prefix_warn_ratio: 0.8,
+        miss_warning: true,
+        system_changed: false,
+        tools_changed: false,
+        divergence_index: 1,
+      },
+    };
+    const warning = mountDetail({ snapshot: miss }).find(".cache-miss-warning");
+    expect(warning.exists()).toBe(true);
+    expect(warning.text()).toContain("缓存未命中");
+    expect(warning.text()).toContain("20%");
+    expect(warning.text()).toContain("10%");
+
+    const hit = snapshot();
+    hit.envelope.diagnostics = {
+      ...(hit.envelope.diagnostics ?? {}),
+      cache: {
+        hit_ratio: 0.9,
+        prefix_match_ratio: 0.2,
+        prefix_warn_ratio: 0.8,
+        miss_warning: false,
+      },
+    };
+    expect(
+      mountDetail({ snapshot: hit }).find(".cache-miss-warning").exists(),
+    ).toBe(false);
   });
 
   it("filters tools by name, description and origin", async () => {

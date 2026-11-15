@@ -552,7 +552,7 @@ def test_truncation_drops_oldest_messages_first(monkeypatch):
     _enable(monkeypatch)
     messages = [{"role": "system", "content": "SYS"}]
     messages.extend(
-        {"role": "user", "content": f"m{index}:" + "x" * 20000} for index in range(40)
+        {"role": "user", "content": f"m{index}:" + "x" * 20000} for index in range(100)
     )
     messages[-1]["content"] = "newest"
     raw = {
@@ -598,7 +598,7 @@ def test_cjk_and_emoji_payload_stays_within_the_byte_cap(monkeypatch):
     chunk = "测试内容🙂" * 2000
     messages = [{"role": "system", "content": "系统提示"}]
     messages.extend(
-        {"role": "user", "content": f"{index}:" + chunk} for index in range(40)
+        {"role": "user", "content": f"{index}:" + chunk} for index in range(80)
     )
     raw = {"model": "m1", "messages": messages}
     snapshot = _snapshot_with(raw, "openai_chat")
@@ -674,7 +674,7 @@ def test_tools_that_exceed_budget_are_truncated_not_dropped(monkeypatch):
                 "description": "demo",
                 "parameters": {
                     "type": "object",
-                    "properties": {"x": {"type": "string", "description": "z" * 15000}},
+                    "properties": {"x": {"type": "string", "description": "z" * 60000}},
                 },
             },
         }

@@ -65,6 +65,7 @@ const COPY = vi.hoisted(() => ({
   "devMode.rail.error": "error",
   "devMode.rail.retry": "retry",
   "devMode.rail.cache": "缓存 {percent}%",
+  "devMode.rail.cacheMiss": "缓存未命中",
   "devMode.rail.tools": "+{count} tool",
   "devMode.truncated": "已截断，原始大小 {size}",
   "devMode.provenance.approx": "近似定位",
@@ -98,10 +99,10 @@ vi.mock("@/i18n/composables", () => ({
 }));
 
 const LIMITS: LlmSnapshotLimits = {
-  max_bytes_per_snapshot: 524288,
+  max_bytes_per_snapshot: 1572864,
   max_snapshots_per_session: 128,
-  max_bytes_per_session: 16777216,
-  max_total_bytes: 67108864,
+  max_bytes_per_session: 67108864,
+  max_total_bytes: 268435456,
   max_message_bindings: 1024,
   ttl_seconds: 7200,
 };
@@ -320,6 +321,20 @@ describe("ChatDevModeInspector", () => {
     wrapper.unmount();
   });
 
+  it("marks a cache miss instead of the hit percentage", async () => {
+    const miss = envelope("snap-1", {
+      kind: "chat",
+      step: 1,
+      diagnostics: { cache: { hit_ratio: 0.1, miss_warning: true } },
+    });
+    api.list.mockResolvedValueOnce(listPayload([miss, ...ITEMS.slice(1)]));
+    const wrapper = await mountOpen();
+    const rail = wrapper.findAll(".rail-item");
+    expect(rail[0].text()).toContain("缓存未命中");
+    expect(rail[0].text()).not.toContain("缓存 10%");
+    wrapper.unmount();
+  });
+
   it("collapses diagnostics and raw json by default", async () => {
     const wrapper = await mountOpen();
     expect(wrapper.find(".sec-diagnostics").classes()).toContain("collapsed");
@@ -370,7 +385,7 @@ describe("ChatDevModeInspector", () => {
     const wrapper = await mountOpen();
     const limits = wrapper.find(".inspector-limits");
     expect(limits.text()).toContain("每会话最多 128 条");
-    expect(limits.text()).toContain("16.0 MB");
+    expect(limits.text()).toContain("64.0 MB");
     expect(limits.text()).not.toContain("512 KB");
     wrapper.unmount();
   });

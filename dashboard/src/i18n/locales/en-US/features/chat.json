@@ -2474,6 +2474,11 @@
       "download": "Download",
       "refresh": "Refresh"
     },
+    "cacheMiss": {
+      "title": "Cache miss",
+      "body": "Prefix match {prefix}, server cache hit {hit}. This request may not have reused the previous prefix cache.",
+      "unknown": "not reported"
+    },
     "copy": {
       "failed": "Copy failed"
     },
@@ -2505,6 +2510,7 @@
     "rail": {
       "label": "Request list",
       "cache": "Cache",
+      "cacheMiss": "Cache miss",
       "compression": "Compression",
       "error": "Error",
       "retry": "Retry",

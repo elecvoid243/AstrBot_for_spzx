@@ -350,7 +350,9 @@ function badges(item: LlmRequestSnapshotEnvelope): RailBadge[] {
   const diagnostics = asRecord(item.diagnostics);
   const cache = asRecord(diagnostics.cache);
   const ratio = num(cache, "hit_ratio");
-  if (ratio !== null) {
+  if (cache.miss_warning === true) {
+    result.push({ text: tm("devMode.rail.cacheMiss"), tone: "warn" });
+  } else if (ratio !== null) {
     result.push({
       text: tm("devMode.rail.cache", { percent: Math.round(ratio * 100) }),
       tone: null,

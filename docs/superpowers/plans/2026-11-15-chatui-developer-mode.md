@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - `chatui.developer_mode` defaults to `false`; only admin/config scope may write it. The flag is instance-global; read APIs are admin-only and enforce session ownership.
-- Snapshots live only in memory: TTL 7200 s, 512 KB per snapshot, 128 per session, 16 MB per session, 64 MB total, 1024 message bindings. No database table, no history/export/search field.
+- Snapshots live only in memory: TTL 7200 s, 1.5 MB per snapshot, 128 per session, 64 MB per session, 256 MB total, 1024 message bindings. No database table, no history/export/search field.
 - Capture must not change provider request behavior; every recorder call is wrapped and never raises into the request path.
 - Do not persist snapshots in `build_bot_history_content`; `llm_request_snapshots` is live metadata only.
 - Do not capture `raw_completion`, per-chunk timings, subagent/team internal runs, or cost estimates.
@@ -28,7 +28,7 @@
 ## Review Focus
 
 1. **Provider final-body fidelity** — a request where the SDK moves fields into `extra_body` or nests them under a provider config (OpenAI Chat, OpenAI Responses, Anthropic, Gemini) must show the body actually sent, not the pre-transform payload. Pinned in Task 4.
-2. **Oversized context** — a payload over 512 KB must drop oldest messages first, keep the newest messages, system prompt, and tool schemas, and mark truncation; it must never present a cut payload as complete. Pinned in Task 2.
+2. **Oversized context** — a payload over 1.5 MB must drop oldest messages first, keep the newest messages, system prompt, and tool schemas, and mark truncation; it must never present a cut payload as complete. Pinned in Task 2.
 3. **Permission and ownership** — a non-admin, a foreign session, and an unknown snapshot must return 403/404 without leaking session existence; `GET /chat/developer-mode` must still return `can_edit=false` for chat-scope users. Pinned in Task 8.
 4. **Toggle and history isolation** — turning the flag off mid-run stops capture immediately, and no snapshot field ever appears in persisted history or orphan-reply handling. Pinned in Tasks 1, 5, and 7.
 5. **Refresh and expiry semantics** — after TTL/restart a session list is empty with `expired=false`; a message-scoped query returns `expired=true`; the UI distinguishes the two and never renders stale data. Pinned in Tasks 7, 8, and 11.
@@ -63,7 +63,7 @@
 **Interfaces:**
 - Consumes: `astrbot_config`, `Provider.meta()/get_model()/get_current_key()/get_keys()`, `LLMResponse` (type-only import).
 - Produces:
-  - `MAX_BYTES_PER_SNAPSHOT=524288`, `MAX_SNAPSHOTS_PER_SESSION=128`, `MAX_BYTES_PER_SESSION=16777216`, `MAX_TOTAL_BYTES=67108864`, `TTL_SECONDS=7200`, `MAX_MESSAGE_BINDINGS=1024`.
+  - `MAX_BYTES_PER_SNAPSHOT=1572864`, `MAX_SNAPSHOTS_PER_SESSION=128`, `MAX_BYTES_PER_SESSION=67108864`, `MAX_TOTAL_BYTES=268435456`, `TTL_SECONDS=7200`, `MAX_MESSAGE_BINDINGS=1024`.
   - `LLMRequestScope(session_id, umo, turn_id, invocation_id, kind, step, stage, fallback_index, is_subagent)`.
   - `request_snapshot_scope(**overrides) -> Iterator[LLMRequestScope]`.
   - `developer_mode_enabled() -> bool`.
@@ -254,7 +254,7 @@ At capture time, derive `tool_meta` from the provider's `ToolSet` when available
 Before the final `bounded_context_value` pass, apply the spec's order:
 
 1. Keep system up to 64 KB and each tool schema up to 16 KB.
-2. Drop messages from index 0 until the serialized size fits 512 KB.
+2. Drop messages from index 0 until the serialized size fits 1.5 MB.
 3. Trim any single message over 32 KB to head 8 KB + tail 8 KB with a `…[truncated N bytes]…` marker.
 4. Trim provider extras to 16 KB.
 5. Set `counts.omitted_messages`, `truncated`, and `original_bytes`.

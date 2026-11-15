@@ -66,7 +66,7 @@ ChatUI 目前能看到最终回复、工具调用、压缩提示和插件注入�
 |---|---|---|
 | D1 | 快照层取 **线上 payload** | 在 provider 网络边界、SDK 调用前抓取；含工具 schema、extra_body、provider 专有转换与重试后的降级 |
 | D2 | 范围 = 主对话 + 辅助调用 | 主对话含 tool loop 每一步；辅助含压缩摘要、标题生成、其他 `aux`；子代理/团队 v1 不采集 |
-| D3 | 留存 = 内存 ring buffer | TTL 120 分钟；每会话 128 条、16 MB；全局 64 MB；单条 512 KB；不落库 |
+| D3 | 留存 = 内存 ring buffer | TTL 120 分钟；每会话 128 条、64 MB；全局 256 MB；单条 1.5 MB；不落库 |
 | D4 | 形态 = 右侧可拖宽 Inspector | 消息上的 DEV 标记 + 头部 DEV chip 两个入口；`ReasoningSidebar` 的交互为参照 |
 | D5 | 信息边界 = B 档 | 请求态 + 响应摘要 + 工具执行基础字段 + 来源归因 + 会话/环境 + 诊断折叠；不含 raw_completion、逐 chunk、子代理、成本 |
 | D6 | 分区顺序 | 差异 → 概览 → 响应 → 系统提示词 → 工具 → 消息 → 额外注入 → 诊断（默认折叠）→ 原始 JSON（默认折叠） |
@@ -199,6 +199,9 @@ UI 打开 Inspector
     },
     "cache": {
       "hit_ratio": 0.202,
+      "prefix_match_ratio": 0.4,
+      "prefix_warn_ratio": 0.8,
+      "miss_warning": false,
       "system_changed": false,
       "tools_changed": true,
       "divergence_index": 6
@@ -457,6 +460,9 @@ record_provenance(session_id, label="persona", text=exact_text_written)
 | 字段 | 来源 | 规则 |
 |---|---|---|
 | `cache.hit_ratio` | `response.usage.input_cached / (input_other + input_cached)` | 响应回填时算；无 usage 或 provider 不报 cached 则 `null` |
+| `cache.prefix_match_ratio` | 上一请求消息 hash 前缀中仍保留的比例；system/tools 变化记 0 | 无上一请求则 `null`；逐条追加时保持 1.0 |
+| `cache.prefix_warn_ratio` | 前缀命中告警阈值常量 | 默认 `0.8`；仅用于展示判定标准 |
+| `cache.miss_warning` | 低前缀率 + 服务端命中率确认；服务端不返回时按前缀判定 | 无上一请求则 `null`；服务端高命中率可推翻前缀告警 |
 | `cache.system_changed` / `tools_changed` | 记录器自持的上一请求指纹（capture 时读取并更新） | 无上一请求则 `null` |
 | `cache.divergence_index` | 上一请求与当前请求的逐消息 hash | 第一个不同下标；找不到则 `null` |
 | `compression` | runner 传入 `ContextManager.last_compression` | 本步未压缩则 `null` |
@@ -474,10 +480,10 @@ record_provenance(session_id, label="persona", text=exact_text_written)
 
 | 常量 | 值 | 说明 |
 |---|---|---|
-| `MAX_BYTES_PER_SNAPSHOT` | 512 KB | 单条 raw 脱敏后的上限 |
+| `MAX_BYTES_PER_SNAPSHOT` | 1.5 MB（1,572,864 B） | 单条 raw 脱敏后的上限 |
 | `MAX_SNAPSHOTS_PER_SESSION` | 128 | 含重试/辅助调用 |
-| `MAX_BYTES_PER_SESSION` | 16 MB | 会话总量 |
-| `MAX_TOTAL_BYTES` | 64 MB | 进程总量 |
+| `MAX_BYTES_PER_SESSION` | 64 MB（67,108,864 B） | 会话总量 |
+| `MAX_TOTAL_BYTES` | 256 MB（268,435,456 B） | 进程总量 |
 | `TTL_SECONDS` | 7200 | 2 小时 |
 | `MAX_MESSAGE_BINDINGS` | 1024 | `message_id → turn_id` 映射条数 |
 
@@ -485,7 +491,7 @@ record_provenance(session_id, label="persona", text=exact_text_written)
 
 ### 7.2 截断顺序
 
-单条超 512 KB 时：
+单条超 1.5 MB 时：
 
 1. 保留 system 与工具 schema 的完整文本（各自上限 64 KB / 16 KB/工具）。
 2. 从**最旧**消息开始丢弃，直到满足预算；记 `omitted_messages`。
@@ -493,7 +499,7 @@ record_provenance(session_id, label="persona", text=exact_text_written)
 4. 仍超限时，压缩 provider 专有扩展字段（`extra_body` 等）到 16 KB。
 5. 最终标记 `truncated=true`、`original_bytes`。
 
-若 system + 工具本身已超 512 KB，则对超限部分用 `…[truncated]…` 标记，仍不丢整条快照。绝不静默丢整条快照；也不截掉最新消息。
+若 system + 工具本身已超 1.5 MB，则对超限部分用 `…[truncated]…` 标记，仍不丢整条快照。绝不静默丢整条快照；也不截掉最新消息。
 
 ### 7.3 脱敏
 
@@ -597,10 +603,11 @@ AgentResponse(
 ### 10.3 Inspector 布局
 
 - 宽度 `min(820px, 66vw)`，可拖宽；`<1000px` 时全屏，请求轨改为横向滚动。
-- 请求轨：分组「本回合」「本会话 · 辅助」；每项两行：kind/step 与 model/耗时；徽标显示 `cache %`、`+N tool`、`压缩`、`error`、`retry`。
+- 请求轨：分组「本回合」「本会话 · 辅助」；每项两行：kind/step 与 model/耗时；徽标显示 `cache %`、`+N tool`、`压缩`、`error`、`retry`；缓存未命中时用「缓存未命中」替代百分比。
 - 详情头：kind、step、状态码、finish、模型、provider、host、attempt；右侧「复制 JSON」「下载」「刷新」。
 - 分区顺序固定：差异（step ≥ 2）→ 概览 → 响应 → 系统提示词 → 工具 → 消息 → 额外注入 → 诊断 → 原始 JSON。
 - 默认展开：概览、响应、系统提示词、工具、消息、注入；默认折叠：诊断、原始 JSON。
+- 概览与响应之间显示「缓存未命中」告警条：前缀匹配率 `< 0.8` 时出现；服务端返回命中率时以其为准，未返回则按前缀判定。
 - 长文本在卡片内滚动（系统提示词 124px、消息 112px），不撑长消息流；单块可展开/收起。
 - 工具区：搜索框（name/desc/origin）、每行 name + origin 标签 + 新增/denied 标签 + 参数个数；点击展开 schema。
 - 响应区：finish/response id/TTFT/chunks/usage 网格 + 工具调用行（状态点、耗时、结果字节、展开 result_preview）；v1 不在快照内跳转完整结果。

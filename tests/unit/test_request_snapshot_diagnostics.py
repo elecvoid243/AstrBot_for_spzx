@@ -189,6 +189,11 @@ def test_cache_reports_first_message_divergence(monkeypatch):
     assert cache["system_changed"] is False
     assert cache["tools_changed"] is False
     assert cache["hit_ratio"] is None
+    assert cache["prefix_match_ratio"] == pytest.approx(0.5)
+    assert cache["prefix_warn_ratio"] == pytest.approx(
+        request_snapshot.CACHE_PREFIX_WARN_RATIO
+    )
+    assert cache["miss_warning"] is True
 
 
 def test_cache_reports_appended_message_and_tool_change(monkeypatch):
@@ -216,6 +221,8 @@ def test_cache_reports_appended_message_and_tool_change(monkeypatch):
     assert cache["divergence_index"] == 1
     assert cache["tools_changed"] is True
     assert cache["system_changed"] is False
+    assert cache["prefix_match_ratio"] == pytest.approx(0.0)
+    assert cache["miss_warning"] is True
 
 
 def test_cache_is_null_without_a_previous_request(monkeypatch):
@@ -225,6 +232,61 @@ def test_cache_is_null_without_a_previous_request(monkeypatch):
     assert cache["system_changed"] is None
     assert cache["tools_changed"] is None
     assert cache["divergence_index"] is None
+    assert cache["prefix_match_ratio"] is None
+    assert cache["miss_warning"] is None
+
+
+def test_cache_warning_defers_to_server_hit_ratio(monkeypatch):
+    _enable(monkeypatch)
+    previous = _anthropic(
+        [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "a"},
+            {"role": "user", "content": "again"},
+            {"role": "assistant", "content": "b"},
+        ]
+    )
+    current = _anthropic(
+        [
+            {"role": "user", "content": "changed"},
+            {"role": "assistant", "content": "a"},
+            {"role": "user", "content": "again"},
+            {"role": "assistant", "content": "b"},
+        ]
+    )
+    _capture(previous, invocation_id="i1")
+    snapshot = _capture(current, invocation_id="i2")
+    cache = snapshot["diagnostics"]["cache"]
+    assert cache["miss_warning"] is True
+
+    # A server-reported high hit ratio disproves the local guess.
+    request_snapshots.attach_response(
+        "i2",
+        LLMResponse(
+            role="assistant",
+            usage=TokenUsage(input_other=100, input_cached=900),
+        ),
+    )
+    stored = request_snapshots.get(snapshot["snapshot_id"])
+    assert stored["diagnostics"]["cache"]["hit_ratio"] == pytest.approx(0.9)
+    assert stored["diagnostics"]["cache"]["miss_warning"] is False
+
+    # A low server ratio keeps the warning; no response keeps the prefix guess.
+    next_snapshot = _capture(
+        _anthropic([{"role": "user", "content": "different"}]),
+        invocation_id="i3",
+    )
+    assert next_snapshot["diagnostics"]["cache"]["miss_warning"] is True
+    request_snapshots.attach_response(
+        "i3",
+        LLMResponse(
+            role="assistant",
+            usage=TokenUsage(input_other=900, input_cached=100),
+        ),
+    )
+    stored = request_snapshots.get(next_snapshot["snapshot_id"])
+    assert stored["diagnostics"]["cache"]["hit_ratio"] == pytest.approx(0.1)
+    assert stored["diagnostics"]["cache"]["miss_warning"] is True
 
 
 def test_attach_diagnostics_merges_compression_and_usage(monkeypatch):

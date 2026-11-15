@@ -41,20 +41,23 @@ if TYPE_CHECKING:
     from astrbot.core.provider.entities import LLMResponse  # noqa: F401
     from astrbot.core.provider.provider import Provider
 
-MAX_BYTES_PER_SNAPSHOT = 524288
+MAX_BYTES_PER_SNAPSHOT = 1572864
 """Serialized UTF-8 byte budget of one sanitized request body."""
 
 MAX_SNAPSHOTS_PER_SESSION = 128
 """Maximum number of snapshots kept per session."""
 
-MAX_BYTES_PER_SESSION = 16777216
+MAX_BYTES_PER_SESSION = 67108864
 """Maximum total serialized bytes kept per session."""
 
-MAX_TOTAL_BYTES = 67108864
+MAX_TOTAL_BYTES = 268435456
 """Maximum total serialized bytes kept across all sessions."""
 
 TTL_SECONDS = 7200
 """Retention window of a snapshot and a message binding."""
+
+CACHE_PREFIX_WARN_RATIO = 0.8
+"""Warn when less than this share of the previous request prefix survives."""
 
 MAX_MESSAGE_BINDINGS = 1024
 """Maximum number of ``message_id -> turn_id`` bindings."""
@@ -2230,6 +2233,31 @@ def _cache_hit_ratio(usage: object) -> float | None:
     return input_cached / total
 
 
+def _cache_miss_warning(prefix_ratio: object, hit_ratio: object) -> bool | None:
+    """Decide whether a request should show the cache-miss warning.
+
+    A low local prefix ratio starts as a warning; a server-reported hit ratio,
+    when present, overrides that guess. ``None`` means there is no previous
+    request to compare against, never a fake "no miss".
+
+    Args:
+        prefix_ratio: Share of the previous request prefix that survived.
+        hit_ratio: Provider-reported input-cache hit ratio, if any.
+
+    Returns:
+        ``True`` for a miss, ``False`` for a confirmed hit, or ``None`` when
+        there is no previous request.
+    """
+
+    if not isinstance(prefix_ratio, (int, float)) or isinstance(prefix_ratio, bool):
+        return None
+    if prefix_ratio >= CACHE_PREFIX_WARN_RATIO:
+        return False
+    if not isinstance(hit_ratio, (int, float)) or isinstance(hit_ratio, bool):
+        return True
+    return hit_ratio < CACHE_PREFIX_WARN_RATIO
+
+
 def _char_cap(text: object, limit: int) -> str:
     """Keep ``limit`` characters of a text, appending the truncation marker."""
 
@@ -2775,12 +2803,19 @@ class RequestSnapshotRecorder:
                     if not isinstance(cache, dict):
                         cache = {
                             "hit_ratio": None,
+                            "prefix_match_ratio": None,
+                            "prefix_warn_ratio": CACHE_PREFIX_WARN_RATIO,
+                            "miss_warning": None,
                             "system_changed": None,
                             "tools_changed": None,
                             "divergence_index": None,
                         }
                         diagnostics["cache"] = cache
                     cache["hit_ratio"] = _cache_hit_ratio(usage)
+                    cache["miss_warning"] = _cache_miss_warning(
+                        cache.get("prefix_match_ratio"),
+                        cache.get("hit_ratio"),
+                    )
         except Exception:
             logger.debug("Failed to attach LLM snapshot response", exc_info=True)
 
@@ -3028,7 +3063,7 @@ class RequestSnapshotRecorder:
     def limits() -> dict:
         """Return the public retention limits.
 
-        The 512 KB per-snapshot budget is enforced on the serialized UTF-8 bytes
+        The 1.5 MiB per-snapshot budget is enforced on the serialized UTF-8 bytes
         of the sanitized body.
         """
 
@@ -3103,6 +3138,9 @@ class RequestSnapshotRecorder:
         previous = self._fingerprints.get(session_id)
         cache = {
             "hit_ratio": None,
+            "prefix_match_ratio": None,
+            "prefix_warn_ratio": CACHE_PREFIX_WARN_RATIO,
+            "miss_warning": None,
             "system_changed": None,
             "tools_changed": None,
             "divergence_index": None,
@@ -3113,10 +3151,24 @@ class RequestSnapshotRecorder:
                 previous.get("tool_hashes") != fingerprint["tool_hashes"]
             )
             previous_messages = previous.get("message_hashes")
-            cache["divergence_index"] = _first_divergence(
-                previous_messages if isinstance(previous_messages, list) else [],
+            previous_list = (
+                previous_messages if isinstance(previous_messages, list) else []
+            )
+            divergence = _first_divergence(
+                previous_list,
                 fingerprint["message_hashes"],
             )
+            cache["divergence_index"] = divergence
+            if previous_list:
+                if cache["system_changed"] or cache["tools_changed"]:
+                    prefix_ratio = 0.0
+                else:
+                    shared = (
+                        divergence if divergence is not None else len(previous_list)
+                    )
+                    prefix_ratio = max(0.0, min(1.0, shared / len(previous_list)))
+                cache["prefix_match_ratio"] = prefix_ratio
+                cache["miss_warning"] = _cache_miss_warning(prefix_ratio, None)
         self._fingerprints[session_id] = {**fingerprint, "ts": now}
         self._fingerprints.move_to_end(session_id)
         while len(self._fingerprints) > _MAX_TRACKED_SESSIONS:

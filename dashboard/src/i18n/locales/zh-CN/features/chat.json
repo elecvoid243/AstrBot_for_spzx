@@ -2507,6 +2507,11 @@
       "download": "下载",
       "refresh": "刷新"
     },
+    "cacheMiss": {
+      "title": "缓存未命中",
+      "body": "前缀匹配率 {prefix}，服务端缓存命中率 {hit}。本次请求可能没有复用上一次的前缀缓存。",
+      "unknown": "未返回"
+    },
     "copy": {
       "failed": "复制失败"
     },
@@ -2538,6 +2543,7 @@
     "rail": {
       "label": "请求列表",
       "cache": "缓存",
+      "cacheMiss": "缓存未命中",
       "compression": "压缩",
       "error": "错误",
       "retry": "重试",

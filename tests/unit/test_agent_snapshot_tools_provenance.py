@@ -7,13 +7,15 @@ Date: 2026-11-15
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 import pytest_asyncio
 from mcp.types import CallToolResult, TextContent
 
+from astrbot.builtin_stars.compact.main import Main as CompactCommand
 from astrbot.core import astr_main_agent
 from astrbot.core.agent.context.compressor import LLMSummaryCompressor
 from astrbot.core.agent.hooks import BaseAgentRunHooks
@@ -137,11 +139,18 @@ class FakeSnapshotHooks(BaseAgentRunHooks):
 
 
 class FakeSnapshotToolExecutor:
-    """Return one text result, or raise, for every tool call."""
+    """Return one or more text results, or raise, for every tool call."""
 
-    def __init__(self, *, text: str = "tool result", error: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        text: str = "tool result",
+        error: bool = False,
+        chunks: list[str] | None = None,
+    ) -> None:
         self.text = text
         self.error = error
+        self.chunks = chunks
 
     def execute(self, tool, run_context, **tool_args):
         if self.error:
@@ -153,6 +162,10 @@ class FakeSnapshotToolExecutor:
             return failing()
 
         async def generator():
+            if self.chunks is not None:
+                for chunk in self.chunks:
+                    yield CallToolResult(content=[TextContent(type="text", text=chunk)])
+                return
             yield CallToolResult(content=[TextContent(type="text", text=self.text)])
 
         return generator()
@@ -573,6 +586,109 @@ async def test_runner_attributes_compression_to_its_session():
     # Compression is not the request that produced a model response, so it
     # must not borrow the chat invocation id.
     assert compression_snapshot["invocation_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_subagent_never_records_a_compression_snapshot():
+    provider = FakeSnapshotProvider(tool_calls=False)
+    provider.provider_config["max_context_tokens"] = 100
+    fixture = FakeRunnerFixture(provider)
+    fixture.context.extra["is_subagent"] = True
+    runner = await fixture.reset(
+        contexts=[
+            {"role": "user", "content": "old question " * 40},
+            {"role": "assistant", "content": "old answer " * 40},
+        ],
+        llm_compress_provider=FakeCompressionProvider(),
+    )
+
+    with pytest.raises(ContextCapacityError):
+        # The summary request happens before the capacity check fails, so this
+        # exercises the compression scope of a subagent run.
+        [event async for event in runner.step_until_done(max_step=2)]
+
+    items = request_snapshots.list_for_session(SESSION_ID)["items"]
+    assert [item for item in items if item["kind"] == "compression"] == []
+
+
+@pytest.mark.asyncio
+async def test_manual_compact_records_a_compression_snapshot():
+    """``/compact`` attributes its summary request to the conversation.
+
+    The command runs outside the agent runner, so the compressor has to carry
+    the session itself; otherwise the capture hook drops the request.
+    """
+
+    provider = FakeCompressionProvider()
+    conversation_manager = MagicMock()
+    conversation_manager.get_curr_conversation_id = AsyncMock(return_value=SESSION_ID)
+    conversation_manager.get_conversation = AsyncMock(
+        return_value=SimpleNamespace(
+            history=[
+                {"role": "user", "content": "u1"},
+                {"role": "assistant", "content": "a1"},
+                {"role": "user", "content": "u2"},
+                {"role": "assistant", "content": "a2"},
+                {"role": "user", "content": "u3"},
+            ]
+        )
+    )
+    conversation_manager.update_conversation = AsyncMock()
+    context = MagicMock()
+    context.get_config.return_value = {}
+    context.get_using_provider.return_value = provider
+    context.get_provider_by_id.return_value = None
+    context.conversation_manager = conversation_manager
+    event = MagicMock()
+    event.unified_msg_origin = UMO
+    event.send = AsyncMock()
+
+    await CompactCommand(context=context).compact(event)
+
+    items = request_snapshots.list_for_session(SESSION_ID)["items"]
+    compression_items = [item for item in items if item["kind"] == "compression"]
+    assert compression_items, [item["kind"] for item in items]
+    snapshot = request_snapshots.get(compression_items[0]["snapshot_id"])
+    assert snapshot["session_id"] == SESSION_ID
+    assert snapshot["umo"] == UMO
+    # Manual compaction is not part of a chat turn.
+    assert snapshot["turn_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_large_tool_result_records_the_overflow_reference(tmp_path: Path):
+    big_result = "x" * 120_000
+    fixture = FakeRunnerFixture(FakeSnapshotProvider(tool_result=big_result))
+    runner = await fixture.reset()
+    runner.tool_result_overflow_dir = str(tmp_path)
+    runner.read_tool = _tool_set().get_tool("read_file")
+
+    events = [event async for event in runner.step_until_done(max_step=4)]
+    execution = _stored(_snapshot_items(events[0]))["tool_executions"][0]
+
+    ref = execution["result_ref"]
+    assert ref is not None
+    assert Path(ref).parent == tmp_path
+    assert Path(ref).read_text(encoding="utf-8") == big_result
+    # The preview and the byte count still describe the complete output.
+    assert execution["result_bytes"] == len(big_result.encode("utf-8"))
+    assert execution["result_preview"].startswith("x" * 100)
+
+
+@pytest.mark.asyncio
+async def test_multi_chunk_tool_result_preview_accumulates():
+    executor = FakeSnapshotToolExecutor(chunks=["first part", "second part"])
+    fixture = FakeRunnerFixture(
+        FakeSnapshotProvider(),
+        tool_executor=executor,
+    )
+    runner = await fixture.reset()
+
+    events = [event async for event in runner.step_until_done(max_step=4)]
+    execution = _stored(_snapshot_items(events[0]))["tool_executions"][0]
+
+    assert execution["result_preview"] == "first part\n\nsecond part"
+    assert execution["result_bytes"] == len(b"first part\n\nsecond part")
 
 
 class FakeProvenanceProvider:

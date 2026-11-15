@@ -107,6 +107,12 @@ class Main(star.Star):
             ),
             token_counter=EstimateTokenCounter(),
             llm_params=llm_params,
+            # Manual compression runs outside the agent runner, so there is no
+            # ambient request scope to inherit the session from. Name the
+            # conversation here so the summary request is still attributable to
+            # this session as a ``compression`` snapshot.
+            session_id=cid,
+            umo=umo,
         )
         window = int(provider.provider_config.get("max_context_tokens", 0) or 0)
         if window <= 0:

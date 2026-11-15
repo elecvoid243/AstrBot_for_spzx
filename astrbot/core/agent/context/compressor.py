@@ -339,7 +339,10 @@ class LLMSummaryCompressor:
                 (such as reasoning_effort) stay identical to the chat requests
                 the prefix cache was built from.
             session_id: Optional ChatUI session id used to attribute the
-                summary request when no ambient request scope exists.
+                summary request when no ambient request scope exists. Only the
+                builtin ``/compact`` command sets this; automatic compression
+                runs inside the agent runner's request scope and inherits the
+                session from there.
             umo: Optional unified message origin paired with ``session_id``.
         """
         self.provider = provider

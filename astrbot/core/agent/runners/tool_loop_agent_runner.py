@@ -424,6 +424,18 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             "stop_reason": stop_reason,
         }
 
+    def _snapshot_is_subagent(self) -> bool:
+        """Return whether this runner executes inside a subagent.
+
+        Returns:
+            True when the run context was seeded as a subagent, which keeps its
+            requests out of the developer-mode snapshots.
+        """
+
+        return bool(
+            (getattr(self.run_context.context, "extra", None) or {}).get("is_subagent")
+        )
+
     def _snapshot_scope(self, invocation_id: str):
         """Build the developer-mode scope covering one provider call.
 
@@ -443,11 +455,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             step=self._step_budget_used,
             stage="main",
             fallback_index=self._snapshot_fallback_index,
-            is_subagent=bool(
-                (getattr(self.run_context.context, "extra", None) or {}).get(
-                    "is_subagent"
-                )
-            ),
+            is_subagent=self._snapshot_is_subagent(),
         )
 
     def _attach_snapshot_metadata(
@@ -463,9 +471,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             captured for this invocation or the run is a subagent.
         """
 
-        if bool(
-            (getattr(self.run_context.context, "extra", None) or {}).get("is_subagent")
-        ):
+        if self._snapshot_is_subagent():
             # Capture already drops subagent scopes; skip the attach work too.
             return None
         invocation_id = self._snapshot_invocation_id
@@ -1800,7 +1806,8 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             # Context preparation may call a summary model. The chat scope is
             # only active around provider calls, so name this session and turn
             # here; the compressor overrides only ``kind``. Without a session
-            # id compression snapshots are skipped, never guessed.
+            # id compression snapshots are skipped, never guessed. Subagent
+            # runs are flagged so a summary can never become a snapshot.
             with request_snapshot_scope(
                 session_id=(
                     self.req.conversation.cid if self.req.conversation else None
@@ -1808,6 +1815,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                 umo=self.req.session_id,
                 turn_id=self._snapshot_turn_id,
                 invocation_id=None,
+                is_subagent=self._snapshot_is_subagent(),
             ):
                 checked = await self._await_or_stop(
                     self.request_context_manager.process(
@@ -3160,13 +3168,10 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         # 如果有工具调用，还需处理工具调用
         if llm_resp.tools_call_name:
             if self.tool_schema_mode == "skills_like":
-                # Parameter queries run their own model invocation; restore the
-                # plan invocation so the tool calls it produced stay attributed
-                # to the request that asked for them.
-                plan_invocation_id = self._snapshot_invocation_id
-                self._snapshot_invocation_id = None
+                # Parameter queries call ``provider.text_chat`` directly and
+                # never set ``_snapshot_invocation_id``, so the plan invocation
+                # the tool calls are attributed to is already intact.
                 requery_resp, _ = await self._resolve_tool_exec(llm_resp)
-                self._snapshot_invocation_id = plan_invocation_id
                 if self._output_compression_report is not None:
                     yield AgentResponse(
                         type="context_compression",
@@ -3920,11 +3925,6 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                     func_tool_args,
                 )
             )
-            # Timing belongs to the call, not the outer batch: it starts before
-            # the tool can run and ends in whichever outcome branch is taken.
-            started_at = time.time()
-            snapshot_result_text = ""
-            snapshot_result_ref: str | None = None
             yield _HandleFunctionToolsResult.from_message_chain(
                 MessageChain(
                     type="tool_call",
@@ -3947,6 +3947,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             # 知道它已无法再使用该工具。放在 func_tool 判空之前，即使工具
             # 段不存在，幻觉出的调用也能拿到协议完整的错误结果。
             if func_tool_name in denied_tools:
+                denied_started_at = time.time()
                 logger.info(f"[Permission] 工具 {func_tool_name} 已被禁用，拒绝调用。")
                 denied_text = (
                     f"error: Permission denied. Tool `{func_tool_name}` is no "
@@ -3956,7 +3957,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                 )
                 _record_snapshot_tool_execution(
                     "denied",
-                    started_at,
+                    denied_started_at,
                     result_text=denied_text,
                     permission="deny",
                 )
@@ -3982,6 +3983,15 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             invocation_token = None
             recovery_retry_token = None
             usage_receipt = None
+            # Timing belongs to the call, not the outer batch or the event
+            # consumer: it starts right before execution and ends in whichever
+            # outcome branch is taken.
+            started_at = time.time()
+            # A tool may stream several result chunks; the snapshot describes
+            # the complete output, so accumulate them instead of keeping only
+            # the last chunk.
+            snapshot_result_chunks: list[str] = []
+            snapshot_result_ref: str | None = None
             try:
                 if not req.func_tool:
                     return
@@ -4312,8 +4322,12 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                         if result_parts and any(
                             isinstance(part, AudioURLPart) for part in result_parts
                         ):
-                            snapshot_result_text = "\n\n".join(
-                                part for part in result_parts if isinstance(part, str)
+                            snapshot_result_chunks.append(
+                                "\n\n".join(
+                                    part
+                                    for part in result_parts
+                                    if isinstance(part, str)
+                                )
                             )
                             await _append_tool_call_result(
                                 func_tool_id,
@@ -4336,13 +4350,16 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                             inline_result = "\n\n".join(T.cast(list[str], result_parts))
                             # The preview describes the complete tool output,
                             # before any overflow materialization shortens it.
-                            snapshot_result_text = inline_result
+                            snapshot_result_chunks.append(inline_result)
                             inline_result = await self._materialize_large_tool_result(
                                 tool_call_id=func_tool_id,
                                 content=inline_result,
                             )
-                            snapshot_result_ref = self._tool_result_overflow_refs.pop(
-                                func_tool_id, None
+                            # Keep the last spilled chunk's reference: a later
+                            # chunk that stayed inline must not clear it.
+                            snapshot_result_ref = (
+                                self._tool_result_overflow_refs.pop(func_tool_id, None)
+                                or snapshot_result_ref
                             )
                             await _append_tool_call_result(
                                 func_tool_id,
@@ -4422,7 +4439,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                     _record_snapshot_tool_execution(
                         "error" if tool_failed or result_is_error else "ok",
                         started_at,
-                        result_text=snapshot_result_text,
+                        result_text="\n\n".join(snapshot_result_chunks),
                         result_ref=snapshot_result_ref,
                     )
             except _AgentManualPause:

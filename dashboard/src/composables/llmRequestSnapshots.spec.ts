@@ -67,6 +67,20 @@ function envelope(
   } as LlmRequestSnapshotEnvelope;
 }
 
+function listPayload(items: LlmRequestSnapshotEnvelope[]) {
+  return {
+    data: {
+      data: {
+        enabled: true,
+        expired: false,
+        items,
+        limits: LIMITS,
+        dropped: 0,
+      },
+    },
+  };
+}
+
 describe("parseLlmRequestSnapshots", () => {
   it("accepts the list envelope and keeps only string snapshot ids", () => {
     const parsed = parseLlmRequestSnapshots({
@@ -271,6 +285,60 @@ describe("useLlmSnapshots", () => {
       "b",
     ]);
   });
+
+  it("ignores a list response that resolves after the session switched", async () => {
+    const pending: Array<(value: unknown) => void> = [];
+    vi.mocked(llmSnapshotsApi.list).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          pending.push(resolve);
+        }) as never,
+    );
+
+    const session = ref("s1");
+    const snapshots = useLlmSnapshots(session);
+    const pendingA = snapshots.loadList();
+    session.value = "s2";
+    const pendingB = snapshots.loadList();
+
+    expect(llmSnapshotsApi.list).toHaveBeenNthCalledWith(1, "s1", {
+      message_id: undefined,
+      turn_id: undefined,
+    });
+    expect(llmSnapshotsApi.list).toHaveBeenNthCalledWith(2, "s2", {
+      message_id: undefined,
+      turn_id: undefined,
+    });
+
+    // B resolves first, then the slow A response arrives and must be dropped.
+    pending[1](listPayload([envelope("b")]));
+    await pendingB;
+    pending[0](listPayload([envelope("a")]));
+    await pendingA;
+
+    expect(snapshots.items.value.map((item) => item.snapshot_id)).toEqual([
+      "b",
+    ]);
+  });
+
+  it("does not reuse a detail cached for another session", async () => {
+    const detailFor = (sessionId: string) => ({
+      envelope: envelope("a", { session_id: sessionId }),
+      raw: {},
+      view: {},
+    });
+    vi.mocked(llmSnapshotsApi.get)
+      .mockResolvedValueOnce({ data: { data: detailFor("s1") } } as never)
+      .mockResolvedValueOnce({ data: { data: detailFor("s2") } } as never);
+
+    const session = ref("s1");
+    const snapshots = useLlmSnapshots(session);
+    expect((await snapshots.loadDetail("a"))?.envelope.session_id).toBe("s1");
+
+    session.value = "s2";
+    expect((await snapshots.loadDetail("a"))?.envelope.session_id).toBe("s2");
+    expect(llmSnapshotsApi.get).toHaveBeenCalledTimes(2);
+  });
 });
 
 function sseResponse(frames: string) {
@@ -362,6 +430,18 @@ describe("useMessages llm_request_snapshots fold", () => {
     );
     expect(botRecord.content.llmRequestSnapshots?.[0].bytes).toBe(2);
     expect(botRecord.content.llmRequestSnapshots).toHaveLength(2);
+
+    // Telemetry is state, not chat text: no rendered plain part may carry
+    // the snapshot payload (e.g. an accidental `snapshot_id` blob).
+    const plainText = [
+      ...userRecord.content.message,
+      ...botRecord.content.message,
+    ].flatMap((part) =>
+      "text" in part && typeof part.text === "string" ? [part.text] : [],
+    );
+    expect(plainText.filter((text) => text.includes("snapshot_id"))).toEqual(
+      [],
+    );
   });
 
   it("does not resurrect the ephemeral field from history", async () => {

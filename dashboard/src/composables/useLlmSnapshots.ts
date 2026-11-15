@@ -43,6 +43,10 @@ export function useLlmSnapshots(sessionId?: LlmSnapshotSessionSource) {
   const error = ref<string | null>(null);
   const detailCache = new Map<string, LlmSnapshotDetail>();
   let lastParams: LlmSnapshotListParams = {};
+  // Session the current list state and detail cache belong to. Reset on every
+  // switch so a detail cached for one session is never returned for another,
+  // and a slow list response cannot overwrite the session we moved to.
+  let boundSessionId: string | null = null;
 
   function resolveSessionId(): string {
     const value =
@@ -54,26 +58,34 @@ export function useLlmSnapshots(sessionId?: LlmSnapshotSessionSource) {
     return typeof value === "string" ? value : "";
   }
 
+  function bindSession(session: string): void {
+    if (boundSessionId === session) return;
+    boundSessionId = session;
+    detailCache.clear();
+  }
+
   async function loadList(params: LlmSnapshotListParams = {}): Promise<void> {
     lastParams = { ...params };
-    const currentSessionId = resolveSessionId();
+    // Resolve once: the request and the staleness check must use the same id.
+    const requestSessionId = resolveSessionId();
+    bindSession(requestSessionId);
+    items.value = [];
+    expired.value = false;
+    limits.value = null;
     error.value = null;
-    if (!currentSessionId) {
-      items.value = [];
-      expired.value = false;
-      limits.value = null;
-      return;
-    }
+    if (!requestSessionId) return;
     try {
-      const response = await llmSnapshotsApi.list(currentSessionId, {
+      const response = await llmSnapshotsApi.list(requestSessionId, {
         message_id: params.messageId,
         turn_id: params.turnId,
       });
+      if (resolveSessionId() !== requestSessionId) return;
       const list = response.data?.data;
       items.value = parseLlmRequestSnapshots(list);
       expired.value = Boolean(list?.expired);
       limits.value = list?.limits ?? null;
     } catch (e) {
+      if (resolveSessionId() !== requestSessionId) return;
       error.value = errorMessage(e);
     }
   }
@@ -81,6 +93,8 @@ export function useLlmSnapshots(sessionId?: LlmSnapshotSessionSource) {
   async function loadDetail(
     snapshotId: string,
   ): Promise<LlmSnapshotDetail | null> {
+    const requestSessionId = resolveSessionId();
+    bindSession(requestSessionId);
     const cached = detailCache.get(snapshotId);
     if (cached) {
       error.value = null;
@@ -89,11 +103,15 @@ export function useLlmSnapshots(sessionId?: LlmSnapshotSessionSource) {
     error.value = null;
     try {
       const response = await llmSnapshotsApi.get(snapshotId);
+      // A detail that lands after a session switch must not enter the new
+      // session's cache (or the Inspector would render it for the wrong chat).
+      if (resolveSessionId() !== requestSessionId) return null;
       const detail = (response.data?.data ?? null) as LlmSnapshotDetail | null;
       if (!detail) return null;
       detailCache.set(snapshotId, detail);
       return detail;
     } catch (e) {
+      if (resolveSessionId() !== requestSessionId) return null;
       error.value = errorMessage(e);
       return null;
     }

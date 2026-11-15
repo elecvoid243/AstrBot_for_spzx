@@ -34,11 +34,7 @@ if TYPE_CHECKING:
     from astrbot.core.provider.provider import Provider
 
 MAX_BYTES_PER_SNAPSHOT = 524288
-"""Character budget handed to the sanitizer for one request body.
-
-The serialized byte cap is structurally enforced in Task 2; until then this
-value only bounds the sanitizer traversal.
-"""
+"""Serialized UTF-8 byte budget of one sanitized request body."""
 
 MAX_SNAPSHOTS_PER_SESSION = 128
 """Maximum number of snapshots kept per session."""
@@ -363,6 +359,1453 @@ def _light_envelope(envelope: dict) -> dict:
     return copy.deepcopy(light)
 
 
+SYSTEM_BYTES = 65536
+"""Upper bound of the system prompt kept in one snapshot."""
+
+TOOL_SCHEMA_BYTES = 16384
+"""Upper bound of one tool schema kept in one snapshot."""
+
+MESSAGE_BYTES = 32768
+"""Upper bound of one provider-native message kept in one snapshot."""
+
+MESSAGE_HEAD_BYTES = 8192
+"""Head bytes kept when one oversized message is trimmed."""
+
+MESSAGE_TAIL_BYTES = 8192
+"""Tail bytes kept when one oversized message is trimmed."""
+
+EXTRA_BYTES = 16384
+"""Upper bound of provider-specific extension fields kept in one snapshot."""
+
+_SANITIZER_LIMIT = MAX_BYTES_PER_SNAPSHOT * 2
+"""Character budget handed to the sanitizer.
+
+The structural pass already enforces the serialized byte cap, so this budget
+only bounds pathological non-text shapes. It is deliberately larger than the
+byte cap: a body close to the cap must not be cut from the tail, where the
+newest message lives.
+"""
+
+_PRIMARY_SHRINK_LADDER = (8192, 4096, 2048, 1024, 512, 256)
+"""Tool schema limits tried when system plus tools alone exceed the budget."""
+
+
+def _serialized_bytes(value: object) -> int:
+    """Return the serialized UTF-8 byte size of a JSON-compatible value."""
+
+    try:
+        payload = json.dumps(value, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        payload = str(value)
+    return len(payload.encode("utf-8"))
+
+
+def _truncation_marker(removed: int) -> str:
+    """Return the marker that replaces removed bytes."""
+
+    return f"…[truncated {removed} bytes]…"
+
+
+def _utf8_head(text: str, max_bytes: int) -> str:
+    """Return a prefix of ``text`` that fits ``max_bytes`` UTF-8 bytes."""
+
+    if max_bytes <= 0:
+        return ""
+    encoded = text.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return text
+    return encoded[:max_bytes].decode("utf-8", "ignore")
+
+
+def _utf8_tail(text: str, max_bytes: int) -> str:
+    """Return a suffix of ``text`` that fits ``max_bytes`` UTF-8 bytes."""
+
+    if max_bytes <= 0:
+        return ""
+    encoded = text.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return text
+    return encoded[-max_bytes:].decode("utf-8", "ignore")
+
+
+def _head_cap_text(text: str, max_bytes: int) -> str:
+    """Keep the head of ``text`` and append the truncation marker."""
+
+    size = len(text.encode("utf-8"))
+    if size <= max_bytes:
+        return text
+    reserve = len(_truncation_marker(size).encode("utf-8")) + 8
+    head = _utf8_head(text, max(0, max_bytes - reserve))
+    removed = size - len(head.encode("utf-8"))
+    if removed <= 0:
+        return text
+    return f"{head}{_truncation_marker(removed)}"
+
+
+def _head_tail_text(text: str, head_bytes: int, tail_bytes: int) -> str:
+    """Keep the head and tail of ``text``, replacing the middle with a marker."""
+
+    size = len(text.encode("utf-8"))
+    if size <= head_bytes + tail_bytes + 64:
+        return text
+    head = _utf8_head(text, head_bytes)
+    tail = _utf8_tail(text, tail_bytes)
+    removed = size - len(head.encode("utf-8")) - len(tail.encode("utf-8"))
+    if removed <= 0:
+        return text
+    replacement = f"{head}{_truncation_marker(removed)}{tail}"
+    if len(replacement.encode("utf-8")) >= size:
+        return text
+    return replacement
+
+
+def _get_at(container: object, path: tuple) -> object:
+    """Read a nested value by path."""
+
+    current = container
+    for key in path:
+        current = current[key]
+    return current
+
+
+def _set_at(container: object, path: tuple, value: object) -> None:
+    """Write a nested value by path."""
+
+    parent = container
+    for key in path[:-1]:
+        parent = parent[key]
+    parent[path[-1]] = value
+
+
+def _longest_string(value: object) -> tuple[tuple, str] | None:
+    """Return the path and value of the longest string inside a structure."""
+
+    best: tuple[tuple, str] | None = None
+    stack: list[tuple[tuple, object]] = [((), value)]
+    while stack:
+        path, current = stack.pop()
+        if isinstance(current, str):
+            if path and (best is None or len(current) > len(best[1])):
+                best = (path, current)
+        elif isinstance(current, dict):
+            for key, child in current.items():
+                stack.append(((*path, key), child))
+        elif isinstance(current, list):
+            for index, child in enumerate(current):
+                stack.append(((*path, index), child))
+    return best
+
+
+def _cap_structure(
+    value: object,
+    max_bytes: int,
+    head_bytes: int | None = None,
+    tail_bytes: int | None = None,
+) -> tuple[object, bool]:
+    """Shrink one JSON value so its serialized size fits ``max_bytes``.
+
+    Args:
+        value: JSON-compatible value; containers are mutated in place.
+        max_bytes: Serialized UTF-8 byte budget.
+        head_bytes: Head bytes kept per trimmed string, when trimming with a
+            head and tail is requested.
+        tail_bytes: Tail bytes kept per trimmed string.
+
+    Returns:
+        The possibly replaced value and whether anything changed.
+    """
+
+    if isinstance(value, str):
+        if head_bytes is not None and tail_bytes is not None:
+            capped = _head_tail_text(value, head_bytes, tail_bytes)
+            if capped != value:
+                return capped, True
+        capped = _head_cap_text(value, max_bytes)
+        return capped, capped != value
+    if not isinstance(value, (dict, list)):
+        return value, False
+    if _serialized_bytes(value) <= max_bytes:
+        return value, False
+
+    changed = False
+    while _serialized_bytes(value) > max_bytes:
+        slot = _longest_string(value)
+        if slot is None:
+            break
+        path, text = slot
+        if head_bytes is not None and tail_bytes is not None:
+            replacement = _head_tail_text(text, head_bytes, tail_bytes)
+            if replacement == text:
+                replacement = _head_cap_text(
+                    text,
+                    max(1024, len(text.encode("utf-8")) // 2),
+                )
+        else:
+            replacement = _head_cap_text(
+                text,
+                max(1024, len(text.encode("utf-8")) // 2),
+            )
+        if replacement == text:
+            break
+        _set_at(value, path, replacement)
+        changed = True
+
+    if isinstance(value, (dict, list)) and _serialized_bytes(value) > max_bytes:
+        serialized = json.dumps(value, ensure_ascii=False, default=str)
+        value = _head_cap_text(serialized, max_bytes)
+        changed = True
+    return value, changed
+
+
+def _system_slots(body: object) -> list[tuple]:
+    """Return the paths of the system-prompt fields of a provider body."""
+
+    if not isinstance(body, dict):
+        return []
+    slots: list[tuple] = [
+        (key,)
+        for key in ("system", "instructions", "system_instruction")
+        if key in body
+    ]
+    config = body.get("config")
+    if isinstance(config, dict):
+        for key in ("system_instruction", "systemInstruction"):
+            if key in config:
+                slots.append(("config", key))
+    return slots
+
+
+def _messages_container(body: object) -> list | None:
+    """Return the provider-native message list of a body, when present."""
+
+    if not isinstance(body, dict):
+        return None
+    for key in ("messages", "input", "contents"):
+        value = body.get(key)
+        if isinstance(value, list):
+            return value
+    return None
+
+
+def _tool_containers(body: object) -> list[list]:
+    """Return every provider-native tool list of a body."""
+
+    containers: list[list] = []
+    if not isinstance(body, dict):
+        return containers
+    tools = body.get("tools")
+    if isinstance(tools, list):
+        containers.append(tools)
+    config = body.get("config")
+    if isinstance(config, dict):
+        for key in ("tools", "toolConfig"):
+            value = config.get(key)
+            if isinstance(value, list):
+                containers.append(value)
+    return containers
+
+
+def _cap_system(body: object, limit: int = SYSTEM_BYTES) -> bool:
+    """Cap the system prompt to ``limit`` bytes, keeping a marker."""
+
+    changed = False
+    for path in _system_slots(body):
+        value = _get_at(body, path)
+        capped, slot_changed = _cap_structure(value, limit)
+        if slot_changed:
+            _set_at(body, path, capped)
+            changed = True
+    messages = _messages_container(body)
+    if messages and _is_system_message(messages[0]):
+        capped, slot_changed = _cap_structure(messages[0], limit)
+        if slot_changed:
+            messages[0] = capped
+            changed = True
+    return changed
+
+
+def _is_system_message(message: object) -> bool:
+    """Return whether a provider-native message is the system prompt."""
+
+    return isinstance(message, dict) and message.get("role") == "system"
+
+
+def _protected_head(messages: list | None) -> int:
+    """Return how many leading messages must never be dropped."""
+
+    if messages and _is_system_message(messages[0]):
+        return 1
+    return 0
+
+
+def _cap_tools(body: object, limit: int = TOOL_SCHEMA_BYTES) -> bool:
+    """Cap every tool schema to ``limit`` bytes, keeping all tools."""
+
+    changed = False
+    for container in _tool_containers(body):
+        for index, tool in enumerate(container):
+            capped, tool_changed = _cap_structure(tool, limit)
+            if tool_changed:
+                container[index] = capped
+                changed = True
+    return changed
+
+
+def _cap_extras(body: object, limit: int = EXTRA_BYTES) -> bool:
+    """Cap provider-specific extension fields to ``limit`` bytes."""
+
+    if not isinstance(body, dict):
+        return False
+    changed = False
+    extra_body = body.get("extra_body")
+    if isinstance(extra_body, (dict, list)):
+        capped, slot_changed = _cap_structure(extra_body, limit)
+        if slot_changed:
+            body["extra_body"] = capped
+            changed = True
+    config = body.get("config")
+    if isinstance(config, dict):
+        skip = {"system_instruction", "systemInstruction", "tools", "toolConfig"}
+        for key in list(config):
+            if key in skip:
+                continue
+            capped, slot_changed = _cap_structure(config[key], limit)
+            if slot_changed:
+                config[key] = capped
+                changed = True
+    return changed
+
+
+def _cap_message_strings(body: object) -> bool:
+    """Cap provider bodies whose messages are one flat string."""
+
+    if not isinstance(body, dict):
+        return False
+    changed = False
+    for key in ("input", "contents", "messages"):
+        value = body.get(key)
+        if not isinstance(value, str):
+            continue
+        capped, slot_changed = _cap_structure(
+            value,
+            MESSAGE_BYTES,
+            MESSAGE_HEAD_BYTES,
+            MESSAGE_TAIL_BYTES,
+        )
+        if slot_changed:
+            body[key] = capped
+            changed = True
+    return changed
+
+
+def _force_under_budget(body: object, budget: int) -> bool:
+    """Enforce the byte budget as a last resort.
+
+    The normal structural pass already fits the budget. This guard exists so a
+    snapshot can never exceed the cap, even when one field alone is oversized.
+    System and tools are trimmed with markers first; only when nothing else can
+    shrink are tool schemas and then the oldest messages (never the newest)
+    removed.
+
+    Args:
+        body: Mutable sanitized body.
+        budget: Serialized UTF-8 byte budget.
+
+    Returns:
+        Whether the body was changed.
+    """
+
+    if _serialized_bytes(body) <= budget:
+        return False
+    changed = False
+    messages = _messages_container(body)
+    tool_containers = _tool_containers(body)
+    head = _protected_head(messages)
+    while _serialized_bytes(body) > budget:
+        progress = False
+        for path in _system_slots(body):
+            value = _get_at(body, path)
+            if _serialized_bytes(value) <= 256:
+                continue
+            serialized = (
+                value
+                if isinstance(value, str)
+                else json.dumps(value, ensure_ascii=False, default=str)
+            )
+            _set_at(body, path, _head_cap_text(serialized, 256))
+            progress = changed = True
+        if progress:
+            continue
+        for container in tool_containers:
+            if len(container) > 1:
+                container.pop()
+                progress = changed = True
+                break
+        if progress:
+            continue
+        if messages is not None and len(messages) > head + 1:
+            del messages[head]
+            progress = changed = True
+        if progress:
+            continue
+        if messages:
+            capped, slot_changed = _cap_structure(messages[head], 512)
+            if slot_changed:
+                messages[head] = capped
+                progress = changed = True
+        if progress:
+            continue
+        if isinstance(body, dict):
+            for key in list(body):
+                value = body[key]
+                if _serialized_bytes(value) <= 1024:
+                    continue
+                capped, slot_changed = _cap_structure(value, 1024)
+                if slot_changed:
+                    body[key] = capped
+                    progress = changed = True
+        if progress:
+            continue
+        marker = _truncation_marker(_serialized_bytes(body))
+        if isinstance(body, dict):
+            body.clear()
+            body["truncated"] = marker
+        elif isinstance(body, list):
+            body.clear()
+            body.append(marker)
+        changed = True
+        break
+    return changed
+
+
+def _apply_structural_truncation(
+    body: object,
+    budget: int = MAX_BYTES_PER_SNAPSHOT,
+) -> tuple[int, bool]:
+    """Trim one provider-native body to the serialized byte budget.
+
+    The order follows the recorder spec: bound system and tool schemas, drop
+    the oldest messages, trim oversized messages to head plus tail, bound
+    provider extras, and finally shrink system/tools with markers when they
+    alone exceed the budget.
+
+    Args:
+        body: Deep copy of the request body; mutated in place so the caller's
+            object is never touched.
+        budget: Serialized UTF-8 byte budget.
+
+    Returns:
+        ``(omitted_messages, truncated)``.
+    """
+
+    if not isinstance(body, (dict, list)):
+        return 0, False
+    truncated = _cap_system(body)
+    truncated = _cap_tools(body) or truncated
+
+    messages = _messages_container(body)
+    omitted = 0
+    head = _protected_head(messages)
+    while messages is not None and len(messages) > head + 1:
+        if _serialized_bytes(body) <= budget:
+            break
+        del messages[head]
+        omitted += 1
+        truncated = True
+
+    if messages is not None:
+        for index, message in enumerate(messages):
+            capped, message_changed = _cap_structure(
+                message,
+                MESSAGE_BYTES,
+                MESSAGE_HEAD_BYTES,
+                MESSAGE_TAIL_BYTES,
+            )
+            if message_changed:
+                messages[index] = capped
+                truncated = True
+
+    if _cap_message_strings(body):
+        truncated = True
+
+    if _cap_extras(body):
+        truncated = True
+
+    if _serialized_bytes(body) > budget:
+        for tool_limit in _PRIMARY_SHRINK_LADDER:
+            if _serialized_bytes(body) <= budget:
+                break
+            _cap_system(body, min(SYSTEM_BYTES, tool_limit * 4))
+            _cap_tools(body, tool_limit)
+            truncated = True
+
+    if _serialized_bytes(body) > budget:
+        truncated = _force_under_budget(body, budget) or truncated
+    return omitted, truncated
+
+
+def _canonical_json(value: object) -> str:
+    """Serialize a value with stable key order for hashing."""
+
+    try:
+        return json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        )
+    except (TypeError, ValueError):
+        return json.dumps(str(value), ensure_ascii=False)
+
+
+def _schema_fingerprint(schema: object) -> tuple[str, int]:
+    """Return the sha1 and byte size of a canonical tool schema."""
+
+    canonical = _canonical_json(schema)
+    encoded = canonical.encode("utf-8")
+    return hashlib.sha1(encoded).hexdigest(), len(encoded)
+
+
+def _classify_tool_origin(tool: object) -> str:
+    """Infer where a function tool comes from.
+
+    Args:
+        tool: A ``FunctionTool``-like object.
+
+    Returns:
+        One of ``builtin``, ``plugin``, ``mcp``, ``skill``, ``subagent``,
+        ``team`` or ``unknown``.
+    """
+
+    cls = type(tool)
+    module = (getattr(cls, "__module__", "") or "").lower()
+    class_name = (getattr(cls, "__name__", "") or "").lower()
+    if "mcp" in module or "mcp" in class_name:
+        return "mcp"
+    if "subagent" in module or "handoff" in module:
+        return "subagent"
+    if "agent_team" in module:
+        return "team"
+    if "skill" in module:
+        return "skill"
+    if module.startswith(("astrbot.core.tools", "astrbot.builtin_stars")):
+        return "builtin"
+    if getattr(tool, "handler_module_path", None):
+        return "plugin"
+    return "unknown"
+
+
+def _provider_tool_set(provider: object | None) -> object | None:
+    """Return the provider's ``ToolSet`` when it exposes one."""
+
+    if provider is None:
+        return None
+    for attribute in ("func_tool", "tool_set", "snapshot_tool_set"):
+        candidate = getattr(provider, attribute, None)
+        if candidate is not None and hasattr(candidate, "tools"):
+            return candidate
+    return None
+
+
+def _raw_tool_schemas(raw: object) -> list[tuple[str, dict]]:
+    """Return ``(name, schema)`` pairs found in a provider-native body."""
+
+    schemas: list[tuple[str, dict]] = []
+    seen: set[str] = set()
+
+    def add(name: object, schema: object) -> None:
+        if not isinstance(name, str) or not name or name in seen:
+            return
+        seen.add(name)
+        schemas.append((name, schema if isinstance(schema, dict) else {}))
+
+    for container in _tool_containers(raw):
+        for item in container:
+            if not isinstance(item, dict):
+                continue
+            function = item.get("function")
+            if isinstance(function, dict):
+                add(function.get("name"), function.get("parameters"))
+                continue
+            declarations = item.get("function_declarations") or item.get(
+                "functionDeclarations"
+            )
+            if isinstance(declarations, list):
+                for declaration in declarations:
+                    if isinstance(declaration, dict):
+                        add(
+                            declaration.get("name"),
+                            declaration.get("parameters")
+                            or declaration.get("parametersJsonSchema"),
+                        )
+                continue
+            add(
+                item.get("name") or item.get("type"),
+                item.get("parameters")
+                or item.get("input_schema")
+                or item.get("parametersJsonSchema"),
+            )
+    return schemas
+
+
+def _tool_meta_row(
+    origin: str,
+    active: bool,
+    denied: bool,
+    background: bool,
+    schema: object,
+) -> dict:
+    """Build one ``tool_meta`` row."""
+
+    schema_hash, schema_bytes = _schema_fingerprint(schema)
+    return {
+        "origin": origin,
+        "active": active,
+        "denied": denied,
+        "background": background,
+        "schema_hash": schema_hash,
+        "schema_bytes": schema_bytes,
+    }
+
+
+def _build_tool_meta(raw: object, provider: object | None) -> dict:
+    """Describe the tools a provider request carried.
+
+    Rich metadata comes from the provider's ``ToolSet`` when it exposes one.
+    Otherwise only the serialized schema is known, which is reported with
+    ``origin="unknown"`` and ``active=True``.
+
+    Args:
+        raw: Provider-native request body.
+        provider: Provider that is about to perform the call.
+
+    Returns:
+        ``tool name -> meta`` mapping.
+    """
+
+    meta: dict[str, dict] = {}
+    denied_tools = getattr(provider, "denied_tools", None) or ()
+    try:
+        denied = {str(name) for name in denied_tools}
+    except TypeError:
+        denied = set()
+
+    tool_set = _provider_tool_set(provider)
+    for tool in getattr(tool_set, "tools", None) or ():
+        name = getattr(tool, "name", None)
+        if not isinstance(name, str) or not name:
+            continue
+        meta[name] = _tool_meta_row(
+            origin=_classify_tool_origin(tool),
+            active=bool(getattr(tool, "active", True)),
+            denied=name in denied,
+            background=bool(getattr(tool, "is_background_task", False)),
+            schema=getattr(tool, "parameters", None) or {"type": "object"},
+        )
+
+    for name, schema in _raw_tool_schemas(raw):
+        if name in meta:
+            continue
+        meta[name] = _tool_meta_row(
+            origin="unknown",
+            active=True,
+            denied=name in denied,
+            background=False,
+            schema=schema,
+        )
+    return meta
+
+
+_TEXT_KEYS = {
+    "text",
+    "think",
+    "thinking",
+    "content",
+    "output",
+    "arguments",
+    "input",
+    "response",
+    "summary",
+}
+
+
+def _content_chars(value: object) -> int:
+    """Count displayable characters in a provider-native content value."""
+
+    if isinstance(value, str):
+        return len(value)
+    if isinstance(value, (list, tuple)):
+        return sum(_content_chars(item) for item in value)
+    if isinstance(value, dict):
+        total = 0
+        for key, child in value.items():
+            if not isinstance(key, str) or key not in _TEXT_KEYS:
+                continue
+            if isinstance(child, (str, list, tuple)):
+                total += _content_chars(child)
+            elif isinstance(child, (dict, int, float)) and key in {
+                "input",
+                "arguments",
+            }:
+                total += len(json.dumps(child, ensure_ascii=False, default=str))
+        return total
+    return 0
+
+
+def _text_from_parts(value: object) -> str:
+    """Flatten provider-native text blocks into one string."""
+
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (list, tuple)):
+        return "".join(_text_from_parts(item) for item in value)
+    if isinstance(value, dict):
+        text = value.get("text")
+        if isinstance(text, str):
+            return text
+        for key in ("think", "thinking", "output", "content", "parts"):
+            if key in value:
+                flattened = _text_from_parts(value[key])
+                if flattened:
+                    return flattened
+    return ""
+
+
+def _message_entry(
+    *,
+    role: object,
+    content: object = None,
+    name: object = None,
+    tool_call_id: object = None,
+    tool_calls: object = None,
+    source: object = None,
+    native: object = None,
+    flags: tuple[str, ...] = (),
+) -> dict:
+    """Normalize one provider-native message into the shared entry shape."""
+
+    return {
+        "role": role if isinstance(role, str) and role else "user",
+        "name": name if isinstance(name, str) else None,
+        "tool_call_id": tool_call_id if isinstance(tool_call_id, str) else None,
+        "content": content,
+        "tool_calls": list(tool_calls) if isinstance(tool_calls, list) else [],
+        "source": source if isinstance(source, str) else None,
+        "native": native,
+        "flags": list(flags),
+    }
+
+
+def _tool_entry(name: object, description: object, parameters: object) -> dict | None:
+    """Normalize one provider-native tool schema."""
+
+    if not isinstance(name, str) or not name:
+        return None
+    return {
+        "name": name,
+        "description": description if isinstance(description, str) else None,
+        "parameters": parameters
+        if isinstance(parameters, dict)
+        else {"type": "object"},
+    }
+
+
+def _pick(mapping: object, keys: tuple[str, ...]) -> dict:
+    """Return the present, non-null keys of ``mapping``."""
+
+    if not isinstance(mapping, dict):
+        return {}
+    return {key: mapping[key] for key in keys if mapping.get(key) is not None}
+
+
+def _extension_fields(raw: object, keys: tuple[str, ...]) -> dict:
+    """Return provider-specific extension fields, flattened from ``extra_body``."""
+
+    if not isinstance(raw, dict):
+        return {}
+    extra = {key: raw[key] for key in keys if raw.get(key) is not None}
+    extra_body = raw.get("extra_body")
+    if isinstance(extra_body, dict) and extra_body:
+        extra.update(extra_body)
+    if not extra:
+        return {}
+    extra["extra_body_keys"] = sorted(key for key in extra if key != "extra_body_keys")
+    return extra
+
+
+class ProviderAdapter:
+    """Normalize one provider-native request body for the developer view.
+
+    Subclasses implement the five hooks the view needs. All hooks are
+    side-effect free and tolerate partially truncated payloads.
+    """
+
+    name: str = "unknown"
+
+    def system_text(self, raw: dict) -> str | None:
+        """Return the system prompt text of the request."""
+
+        return None
+
+    def system_source_field(self, raw: dict) -> str | None:
+        """Return where the system prompt lives in the native payload."""
+
+        return None
+
+    def messages(self, raw: dict) -> list[dict]:
+        """Return normalized message entries in provider order."""
+
+        return []
+
+    def tools(self, raw: dict) -> list[dict]:
+        """Return normalized tool schemas in provider order."""
+
+        return []
+
+    def params(self, raw: dict) -> dict:
+        """Return sampling and request parameters."""
+
+        return {}
+
+    def extra(self, raw: dict) -> dict:
+        """Return provider-specific extension fields."""
+
+        return {}
+
+
+class OpenAIChatAdapter(ProviderAdapter):
+    """Adapter for OpenAI Chat Completions style payloads."""
+
+    name = "openai_chat"
+    _PARAM_KEYS = (
+        "temperature",
+        "top_p",
+        "max_tokens",
+        "max_completion_tokens",
+        "tool_choice",
+        "stream",
+        "stream_options",
+        "presence_penalty",
+        "frequency_penalty",
+        "seed",
+        "stop",
+        "response_format",
+        "logit_bias",
+        "reasoning_effort",
+        "n",
+    )
+    _EXTRA_KEYS = ("reasoning", "chat_template_kwargs", "think", "thinking")
+
+    def system_text(self, raw: dict) -> str | None:
+        messages = raw.get("messages") if isinstance(raw, dict) else None
+        if not isinstance(messages, list) or not messages:
+            return None
+        first = messages[0]
+        if isinstance(first, dict) and first.get("role") == "system":
+            return _text_from_parts(first.get("content")) or None
+        return None
+
+    def system_source_field(self, raw: dict) -> str | None:
+        return "messages[0]" if self.system_text(raw) is not None else None
+
+    def messages(self, raw: dict) -> list[dict]:
+        messages = raw.get("messages") if isinstance(raw, dict) else None
+        if not isinstance(messages, list):
+            return []
+        entries = []
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            entries.append(
+                _message_entry(
+                    role=message.get("role"),
+                    content=message.get("content"),
+                    name=message.get("name"),
+                    tool_call_id=message.get("tool_call_id"),
+                    tool_calls=message.get("tool_calls"),
+                    source=message.get("source"),
+                    native=message,
+                )
+            )
+        return entries
+
+    def tools(self, raw: dict) -> list[dict]:
+        tools = raw.get("tools") if isinstance(raw, dict) else None
+        if not isinstance(tools, list):
+            return []
+        entries = []
+        for tool in tools:
+            if not isinstance(tool, dict):
+                continue
+            function = tool.get("function")
+            if isinstance(function, dict):
+                entry = _tool_entry(
+                    function.get("name"),
+                    function.get("description"),
+                    function.get("parameters"),
+                )
+            else:
+                entry = _tool_entry(
+                    tool.get("name"),
+                    tool.get("description"),
+                    tool.get("parameters"),
+                )
+            if entry is not None:
+                entries.append(entry)
+        return entries
+
+    def params(self, raw: dict) -> dict:
+        params = _pick(raw, self._PARAM_KEYS)
+        extra_body = raw.get("extra_body") if isinstance(raw, dict) else None
+        if (
+            isinstance(extra_body, dict)
+            and "reasoning_effort" in extra_body
+            and "reasoning_effort" not in params
+        ):
+            params["reasoning_effort"] = extra_body["reasoning_effort"]
+        return params
+
+    def extra(self, raw: dict) -> dict:
+        return _extension_fields(raw, self._EXTRA_KEYS)
+
+
+class OpenAIResponsesAdapter(ProviderAdapter):
+    """Adapter for OpenAI Responses style payloads."""
+
+    name = "openai_responses"
+    _PARAM_KEYS = (
+        "temperature",
+        "top_p",
+        "max_output_tokens",
+        "tool_choice",
+        "stream",
+        "parallel_tool_calls",
+        "max_tool_calls",
+    )
+    _EXTRA_KEYS = (
+        "store",
+        "text",
+        "truncation",
+        "include",
+        "metadata",
+        "prompt_cache_key",
+    )
+
+    def system_text(self, raw: dict) -> str | None:
+        value = raw.get("instructions") if isinstance(raw, dict) else None
+        return (_text_from_parts(value) or None) if value is not None else None
+
+    def system_source_field(self, raw: dict) -> str | None:
+        return "instructions" if self.system_text(raw) is not None else None
+
+    def messages(self, raw: dict) -> list[dict]:
+        items = raw.get("input") if isinstance(raw, dict) else None
+        if isinstance(items, str):
+            return [_message_entry(role="user", content=items, native=items)]
+        if not isinstance(items, list):
+            return []
+        entries = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            item_type = item.get("type")
+            if item_type == "function_call":
+                entries.append(
+                    _message_entry(
+                        role="assistant",
+                        tool_calls=[
+                            {
+                                "id": item.get("call_id"),
+                                "type": "function",
+                                "name": item.get("name"),
+                                "arguments": item.get("arguments"),
+                            }
+                        ],
+                        native=item,
+                    )
+                )
+            elif item_type == "function_call_output":
+                entries.append(
+                    _message_entry(
+                        role="tool",
+                        content=item.get("output"),
+                        tool_call_id=item.get("call_id"),
+                        native=item,
+                    )
+                )
+            elif item_type == "reasoning":
+                entries.append(
+                    _message_entry(
+                        role="assistant",
+                        content=item.get("summary") or item.get("content"),
+                        native=item,
+                        flags=("reasoning",),
+                    )
+                )
+            else:
+                entries.append(
+                    _message_entry(
+                        role=item.get("role") or "user",
+                        content=item.get("content"),
+                        name=item.get("name"),
+                        native=item,
+                    )
+                )
+        return entries
+
+    def tools(self, raw: dict) -> list[dict]:
+        tools = raw.get("tools") if isinstance(raw, dict) else None
+        if not isinstance(tools, list):
+            return []
+        entries = []
+        for tool in tools:
+            if not isinstance(tool, dict):
+                continue
+            name = tool.get("name")
+            if not isinstance(name, str) or not name:
+                name = tool.get("type")
+            entry = _tool_entry(name, tool.get("description"), tool.get("parameters"))
+            if entry is not None:
+                entries.append(entry)
+        return entries
+
+    def params(self, raw: dict) -> dict:
+        params = _pick(raw, self._PARAM_KEYS)
+        reasoning = raw.get("reasoning") if isinstance(raw, dict) else None
+        if isinstance(reasoning, dict) and reasoning.get("effort") is not None:
+            params["reasoning_effort"] = reasoning["effort"]
+        return params
+
+    def extra(self, raw: dict) -> dict:
+        return _extension_fields(raw, self._EXTRA_KEYS)
+
+
+class AnthropicAdapter(ProviderAdapter):
+    """Adapter for Anthropic Messages style payloads."""
+
+    name = "anthropic"
+    _PARAM_KEYS = (
+        "temperature",
+        "top_p",
+        "top_k",
+        "max_tokens",
+        "tool_choice",
+        "stream",
+        "stop_sequences",
+        "metadata",
+        "service_tier",
+    )
+    _EXTRA_KEYS = (
+        "thinking",
+        "betas",
+        "mcp_servers",
+        "context_management",
+        "container",
+    )
+
+    def system_text(self, raw: dict) -> str | None:
+        value = raw.get("system") if isinstance(raw, dict) else None
+        return (_text_from_parts(value) or None) if value is not None else None
+
+    def system_source_field(self, raw: dict) -> str | None:
+        return "system" if self.system_text(raw) is not None else None
+
+    def messages(self, raw: dict) -> list[dict]:
+        messages = raw.get("messages") if isinstance(raw, dict) else None
+        if not isinstance(messages, list):
+            return []
+        entries = []
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            content = message.get("content")
+            tool_calls: list[dict] = []
+            tool_call_id = None
+            if isinstance(content, list):
+                for block in content:
+                    if not isinstance(block, dict):
+                        continue
+                    block_type = block.get("type")
+                    if block_type == "tool_use":
+                        tool_calls.append(
+                            {
+                                "id": block.get("id"),
+                                "type": "tool_use",
+                                "name": block.get("name"),
+                                "input": block.get("input"),
+                            }
+                        )
+                    elif block_type == "tool_result" and tool_call_id is None:
+                        tool_call_id = block.get("tool_use_id")
+            entries.append(
+                _message_entry(
+                    role=message.get("role"),
+                    content=content,
+                    tool_call_id=tool_call_id,
+                    tool_calls=tool_calls,
+                    native=message,
+                )
+            )
+        return entries
+
+    def tools(self, raw: dict) -> list[dict]:
+        tools = raw.get("tools") if isinstance(raw, dict) else None
+        if not isinstance(tools, list):
+            return []
+        entries = []
+        for tool in tools:
+            if not isinstance(tool, dict):
+                continue
+            entry = _tool_entry(
+                tool.get("name"),
+                tool.get("description"),
+                tool.get("input_schema"),
+            )
+            if entry is not None:
+                entries.append(entry)
+        return entries
+
+    def params(self, raw: dict) -> dict:
+        return _pick(raw, self._PARAM_KEYS)
+
+    def extra(self, raw: dict) -> dict:
+        return _extension_fields(raw, self._EXTRA_KEYS)
+
+
+class GeminiAdapter(ProviderAdapter):
+    """Adapter for Google GenAI (Gemini) style payloads."""
+
+    name = "gemini"
+    _EXTRA_SKIP = {
+        "system_instruction",
+        "systemInstruction",
+        "tools",
+        "toolConfig",
+        "generation_config",
+        "generationConfig",
+    }
+
+    @staticmethod
+    def _config(raw: object) -> dict:
+        config = raw.get("config") if isinstance(raw, dict) else None
+        return config if isinstance(config, dict) else {}
+
+    def system_text(self, raw: dict) -> str | None:
+        config = self._config(raw)
+        value = config.get("system_instruction")
+        if value is None:
+            value = config.get("systemInstruction")
+        return (_text_from_parts(value) or None) if value is not None else None
+
+    def system_source_field(self, raw: dict) -> str | None:
+        return (
+            "config.system_instruction" if self.system_text(raw) is not None else None
+        )
+
+    def messages(self, raw: dict) -> list[dict]:
+        contents = raw.get("contents") if isinstance(raw, dict) else None
+        if not isinstance(contents, list):
+            return []
+        entries = []
+        for item in contents:
+            if not isinstance(item, dict):
+                continue
+            parts = item.get("parts")
+            tool_calls: list[dict] = []
+            if isinstance(parts, list):
+                for part in parts:
+                    if not isinstance(part, dict):
+                        continue
+                    call = part.get("functionCall") or part.get("function_call")
+                    if isinstance(call, dict):
+                        tool_calls.append(
+                            {
+                                "id": part.get("id"),
+                                "type": "function_call",
+                                "name": call.get("name"),
+                                "args": call.get("args"),
+                            }
+                        )
+            role = item.get("role")
+            entries.append(
+                _message_entry(
+                    role="assistant" if role == "model" else role,
+                    content=parts if isinstance(parts, list) else item.get("content"),
+                    tool_calls=tool_calls,
+                    native=item,
+                )
+            )
+        return entries
+
+    def tools(self, raw: dict) -> list[dict]:
+        tools = self._config(raw).get("tools")
+        if not isinstance(tools, list):
+            return []
+        entries = []
+        for tool in tools:
+            if not isinstance(tool, dict):
+                continue
+            declarations = tool.get("function_declarations") or tool.get(
+                "functionDeclarations"
+            )
+            if isinstance(declarations, list):
+                for declaration in declarations:
+                    if not isinstance(declaration, dict):
+                        continue
+                    entry = _tool_entry(
+                        declaration.get("name"),
+                        declaration.get("description"),
+                        declaration.get("parameters")
+                        or declaration.get("parametersJsonSchema"),
+                    )
+                    if entry is not None:
+                        entries.append(entry)
+                continue
+            entry = _tool_entry(
+                tool.get("name"),
+                tool.get("description"),
+                tool.get("parameters"),
+            )
+            if entry is not None:
+                entries.append(entry)
+        return entries
+
+    def params(self, raw: dict) -> dict:
+        config = self._config(raw)
+        generation = config.get("generation_config") or config.get("generationConfig")
+        params = dict(generation) if isinstance(generation, dict) else {}
+        for key in (
+            "temperature",
+            "top_p",
+            "topP",
+            "max_output_tokens",
+            "maxOutputTokens",
+            "top_k",
+            "topK",
+        ):
+            if key in config:
+                params.setdefault(key, config[key])
+        tool_config = config.get("tool_config") or config.get("toolConfig")
+        if isinstance(tool_config, dict):
+            params["tool_choice"] = tool_config
+        return params
+
+    def extra(self, raw: dict) -> dict:
+        config = self._config(raw)
+        extra = {
+            key: value for key, value in config.items() if key not in self._EXTRA_SKIP
+        }
+        extra_body = raw.get("extra_body") if isinstance(raw, dict) else None
+        if isinstance(extra_body, dict):
+            extra.update(extra_body)
+        return extra
+
+
+ADAPTERS: dict[str, ProviderAdapter] = {
+    "openai_chat": OpenAIChatAdapter(),
+    "openai_responses": OpenAIResponsesAdapter(),
+    "anthropic": AnthropicAdapter(),
+    "gemini": GeminiAdapter(),
+}
+"""Snapshot adapters keyed by the ``adapter`` field of the envelope."""
+
+
+def _detect_adapter(raw: object) -> str:
+    """Infer the adapter name from the shape of a provider-native body."""
+
+    if not isinstance(raw, dict):
+        return "openai_chat"
+    if "contents" in raw:
+        return "gemini"
+    if "instructions" in raw:
+        return "openai_responses"
+    if "input" in raw and "messages" not in raw:
+        return "openai_responses"
+    if "system" in raw:
+        return "anthropic"
+    return "openai_chat"
+
+
+def _provenance_parts(provenance: object) -> list[dict]:
+    """Project envelope provenance entries into view system parts."""
+
+    parts: list[dict] = []
+    if not isinstance(provenance, list):
+        return parts
+    for entry in provenance:
+        if not isinstance(entry, dict):
+            continue
+        label = entry.get("label")
+        if not isinstance(label, str) or not label:
+            continue
+        chars = entry.get("chars")
+        parts.append(
+            {
+                "label": label,
+                "chars": chars
+                if isinstance(chars, int) and not isinstance(chars, bool)
+                else 0,
+                "approx": bool(entry.get("approx", True)),
+            }
+        )
+    return parts
+
+
+def _estimate_tokens(native: object, chars: int) -> int:
+    """Estimate tokens of one native message.
+
+    Uses :class:`EstimateTokenCounter` when the provider-native message can be
+    validated as an AstrBot :class:`Message`; otherwise falls back to a
+    character-based estimate.
+
+    Args:
+        native: Provider-native message payload.
+        chars: Displayable character count of the message.
+
+    Returns:
+        Estimated token count for display.
+    """
+
+    if isinstance(native, dict):
+        try:
+            from astrbot.core.agent.context.token_counter import (
+                EstimateTokenCounter,
+            )
+            from astrbot.core.agent.message import Message
+
+            message = Message.model_validate(native)
+        except Exception:
+            message = None
+        if message is not None:
+            try:
+                return EstimateTokenCounter().count_tokens([message])
+            except Exception:
+                logger.debug("Failed to estimate snapshot tokens", exc_info=True)
+    return max(1, chars // 3)
+
+
+def _message_flags(native: object, entry: dict) -> list[str]:
+    """Return internal markers still present on one native message."""
+
+    flags: list[str] = []
+    if isinstance(native, dict):
+        if native.get("role") == "_checkpoint":
+            flags.append("checkpoint")
+        if native.get("_window") is not None:
+            flags.append("window")
+        if native.get("_internal"):
+            flags.append("internal")
+        if native.get("_tool_result_unknown"):
+            flags.append("tool_result_unknown")
+        if native.get("type") == "reasoning":
+            flags.append("reasoning")
+    for flag in entry.get("flags") or ():
+        if flag not in flags:
+            flags.append(flag)
+    return flags
+
+
+def _message_row(entry: dict, position: int, offset: int) -> dict:
+    """Build one normalized view message row."""
+
+    content = entry.get("content")
+    tool_calls = entry.get("tool_calls") or []
+    chars = _content_chars(content) + _content_chars(tool_calls)
+    return {
+        "index": position + offset,
+        "role": entry.get("role") or "user",
+        "name": entry.get("name"),
+        "tool_call_id": entry.get("tool_call_id"),
+        "source": entry.get("source"),
+        "content": content,
+        "tool_calls": tool_calls,
+        "chars": chars,
+        "estimated_tokens": _estimate_tokens(entry.get("native"), chars),
+        "flags": _message_flags(entry.get("native"), entry),
+    }
+
+
+def _tool_view_row(row: dict, meta: dict | None) -> dict:
+    """Merge one normalized tool schema with its captured metadata."""
+
+    parameters = row.get("parameters") or {"type": "object"}
+    schema_hash, schema_bytes = _schema_fingerprint(parameters)
+    meta = meta if isinstance(meta, dict) else {}
+    return {
+        "name": row.get("name"),
+        "description": row.get("description"),
+        "parameters": parameters,
+        "origin": meta.get("origin") or "unknown",
+        "active": bool(meta.get("active", True)),
+        "denied": bool(meta.get("denied", False)),
+        "background": bool(meta.get("background", False)),
+        "schema_hash": schema_hash,
+        "schema_bytes": schema_bytes,
+    }
+
+
+def build_view(snapshot: dict) -> dict:
+    """Derive the normalized developer view from a stored snapshot.
+
+    Args:
+        snapshot: Snapshot returned by :meth:`RequestSnapshotRecorder.get`;
+            it must carry the sanitized ``raw`` body.
+
+    Returns:
+        ``{"system", "messages", "tools", "params", "extra"}``. The view is
+        derived on every call and never stored. Message ``index`` values stay
+        relative to the request before truncation, because head-dropped
+        messages are reported through ``counts.omitted_messages``.
+    """
+
+    snapshot = snapshot if isinstance(snapshot, dict) else {}
+    raw = snapshot.get("raw")
+    raw = raw if isinstance(raw, dict) else {}
+    adapter_name = snapshot.get("adapter")
+    adapter = ADAPTERS.get(adapter_name) if isinstance(adapter_name, str) else None
+    if adapter is None:
+        adapter = ADAPTERS[_detect_adapter(raw)]
+
+    system_text = adapter.system_text(raw) or ""
+    system = {
+        "text": system_text,
+        "hash": (
+            hashlib.sha1(system_text.encode("utf-8")).hexdigest()
+            if system_text
+            else None
+        ),
+        "source_field": adapter.system_source_field(raw),
+        "parts": _provenance_parts(snapshot.get("provenance")),
+    }
+
+    counts = snapshot.get("counts")
+    omitted = counts.get("omitted_messages") if isinstance(counts, dict) else 0
+    try:
+        offset = int(omitted or 0)
+    except (TypeError, ValueError):
+        offset = 0
+    messages = [
+        _message_row(entry, position, offset)
+        for position, entry in enumerate(adapter.messages(raw))
+    ]
+
+    tool_meta = snapshot.get("tool_meta")
+    tool_meta = tool_meta if isinstance(tool_meta, dict) else {}
+    tools = [
+        _tool_view_row(row, tool_meta.get(row.get("name")))
+        for row in adapter.tools(raw)
+    ]
+
+    return {
+        "system": system,
+        "messages": messages,
+        "tools": tools,
+        "params": adapter.params(raw),
+        "extra": adapter.extra(raw),
+    }
+
+
 class RequestSnapshotRecorder:
     """Process-local ring buffer of sanitized LLM request snapshots."""
 
@@ -398,7 +1841,8 @@ class RequestSnapshotRecorder:
         Args:
             provider: Provider that is about to perform the network call.
             raw: Final provider-native request body.
-            adapter: Snapshot adapter name; defaults to the provider attribute.
+            adapter: Snapshot adapter name; ``None`` uses the provider's
+                ``SNAPSHOT_ADAPTER`` attribute.
             session_id: Overrides the scope session id.
             umo: Overrides the scope unified message origin.
 
@@ -436,10 +1880,32 @@ class RequestSnapshotRecorder:
                 attempt,
             )
             counts = _build_counts(raw)
-            sanitized = bounded_context_value(raw, limit=MAX_BYTES_PER_SNAPSHOT)
+            # Structural truncation runs on a deep copy so the caller's request
+            # object is never mutated. It enforces the serialized byte cap; the
+            # sanitizer only redacts and bounds pathological shapes afterwards.
+            body = raw
+            original_bytes = _serialized_bytes(raw)
+            omitted_messages, structurally_truncated = 0, False
+            try:
+                prepared = copy.deepcopy(raw) if isinstance(raw, (dict, list)) else raw
+            except Exception:
+                # Non-copyable provider objects still get a sanitized snapshot;
+                # the sanitizer copies detached values itself.
+                logger.debug("Snapshot body is not deep-copyable", exc_info=True)
+                prepared = None
+            if prepared is not None:
+                body = prepared
+                omitted_messages, structurally_truncated = _apply_structural_truncation(
+                    body
+                )
+            sanitized = bounded_context_value(body, limit=_SANITIZER_LIMIT)
             body = sanitized.get("value")
-            serialized = json.dumps(body, ensure_ascii=False, default=str)
-            size = len(serialized.encode("utf-8"))
+            if _serialized_bytes(body) > MAX_BYTES_PER_SNAPSHOT:
+                structurally_truncated = (
+                    _force_under_budget(body, MAX_BYTES_PER_SNAPSHOT)
+                    or structurally_truncated
+                )
+            size = _serialized_bytes(body)
             snapshot_id = uuid.uuid4().hex
             envelope = {
                 "snapshot_id": snapshot_id,
@@ -454,11 +1920,12 @@ class RequestSnapshotRecorder:
                 "created_at": now,
                 "duration_ms": None,
                 "bytes": size,
-                "truncated": bool(sanitized.get("truncated")),
+                "original_bytes": original_bytes,
+                "truncated": bool(sanitized.get("truncated")) or structurally_truncated,
                 "redactions": int(sanitized.get("redactions") or 0),
                 "provider": _build_provider_info(provider),
                 "request": request_info,
-                "counts": counts,
+                "counts": {**counts, "omitted_messages": omitted_messages},
                 "response": None,
                 "tool_executions": [],
                 "diagnostics": {
@@ -467,11 +1934,11 @@ class RequestSnapshotRecorder:
                     "budget": None,
                     "retries": None,
                     "stop_reason": None,
-                    "omitted_messages": 0,
+                    "omitted_messages": omitted_messages,
                 },
                 "provenance": [],
                 "injections": [],
-                "tool_meta": {},
+                "tool_meta": _build_tool_meta(raw, provider),
                 "env": _build_env(),
                 "adapter": adapter
                 if adapter is not None
@@ -633,9 +2100,8 @@ class RequestSnapshotRecorder:
     def limits() -> dict:
         """Return the public retention limits.
 
-        The 512 KB per-snapshot budget is currently a character budget on the
-        sanitized copy; structural enforcement of the serialized byte cap lands
-        in Task 2, so callers must not treat it as fully enforced yet.
+        The 512 KB per-snapshot budget is enforced on the serialized UTF-8 bytes
+        of the sanitized body.
         """
 
         return {

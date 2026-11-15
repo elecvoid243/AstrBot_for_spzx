@@ -550,6 +550,24 @@
             </div>
 
             <div v-if="showMessageMeta(msg, msgIndex)" class="message-meta">
+              <button
+                v-if="devSnapshotItems(msg).length"
+                type="button"
+                class="dev-mode-marker"
+                :title="
+                  tm('devMode.markerTooltip', {
+                    count: devSnapshotItems(msg).length,
+                  })
+                "
+                :aria-label="
+                  tm('devMode.markerTooltip', {
+                    count: devSnapshotItems(msg).length,
+                  })
+                "
+                @click="emit('openDevSnapshots', msg)"
+              >
+                {{ tm("devMode.marker", { count: devSnapshotItems(msg).length }) }}
+              </button>
               <span v-if="msg.created_at">{{
                 formatTime(msg.created_at)
               }}</span>
@@ -871,6 +889,7 @@ const emit = defineEmits<{
     },
   ];
   openRefs: [refs: unknown];
+  openDevSnapshots: [message: ChatRecord];
   submitChoice: [
     requestId: string,
     payload: { choice_id: string; free_text: string },
@@ -1793,6 +1812,10 @@ function injectionTrailKey(message: ChatRecord, messageIndex: number) {
 
 function injectionItems(message: ChatRecord) {
   return messageContent(message).llmRequestInjections?.items || [];
+}
+
+function devSnapshotItems(message: ChatRecord) {
+  return messageContent(message).llmRequestSnapshots || [];
 }
 
 function injectionChangeCount(message: ChatRecord) {
@@ -2783,6 +2806,33 @@ function formatDuration(seconds: number) {
   min-height: 24px;
   color: var(--chat-muted);
   font-size: 12px;
+}
+
+.dev-mode-marker {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  margin-right: 4px;
+  padding: 0 5px;
+  border: 1px solid rgba(var(--v-theme-primary), 0.32);
+  border-radius: 3px;
+  background: transparent;
+  color: rgba(var(--v-theme-primary), 0.9);
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+}
+
+.dev-mode-marker:hover {
+  border-color: rgba(var(--v-theme-primary), 0.6);
+  background: rgba(var(--v-theme-primary), 0.08);
+}
+
+.dev-mode-marker:focus-visible {
+  outline: 2px solid rgba(var(--v-theme-primary), 0.5);
+  outline-offset: 1px;
 }
 
 .message-meta-refs {

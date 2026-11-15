@@ -513,5 +513,79 @@
     "messageCount": "{count} 件のメッセージ",
     "attachmentCount": "{count} 件の添付ファイル",
     "versionMismatch": "パッケージは別のマイナーバージョンで作成されています。一部の内容が正しく表示されない可能性があります。"
+  },
+  "devMode": {
+    "title": "リクエストスナップショット",
+    "subtitle": "このターン {count} 回のリクエスト · 補助 {aux} 回",
+    "marker": "DEV · {count}",
+    "markerTooltip": "このターンの LLM リクエストスナップショットを表示（{count}）",
+    "action": {
+      "close": "閉じる",
+      "copy": "JSON をコピー",
+      "download": "ダウンロード",
+      "refresh": "更新"
+    },
+    "copy": {
+      "failed": "コピーに失敗しました"
+    },
+    "download": {
+      "done": "ダウンロードしました",
+      "failed": "ダウンロードに失敗しました"
+    },
+    "diff": {
+      "title": "前のステップとの差分"
+    },
+    "error": "読み込みに失敗しました：{message}",
+    "group": {
+      "turn": "このターン",
+      "aux": "セッション · 補助"
+    },
+    "kind": {
+      "chat": "メイン",
+      "compression": "圧縮",
+      "title": "タイトル",
+      "aux": "補助"
+    },
+    "notice": {
+      "memory": "スナップショットはメモリのみ · 2 時間で期限切れ · 開発者モードをオフにすると記録停止",
+      "redacted": "{count} 件をマスク"
+    },
+    "provenance": {
+      "approx": "推定の帰属"
+    },
+    "rail": {
+      "label": "リクエスト一覧",
+      "cache": "キャッシュ",
+      "compression": "圧縮",
+      "error": "エラー",
+      "retry": "リトライ",
+      "tools": "ツール"
+    },
+    "section": {
+      "overview": "概要",
+      "response": "応答",
+      "system": "システムプロンプト",
+      "tools": "ツール",
+      "messages": "メッセージ",
+      "injections": "追加注入",
+      "diagnostics": "診断",
+      "raw": "生 JSON"
+    },
+    "settings": {
+      "switch": "LLM リクエストのスナップショットを記録",
+      "limits": "セッションあたり最大 {count} 件 · {size} · {ttl} で期限切れ",
+      "error": "開発者モードの切り替えに失敗しました"
+    },
+    "state": {
+      "disabled": "開発者モードはオフです。オンにすると各 LLM リクエストの完全なコンテキストをローカルメモリにのみ記録します。",
+      "empty": "このターンにはまだリクエストスナップショットがありません。メッセージを送信してください。",
+      "expired": "スナップショットは期限切れです。再起動または 2 時間後に消去されます。",
+      "select": "左側からリクエストスナップショットを選択してください。"
+    },
+    "tool": {
+      "empty": "一致するツールがありません",
+      "searchPlaceholder": "ツール名・説明・由来を検索"
+    },
+    "truncated": "切り詰め済み · 元のサイズ {size}"
   }
 }

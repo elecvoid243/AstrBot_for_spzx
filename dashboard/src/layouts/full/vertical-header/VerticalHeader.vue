@@ -1249,6 +1249,21 @@ onMounted(async () => {
     </div>
 
     <div class="header-actions" :class="{ 'chat-header-actions': isChatPath }">
+      <!-- 2026-11-16 (elecvoid243): admin-only developer-mode entry. The
+           inspector itself lives in Chat.vue; this chip only owns the
+           store flag so the header does not import the panel. -->
+      <button
+        v-if="isChatPath && chatHeader.devModeCanEdit"
+        type="button"
+        class="chat-action-btn dev-mode-chip"
+        :class="{ 'is-on': chatHeader.devModeEnabled }"
+        :title="tm('devMode.title')"
+        :aria-label="tm('devMode.title')"
+        @click.stop="chatHeader.OPEN_DEV_MODE()"
+      >
+        <span class="dev-mode-dot" aria-hidden="true" />
+        DEV
+      </button>
       <!-- 2026-11-07: goal entry. The goal itself now lives in the composer
            bar; this badge keeps the live status + turn budget visible and
            opens the bar's edit dialog through the shared store flag. -->
@@ -2457,6 +2472,40 @@ onMounted(async () => {
 .chat-header-actions {
   gap: 4px;
   margin-right: 0;
+}
+
+.dev-mode-chip.chat-action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 24px;
+  min-width: 0;
+  padding: 0 8px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.2);
+  border-radius: 3px;
+  color: rgba(var(--v-theme-on-surface), 0.55);
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: none;
+}
+
+.dev-mode-chip.chat-action-btn.is-on {
+  border-color: rgba(var(--v-theme-primary), 0.42);
+  background: rgba(var(--v-theme-primary), 0.08);
+  color: rgb(var(--v-theme-primary));
+}
+
+.dev-mode-chip:hover {
+  border-color: rgba(var(--v-theme-on-surface), 0.34);
+}
+
+.dev-mode-dot {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: currentColor;
 }
 
 .chat-account-actions {

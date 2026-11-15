@@ -2495,5 +2495,79 @@
     "noProject": "无项目",
     "creationHint": "使用远端项目与模型默认配置。新会话立即暴露给绑定此远端账号的连接。创建后在远端输入框发送首条消息。",
     "creationUnknown": "无法确认创建结果。请刷新连接并检查会话列表后再新建。"
+  },
+  "devMode": {
+    "title": "请求快照",
+    "subtitle": "本回合 {count} 次请求 · 另有 {aux} 次辅助调用",
+    "marker": "DEV · {count}",
+    "markerTooltip": "查看本回合的 LLM 请求快照（{count} 条）",
+    "action": {
+      "close": "关闭",
+      "copy": "复制 JSON",
+      "download": "下载",
+      "refresh": "刷新"
+    },
+    "copy": {
+      "failed": "复制失败"
+    },
+    "download": {
+      "done": "已下载",
+      "failed": "下载失败"
+    },
+    "diff": {
+      "title": "相对上一步"
+    },
+    "error": "加载失败：{message}",
+    "group": {
+      "turn": "本回合",
+      "aux": "本会话 · 辅助"
+    },
+    "kind": {
+      "chat": "主对话",
+      "compression": "压缩摘要",
+      "title": "标题生成",
+      "aux": "辅助调用"
+    },
+    "notice": {
+      "memory": "快照仅保存在内存 · 2 小时后过期 · 关闭开发者模式即停止采集",
+      "redacted": "已脱敏 {count} 处"
+    },
+    "provenance": {
+      "approx": "近似归因"
+    },
+    "rail": {
+      "label": "请求列表",
+      "cache": "缓存",
+      "compression": "压缩",
+      "error": "错误",
+      "retry": "重试",
+      "tools": "工具"
+    },
+    "section": {
+      "overview": "概览",
+      "response": "响应",
+      "system": "系统提示词",
+      "tools": "工具",
+      "messages": "消息",
+      "injections": "额外注入",
+      "diagnostics": "诊断",
+      "raw": "原始 JSON"
+    },
+    "settings": {
+      "switch": "记录 LLM 请求快照",
+      "limits": "每会话最多 {count} 条 · {size} · {ttl} 后过期",
+      "error": "切换开发者模式失败"
+    },
+    "state": {
+      "disabled": "开发者模式未开启。开启后会记录每次 LLM 请求的完整上下文，仅保存在本机内存。",
+      "empty": "本回合还没有请求快照。发送一条消息后再看。",
+      "expired": "快照已过期。服务重启或超过 2 小时后会清空。",
+      "select": "从左侧选择一个请求快照。"
+    },
+    "tool": {
+      "empty": "没有匹配的工具",
+      "searchPlaceholder": "搜索工具名、描述或来源"
+    },
+    "truncated": "已截断，原始大小 {size}"
   }
 }

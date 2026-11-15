@@ -2462,5 +2462,79 @@
     "noProject": "No project",
     "creationHint": "Uses the remote project and model defaults. The new session is immediately exposed to connections bound to this remote account. Send its first message in the remote composer.",
     "creationUnknown": "Creation could not be confirmed. Refresh the connection and inspect its sessions before creating again."
+  },
+  "devMode": {
+    "title": "Request snapshots",
+    "subtitle": "{count} requests this turn · {aux} auxiliary",
+    "marker": "DEV · {count}",
+    "markerTooltip": "View this turn's LLM request snapshots ({count})",
+    "action": {
+      "close": "Close",
+      "copy": "Copy JSON",
+      "download": "Download",
+      "refresh": "Refresh"
+    },
+    "copy": {
+      "failed": "Copy failed"
+    },
+    "download": {
+      "done": "Downloaded",
+      "failed": "Download failed"
+    },
+    "diff": {
+      "title": "Versus previous step"
+    },
+    "error": "Failed to load: {message}",
+    "group": {
+      "turn": "This turn",
+      "aux": "Session · auxiliary"
+    },
+    "kind": {
+      "chat": "Main call",
+      "compression": "Compression",
+      "title": "Title",
+      "aux": "Auxiliary"
+    },
+    "notice": {
+      "memory": "Snapshots live in memory only · expire after 2 hours · turning developer mode off stops capture",
+      "redacted": "{count} redacted"
+    },
+    "provenance": {
+      "approx": "approximate attribution"
+    },
+    "rail": {
+      "label": "Request list",
+      "cache": "Cache",
+      "compression": "Compression",
+      "error": "Error",
+      "retry": "Retry",
+      "tools": "Tools"
+    },
+    "section": {
+      "overview": "Overview",
+      "response": "Response",
+      "system": "System prompt",
+      "tools": "Tools",
+      "messages": "Messages",
+      "injections": "Extra injections",
+      "diagnostics": "Diagnostics",
+      "raw": "Raw JSON"
+    },
+    "settings": {
+      "switch": "Record LLM request snapshots",
+      "limits": "Up to {count} per session · {size} · expires after {ttl}",
+      "error": "Failed to toggle developer mode"
+    },
+    "state": {
+      "disabled": "Developer mode is off. Turning it on records the full context of every LLM request, in local memory only.",
+      "empty": "No request snapshots this turn yet. Send a message and look again.",
+      "expired": "Snapshots expired. They are cleared after a restart or 2 hours.",
+      "select": "Select a request snapshot on the left."
+    },
+    "tool": {
+      "empty": "No matching tools",
+      "searchPlaceholder": "Search tool name, description or origin"
+    },
+    "truncated": "Truncated; original size {size}"
   }
 }

@@ -17,6 +17,12 @@ export const useChatHeaderStore = defineStore("chatHeader", {
     subtitle: "",
     projectId: "",
     workspaceFilesOpen: false,
+    // 2026-11-16 (elecvoid243): admin-only developer mode. The flag is
+    // instance-global; `canEdit` decides whether the header exposes the chip.
+    devModeOpen: false,
+    devModeEnabled: false,
+    devModeCanEdit: false,
+    devModeInitialTurnId: null as string | null,
     // Goal state lives in the kernel KV (per-UMO) and only reaches the
     // dashboard via the GET /chat/sessions/{id}/goal endpoint, so a compact
     // turns badge lives here where the VerticalHeader app-bar button can
@@ -69,6 +75,19 @@ export const useChatHeaderStore = defineStore("chatHeader", {
     SET_WORKSPACE_FILES_OPEN(open: boolean) {
       this.workspaceFilesOpen = Boolean(open && this.projectId);
     },
+    SET_DEV_MODE_STATE(payload: { enabled: boolean; canEdit: boolean }) {
+      this.devModeEnabled = Boolean(payload.enabled);
+      this.devModeCanEdit = Boolean(payload.canEdit);
+      if (!this.devModeCanEdit) this.devModeOpen = false;
+    },
+    OPEN_DEV_MODE(turnId: string | null = null) {
+      this.devModeInitialTurnId = turnId;
+      this.devModeOpen = true;
+    },
+    SET_DEV_MODE_OPEN(open: boolean) {
+      this.devModeOpen = Boolean(open);
+      if (!this.devModeOpen) this.devModeInitialTurnId = null;
+    },
     SET_GOAL_BADGE(badge: GoalBadge | null) {
       this.goalBadge = badge;
     },
@@ -111,6 +130,10 @@ export const useChatHeaderStore = defineStore("chatHeader", {
       this.subtitle = "";
       this.projectId = "";
       this.workspaceFilesOpen = false;
+      this.devModeOpen = false;
+      this.devModeEnabled = false;
+      this.devModeCanEdit = false;
+      this.devModeInitialTurnId = null;
       this.goalBadge = null;
       this.goalEditOpen = false;
       this.todoSnapshot = null;

@@ -944,6 +944,7 @@
               @open-thread="openThreadPanel"
               @open-reasoning="openReasoningPanel"
               @open-refs="openRefsSidebar"
+              @open-dev-snapshots="openDevSnapshots"
               @load-older="loadOlderHistory(true)"
             />
           </div>
@@ -1173,6 +1174,15 @@
       :focus-call-id="activeReasoningTarget?.callId ?? null"
       :focus-query="activeReasoningTarget?.query ?? null"
     />
+    <ChatDevModeInspector
+      :model-value="chatHeader.devModeOpen"
+      :session-id="currSessionId || ''"
+      :enabled="chatHeader.devModeEnabled"
+      :can-edit="chatHeader.devModeCanEdit"
+      :initial-turn-id="chatHeader.devModeInitialTurnId ?? undefined"
+      @update:model-value="chatHeader.SET_DEV_MODE_OPEN"
+      @toggle="toggleDevMode"
+    />
     <RefsSidebar
       v-if="!isOrdinaryUser"
       v-model="refsSidebarOpen"
@@ -1294,6 +1304,7 @@ import {
 } from "@lucide/vue";
 import {
   chatApi,
+  llmSnapshotsApi,
   pluginExtensionApi,
   providerApi,
   type SessionGoalState,
@@ -1349,6 +1360,7 @@ import ChatScrollMarkers, {
 import ChatUILogo from "@/components/chat/ChatUILogo.vue";
 import type { RegenerateModelSelection } from "@/components/chat/RegenerateMenu.vue";
 import ReasoningSidebar from "@/components/chat/ReasoningSidebar.vue";
+import ChatDevModeInspector from "@/components/chat/ChatDevModeInspector.vue";
 import ThreadPanel from "@/components/chat/ThreadPanel.vue";
 import WorkspaceFilesPanel from "@/components/chat/WorkspaceFilesPanel.vue";
 import RefsSidebar from "@/components/chat/message_list_comps/RefsSidebar.vue";
@@ -1493,6 +1505,47 @@ const vivadoStatus = useSpcodeVivadoStatus();
 const fileAccessMode = useFileAccessMode();
 const confirmDialog = useConfirmDialog();
 const toast = useToast();
+
+/** Read the instance-wide developer-mode state for the header chip. */
+async function loadDevModeState(): Promise<void> {
+  try {
+    const response = await llmSnapshotsApi.getDeveloperMode();
+    const state = response.data?.data;
+    chatHeader.SET_DEV_MODE_STATE({
+      enabled: Boolean(state?.enabled),
+      canEdit: Boolean(state?.can_edit),
+    });
+  } catch {
+    chatHeader.SET_DEV_MODE_STATE({ enabled: false, canEdit: false });
+  }
+}
+
+/** Flip the global capture flag; the inspector reacts to the prop change. */
+async function toggleDevMode(): Promise<void> {
+  const next = !chatHeader.devModeEnabled;
+  try {
+    const response = await llmSnapshotsApi.setDeveloperMode(next);
+    const enabled = Boolean(response.data?.data?.enabled ?? next);
+    chatHeader.SET_DEV_MODE_STATE({
+      enabled,
+      canEdit: chatHeader.devModeCanEdit,
+    });
+    if (!enabled) chatHeader.SET_DEV_MODE_OPEN(false);
+  } catch {
+    toast.error(tm("devMode.settings.error"));
+  }
+}
+
+/** Open the inspector at the turn that produced this bot message. */
+function openDevSnapshots(message: ChatRecord): void {
+  const turnId = message.content.llmRequestSnapshots?.[0]?.turn_id ?? null;
+  chatHeader.OPEN_DEV_MODE(turnId);
+}
+
+onMounted(() => {
+  void loadDevModeState();
+});
+
 // Author: elecvoid243
 // Date: 2026-10-08
 // Current session's last context compression notice, handed to ChatInput,

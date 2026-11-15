@@ -19,6 +19,8 @@ from astrbot.core.agent.run_context import ContextWrapper
 from astrbot.core.agent.runners.tool_loop_agent_runner import ToolLoopAgentRunner
 from astrbot.core.agent.tool import FunctionTool, ToolSet
 from astrbot.core.db.po import Conversation
+from astrbot.core.exceptions import EmptyModelOutputError
+from astrbot.core.pipeline.llm_request_trace import EVENT_EXTRA_KEY
 from astrbot.core.provider import request_snapshot
 from astrbot.core.provider.entities import LLMResponse, ProviderRequest, TokenUsage
 from astrbot.core.provider.provider import Provider
@@ -53,11 +55,14 @@ class FakeSnapshotProvider(Provider):
         tool_calls: bool = True,
         extra_captures: int = 0,
         fail: bool = False,
+        err_response: bool = False,
+        empty_once: bool = False,
+        provider_id: str = "fake-snapshot-provider",
         stream_chunks: list[str] | None = None,
     ) -> None:
         super().__init__(
             {
-                "id": "fake-snapshot-provider",
+                "id": provider_id,
                 "type": "openai_chat_completion",
                 "max_context_tokens": 0,
             },
@@ -67,6 +72,8 @@ class FakeSnapshotProvider(Provider):
         self.tool_calls = tool_calls
         self.extra_captures = extra_captures
         self.fail = fail
+        self.err_response = err_response
+        self.empty_once = empty_once
         self.stream_chunks = stream_chunks
 
     def get_current_key(self) -> str:
@@ -95,6 +102,13 @@ class FakeSnapshotProvider(Provider):
             )
         if self.fail:
             raise RuntimeError("provider exploded")
+        if self.empty_once and self.call_count == 1:
+            raise EmptyModelOutputError("provider returned no text")
+        if self.err_response:
+            return LLMResponse(
+                role="err",
+                completion_text="primary provider failed",
+            )
         if self.tool_calls and self.call_count == 1:
             return LLMResponse(
                 role="assistant",
@@ -185,8 +199,14 @@ def _tool_set() -> ToolSet:
 class FakeRunnerFixture:
     """Bundle of the runner and its doubles used by the tests."""
 
-    def __init__(self, provider: FakeSnapshotProvider) -> None:
+    def __init__(
+        self,
+        provider: FakeSnapshotProvider,
+        *,
+        fallback_providers: list[FakeSnapshotProvider] | None = None,
+    ) -> None:
         self.provider = provider
+        self.fallback_providers = fallback_providers or []
         self.event = FakeSnapshotEvent()
         self.context = SimpleNamespace(event=self.event, extra={})
         self.run_context = ContextWrapper(context=self.context)
@@ -210,6 +230,7 @@ class FakeRunnerFixture:
             tool_executor=FakeSnapshotToolExecutor(),
             agent_hooks=FakeSnapshotHooks(),
             streaming=streaming,
+            fallback_providers=self.fallback_providers,
         )
         return self.runner
 
@@ -290,7 +311,9 @@ async def test_provider_exception_marks_error():
     items = _snapshot_items(snapshots[0])
     assert items[0]["status"] == "error"
     assert items[0]["response"]["error"]["type"] == "RuntimeError"
-    assert "provider exploded" in items[0]["response"]["error"]["message"]
+    # The real provider exception survives; the generated
+    # "All chat models failed: RuntimeError: ..." response must not replace it.
+    assert items[0]["response"]["error"]["message"] == "provider exploded"
 
 
 @pytest.mark.asyncio
@@ -330,3 +353,131 @@ async def test_event_carries_no_raw_payload(fake_runner):
     assert items
     for item in items:
         assert "raw" not in item
+
+
+@pytest.mark.asyncio
+async def test_fallback_error_stays_on_the_erroring_invocation():
+    primary = FakeSnapshotProvider(
+        err_response=True, provider_id="fake-primary-provider"
+    )
+    fallback = FakeSnapshotProvider(fail=True, provider_id="fake-fallback-provider")
+    fixture = FakeRunnerFixture(primary, fallback_providers=[fallback])
+    runner = await fixture.reset()
+
+    events = [event async for event in runner.step_until_done(max_step=4)]
+    snapshots = [e for e in events if e.type == "llm_request_snapshots"]
+
+    assert len(snapshots) == 1
+    items = _snapshot_items(snapshots[0])
+    # The event belongs to the first candidate's invocation, not to the
+    # fallback invocation that raised afterwards.
+    assert [item["request"]["fallback_index"] for item in items] == [0]
+    assert items[0]["status"] == "error"
+    assert "primary provider failed" in items[0]["response"]["error"]["message"]
+
+    recorded = request_snapshots.list_for_session("session-1")["items"]
+    fallback_items = [
+        item for item in recorded if item["request"]["fallback_index"] == 1
+    ]
+    assert len(fallback_items) == 1
+    assert fallback_items[0]["status"] == "error"
+    assert "provider exploded" in fallback_items[0]["response"]["error"]["message"]
+    assert items[0]["invocation_id"] != fallback_items[0]["invocation_id"]
+
+
+@pytest.mark.asyncio
+async def test_empty_output_retry_marks_failed_attempt(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(ToolLoopAgentRunner, "EMPTY_OUTPUT_RETRY_WAIT_MIN_S", 0)
+    monkeypatch.setattr(ToolLoopAgentRunner, "EMPTY_OUTPUT_RETRY_WAIT_MAX_S", 0)
+    fixture = FakeRunnerFixture(FakeSnapshotProvider(empty_once=True))
+    runner = await fixture.reset()
+
+    events = [event async for event in runner.step_until_done(max_step=4)]
+    snapshots = [e for e in events if e.type == "llm_request_snapshots"]
+
+    assert len(snapshots) == 1
+    assert [item["status"] for item in _snapshot_items(snapshots[0])] == ["ok"]
+
+    recorded = request_snapshots.list_for_session("session-1")["items"]
+    assert len(recorded) == 2
+    failed = [item for item in recorded if item["status"] == "error"]
+    assert len(failed) == 1
+    assert failed[0]["response"]["error"]["type"] == "EmptyModelOutputError"
+    assert (
+        failed[0]["invocation_id"] != _snapshot_items(snapshots[0])[0]["invocation_id"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_normal_step_attaches_diagnostics_tool_meta_and_injections():
+    fixture = FakeRunnerFixture(FakeSnapshotProvider(tool_calls=False))
+    injections = [
+        {
+            "plugin": "tc_memory",
+            "handler": "decorate_llm_req",
+            "changes": [
+                {
+                    "field": "contexts",
+                    "delta": 1,
+                    "lossy": False,
+                    "preview": "remembered",
+                }
+            ],
+        }
+    ]
+    fixture.event.set_extra(EVENT_EXTRA_KEY, injections)
+    runner = await fixture.reset()
+
+    events = [event async for event in runner.step_until_done(max_step=4)]
+    snapshots = [e for e in events if e.type == "llm_request_snapshots"]
+
+    assert len(snapshots) == 1
+    items = _snapshot_items(snapshots[0])
+    # The live envelope strips injections; the recorder keeps them.
+    assert "injections" not in items[0]
+    stored = request_snapshots.get(items[0]["snapshot_id"])
+    assert stored is not None
+    diagnostics = stored["diagnostics"]
+    assert diagnostics["budget"]["step_used"] == 1
+    assert diagnostics["budget"]["step_max"] == 4
+    # The fake provider config yields a concrete (zero) output budget.
+    assert isinstance(diagnostics["budget"]["output_budget"], int)
+    assert diagnostics["retries"] == {"request_max_retries": None}
+    assert diagnostics["stop_reason"] is None
+    assert stored["tool_meta"]["test_tool"]["denied"] is False
+    assert stored["tool_meta"]["test_tool"]["active"] is True
+    stored_injection = stored["injections"][0]
+    assert stored_injection["plugin"] == "tc_memory"
+    assert stored_injection["handler"] == "decorate_llm_req"
+    assert stored_injection["changes"][0]["field"] == "contexts"
+    assert stored_injection["changes"][0]["preview"] == "remembered"
+
+
+@pytest.mark.asyncio
+async def test_normal_final_answer_on_the_last_allowed_step_is_not_max_steps():
+    fixture = FakeRunnerFixture(FakeSnapshotProvider(tool_calls=False))
+    runner = await fixture.reset()
+
+    events = [event async for event in runner.step_until_done(max_step=1)]
+    snapshots = [e for e in events if e.type == "llm_request_snapshots"]
+
+    items = _snapshot_items(snapshots[0])
+    stored = request_snapshots.get(items[0]["snapshot_id"])
+    assert stored["diagnostics"]["budget"]["step_used"] == 1
+    assert stored["diagnostics"]["budget"]["step_max"] == 1
+    assert stored["diagnostics"]["stop_reason"] is None
+
+
+@pytest.mark.asyncio
+async def test_tool_loop_cut_off_by_the_step_cap_reports_max_steps():
+    fixture = FakeRunnerFixture(FakeSnapshotProvider())
+    runner = await fixture.reset()
+
+    events = [event async for event in runner.step_until_done(max_step=1)]
+    snapshots = [e for e in events if e.type == "llm_request_snapshots"]
+
+    items = _snapshot_items(snapshots[0])
+    stored = request_snapshots.get(items[0]["snapshot_id"])
+    assert stored["diagnostics"]["stop_reason"] == "max_steps"

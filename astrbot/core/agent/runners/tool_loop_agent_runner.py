@@ -403,9 +403,13 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         elif llm_response.role == "err":
             stop_reason = "error"
         elif (
-            self._step_budget_max is not None
+            bool(llm_response.tools_call_name)
+            and self._step_budget_max is not None
             and self._step_budget_used >= self._step_budget_max
         ):
+            # Only a response that still wants tools can be cut off by the step
+            # cap; a normal final answer on the last allowed step is not
+            # ``max_steps``.
             stop_reason = "max_steps"
         return {
             "compression": self.request_context_manager.last_compression,
@@ -459,15 +463,28 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             captured for this invocation or the run is a subagent.
         """
 
+        if bool(
+            (getattr(self.run_context.context, "extra", None) or {}).get("is_subagent")
+        ):
+            # Capture already drops subagent scopes; skip the attach work too.
+            return None
         invocation_id = self._snapshot_invocation_id
         if not invocation_id:
             return None
         try:
-            request_snapshots.attach_response(
-                invocation_id,
-                llm_response,
-                chunks=self._snapshot_stream_chunks,
+            # The provider exception path marks the invocation before the
+            # synthetic error response reaches the runner. Keep that real error
+            # instead of replacing it with a generated ``RuntimeError``.
+            already_error = llm_response.role == "err" and any(
+                item.get("status") == "error"
+                for item in request_snapshots.metadata_for_invocation(invocation_id)
             )
+            if not already_error:
+                request_snapshots.attach_response(
+                    invocation_id,
+                    llm_response,
+                    chunks=self._snapshot_stream_chunks,
+                )
             request_snapshots.attach_diagnostics(
                 invocation_id, self._snapshot_diagnostics(llm_response)
             )
@@ -478,17 +495,11 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                 tool_set=self.req.func_tool,
                 denied_tools=self.req.denied_tools,
             )
-            if llm_response.role == "err":
+            if llm_response.role == "err" and not already_error:
                 error = RuntimeError(
                     llm_response.completion_text or "LLM response error"
                 )
                 request_snapshots.mark_error(invocation_id, error)
-            if bool(
-                (getattr(self.run_context.context, "extra", None) or {}).get(
-                    "is_subagent"
-                )
-            ):
-                return None
             items = request_snapshots.metadata_for_invocation(invocation_id)
         except Exception:
             logger.debug("Failed to attach LLM snapshot metadata", exc_info=True)
@@ -2256,6 +2267,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         total_candidates = len(candidates)
         last_exception: Exception | None = None
         last_err_response: LLMResponse | None = None
+        last_err_invocation_id: str | None = None
 
         for idx, candidate in enumerate(candidates):
             if self._is_stop_requested():
@@ -2306,6 +2318,21 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                                     and (not is_last_candidate)
                                 ):
                                     last_err_response = resp
+                                    # The next candidate may raise, replacing the
+                                    # current invocation id; remember this one so
+                                    # the error attaches to the invocation that
+                                    # actually produced it.
+                                    last_err_invocation_id = (
+                                        self._snapshot_invocation_id
+                                    )
+                                    if last_err_invocation_id:
+                                        request_snapshots.mark_error(
+                                            last_err_invocation_id,
+                                            RuntimeError(
+                                                resp.completion_text
+                                                or "LLM response error"
+                                            ),
+                                        )
                                     logger.warning(
                                         "Chat Model %s returns error response, trying fallback to next provider.",
                                         candidate_id,
@@ -2318,7 +2345,13 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
 
                             if has_stream_output:
                                 return
-                        except EmptyModelOutputError:
+                        except EmptyModelOutputError as exc:
+                            if self._snapshot_invocation_id:
+                                # A failed non-final attempt must not stay
+                                # ``pending`` for the turn's snapshots.
+                                request_snapshots.mark_error(
+                                    self._snapshot_invocation_id, exc
+                                )
                             if has_stream_output:
                                 logger.warning(
                                     "Chat Model %s returned empty output after streaming started; skipping empty-output retry.",
@@ -2344,6 +2377,10 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                         _AgentManualPause,
                     ),
                 ):
+                    if self._snapshot_invocation_id:
+                        # Re-raised control-flow errors still happened on this
+                        # invocation; record them before unwinding.
+                        request_snapshots.mark_error(self._snapshot_invocation_id, exc)
                     raise
                 if self._snapshot_invocation_id:
                     request_snapshots.mark_error(self._snapshot_invocation_id, exc)
@@ -2357,6 +2394,9 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                 continue
 
         if last_err_response:
+            # Restore the invocation that produced the error response so
+            # ``_step`` attaches it to the right snapshot.
+            self._snapshot_invocation_id = last_err_invocation_id
             yield last_err_response
             return
         if last_exception:
@@ -2898,6 +2938,9 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             raise ValueError("Request is not set. Please call reset() first.")
 
         self._snapshot_invocation_id = None
+        # A skipped or failed preparation must not report the previous step's
+        # output budget in this step's diagnostics.
+        self._snapshot_output_budget = None
         if self._is_stop_requested():
             yield await self._finalize_aborted_step()
             return

@@ -15,7 +15,7 @@
 - 不新增第三方依赖。
 - 不新增数据库表或列；窗口状态只写进既有 `conversations.content` 的 JSON。
 - `config_version` 保持 `4`，不做配置迁移。
-- 提醒阈值默认值 `8192`（`provider.compaction_reminder_tokens`），仅 `token_budget` 读取。
+- 提醒阈值默认值 `16384`（`provider.compaction_reminder_tokens`），仅 `token_budget` 读取。
 - `WindowState.seq` 从 `0` 开始，`0` 表示从未换窗。
 - UI 文案（chip 策略名、配置元数据、文档）必须落在 `zh-CN` / `en-US` / `ru-RU` / `ja-JP` 四个 locale；模型可见的内核提示是英文常量（内核没有运行时 i18n）。
 - 不改动 `llm_compress` 的阈值语义、`keep_recent_ratio` 的 `[0, 0.3]` 钳制、以及 `2026-10-31` spec 定义的预算与配对规则。
@@ -394,7 +394,7 @@ git commit -m "feat(config): treat token budget as an implemented overflow strat
 ```python
 # tests/test_tool_loop_token_budget_notice.py
 def test_notice_injected_once_per_window(runner_factory):
-    runner = runner_factory(remaining=100, reminder_tokens=8192)
+    runner = runner_factory(remaining=100, reminder_tokens=16384)
     first = runner._inject_budget_notices([Message(role="user", content="hi")])
     second = runner._inject_budget_notices(first)
     assert len(first) == 2
@@ -458,7 +458,7 @@ git commit -m "feat(agent): inject one-shot token budget notices per window"
 - Produces:
   - `reset(..., context_limit_reached_strategy: str = "llm_compress", ...)`
   - `InternalAgentSubStage._save_to_history(..., window_state: WindowState | None = None)`
-  - `config.resolve_budget_strategy(strategy: str, provider_config: dict) -> tuple[str, int]`（返回生效策略与提醒阈值；阈值非法回落 `8192`，窗口 `<= 0` 时策略回落 `llm_compress`）
+  - `config.resolve_budget_strategy(strategy: str, provider_config: dict) -> tuple[str, int]`（返回生效策略与提醒阈值；阈值非法回落 `16384`，窗口 `<= 0` 时策略回落 `llm_compress`）
 
 - [ ] **Step 1: 写失败的测试**
 
@@ -483,11 +483,11 @@ def test_runner_reads_state_from_loaded_history(runner_factory):
 def test_budget_strategy_falls_back_without_window():
     assert resolve_budget_strategy("token_budget", {"max_context_tokens": 0}) == (
         "llm_compress",
-        8192,
+        16384,
     )
     assert resolve_budget_strategy(
         "token_budget", {"max_context_tokens": 128000, "compaction_reminder_tokens": 0}
-    ) == ("token_budget", 8192)
+    ) == ("token_budget", 16384)
 ```
 
 `tests/agent/test_repetition_sanitizer_history.py` 追加：
@@ -515,7 +515,7 @@ Expected: FAIL — `AttributeError: ... _on_context_reset`
 - [ ] **Step 3: 实现**
 
 - runner `reset()` 新增 `context_limit_reached_strategy` 参数并存入 `self.context_limit_reached_strategy`，传入 `ContextConfig(strategy=...)`；`self.window_state = latest_window_state(run_context.messages) or WindowState(id=uuid4().hex)`；
-- `config.py` 新增 `resolve_budget_strategy`，runner 构造 `ContextConfig` 前调用它，把返回的策略与提醒阈值写进 `ContextConfig`（新增 `reminder_tokens: int = 8192` 字段）；
+- `config.py` 新增 `resolve_budget_strategy`，runner 构造 `ContextConfig` 前调用它，把返回的策略与提醒阈值写进 `ContextConfig`（新增 `reminder_tokens: int = 16384` 字段）；
 - 换窗发生后（`checked != contexts` 且 `last_compression["strategy"] == "token_budget"`）调用 `_on_context_reset()`：`seq += 1`、新 `id`、两个 `sent` 复位；
 - `internal.py` 两处 `_save_to_history` 调用补 `window_state=agent_runner.window_state`；
 - `_save_to_history` 跳过 `_internal` 消息后，把 `window_state` 盖在最后一条待保存消息的 `window` 字段上，再 `dump_messages_with_checkpoints`；
@@ -636,7 +636,7 @@ Expected: FAIL — `chip.lossy` 为 `false` 或 tooltip 落到 `generic`
 - `STRATEGY_KEYS` 与 `LOSSY_STRATEGIES` 各加一项；
 - 四语 `chat.json` 增 `contextCompression.strategy.token_budget`：zh `换窗`、en `Window reset`、ru `Сброс окна`、ja `ウィンドウリセット`；
 - 四语 `config-metadata.json` 与 `default.py` 的 `overflow_strategy` label 去掉“（尚未实现）”，hint 改为“换窗：不调用摘要模型，直接丢弃历史，只保留当前轮”；
-- 新增 `compaction_reminder_tokens` 的 metadata（int，默认 `8192`，hint 说明“仅 Token Budget 策略使用，剩余预算低于该值时提醒一次”）；
+- 新增 `compaction_reminder_tokens` 的 metadata（int，默认 `16384`，hint 说明“仅 Token Budget 策略使用，剩余预算低于该值时提醒一次”）；
 - `docs/{zh,en}` 用真实语义替换“占位”段落，并写明“LLM 显示历史不受影响”。
 
 - [ ] **Step 4: 运行测试确认通过**

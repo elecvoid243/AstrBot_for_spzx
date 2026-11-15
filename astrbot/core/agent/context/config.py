@@ -8,7 +8,7 @@ if TYPE_CHECKING:
     from astrbot.core.provider.provider import Provider
 
 
-DEFAULT_COMPACTION_REMINDER_TOKENS = 8192
+DEFAULT_COMPACTION_REMINDER_TOKENS = 16384
 """Remaining budget that triggers the one-shot window reminder."""
 
 

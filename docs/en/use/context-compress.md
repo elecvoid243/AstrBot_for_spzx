@@ -14,7 +14,7 @@ Selecting `Token Budget` (taken from Codex's implementation) calls no model at a
 
 Two one-shot notices live inside a window. Both are model-facing English control messages and are never written to history:
 
-- When the remaining budget drops below the provider's `compaction_reminder_tokens` (default `8192`), the model is reminded once to wrap up.
+- When the remaining budget drops below the provider's `compaction_reminder_tokens` (default `16384`), the model is reminded once to wrap up.
 - When a reset still leaves the request above the trigger (the window could not free enough room), the model is told once to give its conclusion and start no new tool calls.
 
 Truncation by conversation rounds is no longer a separate strategy, and there is no "discard N turns / drop to 40%" setting. If pressure remains after the summary, AstrBot removes the oldest ordinary rounds one at a time, preserving system messages, summaries, and the current complete round. Exceeding only the compression trigger does not force protected content to be removed. If protected content, tool definitions, and the output budget still exceed the model window, the request stops with an explicit capacity error. Reduce the current input, tool definitions, or output limit, or select a larger model window.

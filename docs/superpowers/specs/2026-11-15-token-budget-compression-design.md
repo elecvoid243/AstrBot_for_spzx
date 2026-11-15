@@ -57,7 +57,7 @@ codex 侧的参照实现：
 | D5 | 窗口状态**随历史落库**（内部字段 + 反向扫描取最新） | 取代早期“进程内 registry”；消除状态与历史不同源 |
 | D6 | 插入点为 `ContextConfig.strategy` + `TokenBudgetCompressor` | 公共流程（工具结果剪枝、容量复查、报告、兜底）全部保留 |
 | D7 | `config_version` 不 bump，无配置迁移 | 占位键已在位，只删除“未实现”回落 |
-| D8 | 新增唯一配置项：`provider.compaction_reminder_tokens`（默认 8192） | 仅 `token_budget` 读取 |
+| D8 | 新增唯一配置项：`provider.compaction_reminder_tokens`（默认 16384） | 仅 `token_budget` 读取 |
 | D9 | WebChat 展示历史独立于 LLM 历史（现状依据，非新决策） | `platform_message_history` 与 `conversations.content` 分离，裁剪不会回滚聊天记录 |
 
 ## 5. 架构
@@ -118,7 +118,7 @@ else: TruncateByTurnsCompressor(...)
 |---|---|---|
 | `resolve_context_compression_config` | 策略不在已实现集合内 | 回落 `llm_compress` + warning |
 | `resolve_context_compression_config` | `keep_recent_ratio` 越界 | 钳制到 `[0, 0.3]`（现状） |
-| runner 构造 `ContextConfig` | `compaction_reminder_tokens <= 0` | 回落 8192 + warning |
+| runner 构造 `ContextConfig` | `compaction_reminder_tokens <= 0` | 回落 16384 + warning |
 | runner 构造 `ContextConfig` | `max_context_tokens <= 0` | `token_budget` 不可用，回落 `llm_compress` + warning |
 
 零迁移：占位键、字段名、默认值都不动，`config_version` 保持 4。删除 `PLANNED_OVERFLOW_STRATEGIES` 与“未实现”回落分支。

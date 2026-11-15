@@ -4297,7 +4297,7 @@ CONFIG_METADATA_3 = {
                         "condition": {
                             "agent_runner.runner_type": "local",
                         },
-                        "hint": "请求发送前，当上下文 Token 超过压缩阈值（提供方 compress_threshold_tokens，未设置时取 min(窗口×0.8, 窗口−输出预算−headroom)）或输入加输出预算超出模型窗口时执行该策略。“由 LLM 压缩上下文”生成结构化摘要；“Token Budget”取自 Codex：不调用模型，直接把历史换成新窗口，只保留系统指令与当前轮。按对话轮数截断已弃用，仅在摘要不可用时作为内部兜底。提醒阈值由提供方的 compaction_reminder_tokens 控制（默认 8192）。",
+                        "hint": "请求发送前，当上下文 Token 超过压缩阈值（提供方 compress_threshold_tokens，未设置时取 min(窗口×0.8, 窗口−输出预算−headroom)）或输入加输出预算超出模型窗口时执行该策略。“由 LLM 压缩上下文”生成结构化摘要；“Token Budget”取自 Codex：不调用模型，直接把历史换成新窗口，只保留系统指令与当前轮。按对话轮数截断已弃用，仅在摘要不可用时作为内部兜底。提醒阈值由提供方的 compaction_reminder_tokens 控制（默认 16384）。",
                     },
                     "agent_runner.config.compression.keep_recent_ratio": {
                         "description": "压缩时保留最近上下文比例",

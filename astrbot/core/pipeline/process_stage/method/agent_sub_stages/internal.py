@@ -698,7 +698,7 @@ class InternalAgentSubStage(Stage):
                 continue
             if message.role in ["assistant", "user"] and message._no_save:
                 continue
-            if getattr(message, "_internal", False):
+            if message.internal:
                 continue
             messages_to_save.append(message)
 

@@ -220,7 +220,13 @@ class Provider(AbstractProvider):
                     {
                         key: value
                         for key, value in message.items()
-                        if key not in {"_compaction_id", "_tool_result_unknown"}
+                        if key
+                        not in {
+                            "_compaction_id",
+                            "_tool_result_unknown",
+                            "_window",
+                            "_internal",
+                        }
                     }
                 )
 

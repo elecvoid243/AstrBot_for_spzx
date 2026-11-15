@@ -23,6 +23,7 @@ def runner_factory(
     """Build a runner with only the compression state the injector reads."""
     runner = object.__new__(ToolLoopAgentRunner)
     runner.window_state = window_state or WindowState(id="w1")
+    runner._window_just_reset = False
     runner.request_context_manager = SimpleNamespace(
         config=SimpleNamespace(strategy=strategy, reminder_tokens=reminder_tokens),
         last_compression=last_compression,
@@ -38,7 +39,7 @@ def test_notice_injected_once_per_window():
     second = runner._inject_budget_notices(first)
 
     assert len(first) == 2
-    assert first[-1]._internal is True
+    assert first[-1].internal is True
     assert "100 tokens left" in first[-1].content
     assert len(second) == 2
     assert runner.window_state.reminder_sent is True
@@ -47,12 +48,17 @@ def test_notice_injected_once_per_window():
 def test_exhausted_notice_wins_over_the_reminder():
     runner = runner_factory(
         remaining=0,
-        last_compression={"strategy": "token_budget", "insufficient": True},
+        last_compression={
+            "strategy": "token_budget",
+            "insufficient": True,
+            "tokens_after": 1200,
+            "threshold_tokens": 1000,
+        },
     )
 
     injected = runner._inject_budget_notices([Message(role="user", content="hi")])
 
-    assert injected[-1]._internal is True
+    assert injected[-1].internal is True
     assert "cannot be trimmed further" in injected[-1].content
     assert runner.window_state.exhausted_sent is True
     assert runner.window_state.reminder_sent is False
@@ -63,6 +69,25 @@ def test_llm_compress_strategy_receives_no_notice():
     messages = [Message(role="user", content="hi")]
 
     assert runner._inject_budget_notices(messages) == messages
+
+
+def test_missing_the_summary_target_does_not_announce_exhaustion():
+    """A reset that beats the trigger but misses the summary target is fine."""
+    runner = runner_factory(
+        remaining=5000,
+        reminder_tokens=1000,
+        last_compression={
+            "strategy": "token_budget",
+            "insufficient": True,
+            "tokens_after": 900,
+            "threshold_tokens": 8000,
+        },
+    )
+
+    injected = runner._inject_budget_notices([Message(role="user", content="hi")])
+
+    assert len(injected) == 1
+    assert runner.window_state.exhausted_sent is False
 
 
 def test_no_reminder_on_the_request_that_reset_the_window():
@@ -79,20 +104,25 @@ def test_no_reminder_on_the_request_that_reset_the_window():
 def test_exhausted_notice_still_fires_right_after_a_reset():
     runner = runner_factory(
         remaining=100,
-        last_compression={"strategy": "token_budget", "insufficient": True},
+        last_compression={
+            "strategy": "token_budget",
+            "insufficient": True,
+            "tokens_after": 1200,
+            "threshold_tokens": 1000,
+        },
     )
 
     injected = runner._inject_budget_notices(
         [Message(role="user", content="hi")], just_reset=True
     )
 
-    assert injected[-1]._internal is True
+    assert injected[-1].internal is True
     assert "cannot be trimmed further" in injected[-1].content
 
 
 def test_range_selector_ignores_internal_notice():
     notice = Message(role="user", content="[context budget] ...")
-    notice._internal = True
+    notice.internal = True
     history = [
         Message(role="user", content="old"),
         Message(role="assistant", content="a"),

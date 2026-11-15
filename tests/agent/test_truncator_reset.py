@@ -67,3 +67,21 @@ def test_reset_drops_older_summary():
 def test_reset_returns_input_when_nothing_to_drop():
     messages = [Message(role="system", content="sys")]
     assert ContextTruncator().reset_to_latest_round(messages) == messages
+
+
+def test_reset_keeps_the_request_when_a_notice_trails_it():
+    notice = Message(role="user", content="[context budget] wrap up")
+    notice.internal = True
+    messages = [
+        Message(role="user", content="do the task"),
+        Message(role="assistant", content=None, tool_calls=[TOOL_CALL]),
+        Message(role="tool", tool_call_id="c1", content="ok"),
+        notice,
+    ]
+
+    result = ContextTruncator().reset_to_latest_round(messages)
+
+    # The notice must not open a round of its own; otherwise the real request
+    # would be dropped and the model would see only the kernel reminder.
+    assert [m.role for m in result] == ["user", "assistant", "tool", "user"]
+    assert result[0].content == "do the task"

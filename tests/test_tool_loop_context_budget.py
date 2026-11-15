@@ -219,6 +219,44 @@ async def test_token_budget_replaces_history_without_a_summary_request():
 
 
 @pytest.mark.asyncio
+async def test_reset_resumes_the_persisted_window_state():
+    provider = BudgetProvider(
+        [LLMResponse(role="assistant", completion_text="done")],
+        max_context_tokens=1000,
+    )
+    runner = ToolLoopAgentRunner()
+    await runner.reset(
+        provider=provider,
+        request=ProviderRequest(
+            prompt="current task",
+            contexts=[
+                {
+                    "role": "user",
+                    "content": "hi",
+                    "_window": {
+                        "id": "w9",
+                        "seq": 3,
+                        "reminder_sent": True,
+                        "exhausted_sent": False,
+                    },
+                },
+            ],
+            conversation=SimpleNamespace(cid="budget", token_usage=0),
+            func_tool=None,
+            llm_params={"max_tokens": 1},
+        ),
+        run_context=ContextWrapper(context=None),
+        tool_executor=BudgetToolExecutor(""),
+        agent_hooks=BaseAgentRunHooks(),
+        context_limit_reached_strategy="token_budget",
+        custom_token_counter=CharacterTokenCounter(),
+    )
+
+    assert runner.window_state.seq == 3
+    assert runner.window_state.reminder_sent is True
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("compression_fails", [False, True])
 async def test_request_that_cannot_fit_is_rejected_without_model_or_tool_execution(
     compression_fails,

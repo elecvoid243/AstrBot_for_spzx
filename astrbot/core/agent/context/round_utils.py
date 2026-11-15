@@ -15,6 +15,18 @@ def _segment_role(seg: RoundSegment) -> str:
     return str(seg.get("role", "?"))
 
 
+def _segment_is_internal(seg: RoundSegment) -> bool:
+    """Return whether a segment is kernel-injected control text.
+
+    A notice is role ``user`` so the model reads it as an instruction, but it
+    must not open a new round: doing so would let a later compaction treat the
+    notice as the current request and drop the real one.
+    """
+    if isinstance(seg, Message):
+        return bool(seg.internal)
+    return bool(seg.get("_internal") or seg.get("internal"))
+
+
 def split_into_rounds(
     contexts: Sequence[RoundSegment],
 ) -> list[list[RoundSegment]]:
@@ -26,7 +38,11 @@ def split_into_rounds(
     rounds: list[list[RoundSegment]] = []
     current: list[RoundSegment] = []
     for seg in contexts:
-        if _segment_role(seg) == "user" and current:
+        if (
+            _segment_role(seg) == "user"
+            and current
+            and not _segment_is_internal(seg)
+        ):
             rounds.append(current)
             current = []
         current.append(seg)

@@ -238,11 +238,11 @@ class Message(BaseModel):
     """Whether this result describes an unconfirmed execution outcome."""
     window: WindowState | None = Field(default=None, alias="_window", exclude=True)
     """Context window this message belongs to; internal, never sent to providers."""
+    internal: bool = Field(default=False, alias="_internal", exclude=True)
+    """Kernel-injected control text: model-visible, never sent or persisted."""
 
     _no_save: bool = PrivateAttr(default=False)
     _checkpoint_after: CheckpointData | None = PrivateAttr(default=None)
-    _internal: bool = PrivateAttr(default=False)
-    """Model-visible control text that must stay out of the saved history."""
 
     def model_dump_for_context(self) -> dict[str, Any]:
         """Serialize a message with internal retention and recovery metadata.
@@ -257,6 +257,8 @@ class Message(BaseModel):
             data["_tool_result_unknown"] = True
         if self.window is not None:
             data["_window"] = self.window.model_dump()
+        if self.internal:
+            data["_internal"] = True
         return data
 
     @field_validator("window", mode="before")

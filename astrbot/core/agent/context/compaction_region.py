@@ -152,7 +152,7 @@ def select_compaction_range(
         if (
             message.role == "user"
             and not message.compaction_id
-            and not getattr(message, "_internal", False)
+            and not message.internal
         ):
             last_user = position
 

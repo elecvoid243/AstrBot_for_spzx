@@ -387,6 +387,9 @@ class Context:
         if kwargs.get("runner_messages", None) is not None:
             runner_messages = kwargs.get("runner_messages")
             for msg in agent_runner.run_context.messages:
+                if msg.internal:
+                    # Kernel control text is not a conversation turn.
+                    continue
                 runner_messages.append(msg.model_dump())
         return llm_resp
 

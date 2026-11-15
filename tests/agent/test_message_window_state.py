@@ -1,6 +1,7 @@
 """Window state metadata carried by persisted history messages."""
 
 from astrbot.core.agent.message import Message, WindowState, latest_window_state
+from astrbot.core.provider.modalities import sanitize_contexts_by_modalities
 
 
 def test_window_state_round_trips_through_history():
@@ -20,7 +21,7 @@ def test_window_state_round_trips_through_history():
 def test_window_state_never_reaches_the_provider():
     message = Message(role="user", content="hi")
     message.window = WindowState(id="w1")
-    message._internal = True
+    message.internal = True
     dumped = message.model_dump(mode="json")
     assert "_window" not in dumped
     assert "_internal" not in dumped
@@ -47,3 +48,23 @@ def test_malformed_window_marker_is_dropped_on_load():
 
 def test_latest_window_state_without_markers_is_none():
     assert latest_window_state([Message(role="user", content="a")]) is None
+
+
+def test_internal_marker_survives_a_history_round_trip():
+    message = Message(role="user", content="[context budget] wrap up")
+    message.internal = True
+
+    restored = Message.model_validate(message.model_dump_for_context())
+
+    assert restored.internal is True
+
+
+def test_provider_payload_drops_internal_markers():
+    message = Message(role="user", content="[context budget] wrap up")
+    message.internal = True
+    message.window = WindowState(id="w1")
+
+    delivered, _ = sanitize_contexts_by_modalities([message], ["text"])
+
+    assert "_internal" not in delivered[0]
+    assert "_window" not in delivered[0]

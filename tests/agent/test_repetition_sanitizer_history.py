@@ -160,7 +160,7 @@ async def test_save_to_history_stamps_window_and_skips_internal():
 
     stage, event, req = _make_stage()
     notice = Message(role="user", content="[context budget] wrap up")
-    notice._internal = True
+    notice.internal = True
     messages = [Message(role="user", content="hi"), notice]
     response = LLMResponse(role="assistant", completion_text="done")
 

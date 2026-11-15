@@ -416,7 +416,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         self.llm_compress_keep_recent_ratio = llm_compress_keep_recent_ratio
         self.llm_compress_provider = llm_compress_provider
         self.context_limit_reached_strategy = context_limit_reached_strategy
-        self.window_state = self._load_window_state(run_context.messages)
+        self._window_just_reset = False
         self.target_ratio = target_ratio
         self.min_yield_ratio = min_yield_ratio
         self.max_summary_tokens = max_summary_tokens
@@ -597,6 +597,9 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                 Message(role="system", content=request.system_prompt),
             )
         self.run_context.messages = messages
+        # History is assembled above, so the persisted window marker can only
+        # be read here; loading it earlier always saw an empty run_context.
+        self.window_state = self._load_window_state(messages)
         self._assembled_extra_user_content_parts = copy.deepcopy(
             [
                 part if isinstance(part, dict) else part.model_dump(mode="json")
@@ -1413,9 +1416,10 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         self.window_state = WindowState(
             id=uuid.uuid4().hex, seq=self.window_state.seq + 1
         )
+        self._window_just_reset = True
 
     def _inject_budget_notices(
-        self, messages: list[Message], *, just_reset: bool = False
+        self, messages: list[Message], *, just_reset: bool | None = None
     ) -> list[Message]:
         """Append the window's one-shot budget notice when one is due.
 
@@ -1424,9 +1428,11 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
 
         Args:
             messages: Model-visible history after compaction.
-            just_reset: True when this very request opened a new window. A
-                fresh window must not be announced as "running out of room";
-                only the exhausted notice can still apply.
+            just_reset: Override for the "this request opened a new window"
+                fact; defaults to the runner's own flag so both preparation
+                passes of one model call decide alike. A fresh window must not
+                be announced as "running out of room"; only the exhausted
+                notice can still apply.
 
         Returns:
             The same list, plus one internal notice when a notice is due.
@@ -1435,11 +1441,21 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         config = manager.config
         if getattr(config, "strategy", "llm_compress") != "token_budget":
             return messages
+        if messages and messages[-1].internal:
+            # Already announced for this model call: never stack two notices.
+            return messages
         state = self.window_state
+        if just_reset is None:
+            just_reset = self._window_just_reset
         notice: str | None = None
+        report = manager.last_compression or {}
+        tokens_after = report.get("tokens_after")
+        threshold = report.get("threshold_tokens")
         if (
             not state.exhausted_sent
-            and (manager.last_compression or {}).get("insufficient") is True
+            and tokens_after is not None
+            and threshold is not None
+            and tokens_after > threshold
         ):
             notice = EXHAUSTED_TEXT
             state.exhausted_sent = True
@@ -1454,7 +1470,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         if notice is None:
             return messages
         message = Message(role="user", content=notice)
-        message._internal = True
+        message.internal = True
         return [*messages, message]
 
     async def _prepare_llm_request(
@@ -1487,6 +1503,10 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             ContextCapacityError: Existing compression cannot fit the request.
             ToolProtocolIntegrityError: Tool results cannot be paired unambiguously.
         """
+        if not check_output_limit:
+            # One model call runs two preparation passes; the "just reset"
+            # fact must survive both, so it is cleared where a call starts.
+            self._window_just_reset = False
         if self._is_stop_requested():
             return
         if contexts is None:

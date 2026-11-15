@@ -47,6 +47,7 @@ from astrbot.core.utils.string_utils import normalize_and_dedupe_strings
 
 from ..headers import build_conversation_headers
 from ..register import register_provider_adapter
+from ..request_snapshot import request_snapshots
 from .request_retry import retry_provider_request
 
 
@@ -55,6 +56,7 @@ from .request_retry import retry_provider_request
     "OpenAI API Chat Completion 提供商适配器",
 )
 class ProviderOpenAIOfficial(Provider):
+    SNAPSHOT_ADAPTER = "openai_chat"
     _ERROR_TEXT_CANDIDATE_MAX_CHARS = 4096
     _request_input_key = "messages"
 
@@ -633,6 +635,16 @@ class ProviderOpenAIOfficial(Provider):
             extra_body,
         )
 
+        try:
+            request_snapshots.capture(
+                self,
+                {**payloads, **extra_body},
+                adapter=self.SNAPSHOT_ADAPTER,
+                tool_set=tools,
+            )
+        except Exception:
+            logger.debug("Failed to capture the LLM request snapshot", exc_info=True)
+
         completion = await retry_provider_request(
             "OpenAI",
             lambda: self.client.chat.completions.create(
@@ -718,6 +730,16 @@ class ProviderOpenAIOfficial(Provider):
             else "max_tokens",
             extra_body,
         )
+
+        try:
+            request_snapshots.capture(
+                self,
+                {**payloads, **extra_body},
+                adapter=self.SNAPSHOT_ADAPTER,
+                tool_set=tools,
+            )
+        except Exception:
+            logger.debug("Failed to capture the LLM request snapshot", exc_info=True)
 
         stream = await retry_provider_request(
             "OpenAI",

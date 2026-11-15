@@ -33,6 +33,7 @@ from astrbot.core.utils.network_utils import (
 
 from ..headers import build_conversation_headers, build_provider_headers
 from ..register import register_provider_adapter
+from ..request_snapshot import request_snapshots
 from .request_retry import retry_provider_request, retry_provider_request_context
 
 
@@ -41,6 +42,7 @@ from .request_retry import retry_provider_request, retry_provider_request_contex
     "Anthropic Claude API 提供商适配器",
 )
 class ProviderAnthropic(Provider):
+    SNAPSHOT_ADAPTER = "anthropic"
     _PROMPT_CACHE_CONTROL = {"type": "ephemeral"}
     DEFAULT_MAX_OUTPUT_TOKENS = 65536
 
@@ -592,6 +594,16 @@ class ProviderAnthropic(Provider):
             extra_body.pop(alias, None)
 
         try:
+            request_snapshots.capture(
+                self,
+                {**payloads, **extra_body},
+                adapter=self.SNAPSHOT_ADAPTER,
+                tool_set=tools,
+            )
+        except Exception:
+            logger.debug("Failed to capture the LLM request snapshot", exc_info=True)
+
+        try:
             completion = await retry_provider_request(
                 "Anthropic",
                 lambda: (
@@ -740,6 +752,16 @@ class ProviderAnthropic(Provider):
             "maxOutputTokens",
         ):
             extra_body.pop(alias, None)
+
+        try:
+            request_snapshots.capture(
+                self,
+                {**payloads, **extra_body},
+                adapter=self.SNAPSHOT_ADAPTER,
+                tool_set=tools,
+            )
+        except Exception:
+            logger.debug("Failed to capture the LLM request snapshot", exc_info=True)
 
         async with retry_provider_request_context(
             "Anthropic",

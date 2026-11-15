@@ -20,6 +20,7 @@ from astrbot.core.provider.entities import LLMResponse, TokenUsage, ToolCallsRes
 
 from ..headers import build_conversation_headers
 from ..register import register_provider_adapter
+from ..request_snapshot import request_snapshots
 from .openai_source import ProviderOpenAIOfficial
 from .request_retry import retry_provider_request
 
@@ -31,6 +32,7 @@ from .request_retry import retry_provider_request
 class ProviderOpenAIResponses(ProviderOpenAIOfficial):
     """OpenAI-compatible stateless Responses API provider adapter."""
 
+    SNAPSHOT_ADAPTER = "openai_responses"
     _REASONING_STATE_TYPE = "openai_responses_reasoning"
     _request_input_key = "input"
 
@@ -390,6 +392,16 @@ class ProviderOpenAIResponses(ProviderOpenAIOfficial):
         payloads["store"] = False
         apply_model_output_limit(payloads, "max_output_tokens", extra_body)
 
+        try:
+            request_snapshots.capture(
+                self,
+                {**payloads, **extra_body},
+                adapter=self.SNAPSHOT_ADAPTER,
+                tool_set=tools,
+            )
+        except Exception:
+            logger.debug("Failed to capture the LLM request snapshot", exc_info=True)
+
         response = await retry_provider_request(
             "OpenAI Responses",
             lambda: self.client.responses.create(
@@ -458,6 +470,16 @@ class ProviderOpenAIResponses(ProviderOpenAIOfficial):
         payloads.pop("conversation", None)
         payloads["store"] = False
         apply_model_output_limit(payloads, "max_output_tokens", extra_body)
+
+        try:
+            request_snapshots.capture(
+                self,
+                {**payloads, **extra_body},
+                adapter=self.SNAPSHOT_ADAPTER,
+                tool_set=tools,
+            )
+        except Exception:
+            logger.debug("Failed to capture the LLM request snapshot", exc_info=True)
 
         stream = await retry_provider_request(
             "OpenAI Responses",

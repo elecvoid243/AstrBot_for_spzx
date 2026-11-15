@@ -32,6 +32,7 @@ from astrbot.core.utils.network_utils import is_connection_error, log_connection
 
 from ..headers import build_conversation_headers
 from ..register import register_provider_adapter
+from ..request_snapshot import request_snapshots
 from .request_retry import retry_provider_request
 
 
@@ -50,6 +51,7 @@ logging.getLogger("google_genai.types").addFilter(SuppressNonTextPartsWarning())
     "Google Gemini Chat Completion 提供商适配器",
 )
 class ProviderGoogleGenAI(Provider):
+    SNAPSHOT_ADAPTER = "gemini"
     CATEGORY_MAPPING = {
         "harassment": types.HarmCategory.HARM_CATEGORY_HARASSMENT,
         "hate_speech": types.HarmCategory.HARM_CATEGORY_HATE_SPEECH,
@@ -723,6 +725,22 @@ class ProviderGoogleGenAI(Provider):
                     temperature,
                     llm_params=llm_params,
                 )
+                try:
+                    request_snapshots.capture(
+                        self,
+                        {
+                            "model": model,
+                            "contents": conversation,
+                            "config": config,
+                        },
+                        adapter=self.SNAPSHOT_ADAPTER,
+                        tool_set=tools,
+                    )
+                except Exception:
+                    logger.debug(
+                        "Failed to capture the LLM request snapshot",
+                        exc_info=True,
+                    )
                 async with self._conversation_header(conversation_id):
                     result = await retry_provider_request(
                         "Gemini",
@@ -819,6 +837,22 @@ class ProviderGoogleGenAI(Provider):
                     system_instruction,
                     llm_params=llm_params,
                 )
+                try:
+                    request_snapshots.capture(
+                        self,
+                        {
+                            "model": model,
+                            "contents": conversation,
+                            "config": config,
+                        },
+                        adapter=self.SNAPSHOT_ADAPTER,
+                        tool_set=tools,
+                    )
+                except Exception:
+                    logger.debug(
+                        "Failed to capture the LLM request snapshot",
+                        exc_info=True,
+                    )
                 async with self._conversation_header(conversation_id):
                     result = await retry_provider_request(
                         "Gemini",

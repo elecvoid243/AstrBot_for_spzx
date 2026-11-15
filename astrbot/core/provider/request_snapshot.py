@@ -18,7 +18,7 @@ import platform
 import time
 import uuid
 from collections import OrderedDict, deque
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
@@ -72,6 +72,11 @@ MAX_PROVENANCE_ENTRIES = 32
 
 PROVENANCE_TTL_SECONDS = 600
 """Retention window of a provenance entry registered by prompt assembly."""
+
+PROVENANCE_MAX_TEXT_BYTES = 32768
+"""Maximum UTF-8 bytes retained per registered provenance text."""
+
+_PROVENANCE_TRUNCATION_MARKER = "…[truncated]…"
 
 
 @dataclass(frozen=True, slots=True)
@@ -2015,8 +2020,10 @@ def _plain_text(value: object) -> str | None:
     return None
 
 
-def _parse_completion(raw: object) -> tuple[str | None, str | None]:
-    """Best-effort ``(finish_reason, returned_model)`` of a raw completion.
+def _parse_completion(
+    raw: object,
+) -> tuple[str | None, str | None, int | float | None]:
+    """Best-effort ``(finish_reason, returned_model, created_at)``.
 
     Supports the OpenAI Chat Completions (``choices[0].finish_reason`` /
     ``model``), Anthropic Messages (``stop_reason`` / ``model``) and Gemini
@@ -2026,6 +2033,7 @@ def _parse_completion(raw: object) -> tuple[str | None, str | None]:
 
     finish_reason: str | None = None
     returned_model: str | None = None
+    created_at: int | float | None = None
     try:
         choices = _completion_value(raw, "choices")
         if isinstance(choices, (list, tuple)) and choices:
@@ -2044,16 +2052,19 @@ def _parse_completion(raw: object) -> tuple[str | None, str | None]:
             finish_reason = _plain_text(_completion_value(raw, "stop_reason"))
         if returned_model is None:
             returned_model = _plain_text(_completion_value(raw, "model"))
+        created_at = _numeric(_completion_value(raw, "created"))
+        if created_at is None:
+            created_at = _numeric(_completion_value(raw, "created_at"))
     except Exception:
         logger.debug("Failed to parse snapshot raw completion", exc_info=True)
-        return None, None
-    return finish_reason, returned_model
+        return None, None, None
+    return finish_reason, returned_model, created_at
 
 
 def _usage_value(usage: object, name: str) -> object:
     """Read one usage counter from a ``TokenUsage`` or mapping."""
 
-    if isinstance(usage, dict):
+    if isinstance(usage, Mapping):
         return usage.get(name)
     return getattr(usage, name, None)
 
@@ -2061,7 +2072,7 @@ def _usage_value(usage: object, name: str) -> object:
 def _usage_payload(usage: object) -> dict | None:
     """Project a ``TokenUsage`` into the envelope usage shape."""
 
-    if usage is None:
+    if usage is None or not _is_usable_usage(usage):
         return None
 
     def counter(name: str) -> int:
@@ -2079,6 +2090,17 @@ def _usage_payload(usage: object) -> dict | None:
         "output": output,
         "total": input_other + input_cached + output,
     }
+
+
+def _is_usable_usage(usage: object) -> bool:
+    """Return whether ``usage`` carries at least one real token counter."""
+
+    counters = ("input_other", "input_cached", "output")
+    if isinstance(usage, Mapping):
+        return bool(usage) and any(
+            _numeric(usage.get(name)) is not None for name in counters
+        )
+    return any(_numeric(getattr(usage, name, None)) is not None for name in counters)
 
 
 def _cache_hit_ratio(usage: object) -> float | None:
@@ -2106,6 +2128,17 @@ def _char_cap(text: object, limit: int) -> str:
     if len(text) <= limit:
         return text
     return f"{text[:limit]}…"
+
+
+def _cap_utf8_text(text: str, limit: int, marker: str) -> str:
+    """Keep a valid UTF-8 head of ``text`` within ``limit`` bytes inclusive."""
+
+    encoded = text.encode("utf-8")
+    if len(encoded) <= limit:
+        return text
+    marker_bytes = len(marker.encode("utf-8"))
+    head = encoded[: max(0, limit - marker_bytes)].decode("utf-8", "ignore")
+    return f"{head}{marker}"
 
 
 def _numeric(value: object) -> int | float | None:
@@ -2253,11 +2286,15 @@ class RequestSnapshotRecorder:
             )
             resolved_adapter = _adapter_for(adapter_name, raw)
             system_text = resolved_adapter.system_text(raw)
-            cache = self._cache_diagnostics(
-                effective_session,
-                _cache_fingerprint(raw, system_text),
-                now,
-            )
+            # Only chat requests define the session's prefix-cache baseline;
+            # compression/title/aux calls must not poison the comparison.
+            cache = None
+            if scope.kind == "chat":
+                cache = self._cache_diagnostics(
+                    effective_session,
+                    _cache_fingerprint(raw, system_text),
+                    now,
+                )
             provenance = self._provenance_entries(
                 effective_session,
                 system_text,
@@ -2410,10 +2447,17 @@ class RequestSnapshotRecorder:
         """
 
         try:
+            if not developer_mode_enabled():
+                return
             if not session_id or not isinstance(text, str) or not text:
                 return
             if not isinstance(label, str) or not label:
                 label = "other"
+            text = _cap_utf8_text(
+                text,
+                PROVENANCE_MAX_TEXT_BYTES,
+                _PROVENANCE_TRUNCATION_MARKER,
+            )
             key = str(session_id)
             now = self._clock()
             self._purge_provenance(now)
@@ -2465,7 +2509,7 @@ class RequestSnapshotRecorder:
                 return
             usage = getattr(response, "usage", None)
             usage_payload = _usage_payload(usage)
-            finish_reason, returned_model = _parse_completion(
+            finish_reason, returned_model, response_created_at = _parse_completion(
                 getattr(response, "raw_completion", None)
             )
             response_id = getattr(response, "id", None)
@@ -2491,7 +2535,11 @@ class RequestSnapshotRecorder:
                         ),
                         "finish_reason": finish_reason,
                         "returned_model": returned_model,
-                        "created_at": now,
+                        "created_at": (
+                            response_created_at
+                            if response_created_at is not None
+                            else now
+                        ),
                         "usage": usage_payload,
                         "usage_matches_request": bool(
                             getattr(response, "usage_matches_request", True)
@@ -2513,7 +2561,7 @@ class RequestSnapshotRecorder:
                 if returned_model and isinstance(provider_info, dict):
                     provider_info["returned_model"] = returned_model
                 diagnostics = envelope.get("diagnostics")
-                if isinstance(diagnostics, dict):
+                if isinstance(diagnostics, dict) and envelope.get("kind") == "chat":
                     cache = diagnostics.get("cache")
                     if not isinstance(cache, dict):
                         cache = {

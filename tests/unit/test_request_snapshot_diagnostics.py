@@ -18,6 +18,7 @@ from astrbot.core.provider import request_snapshot
 from astrbot.core.provider.entities import LLMResponse, TokenUsage
 from astrbot.core.provider.request_snapshot import (
     MAX_PROVENANCE_ENTRIES,
+    PROVENANCE_MAX_TEXT_BYTES,
     PROVENANCE_TTL_SECONDS,
     RequestSnapshotRecorder,
     record_provenance,
@@ -80,6 +81,7 @@ def _capture(
     session_id: str = "s1",
     invocation_id: str = "i1",
     adapter: str | None = None,
+    kind: str = "chat",
 ) -> dict:
     """Capture ``raw`` and return the stored snapshot as the API would see it."""
 
@@ -88,6 +90,7 @@ def _capture(
         umo=f"webchat:FriendMessage:{session_id}",
         turn_id="t1",
         invocation_id=invocation_id,
+        kind=kind,
     ):
         snapshot_id = request_snapshots.capture(
             FakeProvider(),
@@ -426,3 +429,84 @@ def test_attachments_never_raise(monkeypatch):
     assert stored["status"] == "error"
     assert stored["response"]["error"]["type"] == "Exploding"
     assert stored["response"]["error"]["message"] == ""
+
+
+def test_record_provenance_is_noop_when_mode_is_off(monkeypatch):
+    monkeypatch.setattr(request_snapshot, "developer_mode_enabled", lambda: False)
+    recorder = RequestSnapshotRecorder()
+    recorder.record_provenance("s1", "persona", "PERSONA")
+    assert recorder._provenance == {}
+
+
+def test_record_provenance_caps_text_at_utf8_budget(monkeypatch):
+    _enable(monkeypatch)
+    recorder = RequestSnapshotRecorder()
+    recorder.record_provenance("s1", "persona", "汉" * 20000)
+    stored = recorder._provenance["s1"][0][1]
+    assert stored.endswith("…[truncated]…")
+    assert len(stored.encode("utf-8")) <= PROVENANCE_MAX_TEXT_BYTES
+    assert "汉" in stored
+
+
+def test_auxiliary_capture_does_not_poison_cache_baseline(monkeypatch):
+    _enable(monkeypatch)
+    chat = _anthropic([{"role": "user", "content": "hi"}], system="SYS")
+    title = _anthropic([{"role": "user", "content": "title me"}], system="TITLE")
+
+    first = _capture(chat, invocation_id="i1")
+    assert first["diagnostics"]["cache"]["system_changed"] is None
+
+    auxiliary = _capture(title, invocation_id="i2", kind="title")
+    assert auxiliary["diagnostics"]["cache"] is None
+    request_snapshots.attach_response("i2", LLMResponse(role="assistant"))
+    stored_auxiliary = request_snapshots.get(auxiliary["snapshot_id"])
+    assert stored_auxiliary["diagnostics"]["cache"] is None
+
+    third = _capture(chat, invocation_id="i3")
+    cache = third["diagnostics"]["cache"]
+    assert cache["system_changed"] is False
+    assert cache["tools_changed"] is False
+    assert cache["divergence_index"] is None
+
+
+def test_attach_response_drops_unusable_usage(monkeypatch):
+    _enable(monkeypatch)
+    snapshot = _capture(_openai_system("SYS"))
+    request_snapshots.attach_response(
+        "i1",
+        LLMResponse(
+            role="assistant",
+            usage=SimpleNamespace(input="not-a-counter"),
+        ),
+    )
+    stored = request_snapshots.get(snapshot["snapshot_id"])
+    assert stored["response"]["usage"] is None
+    assert stored["diagnostics"]["cache"]["hit_ratio"] is None
+
+
+def test_attach_response_prefers_raw_created_at(monkeypatch):
+    _enable(monkeypatch)
+    recorder = RequestSnapshotRecorder(clock=lambda: 1000.0)
+    with request_snapshot_scope(
+        session_id="s1",
+        umo="webchat:FriendMessage:s1",
+        invocation_id="i1",
+    ):
+        snapshot_id = recorder.capture(FakeProvider(), _openai_system("SYS"))
+    recorder.attach_response(
+        "i1",
+        LLMResponse(
+            role="assistant",
+            raw_completion=SimpleNamespace(created=1763200867),
+        ),
+    )
+    assert recorder.get(snapshot_id)["response"]["created_at"] == 1763200867
+
+    with request_snapshot_scope(
+        session_id="s1",
+        umo="webchat:FriendMessage:s1",
+        invocation_id="i2",
+    ):
+        fallback_id = recorder.capture(FakeProvider(), _openai_system("SYS"))
+    recorder.attach_response("i2", LLMResponse(role="assistant"))
+    assert recorder.get(fallback_id)["response"]["created_at"] == 1000.0

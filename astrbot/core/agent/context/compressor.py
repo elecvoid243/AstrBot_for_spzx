@@ -4,6 +4,10 @@ import uuid
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from astrbot.core.exceptions import ContextCapacityError, ToolProtocolIntegrityError
+from astrbot.core.provider.request_snapshot import (
+    current_scope,
+    request_snapshot_scope,
+)
 
 from ...provider.modalities import (
     log_context_sanitize_stats,
@@ -315,6 +319,8 @@ class LLMSummaryCompressor:
         compress_threshold_tokens: int = 0,
         token_counter: TokenCounter | None = None,
         llm_params: dict | None = None,
+        session_id: str | None = None,
+        umo: str | None = None,
     ) -> None:
         """Initialize the LLM summary compressor.
 
@@ -332,6 +338,9 @@ class LLMSummaryCompressor:
                 with the summary request so provider fields derived from them
                 (such as reasoning_effort) stay identical to the chat requests
                 the prefix cache was built from.
+            session_id: Optional ChatUI session id used to attribute the
+                summary request when no ambient request scope exists.
+            umo: Optional unified message origin paired with ``session_id``.
         """
         self.provider = provider
         self.keep_recent_ratio = min(max(float(keep_recent_ratio), 0.0), 0.3)
@@ -339,6 +348,8 @@ class LLMSummaryCompressor:
         self.compress_threshold_tokens = compress_threshold_tokens
         self.token_counter = token_counter or EstimateTokenCounter()
         self.llm_params = llm_params or {}
+        self.session_id = session_id
+        self.umo = umo
 
         self.instruction_text = COMPACTION_INSTRUCTION
         self.last_shadowed_tokens: int | None = None
@@ -370,6 +381,26 @@ class LLMSummaryCompressor:
             return False
         usage_rate = current_tokens / max_tokens
         return usage_rate > self.compression_threshold
+
+    def _snapshot_scope(self):
+        """Build the developer-mode scope covering the summary provider call.
+
+        The ambient scope (set by the agent runner) already names the session,
+        turn and invocation, so only ``kind`` changes. When there is none, the
+        compressor's own session fields are used; without them the recorder
+        drops the snapshot instead of guessing a session.
+
+        Returns:
+            The request scope to wrap the summary request in.
+        """
+
+        if current_scope() is not None:
+            return request_snapshot_scope(kind="compression")
+        return request_snapshot_scope(
+            kind="compression",
+            session_id=self.session_id,
+            umo=self.umo,
+        )
 
     def _split_recent_rounds_by_token_ratio(
         self,
@@ -542,7 +573,10 @@ class LLMSummaryCompressor:
                             f"Summary context capacity exceeded: {input_tokens} input "
                             f"tokens cannot fit with its output budget in the {window}-token window."
                         )
-                    with model_delivery(receipt, output_limit=output_budget):
+                    with (
+                        self._snapshot_scope(),
+                        model_delivery(receipt, output_limit=output_budget),
+                    ):
                         if schemas is None and func_tool is not None:
                             # Tool-free recovery omits the original schema argument.
                             response = await self.provider.text_chat(

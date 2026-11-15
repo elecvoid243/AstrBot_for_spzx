@@ -570,6 +570,9 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         self.request_max_retries = request_max_retries
         self.tool_result_overflow_dir = tool_result_overflow_dir
         self._context_tool_result_files: dict[str, str] = {}
+        # Large tool results already live on disk for the model; the developer
+        # snapshot only keeps a reference to that existing file.
+        self._tool_result_overflow_refs: dict[str, str] = {}
         self.read_tool = read_tool
         self._tool_result_token_counter = EstimateTokenCounter()
         max_context_tokens = provider.provider_config.get("max_context_tokens", 0)
@@ -1316,6 +1319,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                 content=content,
             )
             self._context_tool_result_files[overflow_path] = content
+            self._tool_result_overflow_refs[tool_call_id] = overflow_path
             if self._checkpoint_enabled and self._call_checkpoint is not None:
                 self._call_checkpoint.setdefault("tool_result_files", {})[
                     overflow_path
@@ -1793,35 +1797,49 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         )
         checked = contexts
         if not unchanged or (check_output_limit and output_token_budget):
-            checked = await self._await_or_stop(
-                self.request_context_manager.process(
-                    contexts,
-                    func_tool=func_tool,
-                    usage_snapshot=usage_snapshot,
-                    output_token_budget=output_token_budget
-                    if check_output_limit
-                    and isinstance(output_token_budget, int)
-                    and output_token_budget > 0
-                    else 0,
-                    check_compression_threshold=not unchanged,
-                    modalities=self.provider.provider_config.get("modalities"),
-                    prune_tool_results=self._prune_tool_results_for_context
-                    if stage == "main" and self.custom_compressor is None
-                    else None,
-                    protected_messages=[
-                        self.run_context.messages[item["context_position"]]
-                        for item in (
-                            self._member_message_receipts
-                            or (self._call_checkpoint or {}).get("member_messages", [])
-                        )
-                        if 0
-                        <= item["context_position"]
-                        < len(self.run_context.messages)
-                    ]
-                    if stage == "main"
-                    else None,
+            # Context preparation may call a summary model. The chat scope is
+            # only active around provider calls, so name this session and turn
+            # here; the compressor overrides only ``kind``. Without a session
+            # id compression snapshots are skipped, never guessed.
+            with request_snapshot_scope(
+                session_id=(
+                    self.req.conversation.cid if self.req.conversation else None
+                ),
+                umo=self.req.session_id,
+                turn_id=self._snapshot_turn_id,
+                invocation_id=None,
+            ):
+                checked = await self._await_or_stop(
+                    self.request_context_manager.process(
+                        contexts,
+                        func_tool=func_tool,
+                        usage_snapshot=usage_snapshot,
+                        output_token_budget=output_token_budget
+                        if check_output_limit
+                        and isinstance(output_token_budget, int)
+                        and output_token_budget > 0
+                        else 0,
+                        check_compression_threshold=not unchanged,
+                        modalities=self.provider.provider_config.get("modalities"),
+                        prune_tool_results=self._prune_tool_results_for_context
+                        if stage == "main" and self.custom_compressor is None
+                        else None,
+                        protected_messages=[
+                            self.run_context.messages[item["context_position"]]
+                            for item in (
+                                self._member_message_receipts
+                                or (self._call_checkpoint or {}).get(
+                                    "member_messages", []
+                                )
+                            )
+                            if 0
+                            <= item["context_position"]
+                            < len(self.run_context.messages)
+                        ]
+                        if stage == "main"
+                        else None,
+                    )
                 )
-            )
         if checked is None:
             return
         if (
@@ -3041,7 +3059,9 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             # end_time must be set before the yield serializes to_dict().
             self.stats.end_time = time.time()
             snapshot_event = self._attach_snapshot_metadata(llm_response)
-            self._snapshot_invocation_id = None
+            # Keep the invocation id: the tool calls of this response belong to
+            # the request that produced them. ``_step`` clears it before the
+            # next model request, so it can never mark another invocation.
             if snapshot_event is not None:
                 yield snapshot_event
             yield AgentResponse(
@@ -3140,7 +3160,13 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         # 如果有工具调用，还需处理工具调用
         if llm_resp.tools_call_name:
             if self.tool_schema_mode == "skills_like":
+                # Parameter queries run their own model invocation; restore the
+                # plan invocation so the tool calls it produced stay attributed
+                # to the request that asked for them.
+                plan_invocation_id = self._snapshot_invocation_id
+                self._snapshot_invocation_id = None
                 requery_resp, _ = await self._resolve_tool_exec(llm_resp)
+                self._snapshot_invocation_id = plan_invocation_id
                 if self._output_compression_report is not None:
                     yield AgentResponse(
                         type="context_compression",
@@ -3732,6 +3758,44 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                     )
             tool_call_result_blocks.append(block)
 
+        def _record_snapshot_tool_execution(
+            status: str,
+            started_at: float,
+            *,
+            result_text: str = "",
+            result_ref: str | None = None,
+            permission: str = "allow",
+        ) -> None:
+            """Attach one execution to the request that produced this call.
+
+            Developer mode only; the recorder ignores unknown invocations, so a
+            disabled mode or a skipped capture makes this a no-op.
+
+            Args:
+                status: ``ok``, ``error``, ``denied`` or ``interrupted``.
+                started_at: Epoch seconds captured before execution.
+                result_text: Complete result text handed to the model.
+                result_ref: Existing large-result reference, if the result was
+                    spilled to a readable overflow file.
+                permission: ``allow`` or ``deny`` for this call.
+            """
+            invocation_id = self._snapshot_invocation_id
+            if not invocation_id:
+                return
+            request_snapshots.record_tool_execution(
+                invocation_id,
+                call_id=func_tool_id,
+                name=func_tool_name,
+                status=status,
+                started_at=started_at,
+                duration_ms=max(0, int((time.time() - started_at) * 1000)),
+                result_bytes=len(result_text.encode("utf-8")),
+                result_preview=result_text,
+                result_ref=result_ref,
+                permission=permission,
+                executor="main",
+            )
+
         # 获取 trace span：优先使用 subagent trace_span，否则回退到 event.trace
         _agent_ctx = getattr(self.run_context, "context", None)
         _trace = getattr(_agent_ctx, "trace_span", None)
@@ -3856,6 +3920,11 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                     func_tool_args,
                 )
             )
+            # Timing belongs to the call, not the outer batch: it starts before
+            # the tool can run and ends in whichever outcome branch is taken.
+            started_at = time.time()
+            snapshot_result_text = ""
+            snapshot_result_ref: str | None = None
             yield _HandleFunctionToolsResult.from_message_chain(
                 MessageChain(
                     type="tool_call",
@@ -3879,12 +3948,21 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             # 段不存在，幻觉出的调用也能拿到协议完整的错误结果。
             if func_tool_name in denied_tools:
                 logger.info(f"[Permission] 工具 {func_tool_name} 已被禁用，拒绝调用。")
-                await _append_tool_call_result(
-                    func_tool_id,
+                denied_text = (
                     f"error: Permission denied. Tool `{func_tool_name}` is no "
                     "longer available to you in the current state. Do not retry "
                     "it; continue your task with the information you already "
-                    "have.",
+                    "have."
+                )
+                _record_snapshot_tool_execution(
+                    "denied",
+                    started_at,
+                    result_text=denied_text,
+                    permission="deny",
+                )
+                await _append_tool_call_result(
+                    func_tool_id,
+                    denied_text,
                 )
                 execution = current_team_execution.get()
                 if call_state and execution and execution.record_process:
@@ -4234,6 +4312,9 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                         if result_parts and any(
                             isinstance(part, AudioURLPart) for part in result_parts
                         ):
+                            snapshot_result_text = "\n\n".join(
+                                part for part in result_parts if isinstance(part, str)
+                            )
                             await _append_tool_call_result(
                                 func_tool_id,
                                 [
@@ -4253,9 +4334,15 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                             )
                         elif result_parts:
                             inline_result = "\n\n".join(T.cast(list[str], result_parts))
+                            # The preview describes the complete tool output,
+                            # before any overflow materialization shortens it.
+                            snapshot_result_text = inline_result
                             inline_result = await self._materialize_large_tool_result(
                                 tool_call_id=func_tool_id,
                                 content=inline_result,
+                            )
+                            snapshot_result_ref = self._tool_result_overflow_refs.pop(
+                                func_tool_id, None
                             )
                             await _append_tool_call_result(
                                 func_tool_id,
@@ -4326,7 +4413,20 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                         )
                 except Exception as e:
                     logger.error(f"Error in on_tool_end hook: {e}", exc_info=True)
+                if not reused:
+                    # A result flagged as an error is a failed execution even
+                    # though the protocol loop completed.
+                    result_is_error = isinstance(_final_resp, CallToolResult) and bool(
+                        _final_resp.isError
+                    )
+                    _record_snapshot_tool_execution(
+                        "error" if tool_failed or result_is_error else "ok",
+                        started_at,
+                        result_text=snapshot_result_text,
+                        result_ref=snapshot_result_ref,
+                    )
             except _AgentManualPause:
+                _record_snapshot_tool_execution("interrupted", started_at)
                 await _append_tool_call_result(
                     func_tool_id,
                     "error: Interrupted by human browser takeover. The action may have "
@@ -4343,8 +4443,21 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                         ToolProtocolIntegrityError,
                     ),
                 ):
+                    _record_snapshot_tool_execution(
+                        "interrupted"
+                        if isinstance(
+                            e, (_ToolExecutionInterrupted, HumanInputRequired)
+                        )
+                        else "error",
+                        started_at,
+                    )
                     raise
                 logger.warning(traceback.format_exc())
+                _record_snapshot_tool_execution(
+                    "error",
+                    started_at,
+                    result_text=f"error: {e!s}",
+                )
                 tool_failed = (
                     call_state is not None and call_state["status"] == "started"
                 )

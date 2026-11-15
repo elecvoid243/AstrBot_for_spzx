@@ -21,6 +21,7 @@ from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
 from astrbot.core.agent.message import TextPart
 from astrbot.core.provider.entities import ProviderRequest
+from astrbot.core.provider.request_snapshot import record_provenance
 from astrbot.core.tools import fs_access
 from astrbot.core.workspace import resolve_workspace_root_for_umo
 
@@ -152,3 +153,8 @@ async def inject_file_access_guidance(
     guidance = fs_access.mode_guidance(mode, writable_roots=roots)
     if not _already_injected(req, guidance):
         req.extra_user_content_parts.append(TextPart(text=guidance))
+        session_id = getattr(getattr(req, "conversation", None), "cid", None)
+        if session_id:
+            # Developer-mode attribution only; the recorder ignores empty text
+            # and disabled mode, and never raises into the request path.
+            record_provenance(str(session_id), "file_access", guidance)

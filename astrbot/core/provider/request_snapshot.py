@@ -78,6 +78,9 @@ PROVENANCE_MAX_TEXT_BYTES = 32768
 
 _PROVENANCE_TRUNCATION_MARKER = "…[truncated]…"
 
+TOOL_RESULT_PREVIEW_BYTES = 2048
+"""Upper bound of the tool result preview kept on a snapshot."""
+
 
 @dataclass(frozen=True, slots=True)
 class LLMRequestScope:
@@ -2184,6 +2187,14 @@ def _numeric(value: object) -> int | float | None:
     return value
 
 
+def _non_negative_int(value: object) -> int | None:
+    """Return a non-negative integer, or ``None`` for invalid values."""
+
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value if value >= 0 else None
+
+
 def _cap_injections(items: object) -> list[dict] | None:
     """Project runner injection items into the envelope shape.
 
@@ -2516,6 +2527,92 @@ class RequestSnapshotRecorder:
                 self._provenance.popitem(last=False)
         except Exception:
             logger.debug("Failed to record snapshot provenance", exc_info=True)
+
+    def record_tool_execution(
+        self,
+        invocation_id: str,
+        *,
+        call_id: str,
+        name: str,
+        status: str,
+        started_at: float | None,
+        duration_ms: int | None,
+        result_bytes: int,
+        result_preview: str = "",
+        result_ref: str | None = None,
+        permission: str = "allow",
+        executor: str = "main",
+    ) -> None:
+        """Attach one tool execution to every attempt of an invocation.
+
+        The runner calls this after the tool returned, so the request envelope
+        has already been emitted; the stored envelope is updated in place and
+        readers always see the latest value. A repeated ``call_id`` replaces
+        its previous row instead of adding a duplicate.
+
+        Args:
+            invocation_id: Invocation whose captured requests called the tool.
+            call_id: Provider tool-call identity.
+            name: Tool name as requested by the model.
+            status: ``ok``, ``error``, ``denied`` or ``interrupted``. Unknown
+                values are stored as ``error`` so the UI enum stays closed.
+            started_at: Epoch seconds captured before execution, or ``None``.
+            duration_ms: Execution duration in milliseconds, or ``None``.
+            result_bytes: UTF-8 byte length of the complete result text.
+            result_preview: Result text; capped at 2 KB of UTF-8 bytes.
+            result_ref: Existing large-result reference, or ``None``.
+            permission: ``allow`` or ``deny`` (anything else becomes ``allow``).
+            executor: ``main`` for the main agent; subagents are out of scope.
+
+        This method never raises.
+        """
+
+        if not invocation_id:
+            return
+        try:
+            self._purge(self._clock())
+            envelopes = self._attempt_envelopes(invocation_id)
+            if not envelopes:
+                return
+            normalized_status = (
+                status
+                if status in {"ok", "error", "denied", "interrupted"}
+                else "error"
+            )
+            row = {
+                "call_id": call_id if isinstance(call_id, str) else str(call_id),
+                "name": name if isinstance(name, str) else str(name),
+                "status": normalized_status,
+                "started_at": _numeric(started_at),
+                "duration_ms": _non_negative_int(duration_ms),
+                "result_bytes": _non_negative_int(result_bytes) or 0,
+                "result_preview": _utf8_head(
+                    result_preview if isinstance(result_preview, str) else "",
+                    TOOL_RESULT_PREVIEW_BYTES,
+                ),
+                "result_ref": result_ref
+                if isinstance(result_ref, str) and result_ref
+                else None,
+                "permission": "deny" if permission == "deny" else "allow",
+                "executor": "main" if executor == "main" else str(executor),
+            }
+            for envelope in envelopes:
+                executions = envelope.get("tool_executions")
+                if not isinstance(executions, list):
+                    executions = []
+                    envelope["tool_executions"] = executions
+                for index, existing in enumerate(executions):
+                    same_call = (
+                        isinstance(existing, dict)
+                        and existing.get("call_id") == row["call_id"]
+                    )
+                    if same_call:
+                        executions[index] = dict(row)
+                        break
+                else:
+                    executions.append(dict(row))
+        except Exception:
+            logger.debug("Failed to record LLM snapshot tool execution", exc_info=True)
 
     def attach_response(
         self,

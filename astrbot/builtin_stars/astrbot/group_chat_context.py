@@ -25,6 +25,7 @@ from astrbot.api.platform import MessageType
 from astrbot.api.provider import Provider, ProviderRequest
 from astrbot.core.agent.message import TextPart
 from astrbot.core.astrbot_config_mgr import AstrBotConfigManager
+from astrbot.core.provider.request_snapshot import record_provenance
 
 """
 Group chat context awareness.
@@ -192,9 +193,13 @@ class GroupChatContext:
                 record_ids.extend(remaining_ids)
 
         if records_to_inject:
-            req.extra_user_content_parts.append(
-                TextPart(text=_format_group_history_block(records_to_inject))
-            )
+            block = _format_group_history_block(records_to_inject)
+            req.extra_user_content_parts.append(TextPart(text=block))
+            session_id = getattr(getattr(req, "conversation", None), "cid", None)
+            if session_id:
+                # Group history describes the conversational environment; it is
+                # extra user content, so the recorder keeps it approximate.
+                record_provenance(str(session_id), "environment", block)
 
     async def _format_message(self, event: AstrMessageEvent, cfg: dict) -> str:
         datetime_str = datetime.datetime.now().strftime("%H:%M:%S")

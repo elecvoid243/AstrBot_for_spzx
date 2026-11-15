@@ -149,7 +149,11 @@ def select_compaction_range(
 
     last_user = -1
     for position, message in enumerate(messages):
-        if message.role == "user" and not message.compaction_id:
+        if (
+            message.role == "user"
+            and not message.compaction_id
+            and not getattr(message, "_internal", False)
+        ):
             last_user = position
 
     if last_user >= 0 and cut > last_user:

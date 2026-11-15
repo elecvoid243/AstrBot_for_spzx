@@ -95,6 +95,7 @@ from astrbot.core.utils.image_input import prepare_request_images
 from astrbot.core.utils.media_utils import normalize_model_image_max_size
 from astrbot.core.utils.prefix_diagnostics import record_session_request
 
+from ..context.budget_notice import EXHAUSTED_TEXT, build_reminder
 from ..context.compressor import ContextCompressor
 from ..context.config import ContextConfig
 from ..context.manager import ContextManager, ContextUsageSnapshot
@@ -1379,6 +1380,43 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                 pause_task.cancel()
                 await asyncio.gather(pause_task, return_exceptions=True)
 
+    def _inject_budget_notices(self, messages: list[Message]) -> list[Message]:
+        """Append the window's one-shot budget notice when one is due.
+
+        The exhausted notice wins over the low-budget reminder: when the window
+        cannot be trimmed further the model must conclude instead of planning.
+
+        Args:
+            messages: Model-visible history after compaction.
+
+        Returns:
+            The same list, plus one internal notice when a notice is due.
+        """
+        manager = self.request_context_manager
+        config = manager.config
+        if getattr(config, "strategy", "llm_compress") != "token_budget":
+            return messages
+        state = self.window_state
+        notice: str | None = None
+        if (
+            not state.exhausted_sent
+            and (manager.last_compression or {}).get("insufficient") is True
+        ):
+            notice = EXHAUSTED_TEXT
+            state.exhausted_sent = True
+        elif (
+            not state.reminder_sent
+            and manager.last_remaining_tokens is not None
+            and manager.last_remaining_tokens <= config.reminder_tokens
+        ):
+            notice = build_reminder(manager.last_remaining_tokens)
+            state.reminder_sent = True
+        if notice is None:
+            return messages
+        message = Message(role="user", content=notice)
+        message._internal = True
+        return [*messages, message]
+
     async def _prepare_llm_request(
         self,
         *,
@@ -1606,6 +1644,9 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                             break
             self.run_context.messages = checked
             self._context_usage_snapshot = None
+        if stage == "main":
+            checked = self._inject_budget_notices(checked)
+            self.run_context.messages = checked
         contexts = self._sanitize_contexts_for_provider(checked)
         if contexts and isinstance(contexts[0], dict):
             messages = bind_checkpoint_messages(contexts)

@@ -70,6 +70,34 @@ class BudgetToolExecutor:
         yield CallToolResult(content=[TextContent(type="text", text=self.text)])
 
 
+async def _reset_budget_runner(provider, contexts, **kwargs):
+    """Build a runner over a real provider, with history assembled by reset."""
+    runner = ToolLoopAgentRunner()
+    await runner.reset(
+        provider=provider,
+        request=ProviderRequest(
+            prompt="current task",
+            contexts=contexts,
+            conversation=SimpleNamespace(cid="budget", token_usage=0),
+            func_tool=None,
+            llm_params={"max_tokens": 1},
+        ),
+        run_context=ContextWrapper(context=None),
+        tool_executor=BudgetToolExecutor(""),
+        agent_hooks=BaseAgentRunHooks(),
+        custom_token_counter=CharacterTokenCounter(),
+        **kwargs,
+    )
+    return runner
+
+
+def _persisted(messages, window_state):
+    """Mirror the save path: drop control text, stamp the window, then dump."""
+    kept = [message for message in messages if not message.internal]
+    kept[-1] = kept[-1].model_copy(update={"window": window_state.model_copy()})
+    return [message.model_dump_for_context() for message in kept]
+
+
 class CharacterTokenCounter:
     """Give text-only fixtures exact thresholds without a real tokenizer."""
 
@@ -254,6 +282,123 @@ async def test_reset_resumes_the_persisted_window_state():
 
     assert runner.window_state.seq == 3
     assert runner.window_state.reminder_sent is True
+
+
+@pytest.mark.asyncio
+async def test_window_state_survives_a_saved_history_round_trip():
+    provider = BudgetProvider(
+        [LLMResponse(role="assistant", completion_text="done")],
+        max_context_tokens=1000,
+    )
+    provider.provider_config["compress_threshold_ratio"] = 0.5
+    provider.provider_config["compaction_headroom_tokens"] = 0
+    runner = await _reset_budget_runner(
+        provider,
+        [
+            {"role": "user", "content": "old history " * 60},
+            {"role": "assistant", "content": "old answer " * 60},
+        ],
+        context_limit_reached_strategy="token_budget",
+    )
+    _ = [event async for event in runner.step_until_done(2)]
+    assert runner.window_state.seq == 1
+    persisted = _persisted(runner.run_context.messages, runner.window_state)
+    assert persisted[-1]["_window"]["seq"] == 1
+
+    provider_second = BudgetProvider(
+        [LLMResponse(role="assistant", completion_text="done")],
+        max_context_tokens=1000,
+    )
+    restored = await _reset_budget_runner(
+        provider_second,
+        persisted,
+        context_limit_reached_strategy="token_budget",
+    )
+
+    assert restored.window_state.seq == 1
+    assert restored.window_state.id == persisted[-1]["_window"]["id"]
+
+
+@pytest.mark.asyncio
+async def test_control_notice_never_enters_the_saved_history():
+    provider = BudgetProvider(
+        [LLMResponse(role="assistant", completion_text="done")],
+        max_context_tokens=1000,
+    )
+    provider.provider_config["compress_threshold_ratio"] = 0.5
+    provider.provider_config["compaction_headroom_tokens"] = 0
+    runner = await _reset_budget_runner(
+        provider,
+        [
+            {"role": "user", "content": "old history " * 60},
+            {"role": "assistant", "content": "old answer " * 60},
+        ],
+        context_limit_reached_strategy="token_budget",
+    )
+    _ = [event async for event in runner.step_until_done(2)]
+
+    assert any(message.internal for message in runner.run_context.messages)
+    persisted = _persisted(runner.run_context.messages, runner.window_state)
+    assert "[context budget]" not in str(persisted)
+    assert "_internal" not in str(persisted)
+
+
+@pytest.mark.asyncio
+async def test_provider_payload_carries_no_kernel_markers():
+    provider = BudgetProvider(
+        [LLMResponse(role="assistant", completion_text="done")],
+        max_context_tokens=1000,
+    )
+    provider.provider_config["compress_threshold_ratio"] = 0.5
+    provider.provider_config["compaction_headroom_tokens"] = 0
+    runner = await _reset_budget_runner(
+        provider,
+        [
+            {"role": "user", "content": "old history " * 60},
+            {"role": "assistant", "content": "old answer " * 60},
+        ],
+        context_limit_reached_strategy="token_budget",
+    )
+    _ = [event async for event in runner.step_until_done(2)]
+
+    for request in provider.requests:
+        payload = str([message.model_dump(mode="json") for message in request["contexts"]])
+        assert "_window" not in payload
+        assert "_internal" not in payload
+
+
+@pytest.mark.asyncio
+async def test_provider_reminder_threshold_reaches_the_request_config():
+    provider = BudgetProvider(
+        [LLMResponse(role="assistant", completion_text="done")],
+        max_context_tokens=1000,
+    )
+    provider.provider_config["compaction_reminder_tokens"] = 2048
+
+    runner = await _reset_budget_runner(
+        provider,
+        [{"role": "user", "content": "hi"}],
+        context_limit_reached_strategy="token_budget",
+    )
+
+    assert runner.request_context_manager.config.reminder_tokens == 2048
+    assert runner.request_context_manager.config.strategy == "token_budget"
+
+
+@pytest.mark.asyncio
+async def test_token_budget_without_a_window_falls_back_to_llm_compression():
+    provider = BudgetProvider(
+        [LLMResponse(role="assistant", completion_text="done")],
+        max_context_tokens=0,
+    )
+
+    runner = await _reset_budget_runner(
+        provider,
+        [{"role": "user", "content": "hi"}],
+        context_limit_reached_strategy="token_budget",
+    )
+
+    assert runner.request_context_manager.config.strategy == "llm_compress"
 
 
 @pytest.mark.asyncio

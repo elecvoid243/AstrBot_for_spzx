@@ -43,3 +43,22 @@ async def test_single_round_over_window_still_raises_capacity_error():
     )
     with pytest.raises(ContextCapacityError):
         await manager.process([Message(role="user", content="x" * 200)])
+
+
+@pytest.mark.asyncio
+async def test_capacity_error_survives_a_trailing_control_notice():
+    """A notice must not make the real request look droppable."""
+    manager = ContextManager(
+        ContextConfig(
+            max_context_tokens=100,
+            threshold_ratio=0.8,
+            headroom_tokens=0,
+            strategy="token_budget",
+            custom_token_counter=CharTokenCounter(),
+        )
+    )
+    notice = Message(role="user", content="[context budget] wrap up")
+    notice.internal = True
+
+    with pytest.raises(ContextCapacityError):
+        await manager.process([Message(role="user", content="x" * 200), notice])

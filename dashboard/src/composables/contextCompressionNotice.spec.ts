@@ -112,6 +112,24 @@ describe("contextCompressionChip", () => {
     );
   });
 
+  it("names a token budget reset in the history line", () => {
+    const seen: Record<string, unknown>[] = [];
+    const spy = (key: string, params?: Record<string, string | number>) => {
+      seen.push({ key, ...params });
+      return key;
+    };
+
+    contextCompressionHistoryLine(
+      { strategy: "token_budget", tokensBefore: 1000, tokensAfter: 100 },
+      spy,
+    );
+
+    // The strategy label is resolved first, then passed as a parameter.
+    expect(seen.at(-1)?.strategy).toBe(
+      "contextCompression.strategy.token_budget",
+    );
+  });
+
   it("treats a custom compressor as a non-lossy summary with generic wording", () => {
     const chip = contextCompressionChip(
       { strategy: "plugin_summarizer", tokensBefore: 1000, tokensAfter: 500 },

@@ -68,3 +68,14 @@ def test_provider_payload_drops_internal_markers():
 
     assert "_internal" not in delivered[0]
     assert "_window" not in delivered[0]
+
+
+def test_internal_marker_survives_internal_round_trips():
+    message = Message(role="user", content="[context budget] wrap up")
+    message.internal = True
+
+    kept, _ = sanitize_contexts_by_modalities(
+        [message], None, preserve_internal=True
+    )
+
+    assert kept[0]["_internal"] is True

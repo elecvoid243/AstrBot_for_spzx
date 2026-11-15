@@ -85,3 +85,19 @@ def test_reset_keeps_the_request_when_a_notice_trails_it():
     # would be dropped and the model would see only the kernel reminder.
     assert [m.role for m in result] == ["user", "assistant", "tool", "user"]
     assert result[0].content == "do the task"
+
+
+def test_drop_oldest_round_ignores_the_trailing_notice():
+    notice = Message(role="user", content="[context budget] wrap up")
+    notice.internal = True
+    messages = [
+        Message(role="user", content="old"),
+        Message(role="assistant", content="old reply"),
+        Message(role="user", content="current"),
+        Message(role="assistant", content="a"),
+        notice,
+    ]
+
+    result = ContextTruncator().drop_oldest_round(messages)
+
+    assert [m.content for m in result] == ["current", "a", "[context budget] wrap up"]

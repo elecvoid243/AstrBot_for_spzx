@@ -525,6 +525,8 @@ async def test_compression_and_title_kinds(monkeypatch: pytest.MonkeyPatch):
     assert compression_snapshot["kind"] == "compression"
     assert compression_snapshot["session_id"] == SESSION_ID
     assert compression_snapshot["turn_id"] == "turn-1"
+    assert compression_snapshot["status"] == "ok"
+    assert compression_snapshot["response"] is not None
 
     title_provider = FakeCompressionProvider()
     fake_db_helper = SimpleNamespace(
@@ -556,6 +558,8 @@ async def test_compression_and_title_kinds(monkeypatch: pytest.MonkeyPatch):
     assert title_snapshot["turn_id"] is None
     assert title_snapshot["session_id"] == SESSION_ID
     assert title_snapshot["umo"] == UMO
+    assert title_snapshot["status"] == "ok"
+    assert title_snapshot["response"] is not None
 
 
 @pytest.mark.asyncio
@@ -583,9 +587,9 @@ async def test_runner_attributes_compression_to_its_session():
     assert compression_snapshot["session_id"] == SESSION_ID
     assert compression_snapshot["umo"] == UMO
     assert compression_snapshot["turn_id"] == runner._snapshot_turn_id
-    # Compression is not the request that produced a model response, so it
-    # must not borrow the chat invocation id.
-    assert compression_snapshot["invocation_id"] is None
+    # Compression gets its own invocation id; it must not borrow the chat
+    # invocation (which may not exist yet when the summary runs).
+    assert compression_snapshot["invocation_id"] is not None
 
 
 @pytest.mark.asyncio

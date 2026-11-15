@@ -436,11 +436,12 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             (getattr(self.run_context.context, "extra", None) or {}).get("is_subagent")
         )
 
-    def _snapshot_scope(self, invocation_id: str):
+    def _snapshot_scope(self, invocation_id: str, *, stage: str = "main"):
         """Build the developer-mode scope covering one provider call.
 
         Args:
             invocation_id: Invocation id of the model request.
+            stage: Main call, parameter generation, or parameter repair.
 
         Returns:
             The ambient request scope used by the provider capture hooks.
@@ -453,7 +454,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             invocation_id=invocation_id,
             kind="chat",
             step=self._step_budget_used,
-            stage="main",
+            stage=stage,
             fallback_index=self._snapshot_fallback_index,
             is_subagent=self._snapshot_is_subagent(),
         )
@@ -4811,17 +4812,27 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                     prepared.get("model") or self.provider.get_model(),
                     stage,
                 )
-                with model_delivery(
-                    receipt, output_limit=prepared.pop("output_token_budget")
-                ):
-                    response = await self._await_or_stop(
-                        self.provider.text_chat(
-                            **prepared,
-                            session_id=self.req.session_id,
-                            abort_signal=self._abort_signal,
-                            request_max_retries=self.request_max_retries,
+                try:
+                    with (
+                        self._snapshot_scope(invocation_id, stage=stage),
+                        model_delivery(
+                            receipt, output_limit=prepared.pop("output_token_budget")
+                        ),
+                    ):
+                        response = await self._await_or_stop(
+                            self.provider.text_chat(
+                                **prepared,
+                                session_id=self.req.session_id,
+                                abort_signal=self._abort_signal,
+                                request_max_retries=self.request_max_retries,
+                            )
                         )
-                    )
+                except Exception as exc:
+                    request_snapshots.mark_error(invocation_id, exc)
+                    raise
+                else:
+                    if response is not None:
+                        request_snapshots.attach_response(invocation_id, response)
             finally:
                 await self._report_metered_call(receipt, response)
             self._response_receipt_id = receipt["receipt_id"] if receipt else None

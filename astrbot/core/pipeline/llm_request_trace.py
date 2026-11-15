@@ -284,6 +284,59 @@ def bounded_context_value(value: object, limit: int = FULL_CHARS) -> dict:
         if hasattr(item, "model_dump"):
             item = item.model_dump(mode="json")
         if isinstance(item, dict):
+            # Gemini serializes media as {"inline_data": {"data": ...}} /
+            # {"file_data": {"file_uri": ...}} instead of an OpenAI-style
+            # {"type": "image_url"} block. Redact these shapes explicitly;
+            # otherwise the base64 body bypasses the media branch below.
+            for media_key in ("inline_data", "inlineData", "file_data", "fileData"):
+                media = item.get(media_key)
+                if not isinstance(media, dict):
+                    continue
+                media_result: dict[str, object] = {}
+                result: dict[str, object] = {media_key: media_result}
+                for key, child in media.items():
+                    lowered = str(key).lower()
+                    if lowered in {"data", "bytes", "base64"}:
+                        media_result[key] = {
+                            "omitted": "binary media content",
+                            "original_length": len(child)
+                            if isinstance(child, (str, bytes))
+                            else None,
+                        }
+                        redactions += 1
+                    elif lowered in {
+                        "file_uri",
+                        "fileuri",
+                        "uri",
+                        "url",
+                    } and isinstance(child, str):
+                        media_result[key] = visit(child)
+                        try:
+                            parsed = urlsplit(child)
+                            if (
+                                parsed.scheme in {"http", "https"}
+                                and parsed.hostname
+                                and (
+                                    parsed.username
+                                    or parsed.password
+                                    or parsed.query
+                                    or parsed.fragment
+                                )
+                            ):
+                                host = parsed.hostname
+                                if ":" in host:
+                                    host = f"[{host}]"
+                                if parsed.port:
+                                    host += f":{parsed.port}"
+                                media_result[key] = urlunsplit(
+                                    (parsed.scheme, host, parsed.path, "", "")
+                                )
+                                redactions += 1
+                        except ValueError:
+                            pass
+                    else:
+                        media_result[key] = visit(child)
+                return result
             part_type = item.get("type")
             if isinstance(part_type, str) and part_type in {
                 "image_url",

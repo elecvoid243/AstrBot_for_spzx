@@ -7,6 +7,7 @@ from astrbot.core.exceptions import ContextCapacityError, ToolProtocolIntegrityE
 from astrbot.core.provider.request_snapshot import (
     current_scope,
     request_snapshot_scope,
+    request_snapshots,
 )
 
 from ...provider.modalities import (
@@ -398,9 +399,13 @@ class LLMSummaryCompressor:
         """
 
         if current_scope() is not None:
-            return request_snapshot_scope(kind="compression")
+            return request_snapshot_scope(
+                kind="compression",
+                invocation_id=uuid.uuid4().hex,
+            )
         return request_snapshot_scope(
             kind="compression",
+            invocation_id=uuid.uuid4().hex,
             session_id=self.session_id,
             umo=self.umo,
         )
@@ -541,6 +546,7 @@ class LLMSummaryCompressor:
                         }
                     )
                 response = None
+                snapshot_scope = None
                 try:
                     default_limit = getattr(
                         self.provider, "DEFAULT_MAX_OUTPUT_TOKENS", 0
@@ -577,7 +583,7 @@ class LLMSummaryCompressor:
                             f"tokens cannot fit with its output budget in the {window}-token window."
                         )
                     with (
-                        self._snapshot_scope(),
+                        self._snapshot_scope() as snapshot_scope,
                         model_delivery(receipt, output_limit=output_budget),
                     ):
                         if schemas is None and func_tool is not None:
@@ -594,6 +600,15 @@ class LLMSummaryCompressor:
                                 llm_params=params or None,
                                 request_max_retries=1,
                             )
+                except Exception as exc:
+                    if snapshot_scope is not None:
+                        request_snapshots.mark_error(snapshot_scope.invocation_id, exc)
+                    raise
+                else:
+                    if response is not None and snapshot_scope is not None:
+                        request_snapshots.attach_response(
+                            snapshot_scope.invocation_id, response
+                        )
                 finally:
                     if receipt and execution and execution.report_usage:
                         report = (

@@ -424,6 +424,38 @@ def test_bounded_context_value_counts_data_uri_once():
     assert "PRIVATE-IMAGE-BYTES" not in str(sanitized)
 
 
+def test_bounded_context_value_redacts_gemini_inline_data():
+    sanitized = bounded_context_value(
+        {
+            "inline_data": {
+                "data": "QUJDREVGRw==",
+                "mime_type": "image/png",
+            }
+        }
+    )
+
+    assert sanitized["redactions"] == 1
+    assert "QUJDREVGRw==" not in str(sanitized)
+    assert sanitized["value"]["inline_data"]["data"]["omitted"] == (
+        "binary media content"
+    )
+    assert sanitized["value"]["inline_data"]["mime_type"] == "image/png"
+
+
+def test_bounded_context_value_redacts_gemini_file_uri_query():
+    sanitized = bounded_context_value(
+        {
+            "file_data": {
+                "file_uri": "https://example.com/a.png?token=PRIVATE#frag",
+            }
+        }
+    )
+
+    assert sanitized["redactions"] == 1
+    assert "token=PRIVATE" not in str(sanitized)
+    assert sanitized["value"]["file_data"]["file_uri"].endswith("/a.png")
+
+
 def test_capture_keeps_sampling_fields_when_first_message_is_huge(monkeypatch):
     _enable(monkeypatch)
     raw = {

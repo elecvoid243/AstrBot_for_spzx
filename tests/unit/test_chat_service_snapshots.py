@@ -145,6 +145,7 @@ def _run() -> ChatRunState:
         llm_checkpoint_id="ckpt-1",
         platform_history_id="webchat",
         back_queue=asyncio.Queue(),
+        dev_mode_visible=True,
     )
 
 
@@ -253,6 +254,23 @@ def test_merge_snapshot_event_ignores_malformed_items():
     assert queue.empty()
     # A fully dropped batch is noise and must not bump the revision.
     assert run.revision == 1
+
+
+def test_non_admin_run_never_receives_snapshot_envelopes():
+    service = ChatService.__new__(ChatService)
+    run = _run()
+    run.dev_mode_visible = False
+    queue: asyncio.Queue = asyncio.Queue()
+    run.subscribers.add(queue)
+
+    service._merge_snapshot_event(
+        run,
+        [{"snapshot_id": "snap-1", "turn_id": "t1", "status": "ok"}],
+    )
+
+    assert run.dev_snapshots == {}
+    assert run.dev_turn_id is None
+    assert queue.empty()
 
 
 def test_merge_snapshot_event_caps_dev_snapshots_to_newest():

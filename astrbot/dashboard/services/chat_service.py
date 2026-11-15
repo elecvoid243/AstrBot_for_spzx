@@ -1295,6 +1295,8 @@ class ChatRunState:
     agent_stats: dict = field(default_factory=dict)
     file_changes: dict = field(default_factory=dict)
     llm_request_injections: dict = field(default_factory=dict)
+    dev_mode_visible: bool = False
+    """Whether this run's owner may receive developer-mode snapshots live."""
     refs: dict = field(default_factory=dict)
     dev_snapshots: dict[str, dict] = field(default_factory=dict)
     """Developer-mode LLM request envelopes seen by this run, keyed by id.
@@ -1637,6 +1639,8 @@ class ChatService:
             items: Envelopes carried by the event; malformed entries are
                 dropped instead of raising into the stream.
         """
+        if not run.dev_mode_visible:
+            return
         envelopes: list[dict] = []
         for item in items:
             if not isinstance(item, dict):
@@ -3156,6 +3160,12 @@ class ChatService:
               a fresh one is generated when omitted.
         """
         back_queue = webchat_queue_mgr.get_or_create_back_queue(message_id, session_id)
+        principal = dashboard_account_context.get()
+        dev_mode_visible = bool(
+            principal.role == "admin"
+            if principal is not None
+            else webchat_account_role.get() == "admin"
+        )
         run = ChatRunState(
             run_id=message_id,
             username=username,
@@ -3163,6 +3173,7 @@ class ChatService:
             llm_checkpoint_id=llm_checkpoint_id or str(uuid.uuid4()),
             platform_history_id="webchat",
             back_queue=back_queue,
+            dev_mode_visible=dev_mode_visible,
         )
         self.chat_runs[message_id] = run
         self.chat_runs_by_session.setdefault(session_id, set()).add(message_id)
@@ -4089,6 +4100,12 @@ class ChatService:
                 message_id,
                 webchat_conv_id,
             )
+            principal = dashboard_account_context.get()
+            dev_mode_visible = bool(
+                principal.role == "admin"
+                if principal is not None
+                else webchat_account_role.get() == "admin"
+            )
             run = ChatRunState(
                 run_id=message_id,
                 username=username,
@@ -4096,6 +4113,7 @@ class ChatService:
                 llm_checkpoint_id=llm_checkpoint_id,
                 platform_history_id=platform_history_id,
                 back_queue=back_queue,
+                dev_mode_visible=dev_mode_visible,
                 input_message=serialize_history_entry(saved_user_record)
                 if agent_source is not None and saved_user_record
                 else None,

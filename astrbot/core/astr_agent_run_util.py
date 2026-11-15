@@ -227,6 +227,14 @@ async def run_agent(
                         await astr_event.send(resp.data["chain"])
                     continue
 
+                # Developer-mode request snapshots: metadata-only envelopes
+                # for the ChatUI inspector. Like injections, they must not
+                # fall through to the streaming text path.
+                if resp.type == "llm_request_snapshots":
+                    if astr_event.get_platform_name() == "webchat":
+                        await astr_event.send(resp.data["chain"])
+                    continue
+
                 # Context compression notice: webchat surfaces it as a
                 # transient toast. Other platforms have no notice UI, so the
                 # payload is dropped rather than injected into their chat

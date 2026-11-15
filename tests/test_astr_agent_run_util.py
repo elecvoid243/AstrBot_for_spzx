@@ -236,3 +236,62 @@ async def test_run_agent_drops_context_compression_off_webchat():
 
     assert chains == []
     assert event.sent_chains == []
+
+
+class _SnapshotsRunner:
+    """Streaming runner that emits one developer-mode snapshot batch."""
+
+    streaming = True
+    req = None
+
+    def __init__(self, event: _WebchatEvent) -> None:
+        self.finished = False
+        self.run_context = SimpleNamespace(context=SimpleNamespace(event=event))
+
+    async def step(self):
+        self.finished = True
+        yield AgentResponse(
+            type="llm_request_snapshots",
+            data={
+                "chain": MessageChain(
+                    type="llm_request_snapshots",
+                    chain=[],
+                ).message("payload"),
+            },
+        )
+
+    def done(self) -> bool:
+        return self.finished
+
+
+@pytest.mark.asyncio
+async def test_run_agent_forwards_llm_request_snapshots_on_webchat():
+    """Snapshot metadata must reach webchat, not the streaming text path."""
+    event = _WebchatEvent()
+    runner = _SnapshotsRunner(event)
+
+    chains = [chain async for chain in run_agent(runner)]
+
+    assert chains == []
+    assert len(event.sent_chains) == 1
+    assert event.sent_chains[0].type == "llm_request_snapshots"
+
+
+@pytest.mark.asyncio
+async def test_run_agent_drops_llm_request_snapshots_off_webchat():
+    """Non-webchat platforms have no inspector: drop the envelopes."""
+
+    class _OtherPlatformEvent(_FakeEvent):
+        def __init__(self) -> None:
+            self.sent_chains: list[MessageChain] = []
+
+        async def send(self, chain: MessageChain) -> None:
+            self.sent_chains.append(chain)
+
+    event = _OtherPlatformEvent()
+    runner = _SnapshotsRunner(event)  # type: ignore[arg-type]
+
+    chains = [chain async for chain in run_agent(runner)]
+
+    assert chains == []
+    assert event.sent_chains == []

@@ -4814,7 +4814,10 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                 )
                 try:
                     with (
-                        self._snapshot_scope(invocation_id, stage=stage),
+                        self._snapshot_scope(
+                            invocation_id,
+                            stage="param" if stage == "parameters" else stage,
+                        ),
                         model_delivery(
                             receipt, output_limit=prepared.pop("output_token_budget")
                         ),

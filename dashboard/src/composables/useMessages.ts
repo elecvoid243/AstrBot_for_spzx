@@ -732,6 +732,11 @@ export function useMessages(options: UseMessagesOptions) {
             if (payload?.chain_type === "llm_request_injections") {
               return;
             }
+            // Developer-mode snapshots are primary-stream telemetry too; an
+            // orphan turn must not render the envelope JSON as chat text.
+            if (payload?.chain_type === "llm_request_snapshots") {
+              return;
+            }
             messagesBySession[sessionId] = messagesBySession[sessionId] || [];
             const consumed = processSystemPayload(
               systemStreamState,

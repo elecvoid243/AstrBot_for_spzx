@@ -697,7 +697,8 @@
       "llm": "summary",
       "truncate": "truncation",
       "halving": "truncated again",
-      "generic": "compaction"
+      "generic": "compaction",
+      "token_budget": "Window reset"
     }
   },
   "llmRequestInjections": {
@@ -2421,7 +2422,6 @@
     "removeAttachment": "Remove",
     "attachment": "Remote attachment",
     "download": "Download",
-
     "title": "Remote connections",
     "manage": "Manage connections",
     "local": "This instance",

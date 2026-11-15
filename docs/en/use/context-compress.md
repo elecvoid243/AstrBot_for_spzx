@@ -8,9 +8,14 @@ AstrBot checks context before every model request, including tool continuations.
 
 ## Compression method
 
-The default and only method that takes effect is an LLM-generated structured summary. Choose a summary model or leave it empty to try the session's chat model. The compression instruction is a built-in fixed template and is no longer configurable.
+The default method is an LLM-generated structured summary. Choose a summary model or leave it empty to try the session's chat model. The compression instruction is a built-in fixed template and is no longer configurable.
 
-The configuration also offers a `Token Budget` option (taken from Codex's implementation). It is a reserved placeholder: not implemented yet, so selecting it still runs LLM compression instead of degrading to turn truncation.
+Selecting `Token Budget` (taken from Codex's implementation) calls no model at all: it replaces the window, keeping only the system instructions and the current round (the current user request plus its tool batches) and dropping every older message. Window state (window number, whether each notice was sent) is stored with the history, so a restart resumes the same window. Round granularity keeps a tool call and its results together; a current round that alone exceeds the window still stops with a capacity error. A reset only changes the history the model sees — WebChat transcripts are untouched.
+
+Two one-shot notices live inside a window. Both are model-facing English control messages and are never written to history:
+
+- When the remaining budget drops below the provider's `compaction_reminder_tokens` (default `8192`), the model is reminded once to wrap up.
+- When a reset still leaves the request above the trigger (the window could not free enough room), the model is told once to give its conclusion and start no new tool calls.
 
 Truncation by conversation rounds is no longer a separate strategy, and there is no "discard N turns / drop to 40%" setting. If pressure remains after the summary, AstrBot removes the oldest ordinary rounds one at a time, preserving system messages, summaries, and the current complete round. Exceeding only the compression trigger does not force protected content to be removed. If protected content, tool definitions, and the output budget still exceed the model window, the request stops with an explicit capacity error. Reduce the current input, tool definitions, or output limit, or select a larger model window.
 

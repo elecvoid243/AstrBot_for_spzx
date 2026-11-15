@@ -99,6 +99,19 @@ describe("contextCompressionChip", () => {
     }
   });
 
+  it("marks a token budget reset lossy with its own label", () => {
+    const chip = contextCompressionChip(
+      { strategy: "token_budget", tokensBefore: 1000, tokensAfter: 100 },
+      translate,
+    );
+
+    expect(chip.lossy).toBe(true);
+    expect(chip.delta).toBe("−90%");
+    expect(chip.description).toContain(
+      "contextCompression.strategy.token_budget",
+    );
+  });
+
   it("treats a custom compressor as a non-lossy summary with generic wording", () => {
     const chip = contextCompressionChip(
       { strategy: "plugin_summarizer", tokensBefore: 1000, tokensAfter: 500 },

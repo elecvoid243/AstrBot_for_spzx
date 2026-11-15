@@ -110,13 +110,18 @@ export type CompressionTranslate = (
 ) => string;
 
 /** Strategies that lose history outright. */
-const LOSSY_STRATEGIES = new Set(["truncate_by_turns", "truncate_by_halving"]);
+const LOSSY_STRATEGIES = new Set([
+  "truncate_by_turns",
+  "truncate_by_halving",
+  "token_budget",
+]);
 
 /** Wire strategy → i18n key suffix. Unknown (custom) compressors fall back. */
 const STRATEGY_KEYS: Record<string, string> = {
   llm_compress: "llm",
   truncate_by_turns: "truncate",
   truncate_by_halving: "halving",
+  token_budget: "token_budget",
 };
 
 function strategyKey(strategy: string): string {

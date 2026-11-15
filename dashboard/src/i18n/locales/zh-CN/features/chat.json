@@ -697,7 +697,8 @@
       "llm": "摘要",
       "truncate": "截断",
       "halving": "二次截断",
-      "generic": "压缩"
+      "generic": "压缩",
+      "token_budget": "换窗"
     }
   },
   "llmRequestInjections": {
@@ -2454,7 +2455,6 @@
     "removeAttachment": "移除",
     "attachment": "远端附件",
     "download": "下载",
-
     "title": "远端连接",
     "manage": "管理连接",
     "local": "本机",

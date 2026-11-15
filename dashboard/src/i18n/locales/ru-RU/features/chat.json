@@ -661,7 +661,8 @@
       "llm": "сводка",
       "truncate": "усечение",
       "halving": "усечено повторно",
-      "generic": "сжатие"
+      "generic": "сжатие",
+      "token_budget": "Сброс окна"
     }
   },
   "llmRequestInjections": {

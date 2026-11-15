@@ -59,6 +59,13 @@ import {
   parseLlmRequestInjections,
   type LlmRequestInjections,
 } from "./llmRequestInjections";
+// Developer-mode LLM request snapshots: live-only telemetry folded onto the
+// bot record. Leaf parsing/merging keeps the SSE branch thin.
+import {
+  mergeLlmRequestSnapshots,
+  parseLlmRequestSnapshots,
+  type LlmRequestSnapshotEnvelope,
+} from "./llmRequestSnapshots";
 // Live reducer for structured subagent progress stream payloads.
 import { applySubAgentEvent } from "./subagentRunReducer";
 // spcode todo_* tool protocol: shared tool-name set + the history
@@ -299,6 +306,10 @@ export interface ChatContent {
    * the `llm_request_injections` stream event and persisted as
    * `content.llm_request_injections`. */
   llmRequestInjections?: LlmRequestInjections | null;
+  /** Developer-mode LLM request snapshots delivered via the live
+   * `llm_request_snapshots` stream event. Ephemeral: never persisted and
+   * never rebuilt from history. */
+  llmRequestSnapshots?: LlmRequestSnapshotEnvelope[];
   refs?: any;
 }
 
@@ -3101,6 +3112,17 @@ export function useMessages(options: UseMessagesOptions) {
       if (data?.refs) {
         messageContent(botRecord).refs = data.refs;
       }
+      return;
+    }
+    if (
+      msgType === "llm_request_snapshots" ||
+      chainType === "llm_request_snapshots"
+    ) {
+      markMessageStarted(botRecord);
+      messageContent(botRecord).llmRequestSnapshots = mergeLlmRequestSnapshots(
+        messageContent(botRecord).llmRequestSnapshots || [],
+        parseLlmRequestSnapshots(data),
+      );
       return;
     }
     if (msgType === "agent_stats" || chainType === "agent_stats") {

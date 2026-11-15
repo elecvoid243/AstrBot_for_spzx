@@ -1,7 +1,10 @@
+import asyncio
+import json
 from types import SimpleNamespace
 
 import pytest
 
+from astrbot.core.platform.sources.webchat.webchat_queue_mgr import webchat_queue_mgr
 from astrbot.dashboard.services.open_api_service import (
     OpenApiService,
     OpenApiServiceError,
@@ -185,3 +188,125 @@ async def test_prepare_chat_send_allows_admin_username_with_subscope(monkeypatch
     assert username == "admin-user"
     assert session_id == "admin-session"
     assert config_id is None
+
+
+@pytest.mark.asyncio
+async def test_ws_stream_skips_snapshot_telemetry_but_keeps_plain_and_tools(
+    monkeypatch,
+):
+    service = _service()
+    sent: list[dict] = []
+    saved: list[list[dict]] = []
+    snapshot_payload = json.dumps(
+        {"items": [{"snapshot_id": "snap-secret", "raw": {"api_key": "PRIVATE"}}]}
+    )
+
+    async def prepare_chat_send(_post_data, _conf_list, **_kwargs):
+        return "alice", "api-session", None
+
+    async def update_session_config_route(**_kwargs):
+        return None
+
+    async def build_user_message_parts(_message):
+        return [{"type": "plain", "text": "hello"}]
+
+    async def create_attachment_from_file(_filename, _attach_type):
+        return None
+
+    async def insert_user_message(_session_id, _username, _parts):
+        return None
+
+    async def save_bot_message(_session_id, parts, _stats, _refs, **_kwargs):
+        saved.append(parts)
+        return None
+
+    bridge = OpenApiWebSocketChatBridge(
+        build_user_message_parts=build_user_message_parts,
+        create_attachment_from_file=create_attachment_from_file,
+        extract_web_search_refs=lambda _text, _parts: {},
+        insert_user_message=insert_user_message,
+        save_bot_message=save_bot_message,
+    )
+    monkeypatch.setattr(service, "prepare_chat_send", prepare_chat_send)
+    monkeypatch.setattr(
+        service,
+        "update_session_config_route",
+        update_session_config_route,
+    )
+
+    async def send_json(payload: dict) -> None:
+        sent.append(payload)
+
+    async def send_error(message: str, code: str) -> None:
+        raise AssertionError(f"unexpected error: {code}: {message}")
+
+    back_queue_ready = asyncio.Event()
+    original_back_queue = webchat_queue_mgr.get_or_create_back_queue
+
+    def tracking_back_queue(request_id, conversation_id=None):
+        queue = original_back_queue(request_id, conversation_id)
+        back_queue_ready.set()
+        return queue
+
+    monkeypatch.setattr(
+        webchat_queue_mgr,
+        "get_or_create_back_queue",
+        tracking_back_queue,
+    )
+
+    async def generate() -> None:
+        queue = webchat_queue_mgr.get_or_create_queue("api-session")
+        _username, _session_id, payload = await queue.get()
+        message_id = payload["message_id"]
+        await back_queue_ready.wait()
+        for event in (
+            {
+                "type": "plain",
+                "chain_type": "llm_request_snapshots",
+                "data": snapshot_payload,
+                "streaming": False,
+            },
+            {
+                "type": "tool_call",
+                "chain_type": "tool_call",
+                "data": "tool noise",
+                "streaming": False,
+            },
+            {"type": "plain", "data": "hello", "streaming": True},
+            {"type": "end", "data": "", "streaming": False},
+        ):
+            await webchat_queue_mgr.put_back_queue(
+                message_id,
+                {**event, "message_id": message_id},
+            )
+
+    worker = asyncio.create_task(generate())
+    try:
+        await asyncio.wait_for(
+            service.handle_chat_ws_send(
+                post_data={"message": "hello", "message_id": "api-run"},
+                conf_list=[],
+                chat_bridge=bridge,
+                send_json=send_json,
+                send_error=send_error,
+            ),
+            timeout=5,
+        )
+        await worker
+    finally:
+        if not worker.done():
+            worker.cancel()
+        await asyncio.gather(worker, return_exceptions=True)
+        webchat_queue_mgr.remove_queues("api-session")
+
+    assert "snap-secret" not in json.dumps(sent)
+    assert not any(
+        payload.get("chain_type") == "llm_request_snapshots" for payload in sent
+    )
+    assert any(payload.get("type") == "tool_call" for payload in sent)
+    assert any(
+        payload.get("type") == "plain" and payload.get("data") == "hello"
+        for payload in sent
+    )
+    assert any(payload.get("type") == "end" for payload in sent)
+    assert saved == [[{"type": "plain", "text": "hello"}]]

@@ -153,7 +153,9 @@ def developer_mode_enabled() -> bool:
 
     try:
         chatui = astrbot_config.get("chatui") or {}
-        return bool(chatui.get("developer_mode", False))
+        # Match the dashboard's strict config reader: only a real JSON boolean
+        # turns capture on, so hand-edited "false" / 1 values stay disabled.
+        return chatui.get("developer_mode", False) is True
     except Exception:
         logger.debug("Failed to read chatui.developer_mode", exc_info=True)
         return False

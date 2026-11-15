@@ -1547,7 +1547,11 @@ class ChatService:
             ChatServiceError: The session is missing or owned by another user.
         """
         session = await self.db.get_platform_session_by_id(session_id)
-        if session is None or session.creator != username:
+        if (
+            session is None
+            or session.creator != username
+            or session.platform_id != "webchat"
+        ):
             raise ChatServiceError("Permission denied")
         return session
 
@@ -1645,6 +1649,23 @@ class ChatService:
                 run.dev_turn_id = turn_id
             run.dev_snapshots[snapshot_id] = item
             envelopes.append(item)
+        if not envelopes:
+            # Malformed or fully ignored batches are noise; do not bump the
+            # run revision or wake subscribers with an empty event.
+            return
+        limits = request_snapshots.limits()
+        max_snapshots = limits.get("max_per_session") or limits.get(
+            "max_snapshots_per_session"
+        )
+        if (
+            isinstance(max_snapshots, int)
+            and not isinstance(max_snapshots, bool)
+            and max_snapshots > 0
+        ):
+            # Dicts preserve insertion order, so dropping from the front keeps
+            # the newest envelopes exactly like the recorder's own cap.
+            while len(run.dev_snapshots) > max_snapshots:
+                run.dev_snapshots.pop(next(iter(run.dev_snapshots)))
         self._publish_chat_run(
             run,
             {"type": "llm_request_snapshots", "data": {"items": envelopes}},

@@ -61,6 +61,28 @@ def _enable(monkeypatch, enabled: bool = True) -> None:
     monkeypatch.setattr(request_snapshot, "developer_mode_enabled", lambda: enabled)
 
 
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (True, True),
+        (False, False),
+        (1, False),
+        (0, False),
+        ("true", False),
+        ("false", False),
+        (None, False),
+    ],
+)
+def test_developer_mode_enabled_requires_a_strict_boolean(monkeypatch, raw, expected):
+    monkeypatch.setattr(
+        request_snapshot,
+        "astrbot_config",
+        {"chatui": {"developer_mode": raw}},
+    )
+
+    assert request_snapshot.developer_mode_enabled() is expected
+
+
 def test_disabled_capture_is_a_noop(monkeypatch):
     _enable(monkeypatch, False)
     with request_snapshot_scope(session_id="s1", umo="webchat:FriendMessage:s1"):

@@ -499,9 +499,12 @@ class OpenApiService:
                     await send_json({"type": "file_changes", "data": file_changes})
                     continue
 
-                # LLM request injection traces are ChatUI-only telemetry:
+                # LLM request traces and snapshots are ChatUI-only telemetry:
                 # never render the JSON blob as response text for API clients.
-                if chain_type == "llm_request_injections":
+                if chain_type in {
+                    "llm_request_injections",
+                    "llm_request_snapshots",
+                }:
                     continue
 
                 await send_json(result)

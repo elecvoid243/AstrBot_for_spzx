@@ -234,6 +234,8 @@ def test_merge_snapshot_event_dedupes_sets_turn_and_skips_history():
 def test_merge_snapshot_event_ignores_malformed_items():
     service = ChatService.__new__(ChatService)
     run = _run()
+    queue: asyncio.Queue = asyncio.Queue()
+    run.subscribers.add(queue)
 
     service._merge_snapshot_event(
         run,
@@ -242,6 +244,33 @@ def test_merge_snapshot_event_ignores_malformed_items():
 
     assert set(run.dev_snapshots) == {"snap-1"}
     assert run.dev_turn_id is None
+    assert queue.get_nowait()[1]["data"]["items"] == [{"snapshot_id": "snap-1"}]
+    assert run.revision == 1
+
+    service._merge_snapshot_event(run, [None, "junk", {"status": "ok"}])
+
+    assert set(run.dev_snapshots) == {"snap-1"}
+    assert queue.empty()
+    # A fully dropped batch is noise and must not bump the revision.
+    assert run.revision == 1
+
+
+def test_merge_snapshot_event_caps_dev_snapshots_to_newest():
+    service = ChatService.__new__(ChatService)
+    run = _run()
+    cap = request_snapshots.limits()["max_snapshots_per_session"]
+    items = [
+        {"snapshot_id": f"snap-{index}", "turn_id": "t1"} for index in range(cap + 2)
+    ]
+
+    service._merge_snapshot_event(run, items)
+
+    assert len(run.dev_snapshots) == cap
+    assert "snap-0" not in run.dev_snapshots
+    assert "snap-1" not in run.dev_snapshots
+    assert list(run.dev_snapshots)[0] == "snap-2"
+    assert list(run.dev_snapshots)[-1] == f"snap-{cap + 1}"
+    assert run.revision == 1
 
 
 def test_snapshot_event_payload_parsing_never_raises():
@@ -321,6 +350,19 @@ async def test_foreign_or_missing_session_is_denied(tmp_path):
         await service.get_llm_snapshots("bob", SESSION_ID)
     with pytest.raises(ChatServiceError, match="Permission denied"):
         await service.get_llm_snapshots(OWNER, "ghost")
+
+
+@pytest.mark.asyncio
+async def test_non_webchat_session_cannot_read_snapshots(tmp_path):
+    remote = _session("remote-session", OWNER)
+    remote.platform_id = "telegram"
+    service, _ = _service(
+        tmp_path,
+        sessions={"remote-session": remote},
+    )
+
+    with pytest.raises(ChatServiceError, match="Permission denied"):
+        await service.get_llm_snapshots(OWNER, "remote-session")
 
 
 @pytest.mark.asyncio

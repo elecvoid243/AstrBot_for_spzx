@@ -286,3 +286,109 @@ async def test_chat_websocket_forwards_shared_segments_under_client_request_id()
         assert call.args[1]["session_id"] == "chat-session"
     finally:
         await service.cleanup_session(session)
+
+
+@pytest.mark.asyncio
+async def test_live_voice_never_speaks_or_saves_snapshot_telemetry(
+    tmp_path, monkeypatch
+):
+    db = SimpleNamespace(
+        get_platform_session_by_id=AsyncMock(return_value=None),
+        create_platform_session=AsyncMock(),
+    )
+    history = SimpleNamespace(insert=AsyncMock())
+    stt = SimpleNamespace(
+        get_text=AsyncMock(return_value="voice input"),
+        meta=lambda: SimpleNamespace(type="controlled-stt"),
+    )
+    core_lifecycle = SimpleNamespace(
+        astrbot_config={},
+        plugin_manager=SimpleNamespace(
+            context=SimpleNamespace(
+                provider_manager=SimpleNamespace(stt_provider_insts=[stt])
+            )
+        ),
+        platform_message_history_manager=history,
+    )
+    chat_service = SimpleNamespace(
+        validate_chat_selection=AsyncMock(return_value={}),
+        save_uploaded_file=AsyncMock(
+            return_value={"attachment_id": "audio-1", "filename": "voice.wav"}
+        ),
+    )
+    service = LiveChatService(
+        db,
+        core_lifecycle,
+        chat_service=chat_service,
+        account_service=SimpleNamespace(),
+    )
+    service.save_bot_message = AsyncMock()
+    session = service.create_session("alice")
+    session.conversation_id = "live-conversation"
+    session.live_selections = {}
+    replies: list[dict] = []
+    snapshot_payload = json.dumps(
+        {"items": [{"snapshot_id": "snap-secret", "raw": {"api_key": "PRIVATE"}}]}
+    )
+    voice = tmp_path / "voice.wav"
+    voice.write_bytes(b"test voice")
+    back_queue_ready = asyncio.Event()
+    original_back_queue = webchat_queue_mgr.get_or_create_back_queue
+
+    def tracking_back_queue(request_id, conversation_id=None):
+        queue = original_back_queue(request_id, conversation_id)
+        back_queue_ready.set()
+        return queue
+
+    monkeypatch.setattr(
+        webchat_queue_mgr,
+        "get_or_create_back_queue",
+        tracking_back_queue,
+    )
+
+    async def generate() -> None:
+        queue = webchat_queue_mgr.get_or_create_queue("live-conversation")
+        _username, _conversation_id, payload = await queue.get()
+        message_id = payload["message_id"]
+        await back_queue_ready.wait()
+        events = (
+            {
+                "type": "plain",
+                "chain_type": "llm_request_snapshots",
+                "data": snapshot_payload,
+                "streaming": False,
+            },
+            {"type": "plain", "data": "hello", "streaming": True},
+            {"type": "end", "data": "", "streaming": False},
+        )
+        for event in events:
+            await webchat_queue_mgr.put_back_queue(
+                message_id,
+                {**event, "message_id": message_id},
+            )
+
+    worker = asyncio.create_task(generate())
+    try:
+        await asyncio.wait_for(
+            service.process_audio(
+                session,
+                str(voice),
+                0,
+                AsyncMock(side_effect=lambda message: replies.append(message)),
+            ),
+            timeout=5,
+        )
+        await asyncio.wait_for(worker, timeout=2)
+    finally:
+        if not worker.done():
+            worker.cancel()
+        await asyncio.gather(worker, return_exceptions=True)
+        webchat_queue_mgr.remove_queues("live-conversation")
+
+    bot_message = next(reply for reply in replies if reply.get("t") == "bot_msg")
+    assert bot_message["data"]["text"] == "hello"
+    assert "snap-secret" not in json.dumps(replies)
+    service.save_bot_message.assert_awaited_once()
+    saved_parts = service.save_bot_message.await_args.args[1]
+    assert saved_parts == [{"type": "plain", "text": "hello"}]
+    assert "snap-secret" not in json.dumps(saved_parts)

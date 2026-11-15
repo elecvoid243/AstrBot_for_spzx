@@ -44,6 +44,17 @@ SendJson = Callable[[dict], Awaitable[None]]
 ReceiveJson = Callable[[], Awaitable[dict]]
 CloseWebSocket = Callable[[int, str], Awaitable[None]]
 
+# ChatUI-only telemetry is carried as plain events for the dashboard stream.
+# Live voice has no inspector to render it, so any JSON blob that fell
+# through here would be spoken and persisted as bot text.
+_TELEMETRY_CHAIN_TYPES = frozenset(
+    {
+        "context_compression",
+        "llm_request_injections",
+        "llm_request_snapshots",
+    }
+)
+
 
 class LiveChatAuthError(Exception):
     pass
@@ -1104,6 +1115,10 @@ class LiveChatService:
                             )
                         except Exception as exc:
                             logger.error(f"[Live Chat] 解析 TTSStats 失败: {exc}")
+                        continue
+
+                    if result_chain_type in _TELEMETRY_CHAIN_TYPES:
+                        # Never accumulate or speak ChatUI diagnostic payloads.
                         continue
 
                     if result_type == "plain":

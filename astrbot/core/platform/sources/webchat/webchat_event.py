@@ -86,6 +86,7 @@ async def _persist_bot_reply_if_orphan(
             "agent_stats",
             "context_compression",
             "llm_request_injections",
+            "llm_request_snapshots",
         ):
             return
         owned_session = await db_helper.get_platform_session_by_id(cid)

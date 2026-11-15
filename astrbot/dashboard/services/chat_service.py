@@ -46,6 +46,12 @@ from astrbot.core.platform.sources.webchat.request_flags import (
     resolve_webchat_request_flags,
 )
 from astrbot.core.platform.sources.webchat.webchat_queue_mgr import webchat_queue_mgr
+from astrbot.core.provider.request_snapshot import (
+    build_view as build_snapshot_view,
+)
+from astrbot.core.provider.request_snapshot import (
+    request_snapshots,
+)
 from astrbot.core.tools.fs_access import (
     FileAccessMode,
     get_custom_roots,
@@ -73,6 +79,7 @@ from astrbot.core.utils.webchat_access import (
     webchat_resource_owner,
 )
 from astrbot.dashboard.services.chatui_settings import (
+    normalize_developer_mode,
     normalize_quick_messages,
     normalize_thinking_effort_settings,
     normalize_thinking_effort_value,
@@ -411,6 +418,26 @@ def build_bot_history_content(
     return content
 
 
+def _parse_snapshot_event_items(result_text: object) -> list[dict]:
+    """Decode one ``llm_request_snapshots`` event payload into its envelopes.
+
+    Developer-mode telemetry must never break a chat run, so a malformed
+    payload degrades to an empty list instead of raising into the stream.
+
+    Args:
+        result_text: Raw event payload emitted by the agent runner.
+
+    Returns:
+        The lightweight envelopes carried by the event, or an empty list.
+    """
+    try:
+        payload = json.loads(result_text) if result_text else {}
+    except (TypeError, ValueError):
+        return []
+    items = payload.get("items") if isinstance(payload, dict) else None
+    return items if isinstance(items, list) else []
+
+
 class BotMessageAccumulator:
     def __init__(
         self,
@@ -545,6 +572,13 @@ class BotMessageAccumulator:
         # accumulator, so only orphan turns arrive here. Dropping them keeps
         # the JSON blob from being persisted as a literal text part.
         if chain_type == "llm_request_injections":
+            return
+
+        # Developer-mode snapshot envelopes are ChatUI-only telemetry too.
+        # The primary `_consume_chat_run` path folds them into the run state
+        # before reaching this accumulator, so only orphan turns arrive here;
+        # dropping them keeps the JSON blob out of the persisted record.
+        if chain_type == "llm_request_snapshots":
             return
 
         # Author: elecvoid243
@@ -1262,6 +1296,14 @@ class ChatRunState:
     file_changes: dict = field(default_factory=dict)
     llm_request_injections: dict = field(default_factory=dict)
     refs: dict = field(default_factory=dict)
+    dev_snapshots: dict[str, dict] = field(default_factory=dict)
+    """Developer-mode LLM request envelopes seen by this run, keyed by id.
+
+    Memory only: the envelopes are live telemetry for the inspector and never
+    reach the history row.
+    """
+    dev_turn_id: str | None = None
+    """Turn id shared by the run's snapshots; used to bind the bot message."""
     revision: int = 0
     status: str = "running"
     task: asyncio.Task[None] | None = None
@@ -1459,6 +1501,168 @@ class ChatService:
         }
         self._write_chatui(thinking_effort=settings)
         return settings
+
+    def get_chatui_developer_mode(self) -> bool:
+        """Read whether the ChatUI developer mode is enabled.
+
+        Returns:
+            The stored flag; anything but a real boolean reads as disabled.
+        """
+        chatui = self._default_config().get("chatui")
+        raw = chatui.get("developer_mode") if isinstance(chatui, dict) else None
+        return normalize_developer_mode(raw)
+
+    def set_chatui_developer_mode(self, enabled: object) -> dict:
+        """Enable or disable the ChatUI developer mode.
+
+        Args:
+            enabled: Requested state; must be a real boolean.
+
+        Returns:
+            ``{"enabled": bool}`` as persisted.
+
+        Raises:
+            ChatServiceError: If the value is not a boolean.
+        """
+        if not isinstance(enabled, bool):
+            raise ChatServiceError("developer_mode must be a boolean")
+        self._write_chatui(developer_mode=enabled)
+        return {"enabled": enabled}
+
+    async def _require_owned_platform_session(
+        self,
+        username: str,
+        session_id: str,
+    ) -> PlatformSession:
+        """Load a platform session and verify the caller owns it.
+
+        Args:
+            username: Trusted dashboard username from authentication.
+            session_id: Session id whose ownership is required.
+
+        Returns:
+            The owned platform session.
+
+        Raises:
+            ChatServiceError: The session is missing or owned by another user.
+        """
+        session = await self.db.get_platform_session_by_id(session_id)
+        if session is None or session.creator != username:
+            raise ChatServiceError("Permission denied")
+        return session
+
+    async def get_llm_snapshots(
+        self,
+        username: str,
+        session_id: str,
+        *,
+        message_id: int | str | None = None,
+        turn_id: str | None = None,
+        limit: int = 50,
+    ) -> dict:
+        """List the LLM request snapshots of one owned chat session.
+
+        Args:
+            username: Trusted dashboard username from authentication.
+            session_id: WebChat session id.
+            message_id: Resolve the turn through a recorded message binding.
+            turn_id: Explicit turn filter.
+            limit: Maximum number of envelopes to return.
+
+        Returns:
+            The recorder's list payload (``enabled``, ``expired``, ``items``,
+            ``limits``, ``dropped``) with ``enabled`` read from the live
+            developer-mode setting.
+
+        Raises:
+            ChatServiceError: The caller does not own the session.
+        """
+        await self._require_owned_platform_session(username, session_id)
+        listed = request_snapshots.list_for_session(
+            session_id,
+            message_id=message_id,
+            turn_id=turn_id,
+            limit=limit,
+        )
+        try:
+            listed["enabled"] = self.get_chatui_developer_mode()
+        except ChatServiceError:
+            # A missing default profile must not hide an otherwise usable list.
+            listed["enabled"] = False
+        return listed
+
+    async def get_llm_snapshot(self, username: str, snapshot_id: str) -> dict:
+        """Read one stored snapshot, its raw payload and its derived view.
+
+        Args:
+            username: Trusted dashboard username from authentication.
+            snapshot_id: Id carried by the snapshot event.
+
+        Returns:
+            ``{"envelope", "raw", "view"}``. The envelope is the stored
+            envelope with ``raw`` removed, so the payload is shipped exactly
+            once.
+
+        Raises:
+            ChatServiceError: The snapshot is unknown or its session is not
+                owned by the caller.
+        """
+        snapshot = request_snapshots.get(snapshot_id)
+        if not isinstance(snapshot, dict):
+            raise ChatServiceError("Snapshot not found")
+        session_id = snapshot.get("session_id")
+        if not isinstance(session_id, str) or not session_id:
+            raise ChatServiceError("Snapshot not found")
+        await self._require_owned_platform_session(username, session_id)
+        return {
+            "envelope": {key: value for key, value in snapshot.items() if key != "raw"},
+            "raw": snapshot.get("raw"),
+            "view": build_snapshot_view(snapshot),
+        }
+
+    @staticmethod
+    def get_llm_snapshot_limits() -> dict:
+        """Return the public retention limits of the snapshot store."""
+        return request_snapshots.limits()
+
+    def _merge_snapshot_event(self, run: ChatRunState, items: list[dict]) -> None:
+        """Fold one snapshot event batch into the run's developer state.
+
+        Args:
+            run: Chat run receiving the envelopes.
+            items: Envelopes carried by the event; malformed entries are
+                dropped instead of raising into the stream.
+        """
+        envelopes: list[dict] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            snapshot_id = item.get("snapshot_id")
+            if not isinstance(snapshot_id, str) or not snapshot_id:
+                continue
+            turn_id = item.get("turn_id")
+            if run.dev_turn_id is None and isinstance(turn_id, str) and turn_id:
+                run.dev_turn_id = turn_id
+            run.dev_snapshots[snapshot_id] = item
+            envelopes.append(item)
+        self._publish_chat_run(
+            run,
+            {"type": "llm_request_snapshots", "data": {"items": envelopes}},
+        )
+
+    def _bind_snapshot_message(self, run: ChatRunState) -> None:
+        """Bind the run's history row to its developer-mode turn.
+
+        Args:
+            run: Chat run whose row and turn id are bound; a no-op until both
+                are known.
+        """
+        if run.dev_turn_id and run.history_record:
+            request_snapshots.bind_message(
+                run.history_record.id,
+                run.dev_turn_id,
+                run.session_id,
+            )
 
     async def get_branch_relations(
         self, username: str | None = None
@@ -2339,6 +2543,9 @@ class ChatService:
                     llm_checkpoint_id=run.llm_checkpoint_id,
                 )
             saved_record = run.history_record
+            # Bind the row to the run's developer-mode turn, so the inspector
+            # can load the snapshots behind this reply after a reload.
+            self._bind_snapshot_message(run)
             pending_accumulator = BotMessageAccumulator(
                 filtered_tool_call_ids=suppressed_tool_call_ids,
                 # `build_message_parts(include_pending_tool_calls=True)` clears
@@ -2522,6 +2729,17 @@ class ChatService:
                             "data": run.llm_request_injections,
                         },
                     )
+                    continue
+
+                if chain_type == "llm_request_snapshots":
+                    # Developer-mode telemetry: keep it in the run state and
+                    # out of the persisted record. A malformed payload reads
+                    # as an empty batch and never breaks the turn.
+                    self._merge_snapshot_event(
+                        run,
+                        _parse_snapshot_event_items(result_text),
+                    )
+                    self._bind_snapshot_message(run)
                     continue
 
                 attachment_saved_payload = None

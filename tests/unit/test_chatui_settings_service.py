@@ -18,6 +18,7 @@ import pytest
 from astrbot.core.config.astrbot_config import AstrBotConfig
 from astrbot.core.config.default import DEFAULT_CONFIG
 from astrbot.dashboard.services.chat_service import ChatService, ChatServiceError
+from astrbot.dashboard.services.chatui_settings import normalize_developer_mode
 
 BASE_CONFIG = {"chatui": copy.deepcopy(DEFAULT_CONFIG["chatui"])}
 
@@ -193,3 +194,21 @@ def test_quick_messages_reject_invalid_payload_without_touching_siblings(tmp_pat
     stored = json.loads(config_path.read_text(encoding="utf-8-sig"))["chatui"]
     assert stored["quick_messages"]["items"] == []
     assert stored["thinking_effort"]["active_preset"] == "deepseek-v4.1"
+
+
+def test_developer_mode_defaults_off(tmp_path):
+    service, config_path = _service(tmp_path)
+
+    assert service.get_chatui_developer_mode() is False
+    stored = json.loads(config_path.read_text(encoding="utf-8-sig"))["chatui"]
+    assert stored["developer_mode"] is False
+
+
+def test_normalize_developer_mode_rejects_truthy_non_bools():
+    assert normalize_developer_mode(True) is True
+    assert normalize_developer_mode(False) is False
+    # A hand-edited config may contain anything; only a JSON bool turns it on.
+    assert normalize_developer_mode(1) is False
+    assert normalize_developer_mode("true") is False
+    assert normalize_developer_mode(None) is False
+    assert normalize_developer_mode({"enabled": True}) is False

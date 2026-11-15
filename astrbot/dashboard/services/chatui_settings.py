@@ -389,3 +389,19 @@ def validate_quick_messages(raw: object) -> list[dict]:
         seen_ids.add(message["id"])
         items.append(message)
     return items
+
+
+def normalize_developer_mode(raw: object) -> bool:
+    """Coerce the stored ``chatui.developer_mode`` into a strict boolean.
+
+    A hand-edited config can hold any JSON value, and the developer mode
+    gates an in-memory request inspector, so only a real boolean may turn it
+    on: ``1`` or ``"true"`` must not enable it by accident.
+
+    Args:
+        raw: Value currently stored under ``chatui.developer_mode``.
+
+    Returns:
+        The stored boolean, or False for every other value.
+    """
+    return raw if isinstance(raw, bool) else False

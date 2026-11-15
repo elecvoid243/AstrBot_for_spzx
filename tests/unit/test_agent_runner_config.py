@@ -8,6 +8,7 @@ from astrbot.core.config.agent_runner import (
     AGENT_RUNNER_CONFIG_DEFAULTS,
     get_agent_runner_config_default,
     normalize_agent_runner,
+    resolve_context_compression_config,
 )
 from astrbot.core.config.astrbot_config import AstrBotConfig
 from astrbot.core.config.default import DEFAULT_CONFIG
@@ -162,7 +163,9 @@ def test_local_legacy_fields_are_fully_migrated():
                 ),
             },
             "compression": {
-                "overflow_strategy": "truncate_by_turns",
+                # Deprecated turn truncation is rewritten to the only strategy
+                # the runtime executes, so the select never shows a raw value.
+                "overflow_strategy": "llm_compress",
                 "keep_recent_ratio": 0.2,
                 "provider_id": "compressor",
                 "fallback_max_tokens": 64000,
@@ -189,6 +192,40 @@ def test_local_legacy_fields_are_fully_migrated():
         "repeated_tool_call_notice",
         "sanitize_context_by_modalities",
     }.intersection(config["provider_settings"])
+
+
+def test_overflow_strategy_resolves_placeholder_and_legacy_values_to_llm():
+    """Only LLM compression is implemented, so no value may disable it."""
+    for stored in ("token_budget", "truncate_by_turns", "", 0):
+        resolved = resolve_context_compression_config({"overflow_strategy": stored})
+        assert resolved["context_limit_reached_strategy"] == "llm_compress"
+
+    default = resolve_context_compression_config({})
+    assert default["context_limit_reached_strategy"] == "llm_compress"
+
+
+def test_normalize_keeps_placeholder_and_rewrites_deprecated_strategy():
+    """The planned option survives a save; a dead strategy does not."""
+    placeholder = normalize_agent_runner(
+        {"runner_type": "local", "config": {"compression": {}}}
+    )
+    assert placeholder["config"]["compression"]["overflow_strategy"] == "llm_compress"
+
+    kept = normalize_agent_runner(
+        {
+            "runner_type": "local",
+            "config": {"compression": {"overflow_strategy": "token_budget"}},
+        }
+    )
+    assert kept["config"]["compression"]["overflow_strategy"] == "token_budget"
+
+    rewritten = normalize_agent_runner(
+        {
+            "runner_type": "local",
+            "config": {"compression": {"overflow_strategy": "truncate_by_turns"}},
+        }
+    )
+    assert rewritten["config"]["compression"]["overflow_strategy"] == "llm_compress"
 
 
 def test_local_migration_replaces_default_root_inserted_before_version_bump():

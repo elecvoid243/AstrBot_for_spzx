@@ -8,7 +8,9 @@ AstrBot checks context before every model request, including tool continuations.
 
 ## Compression method
 
-The default and only user-selectable method is an LLM-generated structured summary. Choose a summary model or leave it empty to try the session's chat model. The compression instruction is a built-in fixed template and is no longer configurable.
+The default and only method that takes effect is an LLM-generated structured summary. Choose a summary model or leave it empty to try the session's chat model. The compression instruction is a built-in fixed template and is no longer configurable.
+
+The configuration also offers a `Token Budget` option (taken from Codex's implementation). It is a reserved placeholder: not implemented yet, so selecting it still runs LLM compression instead of degrading to turn truncation.
 
 Truncation by conversation rounds is no longer a separate strategy, and there is no "discard N turns / drop to 40%" setting. If pressure remains after the summary, AstrBot removes the oldest ordinary rounds one at a time, preserving system messages, summaries, and the current complete round. Exceeding only the compression trigger does not force protected content to be removed. If protected content, tool definitions, and the output budget still exceed the model window, the request stops with an explicit capacity error. Reduce the current input, tool definitions, or output limit, or select a larger model window.
 

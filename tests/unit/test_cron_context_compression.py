@@ -60,12 +60,12 @@ def test_explicit_build_settings_and_per_request_overrides_are_preserved():
         ),
         pytest.param(
             {},
-            ("truncate_by_turns", 0.15, "", 128000),
+            ("llm_compress", 0.15, "", 128000),
             id="empty-config",
         ),
         pytest.param(
             None,
-            ("truncate_by_turns", 0.15, "", 128000),
+            ("llm_compress", 0.15, "", 128000),
             id="missing-cron-compression-section",
         ),
     ],

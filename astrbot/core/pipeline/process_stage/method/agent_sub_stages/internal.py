@@ -25,6 +25,7 @@ from astrbot.core.astr_main_agent import (
     _provider_supports_modality,
     build_main_agent,
 )
+from astrbot.core.config.agent_runner import resolve_context_compression_config
 from astrbot.core.message.components import File, Image, Record, Reply, Video
 from astrbot.core.message.message_event_result import (
     MessageChain,
@@ -182,16 +183,21 @@ class InternalAgentSubStage(Stage):
         )
 
         # 上下文管理相关
-        self.context_limit_reached_strategy: str = compression_config.get(
-            "overflow_strategy", "truncate_by_turns"
-        )
-        self.llm_compress_keep_recent_ratio: float = compression_config.get(
-            "keep_recent_ratio", 0.15
-        )
-        self.llm_compress_provider_id: str = compression_config.get("provider_id", "")
-        self.fallback_max_context_tokens: int = compression_config.get(
-            "fallback_max_tokens", 128000
-        )
+        # Resolved through the shared mapper so this stage and the chat/Cron
+        # paths cannot disagree on which strategies are actually implemented.
+        compression_kwargs = resolve_context_compression_config(compression_config)
+        self.context_limit_reached_strategy: str = compression_kwargs[
+            "context_limit_reached_strategy"
+        ]
+        self.llm_compress_keep_recent_ratio: float = compression_kwargs[
+            "llm_compress_keep_recent_ratio"
+        ]
+        self.llm_compress_provider_id: str = compression_kwargs[
+            "llm_compress_provider_id"
+        ]
+        self.fallback_max_context_tokens: int = compression_kwargs[
+            "fallback_max_context_tokens"
+        ]
 
         self.llm_safety_mode = persona_config.get("safety_mode", True)
         self.safety_mode_strategy = persona_config.get(

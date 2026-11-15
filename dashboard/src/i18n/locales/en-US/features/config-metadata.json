@@ -409,10 +409,10 @@
         "overflow_strategy": {
           "description": "Handling for History Limits or Context Window Pressure",
           "labels": [
-            "Truncate by Turns",
-            "Compress by LLM"
+            "Compress by LLM",
+            "Token Budget (not implemented yet)"
           ],
-          "hint": "Before each request, this strategy runs when context tokens exceed the compression threshold (provider compress_threshold_tokens, or min(window × 0.8, window − output budget − headroom) when unset) or when input plus output budget would overflow the model window."
+          "hint": "Before each request, this strategy runs when context tokens exceed the compression threshold (provider compress_threshold_tokens, or min(window × 0.8, window − output budget − headroom) when unset) or when input plus output budget would overflow the model window. Only “Compress by LLM” takes effect today; truncation by turns is deprecated and remains an internal fallback for when a summary cannot be produced. Token Budget is a reserved strategy taken from Codex's implementation and is not implemented yet, so selecting it currently runs LLM compression."
         },
         "keep_recent_ratio": {
           "description": "Recent Context Token Ratio to Keep",

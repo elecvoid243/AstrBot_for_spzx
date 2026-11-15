@@ -3,8 +3,16 @@ from __future__ import annotations
 import copy
 from typing import Any
 
+from astrbot import logger
+
 AGENT_RUNNER_TYPES = ("local", "dify", "coze", "dashscope", "deerflow")
 THIRD_PARTY_AGENT_RUNNER_TYPES = AGENT_RUNNER_TYPES[1:]
+
+IMPLEMENTED_OVERFLOW_STRATEGIES = ("llm_compress",)
+"""Compression strategies the runtime can actually execute."""
+PLANNED_OVERFLOW_STRATEGIES = ("token_budget",)
+"""Selectable placeholders for strategies that are not implemented yet."""
+_warned_overflow_strategies: set[str] = set()
 
 
 def get_agent_runner_capability_issues(
@@ -209,10 +217,21 @@ def resolve_context_compression_config(
         Build arguments shared by chat, Cron and background-result wakeups.
         The input mapping is not modified.
     """
+    strategy = compression_config.get("overflow_strategy", "llm_compress")
+    if strategy not in IMPLEMENTED_OVERFLOW_STRATEGIES:
+        # Deprecated turn truncation and the planned token-budget strategy both
+        # run LLM compression: leaving the raw value here would drop the
+        # compression provider and silently degrade to truncation.
+        if isinstance(strategy, str) and strategy not in _warned_overflow_strategies:
+            _warned_overflow_strategies.add(strategy)
+            logger.warning(
+                "Context compression strategy %s is not implemented, using %s instead.",
+                strategy,
+                IMPLEMENTED_OVERFLOW_STRATEGIES[0],
+            )
+        strategy = IMPLEMENTED_OVERFLOW_STRATEGIES[0]
     return {
-        "context_limit_reached_strategy": compression_config.get(
-            "overflow_strategy", "truncate_by_turns"
-        ),
+        "context_limit_reached_strategy": strategy,
         "llm_compress_keep_recent_ratio": compression_config.get(
             "keep_recent_ratio", 0.15
         ),
@@ -279,6 +298,16 @@ def normalize_agent_runner(agent_runner: object) -> dict[str, Any]:
     default = AGENT_RUNNER_CONFIG_DEFAULTS[runner_type]
     normalized = _normalize_value(config, default)
     if runner_type == "local":
+        # Keep the placeholder visible in the UI while rewriting legacy values
+        # (e.g. the deprecated ``truncate_by_turns``) so the select never shows
+        # a raw strategy name that the runtime no longer honours.
+        if normalized["compression"]["overflow_strategy"] not in (
+            *IMPLEMENTED_OVERFLOW_STRATEGIES,
+            *PLANNED_OVERFLOW_STRATEGIES,
+        ):
+            normalized["compression"]["overflow_strategy"] = (
+                IMPLEMENTED_OVERFLOW_STRATEGIES[0]
+            )
         ratio = normalized["compression"]["keep_recent_ratio"]
         normalized["compression"]["keep_recent_ratio"] = min(0.3, max(0.0, ratio))
         if normalized["model"]["request_max_retries"] < 1:

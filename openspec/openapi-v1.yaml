@@ -3262,6 +3262,117 @@ paths:
                       data:
                         $ref: "#/components/schemas/ChatMessageMarkers"
 
+  /api/v1/chat/sessions/{session_id}/llm-snapshots:
+    get:
+      tags: [Chat]
+      summary: List the LLM request snapshots of an owned webchat session
+      operationId: listChatSessionLlmSnapshots
+      description: >-
+        Administrative developer-mode surface. The caller must own a webchat
+        session or hold the administrator role/scope; message_id resolves the
+        turn through the recorder's message binding and reports expired
+        bindings as expired instead of returning another user's data.
+      x-astrbot-scope: chat
+      parameters:
+        - $ref: "#/components/parameters/SessionId"
+        - name: message_id
+          in: query
+          required: false
+          schema:
+            oneOf:
+              - type: integer
+              - type: string
+          description: Persisted bot message binding used to resolve the turn.
+        - name: turn_id
+          in: query
+          required: false
+          schema: { type: string }
+          description: Explicit turn filter.
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 128, default: 50 }
+          description: Maximum number of snapshot envelopes to return.
+      responses:
+        "200":
+          description: Snapshot envelopes and the recorder's retention limits.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/LlmSnapshotList"
+        "403": { $ref: "#/components/responses/Error" }
+
+  /api/v1/chat/llm-snapshots/{snapshot_id}:
+    get:
+      tags: [Chat]
+      summary: Read one captured LLM request snapshot
+      operationId: getChatLlmSnapshot
+      description: >-
+        Administrative developer-mode surface. The snapshot's session must be
+        owned by the authenticated account; unknown or expired ids return 404.
+      x-astrbot-scope: chat
+      parameters:
+        - name: snapshot_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Snapshot envelope, sanitized raw payload and derived view.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/LlmSnapshotDetail"
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+
+  /api/v1/chat/developer-mode:
+    get:
+      tags: [Chat]
+      summary: Read the ChatUI developer-mode state
+      operationId: getChatDeveloperMode
+      description: >-
+        Any chat-scope caller may read whether developer mode is enabled and
+        the snapshot retention limits. Only administrators may edit it.
+      x-astrbot-scope: chat
+      responses:
+        "200":
+          description: Developer-mode flag, edit permission and retention limits.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/DeveloperModeState"
+    post:
+      tags: [Chat]
+      summary: Enable or disable the ChatUI developer mode
+      operationId: setChatDeveloperMode
+      description: Requires the config scope; the payload accepts real booleans only.
+      x-astrbot-scope: config
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeveloperModeRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/Ok"
+
   /api/v1/chat/sessions/{session_id}/goal:
     get:
       tags: [Chat]
@@ -11499,6 +11610,146 @@ components:
         total_messages:
           type: integer
         truncated:
+          type: boolean
+      additionalProperties: false
+
+    LlmSnapshotEnvelope:
+      type: object
+      description: >-
+        Lightweight snapshot metadata emitted by the live stream and returned
+        by the list route. The sanitized raw payload is deliberately absent
+        and is only available from the detail route.
+      required: [snapshot_id, session_id, status]
+      properties:
+        snapshot_id:
+          type: string
+        session_id:
+          type: string
+        umo:
+          type: string
+        turn_id:
+          type: [string, "null"]
+        invocation_id:
+          type: [string, "null"]
+        kind:
+          type: string
+        stage:
+          type: string
+        step:
+          type: integer
+        status:
+          type: string
+        created_at:
+          type: number
+        duration_ms:
+          type: [integer, "null"]
+        bytes:
+          type: integer
+        original_bytes:
+          type: integer
+        truncated:
+          type: boolean
+        redactions:
+          type: integer
+        provider:
+          type: object
+          additionalProperties: true
+        request:
+          type: object
+          additionalProperties: true
+        counts:
+          type: object
+          additionalProperties: true
+        response:
+          type: object
+          additionalProperties: true
+        diagnostics:
+          type: object
+          additionalProperties: true
+        tool_meta:
+          type: object
+          additionalProperties: true
+        env:
+          type: object
+          additionalProperties: true
+        adapter:
+          type: string
+      additionalProperties: true
+
+    LlmSnapshotList:
+      type: object
+      required: [enabled, expired, items, limits, dropped]
+      properties:
+        enabled:
+          type: boolean
+          description: Whether developer mode was enabled when the list was read.
+        expired:
+          type: boolean
+          description: True when message_id has no live turn binding.
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/LlmSnapshotEnvelope"
+        limits:
+          type: object
+          required:
+            - max_bytes_per_snapshot
+            - max_snapshots_per_session
+            - max_bytes_per_session
+            - max_total_bytes
+            - max_message_bindings
+            - ttl_seconds
+          properties:
+            max_bytes_per_snapshot:
+              type: integer
+            max_snapshots_per_session:
+              type: integer
+            max_bytes_per_session:
+              type: integer
+            max_total_bytes:
+              type: integer
+            max_message_bindings:
+              type: integer
+            ttl_seconds:
+              type: integer
+          additionalProperties: false
+        dropped:
+          type: integer
+          description: Snapshots evicted by the recorder's retention limits.
+      additionalProperties: false
+
+    LlmSnapshotDetail:
+      type: object
+      required: [envelope, raw, view]
+      properties:
+        envelope:
+          $ref: "#/components/schemas/LlmSnapshotEnvelope"
+        raw:
+          description: Sanitized provider request body; shape depends on the adapter.
+        view:
+          type: object
+          additionalProperties: true
+      additionalProperties: false
+
+    DeveloperModeState:
+      type: object
+      required: [enabled, can_edit, limits]
+      properties:
+        enabled:
+          type: boolean
+        can_edit:
+          type: boolean
+          description: True only for the administrator role or scope.
+        limits:
+          type: object
+          additionalProperties: true
+      additionalProperties: false
+
+    DeveloperModeRequest:
+      type: object
+      required: [enabled]
+      properties:
+        enabled:
           type: boolean
       additionalProperties: false
 

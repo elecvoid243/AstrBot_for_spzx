@@ -796,6 +796,21 @@ export type CronJobRequest = {
     [key: string]: unknown | string | boolean;
 };
 
+export type DeveloperModeRequest = {
+    enabled: boolean;
+};
+
+export type DeveloperModeState = {
+    enabled: boolean;
+    /**
+     * True only for the administrator role or scope.
+     */
+    can_edit: boolean;
+    limits: {
+        [key: string]: unknown;
+    };
+};
+
 /**
  * Initial editable snapshot and optional existing asset identity.
  */
@@ -1027,6 +1042,85 @@ export type KnowledgeRetrieveRequest = {
     query: string;
     top_k?: number;
     score_threshold?: number;
+};
+
+export type LlmSnapshotDetail = {
+    envelope: LlmSnapshotEnvelope;
+    /**
+     * Sanitized provider request body; shape depends on the adapter.
+     */
+    raw: unknown;
+    view: {
+        [key: string]: unknown;
+    };
+};
+
+/**
+ * Lightweight snapshot metadata emitted by the live stream and returned by the list route. The sanitized raw payload is deliberately absent and is only available from the detail route.
+ */
+export type LlmSnapshotEnvelope = {
+    snapshot_id: string;
+    session_id: string;
+    umo?: string;
+    turn_id?: (string) | null;
+    invocation_id?: (string) | null;
+    kind?: string;
+    stage?: string;
+    step?: number;
+    status: string;
+    created_at?: number;
+    duration_ms?: (number) | null;
+    bytes?: number;
+    original_bytes?: number;
+    truncated?: boolean;
+    redactions?: number;
+    provider?: {
+        [key: string]: unknown;
+    };
+    request?: {
+        [key: string]: unknown;
+    };
+    counts?: {
+        [key: string]: unknown;
+    };
+    response?: {
+        [key: string]: unknown;
+    };
+    diagnostics?: {
+        [key: string]: unknown;
+    };
+    tool_meta?: {
+        [key: string]: unknown;
+    };
+    env?: {
+        [key: string]: unknown;
+    };
+    adapter?: string;
+    [key: string]: unknown | string | number | boolean;
+};
+
+export type LlmSnapshotList = {
+    /**
+     * Whether developer mode was enabled when the list was read.
+     */
+    enabled: boolean;
+    /**
+     * True when message_id has no live turn binding.
+     */
+    expired: boolean;
+    items: Array<LlmSnapshotEnvelope>;
+    limits: {
+        max_bytes_per_snapshot: number;
+        max_snapshots_per_session: number;
+        max_bytes_per_session: number;
+        max_total_bytes: number;
+        max_message_bindings: number;
+        ttl_seconds: number;
+    };
+    /**
+     * Snapshots evicted by the recorder's retention limits.
+     */
+    dropped: number;
 };
 
 export type LoginRequest = {
@@ -3176,6 +3270,58 @@ export type GetChatSessionMarkersResponse = ((SuccessEnvelope & {
 }));
 
 export type GetChatSessionMarkersError = unknown;
+
+export type ListChatSessionLlmSnapshotsData = {
+    path: {
+        session_id: string;
+    };
+    query?: {
+        /**
+         * Maximum number of snapshot envelopes to return.
+         */
+        limit?: number;
+        /**
+         * Persisted bot message binding used to resolve the turn.
+         */
+        message_id?: (number | string);
+        /**
+         * Explicit turn filter.
+         */
+        turn_id?: string;
+    };
+};
+
+export type ListChatSessionLlmSnapshotsResponse = ((SuccessEnvelope & {
+    data?: LlmSnapshotList;
+}));
+
+export type ListChatSessionLlmSnapshotsError = (ErrorEnvelope);
+
+export type GetChatLlmSnapshotData = {
+    path: {
+        snapshot_id: string;
+    };
+};
+
+export type GetChatLlmSnapshotResponse = ((SuccessEnvelope & {
+    data?: LlmSnapshotDetail;
+}));
+
+export type GetChatLlmSnapshotError = (ErrorEnvelope);
+
+export type GetChatDeveloperModeResponse = ((SuccessEnvelope & {
+    data?: DeveloperModeState;
+}));
+
+export type GetChatDeveloperModeError = unknown;
+
+export type SetChatDeveloperModeData = {
+    body: DeveloperModeRequest;
+};
+
+export type SetChatDeveloperModeResponse = (SuccessEnvelope);
+
+export type SetChatDeveloperModeError = unknown;
 
 export type GetChatSessionGoalData = {
     path: {

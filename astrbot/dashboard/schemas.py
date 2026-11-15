@@ -418,6 +418,17 @@ class ChatUiQuickMessagesRequest(OpenModel):
     items: list[Any] = Field(default_factory=list)
 
 
+class DeveloperModeRequest(BaseModel):
+    """Toggle payload for the ChatUI developer mode.
+
+    Strict booleans reject strings such as ``"yes"`` so a malformed UI
+    request cannot silently enable the snapshot surface.
+    """
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    enabled: bool
+
+
 class CronJobRequest(OpenModel):
     pass
 

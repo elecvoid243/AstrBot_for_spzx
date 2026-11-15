@@ -40,6 +40,8 @@ import {
   type CreateApiKeyRequest,
   type CronJobPatchRequest,
   type CronJobRequest,
+  type DeveloperModeRequest,
+  type DeveloperModeState,
   type DynamicConfig,
   type EnabledPatch,
   type GhproxyTestRequest,
@@ -47,6 +49,9 @@ import {
   type KnowledgeBaseRequest,
   type LoginRequest,
   type ListConversationsData,
+  type LlmSnapshotDetail,
+  type LlmSnapshotEnvelope,
+  type LlmSnapshotList,
   type McpServerConfig,
   type ModelScopeSyncRequest,
   type PipInstallRequest,
@@ -70,6 +75,14 @@ import {
   type UpdateSourcesRequest,
 } from './generated/openapi-v1';
 import { apiV1Client, fetchWithAuth, httpClient } from './http';
+
+export type {
+  DeveloperModeRequest,
+  DeveloperModeState,
+  LlmSnapshotDetail,
+  LlmSnapshotEnvelope,
+  LlmSnapshotList,
+};
 
 openApiV1Client.setConfig({
   axios: httpClient,
@@ -1322,6 +1335,35 @@ export const chatApi = {
   removeProjectSession(sessionId: string) {
     return typed<any>(
       openApiV1.removeChatProjectSession({ path: { session_id: sessionId } }),
+    );
+  },
+};
+
+/** Administrative developer-mode snapshot readers (GET) and toggle (POST). */
+export const llmSnapshotsApi = {
+  list(
+    sessionId: string,
+    params?: { message_id?: number | string; turn_id?: string; limit?: number },
+  ) {
+    return typed<LlmSnapshotList>(
+      openApiV1.listChatSessionLlmSnapshots({
+        path: { session_id: sessionId },
+        query: generatedQuery(params),
+      }),
+    );
+  },
+  get(snapshotId: string) {
+    return typed<LlmSnapshotDetail>(
+      openApiV1.getChatLlmSnapshot({ path: { snapshot_id: snapshotId } }),
+    );
+  },
+  getDeveloperMode() {
+    return typed<DeveloperModeState>(openApiV1.getChatDeveloperMode());
+  },
+  setDeveloperMode(enabled: boolean) {
+    const body: DeveloperModeRequest = { enabled };
+    return typed<{ enabled: boolean }>(
+      openApiV1.setChatDeveloperMode({ body }),
     );
   },
 };

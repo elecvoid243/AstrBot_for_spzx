@@ -107,9 +107,12 @@ outline: deep
 | 方法 | 接口 | 条件性敏感子权限 |
 | --- | --- | --- |
 | `POST` | `/api/v1/bot-types/{bot_type}/registration` | — |
+| `POST` | `/api/v1/chat/developer-mode` | — |
 | `PUT` | `/api/v1/chat/ui-settings/presets` | `config:edit_admin` |
 | `GET` | `/api/v1/config-profiles` | — |
 | `POST` | `/api/v1/config-profiles` | `config:edit_admin` |
+| `GET` | `/api/v1/config-profiles/export` | — |
+| `POST` | `/api/v1/config-profiles/import` | `config:edit_admin` |
 | `GET` | `/api/v1/config-profiles/schema` | — |
 | `GET` | `/api/v1/config-profiles/{config_id}` | — |
 | `PUT` | `/api/v1/config-profiles/{config_id}` | `config:edit_admin` |
@@ -144,7 +147,9 @@ outline: deep
 | 方法 | 接口 | 条件性敏感子权限 |
 | --- | --- | --- |
 | `POST` | `/api/v1/chat` | `chat:admin` |
+| `GET` | `/api/v1/chat/active-runs` | — |
 | `GET` | `/api/v1/chat/configs` | — |
+| `GET` | `/api/v1/chat/developer-mode` | — |
 | `GET` | `/api/v1/chat/file-access-mode` | — |
 | `POST` | `/api/v1/chat/file-access-mode` | — |
 | `POST` | `/api/v1/chat/file-access-mode/roots` | — |
@@ -152,6 +157,7 @@ outline: deep
 | `POST` | `/api/v1/chat/file-changes/restore` | — |
 | `POST` | `/api/v1/chat/file-changes/restore-removed` | — |
 | `POST` | `/api/v1/chat/file-changes/status` | — |
+| `GET` | `/api/v1/chat/llm-snapshots/{snapshot_id}` | — |
 | `GET` | `/api/v1/chat/models` | — |
 | `POST` | `/api/v1/chat/open-file` | — |
 | `POST` | `/api/v1/chat/open-folder` | — |
@@ -186,6 +192,7 @@ outline: deep
 | `POST` | `/api/v1/chat/sessions/{session_id}/goal` | — |
 | `POST` | `/api/v1/chat/sessions/{session_id}/goal/actions` | — |
 | `GET` | `/api/v1/chat/sessions/{session_id}/history` | — |
+| `GET` | `/api/v1/chat/sessions/{session_id}/llm-snapshots` | — |
 | `GET` | `/api/v1/chat/sessions/{session_id}/markers` | — |
 | `PATCH` | `/api/v1/chat/sessions/{session_id}/messages/{message_id}` | — |
 | `POST` | `/api/v1/chat/sessions/{session_id}/messages/{message_id}/branch` | — |

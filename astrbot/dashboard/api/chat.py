@@ -55,6 +55,7 @@ from astrbot.dashboard.schemas import (
     ChatUiQuickMessagesRequest,
     ChatUiThinkingEffortPresetsRequest,
     ChatUiThinkingEffortValueRequest,
+    DeveloperModeRequest,
     FileAccessModeSetRequest,
     FileAccessRootsSetRequest,
     GoalActionRequest,
@@ -130,6 +131,18 @@ async def _run(operation):
         return ok(result)
     except ChatServiceError as exc:
         return error(str(exc))
+
+
+def _is_admin(auth: AuthContext) -> bool:
+    """Return whether the caller may inspect any user's request snapshots.
+
+    Args:
+        auth: Authenticated dashboard context.
+
+    Returns:
+        True for the admin role or an administrator API key scope.
+    """
+    return auth.role == "admin" or "*" in (auth.scopes or [])
 
 
 def _file_response(file_path: str, mimetype: str | None):
@@ -580,6 +593,128 @@ async def get_archived_chat_sessions(
             search,
         )
     )
+
+
+@router.get("/chat/sessions/{session_id}/llm-snapshots")
+async def list_chat_llm_snapshots(
+    session_id: str,
+    message_id: int | str | None = Query(default=None),
+    turn_id: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=128),
+    auth: AuthContext = Depends(require_chat_scope),
+    service: ChatService = Depends(get_service),
+):
+    """List the LLM request snapshots of one owned WebChat session.
+
+    Developer-mode debugging is administrative: ordinary accounts cannot
+    read another user's prompts even when their own API key carries the
+    chat scope. ``message_id`` resolves the turn through the recorder's
+    message binding; an expired binding is reported as ``expired`` instead
+    of a missing-session error.
+
+    Args:
+        session_id: WebChat session whose snapshots are requested.
+        message_id: Optional persisted bot message binding.
+        turn_id: Optional explicit turn filter.
+        limit: Maximum number of envelopes to return.
+        auth: Authenticated dashboard account.
+        service: Chat service owning the snapshot readers.
+
+    Returns:
+        ``ok({enabled, expired, items, limits, dropped})``.
+
+    Raises:
+        ApiError: The caller is not an administrator or does not own the
+            session.
+    """
+    if not _is_admin(auth):
+        raise ApiError("Resource is unavailable", status_code=403)
+    try:
+        return ok(
+            await service.get_llm_snapshots(
+                auth.username,
+                session_id,
+                message_id=message_id,
+                turn_id=turn_id,
+                limit=limit,
+            )
+        )
+    except ChatServiceError as exc:
+        if "Permission denied" in str(exc):
+            raise ApiError("Resource is unavailable", status_code=403) from exc
+        raise ApiError(str(exc), status_code=400) from exc
+
+
+@router.get("/chat/llm-snapshots/{snapshot_id}")
+async def get_chat_llm_snapshot(
+    snapshot_id: str,
+    auth: AuthContext = Depends(require_chat_scope),
+    service: ChatService = Depends(get_service),
+):
+    """Read one captured snapshot, its raw payload and its derived view.
+
+    Args:
+        snapshot_id: Id carried by the developer-mode snapshot event.
+        auth: Authenticated dashboard account.
+        service: Chat service owning the snapshot readers.
+
+    Returns:
+        ``ok({envelope, raw, view})``.
+
+    Raises:
+        ApiError: The caller is not an administrator, the snapshot is
+            missing or its session belongs to another account.
+    """
+    if not _is_admin(auth):
+        raise ApiError("Resource is unavailable", status_code=403)
+    try:
+        return ok(await service.get_llm_snapshot(auth.username, snapshot_id))
+    except ChatServiceError as exc:
+        status_code = 403 if "Permission denied" in str(exc) else 404
+        raise ApiError("Resource is unavailable", status_code=status_code) from exc
+
+
+@router.get("/chat/developer-mode")
+async def get_chat_developer_mode(
+    auth: AuthContext = Depends(require_chat_scope),
+    service: ChatService = Depends(get_service),
+):
+    """Return the developer-mode flag, edit permission and retention limits.
+
+    Args:
+        auth: Authenticated dashboard account.
+        service: Chat service holding the ChatUI settings.
+
+    Returns:
+        ``ok({enabled, can_edit, limits})`` where ``can_edit`` is true only
+        for administrators.
+    """
+    return ok(
+        {
+            "enabled": service.get_chatui_developer_mode(),
+            "can_edit": _is_admin(auth),
+            "limits": service.get_llm_snapshot_limits(),
+        }
+    )
+
+
+@router.post("/chat/developer-mode")
+async def set_chat_developer_mode(
+    payload: DeveloperModeRequest,
+    _auth: AuthContext = Depends(require_config_scope),
+    service: ChatService = Depends(get_service),
+):
+    """Enable or disable the ChatUI developer mode.
+
+    Args:
+        payload: Strict boolean toggle payload.
+        _auth: Caller authorized by the config scope.
+        service: Chat service persisting the ChatUI settings.
+
+    Returns:
+        ``ok({"enabled": bool})`` as persisted.
+    """
+    return await _run(lambda: service.set_chatui_developer_mode(payload.enabled))
 
 
 @router.post("/chat/sessions/{session_id}/archive")

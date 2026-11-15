@@ -237,6 +237,53 @@ def test_openai_responses_view_uses_instructions_and_input(monkeypatch):
     assert view["extra"]["store"] is False
 
 
+def test_openai_responses_view_reads_system_input_messages(monkeypatch):
+    _enable(monkeypatch)
+    raw = {
+        "model": "m1",
+        "input": [
+            {
+                "type": "message",
+                "role": "system",
+                "content": [{"type": "input_text", "text": "SYS IN INPUT"}],
+            },
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "hi"}],
+            },
+        ],
+    }
+    view = build_view(_snapshot_with(raw, "openai_responses"))
+    assert view["system"]["text"] == "SYS IN INPUT"
+    assert view["system"]["source_field"] == "input[role=system|developer]"
+
+
+def test_openai_responses_joins_instructions_and_system_input(monkeypatch):
+    _enable(monkeypatch)
+    raw = {
+        "model": "m1",
+        "instructions": "INSTRUCTIONS",
+        "input": [
+            {
+                "type": "message",
+                "role": "developer",
+                "content": "DEVELOPER",
+            },
+            {
+                "type": "message",
+                "role": "user",
+                "content": "hi",
+            },
+        ],
+    }
+    view = build_view(_snapshot_with(raw, "openai_responses"))
+    assert view["system"]["text"] == "INSTRUCTIONS\n\nDEVELOPER"
+    assert (
+        view["system"]["source_field"] == "instructions + input[role=system|developer]"
+    )
+
+
 def test_anthropic_view_uses_system_and_input_schema(monkeypatch):
     _enable(monkeypatch)
     raw = {

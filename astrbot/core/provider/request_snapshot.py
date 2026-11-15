@@ -1272,6 +1272,35 @@ def _text_from_parts(value: object) -> str:
     return ""
 
 
+def _system_input_texts(raw: dict) -> list[str]:
+    """Read system/developer message texts from OpenAI Responses input items.
+
+    The Responses API accepts system instructions either in the top-level
+    ``instructions`` field or as ``input`` messages. The snapshot must show the
+    effective system prompt regardless of which shape the provider used.
+
+    Args:
+        raw: Native Responses request body.
+
+    Returns:
+        Non-empty system/developer texts in input order.
+    """
+
+    items = raw.get("input")
+    if not isinstance(items, list):
+        return []
+    texts: list[str] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        if item.get("role") not in ("system", "developer"):
+            continue
+        text = _text_from_parts(item.get("content"))
+        if text:
+            texts.append(text)
+    return texts
+
+
 def _message_entry(
     *,
     role: object,
@@ -1493,11 +1522,27 @@ class OpenAIResponsesAdapter(ProviderAdapter):
     )
 
     def system_text(self, raw: dict) -> str | None:
-        value = raw.get("instructions") if isinstance(raw, dict) else None
-        return (_text_from_parts(value) or None) if value is not None else None
+        if not isinstance(raw, dict):
+            return None
+        parts: list[str] = []
+        instructions = _text_from_parts(raw.get("instructions"))
+        if instructions:
+            parts.append(instructions)
+        parts.extend(_system_input_texts(raw))
+        return "\n\n".join(parts) or None
 
     def system_source_field(self, raw: dict) -> str | None:
-        return "instructions" if self.system_text(raw) is not None else None
+        if not isinstance(raw, dict):
+            return None
+        has_instructions = bool(_text_from_parts(raw.get("instructions")))
+        has_input = bool(_system_input_texts(raw))
+        if has_instructions and has_input:
+            return "instructions + input[role=system|developer]"
+        if has_instructions:
+            return "instructions"
+        if has_input:
+            return "input[role=system|developer]"
+        return None
 
     def messages(self, raw: dict) -> list[dict]:
         items = raw.get("input") if isinstance(raw, dict) else None

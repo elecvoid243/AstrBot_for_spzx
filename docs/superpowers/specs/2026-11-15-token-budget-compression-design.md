@@ -158,14 +158,11 @@ class TokenBudgetCompressor:
 
     async def __call__(self, messages, func_tool=None, spec=None, **_):
         before = self.token_counter.count_tokens(messages)
-        result = ContextTruncator().truncate_by_token_budget(
-            messages, budget_tokens=0, token_counter=self.token_counter
-        )
+        result = ContextTruncator().reset_to_latest_round(messages)
         self.last_shadowed_tokens = before - self.token_counter.count_tokens(result)
         return result
-```
 
-`budget_tokens=0` 的语义即“只保留 leading system 与最新一轮”；轮粒度保证 assistant `tool_calls` 与其 `tool` 结果整批保留或整批丢弃，不会劈开配对。
+不使用 `truncate_by_token_budget(budget_tokens=0)`：该函数在 `budget_tokens <= 0` 时直接返回原列表，`0` 不是“只留最新轮”。新增 `reset_to_latest_round`，复用 `_split_system_rest` / `split_into_rounds` / `fix_messages`，语义即“只保留 leading system 与最新一轮”；轮粒度保证 assistant `tool_calls` 与其 `tool` 结果整批保留或整批丢弃，不会劈开配对。
 
 ### 7.3 窗口状态（随历史落库）
 
@@ -204,9 +201,9 @@ window: WindowState | None = Field(default=None, alias="_window", exclude=True)
 
 收尾提示的注入位置在 `ContextManager.process()` **返回之后**，因此它只在“请求仍可发送”的前提下出现：若换窗后连窗口都放不下，`process()` 直接抛 `ContextCapacityError`，请求不会发出，也就没有“提示发不出去”的分支。典型触发场景是当前轮自身很大、但仍在窗口内，换窗腾不出足够余量。
 
-注入形态：追加在 `messages` 尾部的一条 `Message(role="user", ...)`，带 `internal=True`（新增字段 `Field(default=False, alias="_internal", exclude=True)`）。
+注入形态：追加在 `messages` 尾部的一条 `Message(role="user", ...)`，构造后设 `_internal = True`（`PrivateAttr`，与既有 `_no_save` 同一模式；不是 pydantic 字段，因此天然不参与序列化与相等比较）。
 
-`internal` 的三个消费者：
+`_internal` 的三个消费者：
 
 1. `select_compaction_range` 选择“当前真实请求”时跳过它；
 2. `_save_to_history` 跳过它（不落库、不显示在历史）；
@@ -239,8 +236,9 @@ en-US  [context budget] The context is at its limit and cannot be trimmed furthe
 
 | 文件 | 改动 | 原因 |
 |---|---|---|
-| `astrbot/core/agent/message.py` | 新增 `WindowState`；`Message` 增 `window` / `internal` 内部字段；`model_dump_for_context` 附带 `_window` | D5 状态落库、7.4 提示标记 |
+| `astrbot/core/agent/message.py` | 新增 `WindowState`；`Message` 增 `window` 字段与 `_internal` PrivateAttr；`model_dump_for_context` 附带 `_window` | D5 状态落库、7.4 提示标记 |
 | `astrbot/core/agent/context/config.py` | `ContextConfig.strategy: str = "llm_compress"` | D6 |
+| `astrbot/core/agent/context/truncator.py` | 新增 `reset_to_latest_round(messages)` | 7.2 |
 | `astrbot/core/agent/context/compressor.py` | 新增 `TokenBudgetCompressor`；补 `supports_retries` 能力位 | 7.2、5 |
 | `astrbot/core/agent/context/manager.py` | 策略分支；`isinstance` → 能力位；计算并报告 `remaining`；选压缩机时传 strategy | D6 |
 | `astrbot/core/agent/context/compaction_region.py` | 跳过 `internal` 消息 | 7.4 |
@@ -267,7 +265,7 @@ en-US  [context budget] The context is at its limit and cannot be trimmed furthe
 单元：
 
 1. `resolve_compaction_spec` 阈值不随策略变化（回归）。
-2. `TokenBudgetCompressor` 只保留 system 与最新一轮；tool 配对完整。
+2. `reset_to_latest_round` 只保留 system 与最新一轮；tool 配对完整；`TokenBudgetCompressor` 走同一条路径。
 3. 单轮超窗时抛出 `ContextCapacityError`。
 4. `WindowState` 写回 / 反向扫描 / 缺字段默认值。
 5. 两条提示各只注入一次；`internal` 消息被选择器与保存路径跳过。

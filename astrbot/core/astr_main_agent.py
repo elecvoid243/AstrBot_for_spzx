@@ -2371,6 +2371,7 @@ async def build_main_agent(
             plugin_context,
             event,
         ),
+        context_limit_reached_strategy=config.context_limit_reached_strategy,
         tool_schema_mode=config.tool_schema_mode,
         repeated_tool_notice_enabled=repeated_tool_notice_enabled,
         repeated_tool_notice_threshold=repeated_tool_notice_threshold,

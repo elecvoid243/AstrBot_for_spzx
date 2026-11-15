@@ -97,7 +97,7 @@ from astrbot.core.utils.prefix_diagnostics import record_session_request
 
 from ..context.budget_notice import EXHAUSTED_TEXT, build_reminder
 from ..context.compressor import ContextCompressor
-from ..context.config import ContextConfig
+from ..context.config import ContextConfig, resolve_budget_strategy
 from ..context.manager import ContextManager, ContextUsageSnapshot
 from ..context.token_counter import EstimateTokenCounter, TokenCounter
 from ..hooks import BaseAgentRunHooks
@@ -106,7 +106,9 @@ from ..message import (
     Message,
     ToolCallMessageSegment,
     UserMessageSegment,
+    WindowState,
     bind_checkpoint_messages,
+    latest_window_state,
 )
 from ..response import AgentResponseData, AgentStats
 from ..run_context import ContextWrapper, TContext
@@ -389,6 +391,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         # llm compressor
         llm_compress_keep_recent_ratio: float = 0.15,
         llm_compress_provider: Provider | None = None,
+        context_limit_reached_strategy: str = "llm_compress",
         target_ratio: float = 0.55,
         min_yield_ratio: float = 0.0,
         max_summary_tokens: int = 0,
@@ -412,6 +415,8 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         self.streaming = streaming
         self.llm_compress_keep_recent_ratio = llm_compress_keep_recent_ratio
         self.llm_compress_provider = llm_compress_provider
+        self.context_limit_reached_strategy = context_limit_reached_strategy
+        self.window_state = self._load_window_state(run_context.messages)
         self.target_ratio = target_ratio
         self.min_yield_ratio = min_yield_ratio
         self.max_summary_tokens = max_summary_tokens
@@ -448,9 +453,21 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             )
             compress_threshold_tokens = 0
 
+        resolved_strategy, reminder_tokens = resolve_budget_strategy(
+            context_limit_reached_strategy, provider.provider_config or {}
+        )
+        if resolved_strategy != context_limit_reached_strategy:
+            logger.warning(
+                "Context compression strategy %s needs a provider context "
+                "window; falling back to %s.",
+                context_limit_reached_strategy,
+                resolved_strategy,
+            )
         self.request_context_manager_config = ContextConfig(
             # <=0 disables token-based guarding.
             max_context_tokens=max_context_tokens,
+            strategy=resolved_strategy,
+            reminder_tokens=reminder_tokens,
             # <=0 keeps the compressors' ratio-based trigger.
             compress_threshold_tokens=compress_threshold_tokens,
             threshold_ratio=float(
@@ -1380,6 +1397,23 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                 pause_task.cancel()
                 await asyncio.gather(pause_task, return_exceptions=True)
 
+    def _load_window_state(self, messages: list[Message]) -> WindowState:
+        """Resume the window the loaded history belongs to.
+
+        Args:
+            messages: History loaded for this run.
+
+        Returns:
+            The newest persisted marker, or a fresh window when none exists.
+        """
+        return latest_window_state(messages) or WindowState(id=uuid.uuid4().hex)
+
+    def _on_context_reset(self) -> None:
+        """Start a new window; the notice flags belong to the window that ended."""
+        self.window_state = WindowState(
+            id=uuid.uuid4().hex, seq=self.window_state.seq + 1
+        )
+
     def _inject_budget_notices(self, messages: list[Message]) -> list[Message]:
         """Append the window's one-shot budget notice when one is due.
 
@@ -1644,6 +1678,14 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                             break
             self.run_context.messages = checked
             self._context_usage_snapshot = None
+            if (
+                stage == "main"
+                and (self.request_context_manager.last_compression or {}).get(
+                    "strategy"
+                )
+                == "token_budget"
+            ):
+                self._on_context_reset()
         if stage == "main":
             checked = self._inject_budget_notices(checked)
             self.run_context.messages = checked

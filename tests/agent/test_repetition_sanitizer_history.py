@@ -152,3 +152,27 @@ async def test_save_to_history_keeps_encrypted_think():
     assert think_parts
     assert think_parts[0]["think"] == REPEATED
     assert think_parts[0]["encrypted"] == "sig"
+
+
+@pytest.mark.asyncio
+async def test_save_to_history_stamps_window_and_skips_internal():
+    from astrbot.core.agent.message import WindowState
+
+    stage, event, req = _make_stage()
+    notice = Message(role="user", content="[context budget] wrap up")
+    notice._internal = True
+    messages = [Message(role="user", content="hi"), notice]
+    response = LLMResponse(role="assistant", completion_text="done")
+
+    await stage._save_to_history(
+        event,
+        req,
+        response,
+        messages,
+        None,
+        window_state=WindowState(id="w2", seq=2),
+    )
+
+    history = stage.conv_manager.update_conversation.call_args.kwargs["history"]
+    assert all(item.get("content") != notice.content for item in history)
+    assert history[-1]["_window"]["seq"] == 2

@@ -14,6 +14,7 @@ from astrbot.core.agent.message import (
     CheckpointData,
     CheckpointMessageSegment,
     Message,
+    WindowState,
     dump_messages_with_checkpoints,
 )
 from astrbot.core.agent.response import AgentStats
@@ -543,6 +544,7 @@ class InternalAgentSubStage(Stage):
                                 agent_runner.stats,
                                 user_aborted=agent_runner.was_aborted(),
                                 repetition_cfg=agent_runner.get_repetition_sanitize_config(),
+                                window_state=agent_runner.window_state,
                             )
 
                     elif streaming_response and not stream_to_general:
@@ -619,6 +621,7 @@ class InternalAgentSubStage(Stage):
                             agent_runner.stats,
                             user_aborted=agent_runner.was_aborted(),
                             repetition_cfg=agent_runner.get_repetition_sanitize_config(),
+                            window_state=agent_runner.window_state,
                         )
 
                     asyncio.create_task(
@@ -682,6 +685,7 @@ class InternalAgentSubStage(Stage):
         runner_stats: AgentStats | None,
         user_aborted: bool = False,
         repetition_cfg: RepetitionSanitizeConfig | None = None,
+        window_state: WindowState | None = None,
     ) -> None:
         if not req or not req.conversation:
             return
@@ -693,6 +697,8 @@ class InternalAgentSubStage(Stage):
                 skipped_initial_system = True
                 continue
             if message.role in ["assistant", "user"] and message._no_save:
+                continue
+            if getattr(message, "_internal", False):
                 continue
             messages_to_save.append(message)
 
@@ -708,6 +714,10 @@ class InternalAgentSubStage(Stage):
 
         checkpoint_id = event.get_extra("llm_checkpoint_id")
         has_checkpoint = isinstance(checkpoint_id, str) and bool(checkpoint_id)
+        if window_state is not None and messages_to_save:
+            # The marker rides on the last persisted message: it is written with
+            # the history it describes, so state and history cannot drift.
+            messages_to_save[-1].window = window_state
         message_to_save = dump_messages_with_checkpoints(messages_to_save)
         if not user_aborted and (
             llm_response is None or llm_response.role != "assistant"

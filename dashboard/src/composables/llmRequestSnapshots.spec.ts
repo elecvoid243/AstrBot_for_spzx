@@ -248,6 +248,21 @@ describe("useLlmSnapshots", () => {
     expect(snapshots.error.value).toContain("boom");
   });
 
+  it("re-reads a forced detail instead of answering from the cache", async () => {
+    const detail = { envelope: envelope("a"), raw: {}, view: {} };
+    vi.mocked(llmSnapshotsApi.get).mockResolvedValue({
+      data: { data: detail },
+    } as never);
+
+    const snapshots = useLlmSnapshots("s1");
+    await snapshots.loadDetail("a");
+    await snapshots.loadDetail("a");
+    expect(llmSnapshotsApi.get).toHaveBeenCalledTimes(1);
+
+    await snapshots.loadDetail("a", { force: true });
+    expect(llmSnapshotsApi.get).toHaveBeenCalledTimes(2);
+  });
+
   it("refreshes with the last list filters", async () => {
     vi.mocked(llmSnapshotsApi.list).mockResolvedValue({
       data: {

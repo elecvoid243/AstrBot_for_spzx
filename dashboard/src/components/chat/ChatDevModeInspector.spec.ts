@@ -53,6 +53,9 @@ const COPY = vi.hoisted(() => ({
   "devMode.action.download": "下载",
   "devMode.action.refresh": "刷新",
   "devMode.action.close": "关闭",
+  "devMode.download.done": "已下载",
+  "devMode.download.failed": "下载失败",
+  "devMode.rail.label": "快照列表",
   "devMode.settings.title": "开发者模式",
   "devMode.settings.switch": "记录 LLM 请求快照",
   "devMode.settings.limits": "每会话最多 {count} 条 · {size} · {ttl} 后过期",
@@ -360,6 +363,61 @@ describe("ChatDevModeInspector", () => {
       "s1",
       expect.objectContaining({ turn_id: "turn-9" }),
     );
+    wrapper.unmount();
+  });
+
+  it("shows the per-session byte budget in the limits line", async () => {
+    const wrapper = await mountOpen();
+    const limits = wrapper.find(".inspector-limits");
+    expect(limits.text()).toContain("每会话最多 128 条");
+    expect(limits.text()).toContain("16.0 MB");
+    expect(limits.text()).not.toContain("512 KB");
+    wrapper.unmount();
+  });
+
+  it("reloads the selected detail past the cache from the header action", async () => {
+    const wrapper = await mountOpen();
+    expect(api.get).toHaveBeenCalledTimes(1);
+    const snapshotId = api.get.mock.calls[0][0];
+
+    await wrapper.find(".action-refresh").trigger("click");
+    await flushPromises();
+    await flushPromises();
+
+    expect(api.get).toHaveBeenCalledTimes(2);
+    expect(api.get).toHaveBeenLastCalledWith(snapshotId);
+    expect(wrapper.find(".rail-item.is-active").text()).toContain("step 1");
+    expect(wrapper.find(".detail-title").text()).toContain("step 1");
+    wrapper.unmount();
+  });
+
+  it("resets detail interaction state when switching snapshots", async () => {
+    const wrapper = await mountOpen();
+    expect(wrapper.findAll(".tool-row")).toHaveLength(1);
+
+    await wrapper.find(".tool-search").setValue("nothing-matches");
+    expect(wrapper.findAll(".tool-row")).toHaveLength(0);
+
+    await wrapper.findAll(".rail-item")[1].trigger("click");
+    await flushPromises();
+
+    const search = wrapper.find(".tool-search")
+      .element as HTMLInputElement;
+    expect(search.value).toBe("");
+    expect(wrapper.findAll(".tool-row")).toHaveLength(1);
+    expect(wrapper.find(".detail-title").text()).toContain("step 2");
+    wrapper.unmount();
+  });
+
+  it("closes from the narrow-screen backdrop and keeps the escape path", async () => {
+    const wrapper = await mountOpen();
+    const backdrop = wrapper.find(".devmode-backdrop");
+    expect(backdrop.exists()).toBe(true);
+    await backdrop.trigger("click");
+    expect(wrapper.emitted("update:modelValue")).toEqual([[false]]);
+
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    expect(wrapper.emitted("update:modelValue")).toHaveLength(2);
     wrapper.unmount();
   });
 });

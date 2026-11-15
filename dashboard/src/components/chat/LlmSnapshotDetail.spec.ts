@@ -39,6 +39,9 @@ const COPY = vi.hoisted(() => ({
   "devMode.action.download": "下载",
   "devMode.action.refresh": "刷新",
   "devMode.action.close": "关闭",
+  "devMode.download.done": "已下载",
+  "devMode.download.failed": "下载失败",
+  "devMode.rail.label": "快照列表",
   "devMode.settings.title": "开发者模式",
   "devMode.settings.switch": "记录 LLM 请求快照",
   "devMode.settings.limits": "每会话最多 {count} 条 · {size} · {ttl} 后过期",
@@ -376,5 +379,69 @@ describe("LlmSnapshotDetail", () => {
       expect(head.element.tagName).toBe("BUTTON");
       expect(head.attributes("aria-expanded")).toBeTruthy();
     }
+  });
+
+  it("emits refresh from the detail header action", async () => {
+    const wrapper = mountDetail({ snapshot: snapshot() });
+    expect(wrapper.find(".action-refresh").text()).toBe("刷新");
+    await wrapper.find(".action-refresh").trigger("click");
+    expect(wrapper.emitted("refresh")).toHaveLength(1);
+  });
+
+  it("labels the tool search input from the placeholder copy", () => {
+    const wrapper = mountDetail({ snapshot: snapshot() });
+    expect(wrapper.find(".tool-search").attributes("aria-label")).toBe(
+      "搜索工具名称、描述或来源",
+    );
+  });
+
+  it("shows finish_reason and provider id in the header meta", () => {
+    const wrapper = mountDetail({ snapshot: snapshot() });
+    const subtitle = wrapper.find(".detail-sub").text();
+    expect(subtitle).toContain("tool_calls");
+    expect(subtitle).toContain("deepseek-official");
+  });
+
+  it("renders an unknown cache hit ratio instead of a dash", async () => {
+    const wrapper = mountDetail({
+      snapshot: snapshot({ diagnostics: { cache: { hit_ratio: null } } }),
+    });
+    await wrapper.find(".sec-diagnostics .sec-head").trigger("click");
+    const row = wrapper
+      .findAll(".diag-row")
+      .find((node) => node.text().includes("cache.hit_ratio"));
+    expect(row).toBeTruthy();
+    expect(row?.text()).toContain("unknown");
+  });
+
+  it("reports download success with role=status and resets after 1.2s", async () => {
+    const createObjectURL = vi.fn(() => "blob:snapshot");
+    const revokeObjectURL = vi.fn();
+    Object.defineProperty(URL, "createObjectURL", {
+      configurable: true,
+      value: createObjectURL,
+    });
+    Object.defineProperty(URL, "revokeObjectURL", {
+      configurable: true,
+      value: revokeObjectURL,
+    });
+    const click = vi
+      .spyOn(HTMLAnchorElement.prototype, "click")
+      .mockImplementation(() => undefined);
+
+    const wrapper = mountDetail({ snapshot: snapshot() });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+
+    await wrapper.find(".action-download").trigger("click");
+    expect(createObjectURL).toHaveBeenCalledTimes(1);
+    expect(revokeObjectURL).toHaveBeenCalledTimes(1);
+    const feedback = wrapper.find(".action-feedback");
+    expect(feedback.text()).toBe("已下载");
+    expect(feedback.attributes("role")).toBe("status");
+
+    vi.advanceTimersByTime(1200);
+    await nextTick();
+    expect(wrapper.find(".action-feedback").exists()).toBe(false);
+    click.mockRestore();
   });
 });

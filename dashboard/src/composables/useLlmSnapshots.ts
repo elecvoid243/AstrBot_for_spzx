@@ -92,9 +92,13 @@ export function useLlmSnapshots(sessionId?: LlmSnapshotSessionSource) {
 
   async function loadDetail(
     snapshotId: string,
+    options: { force?: boolean } = {},
   ): Promise<LlmSnapshotDetail | null> {
     const requestSessionId = resolveSessionId();
     bindSession(requestSessionId);
+    // A forced read (detail-header refresh) must not answer from the cache,
+    // otherwise the button would look inert.
+    if (options.force) detailCache.delete(snapshotId);
     const cached = detailCache.get(snapshotId);
     if (cached) {
       error.value = null;

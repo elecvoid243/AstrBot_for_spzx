@@ -21,15 +21,11 @@
       </div>
       <div class="detail-actions">
         <span
-          v-if="copyState !== 'idle'"
-          class="copy-feedback"
+          v-if="actionState !== 'idle'"
+          class="copy-feedback action-feedback"
           role="status"
         >
-          {{
-            copyState === "copied"
-              ? tm("copy.copied")
-              : tm("devMode.copy.failed")
-          }}
+          {{ feedbackText }}
         </span>
         <button
           type="button"
@@ -44,6 +40,13 @@
           @click="copyJson"
         >
           {{ tm("devMode.action.copy") }}
+        </button>
+        <button
+          type="button"
+          class="detail-action action-refresh"
+          @click="emit('refresh')"
+        >
+          {{ tm("devMode.action.refresh") }}
         </button>
       </div>
     </header>
@@ -263,6 +266,7 @@
             type="search"
             class="tool-search mono"
             :placeholder="tm('devMode.tool.searchPlaceholder')"
+            :aria-label="tm('devMode.tool.searchPlaceholder')"
           />
           <span class="tool-count mono"
             >{{ filteredTools.length }} / {{ tools.length }}</span
@@ -456,6 +460,8 @@ const props = defineProps<{
   previous?: LlmSnapshotDetail;
 }>();
 
+const emit = defineEmits<{ refresh: [] }>();
+
 const { tm } = useModuleI18n("features/chat");
 
 interface SnapshotSystem {
@@ -574,7 +580,7 @@ function formatSigned(value: number): string {
 }
 
 function formatRatio(value: number | null): string {
-  return value === null ? "—" : `${Math.round(value * 100)}%`;
+  return value === null ? "unknown" : `${Math.round(value * 100)}%`;
 }
 
 const envelope = computed<LlmRequestSnapshotEnvelope>(
@@ -640,7 +646,9 @@ const subtitle = computed(() => {
   const attempt = num(request.value, "attempt");
   return [
     envelope.value.status,
+    str(response.value, "finish_reason"),
     modelName.value,
+    str(provider.value, "id"),
     str(provider.value, "host") ?? "—",
     attempt !== null ? `attempt ${attempt}` : null,
   ]
@@ -944,16 +952,32 @@ const rawJson = computed(() =>
 
 // ── Copy / download ─────────────────────────────────────────────────
 
-type CopyState = "idle" | "copied" | "failed";
+type ActionState =
+  | "idle"
+  | "copied"
+  | "copy-failed"
+  | "downloaded"
+  | "download-failed";
 
-const copyState = ref<CopyState>("idle");
+const FEEDBACK_KEYS: Record<Exclude<ActionState, "idle">, string> = {
+  copied: "copy.copied",
+  "copy-failed": "devMode.copy.failed",
+  downloaded: "devMode.download.done",
+  "download-failed": "devMode.download.failed",
+};
+
+const actionState = ref<ActionState>("idle");
 let feedbackTimer: ReturnType<typeof setTimeout> | null = null;
 
-function showCopyFeedback(state: Exclude<CopyState, "idle">): void {
-  copyState.value = state;
+const feedbackText = computed(() =>
+  actionState.value === "idle" ? "" : tm(FEEDBACK_KEYS[actionState.value]),
+);
+
+function showActionFeedback(state: Exclude<ActionState, "idle">): void {
+  actionState.value = state;
   if (feedbackTimer !== null) clearTimeout(feedbackTimer);
   feedbackTimer = setTimeout(() => {
-    copyState.value = "idle";
+    actionState.value = "idle";
     feedbackTimer = null;
   }, 1200);
 }
@@ -980,25 +1004,31 @@ async function writeClipboard(text: string): Promise<void> {
 async function copyJson(): Promise<void> {
   try {
     await writeClipboard(rawJson.value);
-    showCopyFeedback("copied");
+    showActionFeedback("copied");
   } catch {
-    showCopyFeedback("failed");
+    showActionFeedback("copy-failed");
   }
 }
 
 function downloadJson(): void {
   if (typeof URL === "undefined" || typeof URL.createObjectURL !== "function") {
+    showActionFeedback("download-failed");
     return;
   }
-  const blob = new Blob([rawJson.value], { type: "application/json" });
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = `${envelope.value.snapshot_id || "llm-snapshot"}.json`;
-  document.body.appendChild(anchor);
-  anchor.click();
-  anchor.remove();
-  URL.revokeObjectURL(url);
+  try {
+    const blob = new Blob([rawJson.value], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `${envelope.value.snapshot_id || "llm-snapshot"}.json`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(url);
+    showActionFeedback("downloaded");
+  } catch {
+    showActionFeedback("download-failed");
+  }
 }
 
 onBeforeUnmount(() => {

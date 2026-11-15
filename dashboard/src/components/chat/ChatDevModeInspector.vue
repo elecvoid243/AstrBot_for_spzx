@@ -10,169 +10,190 @@
   a diff.
 -->
 <template>
-  <transition name="slide-left">
-    <aside
+  <div class="devmode-shell" :class="{ 'is-open': modelValue }">
+    <div
       v-if="modelValue"
-      ref="panelRef"
-      class="devmode-inspector"
-      :style="panelWidth !== null ? { width: `${panelWidth}px` } : undefined"
-    >
-      <div class="inspector-resizer" @mousedown="startResize" />
+      class="devmode-backdrop"
+      aria-hidden="true"
+      @click="close"
+    />
+    <transition name="slide-left">
+      <aside
+        v-if="modelValue"
+        ref="panelRef"
+        class="devmode-inspector"
+        :aria-label="tm('devMode.title')"
+        :aria-busy="listLoading ? 'true' : undefined"
+        :style="panelWidth !== null ? { width: `${panelWidth}px` } : undefined"
+      >
+        <div class="inspector-resizer" @mousedown="startResize" />
 
-      <header class="inspector-head">
-        <div class="inspector-heading">
-          <div class="inspector-title">{{ tm("devMode.title") }}</div>
-          <div class="inspector-subtitle">{{ subtitle }}</div>
+        <header class="inspector-head">
+          <div class="inspector-heading">
+            <div class="inspector-title">{{ tm("devMode.title") }}</div>
+            <div class="inspector-subtitle">{{ subtitle }}</div>
+          </div>
+          <div class="inspector-actions">
+            <label v-if="canEdit" class="inspector-switch">
+              <v-switch
+                class="devmode-switch"
+                :model-value="enabled"
+                density="compact"
+                hide-details
+                color="primary"
+                @update:model-value="emit('toggle')"
+              />
+              <span class="inspector-switch-label mono">{{
+                tm("devMode.settings.switch")
+              }}</span>
+            </label>
+            <button
+              type="button"
+              class="inspector-action inspector-refresh"
+              :disabled="!enabled || listLoading"
+              @click="handleRefresh"
+            >
+              {{ listLoading ? "…" : tm("devMode.action.refresh") }}
+            </button>
+            <button
+              type="button"
+              class="inspector-action inspector-close"
+              @click="close"
+            >
+              {{ tm("devMode.action.close") }}
+            </button>
+          </div>
+        </header>
+
+        <div class="inspector-settings">
+          <span class="inspector-notice">{{ tm("devMode.notice.memory") }}</span>
+          <span v-if="limitsCopy" class="inspector-limits mono">{{
+            limitsCopy
+          }}</span>
         </div>
-        <div class="inspector-actions">
-          <label v-if="canEdit" class="inspector-switch">
-            <v-switch
-              class="devmode-switch"
-              :model-value="enabled"
-              density="compact"
-              hide-details
-              color="primary"
-              @update:model-value="emit('toggle')"
+
+        <div v-if="error" class="inspector-error">
+          {{ tm("devMode.error", { message: error ?? "" }) }}
+        </div>
+
+        <div v-if="!enabled" class="inspector-state state-disabled">
+          <p>{{ tm("devMode.state.disabled") }}</p>
+        </div>
+        <div v-else-if="expired" class="inspector-state state-expired">
+          <p>{{ tm("devMode.state.expired") }}</p>
+        </div>
+        <div
+          v-else-if="!items.length && listLoading"
+          class="inspector-state state-loading"
+        >
+          <p class="mono">…</p>
+        </div>
+        <div v-else-if="!items.length" class="inspector-state state-empty">
+          <p>{{ tm("devMode.state.empty") }}</p>
+        </div>
+        <div v-else class="inspector-body">
+          <nav
+            class="inspector-rail"
+            :aria-label="tm('devMode.rail.label')"
+          >
+            <div v-if="chatItems.length" class="rail-group">
+              <div class="rail-group-title mono">
+                {{ tm("devMode.group.turn") }}
+              </div>
+              <button
+                v-for="item in chatItems"
+                :key="item.snapshot_id"
+                type="button"
+                class="rail-item"
+                :class="{ 'is-active': selectedId === item.snapshot_id }"
+                :aria-current="
+                  selectedId === item.snapshot_id ? 'true' : undefined
+                "
+                @click="selectSnapshot(item.snapshot_id)"
+              >
+                <span class="rail-line">
+                  <span class="rail-kind">{{ kindLabel(item) }}</span>
+                  <span v-if="item.step != null" class="rail-step mono"
+                    >step {{ item.step }}</span
+                  >
+                  <span class="rail-status mono">{{ item.status }}</span>
+                </span>
+                <span class="rail-line rail-sub">
+                  <span class="rail-model mono">{{ modelOf(item) }}</span>
+                  <span class="rail-duration mono">{{
+                    formatDuration(item.duration_ms)
+                  }}</span>
+                </span>
+                <span v-if="badges(item).length" class="rail-badges">
+                  <span
+                    v-for="badge in badges(item)"
+                    :key="badge.text"
+                    class="rail-badge mono"
+                    :class="badge.tone ? `is-${badge.tone}` : undefined"
+                    >{{ badge.text }}</span
+                  >
+                </span>
+              </button>
+            </div>
+
+            <div v-if="auxItems.length" class="rail-group">
+              <div class="rail-group-title mono">
+                {{ tm("devMode.group.aux") }}
+              </div>
+              <button
+                v-for="item in auxItems"
+                :key="item.snapshot_id"
+                type="button"
+                class="rail-item"
+                :class="{ 'is-active': selectedId === item.snapshot_id }"
+                :aria-current="
+                  selectedId === item.snapshot_id ? 'true' : undefined
+                "
+                @click="selectSnapshot(item.snapshot_id)"
+              >
+                <span class="rail-line">
+                  <span class="rail-kind">{{ kindLabel(item) }}</span>
+                  <span v-if="item.step != null" class="rail-step mono"
+                    >step {{ item.step }}</span
+                  >
+                  <span class="rail-status mono">{{ item.status }}</span>
+                </span>
+                <span class="rail-line rail-sub">
+                  <span class="rail-model mono">{{ modelOf(item) }}</span>
+                  <span class="rail-duration mono">{{
+                    formatDuration(item.duration_ms)
+                  }}</span>
+                </span>
+                <span v-if="badges(item).length" class="rail-badges">
+                  <span
+                    v-for="badge in badges(item)"
+                    :key="badge.text"
+                    class="rail-badge mono"
+                    :class="badge.tone ? `is-${badge.tone}` : undefined"
+                    >{{ badge.text }}</span
+                  >
+                </span>
+              </button>
+            </div>
+          </nav>
+
+          <div class="inspector-detail">
+            <LlmSnapshotDetailView
+              v-if="selectedDetail"
+              :key="selectedId ?? ''"
+              :snapshot="selectedDetail"
+              :previous="previousDetail ?? undefined"
+              @refresh="handleDetailRefresh"
             />
-            <span class="inspector-switch-label mono">{{
-              tm("devMode.settings.switch")
-            }}</span>
-          </label>
-          <button
-            type="button"
-            class="inspector-action inspector-refresh"
-            :disabled="!enabled"
-            @click="handleRefresh"
-          >
-            {{ tm("devMode.action.refresh") }}
-          </button>
-          <button
-            type="button"
-            class="inspector-action inspector-close"
-            @click="close"
-          >
-            {{ tm("devMode.action.close") }}
-          </button>
-        </div>
-      </header>
-
-      <div class="inspector-settings">
-        <span class="inspector-notice">{{ tm("devMode.notice.memory") }}</span>
-        <span v-if="limitsCopy" class="inspector-limits mono">{{
-          limitsCopy
-        }}</span>
-      </div>
-
-      <div v-if="error" class="inspector-error">
-        {{ tm("devMode.error", { message: error ?? "" }) }}
-      </div>
-
-      <div v-if="!enabled" class="inspector-state state-disabled">
-        <p>{{ tm("devMode.state.disabled") }}</p>
-      </div>
-      <div v-else-if="expired" class="inspector-state state-expired">
-        <p>{{ tm("devMode.state.expired") }}</p>
-      </div>
-      <div v-else-if="!items.length" class="inspector-state state-empty">
-        <p>{{ tm("devMode.state.empty") }}</p>
-      </div>
-      <div v-else class="inspector-body">
-        <nav class="inspector-rail">
-          <div v-if="chatItems.length" class="rail-group">
-            <div class="rail-group-title mono">
-              {{ tm("devMode.group.turn") }}
+            <div v-else-if="detailLoading" class="detail-loading mono">…</div>
+            <div v-else class="detail-empty">
+              {{ tm("devMode.state.select") }}
             </div>
-            <button
-              v-for="item in chatItems"
-              :key="item.snapshot_id"
-              type="button"
-              class="rail-item"
-              :class="{ 'is-active': selectedId === item.snapshot_id }"
-              :aria-current="
-                selectedId === item.snapshot_id ? 'true' : undefined
-              "
-              @click="selectSnapshot(item.snapshot_id)"
-            >
-              <span class="rail-line">
-                <span class="rail-kind">{{ kindLabel(item) }}</span>
-                <span v-if="item.step != null" class="rail-step mono"
-                  >step {{ item.step }}</span
-                >
-                <span class="rail-status mono">{{ item.status }}</span>
-              </span>
-              <span class="rail-line rail-sub">
-                <span class="rail-model mono">{{ modelOf(item) }}</span>
-                <span class="rail-duration mono">{{
-                  formatDuration(item.duration_ms)
-                }}</span>
-              </span>
-              <span v-if="badges(item).length" class="rail-badges">
-                <span
-                  v-for="badge in badges(item)"
-                  :key="badge.text"
-                  class="rail-badge mono"
-                  :class="badge.tone ? `is-${badge.tone}` : undefined"
-                  >{{ badge.text }}</span
-                >
-              </span>
-            </button>
-          </div>
-
-          <div v-if="auxItems.length" class="rail-group">
-            <div class="rail-group-title mono">
-              {{ tm("devMode.group.aux") }}
-            </div>
-            <button
-              v-for="item in auxItems"
-              :key="item.snapshot_id"
-              type="button"
-              class="rail-item"
-              :class="{ 'is-active': selectedId === item.snapshot_id }"
-              :aria-current="
-                selectedId === item.snapshot_id ? 'true' : undefined
-              "
-              @click="selectSnapshot(item.snapshot_id)"
-            >
-              <span class="rail-line">
-                <span class="rail-kind">{{ kindLabel(item) }}</span>
-                <span v-if="item.step != null" class="rail-step mono"
-                  >step {{ item.step }}</span
-                >
-                <span class="rail-status mono">{{ item.status }}</span>
-              </span>
-              <span class="rail-line rail-sub">
-                <span class="rail-model mono">{{ modelOf(item) }}</span>
-                <span class="rail-duration mono">{{
-                  formatDuration(item.duration_ms)
-                }}</span>
-              </span>
-              <span v-if="badges(item).length" class="rail-badges">
-                <span
-                  v-for="badge in badges(item)"
-                  :key="badge.text"
-                  class="rail-badge mono"
-                  :class="badge.tone ? `is-${badge.tone}` : undefined"
-                  >{{ badge.text }}</span
-                >
-              </span>
-            </button>
-          </div>
-        </nav>
-
-        <div class="inspector-detail">
-          <LlmSnapshotDetailView
-            v-if="selectedDetail"
-            :snapshot="selectedDetail"
-            :previous="previousDetail ?? undefined"
-          />
-          <div v-else-if="detailLoading" class="detail-loading mono">…</div>
-          <div v-else class="detail-empty">
-            {{ tm("devMode.state.select") }}
           </div>
         </div>
-      </div>
-    </aside>
-  </transition>
+      </aside>
+    </transition>
+  </div>
 </template>
 
 <script setup lang="ts">
@@ -302,7 +323,9 @@ const limitsCopy = computed(() => {
   if (!value) return "";
   return tm("devMode.settings.limits", {
     count: value.max_snapshots_per_session,
-    size: formatSize(value.max_bytes_per_snapshot),
+    // The copy says "每会话", so report the session budget, not the
+    // per-snapshot cap (which is 32x smaller and misleading here).
+    size: formatSize(value.max_bytes_per_session),
     ttl: formatTtl(value.ttl_seconds),
   });
 });
@@ -353,28 +376,53 @@ function badges(item: LlmRequestSnapshotEnvelope): RailBadge[] {
   return result;
 }
 
-async function selectSnapshot(snapshotId: string): Promise<void> {
-  selectedId.value = snapshotId;
-  previousDetail.value = null;
-  detailLoading.value = true;
-  const detail = await loadDetail(snapshotId);
-  if (selectedId.value !== snapshotId) return;
-  selectedDetail.value = detail;
-  detailLoading.value = false;
-  if (!detail) return;
-
+/** Loads the "previous step" detail used by the diff section. */
+async function loadPreviousDetail(snapshotId: string): Promise<void> {
   const index = chatItems.value.findIndex(
     (item) => item.snapshot_id === snapshotId,
   );
   const step =
-    typeof detail.envelope.step === "number" ? detail.envelope.step : null;
-  if (index > 0 && step !== null && step >= 2) {
-    const previousItem = chatItems.value[index - 1];
-    const previous = await loadDetail(previousItem.snapshot_id);
-    if (selectedId.value === snapshotId) {
-      previousDetail.value = previous;
-    }
+    typeof selectedDetail.value?.envelope.step === "number"
+      ? selectedDetail.value.envelope.step
+      : null;
+  if (index <= 0 || step === null || step < 2) return;
+  const previousItem = chatItems.value[index - 1];
+  const previous = await loadDetail(previousItem.snapshot_id);
+  if (selectedId.value === snapshotId) {
+    previousDetail.value = previous;
   }
+}
+
+/**
+ * Clears the visible detail before awaiting so the loading state can show,
+ * then renders the detail only when the selection did not move on.
+ */
+async function loadSelectedDetail(
+  snapshotId: string,
+  options: { force?: boolean } = {},
+): Promise<void> {
+  selectedDetail.value = null;
+  previousDetail.value = null;
+  detailLoading.value = true;
+  const detail = await loadDetail(snapshotId, options);
+  if (selectedId.value !== snapshotId) return;
+  selectedDetail.value = detail;
+  detailLoading.value = false;
+  if (detail) {
+    await loadPreviousDetail(snapshotId);
+  }
+}
+
+async function selectSnapshot(snapshotId: string): Promise<void> {
+  selectedId.value = snapshotId;
+  await loadSelectedDetail(snapshotId);
+}
+
+/** Detail-header refresh: bypass the cache, keep the current selection. */
+function handleDetailRefresh(): void {
+  const snapshotId = selectedId.value;
+  if (!snapshotId) return;
+  void loadSelectedDetail(snapshotId, { force: true });
 }
 
 async function loadListAndSelect(
@@ -480,6 +528,16 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
+/* The shell only exists to host the narrow-screen backdrop; on desktop
+   `display: contents` keeps the panel a direct flex item of the chat layout. */
+.devmode-shell {
+  display: contents;
+}
+
+.devmode-backdrop {
+  display: none;
+}
+
 .devmode-inspector {
   --di-border: var(--chat-border, rgba(var(--v-theme-on-surface), 0.14));
   --di-muted: rgba(var(--v-theme-on-surface), 0.56);
@@ -768,6 +826,23 @@ onBeforeUnmount(() => {
 /* ── Narrow screens: full-screen, horizontal rail ──────────────── */
 
 @media (max-width: 999px) {
+  .devmode-shell.is-open {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 1299;
+    /* Only the backdrop and the panel itself should take clicks. */
+    pointer-events: none;
+  }
+
+  .devmode-backdrop {
+    display: block;
+    position: absolute;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.42);
+    pointer-events: auto;
+  }
+
   .devmode-inspector {
     position: fixed;
     inset: 0;
@@ -776,6 +851,7 @@ onBeforeUnmount(() => {
     height: 100dvh;
     margin-top: 0;
     border-left: 0;
+    pointer-events: auto;
   }
 
   .inspector-resizer {

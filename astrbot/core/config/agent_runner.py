@@ -8,10 +8,8 @@ from astrbot import logger
 AGENT_RUNNER_TYPES = ("local", "dify", "coze", "dashscope", "deerflow")
 THIRD_PARTY_AGENT_RUNNER_TYPES = AGENT_RUNNER_TYPES[1:]
 
-IMPLEMENTED_OVERFLOW_STRATEGIES = ("llm_compress",)
+IMPLEMENTED_OVERFLOW_STRATEGIES = ("llm_compress", "token_budget")
 """Compression strategies the runtime can actually execute."""
-PLANNED_OVERFLOW_STRATEGIES = ("token_budget",)
-"""Selectable placeholders for strategies that are not implemented yet."""
 _warned_overflow_strategies: set[str] = set()
 
 
@@ -219,9 +217,9 @@ def resolve_context_compression_config(
     """
     strategy = compression_config.get("overflow_strategy", "llm_compress")
     if strategy not in IMPLEMENTED_OVERFLOW_STRATEGIES:
-        # Deprecated turn truncation and the planned token-budget strategy both
-        # run LLM compression: leaving the raw value here would drop the
-        # compression provider and silently degrade to truncation.
+        # Deprecated turn truncation and any unknown value run LLM compression:
+        # leaving the raw value here would drop the compression provider and
+        # silently degrade to truncation.
         if isinstance(strategy, str) and strategy not in _warned_overflow_strategies:
             _warned_overflow_strategies.add(strategy)
             logger.warning(
@@ -298,12 +296,11 @@ def normalize_agent_runner(agent_runner: object) -> dict[str, Any]:
     default = AGENT_RUNNER_CONFIG_DEFAULTS[runner_type]
     normalized = _normalize_value(config, default)
     if runner_type == "local":
-        # Keep the placeholder visible in the UI while rewriting legacy values
-        # (e.g. the deprecated ``truncate_by_turns``) so the select never shows
-        # a raw strategy name that the runtime no longer honours.
-        if normalized["compression"]["overflow_strategy"] not in (
-            *IMPLEMENTED_OVERFLOW_STRATEGIES,
-            *PLANNED_OVERFLOW_STRATEGIES,
+        # Rewrite legacy values (e.g. the deprecated ``truncate_by_turns``) so
+        # the select never shows a raw strategy name the runtime cannot run.
+        if (
+            normalized["compression"]["overflow_strategy"]
+            not in IMPLEMENTED_OVERFLOW_STRATEGIES
         ):
             normalized["compression"]["overflow_strategy"] = (
                 IMPLEMENTED_OVERFLOW_STRATEGIES[0]

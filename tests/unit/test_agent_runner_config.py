@@ -194,9 +194,9 @@ def test_local_legacy_fields_are_fully_migrated():
     }.intersection(config["provider_settings"])
 
 
-def test_overflow_strategy_resolves_placeholder_and_legacy_values_to_llm():
-    """Only LLM compression is implemented, so no value may disable it."""
-    for stored in ("token_budget", "truncate_by_turns", "", 0):
+def test_overflow_strategy_falls_back_for_unknown_values():
+    """Deprecated and malformed values never disable compression."""
+    for stored in ("truncate_by_turns", "", 0):
         resolved = resolve_context_compression_config({"overflow_strategy": stored})
         assert resolved["context_limit_reached_strategy"] == "llm_compress"
 
@@ -204,8 +204,22 @@ def test_overflow_strategy_resolves_placeholder_and_legacy_values_to_llm():
     assert default["context_limit_reached_strategy"] == "llm_compress"
 
 
-def test_normalize_keeps_placeholder_and_rewrites_deprecated_strategy():
-    """The planned option survives a save; a dead strategy does not."""
+def test_resolve_keeps_implemented_token_budget_strategy():
+    """An implemented strategy is passed through instead of rewritten."""
+    resolved = resolve_context_compression_config(
+        {"overflow_strategy": "token_budget"}
+    )
+    assert resolved["context_limit_reached_strategy"] == "token_budget"
+
+
+def test_resolve_falls_back_unknown_strategy():
+    """A strategy the runtime cannot execute resolves to LLM compression."""
+    resolved = resolve_context_compression_config({"overflow_strategy": "memento"})
+    assert resolved["context_limit_reached_strategy"] == "llm_compress"
+
+
+def test_normalize_keeps_implemented_and_rewrites_deprecated_strategy():
+    """A stored implemented strategy survives a save; a dead one does not."""
     placeholder = normalize_agent_runner(
         {"runner_type": "local", "config": {"compression": {}}}
     )

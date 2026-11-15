@@ -259,20 +259,24 @@ def record_team_source(
     event.set_extra(TEAM_SOURCES_KEY, items)
 
 
-def bounded_context_value(value: object) -> dict:
+def bounded_context_value(value: object, limit: int = FULL_CHARS) -> dict:
     """Bound and sanitize a provider-facing observation without altering the request.
 
     Args:
         value: JSON-compatible observation containing only explicitly chosen fields.
+        limit: Character/traversal budget of the sanitized copy. The default
+            keeps the historical behavior of every existing caller.
 
     Returns:
-        Sanitized value and truncation information.
+        Sanitized value and truncation information, including how many
+        redactions were applied.
     """
-    budget = FULL_CHARS
+    budget = limit
+    redactions = 0
     truncated = False
 
     def visit(item):
-        nonlocal budget, truncated
+        nonlocal budget, redactions, truncated
         budget -= 1
         if budget <= 0:
             truncated = True
@@ -294,6 +298,7 @@ def bounded_context_value(value: object) -> dict:
                 "input_file",
             }:
                 result = {"type": part_type, "omitted": "binary or local media content"}
+                redactions += 1
                 pending = [item]
                 while pending:
                     part = pending.pop()
@@ -336,6 +341,7 @@ def bounded_context_value(value: object) -> dict:
                                             or parsed.fragment
                                         ):
                                             result["reference_redacted"] = True
+                                            redactions += 1
                                     elif child.startswith("data:"):
                                         result["omitted"] = "binary data URI"
                                     else:
@@ -353,6 +359,7 @@ def bounded_context_value(value: object) -> dict:
                             } and isinstance(child, str):
                                 result["original_length"] = len(child)
                                 result["omitted"] = "binary media content"
+                                redactions += 1
                                 result.pop("url", None)
                             elif isinstance(child, (dict, list)):
                                 pending.append(child)
@@ -384,6 +391,7 @@ def bounded_context_value(value: object) -> dict:
                         if isinstance(v, (str, bytes))
                         else None,
                     }
+                    redactions += 1
                     budget -= 1
                 else:
                     result[key] = visit(v)
@@ -413,12 +421,13 @@ def bounded_context_value(value: object) -> dict:
                     if budget <= 0:
                         truncated = True
                         return ""
-            item = re.sub(
+            item, replaced = re.subn(
                 r"data:(?:image|audio|video|application)/[^\s,;]+(?:;[^\s,]*)?,[A-Za-z0-9+/=_-]+",
                 "[binary data URI omitted]",
                 item,
                 flags=re.IGNORECASE,
             )
+            redactions += replaced
             length = len(item)
             result = item[:budget]
             budget -= len(result)
@@ -434,7 +443,8 @@ def bounded_context_value(value: object) -> dict:
     return {
         "value": sanitized,
         "truncated": truncated,
-        "limit": FULL_CHARS,
+        "limit": limit,
+        "redactions": redactions,
         "original_length": len(json.dumps(value, ensure_ascii=False, default=str)),
         "reason": "content limit" if truncated else None,
     }

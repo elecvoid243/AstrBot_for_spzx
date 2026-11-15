@@ -400,6 +400,7 @@ DEFAULT_CONFIG = {
     # definition; written through /api/chat/ui-settings rather than the
     # system config editor, hence no CONFIG_METADATA entry.
     "chatui": {
+        "developer_mode": False,
         "remote_sessions_enabled": False,
         "remote_session_creation_enabled": False,
         "thinking_effort": {

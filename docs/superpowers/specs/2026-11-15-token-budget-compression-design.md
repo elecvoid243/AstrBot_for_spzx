@@ -53,7 +53,7 @@ codex 侧的参照实现：
 | D1 | 换窗严格沿用 codex：只留初始上下文与当前轮，不保留最近历史 | 取代早期“按预算保留最近完整轮”的方案 |
 | D2 | `token_budget` 与 `llm_compress` **共用同一套压缩配置** | 取代早期“两套命名空间 + config 迁移”的方案；零迁移 |
 | D3 | 范围包含两条提示（阈值提醒 + 收尾提示） | 对齐 codex 的完整语义 |
-| D4 | 提醒阈值可配，文案内置（四语常量） | 与现有“压缩提示词不提供配置项”的口径一致 |
+| D4 | 提醒阈值可配，文案内置（**模型可见，英文常量**） | 内核没有运行时 i18n（`i18n_utils` 只服务配置元数据），与 codex 一致用英文控制消息；只有 UI 文案走四语 |
 | D5 | 窗口状态**随历史落库**（内部字段 + 反向扫描取最新） | 取代早期“进程内 registry”；消除状态与历史不同源 |
 | D6 | 插入点为 `ContextConfig.strategy` + `TokenBudgetCompressor` | 公共流程（工具结果剪枝、容量复查、报告、兜底）全部保留 |
 | D7 | `config_version` 不 bump，无配置迁移 | 占位键已在位，只删除“未实现”回落 |
@@ -162,6 +162,8 @@ class TokenBudgetCompressor:
         self.last_shadowed_tokens = before - self.token_counter.count_tokens(result)
         return result
 
+```
+
 不使用 `truncate_by_token_budget(budget_tokens=0)`：该函数在 `budget_tokens <= 0` 时直接返回原列表，`0` 不是“只留最新轮”。新增 `reset_to_latest_round`，复用 `_split_system_rest` / `split_into_rounds` / `fix_messages`，语义即“只保留 leading system 与最新一轮”；轮粒度保证 assistant `tool_calls` 与其 `tool` 结果整批保留或整批丢弃，不会劈开配对。
 
 ### 7.3 窗口状态（随历史落库）
@@ -209,20 +211,17 @@ window: WindowState | None = Field(default=None, alias="_window", exclude=True)
 2. `_save_to_history` 跳过它（不落库、不显示在历史）；
 3. 模型侧照常可见（这正是提示的目的）。
 
-文案（内置常量，四语各一份）：
+文案（内置常量，英文；模型可见的控制消息，不参与 UI i18n）：
 
 ```
-zh-CN  [context budget] 本窗口剩余 {n} tokens。请优先收尾当前任务；如需继续，
-       先给出结论，再拆到下一轮。
-zh-CN  [context budget] 上下文已达上限且无法再裁剪。请直接给出当前结论，
-       不要再发起新的工具调用。
-en-US  [context budget] {n} tokens left in this window. Wrap up the current task
-       first; if more work is needed, give a conclusion and continue next turn.
-en-US  [context budget] The context is at its limit and cannot be trimmed further.
-       Give your current conclusion without starting new tool calls.
+[context budget] {n} tokens left in this window. Wrap up the current task first;
+if more work is needed, give a conclusion and continue next turn.
+
+[context budget] The context is at its limit and cannot be trimmed further.
+Give your current conclusion without starting new tool calls.
 ```
 
-`ru-RU` / `ja-JP` 按同义翻译；`{n}` 为原始整数。
+`{n}` 为原始整数。内核侧不维护四语表：没有语言判断依据的四语常量属于死代码；模型对英文控制消息的遵循度与语言无关。
 
 ### 7.5 不可解的容量
 

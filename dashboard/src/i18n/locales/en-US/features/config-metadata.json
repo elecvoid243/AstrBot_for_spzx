@@ -262,6 +262,10 @@
           "description": "Extra Whitelisted Directories for Workspace Mode",
           "hint": "When the file access mode is workspace, absolute paths that are additionally writable besides the session workspace and temporary directories."
         },
+        "file_access_readonly_blocked_tools": {
+          "description": "Blocked Tools in Read-Only Mode",
+          "hint": "When the file access mode is readonly, these tools are added to denied_tools (rejected at execution time, while their schema stays visible to the LLM). The defaults cover the core and plugin file write tools, code formatting, todo and vivado write tools. astrbot_execute_shell / astrbot_execute_python are intentionally left out: the Windows ACL sandbox already constrains their writes, and disabling them would reduce LLM capability."
+        },
         "file_remove_blacklist": {
           "description": "File Deletion Blacklist Directories",
           "hint": "Absolute path prefixes the astrbot_file_remove tool is forbidden to delete. Applied on top of the built-in system directory blacklist; a matching prefix (including its subpaths) rejects the deletion."

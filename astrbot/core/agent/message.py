@@ -9,6 +9,7 @@ from pydantic import (
     GetCoreSchemaHandler,
     PrivateAttr,
     ValidationError,
+    field_validator,
     model_serializer,
     model_validator,
 )
@@ -193,6 +194,20 @@ class CheckpointData(BaseModel):
 CHECKPOINT_ROLE = "_checkpoint"
 
 
+class WindowState(BaseModel):
+    """Context window identity and one-shot notice flags.
+
+    Persisted with the history it describes (``_window``), so a restarted
+    process reads the same window the saved messages belong to.
+    """
+
+    id: str
+    seq: int = 0
+    """Window number; 0 means no reset has happened yet."""
+    reminder_sent: bool = False
+    exhausted_sent: bool = False
+
+
 class Message(BaseModel):
     """A message in a conversation."""
 
@@ -221,9 +236,13 @@ class Message(BaseModel):
         default=False, alias="_tool_result_unknown", exclude=True
     )
     """Whether this result describes an unconfirmed execution outcome."""
+    window: WindowState | None = Field(default=None, alias="_window", exclude=True)
+    """Context window this message belongs to; internal, never sent to providers."""
 
     _no_save: bool = PrivateAttr(default=False)
     _checkpoint_after: CheckpointData | None = PrivateAttr(default=None)
+    _internal: bool = PrivateAttr(default=False)
+    """Model-visible control text that must stay out of the saved history."""
 
     def model_dump_for_context(self) -> dict[str, Any]:
         """Serialize a message with internal retention and recovery metadata.
@@ -236,7 +255,20 @@ class Message(BaseModel):
             data["_compaction_id"] = self.compaction_id
         if self.tool_result_unknown:
             data["_tool_result_unknown"] = True
+        if self.window is not None:
+            data["_window"] = self.window.model_dump()
         return data
+
+    @field_validator("window", mode="before")
+    @classmethod
+    def _drop_malformed_window(cls, value: Any) -> Any:
+        """Keep one bad marker from making the whole history unreadable."""
+        if value is None or isinstance(value, WindowState):
+            return value
+        try:
+            return WindowState.model_validate(value)
+        except (ValidationError, TypeError, ValueError):
+            return None
 
     @model_validator(mode="after")
     def check_content_required(self):
@@ -382,3 +414,16 @@ def dump_messages_with_checkpoints(messages: list[Message]) -> list[dict]:
                 CheckpointMessageSegment(content=message._checkpoint_after).model_dump()
             )
     return dumped
+
+
+def latest_window_state(messages: list[Message]) -> WindowState | None:
+    """Return the newest window marker carried by ``messages``.
+
+    Markers ride on the last persisted message of each save, so the newest one
+    describes the window the loaded history belongs to.
+    """
+    for message in reversed(messages):
+        state = message.window
+        if state is not None:
+            return state
+    return None

@@ -27,7 +27,15 @@ from urllib.parse import urlsplit, urlunsplit
 
 from astrbot import __version__
 from astrbot.core import astrbot_config, logger
-from astrbot.core.pipeline.llm_request_trace import bounded_context_value
+from astrbot.core.pipeline.llm_request_trace import (
+    FULL_CHARS as INJECTION_FULL_CHARS,
+)
+from astrbot.core.pipeline.llm_request_trace import (
+    PREVIEW_CHARS as INJECTION_PREVIEW_CHARS,
+)
+from astrbot.core.pipeline.llm_request_trace import (
+    bounded_context_value,
+)
 
 if TYPE_CHECKING:
     from astrbot.core.provider.entities import LLMResponse  # noqa: F401
@@ -58,6 +66,12 @@ _MAX_TRACKED_ATTEMPTS = 4096
 """Safety valve for per-invocation attempt counters."""
 
 _DEFAULT_LIST_LIMIT = 50
+
+MAX_PROVENANCE_ENTRIES = 32
+"""Maximum number of provenance entries kept per session."""
+
+PROVENANCE_TTL_SECONDS = 600
+"""Retention window of a provenance entry registered by prompt assembly."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -869,6 +883,93 @@ def _schema_fingerprint(schema: object) -> tuple[str, int]:
     return hashlib.sha1(encoded).hexdigest(), len(encoded)
 
 
+def _text_digest(text: str | None) -> str | None:
+    """Return a sha1 digest of a text, or ``None`` for an empty prompt."""
+
+    if not isinstance(text, str) or not text:
+        return None
+    return hashlib.sha1(text.encode("utf-8")).hexdigest()
+
+
+def _message_hashes(raw: object) -> list[str]:
+    """Fingerprint every provider-native message of a request body.
+
+    The digest feeds the per-session prefix-cache diagnostics, so it is taken
+    from the original body before sanitization and truncation.
+    """
+
+    messages = _messages_container(raw)
+    if not messages:
+        return []
+    return [
+        hashlib.sha1(_canonical_json(message).encode("utf-8")).hexdigest()
+        for message in messages
+    ]
+
+
+def _raw_tool_hashes(raw: object) -> list[list[str]]:
+    """Fingerprint the tool definitions of a request body, keeping order.
+
+    A list of ``[name, sha1]`` pairs is used instead of a mapping so a pure
+    reordering of the tool list is still reported as a prefix change.
+    """
+
+    rows: list[list[str]] = []
+    seen: set[str] = set()
+
+    def add(name: object, payload: object) -> None:
+        if not isinstance(name, str) or not name or name in seen:
+            return
+        seen.add(name)
+        rows.append([name, _schema_fingerprint(payload)[0]])
+
+    for container in _tool_containers(raw):
+        for item in container:
+            if not isinstance(item, dict):
+                continue
+            function = item.get("function")
+            if isinstance(function, dict):
+                add(function.get("name"), item)
+                continue
+            declarations = item.get("function_declarations") or item.get(
+                "functionDeclarations"
+            )
+            if isinstance(declarations, list):
+                for declaration in declarations:
+                    if isinstance(declaration, dict):
+                        add(declaration.get("name"), declaration)
+                continue
+            add(item.get("name") or item.get("type"), item)
+    return rows
+
+
+def _cache_fingerprint(raw: object, system_text: str | None) -> dict:
+    """Build the prefix-cache fingerprint of one request."""
+
+    return {
+        "message_hashes": _message_hashes(raw),
+        "tool_hashes": _raw_tool_hashes(raw),
+        "system": _text_digest(system_text),
+    }
+
+
+def _first_divergence(previous: list[str], current: list[str]) -> int | None:
+    """Return the first differing message index of two hash lists.
+
+    ``None`` means the two requests share the same message prefix and length.
+    When one list is a strict prefix of the other, the divergence is the first
+    appended position.
+    """
+
+    limit = min(len(previous), len(current))
+    for index in range(limit):
+        if previous[index] != current[index]:
+            return index
+    if len(previous) != len(current):
+        return limit
+    return None
+
+
 def _classify_tool_origin(tool: object) -> str:
     """Infer where a function tool comes from.
 
@@ -1656,6 +1757,24 @@ def _detect_adapter(raw: object) -> str:
     return "openai_chat"
 
 
+def _adapter_for(name: object, raw: object) -> ProviderAdapter:
+    """Resolve the snapshot adapter of a request.
+
+    Args:
+        name: Recorded adapter name; ``None`` or unknown names fall back to
+            shape detection.
+        raw: Provider-native request body used for shape detection.
+
+    Returns:
+        The adapter instance to use for this request.
+    """
+
+    adapter = ADAPTERS.get(name) if isinstance(name, str) else None
+    if adapter is None:
+        adapter = ADAPTERS[_detect_adapter(raw)]
+    return adapter
+
+
 def _provenance_parts(provenance: object) -> list[dict]:
     """Project envelope provenance entries into view system parts."""
 
@@ -1811,10 +1930,7 @@ def build_view(snapshot: dict) -> dict:
     snapshot = snapshot if isinstance(snapshot, dict) else {}
     raw = snapshot.get("raw")
     raw = raw if isinstance(raw, dict) else {}
-    adapter_name = snapshot.get("adapter")
-    adapter = ADAPTERS.get(adapter_name) if isinstance(adapter_name, str) else None
-    if adapter is None:
-        adapter = ADAPTERS[_detect_adapter(raw)]
+    adapter = _adapter_for(snapshot.get("adapter"), raw)
 
     system_text = adapter.system_text(raw) or ""
     system = {
@@ -1860,6 +1976,190 @@ def build_view(snapshot: dict) -> dict:
     }
 
 
+def _response_skeleton() -> dict:
+    """Return the empty response slot of a snapshot envelope.
+
+    Keeping the keys stable lets the Inspector render an unknown field as
+    "not recorded" instead of having to special-case missing keys.
+    """
+
+    return {
+        "response_id": None,
+        "finish_reason": None,
+        "returned_model": None,
+        "created_at": None,
+        "usage": None,
+        "usage_matches_request": None,
+        "ttft_ms": None,
+        "chunks": 0,
+        "error": None,
+    }
+
+
+def _completion_value(value: object, name: str) -> object:
+    """Read ``name`` from a raw completion object or mapping."""
+
+    if isinstance(value, dict):
+        return value.get(name)
+    return getattr(value, name, None)
+
+
+def _plain_text(value: object) -> str | None:
+    """Return a plain string for SDK string/enum values, else ``None``."""
+
+    if isinstance(value, str):
+        return value or None
+    enum_value = getattr(value, "value", None)
+    if isinstance(enum_value, str):
+        return enum_value or None
+    return None
+
+
+def _parse_completion(raw: object) -> tuple[str | None, str | None]:
+    """Best-effort ``(finish_reason, returned_model)`` of a raw completion.
+
+    Supports the OpenAI Chat Completions (``choices[0].finish_reason`` /
+    ``model``), Anthropic Messages (``stop_reason`` / ``model``) and Gemini
+    (``candidates[0].finish_reason``) shapes. Unknown fields stay ``None``:
+    nothing is inferred from unrelated attributes.
+    """
+
+    finish_reason: str | None = None
+    returned_model: str | None = None
+    try:
+        choices = _completion_value(raw, "choices")
+        if isinstance(choices, (list, tuple)) and choices:
+            first = choices[0]
+            finish_reason = _plain_text(_completion_value(first, "finish_reason"))
+            returned_model = _plain_text(_completion_value(first, "model"))
+        if finish_reason is None:
+            candidates = _completion_value(raw, "candidates")
+            if isinstance(candidates, (list, tuple)) and candidates:
+                finish_reason = _plain_text(
+                    _completion_value(candidates[0], "finish_reason")
+                )
+        if finish_reason is None:
+            finish_reason = _plain_text(_completion_value(raw, "finish_reason"))
+        if finish_reason is None:
+            finish_reason = _plain_text(_completion_value(raw, "stop_reason"))
+        if returned_model is None:
+            returned_model = _plain_text(_completion_value(raw, "model"))
+    except Exception:
+        logger.debug("Failed to parse snapshot raw completion", exc_info=True)
+        return None, None
+    return finish_reason, returned_model
+
+
+def _usage_value(usage: object, name: str) -> object:
+    """Read one usage counter from a ``TokenUsage`` or mapping."""
+
+    if isinstance(usage, dict):
+        return usage.get(name)
+    return getattr(usage, name, None)
+
+
+def _usage_payload(usage: object) -> dict | None:
+    """Project a ``TokenUsage`` into the envelope usage shape."""
+
+    if usage is None:
+        return None
+
+    def counter(name: str) -> int:
+        value = _usage_value(usage, name)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return 0
+        return int(value)
+
+    input_other = counter("input_other")
+    input_cached = counter("input_cached")
+    output = counter("output")
+    return {
+        "input_other": input_other,
+        "input_cached": input_cached,
+        "output": output,
+        "total": input_other + input_cached + output,
+    }
+
+
+def _cache_hit_ratio(usage: object) -> float | None:
+    """Return ``input_cached / input`` for a usage, or ``None`` when unknown."""
+
+    if usage is None:
+        return None
+    input_other = _usage_value(usage, "input_other")
+    input_cached = _usage_value(usage, "input_cached")
+    if isinstance(input_other, bool) or not isinstance(input_other, (int, float)):
+        input_other = 0
+    if isinstance(input_cached, bool) or not isinstance(input_cached, (int, float)):
+        input_cached = 0
+    total = input_other + input_cached
+    if total <= 0:
+        return None
+    return input_cached / total
+
+
+def _char_cap(text: object, limit: int) -> str:
+    """Keep ``limit`` characters of a text, appending the truncation marker."""
+
+    if not isinstance(text, str):
+        return ""
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]}…"
+
+
+def _numeric(value: object) -> int | float | None:
+    """Return a numeric value, ignoring bools and strings."""
+
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return value
+
+
+def _cap_injections(items: object) -> list[dict] | None:
+    """Project runner injection items into the envelope shape.
+
+    The producer already caps ``preview``/``full``; this pass keeps those caps
+    even when another caller provides raw strings, and drops unknown keys so
+    the stored list stays small and JSON-compatible.
+    """
+
+    if not isinstance(items, list):
+        return None
+    capped: list[dict] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        changes: list[dict] = []
+        raw_changes = item.get("changes")
+        for change in raw_changes if isinstance(raw_changes, list) else ():
+            if not isinstance(change, dict):
+                continue
+            field = change.get("field")
+            changes.append(
+                {
+                    "field": field if isinstance(field, str) else None,
+                    "delta": _numeric(change.get("delta")),
+                    "lossy": bool(change.get("lossy")),
+                    "preview": _char_cap(
+                        change.get("preview"),
+                        INJECTION_PREVIEW_CHARS,
+                    ),
+                    "full": _char_cap(change.get("full"), INJECTION_FULL_CHARS),
+                }
+            )
+        plugin = item.get("plugin")
+        handler = item.get("handler")
+        capped.append(
+            {
+                "plugin": plugin if isinstance(plugin, str) else None,
+                "handler": handler if isinstance(handler, str) else None,
+                "changes": changes,
+            }
+        )
+    return capped
+
+
 class RequestSnapshotRecorder:
     """Process-local ring buffer of sanitized LLM request snapshots."""
 
@@ -1880,6 +2180,8 @@ class RequestSnapshotRecorder:
         self._attempts: OrderedDict[str, int] = OrderedDict()
         self._by_invocation: dict[str, list[str]] = {}
         self._bindings: OrderedDict[str, tuple[str, str | None, float]] = OrderedDict()
+        self._provenance: OrderedDict[str, list[tuple[str, str, float]]] = OrderedDict()
+        self._fingerprints: OrderedDict[str, dict] = OrderedDict()
 
     def capture(
         self,
@@ -1941,6 +2243,26 @@ class RequestSnapshotRecorder:
                 attempt,
             )
             counts = _build_counts(raw)
+            # Provenance and prefix-cache diagnostics must describe the request
+            # as sent, so both are derived from the original body before the
+            # sanitizer can truncate or redact anything.
+            adapter_name = (
+                adapter
+                if adapter is not None
+                else getattr(provider, "SNAPSHOT_ADAPTER", None)
+            )
+            resolved_adapter = _adapter_for(adapter_name, raw)
+            system_text = resolved_adapter.system_text(raw)
+            cache = self._cache_diagnostics(
+                effective_session,
+                _cache_fingerprint(raw, system_text),
+                now,
+            )
+            provenance = self._provenance_entries(
+                effective_session,
+                system_text,
+                now,
+            )
             # Structural truncation runs on a deep copy so the caller's request
             # object is never mutated. It enforces the serialized byte cap; the
             # sanitizer only redacts and bounds pathological shapes afterwards.
@@ -1991,13 +2313,13 @@ class RequestSnapshotRecorder:
                 "tool_executions": [],
                 "diagnostics": {
                     "compression": None,
-                    "cache": None,
+                    "cache": cache,
                     "budget": None,
                     "retries": None,
                     "stop_reason": None,
                     "omitted_messages": omitted_messages,
                 },
-                "provenance": [],
+                "provenance": provenance,
                 "injections": [],
                 "tool_meta": _build_tool_meta(
                     raw,
@@ -2005,9 +2327,7 @@ class RequestSnapshotRecorder:
                     denied_tools=denied_tools,
                 ),
                 "env": _build_env(),
-                "adapter": adapter
-                if adapter is not None
-                else getattr(provider, "SNAPSHOT_ADAPTER", None),
+                "adapter": adapter_name,
             }
             self._store(effective_session, envelope, body)
             return snapshot_id
@@ -2070,6 +2390,236 @@ class RequestSnapshotRecorder:
                 envelope["tool_meta"] = meta
         except Exception:
             logger.debug("Failed to attach LLM snapshot tool metadata", exc_info=True)
+
+    def record_provenance(self, session_id: str, label: str, text: str) -> None:
+        """Register system-prompt text that assembly wrote for a session.
+
+        Entries are kept per session (never mixed across sessions) until
+        :data:`PROVENANCE_TTL_SECONDS` expires, so every request of the same
+        turn can be attributed by the next :meth:`capture`. A repeated
+        ``(label, text)`` pair refreshes the existing entry instead of adding
+        a duplicate.
+
+        Args:
+            session_id: ChatUI session the text was written for.
+            label: Stable attribution label, e.g. ``persona`` or ``skills``.
+            text: Exact text appended to the system prompt; empty text is
+                ignored because it cannot be located.
+
+        This method never raises.
+        """
+
+        try:
+            if not session_id or not isinstance(text, str) or not text:
+                return
+            if not isinstance(label, str) or not label:
+                label = "other"
+            key = str(session_id)
+            now = self._clock()
+            self._purge_provenance(now)
+            entries = self._provenance.get(key)
+            if entries is None:
+                entries = []
+                self._provenance[key] = entries
+            for index, (existing_label, existing_text, _) in enumerate(entries):
+                if existing_label == label and existing_text == text:
+                    entries.pop(index)
+                    break
+            entries.append((label, text, now + PROVENANCE_TTL_SECONDS))
+            del entries[:-MAX_PROVENANCE_ENTRIES]
+            self._provenance.move_to_end(key)
+            while len(self._provenance) > _MAX_TRACKED_SESSIONS:
+                self._provenance.popitem(last=False)
+        except Exception:
+            logger.debug("Failed to record snapshot provenance", exc_info=True)
+
+    def attach_response(
+        self,
+        invocation_id: str,
+        response: LLMResponse | object | None,
+        *,
+        chunks: int = 0,
+    ) -> None:
+        """Fill the response slot of every attempt of an invocation.
+
+        Args:
+            invocation_id: Invocation whose captured attempts are completed.
+            response: Provider :class:`LLMResponse`. Its ``raw_completion`` is
+                only inspected for ``finish_reason``/``model``; the raw object
+                is never stored.
+            chunks: Number of streamed chunks observed by the caller; ``0``
+                for non-streaming calls.
+
+        Unknown ``finish_reason``/``returned_model`` values stay ``None``. The
+        cache hit ratio is derived from ``response.usage``. This method never
+        raises.
+        """
+
+        if not invocation_id or response is None:
+            return
+        try:
+            now = self._clock()
+            self._purge(now)
+            envelopes = self._attempt_envelopes(invocation_id)
+            if not envelopes:
+                return
+            usage = getattr(response, "usage", None)
+            usage_payload = _usage_payload(usage)
+            finish_reason, returned_model = _parse_completion(
+                getattr(response, "raw_completion", None)
+            )
+            response_id = getattr(response, "id", None)
+            stored_chunks = (
+                int(chunks)
+                if isinstance(chunks, int) and not isinstance(chunks, bool)
+                else 0
+            )
+            stored_chunks = max(0, stored_chunks)
+            for envelope in envelopes:
+                previous = envelope.get("response")
+                payload = (
+                    dict(previous)
+                    if isinstance(previous, dict)
+                    else _response_skeleton()
+                )
+                payload.update(
+                    {
+                        "response_id": (
+                            response_id
+                            if isinstance(response_id, str) and response_id
+                            else None
+                        ),
+                        "finish_reason": finish_reason,
+                        "returned_model": returned_model,
+                        "created_at": now,
+                        "usage": usage_payload,
+                        "usage_matches_request": bool(
+                            getattr(response, "usage_matches_request", True)
+                        ),
+                        "chunks": stored_chunks,
+                        "error": None,
+                    }
+                )
+                envelope["response"] = payload
+                envelope["status"] = "ok"
+                created_at = envelope.get("created_at")
+                if (
+                    isinstance(created_at, (int, float))
+                    and not isinstance(created_at, bool)
+                    and now >= created_at
+                ):
+                    envelope["duration_ms"] = int(round((now - created_at) * 1000))
+                provider_info = envelope.get("provider")
+                if returned_model and isinstance(provider_info, dict):
+                    provider_info["returned_model"] = returned_model
+                diagnostics = envelope.get("diagnostics")
+                if isinstance(diagnostics, dict):
+                    cache = diagnostics.get("cache")
+                    if not isinstance(cache, dict):
+                        cache = {
+                            "hit_ratio": None,
+                            "system_changed": None,
+                            "tools_changed": None,
+                            "divergence_index": None,
+                        }
+                        diagnostics["cache"] = cache
+                    cache["hit_ratio"] = _cache_hit_ratio(usage)
+        except Exception:
+            logger.debug("Failed to attach LLM snapshot response", exc_info=True)
+
+    def attach_diagnostics(self, invocation_id: str, diagnostics: dict) -> None:
+        """Merge runner diagnostics into every attempt of an invocation.
+
+        Only ``compression``, ``budget``, ``retries`` and ``stop_reason`` are
+        accepted, and they never touch the ``response`` slot.
+
+        Args:
+            invocation_id: Invocation whose captured attempts are updated.
+            diagnostics: Runner-assembled diagnostic values; missing keys are
+                left untouched.
+
+        This method never raises.
+        """
+
+        if not invocation_id or not isinstance(diagnostics, dict):
+            return
+        try:
+            self._purge(self._clock())
+            values: dict[str, object] = {}
+            for key in ("compression", "budget", "retries", "stop_reason"):
+                if key not in diagnostics:
+                    continue
+                try:
+                    values[key] = copy.deepcopy(diagnostics[key])
+                except Exception:
+                    logger.debug(
+                        "Failed to copy snapshot diagnostic %s", key, exc_info=True
+                    )
+            if not values:
+                return
+            for envelope in self._attempt_envelopes(invocation_id):
+                target = envelope.get("diagnostics")
+                if not isinstance(target, dict):
+                    target = {}
+                    envelope["diagnostics"] = target
+                target.update(values)
+        except Exception:
+            logger.debug("Failed to attach LLM snapshot diagnostics", exc_info=True)
+
+    def attach_injections(self, invocation_id: str, items: list[dict]) -> None:
+        """Store the runner's injection trace on every attempt of an invocation.
+
+        Args:
+            invocation_id: Invocation whose captured attempts are updated.
+            items: ``read_injections(event)`` output; non-list input is
+                ignored. ``preview``/``full`` keep the existing caps.
+
+        This method never raises.
+        """
+
+        if not invocation_id:
+            return
+        try:
+            self._purge(self._clock())
+            capped = _cap_injections(items)
+            if capped is None:
+                return
+            for envelope in self._attempt_envelopes(invocation_id):
+                envelope["injections"] = copy.deepcopy(capped)
+        except Exception:
+            logger.debug("Failed to attach LLM snapshot injections", exc_info=True)
+
+    def mark_error(self, invocation_id: str, exc: BaseException) -> None:
+        """Mark every attempt of an invocation as failed.
+
+        The completion fields of the response slot stay empty and
+        ``response.error`` carries only the exception type and a message capped
+        at 1024 characters. No traceback is recorded.
+
+        Args:
+            invocation_id: Invocation that raised.
+            exc: The exception that aborted the call.
+
+        This method never raises.
+        """
+
+        if not invocation_id:
+            return
+        try:
+            self._purge(self._clock())
+            try:
+                message = str(exc)[:1024]
+            except Exception:
+                message = ""
+            error = {
+                "type": type(exc).__name__ if exc is not None else None,
+                "message": message,
+            }
+            for envelope in self._attempt_envelopes(invocation_id):
+                envelope["status"] = "error"
+                envelope["response"] = {**_response_skeleton(), "error": error}
+        except Exception:
+            logger.debug("Failed to mark LLM snapshot error", exc_info=True)
 
     def list_for_session(
         self,
@@ -2246,6 +2796,8 @@ class RequestSnapshotRecorder:
         self._attempts.clear()
         self._by_invocation.clear()
         self._bindings.clear()
+        self._provenance.clear()
+        self._fingerprints.clear()
 
     def _next_attempt(self, scope: LLMRequestScope) -> int:
         """Increment and return the attempt counter of the scope."""
@@ -2266,6 +2818,109 @@ class RequestSnapshotRecorder:
         while len(self._attempts) > _MAX_TRACKED_ATTEMPTS:
             self._attempts.popitem(last=False)
         return attempt
+
+    def _attempt_envelopes(self, invocation_id: str) -> list[dict]:
+        """Return the live envelopes of every attempt of an invocation."""
+
+        envelopes: list[dict] = []
+        for snapshot_id in self._by_invocation.get(str(invocation_id), ()):
+            envelope = self._snapshots.get(snapshot_id)
+            if envelope is not None:
+                envelopes.append(envelope)
+        return envelopes
+
+    def _cache_diagnostics(
+        self,
+        session_id: str,
+        fingerprint: dict,
+        now: float,
+    ) -> dict:
+        """Compare a request fingerprint with the session's previous request.
+
+        The record is replaced even when the new snapshot is later evicted, so
+        the next request still compares against what was actually sent. Keys
+        stay ``None`` when the session has no previous fingerprint: an unknown
+        comparison must never be reported as ``False``.
+        """
+
+        previous = self._fingerprints.get(session_id)
+        cache = {
+            "hit_ratio": None,
+            "system_changed": None,
+            "tools_changed": None,
+            "divergence_index": None,
+        }
+        if previous is not None:
+            cache["system_changed"] = previous.get("system") != fingerprint["system"]
+            cache["tools_changed"] = (
+                previous.get("tool_hashes") != fingerprint["tool_hashes"]
+            )
+            previous_messages = previous.get("message_hashes")
+            cache["divergence_index"] = _first_divergence(
+                previous_messages if isinstance(previous_messages, list) else [],
+                fingerprint["message_hashes"],
+            )
+        self._fingerprints[session_id] = {**fingerprint, "ts": now}
+        self._fingerprints.move_to_end(session_id)
+        while len(self._fingerprints) > _MAX_TRACKED_SESSIONS:
+            self._fingerprints.popitem(last=False)
+        return cache
+
+    def _provenance_entries(
+        self,
+        session_id: str,
+        system_text: str | None,
+        now: float,
+    ) -> list[dict]:
+        """Locate the session's registered provenance texts in the prompt.
+
+        A unique occurrence yields an exact span. A missing or repeated text
+        stays approximate (``span=None``, ``approx=True``) but keeps its label,
+        character count and hash so the UI can still attribute it.
+        """
+
+        parts: list[dict] = []
+        entries = self._provenance.get(str(session_id)) or ()
+        for label, text, expires_at in entries:
+            if expires_at <= now:
+                continue
+            start = system_text.find(text) if system_text else -1
+            unique = bool(system_text) and start >= 0 and system_text.count(text) == 1
+            parts.append(
+                {
+                    "label": label,
+                    "chars": len(text),
+                    "span": [start, start + len(text)] if unique else None,
+                    "approx": not unique,
+                    "hash": _text_digest(text),
+                }
+            )
+        return parts
+
+    def _purge_provenance(self, now: float) -> None:
+        """Drop expired provenance entries and idle session buffers."""
+
+        for session_id in list(self._provenance):
+            entries = self._provenance[session_id]
+            kept = [entry for entry in entries if entry[2] > now]
+            if kept:
+                self._provenance[session_id] = kept
+            else:
+                self._provenance.pop(session_id, None)
+
+    def _purge_fingerprints(self, now: float) -> None:
+        """Drop prefix-cache fingerprints older than the snapshot TTL."""
+
+        for session_id in list(self._fingerprints):
+            record = self._fingerprints[session_id]
+            recorded_at = record.get("ts") if isinstance(record, dict) else None
+            if not isinstance(recorded_at, (int, float)) or isinstance(
+                recorded_at, bool
+            ):
+                self._fingerprints.pop(session_id, None)
+                continue
+            if float(recorded_at) + TTL_SECONDS <= now:
+                self._fingerprints.pop(session_id, None)
 
     def _store(self, session_id: str, envelope: dict, raw: object) -> None:
         """Insert one envelope and enforce all retention limits."""
@@ -2382,6 +3037,8 @@ class RequestSnapshotRecorder:
                     break
                 self._remove(session_id, ids[0], dropped=False)
         self._purge_bindings(now)
+        self._purge_fingerprints(now)
+        self._purge_provenance(now)
 
     def _purge_bindings(self, now: float) -> None:
         """Drop expired message bindings."""
@@ -2407,3 +3064,24 @@ class RequestSnapshotRecorder:
 
 request_snapshots = RequestSnapshotRecorder()
 """Singleton recorder used by providers, the runner and the dashboard."""
+
+
+def record_provenance(session_id: str, label: str, text: str) -> None:
+    """Register prompt-assembly text on the process-local recorder.
+
+    Prompt assembly calls this with the exact text it wrote into the system
+    prompt; :meth:`RequestSnapshotRecorder.capture` later attributes it. The
+    buffer is per session, bounded and expires after
+    :data:`PROVENANCE_TTL_SECONDS`, so a later request in the same turn still
+    sees the registration. It is deliberately not a context variable: assembly
+    and the provider call may run in different tasks.
+
+    Args:
+        session_id: ChatUI session the text was written for.
+        label: Stable attribution label, e.g. ``persona``.
+        text: Exact text appended to the system prompt.
+
+    This function never raises.
+    """
+
+    request_snapshots.record_provenance(session_id, label, text)

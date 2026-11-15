@@ -408,7 +408,9 @@ def test_capture_keeps_sampling_fields_when_first_message_is_huge(monkeypatch):
         "temperature": 0.3,
         "top_p": 0.9,
         "max_tokens": 512,
-        "tools": [{"type": "function", "function": {"name": "t1"}}],
+        # Anthropic-native shape: the raw body carries a top-level ``system``,
+        # which selects that adapter, and its tool list is flat.
+        "tools": [{"name": "t1", "input_schema": {"type": "object"}}],
         "system": "s" * 128,
         "messages": [
             {

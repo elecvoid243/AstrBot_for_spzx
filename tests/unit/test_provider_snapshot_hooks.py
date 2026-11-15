@@ -27,16 +27,20 @@ from astrbot.core.agent.tool import FunctionTool, ToolSet
 from astrbot.core.provider import request_snapshot
 from astrbot.core.provider.entities import LLMResponse
 from astrbot.core.provider.request_snapshot import (
+    build_view,
     request_snapshot_scope,
     request_snapshots,
 )
+from astrbot.core.provider.sources import anthropic_source, gemini_source
 from astrbot.core.provider.sources.anthropic_source import ProviderAnthropic
 from astrbot.core.provider.sources.gemini_source import ProviderGoogleGenAI
 from astrbot.core.provider.sources.openai_responses_source import (
     ProviderOpenAIResponses,
 )
 from astrbot.core.provider.sources.openai_source import ProviderOpenAIOfficial
-from astrbot.core.provider.sources import anthropic_source, gemini_source
+
+SESSION_ID = "snapshot-hooks"
+"""Session recorded by the end-to-end capture assertions."""
 
 
 class CaptureSpy:
@@ -207,6 +211,8 @@ def _anthropic_payloads() -> dict:
 def _gemini_payloads() -> dict:
     return {
         "model": "gemini-3.7-flash",
+        "temperature": 0.2,
+        "max_tokens": 256,
         "messages": [
             {"role": "system", "content": "system prompt"},
             {"role": "user", "content": "hello"},
@@ -226,13 +232,17 @@ def _make_openai_provider() -> ProviderOpenAIOfficial:
     )
 
 
-async def _run_openai_chat(monkeypatch, capture) -> LLMResponse | list[LLMResponse]:
+async def _run_openai_chat(
+    monkeypatch, capture, sdk_calls: dict | None = None
+) -> LLMResponse | list[LLMResponse]:
     """Run one OpenAI Chat request against a fake SDK client."""
 
     monkeypatch.setattr(request_snapshots, "capture", capture)
     provider = _make_openai_provider()
 
     async def fake_create(**kwargs):
+        if sdk_calls is not None:
+            sdk_calls.update(kwargs)
         return _chat_completion()
 
     monkeypatch.setattr(provider.client.chat.completions, "create", fake_create)
@@ -242,7 +252,9 @@ async def _run_openai_chat(monkeypatch, capture) -> LLMResponse | list[LLMRespon
         await provider.terminate()
 
 
-async def _run_openai_chat_stream(monkeypatch, capture) -> list[LLMResponse]:
+async def _run_openai_chat_stream(
+    monkeypatch, capture, sdk_calls: dict | None = None
+) -> list[LLMResponse]:
     """Run one streaming OpenAI Chat request against a fake SDK client."""
 
     monkeypatch.setattr(request_snapshots, "capture", capture)
@@ -266,6 +278,8 @@ async def _run_openai_chat_stream(monkeypatch, capture) -> list[LLMResponse]:
         )
 
     async def fake_create(**kwargs):
+        if sdk_calls is not None:
+            sdk_calls.update(kwargs)
         return fake_stream()
 
     monkeypatch.setattr(provider.client.chat.completions, "create", fake_create)
@@ -278,7 +292,9 @@ async def _run_openai_chat_stream(monkeypatch, capture) -> list[LLMResponse]:
         await provider.terminate()
 
 
-async def _run_openai_responses(monkeypatch, capture) -> LLMResponse:
+async def _run_openai_responses(
+    monkeypatch, capture, sdk_calls: dict | None = None
+) -> LLMResponse:
     """Run one Responses API request against a fake SDK client."""
 
     monkeypatch.setattr(request_snapshots, "capture", capture)
@@ -295,6 +311,8 @@ async def _run_openai_responses(monkeypatch, capture) -> LLMResponse:
     )
 
     async def fake_create(**kwargs):
+        if sdk_calls is not None:
+            sdk_calls.update(kwargs)
         return _responses_response()
 
     monkeypatch.setattr(provider.client.responses, "create", fake_create)
@@ -304,7 +322,9 @@ async def _run_openai_responses(monkeypatch, capture) -> LLMResponse:
         await provider.terminate()
 
 
-async def _run_openai_responses_stream(monkeypatch, capture) -> list[LLMResponse]:
+async def _run_openai_responses_stream(
+    monkeypatch, capture, sdk_calls: dict | None = None
+) -> list[LLMResponse]:
     """Run one streaming Responses API request against a fake SDK client."""
 
     monkeypatch.setattr(request_snapshots, "capture", capture)
@@ -332,21 +352,21 @@ async def _run_openai_responses_stream(monkeypatch, capture) -> list[LLMResponse
         )
 
     async def fake_create(**kwargs):
+        if sdk_calls is not None:
+            sdk_calls.update(kwargs)
         return fake_stream()
 
     monkeypatch.setattr(provider.client.responses, "create", fake_create)
     try:
         return [
             item
-            async for item in provider._query_stream(
-                _responses_payloads(), _tool_set()
-            )
+            async for item in provider._query_stream(_responses_payloads(), _tool_set())
         ]
     finally:
         await provider.terminate()
 
 
-def _make_anthropic_provider() -> ProviderAnthropic:
+def _make_anthropic_provider(sdk_calls: dict | None = None) -> ProviderAnthropic:
     provider = ProviderAnthropic(
         provider_config={
             "id": "test-anthropic",
@@ -359,21 +379,32 @@ def _make_anthropic_provider() -> ProviderAnthropic:
 
     class FakeMessages:
         async def create(self, **kwargs):
+            if sdk_calls is not None:
+                sdk_calls.update(kwargs)
             return _anthropic_message()
+
+        def stream(self, **kwargs):
+            if sdk_calls is not None:
+                sdk_calls.update(kwargs)
+            return None
 
     provider.client = SimpleNamespace(messages=FakeMessages())
     return provider
 
 
-async def _run_anthropic(monkeypatch, capture) -> LLMResponse:
+async def _run_anthropic(
+    monkeypatch, capture, sdk_calls: dict | None = None
+) -> LLMResponse:
     """Run one Anthropic request against a fake SDK client."""
 
     monkeypatch.setattr(request_snapshots, "capture", capture)
-    provider = _make_anthropic_provider()
+    provider = _make_anthropic_provider(sdk_calls)
     return await provider._query(_anthropic_payloads(), _tool_set())
 
 
-async def _run_anthropic_stream(monkeypatch, capture) -> list[LLMResponse]:
+async def _run_anthropic_stream(
+    monkeypatch, capture, sdk_calls: dict | None = None
+) -> list[LLMResponse]:
     """Run one streaming Anthropic request against a fake SDK client."""
 
     class FakeStream:
@@ -421,6 +452,8 @@ async def _run_anthropic_stream(monkeypatch, capture) -> list[LLMResponse]:
 
     @contextlib.asynccontextmanager
     async def fake_context(provider_name, factory, max_attempts=None):
+        # Invoke the SDK factory so the sent arguments stay observable.
+        factory()
         yield FakeStream(events)
 
     monkeypatch.setattr(request_snapshots, "capture", capture)
@@ -434,7 +467,7 @@ async def _run_anthropic_stream(monkeypatch, capture) -> list[LLMResponse]:
         "retry_provider_request_context",
         fake_context,
     )
-    provider = _make_anthropic_provider()
+    provider = _make_anthropic_provider(sdk_calls)
     return [
         item
         async for item in provider._query_stream(_anthropic_payloads(), _tool_set())
@@ -453,20 +486,26 @@ def _make_gemini_provider() -> ProviderGoogleGenAI:
     return provider
 
 
-async def _run_gemini(monkeypatch, capture) -> LLMResponse:
+async def _run_gemini(
+    monkeypatch, capture, sdk_calls: dict | None = None
+) -> LLMResponse:
     """Run one Gemini request against a fake SDK client."""
 
     monkeypatch.setattr(request_snapshots, "capture", capture)
     provider = _make_gemini_provider()
 
     async def fake_generate_content(**kwargs):
+        if sdk_calls is not None:
+            sdk_calls.update(kwargs)
         return _gemini_response()
 
     provider.client.models.generate_content = fake_generate_content
     return await provider._query(_gemini_payloads(), _tool_set())
 
 
-async def _run_gemini_stream(monkeypatch, capture) -> list[LLMResponse]:
+async def _run_gemini_stream(
+    monkeypatch, capture, sdk_calls: dict | None = None
+) -> list[LLMResponse]:
     """Run one streaming Gemini request against a fake SDK client."""
 
     monkeypatch.setattr(request_snapshots, "capture", capture)
@@ -475,8 +514,15 @@ async def _run_gemini_stream(monkeypatch, capture) -> list[LLMResponse]:
     async def fake_stream():
         yield _gemini_stream_chunk()
 
-    async def fake_retry(provider_name, request_factory, max_attempts=None):
+    async def fake_generate_content_stream(**kwargs):
+        if sdk_calls is not None:
+            sdk_calls.update(kwargs)
         return fake_stream()
+
+    provider.client.models.generate_content_stream = fake_generate_content_stream
+
+    async def fake_retry(provider_name, request_factory, max_attempts=None):
+        return await request_factory()
 
     monkeypatch.setattr(gemini_source, "retry_provider_request", fake_retry)
     return [
@@ -648,7 +694,7 @@ async def test_anthropic_stream_capture_uses_system_messages_and_tools(monkeypat
 
 @pytest.mark.asyncio
 async def test_gemini_capture_uses_contents_and_config(monkeypatch):
-    """The Gemini hook captures model, contents and the prepared config."""
+    """The Gemini hook captures a JSON view while the SDK keeps its objects."""
 
     spy = CaptureSpy()
     tools = _tool_set()
@@ -668,22 +714,44 @@ async def test_gemini_capture_uses_contents_and_config(monkeypatch):
     assert spy.adapter == "gemini"
     assert spy.tool_set is tools
     assert spy.raw["model"] == "gemini-3.7-flash"
-    assert spy.raw["contents"] is sdk_calls["contents"]
-    assert spy.raw["config"] is sdk_calls["config"]
-    assert isinstance(spy.raw["config"], genai_types.GenerateContentConfig)
+    assert spy.raw["stream"] is False
+    # The snapshot body is JSON-ish, so the Inspector can read it directly.
+    assert [item["role"] for item in spy.raw["contents"]] == ["user"]
+    assert spy.raw["contents"][0]["parts"][0]["text"] == "hello"
+    assert isinstance(spy.raw["config"], dict)
+    assert spy.raw["config"]["temperature"] == 0.2
+    assert spy.raw["config"]["max_output_tokens"] == 256
+    assert spy.raw["config"]["system_instruction"] == "system prompt"
+    declarations = spy.raw["config"]["tools"][0]["function_declarations"]
+    assert declarations[0]["name"] == "read_file"
+    # The network call still receives the original SDK objects.
+    assert isinstance(sdk_calls["contents"], list)
+    assert all(isinstance(item, genai_types.Content) for item in sdk_calls["contents"])
+    assert isinstance(sdk_calls["config"], genai_types.GenerateContentConfig)
+    assert "stream" not in sdk_calls
 
 
 @pytest.mark.asyncio
 async def test_gemini_stream_capture_uses_contents_and_config(monkeypatch):
-    """The streaming Gemini hook captures the same model/contents/config body."""
+    """The streaming Gemini hook captures a JSON view; the SDK gets objects."""
 
     spy = CaptureSpy()
-    responses = await _run_gemini_stream(monkeypatch, spy)
+    sdk_calls: dict = {}
+    responses = await _run_gemini_stream(monkeypatch, spy, sdk_calls)
 
     assert spy.calls == 1
     assert spy.adapter == "gemini"
     assert spy.raw["model"] == "gemini-3.7-flash"
-    assert isinstance(spy.raw["config"], genai_types.GenerateContentConfig)
+    assert spy.raw["stream"] is True
+    assert isinstance(spy.raw["config"], dict)
+    # The streaming path keeps its own default temperature; the snapshot must
+    # mirror the config the SDK actually receives.
+    assert spy.raw["config"]["temperature"] == sdk_calls["config"].temperature == 0.7
+    assert spy.raw["config"]["max_output_tokens"] == 256
+    assert isinstance(sdk_calls["contents"], list)
+    assert all(isinstance(item, genai_types.Content) for item in sdk_calls["contents"])
+    assert isinstance(sdk_calls["config"], genai_types.GenerateContentConfig)
+    assert "stream" not in sdk_calls
     assert responses[-1].completion_text == "ok"
 
 
@@ -744,3 +812,174 @@ async def test_capture_is_a_noop_when_developer_mode_disabled(monkeypatch):
 
     assert result.role == "assistant"
     assert request_snapshots.list_for_session("snapshot-hooks")["items"] == []
+
+
+@contextlib.contextmanager
+def _recording(monkeypatch):
+    """Enable developer mode and open the scope the recorder requires."""
+
+    request_snapshots.reset()
+    monkeypatch.setattr(request_snapshot, "developer_mode_enabled", lambda: True)
+    try:
+        with request_snapshot_scope(
+            session_id=SESSION_ID,
+            umo=f"webchat:FriendMessage:{SESSION_ID}",
+        ):
+            yield
+    finally:
+        request_snapshots.reset()
+
+
+def _captured_snapshot() -> dict:
+    """Return the single snapshot recorded in the active scope."""
+
+    items = request_snapshots.list_for_session(SESSION_ID)["items"]
+    assert len(items) == 1
+    snapshot = request_snapshots.get(items[0]["snapshot_id"])
+    assert snapshot is not None
+    return snapshot
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("runner", "stream"),
+    [
+        (_run_openai_chat, False),
+        (_run_openai_chat_stream, True),
+        (_run_openai_responses, False),
+        (_run_openai_responses_stream, True),
+        (_run_anthropic, False),
+        (_run_anthropic_stream, True),
+        (_run_gemini, False),
+        (_run_gemini_stream, True),
+    ],
+    ids=[
+        "openai-chat",
+        "openai-chat-stream",
+        "openai-responses",
+        "openai-responses-stream",
+        "anthropic",
+        "anthropic-stream",
+        "gemini",
+        "gemini-stream",
+    ],
+)
+async def test_capture_records_the_stream_flag(monkeypatch, runner, stream):
+    """Every hook puts the real transport mode into the envelope."""
+
+    with _recording(monkeypatch):
+        await runner(monkeypatch, request_snapshots.capture)
+        snapshot = _captured_snapshot()
+
+    assert snapshot["request"]["stream"] is stream
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("runner", "system_prompt"),
+    [
+        (_run_openai_chat, "system prompt"),
+        (_run_openai_responses, "be brief"),
+        (_run_anthropic, "system prompt"),
+        (_run_gemini, "system prompt"),
+    ],
+    ids=["openai-chat", "openai-responses", "anthropic", "gemini"],
+)
+async def test_counts_come_from_the_adapter_not_the_raw_shape(
+    monkeypatch,
+    runner,
+    system_prompt,
+):
+    """System chars and tool counts match what the view derives per provider."""
+
+    with _recording(monkeypatch):
+        await runner(monkeypatch, request_snapshots.capture)
+        snapshot = _captured_snapshot()
+
+    view = build_view(snapshot)
+    assert view["system"]["text"] == system_prompt
+    assert snapshot["counts"]["system_chars"] == len(system_prompt)
+    assert snapshot["counts"]["tools"] == len(view["tools"]) == 1
+    assert view["tools"][0]["name"] == "read_file"
+
+
+@pytest.mark.asyncio
+async def test_gemini_capture_envelope_carries_config_values(monkeypatch):
+    """The Gemini envelope reports the config values instead of blanks."""
+
+    with _recording(monkeypatch):
+        await _run_gemini(monkeypatch, request_snapshots.capture)
+        snapshot = _captured_snapshot()
+
+    request = snapshot["request"]
+    assert request["temperature"] == 0.2
+    assert request["max_tokens"] == 256
+    assert request["tool_choice"] == "AUTO"
+    assert request["stream"] is False
+    assert snapshot["counts"]["tools"] == 1
+    assert snapshot["counts"]["system_chars"] == len("system prompt")
+    view = build_view(snapshot)
+    assert view["params"]["temperature"] == 0.2
+    assert view["params"]["max_output_tokens"] == 256
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("runner", "expected_stream"),
+    [
+        (_run_openai_chat, False),
+        (_run_openai_chat_stream, True),
+        (_run_openai_responses, False),
+        (_run_openai_responses_stream, True),
+        (_run_anthropic, False),
+        # ``messages.stream`` carries the mode implicitly, so no kwarg is sent.
+        (_run_anthropic_stream, None),
+    ],
+    ids=[
+        "openai-chat",
+        "openai-chat-stream",
+        "openai-responses",
+        "openai-responses-stream",
+        "anthropic",
+        "anthropic-stream",
+    ],
+)
+async def test_envelope_stream_flag_keeps_sdk_arguments_unchanged(
+    monkeypatch,
+    runner,
+    expected_stream,
+):
+    """The captured ``stream`` field never leaks into the SDK call."""
+
+    sdk_calls: dict = {}
+    await runner(monkeypatch, CaptureSpy(), sdk_calls)
+
+    assert sdk_calls.get("stream") is expected_stream
+
+
+@pytest.mark.asyncio
+async def test_openai_chat_stream_capture_matches_the_wire_stream_options(
+    monkeypatch,
+):
+    """The streaming Chat hook mirrors the usage chunk the SDK asks for."""
+
+    spy = CaptureSpy()
+    sdk_calls: dict = {}
+    responses = await _run_openai_chat_stream(monkeypatch, spy, sdk_calls)
+
+    assert spy.raw["stream"] is True
+    assert spy.raw["stream_options"] == {"include_usage": True}
+    assert sdk_calls["stream"] is True
+    assert sdk_calls["stream_options"] == {"include_usage": True}
+    assert responses[-1].completion_text == "ok"
+
+
+@pytest.mark.asyncio
+async def test_openai_chat_non_stream_capture_has_no_stream_options(monkeypatch):
+    """The non-streaming Chat hook does not invent a usage chunk."""
+
+    spy = CaptureSpy()
+    await _run_openai_chat(monkeypatch, spy)
+
+    assert spy.raw["stream"] is False
+    assert "stream_options" not in spy.raw

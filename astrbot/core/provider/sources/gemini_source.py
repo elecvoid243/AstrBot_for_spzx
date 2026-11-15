@@ -46,6 +46,29 @@ class SuppressNonTextPartsWarning(logging.Filter):
 logging.getLogger("google_genai.types").addFilter(SuppressNonTextPartsWarning())
 
 
+def _snapshot_json(value: object) -> object:
+    """Convert Gemini SDK objects into JSON-compatible snapshot values.
+
+    The network call keeps the original SDK objects; only the request snapshot
+    stores a detached JSON view, so the Inspector can read the config values
+    (temperature, output limit, tools, system instruction) without guessing
+    from SDK class shapes.
+    """
+
+    if isinstance(value, (list, tuple)):
+        return [_snapshot_json(item) for item in value]
+    dump = getattr(value, "model_dump", None)
+    if callable(dump):
+        try:
+            return dump(mode="json", exclude_none=True)
+        except Exception:
+            logger.debug(
+                "Failed to dump Gemini request for the snapshot", exc_info=True
+            )
+            return None
+    return value
+
+
 @register_provider_adapter(
     "googlegenai_chat_completion",
     "Google Gemini Chat Completion 提供商适配器",
@@ -730,8 +753,12 @@ class ProviderGoogleGenAI(Provider):
                         self,
                         {
                             "model": model,
-                            "contents": conversation,
-                            "config": config,
+                            # The SDK call below still receives the original
+                            # Content/GenerateContentConfig objects; only the
+                            # snapshot gets the JSON view.
+                            "contents": _snapshot_json(conversation),
+                            "config": _snapshot_json(config),
+                            "stream": False,
                         },
                         adapter=self.SNAPSHOT_ADAPTER,
                         tool_set=tools,
@@ -842,8 +869,11 @@ class ProviderGoogleGenAI(Provider):
                         self,
                         {
                             "model": model,
-                            "contents": conversation,
-                            "config": config,
+                            # See _query: the snapshot mirrors the wire payload
+                            # while the SDK keeps the original objects.
+                            "contents": _snapshot_json(conversation),
+                            "config": _snapshot_json(config),
+                            "stream": True,
                         },
                         adapter=self.SNAPSHOT_ADAPTER,
                         tool_set=tools,

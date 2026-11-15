@@ -269,6 +269,40 @@ def _first_value(mapping: dict, *keys: str) -> object:
     return None
 
 
+def _config_dict(body: dict) -> dict:
+    """Return the nested Gemini-style ``config`` mapping of a request body."""
+
+    config = body.get("config")
+    return config if isinstance(config, dict) else {}
+
+
+def _native_value(body: dict, config: dict, *keys: str) -> object:
+    """Return the first non-``None`` value of ``keys`` in the body or its config.
+
+    Gemini nests its sampling parameters inside ``config`` while the other
+    providers keep them at the top level of the request body.
+    """
+
+    value = _first_value(body, *keys)
+    return value if value is not None else _first_value(config, *keys)
+
+
+def _tool_choice_value(body: dict, config: dict) -> object:
+    """Return the effective tool choice, including Gemini's ``tool_config``."""
+
+    value = _native_value(body, config, "tool_choice")
+    if value is not None:
+        return value
+    tool_config = _native_value(config, {}, "tool_config", "toolConfig")
+    if isinstance(tool_config, dict):
+        calling = tool_config.get("function_calling_config") or tool_config.get(
+            "functionCallingConfig"
+        )
+        if isinstance(calling, dict):
+            return calling.get("mode")
+    return None
+
+
 def _build_request_info(
     scope: LLMRequestScope,
     raw: object,
@@ -278,27 +312,32 @@ def _build_request_info(
     """Describe the sampling parameters of one attempt.
 
     Reads the original request body directly, so the cheap fields survive
-    truncation of the sanitized copy.
+    truncation of the sanitized copy. Gemini-style bodies keep their sampling
+    parameters inside ``config``; those are read as a fallback so the envelope
+    never reports blanks for a provider that sends them.
     """
 
     body = raw if isinstance(raw, dict) else {}
+    config = _config_dict(body)
     reasoning = body.get("reasoning")
     reasoning_effort = body.get("reasoning_effort")
     if reasoning_effort is None and isinstance(reasoning, dict):
         reasoning_effort = reasoning.get("effort")
     return {
         "stream": _primitive(body.get("stream")),
-        "temperature": _primitive(body.get("temperature")),
-        "top_p": _primitive(body.get("top_p")),
+        "temperature": _primitive(_native_value(body, config, "temperature")),
+        "top_p": _primitive(_native_value(body, config, "top_p", "topP")),
         "max_tokens": _primitive(
-            _first_value(
+            _native_value(
                 body,
+                config,
                 "max_tokens",
                 "max_completion_tokens",
                 "max_output_tokens",
+                "maxOutputTokens",
             )
         ),
-        "tool_choice": _primitive(body.get("tool_choice")),
+        "tool_choice": _primitive(_tool_choice_value(body, config)),
         "reasoning_effort": _primitive(reasoning_effort),
         "attempt": attempt,
         "fallback_index": scope.fallback_index,
@@ -309,11 +348,20 @@ def _build_request_info(
     }
 
 
-def _build_counts(raw: object) -> dict:
+def _build_counts(
+    raw: object,
+    *,
+    system_text: str | None,
+    tools: list[dict],
+) -> dict:
     """Derive cheap counters from the original request body.
 
-    Only container lengths and one string length are read, so this stays valid
-    even when the sanitized body is later truncated by the byte budget.
+    Only container lengths and one string length are kept, so this stays valid
+    even when the sanitized body is later truncated by the byte budget. The
+    system prompt and the tool list come from the same adapter the view uses:
+    OpenAI puts the system prompt in ``messages[0]``, Anthropic in a block
+    list and Gemini in ``config``, so reading the raw shape alone would report
+    false blanks.
     """
 
     body = raw if isinstance(raw, dict) else {}
@@ -322,23 +370,10 @@ def _build_counts(raw: object) -> dict:
         messages = body.get("input")
     if not isinstance(messages, list):
         messages = body.get("contents")
-    tools = body.get("tools")
-    config = body.get("config")
-    if not isinstance(tools, list) and isinstance(config, dict):
-        tools = config.get("tools")
-    system = _first_value(
-        body,
-        "system",
-        "instructions",
-        "system_instruction",
-    )
-    if system is None and isinstance(config, dict):
-        system = config.get("system_instruction")
-    system_chars = len(system) if isinstance(system, str) else 0
     return {
         "messages": len(messages) if isinstance(messages, list) else 0,
-        "tools": len(tools) if isinstance(tools, list) else 0,
-        "system_chars": system_chars,
+        "tools": len(tools),
+        "system_chars": len(system_text) if isinstance(system_text, str) else 0,
         "estimated_input_tokens": None,
         "omitted_messages": 0,
     }
@@ -2275,17 +2310,22 @@ class RequestSnapshotRecorder:
                 provider_config,
                 attempt,
             )
-            counts = _build_counts(raw)
-            # Provenance and prefix-cache diagnostics must describe the request
-            # as sent, so both are derived from the original body before the
-            # sanitizer can truncate or redact anything.
             adapter_name = (
                 adapter
                 if adapter is not None
                 else getattr(provider, "SNAPSHOT_ADAPTER", None)
             )
             resolved_adapter = _adapter_for(adapter_name, raw)
+            # The system prompt and tool list live in provider-specific places
+            # (OpenAI ``messages[0]``, Anthropic block lists, Gemini ``config``),
+            # so both the counters and the fingerprint reuse the adapter
+            # extraction instead of guessing from the raw shape.
             system_text = resolved_adapter.system_text(raw)
+            tools = resolved_adapter.tools(raw)
+            counts = _build_counts(raw, system_text=system_text, tools=tools)
+            # Provenance and prefix-cache diagnostics must describe the request
+            # as sent, so both are derived from the original body before the
+            # sanitizer can truncate or redact anything.
             # Only chat requests define the session's prefix-cache baseline;
             # compression/title/aux calls must not poison the comparison.
             cache = None

@@ -395,7 +395,7 @@ class ProviderOpenAIResponses(ProviderOpenAIOfficial):
         try:
             request_snapshots.capture(
                 self,
-                {**payloads, **extra_body},
+                {**payloads, **extra_body, "stream": False},
                 adapter=self.SNAPSHOT_ADAPTER,
                 tool_set=tools,
             )
@@ -474,7 +474,7 @@ class ProviderOpenAIResponses(ProviderOpenAIOfficial):
         try:
             request_snapshots.capture(
                 self,
-                {**payloads, **extra_body},
+                {**payloads, **extra_body, "stream": True},
                 adapter=self.SNAPSHOT_ADAPTER,
                 tool_set=tools,
             )

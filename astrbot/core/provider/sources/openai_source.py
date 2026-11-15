@@ -638,7 +638,7 @@ class ProviderOpenAIOfficial(Provider):
         try:
             request_snapshots.capture(
                 self,
-                {**payloads, **extra_body},
+                {**payloads, **extra_body, "stream": False},
                 adapter=self.SNAPSHOT_ADAPTER,
                 tool_set=tools,
             )
@@ -734,7 +734,13 @@ class ProviderOpenAIOfficial(Provider):
         try:
             request_snapshots.capture(
                 self,
-                {**payloads, **extra_body},
+                {
+                    **payloads,
+                    **extra_body,
+                    "stream": True,
+                    # The SDK call below always asks for the usage chunk.
+                    "stream_options": {"include_usage": True},
+                },
                 adapter=self.SNAPSHOT_ADAPTER,
                 tool_set=tools,
             )

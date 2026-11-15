@@ -26,9 +26,7 @@ class FileAccessCommands:
     def __init__(self, context) -> None:
         self.context = context
 
-    async def set_mode(
-        self, event: AstrMessageEvent, mode: str | None = None
-    ) -> None:
+    async def set_mode(self, event: AstrMessageEvent, mode: str | None = None) -> None:
         """Show or change the file access mode for the current conversation.
 
         Args:

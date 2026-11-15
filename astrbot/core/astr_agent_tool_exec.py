@@ -95,6 +95,52 @@ _FOLLOW_UP_NOTICE_TEMPLATE = (
 )
 
 
+def build_subagent_compression_kwargs(
+    compression_cfg: dict, ctx: T.Any, provider_id: str
+) -> dict[str, T.Any]:
+    """Resolve the compression kwargs handed to a subagent runner.
+
+    Keeps the subagent on the session's strategy: a token budget subagent must
+    not resolve a summary model it will never call, and an LLM-compressed
+    subagent prefers the configured model so its summary request shares the
+    chat requests' prefix cache.
+
+    Args:
+        compression_cfg: Output of ``resolve_context_compression_config``.
+        ctx: Plugin context exposing ``get_provider_by_id``.
+        provider_id: The subagent's own provider, used as the fallback.
+
+    Returns:
+        Keyword arguments for the subagent runner's ``reset``.
+    """
+    if compression_cfg["context_limit_reached_strategy"] == "token_budget":
+        return {"context_limit_reached_strategy": "token_budget"}
+
+    compress_provider: Provider | None = None
+    compress_provider_id = compression_cfg["llm_compress_provider_id"]
+    if compress_provider_id:
+        candidate = ctx.get_provider_by_id(compress_provider_id)
+        if isinstance(candidate, Provider):
+            compress_provider = candidate
+        else:
+            logger.warning(
+                "指定的上下文压缩模型 %s 不可用，子代理将回退到自身模型压缩",
+                compress_provider_id,
+            )
+    if compress_provider is None:
+        candidate = ctx.get_provider_by_id(provider_id)
+        if isinstance(candidate, Provider):
+            compress_provider = candidate
+    if compress_provider is None:
+        return {}
+    return {
+        "llm_compress_provider": compress_provider,
+        "llm_compress_keep_recent_ratio": compression_cfg[
+            "llm_compress_keep_recent_ratio"
+        ],
+    }
+
+
 class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
     @classmethod
     def _collect_image_urls_from_args(cls, image_urls_raw: T.Any) -> list[str]:
@@ -914,29 +960,9 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
         compression_cfg = resolve_context_compression_config(
             config.get("agent_runner", {}).get("config", {}).get("compression", {})
         )
-        if compression_cfg["context_limit_reached_strategy"] == "llm_compress":
-            compress_provider: Provider | None = None
-            compress_provider_id = compression_cfg["llm_compress_provider_id"]
-            if compress_provider_id:
-                candidate = ctx.get_provider_by_id(compress_provider_id)
-                if isinstance(candidate, Provider):
-                    compress_provider = candidate
-                else:
-                    logger.warning(
-                        "指定的上下文压缩模型 %s 不可用，子代理将回退到自身模型压缩",
-                        compress_provider_id,
-                    )
-            if compress_provider is None:
-                candidate = ctx.get_provider_by_id(prov_id)
-                if isinstance(candidate, Provider):
-                    compress_provider = candidate
-            if compress_provider is not None:
-                compress_kwargs = {
-                    "llm_compress_provider": compress_provider,
-                    "llm_compress_keep_recent_ratio": compression_cfg[
-                        "llm_compress_keep_recent_ratio"
-                    ],
-                }
+        compress_kwargs = build_subagent_compression_kwargs(
+            compression_cfg, ctx, prov_id
+        )
 
         agent_max_step = coerce_int_config(
             config.get("agent_runner", {})

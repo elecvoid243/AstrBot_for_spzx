@@ -4,10 +4,14 @@ The recorder keeps the final provider payload of each network attempt in a
 process-local ring buffer. It is a debugging aid: capture is disabled by
 default, only ``webchat:`` sessions are recorded, and nothing is persisted.
 All entry points are best effort and never raise into the request path.
+
+Author: elecvoid243
+Date: 2026-11-15
 """
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import platform
@@ -30,7 +34,11 @@ if TYPE_CHECKING:
     from astrbot.core.provider.provider import Provider
 
 MAX_BYTES_PER_SNAPSHOT = 524288
-"""Maximum serialized size of one sanitized request body."""
+"""Character budget handed to the sanitizer for one request body.
+
+The serialized byte cap is structurally enforced in Task 2; until then this
+value only bounds the sanitizer traversal.
+"""
 
 MAX_SNAPSHOTS_PER_SESSION = 128
 """Maximum number of snapshots kept per session."""
@@ -169,12 +177,18 @@ def _clean_host(api_base: object) -> str | None:
 
 
 def _key_fingerprint(api_key: object) -> str | None:
-    """Build a non-reversible fingerprint that keeps the last four chars."""
+    """Build a non-reversible fingerprint, keeping the tail only for long keys.
+
+    Short keys (eight characters or fewer) would be almost fully disclosed by
+    their last four characters, so they get a hash-only fingerprint.
+    """
 
     if not isinstance(api_key, str) or not api_key:
         return None
     digest = hashlib.sha1(api_key.encode("utf-8")).hexdigest()
-    return f"{digest[:8]}…{api_key[-4:]}"
+    if len(api_key) > 8:
+        return f"{digest[:8]}…{api_key[-4:]}"
+    return digest[:8]
 
 
 def _build_provider_info(provider: Provider | object | None) -> dict:
@@ -246,7 +260,11 @@ def _build_request_info(
     provider_config: dict,
     attempt: int,
 ) -> dict:
-    """Describe the sampling parameters of one attempt."""
+    """Describe the sampling parameters of one attempt.
+
+    Reads the original request body directly, so the cheap fields survive
+    truncation of the sanitized copy.
+    """
 
     body = raw if isinstance(raw, dict) else {}
     reasoning = body.get("reasoning")
@@ -277,7 +295,11 @@ def _build_request_info(
 
 
 def _build_counts(raw: object) -> dict:
-    """Derive cheap counters from the sanitized request body."""
+    """Derive cheap counters from the original request body.
+
+    Only container lengths and one string length are read, so this stays valid
+    even when the sanitized body is later truncated by the byte budget.
+    """
 
     body = raw if isinstance(raw, dict) else {}
     messages = body.get("messages")
@@ -312,6 +334,8 @@ def _build_env() -> dict:
 
     env: dict[str, Any] = {
         "file_access_mode": None,
+        # Per-session concepts, not root configuration keys: ChatService fills
+        # these in later once the snapshot is attached to a turn.
         "project": None,
         "workspace": None,
         "config_profile": None,
@@ -323,22 +347,20 @@ def _build_env() -> dict:
         provider_settings = astrbot_config.get("provider_settings") or {}
         if isinstance(provider_settings, dict):
             env["file_access_mode"] = provider_settings.get("file_access_default_mode")
-        env["project"] = astrbot_config.get("project")
-        env["workspace"] = astrbot_config.get("workspace")
-        env["config_profile"] = astrbot_config.get("config_profile")
     except Exception:
         logger.debug("Failed to read snapshot environment", exc_info=True)
     return env
 
 
 def _light_envelope(envelope: dict) -> dict:
-    """Return a list-friendly envelope without large optional payloads."""
+    """Return a detached, list-friendly envelope without large optional payloads."""
 
-    return {
+    light = {
         key: value
         for key, value in envelope.items()
         if key not in {"injections", "provenance", "raw"}
     }
+    return copy.deepcopy(light)
 
 
 class RequestSnapshotRecorder:
@@ -400,15 +422,25 @@ class RequestSnapshotRecorder:
 
             now = self._clock()
             self._purge(now)
+            # Cheap sampling fields and counters come from the original body so
+            # a huge leading block can never turn them into None/0 when the
+            # sanitized copy is truncated.
+            attempt = self._next_attempt(scope)
+            provider_config = getattr(provider, "provider_config", None)
+            if not isinstance(provider_config, dict):
+                provider_config = {}
+            request_info = _build_request_info(
+                scope,
+                raw,
+                provider_config,
+                attempt,
+            )
+            counts = _build_counts(raw)
             sanitized = bounded_context_value(raw, limit=MAX_BYTES_PER_SNAPSHOT)
             body = sanitized.get("value")
             serialized = json.dumps(body, ensure_ascii=False, default=str)
             size = len(serialized.encode("utf-8"))
             snapshot_id = uuid.uuid4().hex
-            attempt = self._next_attempt(scope)
-            provider_config = getattr(provider, "provider_config", None)
-            if not isinstance(provider_config, dict):
-                provider_config = {}
             envelope = {
                 "snapshot_id": snapshot_id,
                 "session_id": effective_session,
@@ -425,13 +457,8 @@ class RequestSnapshotRecorder:
                 "truncated": bool(sanitized.get("truncated")),
                 "redactions": int(sanitized.get("redactions") or 0),
                 "provider": _build_provider_info(provider),
-                "request": _build_request_info(
-                    scope,
-                    body,
-                    provider_config,
-                    attempt,
-                ),
-                "counts": _build_counts(body),
+                "request": request_info,
+                "counts": counts,
                 "response": None,
                 "tool_executions": [],
                 "diagnostics": {
@@ -475,7 +502,9 @@ class RequestSnapshotRecorder:
         Returns:
             ``{"enabled", "expired", "items", "limits", "dropped"}``. When a
             ``message_id`` has no live binding, ``expired`` is ``True`` and the
-            item list is empty.
+            item list is empty. Items are detached lightweight copies: they
+            never carry ``injections``/``provenance`` payloads and mutating them
+            cannot change the stored state.
         """
 
         try:
@@ -532,8 +561,9 @@ class RequestSnapshotRecorder:
             snapshot_id: Id returned by :meth:`capture`.
 
         Returns:
-            The stored envelope with a ``raw`` key, or ``None`` when the
-            snapshot is unknown or expired.
+            A deep copy of the stored envelope with a ``raw`` key, or ``None``
+            when the snapshot is unknown or expired. Copying keeps consumers
+            from mutating the recorder's state.
         """
 
         try:
@@ -541,8 +571,8 @@ class RequestSnapshotRecorder:
             envelope = self._snapshots.get(str(snapshot_id))
             if envelope is None:
                 return None
-            full = dict(envelope)
-            full["raw"] = self._raw.get(str(snapshot_id))
+            full = copy.deepcopy(envelope)
+            full["raw"] = copy.deepcopy(self._raw.get(str(snapshot_id)))
             return full
         except Exception:
             logger.debug("Failed to read LLM request snapshot", exc_info=True)
@@ -601,7 +631,12 @@ class RequestSnapshotRecorder:
 
     @staticmethod
     def limits() -> dict:
-        """Return the public retention limits."""
+        """Return the public retention limits.
+
+        The 512 KB per-snapshot budget is currently a character budget on the
+        sanitized copy; structural enforcement of the serialized byte cap lands
+        in Task 2, so callers must not treat it as fully enforced yet.
+        """
 
         return {
             "max_bytes_per_snapshot": MAX_BYTES_PER_SNAPSHOT,
@@ -695,13 +730,23 @@ class RequestSnapshotRecorder:
             self._session_bytes.pop(oldest, None)
 
     def _remove(self, session_id: str, snapshot_id: str, *, dropped: bool) -> None:
-        """Remove one snapshot from every index."""
+        """Remove one snapshot from every index.
+
+        A session whose deque becomes empty is dropped entirely so idle
+        sessions cannot accumulate bookkeeping entries.
+        """
 
         envelope = self._snapshots.pop(snapshot_id, None)
         if envelope is None:
             ids = self._sessions.get(session_id)
             if ids and snapshot_id in ids:
-                ids.remove(snapshot_id)
+                try:
+                    ids.remove(snapshot_id)
+                except ValueError:
+                    pass
+                if not ids:
+                    self._sessions.pop(session_id, None)
+                    self._session_bytes.pop(session_id, None)
             return
         self._raw.pop(snapshot_id, None)
         size = int(envelope.get("bytes") or 0)
@@ -719,6 +764,7 @@ class RequestSnapshotRecorder:
                 pass
             if not ids:
                 self._sessions.pop(session_id, None)
+                self._session_bytes.pop(session_id, None)
         invocation_id = envelope.get("invocation_id")
         if invocation_id:
             invocation_ids = self._by_invocation.get(invocation_id)

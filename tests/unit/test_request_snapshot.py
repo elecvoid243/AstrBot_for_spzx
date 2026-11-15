@@ -2,10 +2,14 @@
 
 The recorder is a ChatUI developer-mode feature: it is default-off, only
 keeps ``webchat:`` sessions, and stores sanitized payloads in memory.
+
+Author: elecvoid243
+Date: 2026-11-15
 """
 
 from __future__ import annotations
 
+import copy
 from types import SimpleNamespace
 
 import pytest
@@ -188,6 +192,19 @@ def test_ttl_expires_entries(monkeypatch):
     assert rec.get(snapshot_id) is None
 
 
+def test_empty_session_is_dropped_from_bookkeeping(monkeypatch):
+    _enable(monkeypatch)
+    now = [1000.0]
+    rec = RequestSnapshotRecorder(clock=lambda: now[0])
+    with request_snapshot_scope(session_id="s1", umo="webchat:FriendMessage:s1"):
+        rec.capture(FakeProvider(), {"messages": []})
+    assert "s1" in rec._sessions
+    now[0] += TTL_SECONDS + 1
+    rec.list_for_session("s1")
+    assert "s1" not in rec._sessions
+    assert "s1" not in rec._session_bytes
+
+
 def test_oversized_payload_is_truncated_and_redacted(monkeypatch):
     _enable(monkeypatch)
     raw = {
@@ -355,3 +372,114 @@ def test_bounded_context_value_supports_limits_and_redaction_counts():
     assert "PRIVATE" not in str(redacted)
     assert redacted["redactions"] >= 1
     assert redacted["limit"] == 8192
+
+
+def _image_part(url: str) -> dict:
+    return {"type": "image_url", "image_url": {"url": url}}
+
+
+def test_bounded_context_value_does_not_count_allowed_media_reference():
+    sanitized = bounded_context_value(_image_part("https://example.com/a.png"))
+    assert sanitized["redactions"] == 0
+    assert sanitized["value"]["url"] == "https://example.com/a.png"
+
+
+def test_bounded_context_value_counts_credential_url_once():
+    sanitized = bounded_context_value(
+        _image_part("https://user:pass@example.com/a.png?token=secret")
+    )
+    assert sanitized["redactions"] == 1
+    assert sanitized["value"]["reference_redacted"] is True
+    assert "pass" not in sanitized["value"]["url"]
+    assert "token" not in sanitized["value"]["url"]
+
+
+def test_bounded_context_value_counts_data_uri_once():
+    sanitized = bounded_context_value(
+        _image_part("data:image/png;base64,PRIVATE-IMAGE-BYTES")
+    )
+    assert sanitized["redactions"] == 1
+    assert "PRIVATE-IMAGE-BYTES" not in str(sanitized)
+
+
+def test_capture_keeps_sampling_fields_when_first_message_is_huge(monkeypatch):
+    _enable(monkeypatch)
+    raw = {
+        "temperature": 0.3,
+        "top_p": 0.9,
+        "max_tokens": 512,
+        "tools": [{"type": "function", "function": {"name": "t1"}}],
+        "system": "s" * 128,
+        "messages": [
+            {
+                "role": "user",
+                "content": "x" * (request_snapshot.MAX_BYTES_PER_SNAPSHOT + 1),
+            },
+            {"role": "assistant", "content": "done"},
+        ],
+    }
+    with request_snapshot_scope(session_id="s1", umo="webchat:FriendMessage:s1"):
+        snapshot_id = request_snapshots.capture(FakeProvider(), raw)
+    item = request_snapshots.get(snapshot_id)
+    assert item["truncated"] is True
+    assert item["request"]["temperature"] == 0.3
+    assert item["request"]["top_p"] == 0.9
+    assert item["request"]["max_tokens"] == 512
+    assert item["counts"]["messages"] == 2
+    assert item["counts"]["tools"] == 1
+    assert item["counts"]["system_chars"] == 128
+
+
+def test_capture_does_not_mutate_caller_body(monkeypatch):
+    _enable(monkeypatch)
+    raw = {
+        "temperature": 0.1,
+        "messages": [
+            {"role": "user", "content": "hello"},
+            _image_part("data:image/png;base64,PRIVATE-IMAGE-BYTES"),
+        ],
+        "api_key": "PRIVATE-KEY",
+    }
+    before = copy.deepcopy(raw)
+    with request_snapshot_scope(session_id="s1", umo="webchat:FriendMessage:s1"):
+        request_snapshots.capture(FakeProvider(), raw)
+    assert raw == before
+
+
+def test_listing_and_get_return_detached_copies(monkeypatch):
+    _enable(monkeypatch)
+    raw = {"messages": [{"role": "user", "content": "hello"}]}
+    with request_snapshot_scope(session_id="s1", umo="webchat:FriendMessage:s1"):
+        snapshot_id = request_snapshots.capture(FakeProvider(), raw)
+
+    listing = request_snapshots.list_for_session("s1")
+    listing["items"][0]["request"]["temperature"] = 999
+    listing["items"][0]["counts"]["messages"] = 42
+    stored_list = request_snapshots.list_for_session("s1")["items"][0]
+    assert stored_list["request"]["temperature"] is None
+    assert stored_list["counts"]["messages"] == 1
+
+    full = request_snapshots.get(snapshot_id)
+    full["request"]["temperature"] = 999
+    full["raw"]["messages"][0]["content"] = "mutated"
+    again = request_snapshots.get(snapshot_id)
+    assert again["request"]["temperature"] is None
+    assert again["raw"]["messages"][0]["content"] == "hello"
+
+
+def test_short_api_key_uses_hash_only_fingerprint(monkeypatch):
+    _enable(monkeypatch)
+
+    class ShortKeyProvider(FakeProvider):
+        def get_current_key(self) -> str:
+            return "sk-1"
+
+        def get_keys(self) -> list[str]:
+            return ["sk-1"]
+
+    with request_snapshot_scope(session_id="s1", umo="webchat:FriendMessage:s1"):
+        snapshot_id = request_snapshots.capture(ShortKeyProvider(), {"messages": []})
+    fingerprint = request_snapshots.get(snapshot_id)["provider"]["key_fp"]
+    assert fingerprint is not None
+    assert "sk-1" not in fingerprint
+    assert "…" not in fingerprint

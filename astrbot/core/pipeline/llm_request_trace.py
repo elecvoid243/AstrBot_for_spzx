@@ -298,7 +298,6 @@ def bounded_context_value(value: object, limit: int = FULL_CHARS) -> dict:
                 "input_file",
             }:
                 result = {"type": part_type, "omitted": "binary or local media content"}
-                redactions += 1
                 pending = [item]
                 while pending:
                     part = pending.pop()
@@ -344,12 +343,15 @@ def bounded_context_value(value: object, limit: int = FULL_CHARS) -> dict:
                                             redactions += 1
                                     elif child.startswith("data:"):
                                         result["omitted"] = "binary data URI"
+                                        redactions += 1
                                     else:
                                         result["omitted"] = (
                                             "no authorized file reference"
                                         )
+                                        redactions += 1
                                 except ValueError:
                                     result["omitted"] = "invalid URL"
+                                    redactions += 1
                             elif key in {
                                 "data",
                                 "file_data",

@@ -279,6 +279,42 @@ class ContextTruncator:
         )
         return self.fix_messages(result)
 
+    def reset_to_latest_round(self, messages: list[Message]) -> list[Message]:
+        """Keep the leading system messages and the newest round only.
+
+        Token-budget compaction replaces the window instead of summarizing it,
+        so everything before the current round is dropped rather than priced.
+        Grouping by round keeps a tool batch whole, and ``fix_messages``
+        restores the protocol when that batch was only partly executed.
+
+        Args:
+            messages: Model-visible history, including the current request.
+
+        Returns:
+            System messages plus the newest round, or the input unchanged when
+            there is no non-system message to keep.
+        """
+        first_non_system = next(
+            (
+                index
+                for index, message in enumerate(messages)
+                if message.role != "system"
+            ),
+            len(messages),
+        )
+        system_messages = messages[:first_non_system]
+        rest = messages[first_non_system:]
+        if not rest:
+            return messages
+        rounds = [
+            [segment for segment in group if isinstance(segment, Message)]
+            for group in split_into_rounds(rest)
+        ]
+        rounds = [group for group in rounds if group]
+        if not rounds:
+            return messages
+        return self.fix_messages([*system_messages, *rounds[-1]])
+
     def truncate_by_token_budget(
         self,
         messages: list[Message],

@@ -258,6 +258,7 @@ UI 打开 Inspector
 - `response.usage`: 与 `TokenUsage` 对齐；`total = input_other + input_cached + output`。
 - 顶层 `duration_ms` 是模型调用耗时（请求开始到最终响应）；`chunks` 流式为实际块数，非流式为 `0`。
 - `tool_executions.status`: `ok` | `error` | `denied` | `interrupted`；`permission`: `allow` | `deny`。
+- `tool_meta[*].denied`: `true` | `false` | `null`；`null` 表示请求期拿不到禁用集合，UI 显示“未知”，不伪装成 `false`。
 - `provenance[].span`: 精确字符区间 `[start, end]`；无精确位置时 `null` 且 `approx=true`。
 - `injections`: 与现有 `llm_request_injections` 的 `items` 同形；由 runner 从回合事件读取，详情接口直接返回，UI 复用现有注入面板。
 - `env.env_source`: `request`（请求时抓取）或 `current`（读取时补齐，UI 标“当前”）。

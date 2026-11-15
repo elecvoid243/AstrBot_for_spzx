@@ -186,6 +186,7 @@ git commit -m "feat(provider): add in-memory llm request snapshot recorder"
   - `ADAPTERS = {"openai_chat": ..., "openai_responses": ..., "anthropic": ..., "gemini": ...}`.
   - `build_view(snapshot: dict) -> dict` returning `{"system", "messages", "tools", "params", "extra"}`.
   - `capture(..., adapter: str | None = None)`; when `adapter` is `None`, use `provider.SNAPSHOT_ADAPTER`.
+  - `attach_tool_meta(invocation_id: str, *, tool_set=None, denied_tools=None) -> None`; Task 5 calls it with `req.func_tool`/`req.denied_tools`.
 
 - [ ] **Step 1: Write the failing adapter tests**
 
@@ -435,7 +436,7 @@ Expected: FAIL because `capture` is never called.
 - Anthropic `_query` / `_query_stream`: after the `max_tokens` alias cleanup, before `retry_provider_request` / `retry_provider_request_context`, capture `{**payloads, **extra_body}`.
 - Gemini `_query` / `_query_stream`: after `config = await self._prepare_query_config(...)`, before the SDK call, capture `{"model": model, "contents": conversation, "config": config}`.
 
-Each hook calls `request_snapshots.capture(self, effective_body, adapter=self.SNAPSHOT_ADAPTER)` and is wrapped in `try/except Exception: logger.debug(...)`; never log payload contents and never re-raise. Assert the adapter name in the tests.
+Each hook calls `request_snapshots.capture(self, effective_body, adapter=self.SNAPSHOT_ADAPTER, tool_set=tools)` and is wrapped in `try/except Exception: logger.debug(...)`; never log payload contents and never re-raise. Assert the adapter name in the tests.
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
@@ -556,6 +557,7 @@ After the final response is known in `step()` (before `agent_stats` is yielded),
 - `request_snapshots.attach_response(invocation_id, llm_response, chunks=self._snapshot_stream_chunks)`
 - `request_snapshots.attach_diagnostics(invocation_id, {...})`
 - `request_snapshots.attach_injections(invocation_id, read_injections(event))`
+- `request_snapshots.attach_tool_meta(invocation_id, tool_set=req.func_tool, denied_tools=req.denied_tools)`
 - `items = request_snapshots.metadata_for_invocation(invocation_id)`
 - If `items`, yield `AgentResponse(type="llm_request_snapshots", ...)` with `{"items": items}`.
 

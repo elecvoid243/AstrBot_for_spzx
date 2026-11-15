@@ -22,11 +22,12 @@ import { test } from "node:test";
 import {
   TODO_TOOL_NAMES,
   replayTodoSnapshotFromHistory,
+  resolveTodoAction,
 } from "./todoHistoryReplay.ts";
 
 /** Minimal realistic parser mirroring useMessages.parseTodoToolResult. */
-function stubParse(toolName: string, resultJson: string) {
-  if (toolName === "todo_clear") return null;
+function stubParse(toolName: string, resultJson: string, args?: unknown) {
+  if (resolveTodoAction(toolName, args) === "clear") return null;
   let parsed: any;
   try {
     parsed = JSON.parse(resultJson);
@@ -55,6 +56,7 @@ function todoResult(name: string, title: string) {
 
 test("TODO_TOOL_NAMES covers the spcode todo tools incl. legacy names", () => {
   for (const name of [
+    "todo_manage",
     "todo_create",
     "todo_query",
     "todo_add",
@@ -67,6 +69,54 @@ test("TODO_TOOL_NAMES covers the spcode todo tools incl. legacy names", () => {
     assert.ok(TODO_TOOL_NAMES.has(name), `missing ${name}`);
   }
   assert.ok(!TODO_TOOL_NAMES.has("astrbot_file_edit_tool"));
+});
+
+test("resolveTodoAction reads the merged action, legacy names and args.mode", () => {
+  // v2.35 merged tool: the action lives in the arguments.
+  assert.equal(resolveTodoAction("todo_manage", { action: "create" }), "create");
+  assert.equal(resolveTodoAction("todo_manage", { action: "CLEAR" }), "clear");
+  // Persisted args may still be the raw JSON string.
+  assert.equal(resolveTodoAction("todo_manage", '{"action":"query"}'), "query");
+  assert.equal(resolveTodoAction("todo_manage", {}), null);
+  assert.equal(resolveTodoAction("todo_manage", { action: "nope" }), null);
+  // Legacy standalone tools: the name *is* the action.
+  assert.equal(resolveTodoAction("todo_create", undefined), "create");
+  assert.equal(resolveTodoAction("todo_clear", undefined), "clear");
+  // Legacy todo_modify: args.mode decides; without it the caller falls
+  // back to the data shape.
+  assert.equal(resolveTodoAction("todo_modify", { mode: "delete" }), "delete");
+  assert.equal(resolveTodoAction("todo_modify", {}), null);
+  assert.equal(resolveTodoAction("todo_list", {}), null);
+  assert.equal(resolveTodoAction("astrbot_file_edit_tool", {}), null);
+});
+
+test("merged todo_manage folds by action (create then clear)", () => {
+  const create = toolCallPart([
+    {
+      name: "todo_manage",
+      args: { action: "create" },
+      result: JSON.stringify({
+        ok: true,
+        data: { list: { title: "merged" }, stats: { done: 0, total: 1 } },
+      }),
+    },
+  ]);
+  const out = replayTodoSnapshotFromHistory([create], stubParse);
+  assert.equal(out?.tool, "todo_manage");
+  assert.equal(out?.list.title, "merged");
+
+  const cleared = [
+    create,
+    toolCallPart([
+      {
+        name: "todo_manage",
+        args: { action: "clear" },
+        // Clear carries no list — only the action identifies it.
+        result: '{"ok":true,"deleted":"list"}',
+      },
+    ]),
+  ];
+  assert.equal(replayTodoSnapshotFromHistory(cleared, stubParse), null);
 });
 
 test("returns undefined when history has no todo tool results", () => {

@@ -1481,3 +1481,58 @@ def test_context_config_llm_params_reach_llm_compressor():
 
     assert isinstance(manager.compressor, LLMSummaryCompressor)
     assert manager.compressor.llm_params == {"thinking_effort": "high"}
+
+
+class TestTokenBudgetStrategy:
+    """Token budget selection, reporting and capacity behaviour."""
+
+    @staticmethod
+    def _rounds(count: int, chars: int = 500) -> list[Message]:
+        messages: list[Message] = []
+        for _ in range(count):
+            messages.append(Message(role="user", content="u" * chars))
+            messages.append(Message(role="assistant", content="a" * chars))
+        return messages
+
+    @pytest.mark.asyncio
+    async def test_manager_uses_token_budget_compressor(self):
+        """The configured strategy selects the reset compressor, not a summary."""
+        from astrbot.core.agent.context.compressor import TokenBudgetCompressor
+
+        manager = ContextManager(
+            ContextConfig(
+                max_context_tokens=1000,
+                strategy="token_budget",
+                custom_token_counter=CharTokenCounter(),
+            )
+        )
+
+        result = await manager.process(self._rounds(5))
+
+        assert isinstance(manager.compressor, TokenBudgetCompressor)
+        assert manager.last_compression is not None
+        assert manager.last_compression["strategy"] == "token_budget"
+        assert [message.role for message in result] == ["user", "assistant"]
+        assert result[0].content == "u" * 500
+
+    @pytest.mark.asyncio
+    async def test_manager_reports_remaining_tokens(self):
+        """Remaining budget is reported even when no compression runs."""
+        manager = ContextManager(
+            ContextConfig(
+                max_context_tokens=1000,
+                threshold_ratio=0.8,
+                headroom_tokens=0,
+                strategy="token_budget",
+                custom_token_counter=CharTokenCounter(),
+            )
+        )
+
+        await manager.process(
+            [
+                Message(role="system", content="s" * 100),
+                Message(role="user", content="u" * 700),
+            ]
+        )
+
+        assert manager.last_remaining_tokens == 0

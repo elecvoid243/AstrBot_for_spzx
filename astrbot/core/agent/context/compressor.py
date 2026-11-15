@@ -141,6 +141,8 @@ class TruncateByTurnsCompressor:
 
     strategy = "truncate_by_turns"
     """Strategy label for the compression report consumed by the frontend."""
+    supports_retries = False
+    """Dropping older rounds cannot be improved by a second pass."""
 
     def __init__(
         self,
@@ -239,6 +241,50 @@ class TruncateByTurnsCompressor:
         return truncated_messages
 
 
+class TokenBudgetCompressor:
+    """Replace the context window instead of summarizing it.
+
+    Mirrors codex's token-budget compaction: no summarization request is made;
+    the history is cut back to the leading system instructions and the newest
+    round. Round granularity keeps a tool batch whole.
+    """
+
+    strategy = "token_budget"
+    """Strategy label for the compression report consumed by the frontend."""
+    supports_retries = False
+    """A reset is idempotent, so a second pass cannot improve the result."""
+
+    def __init__(self, token_counter: TokenCounter) -> None:
+        self.token_counter = token_counter
+        self.last_shadowed_tokens = 0
+
+    async def __call__(
+        self,
+        messages: list[Message],
+        func_tool: "ToolSet | None" = None,
+        spec: CompactionSpec | None = None,
+        selected_range: CompactionRange | None = None,
+        protected_messages: list[Message] | None = None,
+    ) -> list[Message]:
+        """Return the system messages plus the newest round.
+
+        Args:
+            messages: Model-visible history, including the current request.
+            func_tool: Unused; a reset makes no model request.
+            spec: Unused; the reset keeps a round, it does not price one.
+            selected_range: Unused for the same reason.
+            protected_messages: Unused; protected inputs live in the newest
+                round, which is kept verbatim.
+
+        Returns:
+            The reset message list.
+        """
+        before = self.token_counter.count_tokens(messages)
+        result = ContextTruncator().reset_to_latest_round(messages)
+        self.last_shadowed_tokens = before - self.token_counter.count_tokens(result)
+        return result
+
+
 def _extract_system_messages(messages: list[Message]) -> list[Message]:
     """Return the leading system messages from a message list."""
     result = []
@@ -258,6 +304,8 @@ class LLMSummaryCompressor:
 
     strategy = "llm_compress"
     """Strategy label for the compression report consumed by the frontend."""
+    supports_retries = True
+    """A summary can be retried when it did not yield enough tokens."""
 
     def __init__(
         self,

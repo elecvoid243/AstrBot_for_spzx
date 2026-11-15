@@ -10,7 +10,11 @@ from astrbot.core.provider.modalities import sanitize_contexts_by_modalities
 from ..message import Message, bind_checkpoint_messages
 from .compaction_region import select_compaction_range
 from .compaction_spec import CompactionSpec, resolve_compaction_spec
-from .compressor import LLMSummaryCompressor, TruncateByTurnsCompressor
+from .compressor import (
+    LLMSummaryCompressor,
+    TokenBudgetCompressor,
+    TruncateByTurnsCompressor,
+)
 from .config import ContextConfig
 from .token_counter import EstimateTokenCounter
 from .truncator import ContextTruncator
@@ -59,6 +63,12 @@ class ContextManager:
         self.config = config
 
         self.last_compression: dict | None = None
+        self.last_remaining_tokens: int | None = None
+        """Budget left after the last ``process()`` call.
+
+        ``None`` means the call had no message budget to report (or ended in a
+        capacity error); the agent runner uses it to time window reminders.
+        """
         self._last_compaction_tokens: int | None = None
         """Report of the compression performed by the latest ``process()`` call.
 
@@ -72,6 +82,8 @@ class ContextManager:
 
         if config.custom_compressor:
             self.compressor = config.custom_compressor
+        elif config.strategy == "token_budget":
+            self.compressor = TokenBudgetCompressor(token_counter=self.token_counter)
         elif config.llm_compress_provider:
             self.compressor = LLMSummaryCompressor(
                 provider=config.llm_compress_provider,
@@ -139,6 +151,7 @@ class ContextManager:
             calls.
         """
         self.last_compression = None
+        self.last_remaining_tokens = None
         total_tokens = None
 
         if modalities:
@@ -222,6 +235,9 @@ class ContextManager:
                     "after compression. Reduce the current input, tool definitions, or output limit."
                 )
 
+            self.last_remaining_tokens = self._remaining_tokens(
+                total_tokens, spec, output_token_budget
+            )
             return result
         except Exception as e:
             from astrbot.core.agent_team_execution import ProcessPersistenceError
@@ -291,6 +307,27 @@ class ContextManager:
             )
         return tokens
 
+    @staticmethod
+    def _remaining_tokens(
+        total_tokens: int, spec: CompactionSpec, output_token_budget: int
+    ) -> int:
+        """Budget left before the trigger or the window, whichever is closer.
+
+        Args:
+            total_tokens: Input tokens the request will actually send.
+            spec: Resolved compaction budgets for this request.
+            output_token_budget: Output tokens reserved in the model window.
+
+        Returns:
+            Non-negative remaining tokens.
+        """
+        window_remaining = (
+            spec.context_window - total_tokens - output_token_budget
+            if spec.context_window > 0
+            else spec.threshold_tokens
+        )
+        return max(0, min(spec.threshold_tokens - total_tokens, window_remaining))
+
     async def _run_compression(
         self,
         spec: CompactionSpec,
@@ -356,7 +393,9 @@ class ContextManager:
 
         passes = 0
         attempted = False
-        if isinstance(self.compressor, LLMSummaryCompressor):
+        # ``is True`` keeps Mock-based and third-party compressors on the
+        # single-pass path: an auto-created Mock attribute is truthy.
+        if getattr(self.compressor, "supports_retries", False) is True:
             # Capacity pressure cannot be fixed by summarizing the same range
             # twice; hard-drop handles the residual instead.
             max_passes = 1 if reason == "capacity" else 1 + spec.compaction_retries

@@ -12,6 +12,12 @@ if TYPE_CHECKING:
 class ContextConfig:
     """Context configuration class."""
 
+    strategy: str = "llm_compress"
+    """Overflow strategy that decides how a request is compacted.
+
+    ``llm_compress`` summarizes old history; ``token_budget`` replaces the
+    window with the current round and never calls a model.
+    """
     max_context_tokens: int = 0
     """Maximum number of context tokens. <= 0 means no limit."""
     compress_threshold_tokens: int = 0

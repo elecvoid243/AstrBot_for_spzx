@@ -89,6 +89,10 @@ from astrbot.core.provider.modalities import (
     sanitize_contexts_by_modalities,
 )
 from astrbot.core.provider.provider import Provider
+from astrbot.core.provider.request_snapshot import (
+    request_snapshot_scope,
+    request_snapshots,
+)
 from astrbot.core.utils.active_event_registry import active_event_registry
 from astrbot.core.utils.async_generator import iterate_in_task
 from astrbot.core.utils.image_input import prepare_request_images
@@ -379,6 +383,128 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             ),
         )
 
+    def _snapshot_diagnostics(self, llm_response: LLMResponse) -> dict:
+        """Build the runner diagnostics attached to a snapshot envelope.
+
+        Args:
+            llm_response: Final response of the current model invocation.
+
+        Returns:
+            The compression, budget, retry and stop-reason diagnostics.
+        """
+
+        context_tokens = self.stats.current_context_tokens or None
+        context_limit = self.request_context_manager_config.max_context_tokens
+        if not isinstance(context_limit, int) or context_limit <= 0:
+            context_limit = None
+        stop_reason = None
+        if self._is_stop_requested():
+            stop_reason = "aborted"
+        elif llm_response.role == "err":
+            stop_reason = "error"
+        elif (
+            self._step_budget_max is not None
+            and self._step_budget_used >= self._step_budget_max
+        ):
+            stop_reason = "max_steps"
+        return {
+            "compression": self.request_context_manager.last_compression,
+            "budget": {
+                "step_used": self._step_budget_used,
+                "step_max": self._step_budget_max,
+                "context_tokens": context_tokens,
+                "context_limit": context_limit,
+                "output_budget": self._snapshot_output_budget,
+            },
+            "retries": {"request_max_retries": self.request_max_retries},
+            "stop_reason": stop_reason,
+        }
+
+    def _snapshot_scope(self, invocation_id: str):
+        """Build the developer-mode scope covering one provider call.
+
+        Args:
+            invocation_id: Invocation id of the model request.
+
+        Returns:
+            The ambient request scope used by the provider capture hooks.
+        """
+
+        return request_snapshot_scope(
+            session_id=(self.req.conversation.cid if self.req.conversation else None),
+            umo=self.req.session_id,
+            turn_id=self._snapshot_turn_id,
+            invocation_id=invocation_id,
+            kind="chat",
+            step=self._step_budget_used,
+            stage="main",
+            fallback_index=self._snapshot_fallback_index,
+            is_subagent=bool(
+                (getattr(self.run_context.context, "extra", None) or {}).get(
+                    "is_subagent"
+                )
+            ),
+        )
+
+    def _attach_snapshot_metadata(
+        self, llm_response: LLMResponse
+    ) -> AgentResponse | None:
+        """Attach the final response to the captured snapshot invocation.
+
+        Args:
+            llm_response: Final response of the current model invocation.
+
+        Returns:
+            The ``llm_request_snapshots`` event, or ``None`` when nothing was
+            captured for this invocation or the run is a subagent.
+        """
+
+        invocation_id = self._snapshot_invocation_id
+        if not invocation_id:
+            return None
+        try:
+            request_snapshots.attach_response(
+                invocation_id,
+                llm_response,
+                chunks=self._snapshot_stream_chunks,
+            )
+            request_snapshots.attach_diagnostics(
+                invocation_id, self._snapshot_diagnostics(llm_response)
+            )
+            event = getattr(getattr(self.run_context, "context", None), "event", None)
+            request_snapshots.attach_injections(invocation_id, read_injections(event))
+            request_snapshots.attach_tool_meta(
+                invocation_id,
+                tool_set=self.req.func_tool,
+                denied_tools=self.req.denied_tools,
+            )
+            if llm_response.role == "err":
+                error = RuntimeError(
+                    llm_response.completion_text or "LLM response error"
+                )
+                request_snapshots.mark_error(invocation_id, error)
+            if bool(
+                (getattr(self.run_context.context, "extra", None) or {}).get(
+                    "is_subagent"
+                )
+            ):
+                return None
+            items = request_snapshots.metadata_for_invocation(invocation_id)
+        except Exception:
+            logger.debug("Failed to attach LLM snapshot metadata", exc_info=True)
+            return None
+        if not items:
+            return None
+        return AgentResponse(
+            type="llm_request_snapshots",
+            data=AgentResponseData(
+                chain=MessageChain(
+                    type="llm_request_snapshots",
+                    chain=[Json(data={"items": items})],
+                )
+            ),
+        )
+
     @override
     async def reset(
         self,
@@ -412,6 +538,11 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         **kwargs: T.Any,
     ) -> None:
         self.req = request
+        self._snapshot_turn_id = uuid.uuid4().hex
+        self._snapshot_fallback_index = 0
+        self._snapshot_invocation_id: str | None = None
+        self._snapshot_stream_chunks = 0
+        self._snapshot_output_budget: int | None = None
         self.streaming = streaming
         self.llm_compress_keep_recent_ratio = llm_compress_keep_recent_ratio
         self.llm_compress_provider = llm_compress_provider
@@ -1863,6 +1994,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                 return
             payload.update(prepared)
             output_token_budget = payload.pop("output_token_budget")
+            self._snapshot_output_budget = output_token_budget
             contexts = payload["contexts"]
             func_tool = payload["func_tool"]
             await self._save_call_checkpoint(
@@ -1926,6 +2058,8 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                 payload.get("model") or self.provider.get_model(),
                 "main",
             )
+            self._snapshot_invocation_id = invocation_id
+            self._snapshot_stream_chunks = 0
             if use_stream:
                 stream = self.provider.text_chat_stream(**payload)
                 pending_text = ""
@@ -1976,8 +2110,14 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                 try:
                     while True:
                         try:
-                            with model_delivery(
-                                receipt, output_limit=output_token_budget
+                            # The provider hook runs while the stream is
+                            # iterated, so the scope wraps the actual `anext`
+                            # instead of only the generator creation above.
+                            with (
+                                self._snapshot_scope(invocation_id),
+                                model_delivery(
+                                    receipt, output_limit=output_token_budget
+                                ),
                             ):
                                 if timer:
                                     pending_read = asyncio.create_task(
@@ -2008,6 +2148,8 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                             await timer
                         if resp is None:
                             return
+                        if resp.is_chunk:
+                            self._snapshot_stream_chunks += 1
                         if resp.is_chunk and timer:
                             pending_text += resp.completion_text or ""
                             pending_reasoning += resp.reasoning_content or ""
@@ -2046,7 +2188,10 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                     finally:
                         await self._close_executor(stream)
             else:
-                with model_delivery(receipt, output_limit=output_token_budget):
+                with (
+                    self._snapshot_scope(invocation_id),
+                    model_delivery(receipt, output_limit=output_token_budget),
+                ):
                     resp = await self._await_or_stop(self.provider.text_chat(**payload))
                 if resp is not None:
                     if process_sink and delivery_id:
@@ -2124,6 +2269,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                     candidate_id,
                 )
             self.provider = candidate
+            self._snapshot_fallback_index = idx
             if idx > 0:
                 # An explicit model belongs to the original provider. Subsequent
                 # steps on this fallback must also use its own default model.
@@ -2199,6 +2345,8 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                     ),
                 ):
                     raise
+                if self._snapshot_invocation_id:
+                    request_snapshots.mark_error(self._snapshot_invocation_id, exc)
                 last_exception = exc
                 logger.warning(
                     "Chat Model %s request error: %s",
@@ -2749,6 +2897,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         if not self.req:
             raise ValueError("Request is not set. Please call reset() first.")
 
+        self._snapshot_invocation_id = None
         if self._is_stop_requested():
             yield await self._finalize_aborted_step()
             return
@@ -2848,6 +2997,10 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             self._reused_parent_response = False
             # end_time must be set before the yield serializes to_dict().
             self.stats.end_time = time.time()
+            snapshot_event = self._attach_snapshot_metadata(llm_response)
+            self._snapshot_invocation_id = None
+            if snapshot_event is not None:
+                yield snapshot_event
             yield AgentResponse(
                 type="agent_stats",
                 data=AgentResponseData(

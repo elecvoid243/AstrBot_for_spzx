@@ -224,6 +224,15 @@ UI 打开 Inspector
     {"label": "persona", "chars": 6350, "hash": "…", "span": [0, 6350], "approx": false},
     {"label": "skills", "chars": 1840, "hash": "…", "span": null, "approx": true}
   ],
+  "injections": [
+    {
+      "plugin": "astrbot",
+      "handler": "on_llm_request",
+      "changes": [
+        {"field": "extra_user_content_parts", "delta": 1, "lossy": false, "preview": "…", "full": "…"}
+      ]
+    }
+  ],
   "tool_meta": {
     "read_file": {"origin": "builtin", "active": true, "denied": false, "background": false, "schema_hash": "…"}
   },
@@ -250,6 +259,7 @@ UI 打开 Inspector
 - 顶层 `duration_ms` 是模型调用耗时（请求开始到最终响应）；`chunks` 流式为实际块数，非流式为 `0`。
 - `tool_executions.status`: `ok` | `error` | `denied` | `interrupted`；`permission`: `allow` | `deny`。
 - `provenance[].span`: 精确字符区间 `[start, end]`；无精确位置时 `null` 且 `approx=true`。
+- `injections`: 与现有 `llm_request_injections` 的 `items` 同形；由 runner 从回合事件读取，详情接口直接返回，UI 复用现有注入面板。
 - `env.env_source`: `request`（请求时抓取）或 `current`（读取时补齐，UI 标“当前”）。
 - `diagnostics.*` 允许为 `null`（未知/不适用）：`compression=null` 表示本步未压缩；`cache.*` 为 `null` 表示没有上一请求指纹；`retries.image_fallback/schema_dropped/history_popped` 为 `null` 表示 provider 未上报，不伪装成 `false`。
 - `stop_reason`: `completed` | `user_stop` | `max_step` | `manual_pause` | `timeout` | `error` | `null`。
@@ -371,6 +381,7 @@ class LLMRequestScope:
 - `finish_reason`、`returned_model`、`created_at` 从 `raw_completion` 尽力解析；解析不到就留 `null`，不猜。
 - `ttft_ms` 取 `AgentStats.time_to_first_token`；`chunks` 由流式循环计数；`duration_ms` 取调用起止。
 - 同一次回填同时接收 `diagnostics`（compression/budget/stop_reason/retries），由 runner 从 `ContextManager.last_compression`、`_step_budget_*`、`_context_usage_snapshot` 与停止状态组装；缓存字段由记录器在 capture 时计算（§6.8）。
+- 同一次回填附上 `read_injections(event)` 的结果（沿用现有 preview/full 上限），存入信封 `injections`，供 UI 的「额外注入」区复用 `LlmRequestInjectionsPanel`。
 - 压缩器/标题生成若拿到 `LLMResponse`，同样回填；拿不到就保持 `response=null`，UI 显示“未记录”。
 - 错误路径：runner 捕获异常后调用 `request_snapshots.mark_error(invocation_id, exc)`；只记异常类名与截断消息（≤1 KB），不记 traceback。
 
@@ -401,22 +412,20 @@ request_snapshots.record_tool_execution(
 
 ### 6.5 来源归因
 
-在组装 system prompt 与 `extra_user_content_parts` 时，用 `provenance_scope()` 包住装配过程，并把**实际写入的文本**与标签登记到当前 context：
+在组装 system prompt 与 `extra_user_content_parts` 时，把**实际写入的文本**与标签登记到记录器的**会话级缓冲**：
 
 ```python
-with provenance_scope():
-    ...
-    record_provenance(label="persona", text=exact_text_written)
+record_provenance(session_id, label="persona", text=exact_text_written)
 ```
 
-记录器在 capture 时读取当前 context 的登记列表，在最终 system 文本中查找：
+缓冲按 `session_id` 保存（上限 32 条，TTL 10 分钟，不跨会话），记录器在 capture 时读取该会话的登记列表，在最终 system 文本中查找：
 
 - 唯一出现 → 记 `span`，`approx=false`。
 - 多处出现或找不到（被模板改写/拼接）→ `span=null`，`approx=true`，只保留 `chars`/`hash`。
 
-`provenance_scope` 是 contextvar 的局部缓冲，不跨请求泄漏；登记数量上限 32，超出丢弃最早的并标 `approx`。
+登记在 capture 后保留到 TTL，供同回合后续请求复用；不使用 contextvar，避免组装与 provider 抓取不在同一任务时丢失。
 
-已知登记点（实施时逐个接）：`astr_main_agent.py`（persona/环境/规则拼接）、`astr_main_agent_resources.py`（工具与 ChatUI 指引常量）、`file_access_guidance.py`、`group_chat_context.py`、技能/KB/goal 注入点。无法定位的注入点只做“近似”、不硬编码偏移。
+已知登记点（实施时逐个接）：`astr_main_agent.py`（persona/环境/规则/资源常量拼接）、`file_access_guidance.py`、`group_chat_context.py`、技能/KB/goal 注入点。无法定位的注入点只做“近似”、不硬编码偏移。
 
 标签集合（可扩展，UI 只做本地化映射，未知标签原样显示）：
 
@@ -428,7 +437,7 @@ with provenance_scope():
 
 - 压缩摘要：`LLMSummaryCompressor` 调用 provider 前设置 `kind="compression"`；继承回合 `turn_id`（若在回合内）。
 - 标题生成：`astr_main_agent` 的标题请求设置 `kind="title"`；`turn_id=None`，只在会话级列表出现。
-- 其他辅助调用：默认 `kind="aux"`；若拿不到 session_id，信封仍记录，但不进任何 ChatUI 会话列表（只可能被调试用全局读取看到——v1 不提供全局接口）。
+- 其他辅助调用：默认 `kind="aux"`；若拿不到 session_id，v1 **不记录**（没有全局视图，避免无主内存占用）。
 
 ### 6.7 子代理与团队
 
@@ -536,7 +545,8 @@ AgentResponse(
 
 - `limit` 默认 50、上限 128；倒序（最新在前）。
 - 列表不返回 raw；详情才返回 raw + view。
-- `expired=true` 表示内存中已无该会话/消息的快照；仍返回空 `items`。
+- 列表返回轻量信封：去掉 `injections`、`provenance` 的全文，只留计数/标签摘要；详情返回完整信封。避免 128 条 × 注入全文撑大列表响应。
+- `expired=true` 只在按 `message_id` 查询、且内存绑定已不存在时返回；此时 `items` 为空。会话级空列表（刚开启、尚无请求或重启后）返回 `expired=false`，由 UI 显示“暂无快照”。
 - 会话归属校验复用现有 snapshot/tool-result 的服务层逻辑；跨账号一律 403，非管理员一律 403。
 - 列表/详情：非管理员 403；`GET /chat/developer-mode` 对所有 chat scope 返回 200，`can_edit=false`，由前端决定是否显示入口。
 - 所有新接口加入 OpenAPI；前端用 `pnpm generate:api` 重新生成客户端。
@@ -645,7 +655,7 @@ en-US / ru-RU / ja-JP 同义翻译；未知归因标签原样显示，不硬编�
 | 辅助调用 | 压缩在回合内出现于「本会话 · 辅助」；标题在回合外，只出现在会话列表；`response` 可为 null |
 | 超容量 | 淘汰最旧；列表返回 `dropped`；UI 提示“容量已满，已丢弃最早 N 条” |
 | 单条截断 | `truncated=true`；UI 在概览与原始 JSON 显示“已截断，原始大小 X”；最新消息优先保留 |
-| 过期 | 列表 `expired=true`、items 空；详情 404；UI 显示过期文案，不回退到历史内容 |
+| 过期 | 按消息查询时 `expired=true`、items 空；会话级列表为空时 `expired=false`；详情 404；UI 区分“已过期”与“暂无快照”，不回退到历史内容 |
 | 服务重启 | 同上；不尝试恢复 |
 | 刷新页面 | 头部列表可用（TTL 内）；消息标记不显示；不发起 N 个按消息查询 |
 | 并发回合 | 以 `turn_id` 隔离；列表按 turn 分组；message_id 绑定各自独立 |

@@ -754,7 +754,9 @@ def test_provenance_marks_exact_and_approximate_parts(monkeypatch: pytest.Monkey
 
 def test_assembly_registers_prompt_provenance(monkeypatch: pytest.MonkeyPatch):
     _enable(monkeypatch)
-    req = SimpleNamespace(conversation=SimpleNamespace(cid=SESSION_ID))
+    req = SimpleNamespace(
+        session_id=UMO, conversation=SimpleNamespace(cid="conversation-1")
+    )
     persona_block = "\n# Persona Instructions\n\nYou are B\n"
 
     astr_main_agent._record_prompt_provenance(req, "persona", persona_block)
@@ -765,8 +767,8 @@ def test_assembly_registers_prompt_provenance(monkeypatch: pytest.MonkeyPatch):
     assert parts[0]["label"] == "persona"
     assert parts[0]["approx"] is False
 
-    # No conversation id means no session to attribute to.
+    # No WebChat UMO means no session to attribute to.
     astr_main_agent._record_prompt_provenance(
-        SimpleNamespace(conversation=None), "persona", "OTHER"
+        SimpleNamespace(session_id=None, conversation=None), "persona", "OTHER"
     )
     assert len(_capture_system("OTHER")["provenance"]) == 1

@@ -31,7 +31,9 @@ class FakeSnapshotEvent:
     """Minimal event carrying the per-turn extras used by the trace helpers."""
 
     def __init__(self) -> None:
-        self.unified_msg_origin = "webchat:FriendMessage:session-1"
+        self.unified_msg_origin = (
+            "webchat:FriendMessage:webchat!user-1!platform-session-1"
+        )
         self._extras: dict[str, object] = {}
 
     def get_extra(self, key: str, default=None):
@@ -217,11 +219,14 @@ class FakeRunnerFixture:
             provider=self.provider,
             request=ProviderRequest(
                 prompt="hello",
-                session_id="webchat:FriendMessage:session-1",
+                # The runner must key snapshots by the ChatUI platform session
+                # id (last segment of the WebChat UMO), not by the separate
+                # conversation row id.
+                session_id="webchat:FriendMessage:webchat!user-1!platform-session-1",
                 conversation=Conversation(
                     platform_id="webchat",
                     user_id="user-1",
-                    cid="session-1",
+                    cid="conversation-1",
                 ),
                 func_tool=_tool_set(),
                 contexts=[],
@@ -269,6 +274,7 @@ async def test_two_model_calls_emit_two_snapshot_envelopes(fake_runner):
     items = _snapshot_items(snapshots[0])
     assert items[0]["kind"] == "chat"
     assert items[0]["turn_id"] == fake_runner._snapshot_turn_id
+    assert items[0]["session_id"] == "platform-session-1"
     assert "raw" not in items[0]
     assert snapshots[0].data["chain"].chain[0].data == {"items": items}
 
@@ -296,7 +302,7 @@ async def test_subagent_scope_skips_capture_and_event(fake_runner):
     events = [event async for event in fake_runner.step_until_done(max_step=4)]
 
     assert not [e for e in events if e.type == "llm_request_snapshots"]
-    assert request_snapshots.list_for_session("session-1")["items"] == []
+    assert request_snapshots.list_for_session("platform-session-1")["items"] == []
 
 
 @pytest.mark.asyncio
@@ -341,7 +347,7 @@ async def test_disabled_mode_emits_no_event(
     events = [event async for event in fake_runner.step_until_done(max_step=4)]
 
     assert not [e for e in events if e.type == "llm_request_snapshots"]
-    assert request_snapshots.list_for_session("session-1")["items"] == []
+    assert request_snapshots.list_for_session("platform-session-1")["items"] == []
 
 
 @pytest.mark.asyncio
@@ -375,7 +381,7 @@ async def test_fallback_error_stays_on_the_erroring_invocation():
     assert items[0]["status"] == "error"
     assert "primary provider failed" in items[0]["response"]["error"]["message"]
 
-    recorded = request_snapshots.list_for_session("session-1")["items"]
+    recorded = request_snapshots.list_for_session("platform-session-1")["items"]
     fallback_items = [
         item for item in recorded if item["request"]["fallback_index"] == 1
     ]
@@ -400,7 +406,7 @@ async def test_empty_output_retry_marks_failed_attempt(
     assert len(snapshots) == 1
     assert [item["status"] for item in _snapshot_items(snapshots[0])] == ["ok"]
 
-    recorded = request_snapshots.list_for_session("session-1")["items"]
+    recorded = request_snapshots.list_for_session("platform-session-1")["items"]
     assert len(recorded) == 2
     failed = [item for item in recorded if item["status"] == "error"]
     assert len(failed) == 1

@@ -25,7 +25,10 @@ from astrbot.api.platform import MessageType
 from astrbot.api.provider import Provider, ProviderRequest
 from astrbot.core.agent.message import TextPart
 from astrbot.core.astrbot_config_mgr import AstrBotConfigManager
-from astrbot.core.provider.request_snapshot import record_provenance
+from astrbot.core.provider.request_snapshot import (
+    chatui_session_id_from_umo,
+    record_provenance,
+)
 
 """
 Group chat context awareness.
@@ -195,7 +198,10 @@ class GroupChatContext:
         if records_to_inject:
             block = _format_group_history_block(records_to_inject)
             req.extra_user_content_parts.append(TextPart(text=block))
-            session_id = getattr(getattr(req, "conversation", None), "cid", None)
+            session_id = chatui_session_id_from_umo(
+                getattr(req, "session_id", None)
+                or getattr(event, "unified_msg_origin", None)
+            )
             if session_id:
                 # Group history describes the conversational environment; it is
                 # extra user content, so the recorder keeps it approximate.

@@ -90,6 +90,7 @@ from astrbot.core.provider.modalities import (
 )
 from astrbot.core.provider.provider import Provider
 from astrbot.core.provider.request_snapshot import (
+    chatui_session_id_from_umo,
     request_snapshot_scope,
     request_snapshots,
 )
@@ -448,7 +449,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         """
 
         return request_snapshot_scope(
-            session_id=(self.req.conversation.cid if self.req.conversation else None),
+            session_id=chatui_session_id_from_umo(self.req.session_id),
             umo=self.req.session_id,
             turn_id=self._snapshot_turn_id,
             invocation_id=invocation_id,
@@ -1810,9 +1811,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             # id compression snapshots are skipped, never guessed. Subagent
             # runs are flagged so a summary can never become a snapshot.
             with request_snapshot_scope(
-                session_id=(
-                    self.req.conversation.cid if self.req.conversation else None
-                ),
+                session_id=chatui_session_id_from_umo(self.req.session_id),
                 umo=self.req.session_id,
                 turn_id=self._snapshot_turn_id,
                 invocation_id=None,

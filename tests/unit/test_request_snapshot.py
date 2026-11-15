@@ -21,6 +21,7 @@ from astrbot.core.provider.request_snapshot import (
     MAX_SNAPSHOTS_PER_SESSION,
     TTL_SECONDS,
     RequestSnapshotRecorder,
+    chatui_session_id_from_umo,
     request_snapshot_scope,
     request_snapshots,
 )
@@ -46,6 +47,22 @@ class FakeProvider:
 
     def get_keys(self) -> list[str]:
         return ["sk-secret-1234"]
+
+
+@pytest.mark.parametrize(
+    ("umo", "expected"),
+    [
+        (
+            "webchat:FriendMessage:webchat!astrbot!platform-session-1",
+            "platform-session-1",
+        ),
+        ("webchat:GroupMessage:platform-session-2", "platform-session-2"),
+        ("qq:FriendMessage:123", None),
+        (None, None),
+    ],
+)
+def test_chatui_session_id_from_umo(umo, expected):
+    assert chatui_session_id_from_umo(umo) == expected
 
 
 @pytest.fixture(autouse=True)

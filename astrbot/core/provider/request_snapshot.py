@@ -161,6 +161,31 @@ def developer_mode_enabled() -> bool:
         return False
 
 
+def chatui_session_id_from_umo(umo: str | None) -> str | None:
+    """Extract the ChatUI platform session id from a WebChat UMO.
+
+    A WebChat origin is ``webchat:<message type>:webchat!<user>!<session_id>``
+    while ``Conversation.cid`` is a separate conversation row id. The recorder
+    and the dashboard list endpoint are keyed by the platform session id, so
+    callers must use this helper rather than the conversation row id.
+
+    Args:
+        umo: Unified message origin, or ``None``.
+
+    Returns:
+        The platform session id, or ``None`` for a non-WebChat origin.
+    """
+
+    if not isinstance(umo, str) or not umo.startswith("webchat:"):
+        return None
+    origin_session = umo.rsplit(":", 1)[-1]
+    if origin_session.startswith("webchat!"):
+        parts = origin_session.split("!", 2)
+        if len(parts) == 3 and parts[2]:
+            return parts[2]
+    return origin_session or None
+
+
 def _primitive(value: object) -> str | int | float | bool | None:
     """Return a small JSON primitive or ``None`` for unsupported values."""
 

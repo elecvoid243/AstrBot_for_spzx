@@ -48,6 +48,7 @@ from astrbot.core.provider import Provider
 from astrbot.core.provider.entities import ProviderRequest
 from astrbot.core.provider.register import llm_tools
 from astrbot.core.provider.request_snapshot import (
+    chatui_session_id_from_umo,
     record_provenance,
     request_snapshot_scope,
     request_snapshots,
@@ -636,18 +637,17 @@ def _snapshot_session_id(req: ProviderRequest) -> str | None:
     """Return the ChatUI session id used to attribute prompt assembly.
 
     The developer-mode recorder is keyed by the session id the runner puts in
-    its request scope, which is the conversation id - never the UMO.
+    its request scope, which is the WebChat platform session id carried by the
+    UMO - never the separate conversation row id.
 
     Args:
         req: Request being assembled.
 
     Returns:
-        The conversation id, or ``None`` when the request has no conversation.
+        The platform session id, or ``None`` for a non-WebChat request.
     """
 
-    conversation = getattr(req, "conversation", None)
-    cid = getattr(conversation, "cid", None)
-    return str(cid) if cid else None
+    return chatui_session_id_from_umo(getattr(req, "session_id", None))
 
 
 def _record_prompt_provenance(
@@ -1356,7 +1356,10 @@ async def _handle_webchat(
 ) -> None:
     from astrbot.core import db_helper
 
-    chatui_session_id = event.session_id.split("!")[-1]
+    chatui_session_id = (
+        chatui_session_id_from_umo(getattr(event, "unified_msg_origin", None))
+        or event.session_id.split("!")[-1]
+    )
     user_prompt = req.prompt
     session = await db_helper.get_platform_session_by_id(chatui_session_id)
 

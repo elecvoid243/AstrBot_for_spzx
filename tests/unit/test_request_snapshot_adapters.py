@@ -144,11 +144,50 @@ def test_openai_chat_tool_rows_carry_schema_metadata(monkeypatch):
     # Only a schema dict was available at capture time.
     assert tool["origin"] == "unknown"
     assert tool["active"] is True
-    assert tool["denied"] is False
+    # No denied set was supplied, so denial is unknown rather than fake False.
+    assert tool["denied"] is None
+    assert snapshot["tool_meta"]["read_file"]["denied"] is None
     assert tool["background"] is False
     assert len(tool["schema_hash"]) == 40
     assert tool["schema_bytes"] > 0
     assert snapshot["tool_meta"]["read_file"]["schema_hash"] == tool["schema_hash"]
+    assert tool["display_schema_hash"] == tool["schema_hash"]
+    assert tool["schema_truncated"] is False
+
+
+def test_truncated_tool_schema_keeps_capture_hash_and_flags_display(monkeypatch):
+    _enable(monkeypatch)
+    raw = {
+        "messages": [{"role": "user", "content": "hi"}],
+        "tools": [
+            {
+                "type": "function",
+                "function": {
+                    "name": "read_file",
+                    "description": "read",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "path": {
+                                "type": "string",
+                                "description": "d" * 50000,
+                            }
+                        },
+                    },
+                },
+            }
+        ],
+    }
+    snapshot = _snapshot_with(raw, "openai_chat")
+    tool = build_view(snapshot)["tools"][0]
+    meta = snapshot["tool_meta"]["read_file"]
+    # The view hash is the capture-time identity; the displayed schema differs
+    # because its long description was trimmed to fit the tool budget.
+    assert tool["schema_hash"] == meta["schema_hash"]
+    assert tool["schema_bytes"] == meta["schema_bytes"]
+    assert tool["display_schema_hash"] != tool["schema_hash"]
+    assert tool["schema_truncated"] is True
+    assert "truncated" in json.dumps(tool["parameters"])
 
 
 def test_openai_responses_view_uses_instructions_and_input(monkeypatch):
@@ -302,7 +341,7 @@ def test_unknown_adapter_falls_back_to_raw_shape(monkeypatch):
     assert view["messages"][0]["role"] == "user"
 
 
-def test_capture_reads_tool_meta_from_provider_tool_set(monkeypatch):
+def test_capture_uses_explicit_tool_set_and_denied_tools(monkeypatch):
     _enable(monkeypatch)
     from astrbot.core.agent.tool import FunctionTool, ToolSet
 
@@ -323,27 +362,91 @@ def test_capture_reads_tool_meta_from_provider_tool_set(monkeypatch):
         parameters={"type": "object", "properties": {}},
         is_background_task=True,
     )
-
-    class ToolSetProvider(FakeProvider):
-        func_tool = ToolSet([plugin_tool, denied_tool, background_tool])
-        denied_tools = {"write_file"}
+    tool_set = ToolSet([plugin_tool, denied_tool, background_tool])
 
     with request_snapshot_scope(
         session_id="s1",
         umo="webchat:FriendMessage:s1",
     ):
         snapshot_id = request_snapshots.capture(
-            ToolSetProvider(),
+            FakeProvider(),
             {"messages": []},
             adapter="openai_chat",
+            tool_set=tool_set,
+            denied_tools={"write_file"},
         )
     meta = request_snapshots.get(snapshot_id)["tool_meta"]
     assert meta["read_file"]["origin"] == "plugin"
     assert meta["read_file"]["active"] is True
+    assert meta["read_file"]["denied"] is False
     assert meta["write_file"]["denied"] is True
     assert meta["long_task"]["background"] is True
     assert len(meta["read_file"]["schema_hash"]) == 40
     assert meta["read_file"]["schema_bytes"] > 0
+
+
+def test_attach_tool_meta_fills_every_attempt_after_capture(monkeypatch):
+    _enable(monkeypatch)
+    from astrbot.core.agent.tool import FunctionTool, ToolSet
+
+    read_tool = FunctionTool(
+        name="read_file",
+        description="read",
+        parameters={"type": "object", "properties": {}},
+        handler_module_path="data.plugins.demo.main",
+    )
+    write_tool = FunctionTool(
+        name="write_file",
+        description="write",
+        parameters={"type": "object", "properties": {}},
+    )
+    raw = {
+        "messages": [{"role": "user", "content": "hi"}],
+        "tools": [
+            {
+                "type": "function",
+                "function": {
+                    "name": "read_file",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ],
+    }
+    with request_snapshot_scope(
+        session_id="s1",
+        umo="webchat:FriendMessage:s1",
+        turn_id="t1",
+        invocation_id="i1",
+    ):
+        request_snapshots.capture(FakeProvider(), raw, adapter="openai_chat")
+        request_snapshots.capture(FakeProvider(), raw, adapter="openai_chat")
+
+    before = request_snapshots.metadata_for_invocation("i1")
+    assert len(before) == 2
+    assert [item["tool_meta"]["read_file"]["origin"] for item in before] == [
+        "unknown",
+        "unknown",
+    ]
+    assert [item["tool_meta"]["read_file"]["denied"] for item in before] == [
+        None,
+        None,
+    ]
+    capture_hash = before[0]["tool_meta"]["read_file"]["schema_hash"]
+
+    request_snapshots.attach_tool_meta(
+        "i1",
+        tool_set=ToolSet([read_tool, write_tool]),
+        denied_tools={"write_file"},
+    )
+
+    after = request_snapshots.metadata_for_invocation("i1")
+    assert len(after) == 2
+    for item in after:
+        assert item["tool_meta"]["read_file"]["origin"] == "plugin"
+        assert item["tool_meta"]["read_file"]["denied"] is False
+        assert item["tool_meta"]["read_file"]["schema_hash"] == capture_hash
+        assert item["tool_meta"]["write_file"]["origin"] == "unknown"
+        assert item["tool_meta"]["write_file"]["denied"] is True
 
 
 def test_message_flags_reflect_markers_in_the_payload(monkeypatch):
@@ -425,7 +528,11 @@ def test_truncation_drops_oldest_messages_first(monkeypatch):
     assert view["messages"][-1]["content"] == "newest"
     assert view["messages"][0]["role"] == "system"
     assert view["messages"][0]["content"] == "SYS"
-    assert view["messages"][1]["index"] > 1
+    # The protected system head keeps index 0; every later row shifts by the
+    # number of omitted messages, so the newest row keeps its original index.
+    assert view["messages"][0]["index"] == 0
+    assert view["messages"][1]["index"] == (snapshot["counts"]["omitted_messages"] + 1)
+    assert view["messages"][-1]["index"] == len(messages) - 1
     assert snapshot["counts"]["omitted_messages"] > 0
     assert (
         snapshot["diagnostics"]["omitted_messages"]
@@ -567,6 +674,25 @@ def test_unknown_huge_provider_field_does_not_drop_messages(monkeypatch):
     assert snapshot["bytes"] <= MAX_BYTES_PER_SNAPSHOT
     assert snapshot["truncated"] is True
     assert view["messages"][-1]["content"] == "hi"
+
+
+def test_structure_without_trimable_strings_becomes_a_flagged_object(monkeypatch):
+    _enable(monkeypatch)
+    raw = {
+        "messages": [
+            {"role": "user", "content": list(range(40000))},
+        ]
+    }
+    snapshot = _snapshot_with(raw, "openai_chat")
+    stored = snapshot["raw"]["messages"][0]
+    # The structure has no long string left to trim, so it is replaced by an
+    # object marker instead of a bare JSON string. The adapter still keeps the
+    # row visible.
+    assert isinstance(stored, dict)
+    assert isinstance(stored.get("truncated"), str)
+    view = build_view(snapshot)
+    assert len(view["messages"]) == 1
+    assert view["messages"][0]["role"] == "user"
 
 
 def test_flat_string_input_is_trimmed_to_the_cap(monkeypatch):

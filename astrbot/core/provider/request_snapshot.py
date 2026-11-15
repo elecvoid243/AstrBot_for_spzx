@@ -551,8 +551,10 @@ def _cap_structure(
         changed = True
 
     if isinstance(value, (dict, list)) and _serialized_bytes(value) > max_bytes:
-        serialized = json.dumps(value, ensure_ascii=False, default=str)
-        value = _head_cap_text(serialized, max_bytes)
+        # All strings are exhausted or short enough to be irrelevant. Replace
+        # the structure with a marker object instead of a bare JSON string so
+        # adapters can still recognize (and display) the truncated row.
+        value = {"truncated": _truncation_marker(_serialized_bytes(value))}
         changed = True
     return value, changed
 
@@ -896,18 +898,6 @@ def _classify_tool_origin(tool: object) -> str:
     return "unknown"
 
 
-def _provider_tool_set(provider: object | None) -> object | None:
-    """Return the provider's ``ToolSet`` when it exposes one."""
-
-    if provider is None:
-        return None
-    for attribute in ("func_tool", "tool_set", "snapshot_tool_set"):
-        candidate = getattr(provider, attribute, None)
-        if candidate is not None and hasattr(candidate, "tools"):
-            return candidate
-    return None
-
-
 def _raw_tool_schemas(raw: object) -> list[tuple[str, dict]]:
     """Return ``(name, schema)`` pairs found in a provider-native body."""
 
@@ -952,11 +942,16 @@ def _raw_tool_schemas(raw: object) -> list[tuple[str, dict]]:
 def _tool_meta_row(
     origin: str,
     active: bool,
-    denied: bool,
+    denied: bool | None,
     background: bool,
     schema: object,
 ) -> dict:
-    """Build one ``tool_meta`` row."""
+    """Build one ``tool_meta`` row.
+
+    ``denied`` is tri-state: ``True``/``False`` when the caller passed the
+    denied set, ``None`` when it is unknown. Callers must never fabricate
+    ``False`` from a missing answer.
+    """
 
     schema_hash, schema_bytes = _schema_fingerprint(schema)
     return {
@@ -969,29 +964,36 @@ def _tool_meta_row(
     }
 
 
-def _build_tool_meta(raw: object, provider: object | None) -> dict:
-    """Describe the tools a provider request carried.
+def _denied_names(denied_tools: object) -> set[str] | None:
+    """Normalize an explicit denied-tool collection.
 
-    Rich metadata comes from the provider's ``ToolSet`` when it exposes one.
-    Otherwise only the serialized schema is known, which is reported with
-    ``origin="unknown"`` and ``active=True``.
+    Returns ``None`` when the caller did not provide one, which makes every
+    ``tool_meta.denied`` value unknown instead of a fabricated ``False``.
+    """
+
+    if denied_tools is None:
+        return None
+    if isinstance(denied_tools, str):
+        return {denied_tools}
+    try:
+        return {str(name) for name in denied_tools}
+    except TypeError:
+        return None
+
+
+def _tool_set_meta(tool_set: object | None, denied: set[str] | None) -> dict:
+    """Describe the tools of an explicit ``ToolSet``.
 
     Args:
-        raw: Provider-native request body.
-        provider: Provider that is about to perform the call.
+        tool_set: ``ToolSet``-like object exposing ``tools``. ``None`` leaves
+            this source empty.
+        denied: Explicit denied names, or ``None`` when unknown.
 
     Returns:
-        ``tool name -> meta`` mapping.
+        ``tool name -> meta`` rows for every named tool.
     """
 
     meta: dict[str, dict] = {}
-    denied_tools = getattr(provider, "denied_tools", None) or ()
-    try:
-        denied = {str(name) for name in denied_tools}
-    except TypeError:
-        denied = set()
-
-    tool_set = _provider_tool_set(provider)
     for tool in getattr(tool_set, "tools", None) or ():
         name = getattr(tool, "name", None)
         if not isinstance(name, str) or not name:
@@ -999,18 +1001,45 @@ def _build_tool_meta(raw: object, provider: object | None) -> dict:
         meta[name] = _tool_meta_row(
             origin=_classify_tool_origin(tool),
             active=bool(getattr(tool, "active", True)),
-            denied=name in denied,
+            denied=(name in denied) if denied is not None else None,
             background=bool(getattr(tool, "is_background_task", False)),
             schema=getattr(tool, "parameters", None) or {"type": "object"},
         )
+    return meta
 
+
+def _build_tool_meta(
+    raw: object,
+    *,
+    tool_set: object | None = None,
+    denied_tools: object | None = None,
+) -> dict:
+    """Describe the tools a provider request carried.
+
+    Rich metadata comes from an explicit ``tool_set`` handed to the recorder by
+    the runner (Task 5). Otherwise only the serialized schema is known, which is
+    reported with ``origin="unknown"`` and ``active=True``. Tool metadata is
+    never read from fabricated provider attributes: the provider object is not
+    consulted here.
+
+    Args:
+        raw: Provider-native request body.
+        tool_set: ``ToolSet``-like object whose tools will be sent, or ``None``.
+        denied_tools: Explicit denied tool names, or ``None`` when unknown.
+
+    Returns:
+        ``tool name -> meta`` mapping.
+    """
+
+    denied = _denied_names(denied_tools)
+    meta = _tool_set_meta(tool_set, denied)
     for name, schema in _raw_tool_schemas(raw):
         if name in meta:
             continue
         meta[name] = _tool_meta_row(
             origin="unknown",
             active=True,
-            denied=name in denied,
+            denied=(name in denied) if denied is not None else None,
             background=False,
             schema=schema,
         )
@@ -1706,14 +1735,19 @@ def _message_flags(native: object, entry: dict) -> list[str]:
     return flags
 
 
-def _message_row(entry: dict, position: int, offset: int) -> dict:
-    """Build one normalized view message row."""
+def _message_row(entry: dict, index: int) -> dict:
+    """Build one normalized view message row.
+
+    Args:
+        entry: Normalized message entry returned by an adapter.
+        index: Position in the request before truncation.
+    """
 
     content = entry.get("content")
     tool_calls = entry.get("tool_calls") or []
     chars = _content_chars(content) + _content_chars(tool_calls)
     return {
-        "index": position + offset,
+        "index": index,
         "role": entry.get("role") or "user",
         "name": entry.get("name"),
         "tool_call_id": entry.get("tool_call_id"),
@@ -1727,21 +1761,36 @@ def _message_row(entry: dict, position: int, offset: int) -> dict:
 
 
 def _tool_view_row(row: dict, meta: dict | None) -> dict:
-    """Merge one normalized tool schema with its captured metadata."""
+    """Merge one normalized tool schema with its captured metadata.
+
+    ``schema_hash``/``schema_bytes`` identify the tool as it was captured, even
+    when the stored schema was truncated. ``display_schema_hash`` fingerprints
+    the schema shown in the view, and ``schema_truncated`` tells whether the two
+    differ. ``denied`` stays tri-state: ``None`` means unknown.
+    """
 
     parameters = row.get("parameters") or {"type": "object"}
-    schema_hash, schema_bytes = _schema_fingerprint(parameters)
+    display_hash, display_bytes = _schema_fingerprint(parameters)
     meta = meta if isinstance(meta, dict) else {}
+    schema_hash = meta.get("schema_hash")
+    if not isinstance(schema_hash, str) or not schema_hash:
+        schema_hash = display_hash
+    schema_bytes = meta.get("schema_bytes")
+    if not isinstance(schema_bytes, int) or isinstance(schema_bytes, bool):
+        schema_bytes = display_bytes
+    denied = meta.get("denied")
     return {
         "name": row.get("name"),
         "description": row.get("description"),
         "parameters": parameters,
         "origin": meta.get("origin") or "unknown",
         "active": bool(meta.get("active", True)),
-        "denied": bool(meta.get("denied", False)),
+        "denied": None if denied is None else bool(denied),
         "background": bool(meta.get("background", False)),
         "schema_hash": schema_hash,
         "schema_bytes": schema_bytes,
+        "display_schema_hash": display_hash,
+        "schema_truncated": schema_hash != display_hash,
     }
 
 
@@ -1785,9 +1834,14 @@ def build_view(snapshot: dict) -> dict:
         offset = int(omitted or 0)
     except (TypeError, ValueError):
         offset = 0
+    entries = adapter.messages(raw)
+    # Only the protected head (the leading system message) keeps its original
+    # position. Every later message shifts by the number of omitted messages,
+    # so indices always refer to the request before truncation.
+    head = _protected_head(_messages_container(raw))
     messages = [
-        _message_row(entry, position, offset)
-        for position, entry in enumerate(adapter.messages(raw))
+        _message_row(entry, position if position < head else position + offset)
+        for position, entry in enumerate(entries)
     ]
 
     tool_meta = snapshot.get("tool_meta")
@@ -1835,6 +1889,8 @@ class RequestSnapshotRecorder:
         adapter: str | None = None,
         session_id: str | None = None,
         umo: str | None = None,
+        tool_set: object | None = None,
+        denied_tools: object | None = None,
     ) -> str | None:
         """Store one sanitized request attempt.
 
@@ -1845,6 +1901,11 @@ class RequestSnapshotRecorder:
                 ``SNAPSHOT_ADAPTER`` attribute.
             session_id: Overrides the scope session id.
             umo: Overrides the scope unified message origin.
+            tool_set: Optional ``ToolSet``-like object used to derive rich
+                ``tool_meta`` (origin/active/background). The runner passes it
+                explicitly; provider attributes are never probed.
+            denied_tools: Optional explicit denied tool names. ``None`` means
+                unknown and keeps every ``tool_meta.denied`` value ``None``.
 
         Returns:
             The new snapshot id, or ``None`` when the attempt is not recorded.
@@ -1938,7 +1999,11 @@ class RequestSnapshotRecorder:
                 },
                 "provenance": [],
                 "injections": [],
-                "tool_meta": _build_tool_meta(raw, provider),
+                "tool_meta": _build_tool_meta(
+                    raw,
+                    tool_set=tool_set,
+                    denied_tools=denied_tools,
+                ),
                 "env": _build_env(),
                 "adapter": adapter
                 if adapter is not None
@@ -1949,6 +2014,62 @@ class RequestSnapshotRecorder:
         except Exception:
             logger.debug("Failed to capture LLM request snapshot", exc_info=True)
             return None
+
+    def attach_tool_meta(
+        self,
+        invocation_id: str,
+        *,
+        tool_set: object | None = None,
+        denied_tools: object | None = None,
+    ) -> None:
+        """Fill tool metadata on every attempt of an invocation after capture.
+
+        The runner calls this once the tool loop knows the effective tool set
+        and denial list (Task 5), after the provider adapter already captured
+        the request body.
+
+        Args:
+            invocation_id: Invocation whose captured attempts are updated.
+            tool_set: Optional ``ToolSet``-like object that supplied the
+                request, used for origin/active/background.
+            denied_tools: Optional explicit denied names. ``None`` leaves the
+                tri-state ``denied`` value unknown instead of faking ``False``.
+
+        Captured schema hashes are preserved, so truncating the stored body
+        never changes a tool's capture-time identity. This method never raises.
+        """
+
+        if not invocation_id or (tool_set is None and denied_tools is None):
+            return
+        try:
+            self._purge(self._clock())
+            denied = _denied_names(denied_tools)
+            rich = _tool_set_meta(tool_set, denied) if tool_set is not None else {}
+            for snapshot_id in self._by_invocation.get(str(invocation_id), ()):
+                envelope = self._snapshots.get(snapshot_id)
+                if envelope is None:
+                    continue
+                meta = envelope.get("tool_meta")
+                meta = meta if isinstance(meta, dict) else {}
+                for name, row in rich.items():
+                    previous = meta.get(name)
+                    if isinstance(previous, dict):
+                        merged = dict(previous)
+                        merged["origin"] = row["origin"]
+                        merged["active"] = row["active"]
+                        merged["background"] = row["background"]
+                        if denied is not None:
+                            merged["denied"] = row["denied"]
+                        meta[name] = merged
+                    else:
+                        meta[name] = dict(row)
+                if denied is not None:
+                    for name, row in meta.items():
+                        if isinstance(row, dict):
+                            row["denied"] = name in denied
+                envelope["tool_meta"] = meta
+        except Exception:
+            logger.debug("Failed to attach LLM snapshot tool metadata", exc_info=True)
 
     def list_for_session(
         self,

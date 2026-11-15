@@ -175,6 +175,50 @@ async def test_new_tool_result_triggers_compression_before_next_delivery(
 
 
 @pytest.mark.asyncio
+async def test_token_budget_replaces_history_without_a_summary_request():
+    provider = BudgetProvider(
+        [LLMResponse(role="assistant", completion_text="done")],
+        max_context_tokens=1000,
+    )
+    provider.provider_config["compress_threshold_ratio"] = 0.5
+    provider.provider_config["compaction_headroom_tokens"] = 0
+    runner = ToolLoopAgentRunner()
+    await runner.reset(
+        provider=provider,
+        request=ProviderRequest(
+            prompt="current task",
+            contexts=[
+                {"role": "user", "content": "old history " * 60},
+                {"role": "assistant", "content": "old answer " * 60},
+            ],
+            conversation=SimpleNamespace(cid="budget", token_usage=0),
+            func_tool=None,
+            llm_params={"max_tokens": 1},
+        ),
+        run_context=ContextWrapper(context=None),
+        tool_executor=BudgetToolExecutor(""),
+        agent_hooks=BaseAgentRunHooks(),
+        context_limit_reached_strategy="token_budget",
+        custom_token_counter=CharacterTokenCounter(),
+    )
+
+    events = [event async for event in runner.step_until_done(2)]
+
+    delivered = provider.requests[0]["contexts"]
+    assert all("old history" not in str(message.content) for message in delivered)
+    assert any("current task" in str(message.content) for message in delivered)
+    # The report is surfaced to the UI instead of being read off the manager:
+    # a later unchanged request clears the manager's copy.
+    assert sum(event.type == "context_compression" for event in events) == 1
+    assert runner.window_state.seq == 1
+    assert "_window" not in str(
+        [message.model_dump(mode="json") for message in delivered]
+    )
+    # A single request: the reset never asked a model for a summary.
+    assert len(provider.requests) == 1
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("compression_fails", [False, True])
 async def test_request_that_cannot_fit_is_rejected_without_model_or_tool_execution(
     compression_fails,

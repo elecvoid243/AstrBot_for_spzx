@@ -20,6 +20,7 @@ const COPY = vi.hoisted(() => ({
   "devMode.kind.title": "标题生成",
   "devMode.kind.aux": "辅助调用",
   "devMode.section.overview": "概览",
+  "devMode.section.params": "请求参数",
   "devMode.section.response": "响应",
   "devMode.section.system": "系统提示词",
   "devMode.section.tools": "工具",
@@ -104,7 +105,14 @@ function snapshot(overrides: Record<string, unknown> = {}): LlmSnapshotDetail {
         model: "deepseek-v4.1",
         host: "api.deepseek.com",
       },
-      request: { attempt: 1, temperature: 0.7, max_tokens: 8192 },
+      request: {
+        attempt: 1,
+        temperature: 0.7,
+        top_p: 0.9,
+        max_tokens: 8192,
+        reasoning_effort: "max",
+        stream: true,
+      },
       counts: {
         messages: 3,
         tools: 2,
@@ -235,8 +243,14 @@ function snapshot(overrides: Record<string, unknown> = {}): LlmSnapshotDetail {
           schema_bytes: 80,
         },
       ],
-      params: { temperature: 0.7, max_tokens: 8192 },
-      extra: {},
+      params: {
+        temperature: 0.7,
+        max_tokens: 8192,
+        max_output_tokens: 128,
+      },
+      extra: {
+        chat_template_kwargs: { enable_thinking: true },
+      },
     },
   } as unknown as LlmSnapshotDetail;
 }
@@ -271,6 +285,20 @@ describe("LlmSnapshotDetail", () => {
     expect(wrapper.find(".sec-messages").text()).toContain("user");
     expect(wrapper.find(".sec-injections .injection-panel").exists()).toBe(true);
     expect(wrapper.find(".sec-injections").text()).toContain("tc_memory");
+  });
+
+  it("previews request, provider and extra parameters", () => {
+    const wrapper = mountDetail({ snapshot: snapshot() });
+    const params = wrapper.find(".sec-params");
+
+    expect(params.exists()).toBe(true);
+    expect(params.classes()).not.toContain("collapsed");
+    expect(params.text()).toContain("reasoning_effort");
+    expect(params.text()).toContain("max");
+    expect(params.text()).toContain("top_p");
+    expect(params.text()).toContain("max_output_tokens");
+    expect(params.text()).toContain("chat_template_kwargs");
+    expect(params.text()).toContain("enable_thinking");
   });
 
   it("marks approximate provenance with a triangle and shows the truncated badge", () => {

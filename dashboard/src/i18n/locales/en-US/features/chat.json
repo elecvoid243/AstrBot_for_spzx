@@ -2518,6 +2518,7 @@
     },
     "section": {
       "overview": "Overview",
+      "params": "Request parameters",
       "response": "Response",
       "system": "System prompt",
       "tools": "Tools",

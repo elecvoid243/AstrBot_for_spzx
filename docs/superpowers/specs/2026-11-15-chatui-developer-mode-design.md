@@ -69,7 +69,7 @@ ChatUI 目前能看到最终回复、工具调用、压缩提示和插件注入�
 | D3 | 留存 = 内存 ring buffer | TTL 120 分钟；每会话 128 条、64 MB；全局 256 MB；单条 1.5 MB；不落库 |
 | D4 | 形态 = 右侧可拖宽 Inspector | 消息上的 DEV 标记 + 头部 DEV chip 两个入口；`ReasoningSidebar` 的交互为参照 |
 | D5 | 信息边界 = B 档 | 请求态 + 响应摘要 + 工具执行基础字段 + 来源归因 + 会话/环境 + 诊断折叠；不含 raw_completion、逐 chunk、子代理、成本 |
-| D6 | 分区顺序 | 差异 → 概览 → 响应 → 系统提示词 → 工具 → 消息 → 额外注入 → 诊断（默认折叠）→ 原始 JSON（默认折叠） |
+| D6 | 分区顺序 | 差异 → 概览 → 请求参数 → 响应 → 系统提示词 → 工具 → 消息 → 额外注入 → 诊断（默认折叠）→ 原始 JSON（默认折叠） |
 | D7 | 工具定义与执行分开 | 「工具」只放模型看到的定义；「响应」放本步 tool_call 与执行状态、耗时、结果大小 |
 | D8 | 默认关闭，仅管理员 | 配置默认 `false`；读取接口可被 chat scope 调用，写接口需 config/admin；会话访问沿用现有归属校验 |
 | D9 | 不落库，刷新可回看 | 记录器持有 `message_id → turn_id` 内存映射；重启/过期后列表返回 `expired: true` |
@@ -605,9 +605,10 @@ AgentResponse(
 - 宽度 `min(820px, 66vw)`，可拖宽；`<1000px` 时全屏，请求轨改为横向滚动。
 - 请求轨：分组「本回合」「本会话 · 辅助」；每项两行：kind/step 与 model/耗时；徽标显示 `cache %`、`+N tool`、`压缩`、`error`、`retry`；缓存未命中时用「缓存未命中」替代百分比。
 - 详情头：kind、step、状态码、finish、模型、provider、host、attempt；右侧「复制 JSON」「下载」「刷新」。
-- 分区顺序固定：差异（step ≥ 2）→ 概览 → 响应 → 系统提示词 → 工具 → 消息 → 额外注入 → 诊断 → 原始 JSON。
-- 默认展开：概览、响应、系统提示词、工具、消息、注入；默认折叠：诊断、原始 JSON。
+- 分区顺序固定：差异（step ≥ 2）→ 概览 → 请求参数 → 响应 → 系统提示词 → 工具 → 消息 → 额外注入 → 诊断 → 原始 JSON。
+- 默认展开：概览、请求参数、响应、系统提示词、工具、消息、注入；默认折叠：诊断、原始 JSON。
 - 概览与响应之间显示「缓存未命中」告警条：前缀匹配率 `< 0.8` 时出现；服务端返回命中率时以其为准，未返回则按前缀判定。
+- 请求参数区按 `request` / `provider params` / `extra` 三组展示：常用采样字段（含 `reasoning_effort`、`temperature`、`top_p`、`max_tokens`、`tool_choice`、`stream`、超时/重试）来自 envelope.request；provider 归一化参数与 `chat_template_kwargs`、`thinking` 等扩展字段来自 view.params/view.extra；缺失值显示 `null`。
 - 长文本在卡片内滚动（系统提示词 124px、消息 112px），不撑长消息流；单块可展开/收起。
 - 工具区：搜索框（name/desc/origin）、每行 name + origin 标签 + 新增/denied 标签 + 参数个数；点击展开 schema。
 - 响应区：finish/response id/TTFT/chunks/usage 网格 + 工具调用行（状态点、耗时、结果字节、展开 result_preview）；v1 不在快照内跳转完整结果。

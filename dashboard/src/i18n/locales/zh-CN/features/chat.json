@@ -2551,6 +2551,7 @@
     },
     "section": {
       "overview": "概览",
+      "params": "请求参数",
       "response": "响应",
       "system": "系统提示词",
       "tools": "工具",

@@ -33,6 +33,7 @@ const COPY = vi.hoisted(() => ({
   "devMode.kind.title": "标题生成",
   "devMode.kind.aux": "辅助调用",
   "devMode.section.overview": "概览",
+  "devMode.section.params": "请求参数",
   "devMode.section.response": "响应",
   "devMode.section.system": "系统提示词",
   "devMode.section.tools": "工具",

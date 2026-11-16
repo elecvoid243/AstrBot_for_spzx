@@ -569,6 +569,7 @@
     },
     "section": {
       "overview": "概要",
+      "params": "リクエストパラメータ",
       "response": "応答",
       "system": "システムプロンプト",
       "tools": "ツール",

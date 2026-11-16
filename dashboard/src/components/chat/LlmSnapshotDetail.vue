@@ -156,6 +156,63 @@
     </div>
 
     <section
+      class="sec sec-params"
+      :class="{ collapsed: !isOpen('params') }"
+    >
+      <button
+        type="button"
+        class="sec-head"
+        :aria-expanded="isOpen('params')"
+        @click="toggleSection('params')"
+      >
+        <span class="sec-title">{{ tm("devMode.section.params") }}</span>
+        <span class="sec-meta mono">{{ paramCount }}</span>
+        <span class="sec-chevron" aria-hidden="true">›</span>
+      </button>
+      <div v-if="isOpen('params')" class="sec-body">
+        <div v-if="requestParamRows.length" class="params-group">
+          <div class="subhead mono">request</div>
+          <div class="param-grid">
+            <div
+              v-for="row in requestParamRows"
+              :key="row.label"
+              class="param-row"
+            >
+              <span class="param-label mono">{{ row.label }}</span>
+              <span class="param-value mono">{{ row.value }}</span>
+            </div>
+          </div>
+        </div>
+        <div v-if="providerParamRows.length" class="params-group">
+          <div class="subhead mono">provider params</div>
+          <div class="param-grid">
+            <div
+              v-for="row in providerParamRows"
+              :key="row.label"
+              class="param-row"
+            >
+              <span class="param-label mono">{{ row.label }}</span>
+              <span class="param-value mono">{{ row.value }}</span>
+            </div>
+          </div>
+        </div>
+        <div v-if="extraParamRows.length" class="params-group">
+          <div class="subhead mono">extra</div>
+          <div class="param-grid">
+            <div
+              v-for="row in extraParamRows"
+              :key="row.label"
+              class="param-row"
+            >
+              <span class="param-label mono">{{ row.label }}</span>
+              <span class="param-value mono">{{ row.value }}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section
       class="sec sec-response"
       :class="{ collapsed: !isOpen('response') }"
     >
@@ -533,6 +590,7 @@ interface ToolExecution {
 type SectionKey =
   | "diff"
   | "overview"
+  | "params"
   | "response"
   | "system"
   | "tools"
@@ -591,6 +649,17 @@ function formatRatio(value: number | null): string {
   return value === null ? "unknown" : `${Math.round(value * 100)}%`;
 }
 
+function formatParamValue(value: unknown): string {
+  if (value === null || value === undefined) return "null";
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  try {
+    return JSON.stringify(value) ?? String(value);
+  } catch {
+    return String(value);
+  }
+}
+
 const envelope = computed<LlmRequestSnapshotEnvelope>(
   () => props.snapshot.envelope,
 );
@@ -615,12 +684,47 @@ const cacheMissText = computed(() => {
   });
 });
 
+const REQUEST_PARAM_KEYS = [
+  "reasoning_effort",
+  "temperature",
+  "top_p",
+  "max_tokens",
+  "tool_choice",
+  "stream",
+  "timeout_s",
+  "retry_max",
+] as const;
+const REQUEST_COMMON_KEYS = new Set<string>(REQUEST_PARAM_KEYS);
+
 const view = computed(() => (props.snapshot.view ?? {}) as SnapshotView);
 const system = computed(() => asRecord(view.value.system));
 const messages = computed(() =>
   asArray<SnapshotMessage>(view.value.messages),
 );
 const tools = computed(() => asArray<SnapshotTool>(view.value.tools));
+const requestParamRows = computed(() =>
+  REQUEST_PARAM_KEYS.map((key) => ({
+    label: key,
+    value: formatParamValue(request.value[key]),
+  })),
+);
+const providerParamRows = computed(() =>
+  Object.entries(asRecord(view.value.params))
+    .filter(([key]) => !REQUEST_COMMON_KEYS.has(key))
+    .map(([label, value]) => ({ label, value: formatParamValue(value) })),
+);
+const extraParamRows = computed(() =>
+  Object.entries(asRecord(view.value.extra)).map(([label, value]) => ({
+    label,
+    value: formatParamValue(value),
+  })),
+);
+const paramCount = computed(
+  () =>
+    requestParamRows.value.length +
+    providerParamRows.value.length +
+    extraParamRows.value.length,
+);
 const provenance = computed(() =>
   asArray<ProvenancePart>(envelope.value.provenance),
 );
@@ -815,6 +919,7 @@ function diagnosticValue(value: unknown): string {
 const openSections = ref<Record<SectionKey, boolean>>({
   diff: true,
   overview: true,
+  params: true,
   response: true,
   system: true,
   tools: true,
@@ -1273,6 +1378,36 @@ onBeforeUnmount(() => {
   color: var(--sd-muted);
   font-size: 10.5px;
   line-height: 1.45;
+}
+
+.params-group + .params-group {
+  margin-top: 10px;
+}
+
+.param-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.param-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.55fr) minmax(0, 1.45fr);
+  gap: 10px;
+  padding: 2px 0;
+  border-bottom: 1px solid var(--sd-faint);
+}
+
+.param-label {
+  color: var(--sd-muted);
+  font-size: 10.5px;
+}
+
+.param-value {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  font-size: 11px;
 }
 
 .sec-diff.is-warning .sec-head {

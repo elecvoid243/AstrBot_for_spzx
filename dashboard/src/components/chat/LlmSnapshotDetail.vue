@@ -16,7 +16,7 @@
         <div class="detail-title">{{ title }}</div>
         <div class="detail-sub">{{ subtitle }}</div>
         <span v-if="envelope.truncated" class="badge-truncated">
-          {{ tm("devMode.truncated", { size: formatSize(envelope.original_bytes) }) }}
+          {{ tm("devMode.truncated.badge") }}
         </span>
       </div>
       <div class="detail-actions">
@@ -107,8 +107,11 @@
             }}</span>
           </div>
         </div>
-        <div v-if="diff?.warning" class="diff-warning mono">
-          compressed / truncated payload
+        <div v-if="diff?.truncated" class="diff-warning mono">
+          {{ tm("devMode.diff.warning.truncated") }}
+        </div>
+        <div v-if="diff?.compressed" class="diff-warning mono">
+          {{ tm("devMode.diff.warning.compressed") }}
         </div>
       </div>
     </section>
@@ -138,11 +141,7 @@
           {{ tm("devMode.notice.redacted", { count: redactions }) }}
         </div>
         <div v-if="envelope.truncated" class="truncated-note">
-          {{
-            tm("devMode.truncated", {
-              size: formatSize(envelope.original_bytes),
-            })
-          }}
+          {{ truncatedNote }}
         </div>
       </div>
     </section>
@@ -744,6 +743,20 @@ const systemText = computed(() => str(system.value, "text") ?? "");
 const systemSource = computed(() => str(system.value, "source_field"));
 const redactions = computed(() => envelope.value.redactions ?? 0);
 
+// Truncation is a single boolean on the envelope, but two very different
+// layers set it: the total byte budget (which drops the oldest messages and
+// is the only layer that increments omitted_messages) and the per-entry caps
+// (system prompt, tool schema, one message). Reporting the boolean alone made
+// a 139 KB snapshot read as "139 KB is over the limit", so the note names the
+// layer that actually fired.
+const truncatedNote = computed(() => {
+  const size = formatSize(envelope.value.original_bytes);
+  const omitted = num(counts.value, "omitted_messages") ?? 0;
+  return omitted > 0
+    ? tm("devMode.truncated.omitted", { count: omitted, size })
+    : tm("devMode.truncated.entry", { size });
+});
+
 const KIND_KEYS: Record<string, string> = {
   chat: "devMode.kind.chat",
   compression: "devMode.kind.compression",
@@ -970,9 +983,9 @@ const diff = computed(() => {
     paramsChanged:
       JSON.stringify(view.value.params ?? {}) !==
       JSON.stringify(previousView.params ?? {}),
-    warning: Boolean(
-      envelope.value.truncated || diagnostics.value.compression,
-    ),
+    truncated: envelope.value.truncated === true,
+    compressed: Boolean(diagnostics.value.compression),
+    warning: Boolean(envelope.value.truncated || diagnostics.value.compression),
   };
 });
 

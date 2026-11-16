@@ -120,6 +120,11 @@
                 </span>
                 <span class="rail-line rail-sub">
                   <span class="rail-model mono">{{ modelOf(item) }}</span>
+                  <span
+                    class="rail-clock mono"
+                    :title="formatStamp(item.created_at)"
+                    >{{ formatClock(item.created_at) }}</span
+                  >
                   <span class="rail-duration mono">{{
                     formatDuration(item.duration_ms)
                   }}</span>
@@ -160,6 +165,11 @@
                 </span>
                 <span class="rail-line rail-sub">
                   <span class="rail-model mono">{{ modelOf(item) }}</span>
+                  <span
+                    class="rail-clock mono"
+                    :title="formatStamp(item.created_at)"
+                    >{{ formatClock(item.created_at) }}</span
+                  >
                   <span class="rail-duration mono">{{
                     formatDuration(item.duration_ms)
                   }}</span>
@@ -259,6 +269,33 @@ function formatDuration(value: number | null | undefined): string {
   return `${(value / 1000).toFixed(value < 10000 ? 2 : 1)} s`;
 }
 
+function pad2(value: number): string {
+  return String(value).padStart(2, "0");
+}
+
+/**
+ * Local wall-clock time of one snapshot. The rail is sorted by this axis, so
+ * every row must show it; the date is left to the tooltip because the rail is
+ * a few hundred pixels wide and snapshots only live for two hours.
+ */
+function formatClock(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) {
+    return "—";
+  }
+  const date = new Date(value * 1000);
+  return `${pad2(date.getHours())}:${pad2(date.getMinutes())}:${pad2(date.getSeconds())}`;
+}
+
+/** Full local timestamp for the hover title of a rail row. */
+function formatStamp(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) {
+    return "";
+  }
+  const date = new Date(value * 1000);
+  const day = `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
+  return `${day} ${formatClock(value)}`;
+}
+
 function formatSize(value: number | null | undefined): string {
   if (value === null || value === undefined || !Number.isFinite(value)) {
     return "—";
@@ -295,13 +332,16 @@ function sequence(item: LlmRequestSnapshotEnvelope): number {
   return typeof item.step === "number" ? item.step : Number.MAX_SAFE_INTEGER;
 }
 
+// Newest first: the rail answers "what just happened", so the freshest request
+// must be reachable without scrolling. created_at leads the comparator because
+// auxiliary calls carry no step; step only breaks same-instant ties.
 const orderedItems = computed(() =>
   items.value
     .slice()
     .sort(
       (a, b) =>
-        sequence(a) - sequence(b) ||
-        (a.created_at ?? 0) - (b.created_at ?? 0),
+        (b.created_at ?? 0) - (a.created_at ?? 0) ||
+        sequence(b) - sequence(a),
     ),
 );
 const chatItems = computed(() =>
@@ -387,8 +427,11 @@ async function loadPreviousDetail(snapshotId: string): Promise<void> {
     typeof selectedDetail.value?.envelope.step === "number"
       ? selectedDetail.value.envelope.step
       : null;
-  if (index <= 0 || step === null || step < 2) return;
-  const previousItem = chatItems.value[index - 1];
+  if (index < 0 || step === null || step < 2) return;
+  // chatItems is newest-first, so the chronologically previous step sits at a
+  // higher index than the selected one.
+  const previousItem = chatItems.value[index + 1];
+  if (!previousItem) return;
   const previous = await loadDetail(previousItem.snapshot_id);
   if (selectedId.value === snapshotId) {
     previousDetail.value = previous;
@@ -444,9 +487,14 @@ async function loadListAndSelect(
   const keep =
     previousSelection !== null &&
     orderedItems.value.some((item) => item.snapshot_id === previousSelection);
+  // Open on the newest chat request, not on the newest row overall: an
+  // auxiliary call (compression/title) can be fresher than the chat step and
+  // would bury the request the operator opened the panel for.
   const target = keep
     ? previousSelection
-    : (orderedItems.value[0]?.snapshot_id ?? null);
+    : (chatItems.value[0]?.snapshot_id ??
+      orderedItems.value[0]?.snapshot_id ??
+      null);
   if (target) {
     await selectSnapshot(target);
   } else {
@@ -763,6 +811,12 @@ onBeforeUnmount(() => {
 }
 
 .rail-duration {
+  flex-shrink: 0;
+}
+
+/* The clock owns the right edge because the rail is sorted by it; the model
+   name yields first when the rail is narrow. */
+.rail-clock {
   margin-left: auto;
   flex-shrink: 0;
 }

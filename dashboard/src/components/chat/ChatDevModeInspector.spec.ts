@@ -68,7 +68,12 @@ const COPY = vi.hoisted(() => ({
   "devMode.rail.cache": "缓存 {percent}%",
   "devMode.rail.cacheMiss": "缓存未命中",
   "devMode.rail.tools": "+{count} tool",
-  "devMode.truncated": "已截断，原始大小 {size}",
+  "devMode.truncated.badge": "已裁剪",
+  "devMode.truncated.omitted":
+    "已裁剪：总量超出上限，丢弃了 {count} 条最旧消息 · 原始大小 {size}",
+  "devMode.truncated.entry": "已裁剪：单条内容超出上限 · 原始大小 {size}",
+  "devMode.diff.warning.truncated": "请求体已裁剪，对比基于裁剪后的内容",
+  "devMode.diff.warning.compressed": "本步上下文经过压缩，对比基于压缩后的内容",
   "devMode.provenance.approx": "近似定位",
   "devMode.copy.failed": "复制失败",
   "devMode.tool.searchPlaceholder": "搜索工具名称、描述或来源",
@@ -124,6 +129,7 @@ const ITEMS: LlmRequestSnapshotEnvelope[] = [
   envelope("snap-1", {
     kind: "chat",
     step: 1,
+    created_at: 1763200100,
     provider: { model: "model-a", host: "api.example.com" },
     duration_ms: 1200,
     counts: { tools: 2, messages: 4 },
@@ -132,6 +138,7 @@ const ITEMS: LlmRequestSnapshotEnvelope[] = [
   envelope("snap-2", {
     kind: "chat",
     step: 2,
+    created_at: 1763200200,
     provider: { model: "model-b", host: "api.example.com" },
     duration_ms: 8300,
     counts: { tools: 2, messages: 5 },
@@ -146,6 +153,7 @@ const ITEMS: LlmRequestSnapshotEnvelope[] = [
   envelope("snap-aux", {
     kind: "compression",
     status: "ok",
+    created_at: 1763200300,
     provider: { model: "model-c" },
     duration_ms: 300,
   }),
@@ -293,13 +301,38 @@ describe("ChatDevModeInspector", () => {
     const wrapper = await mountOpen();
     const rail = wrapper.findAll(".rail-item");
     expect(rail).toHaveLength(3);
-    expect(wrapper.find(".detail-title").text()).toContain("step 1");
+    // Newest chat request first, so the panel opens on step 2.
+    expect(wrapper.find(".detail-title").text()).toContain("step 2");
 
     await rail[1].trigger("click");
     await flushPromises();
 
-    expect(wrapper.find(".detail-title").text()).toContain("step 2");
+    expect(wrapper.find(".detail-title").text()).toContain("step 1");
     expect(rail[1].classes()).toContain("is-active");
+    wrapper.unmount();
+  });
+
+  it("orders the rail newest first and stamps every row", async () => {
+    const wrapper = await mountOpen();
+    const rail = wrapper.findAll(".rail-item");
+    expect(rail[0].text()).toContain("step 2");
+    expect(rail[1].text()).toContain("step 1");
+    expect(rail[2].text()).toContain("压缩摘要");
+    for (const item of rail) {
+      // Local wall-clock, so assert the shape rather than a fixed instant.
+      expect(item.find(".rail-clock").text()).toMatch(/^\d{2}:\d{2}:\d{2}$/);
+      expect(item.find(".rail-clock").attributes("title")).toMatch(
+        /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/,
+      );
+    }
+    wrapper.unmount();
+  });
+
+  it("feeds the chronologically previous step to the diff", async () => {
+    const wrapper = await mountOpen();
+    expect(wrapper.find(".detail-title").text()).toContain("step 2");
+    expect(api.get.mock.calls.map((call) => call[0])).toContain("snap-1");
+    expect(wrapper.find(".sec-diff").exists()).toBe(true);
     wrapper.unmount();
   });
 
@@ -315,10 +348,10 @@ describe("ChatDevModeInspector", () => {
   it("renders rail badges for cache, compression, retry and tools", async () => {
     const wrapper = await mountOpen();
     const rail = wrapper.findAll(".rail-item");
-    expect(rail[0].text()).toContain("缓存 10%");
-    expect(rail[1].text()).toContain("压缩");
-    expect(rail[1].text()).toContain("retry");
-    expect(rail[1].text()).toContain("+1 tool");
+    expect(rail[0].text()).toContain("压缩");
+    expect(rail[0].text()).toContain("retry");
+    expect(rail[0].text()).toContain("+1 tool");
+    expect(rail[1].text()).toContain("缓存 10%");
     wrapper.unmount();
   });
 
@@ -326,6 +359,7 @@ describe("ChatDevModeInspector", () => {
     const miss = envelope("snap-1", {
       kind: "chat",
       step: 1,
+      created_at: 1763200400,
       diagnostics: { cache: { hit_ratio: 0.1, miss_warning: true } },
     });
     api.list.mockResolvedValueOnce(listPayload([miss, ...ITEMS.slice(1)]));
@@ -393,17 +427,18 @@ describe("ChatDevModeInspector", () => {
 
   it("reloads the selected detail past the cache from the header action", async () => {
     const wrapper = await mountOpen();
-    expect(api.get).toHaveBeenCalledTimes(1);
+    // The newest chat step opens together with its previous step (diff input).
+    expect(api.get).toHaveBeenCalledTimes(2);
     const snapshotId = api.get.mock.calls[0][0];
 
     await wrapper.find(".action-refresh").trigger("click");
     await flushPromises();
     await flushPromises();
 
-    expect(api.get).toHaveBeenCalledTimes(2);
+    expect(api.get).toHaveBeenCalledTimes(3);
     expect(api.get).toHaveBeenLastCalledWith(snapshotId);
-    expect(wrapper.find(".rail-item.is-active").text()).toContain("step 1");
-    expect(wrapper.find(".detail-title").text()).toContain("step 1");
+    expect(wrapper.find(".rail-item.is-active").text()).toContain("step 2");
+    expect(wrapper.find(".detail-title").text()).toContain("step 2");
     wrapper.unmount();
   });
 
@@ -421,7 +456,7 @@ describe("ChatDevModeInspector", () => {
       .element as HTMLInputElement;
     expect(search.value).toBe("");
     expect(wrapper.findAll(".tool-row")).toHaveLength(1);
-    expect(wrapper.find(".detail-title").text()).toContain("step 2");
+    expect(wrapper.find(".detail-title").text()).toContain("step 1");
     wrapper.unmount();
   });
 

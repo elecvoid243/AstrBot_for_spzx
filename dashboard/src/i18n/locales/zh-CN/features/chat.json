@@ -2520,7 +2520,11 @@
       "failed": "下载失败"
     },
     "diff": {
-      "title": "相对上一步"
+      "title": "相对上一步",
+      "warning": {
+        "truncated": "请求体已裁剪，对比基于裁剪后的内容",
+        "compressed": "本步上下文经过压缩，对比基于压缩后的内容"
+      }
     },
     "error": "加载失败：{message}",
     "group": {
@@ -2575,6 +2579,10 @@
       "empty": "没有匹配的工具",
       "searchPlaceholder": "搜索工具名、描述或来源"
     },
-    "truncated": "已截断，原始大小 {size}"
+    "truncated": {
+      "badge": "已裁剪",
+      "omitted": "已裁剪：总量超出上限，丢弃了 {count} 条最旧消息 · 原始大小 {size}",
+      "entry": "已裁剪：单条内容超出上限 · 原始大小 {size}"
+    }
   }
 }

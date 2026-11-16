@@ -49,7 +49,12 @@ const COPY = vi.hoisted(() => ({
   "devMode.group.turn": "本回合",
   "devMode.group.aux": "本会话 · 辅助",
   "devMode.rail.compression": "压缩",
-  "devMode.truncated": "已截断，原始大小 {size}",
+  "devMode.truncated.badge": "已裁剪",
+  "devMode.truncated.omitted":
+    "已裁剪：总量超出上限，丢弃了 {count} 条最旧消息 · 原始大小 {size}",
+  "devMode.truncated.entry": "已裁剪：单条内容超出上限 · 原始大小 {size}",
+  "devMode.diff.warning.truncated": "请求体已裁剪，对比基于裁剪后的内容",
+  "devMode.diff.warning.compressed": "本步上下文经过压缩，对比基于压缩后的内容",
   "devMode.provenance.approx": "近似定位",
   "devMode.cacheMiss.title": "缓存未命中",
   "devMode.cacheMiss.body":
@@ -308,7 +313,34 @@ describe("LlmSnapshotDetail", () => {
     expect(chips[0].classes()).not.toContain("is-approx");
     expect(chips[1].classes()).toContain("is-approx");
     expect(chips[1].text()).toContain("△");
-    expect(wrapper.find(".badge-truncated").text()).toContain("已截断");
+    expect(wrapper.find(".badge-truncated").text()).toBe("已裁剪");
+    // omitted_messages > 0 means the total budget fired, not a per-entry cap.
+    expect(wrapper.find(".truncated-note").text()).toContain(
+      "丢弃了 1 条最旧消息",
+    );
+    expect(wrapper.find(".truncated-note").text()).toContain("96.7 KB");
+  });
+
+  it("names the per-entry cap when no message was dropped", () => {
+    const trimmed = snapshot();
+    trimmed.envelope.counts = {
+      ...(trimmed.envelope.counts ?? {}),
+      omitted_messages: 0,
+    };
+    const note = mountDetail({ snapshot: trimmed }).find(".truncated-note");
+    expect(note.text()).toContain("单条内容超出上限");
+    expect(note.text()).not.toContain("丢弃");
+  });
+
+  it("labels the diff warning by reason instead of mixing both", () => {
+    const current = snapshot();
+    const previous = snapshot({ snapshot_id: "snap-1", step: 1 });
+    const warnings = mountDetail({ snapshot: current, previous }).findAll(
+      ".diff-warning",
+    );
+    expect(warnings).toHaveLength(2);
+    expect(warnings[0].text()).toContain("请求体已裁剪");
+    expect(warnings[1].text()).toContain("经过压缩");
   });
 
   it("shows a cache-miss warning only when the recorder flags a miss", () => {

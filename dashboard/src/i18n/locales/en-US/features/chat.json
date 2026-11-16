@@ -2487,7 +2487,11 @@
       "failed": "Download failed"
     },
     "diff": {
-      "title": "Versus previous step"
+      "title": "Versus previous step",
+      "warning": {
+        "truncated": "Request body trimmed; the comparison uses the trimmed content",
+        "compressed": "Context was compressed at this step; the comparison uses the compressed content"
+      }
     },
     "error": "Failed to load: {message}",
     "group": {
@@ -2542,6 +2546,10 @@
       "empty": "No matching tools",
       "searchPlaceholder": "Search tool name, description or origin"
     },
-    "truncated": "Truncated; original size {size}"
+    "truncated": {
+      "badge": "Trimmed",
+      "omitted": "Trimmed: over the total budget, {count} oldest messages dropped · original size {size}",
+      "entry": "Trimmed: a single entry exceeded its cap · original size {size}"
+    }
   }
 }

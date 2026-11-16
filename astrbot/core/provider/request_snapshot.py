@@ -41,7 +41,7 @@ if TYPE_CHECKING:
     from astrbot.core.provider.entities import LLMResponse  # noqa: F401
     from astrbot.core.provider.provider import Provider
 
-MAX_BYTES_PER_SNAPSHOT = 1572864
+MAX_BYTES_PER_SNAPSHOT = 2097152
 """Serialized UTF-8 byte budget of one sanitized request body."""
 
 MAX_SNAPSHOTS_PER_SESSION = 128

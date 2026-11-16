@@ -66,7 +66,7 @@ ChatUI 目前能看到最终回复、工具调用、压缩提示和插件注入�
 |---|---|---|
 | D1 | 快照层取 **线上 payload** | 在 provider 网络边界、SDK 调用前抓取；含工具 schema、extra_body、provider 专有转换与重试后的降级 |
 | D2 | 范围 = 主对话 + 辅助调用 | 主对话含 tool loop 每一步；辅助含压缩摘要、标题生成、其他 `aux`；子代理/团队 v1 不采集 |
-| D3 | 留存 = 内存 ring buffer | TTL 120 分钟；每会话 128 条、64 MB；全局 256 MB；单条 1.5 MB；不落库 |
+| D3 | 留存 = 内存 ring buffer | TTL 120 分钟；每会话 128 条、64 MB；全局 256 MB；单条 2 MB；不落库 |
 | D4 | 形态 = 右侧可拖宽 Inspector | 消息上的 DEV 标记 + 头部 DEV chip 两个入口；`ReasoningSidebar` 的交互为参照 |
 | D5 | 信息边界 = B 档 | 请求态 + 响应摘要 + 工具执行基础字段 + 来源归因 + 会话/环境 + 诊断折叠；不含 raw_completion、逐 chunk、子代理、成本 |
 | D6 | 分区顺序 | 差异 → 概览 → 请求参数 → 响应 → 系统提示词 → 工具 → 消息 → 额外注入 → 诊断（默认折叠）→ 原始 JSON（默认折叠） |
@@ -480,7 +480,7 @@ record_provenance(session_id, label="persona", text=exact_text_written)
 
 | 常量 | 值 | 说明 |
 |---|---|---|
-| `MAX_BYTES_PER_SNAPSHOT` | 1.5 MB（1,572,864 B） | 单条 raw 脱敏后的上限 |
+| `MAX_BYTES_PER_SNAPSHOT` | 2 MB（2,097,152 B） | 单条 raw 脱敏后的上限 |
 | `MAX_SNAPSHOTS_PER_SESSION` | 128 | 含重试/辅助调用 |
 | `MAX_BYTES_PER_SESSION` | 64 MB（67,108,864 B） | 会话总量 |
 | `MAX_TOTAL_BYTES` | 256 MB（268,435,456 B） | 进程总量 |
@@ -491,7 +491,7 @@ record_provenance(session_id, label="persona", text=exact_text_written)
 
 ### 7.2 截断顺序
 
-单条超 1.5 MB 时：
+单条超 2 MB 时：
 
 1. 保留 system 与工具 schema 的完整文本（各自上限 64 KB / 16 KB/工具）。
 2. 从**最旧**消息开始丢弃，直到满足预算；记 `omitted_messages`。
@@ -499,7 +499,7 @@ record_provenance(session_id, label="persona", text=exact_text_written)
 4. 仍超限时，压缩 provider 专有扩展字段（`extra_body` 等）到 16 KB。
 5. 最终标记 `truncated=true`、`original_bytes`。
 
-若 system + 工具本身已超 1.5 MB，则对超限部分用 `…[truncated]…` 标记，仍不丢整条快照。绝不静默丢整条快照；也不截掉最新消息。
+若 system + 工具本身已超 2 MB，则对超限部分用 `…[truncated]…` 标记，仍不丢整条快照。绝不静默丢整条快照；也不截掉最新消息。
 
 ### 7.3 脱敏
 

@@ -551,8 +551,11 @@ def test_build_view_does_not_mutate_or_store_the_snapshot(monkeypatch):
 def test_truncation_drops_oldest_messages_first(monkeypatch):
     _enable(monkeypatch)
     messages = [{"role": "system", "content": "SYS"}]
+    # Derive the row count from the byte budget so raising the cap cannot turn
+    # this into a silent no-op.
+    rows = MAX_BYTES_PER_SNAPSHOT // 20000 + 10
     messages.extend(
-        {"role": "user", "content": f"m{index}:" + "x" * 20000} for index in range(100)
+        {"role": "user", "content": f"m{index}:" + "x" * 20000} for index in range(rows)
     )
     messages[-1]["content"] = "newest"
     raw = {

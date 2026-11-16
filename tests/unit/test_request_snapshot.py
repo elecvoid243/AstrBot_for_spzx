@@ -394,7 +394,7 @@ def test_turn_filter_and_limit_clamp(monkeypatch):
 
 def test_limits_expose_retention_constants():
     limits = request_snapshots.limits()
-    assert limits["max_bytes_per_snapshot"] == 1572864
+    assert limits["max_bytes_per_snapshot"] == 2097152
     assert limits["max_snapshots_per_session"] == 128
     assert limits["max_bytes_per_session"] == 67108864
     assert limits["max_total_bytes"] == 268435456

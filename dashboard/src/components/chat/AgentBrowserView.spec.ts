@@ -2019,7 +2019,7 @@ describe("Agent browser snapshots", () => {
       await flushPromises();
       expect(view.attributes("data-connection")).toBe("idle");
       expect(view.find(".agent-browser-empty").exists()).toBe(true);
-      await vi.advanceTimersByTimeAsync(3000);
+      await vi.advanceTimersByTimeAsync(10000);
       await flushPromises();
       expect(view.attributes("data-connection")).toBe("snapshot");
       expect(view.attributes("data-generation")).toBe("run-1");
@@ -2031,7 +2031,7 @@ describe("Agent browser snapshots", () => {
         "browser-use/snapshot",
       ]);
       // Once subscribed, probing stops and the streamed frame stays untouched.
-      await vi.advanceTimersByTimeAsync(10000);
+      await vi.advanceTimersByTimeAsync(20000);
       expect(get).toHaveBeenCalledTimes(4);
       expect(view.get("img").attributes("src")).toContain("auto");
     } finally {
@@ -2051,14 +2051,14 @@ describe("Agent browser snapshots", () => {
     try {
       await flushPromises();
       expect(view.attributes("data-connection")).toBe("idle");
-      await vi.advanceTimersByTimeAsync(3000);
+      await vi.advanceTimersByTimeAsync(10000);
       expect(get).toHaveBeenCalledTimes(2);
       // The failed probe must not repaint the panel into an error state.
       expect(view.attributes("data-connection")).toBe("idle");
       expect(view.find(".agent-browser-empty").exists()).toBe(true);
-      await vi.advanceTimersByTimeAsync(3000);
+      await vi.advanceTimersByTimeAsync(10000);
       expect(get).toHaveBeenCalledTimes(2);
-      await vi.advanceTimersByTimeAsync(3000);
+      await vi.advanceTimersByTimeAsync(10000);
       expect(get).toHaveBeenCalledTimes(3);
     } finally {
       view.unmount();
@@ -2108,7 +2108,7 @@ describe("Agent browser snapshots", () => {
     });
     try {
       await flushPromises();
-      await vi.advanceTimersByTimeAsync(3000);
+      await vi.advanceTimersByTimeAsync(10000);
       expect(get).toHaveBeenCalledTimes(2);
       await view.get(".agent-browser-refresh").trigger("click");
       await flushPromises();

@@ -1563,8 +1563,9 @@ async function refresh(): Promise<void> {
 // idle panel probes the cheap status endpoint instead of waiting for a click.
 // Probing is confined to states that own no subscription and show no pixels, so
 // it can never abort a live stream nor clear a displayed frame.
-const pollIntervalMs = 3000;
-const pollMaxIntervalMs = 12000;
+const pollIntervalMs = 10000;
+// Derive the backoff cap so the base interval stays the single number to tune.
+const pollMaxIntervalMs = pollIntervalMs * 3;
 let pollTimer: ReturnType<typeof setTimeout> | undefined;
 let pollDelay = pollIntervalMs;
 const waitingForBrowser = computed(() =>

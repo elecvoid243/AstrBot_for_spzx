@@ -21,7 +21,11 @@ from astrbot.core.provider.entities import LLMResponse, TokenUsage, ToolCallsRes
 from ..headers import build_conversation_headers
 from ..register import register_provider_adapter
 from ..request_snapshot import request_snapshots
-from .openai_source import ProviderOpenAIOfficial
+from .openai_source import (
+    ProviderOpenAIOfficial,
+    merge_request_template_kwargs,
+    route_thinking_effort,
+)
 from .request_retry import retry_provider_request
 
 
@@ -312,14 +316,19 @@ class ProviderOpenAIResponses(ProviderOpenAIOfficial):
             payloads["instructions"] = system_prompt
 
         # Per-request overrides (e.g. thinking_effort) win over static config.
-        # `_query`/`_query_stream` convert reasoning_effort into reasoning.effort.
         # Values are free-form (e.g. "max" / "xhigh" / "none"); "auto" / "off"
         # keep the provider default since they cannot be expressed via this field.
+        # The channel depends on the value: numbers only exist as
+        # chat_template_kwargs.reasoning_effort, enums stay request-level.
         llm_params = kwargs.pop("llm_params", None)
         if isinstance(llm_params, dict):
             effort = llm_params.get("thinking_effort")
             if effort and effort not in ("auto", "off"):
-                payloads["reasoning_effort"] = effort
+                route_thinking_effort(
+                    payloads,
+                    effort,
+                    self.provider_config.get("custom_extra_body"),
+                )
 
         return payloads, context_query
 
@@ -374,15 +383,24 @@ class ProviderOpenAIResponses(ProviderOpenAIOfficial):
         if isinstance(custom_extra_body, dict):
             extra_body.update(custom_extra_body)
 
+        request_ctk = payloads.get("chat_template_kwargs")
         for key in list(payloads):
             if key not in self.default_params:
                 extra_body[key] = payloads.pop(key)
+        merge_request_template_kwargs(extra_body, request_ctk, custom_extra_body)
 
         max_tokens = extra_body.pop("max_tokens", None)
         if max_tokens is not None and "max_output_tokens" not in extra_body:
             extra_body["max_output_tokens"] = max_tokens
         reasoning_effort = extra_body.pop("reasoning_effort", None)
-        if reasoning_effort is not None and "reasoning" not in extra_body:
+        # A template-channel effort already carries the intensity; any other
+        # effort field would put a second, conflicting value on the wire.
+        template_effort = (
+            isinstance(request_ctk, dict) and "reasoning_effort" in request_ctk
+        )
+        if template_effort:
+            extra_body.pop("reasoning", None)
+        elif reasoning_effort is not None and "reasoning" not in extra_body:
             extra_body["reasoning"] = {"effort": reasoning_effort}
         extra_body.pop("previous_response_id", None)
         extra_body.pop("conversation", None)
@@ -453,15 +471,24 @@ class ProviderOpenAIResponses(ProviderOpenAIOfficial):
         if isinstance(custom_extra_body, dict):
             extra_body.update(custom_extra_body)
 
+        request_ctk = payloads.get("chat_template_kwargs")
         for key in list(payloads):
             if key not in self.default_params:
                 extra_body[key] = payloads.pop(key)
+        merge_request_template_kwargs(extra_body, request_ctk, custom_extra_body)
 
         max_tokens = extra_body.pop("max_tokens", None)
         if max_tokens is not None and "max_output_tokens" not in extra_body:
             extra_body["max_output_tokens"] = max_tokens
         reasoning_effort = extra_body.pop("reasoning_effort", None)
-        if reasoning_effort is not None and "reasoning" not in extra_body:
+        # A template-channel effort already carries the intensity; any other
+        # effort field would put a second, conflicting value on the wire.
+        template_effort = (
+            isinstance(request_ctk, dict) and "reasoning_effort" in request_ctk
+        )
+        if template_effort:
+            extra_body.pop("reasoning", None)
+        elif reasoning_effort is not None and "reasoning" not in extra_body:
             extra_body["reasoning"] = {"effort": reasoning_effort}
         extra_body.pop("previous_response_id", None)
         extra_body.pop("conversation", None)

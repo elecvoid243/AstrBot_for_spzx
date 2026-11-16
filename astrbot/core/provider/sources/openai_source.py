@@ -51,6 +51,80 @@ from ..request_snapshot import request_snapshots
 from .request_retry import retry_provider_request
 
 
+def route_thinking_effort(
+    payloads: dict,
+    effort: Any,
+    custom_extra_body: Any,
+) -> None:
+    """Write a per-request thinking effort into the channel its value belongs to.
+
+    DeepSeek-V4.1 accepts a 1-100 numeric reasoning effort, but only as
+    ``chat_template_kwargs.reasoning_effort``; the request-level
+    ``reasoning_effort`` field rejects it. Numeric values therefore always take
+    the template channel, regardless of the provider config. Enum values (e.g.
+    ``low`` / ``max``) keep the previous behavior and only use the template
+    channel when the provider declares ``chat_template_kwargs``.
+
+    Args:
+        payloads: Request payload to mutate; receives either
+            ``chat_template_kwargs`` or ``reasoning_effort``.
+        effort: Per-request ``thinking_effort`` value.
+        custom_extra_body: Provider-level static extra body, used to detect an
+            opt-in into the template channel.
+    """
+    numeric_effort = None
+    if isinstance(effort, str) and effort.isdigit():
+        numeric_effort = int(effort)
+    elif isinstance(effort, int) and not isinstance(effort, bool):
+        numeric_effort = effort
+    use_template_channel = numeric_effort is not None or (
+        isinstance(custom_extra_body, dict)
+        and isinstance(custom_extra_body.get("chat_template_kwargs"), dict)
+    )
+    if not use_template_channel:
+        payloads["reasoning_effort"] = effort
+        return
+    # vLLM-style engines accept continuous effort values (1-100) only here,
+    # and only as integers.
+    existing_ctk = payloads.get("chat_template_kwargs")
+    payloads["chat_template_kwargs"] = {
+        **(existing_ctk if isinstance(existing_ctk, dict) else {}),
+        "reasoning_effort": numeric_effort if numeric_effort is not None else effort,
+    }
+
+
+def merge_request_template_kwargs(
+    extra_body: dict,
+    request_ctk: Any,
+    custom_extra_body: Any,
+) -> None:
+    """Merge per-request ``chat_template_kwargs`` over the static provider ones.
+
+    Per-request keys win one by one while provider-declared sibling template
+    args are preserved. A template-channel effort also drops the request-level
+    ``reasoning_effort`` so a single effort never travels on both channels.
+
+    Args:
+        extra_body: Outgoing extra body to mutate.
+        request_ctk: Per-request ``chat_template_kwargs`` (e.g. the ChatUI
+            thinking effort), or any non-dict value to skip the merge.
+        custom_extra_body: Provider-level static extra body.
+    """
+    if not isinstance(request_ctk, dict):
+        return
+    static_ctk = (
+        custom_extra_body.get("chat_template_kwargs")
+        if isinstance(custom_extra_body, dict)
+        else None
+    )
+    extra_body["chat_template_kwargs"] = {
+        **(static_ctk if isinstance(static_ctk, dict) else {}),
+        **request_ctk,
+    }
+    if "reasoning_effort" in request_ctk:
+        extra_body.pop("reasoning_effort", None)
+
+
 @register_provider_adapter(
     "openai_chat_completion",
     "OpenAI API Chat Completion 提供商适配器",
@@ -606,15 +680,7 @@ class ProviderOpenAIOfficial(Provider):
         # Per-request chat_template_kwargs (e.g. the ChatUI thinking effort)
         # win over the static custom body key by key; provider-declared sibling
         # template args are preserved.
-        if isinstance(request_ctk, dict):
-            static_ctk = extra_body.get("chat_template_kwargs")
-            extra_body["chat_template_kwargs"] = {
-                **(static_ctk if isinstance(static_ctk, dict) else {}),
-                **request_ctk,
-            }
-            if "reasoning_effort" in request_ctk:
-                # Both channels would otherwise be sent; the template one wins.
-                extra_body.pop("reasoning_effort", None)
+        merge_request_template_kwargs(extra_body, request_ctk, custom_extra_body)
 
         # The ChatUI thinking effort wins over the static custom body: the SDK
         # merges extra_body last, so a same-named static key would otherwise
@@ -688,11 +754,6 @@ class ProviderOpenAIOfficial(Provider):
         # 读取并合并 custom_extra_body 配置
         custom_extra_body = self.provider_config.get("custom_extra_body", {})
         request_ctk = payloads.get("chat_template_kwargs")
-        static_ctk = (
-            custom_extra_body.get("chat_template_kwargs")
-            if isinstance(custom_extra_body, dict)
-            else None
-        )
         if isinstance(custom_extra_body, dict):
             extra_body.update(custom_extra_body)
 
@@ -706,13 +767,7 @@ class ProviderOpenAIOfficial(Provider):
 
         # Per-request chat_template_kwargs (e.g. the ChatUI thinking effort)
         # win over the static custom body key by key (see _query).
-        if isinstance(request_ctk, dict):
-            extra_body["chat_template_kwargs"] = {
-                **(static_ctk if isinstance(static_ctk, dict) else {}),
-                **request_ctk,
-            }
-            if "reasoning_effort" in request_ctk:
-                extra_body.pop("reasoning_effort", None)
+        merge_request_template_kwargs(extra_body, request_ctk, custom_extra_body)
 
         # The ChatUI thinking effort wins over the static custom body (see
         # _query).
@@ -1144,36 +1199,11 @@ class ProviderOpenAIOfficial(Provider):
             # on llama.cpp-hosted Qwen). "auto" / "off" keep the provider
             # default since they cannot be expressed via this field.
             if effort and effort not in ("auto", "off"):
-                # DeepSeek-V4.1 accepts a 1-100 numeric reasoning effort, but
-                # only as chat_template_kwargs.reasoning_effort; the request-level
-                # reasoning_effort field is rejected. Numeric values therefore
-                # always take the template channel, regardless of the provider
-                # config. Enum values (e.g. "low" / "max") keep the previous
-                # behavior and only use the template channel when the provider
-                # declares it.
-                numeric_effort = None
-                if isinstance(effort, str) and effort.isdigit():
-                    numeric_effort = int(effort)
-                elif isinstance(effort, int) and not isinstance(effort, bool):
-                    numeric_effort = effort
-                custom_extra_body = self.provider_config.get("custom_extra_body")
-                use_template_channel = numeric_effort is not None or (
-                    isinstance(custom_extra_body, dict)
-                    and isinstance(custom_extra_body.get("chat_template_kwargs"), dict)
+                route_thinking_effort(
+                    payloads,
+                    effort,
+                    self.provider_config.get("custom_extra_body"),
                 )
-                if use_template_channel:
-                    # Declaring chat_template_kwargs opts the provider into the
-                    # template channel. vLLM-style engines accept continuous
-                    # effort values (1-100) only there, and only as integers.
-                    existing_ctk = payloads.get("chat_template_kwargs")
-                    payloads["chat_template_kwargs"] = {
-                        **(existing_ctk if isinstance(existing_ctk, dict) else {}),
-                        "reasoning_effort": (
-                            numeric_effort if numeric_effort is not None else effort
-                        ),
-                    }
-                else:
-                    payloads["reasoning_effort"] = effort
 
         self._finally_convert_payload(payloads)
 

@@ -292,6 +292,159 @@ async def test_query_flattens_tools_and_enforces_stateless_body(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_query_routes_numeric_effort_to_chat_template_kwargs(monkeypatch):
+    provider = _make_provider()
+    captured: dict = {}
+
+    async def fake_create(**kwargs):
+        captured.update(kwargs)
+        return _make_response(
+            [
+                {
+                    "type": "message",
+                    "id": "msg_1",
+                    "status": "completed",
+                    "role": "assistant",
+                    "content": [
+                        {"type": "output_text", "text": "ok", "annotations": []}
+                    ],
+                }
+            ]
+        )
+
+    monkeypatch.setattr(provider.client.responses, "create", fake_create)
+
+    payloads, _ = await provider._prepare_chat_payload(
+        prompt="hi",
+        contexts=[],
+        llm_params={"thinking_effort": "80"},
+    )
+    assert payloads["chat_template_kwargs"] == {"reasoning_effort": 80}
+    assert "reasoning_effort" not in payloads
+
+    await provider._query(dict(payloads), tools=None)
+
+    # DeepSeek-V4.1 rejects a 1-100 effort on the request-level field, so the
+    # numeric value must reach the wire only through the template channel.
+    assert captured["extra_body"] == {"chat_template_kwargs": {"reasoning_effort": 80}}
+    assert "reasoning" not in captured["extra_body"]
+
+
+@pytest.mark.asyncio
+async def test_query_stream_routes_numeric_effort_to_chat_template_kwargs(
+    monkeypatch,
+):
+    provider = _make_provider()
+    final_response = _make_response(
+        [
+            {
+                "type": "message",
+                "id": "msg_1",
+                "status": "completed",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "ok", "annotations": []}],
+            }
+        ]
+    )
+    captured: dict = {}
+
+    async def fake_stream():
+        yield SimpleNamespace(type="response.output_text.delta", delta="ok")
+        yield SimpleNamespace(type="response.completed", response=final_response)
+
+    async def fake_create(**kwargs):
+        captured.update(kwargs)
+        return fake_stream()
+
+    monkeypatch.setattr(provider.client.responses, "create", fake_create)
+
+    payloads, _ = await provider._prepare_chat_payload(
+        prompt="hi",
+        contexts=[],
+        llm_params={"thinking_effort": "100"},
+    )
+    async for _ in provider._query_stream(dict(payloads), tools=None):
+        pass
+
+    assert captured["extra_body"] == {"chat_template_kwargs": {"reasoning_effort": 100}}
+    assert "reasoning" not in captured["extra_body"]
+
+
+@pytest.mark.asyncio
+async def test_query_keeps_enum_effort_on_reasoning_channel(monkeypatch):
+    provider = _make_provider()
+    captured: dict = {}
+
+    async def fake_create(**kwargs):
+        captured.update(kwargs)
+        return _make_response(
+            [
+                {
+                    "type": "message",
+                    "id": "msg_1",
+                    "status": "completed",
+                    "role": "assistant",
+                    "content": [
+                        {"type": "output_text", "text": "ok", "annotations": []}
+                    ],
+                }
+            ]
+        )
+
+    monkeypatch.setattr(provider.client.responses, "create", fake_create)
+
+    payloads, _ = await provider._prepare_chat_payload(
+        prompt="hi",
+        contexts=[],
+        llm_params={"thinking_effort": "max"},
+    )
+    await provider._query(dict(payloads), tools=None)
+
+    # Enum tiers keep the Responses-native field.
+    assert captured["extra_body"] == {"reasoning": {"effort": "max"}}
+    assert "chat_template_kwargs" not in captured["extra_body"]
+
+
+@pytest.mark.asyncio
+async def test_query_merges_static_template_args_with_numeric_effort(monkeypatch):
+    provider = _make_provider(
+        {"custom_extra_body": {"chat_template_kwargs": {"enable_thinking": True}}}
+    )
+    captured: dict = {}
+
+    async def fake_create(**kwargs):
+        captured.update(kwargs)
+        return _make_response(
+            [
+                {
+                    "type": "message",
+                    "id": "msg_1",
+                    "status": "completed",
+                    "role": "assistant",
+                    "content": [
+                        {"type": "output_text", "text": "ok", "annotations": []}
+                    ],
+                }
+            ]
+        )
+
+    monkeypatch.setattr(provider.client.responses, "create", fake_create)
+
+    payloads, _ = await provider._prepare_chat_payload(
+        prompt="hi",
+        contexts=[],
+        llm_params={"thinking_effort": "50"},
+    )
+    await provider._query(dict(payloads), tools=None)
+
+    # Provider-declared sibling template args survive the per-request merge.
+    assert captured["extra_body"] == {
+        "chat_template_kwargs": {"enable_thinking": True, "reasoning_effort": 50}
+    }
+    assert "reasoning" not in captured["extra_body"]
+
+
+@pytest.mark.asyncio
 async def test_parse_response_extracts_text_reasoning_usage_and_replay_state():
     provider = _make_provider()
     response = _make_response(

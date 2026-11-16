@@ -174,6 +174,10 @@ USER_OPERATIONS = (
         "dashboard_get_session",
         "chat",
         "dashboard_send_chat",
+        "unified_chat_stream",
+        "unified_send_chat",
+        "unified_run_snapshot",
+        "active_chat_runs",
         "chat_configs",
         "chat_models",
         "get_chat_session_config",
@@ -464,6 +468,92 @@ async def validate_account_request(request: Request, account) -> None:
                     status_code=400,
                 )
     operation = getattr(request.state, "dashboard_operation", None)
+    if account.role != "admin" and operation in {
+        "unified_chat_stream",
+        "unified_send_chat",
+    }:
+        # Unified chat entry points: one POST opens the account-wide stream and
+        # one POST starts a run. Runs and frames are bound to the authenticated
+        # owner by the service and the stream hub, so only the request shape
+        # needs an audited contract here.
+        if request.query_params:
+            raise ApiError("Unsupported chat query", status_code=400)
+        try:
+            payload = await request.json() if await request.body() else {}
+        except ValueError as exc:
+            raise ApiError("Invalid chat payload", status_code=400) from exc
+        if not isinstance(payload, dict):
+            raise ApiError("Invalid chat payload", status_code=400)
+        if operation == "unified_chat_stream":
+            # Epoch and cursors only replay frames the account already owns.
+            if set(payload) - {"epoch", "cursors"}:
+                raise ApiError("Unsupported chat fields", status_code=400)
+            if not isinstance(payload.get("epoch") or "", str) or not isinstance(
+                payload.get("cursors") or {}, dict
+            ):
+                raise ApiError("Invalid stream resume hints", status_code=400)
+            return
+        # flags, _skip_user_history, _llm_checkpoint_id, persona_prompt and the
+        # speech selectors stay admin-only: the route copies them straight into
+        # the run payload, while the ChatUI omits them for ordinary accounts.
+        if set(payload) - {
+            "mode",
+            "run_id",
+            "session_id",
+            "message_id",
+            "content",
+            "config_id",
+            "selected_provider",
+            "selected_model",
+            "thinking_effort",
+        }:
+            raise ApiError("Unsupported chat fields", status_code=400)
+        session_id = payload.get("session_id")
+        if not isinstance(session_id, str) or not session_id:
+            raise ApiError("Invalid session ID", status_code=400)
+        session = await request.app.state.db.get_platform_session_by_id(session_id)
+        if (
+            session is None
+            or session.creator != account.resource_owner
+            or session.platform_id != "webchat"
+        ):
+            raise ApiError("Resource is unavailable", status_code=403)
+        message_id = payload.get("message_id")
+        if payload.get("mode") == "regenerate":
+            # An edited continuation carries content; a regeneration replays an
+            # existing bot message and must name it.
+            if isinstance(message_id, bool) or not isinstance(message_id, (int, str)):
+                raise ApiError("Invalid message ID", status_code=400)
+            return
+        content = payload.get("content")
+        if not isinstance(content, (str, list)) or not content:
+            raise ApiError("Invalid message", status_code=400)
+        for part in content if isinstance(content, list) else []:
+            if (
+                not isinstance(part, dict)
+                or part.get("type")
+                not in {
+                    "plain",
+                    "reply",
+                    "image",
+                    "record",
+                    "audio",
+                    "video",
+                    "file",
+                }
+                or set(part)
+                - {
+                    "type",
+                    "text",
+                    "attachment_id",
+                    "filename",
+                    "stored_filename",
+                    "message_id",
+                    "selected_text",
+                }
+            ):
+                raise ApiError("Unsupported message part", status_code=400)
+        return
     if operation in FILE_OPERATIONS:
         # Typed upload schemas and multipart parsers validate file operations.
         # Ownership is enforced by the upload service and attachment database.

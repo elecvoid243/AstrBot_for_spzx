@@ -1997,27 +1997,131 @@ describe("Agent browser snapshots", () => {
     view.unmount();
   });
 
-  it("checks an idle browser only on opening or explicit refresh", async () => {
+  it("polls an idle panel and attaches the browser that appears later", async () => {
+    vi.useFakeTimers();
+    const frame = {
+      ...current,
+      sequence: 1,
+      image: "auto",
+      mime_type: "image/jpeg",
+      width: 1280,
+      height: 720,
+    };
+    get
+      .mockResolvedValueOnce(ok({ available: false }))
+      .mockResolvedValueOnce(ok(current))
+      .mockResolvedValueOnce(ok(current))
+      .mockResolvedValueOnce(ok(frame));
+    const view = mount(AgentBrowserView, {
+      props: { chatId: "chat-1", visible: true },
+    });
+    try {
+      await flushPromises();
+      expect(view.attributes("data-connection")).toBe("idle");
+      expect(view.find(".agent-browser-empty").exists()).toBe(true);
+      await vi.advanceTimersByTimeAsync(3000);
+      await flushPromises();
+      expect(view.attributes("data-connection")).toBe("snapshot");
+      expect(view.attributes("data-generation")).toBe("run-1");
+      expect(fetchStream).toHaveBeenCalledTimes(1);
+      expect(get.mock.calls.map(([path]) => path)).toEqual([
+        "browser-use/status",
+        "browser-use/status",
+        "browser-use/status",
+        "browser-use/snapshot",
+      ]);
+      // Once subscribed, probing stops and the streamed frame stays untouched.
+      await vi.advanceTimersByTimeAsync(10000);
+      expect(get).toHaveBeenCalledTimes(4);
+      expect(view.get("img").attributes("src")).toContain("auto");
+    } finally {
+      view.unmount();
+    }
+  });
+
+  it("keeps the waiting state and backs off when a probe fails", async () => {
+    vi.useFakeTimers();
+    get
+      .mockResolvedValueOnce(ok({ available: false }))
+      .mockRejectedValueOnce({ response: { status: 503 } })
+      .mockResolvedValue(ok({ available: false }));
+    const view = mount(AgentBrowserView, {
+      props: { chatId: "chat-1", visible: true },
+    });
+    try {
+      await flushPromises();
+      expect(view.attributes("data-connection")).toBe("idle");
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(get).toHaveBeenCalledTimes(2);
+      // The failed probe must not repaint the panel into an error state.
+      expect(view.attributes("data-connection")).toBe("idle");
+      expect(view.find(".agent-browser-empty").exists()).toBe(true);
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(get).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(get).toHaveBeenCalledTimes(3);
+    } finally {
+      view.unmount();
+    }
+  });
+
+  it("never probes while the panel is hidden", async () => {
     vi.useFakeTimers();
     get.mockResolvedValue(ok({ available: false }));
     const view = mount(AgentBrowserView, {
       props: { chatId: "chat-1", visible: true },
     });
-    await flushPromises();
-    expect(view.attributes("data-connection")).toBe("idle");
-    await vi.advanceTimersByTimeAsync(120000);
-    expect(get).toHaveBeenCalledTimes(1);
-    await view.get(".agent-browser-refresh").trigger("click");
-    await flushPromises();
-    expect(get).toHaveBeenCalledTimes(2);
-    expect(
-      get.mock.calls.every(([path]) => path === "browser-use/status"),
-    ).toBe(true);
-    expect(fetchStream).not.toHaveBeenCalled();
-    await view.setProps({ visible: false });
-    await vi.advanceTimersByTimeAsync(120000);
-    expect(get).toHaveBeenCalledTimes(2);
-    view.unmount();
+    try {
+      await flushPromises();
+      expect(get).toHaveBeenCalledTimes(1);
+      await view.setProps({ visible: false });
+      await vi.advanceTimersByTimeAsync(60000);
+      expect(get).toHaveBeenCalledTimes(1);
+    } finally {
+      view.unmount();
+    }
+  });
+
+  it("discards a probe that resolves after a manual refresh took over", async () => {
+    vi.useFakeTimers();
+    const frame = {
+      ...current,
+      sequence: 1,
+      image: "manual",
+      mime_type: "image/jpeg",
+      width: 1280,
+      height: 720,
+    };
+    let resolveProbe: (value: unknown) => void = () => {};
+    get
+      .mockResolvedValueOnce(ok({ available: false }))
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveProbe = resolve;
+          }),
+      )
+      .mockResolvedValueOnce(ok(current))
+      .mockResolvedValueOnce(ok(frame));
+    const view = mount(AgentBrowserView, {
+      props: { chatId: "chat-1", visible: true },
+    });
+    try {
+      await flushPromises();
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(get).toHaveBeenCalledTimes(2);
+      await view.get(".agent-browser-refresh").trigger("click");
+      await flushPromises();
+      expect(view.attributes("data-connection")).toBe("snapshot");
+      const signal = fetchStream.mock.calls[0][1].signal;
+      resolveProbe(ok(current));
+      await flushPromises();
+      expect(signal.aborted).toBe(false);
+      expect(fetchStream).toHaveBeenCalledTimes(1);
+      expect(view.find("img").exists()).toBe(true);
+    } finally {
+      view.unmount();
+    }
   });
 
   it.each([

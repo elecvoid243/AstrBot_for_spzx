@@ -65,7 +65,7 @@
     "expired": "Browser changed. Refresh to reconnect.",
     "unavailable": "Browser unavailable.",
     "loading": "Loading snapshot…",
-    "empty": "Ask the Agent to open a page in this chat, then click refresh to connect.",
+    "empty": "Ask the Agent to open a page in this chat; observation connects automatically.",
     "recentActions": "Recent actions",
     "target": "Actual action position",
     "actionKinds": {

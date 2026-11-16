@@ -65,7 +65,7 @@
     "expired": "浏览器已变更，请刷新重连。",
     "unavailable": "浏览器不可用。",
     "loading": "正在读取快照…",
-    "empty": "请让 Agent 在此聊天打开网页，再点击刷新连接观测。",
+    "empty": "请让 Agent 在此聊天打开网页，观测会自动连接。",
     "recentActions": "最近动作",
     "target": "实际操作位置",
     "actionKinds": {

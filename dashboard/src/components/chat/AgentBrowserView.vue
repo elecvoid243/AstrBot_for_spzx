@@ -1399,7 +1399,10 @@ async function follow(
   }
 }
 
-/** Reauthorize observation on opening or explicit refresh, without a retry loop. */
+/**
+ * Reauthorize observation on opening, explicit refresh, or a probe that found
+ * a browser opened after this panel subscribed.
+ */
 async function refresh(): Promise<void> {
   disconnectControl();
   pending?.abort();
@@ -1556,6 +1559,87 @@ async function refresh(): Promise<void> {
   }
 }
 
+// A browser opened after this panel subscribed has no stream to attach to, so an
+// idle panel probes the cheap status endpoint instead of waiting for a click.
+// Probing is confined to states that own no subscription and show no pixels, so
+// it can never abort a live stream nor clear a displayed frame.
+const pollIntervalMs = 3000;
+const pollMaxIntervalMs = 12000;
+let pollTimer: ReturnType<typeof setTimeout> | undefined;
+let pollDelay = pollIntervalMs;
+const waitingForBrowser = computed(() =>
+  Boolean(
+    props.chatId &&
+      props.visible &&
+      pageVisible.value &&
+      online.value &&
+      !humanControl.value &&
+      !manualPending.value &&
+      !controlling.value &&
+      !state.value?.available &&
+      !imageFrame.value?.image &&
+      ["idle", "closed"].includes(connection.value),
+  ),
+);
+
+function schedulePoll(delay = pollDelay) {
+  clearTimeout(pollTimer);
+  pollTimer = setTimeout(() => void pollForBrowser(), delay);
+}
+
+/**
+ * Probe for a browser that appeared after the panel subscribed.
+ *
+ * Runs only while `waitingForBrowser` holds, and hands a found browser back to
+ * `refresh()` so the panel still keeps exactly one observation stream.
+ */
+async function pollForBrowser(): Promise<void> {
+  pollTimer = undefined;
+  if (!waitingForBrowser.value) return;
+  const chatId = props.chatId!;
+  try {
+    const response = await pluginExtensionApi.get<BrowserState>(
+      "browser-use/status",
+      { params: { chat_id: chatId } },
+    );
+    // A manual refresh or a visibility change may have taken over meanwhile.
+    if (props.chatId !== chatId || !waitingForBrowser.value) return;
+    pollDelay = pollIntervalMs;
+    const current = response.data?.data;
+    if (response.data?.status !== "ok" || !current) return;
+    if (!current.available) {
+      // Mirror a lifetime that closed meanwhile without touching pixels.
+      if (
+        current.execution_state === "closed" &&
+        connection.value !== "closed"
+      ) {
+        state.value = current;
+        connection.value = "closed";
+      }
+      return;
+    }
+    void refresh();
+  } catch {
+    // Probing is best effort: keep the waiting state and back off.
+    pollDelay = Math.min(
+      pollMaxIntervalMs,
+      Math.max(pollIntervalMs, pollDelay * 2),
+    );
+  } finally {
+    if (waitingForBrowser.value) schedulePoll();
+  }
+}
+
+watch(
+  waitingForBrowser,
+  (waiting) => {
+    clearTimeout(pollTimer);
+    pollTimer = undefined;
+    if (waiting) schedulePoll();
+  },
+  { immediate: true },
+);
+
 /**
  * Send a lifetime-bound control and apply only its confirmed server result.
  *
@@ -1636,7 +1720,8 @@ watch(
     }
     resynchronized.value = false;
     if (!previous || next[0] !== previous[0] || (next[1] && !previous[1])) {
-      // Opening a chat subscribes once. Time, visibility and connectivity never retry.
+      // Opening a chat subscribes once. Time, visibility and connectivity never
+      // retry a failed subscription; only an idle panel probes for new browsers.
       void refresh();
     } else if (!next[1] || !next[2] || !next[3]) {
       disconnectControl();
@@ -1687,6 +1772,7 @@ window.addEventListener("astrbot:account-changed", accountChanged);
 onBeforeUnmount(() => {
   resizeObserver?.disconnect();
   clearTimeout(resizeTimer);
+  clearTimeout(pollTimer);
   disconnectControl();
   window.removeEventListener("blur", windowBlurred);
   document.removeEventListener("keydown", onFullscreenKeyDown, true);

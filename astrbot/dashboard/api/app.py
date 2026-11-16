@@ -116,8 +116,8 @@ from .updates import (
 CLEAR_SITE_DATA_HEADERS = {"Clear-Site-Data": '"cache"'}
 
 
-async def _shell_sessions_changed(owner_id: str) -> None:
-    """Push a shell-session snapshot to the owning session's system stream.
+async def _shell_sessions_changed(owner_id: str, services=None) -> None:
+    """Push a shell-session snapshot to the owning session's chat streams.
 
     Registered as a ``LocalShellComponent`` change listener; module-level so
     unit tests can drive it directly. Snapshot generation lives here (not in
@@ -126,6 +126,9 @@ async def _shell_sessions_changed(owner_id: str) -> None:
     Args:
         owner_id: Unified message origin owning the changed sessions;
             non-webchat origins are ignored (no dashboard stream exists).
+        services: Dashboard service container. When present the snapshot fans
+            out to both the system stream and the unified stream, because the
+            ChatUI defaults to the unified transport.
     """
     if not owner_id.startswith("webchat:"):
         return
@@ -135,8 +138,18 @@ async def _shell_sessions_changed(owner_id: str) -> None:
         webchat_queue_mgr,
     )
 
-    cid = owner_id.rsplit("!", 1)[-1]
-    if not webchat_queue_mgr.has_system_subscribers(cid):
+    # `webchat:<type>:webchat!<creator>!<conversation>`: the origin already
+    # carries the account that watches the conversation, so the unified
+    # fan-out needs no ownership lookup (and side-chat threads have no
+    # platform-session row to look up).
+    origin_parts = owner_id.rsplit("!", 2)
+    if len(origin_parts) != 3:
+        return
+    owner, cid = origin_parts[1], origin_parts[2]
+    has_unified_viewer = bool(
+        services is not None and services.chat.unified_stream_hub.connections
+    )
+    if not webchat_queue_mgr.has_system_subscribers(cid) and not has_unified_viewer:
         # Nobody is watching this conversation: skip the snapshot work
         # entirely. The next transition or the cold-start GET re-converges.
         return
@@ -154,13 +167,14 @@ async def _shell_sessions_changed(owner_id: str) -> None:
             requester_id="",
             requester_is_admin=True,
         )
-        await webchat_queue_mgr.put_system_event(
-            cid,
-            {
-                "type": "shell_sessions_changed",
-                "data": {"sessions": result["sessions"]},
-            },
-        )
+        payload = {
+            "type": "shell_sessions_changed",
+            "data": {"sessions": result["sessions"]},
+        }
+        if services is not None:
+            await services.chat.publish_session_event(cid, payload, owner=owner)
+        else:
+            await webchat_queue_mgr.put_system_event(cid, payload)
     except Exception as exc:  # noqa: BLE001 - best-effort push
         logger.warning("Failed to push shell session snapshot: %s", exc)
 
@@ -331,20 +345,21 @@ def create_dashboard_asgi_app(
     _goal_service.set_run_registrar(_goal_run_registrar)
 
     async def _goal_state_changed(umo: str, state) -> None:
-        """Push goal state mutations to the session's webchat system stream."""
+        """Push goal state mutations to the session's chat streams."""
         if not umo.startswith("webchat:"):
             return
-        from astrbot.core.platform.sources.webchat.webchat_queue_mgr import (
-            webchat_queue_mgr,
-        )
 
-        cid = umo.rsplit("!", 1)[-1]
-        await webchat_queue_mgr.put_system_event(
+        origin_parts = umo.rsplit("!", 2)
+        if len(origin_parts) != 3:
+            return
+        owner, cid = origin_parts[1], origin_parts[2]
+        await app.state.services.chat.publish_session_event(
             cid,
             {
                 "type": "goal_state_changed",
                 "data": {"goal": state.to_public_dict() if state else None},
             },
+            owner=owner,
         )
 
     _goal_service.set_state_change_listener(_goal_state_changed)
@@ -361,7 +376,9 @@ def create_dashboard_asgi_app(
     _booter = get_local_booter()
     if isinstance(_booter.shell, LocalShellComponent):
         _booter.shell.add_change_listener(
-            lambda owner_id: asyncio.create_task(_shell_sessions_changed(owner_id))
+            lambda owner_id: asyncio.create_task(
+                _shell_sessions_changed(owner_id, app.state.services)
+            )
         )
 
     @app.exception_handler(RequestValidationError)

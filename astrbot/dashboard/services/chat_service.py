@@ -3653,7 +3653,7 @@ class ChatService:
             "detail_path": f"/#/chat/{session_id}",
         }
         try:
-            await webchat_queue_mgr.put_system_event(
+            await self.publish_session_event(
                 source_id,
                 {
                     "type": "chat_session_created",
@@ -4756,6 +4756,40 @@ class ChatService:
                 "sessions": shell.get("sessions", []),
             },
         }
+
+    async def publish_session_event(
+        self,
+        session_id: str,
+        payload: dict[str, Any],
+        *,
+        owner: str | None = None,
+    ) -> None:
+        """Fan a session-scoped event out to every watching transport.
+
+        The per-session system stream and the unified stream are separate
+        transports: the first only reaches explicit system-stream subscribers,
+        the second only frames published to the hub. The ChatUI defaults to
+        the unified stream and opens no system stream, so a push delivered to
+        one transport alone leaves the other client silently stale (shell
+        indicator, goal bar, cross-tab session list).
+
+        Args:
+            session_id: WebChat conversation the event belongs to.
+            payload: Existing system-event payload.
+            owner: Resource owner watching the conversation. Callers holding a
+                unified message origin pass it directly, because side-chat
+                threads have no platform-session row to resolve.
+        """
+        await webchat_queue_mgr.put_system_event(session_id, payload)
+        if not self.unified_stream_hub.connections:
+            return
+        if owner is None:
+            session = await self.db.get_platform_session_by_id(session_id)
+            owner = session.creator if session is not None else None
+        if not owner:
+            return
+        # Hub fan-out is keyed by the account that owns the conversation.
+        self.unified_stream_hub.publish(owner, session_id, payload)
 
     async def start_unified_chat_run(
         self,

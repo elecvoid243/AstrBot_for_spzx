@@ -113,3 +113,60 @@ async def test_push_non_local_shell_is_noop(monkeypatch):
     await app_module._shell_sessions_changed(UMO)
 
     assert calls == []
+
+
+def _unified_services(calls: list, *, connected: bool = True):
+    """Service container stub exposing only what the push path touches."""
+
+    async def fake_publish(session_id, payload, *, owner=None):
+        calls.append((session_id, payload, owner))
+
+    chat = SimpleNamespace(
+        unified_stream_hub=SimpleNamespace(
+            connections={"conn-1": object()} if connected else {}
+        ),
+        publish_session_event=fake_publish,
+    )
+    return SimpleNamespace(chat=chat)
+
+
+async def test_push_reaches_unified_stream_without_system_subscribers(monkeypatch):
+    """The unified stream is the default ChatUI transport and opens no system
+    stream, so the legacy subscriber check must not swallow the snapshot."""
+    monkeypatch.setattr(webchat_queue_mgr, "has_system_subscribers", lambda _cid: False)
+    shell = LocalShellComponent()
+    monkeypatch.setattr(
+        shell, "list_sessions", AsyncMock(return_value={"sessions": [SESSION_ITEM]})
+    )
+    monkeypatch.setattr(computer_client, "local_booter", SimpleNamespace(shell=shell))
+    calls: list = []
+
+    await app_module._shell_sessions_changed(UMO, _unified_services(calls))
+
+    assert calls == [
+        (
+            "cid1",
+            {
+                "type": "shell_sessions_changed",
+                "data": {"sessions": [SESSION_ITEM]},
+            },
+            "alice",
+        )
+    ]
+
+
+async def test_push_skips_snapshot_when_no_transport_watches(monkeypatch):
+    """No system subscriber and no unified connection → no list_sessions work."""
+    monkeypatch.setattr(webchat_queue_mgr, "has_system_subscribers", lambda _cid: False)
+    shell = LocalShellComponent()
+    list_spy = AsyncMock(return_value={"sessions": [SESSION_ITEM]})
+    monkeypatch.setattr(shell, "list_sessions", list_spy)
+    monkeypatch.setattr(computer_client, "local_booter", SimpleNamespace(shell=shell))
+    calls: list = []
+
+    await app_module._shell_sessions_changed(
+        UMO, _unified_services(calls, connected=False)
+    )
+
+    assert calls == []
+    list_spy.assert_not_awaited()

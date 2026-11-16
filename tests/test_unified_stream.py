@@ -511,6 +511,7 @@ async def test_synthetic_run_registration_broadcasts_run_started():
     service.chat_runs = {}
     service.chat_runs_by_session = {}
     service._consume_chat_run = AsyncMock()
+    service._unified_publish_tasks = set()
 
     stream = hub.stream(connection)
     ready = _decode(await anext(stream))
@@ -528,6 +529,11 @@ async def test_synthetic_run_registration_broadcasts_run_started():
     assert frame["message_id"] == "synth-1"
     assert frame["seq"] == 1
     assert frame["data"]["input_message"] is None
+    # The registration also starts the frame forwarder; it must not outlive
+    # the test.
+    for task in list(service._unified_publish_tasks):
+        task.cancel()
+    await asyncio.gather(*service._unified_publish_tasks, return_exceptions=True)
     hub.disconnect(connection)
     await stream.aclose()
 

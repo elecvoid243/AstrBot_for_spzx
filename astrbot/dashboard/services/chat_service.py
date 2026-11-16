@@ -1305,6 +1305,9 @@ class ChatRunState:
     reach the history row.
     """
     dev_turn_id: str | None = None
+    # A run has at most one unified forwarder; two registration paths (goal
+    # registrar + system announce) must not double its frames.
+    unified_forwarded: bool = False
     """Turn id shared by the run's snapshots; used to bind the bot message."""
     revision: int = 0
     status: str = "running"
@@ -3181,6 +3184,12 @@ class ChatService:
             self._consume_chat_run(run),
             name=f"webchat_run_{message_id}",
         )
+        # Synthetic runs have no request-scoped browser stream, so the hub
+        # receives only their announcement unless a forwarder mirrors the
+        # frames and the terminal end. Subscribe before announcing: the client
+        # opens its connection on run_started, and frames published earlier
+        # would have nowhere to attach.
+        self._start_unified_run_forwarder(run)
         self._publish_unified_run_started(run)
         # Announce to system-stream subscribers so a page with the session
         # open attaches to the run stream. The payload is flagged
@@ -4897,8 +4906,9 @@ class ChatService:
             run: Run accepted by the agent-message path.
         """
         hub = getattr(self, "unified_stream_hub", None)
-        if hub is None:
+        if hub is None or run.unified_forwarded:
             return
+        run.unified_forwarded = True
         # Subscribe synchronously so no frame produced between here and the
         # task's first step is lost.
         subscriber: asyncio.Queue = asyncio.Queue(

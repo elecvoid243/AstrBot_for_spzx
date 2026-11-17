@@ -87,10 +87,6 @@
     "label": "路由提示词",
     "hint": "主Agent的路由提示词，用于指导主Agent如何识别用户意图并委派任务给子代理。仅在未启用动态子代理时有效。"
   },
-  "historyEnabled": {
-    "label": "启用历史记忆",
-    "hint": "是否启用子代理的上下文历史功能，开启后子代理可以保留跨多轮对话的记忆"
-  },
   "empty": {
     "title": "未配置子代理",
     "subtitle": "添加一个新的子代理以开始",
@@ -117,17 +113,13 @@
     "enable": "启用动态子代理",
     "enableHint": "启用动态子代理创建、管理和回收能力。开启后主Agent可在运行时通过create_subagent等工具动态创建子代理。与静态子代理编排可同时存在",
     "autoCleanup": "每轮自动清理",
-    "autoCleanupHint": "每轮对话结束后自动清理未受保护的动态子代理",
-    "sharedContext": "启用共享上下文",
-    "sharedContextHint": "启用子代理间的公共上下文共享，子代理可通过send_shared_context工具互相通信"
+    "autoCleanupHint": "每轮对话结束后自动清理未受保护的动态子代理"
   },
   "enhancedFields": {
     "maxSubagentCount": "最大子代理数量",
     "maxSubagentCountHint": "设置最大子代理数量。动态子代理数量 = 最大子代理数量 - 已有静态子代理数量",
     "defaultProviderId": "默认 Chat Provider",
     "defaultProviderIdHint": "动态子代理未指定 provider 时的默认值。留空则使用主代理的 provider",
-    "sharedContextMaxlen": "共享上下文最大长度",
-    "sharedContextMaxlenHint": "共享上下文消息的最大数量（条）",
     "executionTimeout": "执行超时时间(秒)",
     "executionTimeoutHint": "子代理执行任务的最大超时时间，-1表示不限制",
     "rulePrompt": "行为约束提示词",

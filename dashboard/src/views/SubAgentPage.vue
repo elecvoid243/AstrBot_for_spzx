@@ -70,58 +70,6 @@
             </div>
           </div>
 
-          <!-- 启用历史记忆 -->
-          <div class="setting-card">
-            <div class="setting-card-head">
-              <div>
-                <div class="setting-title">{{ tm('historyEnabled.label') }}</div>
-                <div class="setting-subtitle">{{ tm('historyEnabled.hint') }}</div>
-              </div>
-              <v-switch
-                v-model="rootCfg.history_enabled"
-                color="primary"
-                hide-details
-                inset
-                density="comfortable"
-              />
-            </div>
-          </div>
-
-          <!-- 启用共享上下文 -->
-          <div class="setting-card">
-            <div class="setting-card-head">
-              <div>
-                <div class="setting-title">{{ tm('enhancedSwitches.sharedContext') }}</div>
-                <div class="setting-subtitle">{{ tm('enhancedSwitches.sharedContextHint') }}</div>
-              </div>
-              <v-switch
-                v-model="rootCfg.shared_context_enabled"
-                color="primary"
-                hide-details
-                inset
-                density="comfortable"
-              />
-            </div>
-          </div>
-
-          <!-- 共享上下文最大长度 -->
-          <div v-if="rootCfg.shared_context_enabled" class="setting-card">
-            <div class="setting-card-head">
-              <div>
-                <div class="setting-title">{{ tm('enhancedFields.sharedContextMaxlen') }}</div>
-                <div class="setting-subtitle">{{ tm('enhancedFields.sharedContextMaxlenHint') }}</div>
-              </div>
-              <v-text-field
-                v-model.number="rootCfg.shared_context_maxlen"
-                type="number"
-                density="compact"
-                variant="outlined"
-                style="width: 120px;"
-                hide-details
-              />
-            </div>
-          </div>
-
           <!-- 启用时间提示词 -->
           <div class="setting-card">
             <div class="setting-card-head">
@@ -733,9 +681,6 @@ type SubAgentOrchestratorConfig = {
   router_system_prompt: string
   agents: SubAgentItem[]
   dynamic_agents: DynamicAgentsConfig
-  history_enabled: boolean
-  shared_context_enabled: boolean
-  shared_context_maxlen: number
   execution_timeout: number
   time_prompt_enabled: boolean
 }
@@ -842,9 +787,6 @@ const dynamicCfg = ref<DynamicAgentsConfig>({
 })
 
 const rootCfg = ref({
-  history_enabled: true,
-  shared_context_enabled: false,
-  shared_context_maxlen: 200,
   execution_timeout: 600,
   time_prompt_enabled: true,
   context_inherit_mode: 'normal'
@@ -911,9 +853,6 @@ function normalizeDynamicAgents(raw: any): DynamicAgentsConfig {
 function normalizeRootConfig(raw: any) {
   const orchData = raw?.subagent_orchestrator || raw || {}
   return {
-    history_enabled: orchData?.history_enabled !== false,
-    shared_context_enabled: !!orchData?.shared_context_enabled,
-    shared_context_maxlen: Number(orchData?.shared_context_maxlen) || 200,
     execution_timeout: Number(orchData?.execution_timeout) || 600,
     time_prompt_enabled: orchData?.time_prompt_enabled !== false,
     context_inherit_mode: CONTEXT_INHERIT_MODES.includes(orchData?.context_inherit_mode)
@@ -945,9 +884,6 @@ function serializeFullConfig(config: SubAgentConfig, dynamic: DynamicAgentsConfi
       mcp_blacklist: dynamic.mcp_blacklist,
       mcp_inherent: dynamic.mcp_inherent
     },
-    history_enabled: root.history_enabled,
-    shared_context_enabled: root.shared_context_enabled,
-    shared_context_maxlen: root.shared_context_maxlen,
     execution_timeout: root.execution_timeout,
     time_prompt_enabled: root.time_prompt_enabled,
     context_inherit_mode: root.context_inherit_mode
@@ -1109,9 +1045,6 @@ async function save() {
         mcp_blacklist: dynamicCfg.value.mcp_blacklist,
         mcp_inherent: dynamicCfg.value.mcp_inherent
       },
-      history_enabled: rootCfg.value.history_enabled,
-      shared_context_enabled: rootCfg.value.shared_context_enabled,
-      shared_context_maxlen: rootCfg.value.shared_context_maxlen,
       execution_timeout: rootCfg.value.execution_timeout,
       time_prompt_enabled: rootCfg.value.time_prompt_enabled,
       context_inherit_mode: rootCfg.value.context_inherit_mode

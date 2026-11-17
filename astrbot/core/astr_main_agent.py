@@ -1488,31 +1488,20 @@ async def _apply_subagent_manager_tools(
         # Configure SubAgentManager with settings from subagent_orchestrator
         dynamic_cfg = orch_cfg.get("dynamic_agents", {})
         enable_dynamic = dynamic_cfg.get("enabled", False)
-        history_enabled = orch_cfg.get("history_enabled", True)
-        shared_context_enabled = orch_cfg.get("shared_context_enabled", False)
         SubAgentManager.configure(
             max_subagent_count=dynamic_cfg.get("max_subagent_count", 3),
             auto_cleanup_per_turn=dynamic_cfg.get("auto_cleanup_per_turn", True),
-            shared_context_enabled=shared_context_enabled,
-            shared_context_maxlen=orch_cfg.get("shared_context_maxlen", 300),
             tools_blacklist=dynamic_cfg.get("tools_blacklist", None),
             tools_inherent=dynamic_cfg.get("tools_inherent", None),
             mcp_blacklist=dynamic_cfg.get("mcp_blacklist"),
             mcp_inherent=dynamic_cfg.get("mcp_inherent"),
             execution_timeout=orch_cfg.get("execution_timeout", 1200),
-            history_enabled=history_enabled,
             rule_prompt=dynamic_cfg.get("rule_prompt", ""),
             time_prompt_enabled=orch_cfg.get("time_prompt_enabled", True),
             timezone=cfg.get("timezone", None),
             dag_enabled=orch_cfg.get("dag_enabled", False),
             default_provider_id=dynamic_cfg.get("default_provider_id", ""),
             context_inherit_mode=orch_cfg.get("context_inherit_mode", "normal"),
-        )
-
-        # Enable subagent history and shared context if configured
-        SubAgentManager.set_history_enabled(event.unified_msg_origin, history_enabled)
-        SubAgentManager.set_shared_context_enabled(
-            event.unified_msg_origin, shared_context_enabled
         )
 
         session_id = event.unified_msg_origin
@@ -1542,7 +1531,7 @@ async def _apply_subagent_manager_tools(
                 req.func_tool.add_tool(BROADCAST_SHARED_CONTEXT_TOOL)
 
             # Inject subagent capability system prompt for dynamic creation
-            task_router_prompt = SubAgentManager.build_task_router_prompt(session_id)
+            task_router_prompt = SubAgentManager.build_task_router_prompt()
             req.system_prompt = f"{req.system_prompt or ''}\n{task_router_prompt}\n"
 
     except ImportError as e:

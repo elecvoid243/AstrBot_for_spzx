@@ -194,11 +194,7 @@ DAG Orchestration automatically delegate subagents. When you have 2+ independent
 """
 
     @classmethod
-    def build_task_router_prompt(cls, session_id: str):
-        session = cls.get_session(session_id)
-        if not session:
-            return ""
-
+    def build_task_router_prompt(cls):
         parts = [
             cls._HEADER_TEMPLATE,
             cls._CREATE_GUIDE_PROMPT,
@@ -213,14 +209,11 @@ DAG Orchestration automatically delegate subagents. When you have 2+ independent
         cls,
         max_subagent_count: int = 10,
         auto_cleanup_per_turn: bool = True,
-        shared_context_enabled: bool = False,
-        shared_context_maxlen: int = 300,
         tools_blacklist: list[str] = None,
         tools_inherent: list[str] = None,
         mcp_blacklist: list[str] | None = None,
         mcp_inherent: list[str] | None = None,
         execution_timeout: float = 1200.0,
-        history_enabled: bool = True,
         rule_prompt: str = "",
         time_prompt_enabled: bool = True,
         timezone: str | None = None,
@@ -234,9 +227,11 @@ DAG Orchestration automatically delegate subagents. When you have 2+ independent
         cls._mcp_inherent = set(mcp_inherent or [])
         cls._max_subagent_count = max_subagent_count
         cls._auto_cleanup_per_turn = auto_cleanup_per_turn
-        cls._shared_context_enabled = shared_context_enabled
-        cls._history_enabled = history_enabled
-        cls._shared_context_maxlen = shared_context_maxlen
+        # Subagent history memory is a fixed behavior, not a user setting.
+        cls._history_enabled = True
+        # Shared context is retired from configuration and stays permanently off;
+        # the implementation is kept for now but is unreachable.
+        cls._shared_context_enabled = False
         cls._execution_timeout = execution_timeout
         cls._rule_prompt = rule_prompt
         cls._time_prompt_enabled = time_prompt_enabled

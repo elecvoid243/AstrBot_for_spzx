@@ -283,9 +283,6 @@ DEFAULT_CONFIG = {
             ],
         },
         "time_prompt_enabled": True,
-        "history_enabled": True,
-        "shared_context_enabled": True,
-        "shared_context_maxlen": 300,
         "execution_timeout": 1200,
         # Subagent context inheritance mode:
         # - "normal": subagents start from their own system prompt and history

@@ -50,6 +50,7 @@ const wanted = new Set([
   "openSideChatPanel",
   "loadSideChats",
   "openSideChatMenu",
+  "scheduleCloseSideChatMenu",
   "openThreadPanel",
   "openRefsSidebar",
   "openReasoningPanel",
@@ -65,6 +66,7 @@ const variables = new Set([
   "sideChatThreadId",
   "creatingSideChat",
   "sideChatGeneration",
+  "sideChatCloseTimer",
   "sideChats",
   "sideChatMenuOpen",
   "loadingSideChats",
@@ -240,6 +242,7 @@ function setup() {
     openSideChat: () => Promise<void>;
     createThreadFromSelection: () => Promise<void>;
     openSideChatMenu: () => void;
+    scheduleCloseSideChatMenu: () => void;
     openThreadPanel: (thread: ThreadRef) => void;
     openRefsSidebar: (refs: unknown) => void;
     openReasoningPanel: (payload: unknown) => void;
@@ -267,6 +270,7 @@ const cleanups: Array<() => void> = [];
 afterEach(() => {
   cleanups.splice(0).forEach((cleanup) => cleanup());
   vi.restoreAllMocks();
+  vi.useRealTimers();
 });
 
 describe("Chat side-chat lifecycle", () => {
@@ -869,5 +873,24 @@ describe("Chat side-chat lifecycle", () => {
     ]);
     expect(ctx.sideChatMenuOpen.value).toBe(true);
     expect(ctx.loadingSideChats.value).toBe(false);
+  });
+
+  it("keeps the menu open through the gap between the button and the panel", () => {
+    vi.useFakeTimers();
+    const ctx = setup();
+    ctx.openSideChatMenu();
+
+    ctx.scheduleCloseSideChatMenu();
+    vi.advanceTimersByTime(139);
+    expect(ctx.sideChatMenuOpen.value).toBe(true);
+
+    // Pointer re-enters before the grace period expires: no restart, no flicker.
+    ctx.openSideChatMenu();
+    vi.advanceTimersByTime(1000);
+    expect(ctx.sideChatMenuOpen.value).toBe(true);
+
+    ctx.scheduleCloseSideChatMenu();
+    vi.advanceTimersByTime(140);
+    expect(ctx.sideChatMenuOpen.value).toBe(false);
   });
 });

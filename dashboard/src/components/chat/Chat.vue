@@ -832,7 +832,7 @@
           v-if="currSessionId && !isReadonlySession && !subagentPageOpen"
           class="side-chat-entry"
           @mouseenter="openSideChatMenu"
-          @mouseleave="sideChatMenuOpen = false"
+          @mouseleave="scheduleCloseSideChatMenu"
         >
           <button
             type="button"
@@ -849,59 +849,60 @@
             }}</v-icon>
           </button>
           <transition name="side-chat-menu">
-            <div
-              v-if="sideChatMenuOpen"
-              class="side-chat-menu"
-              role="menu"
-              @mouseenter="sideChatMenuOpen = true"
-            >
-              <button
-                type="button"
-                class="side-chat-menu-new"
-                @click="openSideChat()"
-              >
-                <v-icon size="14">mdi-plus</v-icon>
-                <span>{{ tm("thread.newSideChat") }}</span>
-              </button>
-              <div v-if="loadingSideChats" class="side-chat-menu-state">
-                {{ tm("thread.sideLoading") }}
-              </div>
-              <template v-else>
-                <div
-                  v-for="item in sideChats"
-                  :key="item.thread_id"
-                  class="side-chat-menu-item"
-                  :class="{
-                    'is-active': item.thread_id === sideChatThreadId,
-                  }"
-                  role="menuitem"
-                >
-                  <button
-                    type="button"
-                    class="side-chat-menu-title"
-                    @click="openSideChatThread(item)"
-                  >
-                    <v-icon size="13">mdi-chat-outline</v-icon>
-                    <span>{{
-                      item.title?.trim() || tm("thread.sideTitle")
-                    }}</span>
-                  </button>
-                  <button
-                    type="button"
-                    class="side-chat-menu-delete"
-                    :title="tm('thread.delete')"
-                    :aria-label="tm('thread.delete')"
-                    @click.stop="deleteThread(item)"
-                  >
-                    <v-icon size="13">mdi-delete-outline</v-icon>
-                  </button>
-                </div>
-              </template>
+            <div v-if="sideChatMenuOpen" class="side-chat-menu-shell">
               <div
-                v-if="!loadingSideChats && !sideChats.length"
-                class="side-chat-menu-state"
+                class="side-chat-menu"
+                role="menu"
+                @mouseenter="sideChatMenuOpen = true"
               >
-                {{ tm("thread.sideEmpty") }}
+                <button
+                  type="button"
+                  class="side-chat-menu-new"
+                  @click="openSideChat()"
+                >
+                  <v-icon size="14">mdi-plus</v-icon>
+                  <span>{{ tm("thread.newSideChat") }}</span>
+                </button>
+                <div v-if="loadingSideChats" class="side-chat-menu-state">
+                  {{ tm("thread.sideLoading") }}
+                </div>
+                <template v-else>
+                  <div
+                    v-for="item in sideChats"
+                    :key="item.thread_id"
+                    class="side-chat-menu-item"
+                    :class="{
+                      'is-active': item.thread_id === sideChatThreadId,
+                    }"
+                    role="menuitem"
+                  >
+                    <button
+                      type="button"
+                      class="side-chat-menu-title"
+                      @click="openSideChatThread(item)"
+                    >
+                      <v-icon size="13">mdi-chat-outline</v-icon>
+                      <span>{{
+                        item.title?.trim() || tm("thread.sideTitle")
+                      }}</span>
+                    </button>
+                    <button
+                      type="button"
+                      class="side-chat-menu-delete"
+                      :title="tm('thread.delete')"
+                      :aria-label="tm('thread.delete')"
+                      @click.stop="deleteThread(item)"
+                    >
+                      <v-icon size="13">mdi-delete-outline</v-icon>
+                    </button>
+                  </div>
+                </template>
+                <div
+                  v-if="!loadingSideChats && !sideChats.length"
+                  class="side-chat-menu-state"
+                >
+                  {{ tm("thread.sideEmpty") }}
+                </div>
               </div>
             </div>
           </transition>
@@ -1890,6 +1891,7 @@ const activeThread = ref<ChatThread | null>(null);
 const sideChatThreadId = ref<string | null>(null);
 const creatingSideChat = ref(false);
 let sideChatGeneration = 0;
+let sideChatCloseTimer = 0;
 type SideChatEntry = ChatThread & { title?: string };
 const sideChats = ref<SideChatEntry[]>([]);
 const sideChatMenuOpen = ref(false);
@@ -5580,9 +5582,19 @@ async function loadSideChats(): Promise<void> {
 }
 
 function openSideChatMenu() {
+  window.clearTimeout(sideChatCloseTimer);
   if (creatingSideChat.value) return;
   sideChatMenuOpen.value = true;
   void loadSideChats();
+}
+
+function scheduleCloseSideChatMenu() {
+  window.clearTimeout(sideChatCloseTimer);
+  // A short grace period absorbs diagonal slips and quick re-entries, so the
+  // 140ms leave transition does not restart while the pointer is still nearby.
+  sideChatCloseTimer = window.setTimeout(() => {
+    sideChatMenuOpen.value = false;
+  }, 140);
 }
 
 function closeSideChatMenuOnOutsideClick(event: PointerEvent) {
@@ -5597,6 +5609,7 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+  window.clearTimeout(sideChatCloseTimer);
   document.removeEventListener("pointerdown", closeSideChatMenuOnOutsideClick);
 });
 
@@ -7719,10 +7732,20 @@ function toggleTheme() {
   animation: side-chat-spin 1s linear infinite;
 }
 
-.side-chat-menu {
+/* The shell starts flush with the button and owns the visual gap as padding, so
+   moving from the button into the menu never leaves the hover surface. The gap
+   must not be a pseudo-element on the card: the card scrolls, and a scroll
+   container clips its absolutely positioned children. */
+.side-chat-menu-shell {
   position: absolute;
-  top: calc(100% + 8px);
+  top: 100%;
   right: 0;
+  padding-top: 8px;
+  transform-origin: top right;
+  z-index: 8;
+}
+
+.side-chat-menu {
   width: 280px;
   max-height: 380px;
   overflow-y: auto;
@@ -7731,17 +7754,6 @@ function toggleTheme() {
   border-radius: 12px;
   background: rgb(var(--v-theme-surface));
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.14);
-  z-index: 8;
-}
-
-/* Bridge the 8px gap so moving from the button to the menu keeps it open. */
-.side-chat-menu::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  right: 0;
-  top: -8px;
-  height: 8px;
 }
 
 .side-chat-menu-new {

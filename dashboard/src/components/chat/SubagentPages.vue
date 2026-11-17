@@ -248,36 +248,51 @@
       </nav>
     </Teleport>
     <div v-if="selectedRunId" class="subagent-page-body">
-      <section
-        ref="panel"
-        class="subagent-messages"
-        tabindex="0"
-        @scroll="handleScroll"
-        @wheel.passive="handleIntent"
-        @keydown="handleIntent"
-        @pointerdown="handleIntent"
-        @touchstart.passive="handleIntent"
-      >
-        <div ref="content" class="subagent-message-shell">
-          <div v-if="error" role="alert" class="subagent-page-notice">
-            {{ error }}
+      <!-- The pane owns this page's marker rail: the rail is positioned
+           against the scrolling viewport only, so the reasoning sidebar next
+           to it never gets covered by ticks. -->
+      <div class="subagent-message-pane">
+        <section
+          ref="panel"
+          class="subagent-messages"
+          tabindex="0"
+          @scroll="handleScroll"
+          @wheel.passive="handleIntent"
+          @keydown="handleIntent"
+          @pointerdown="handleIntent"
+          @touchstart.passive="handleIntent"
+        >
+          <div ref="content" class="subagent-message-shell">
+            <div v-if="error" role="alert" class="subagent-page-notice">
+              {{ error }}
+            </div>
+            <div v-if="loading" role="status" class="subagent-page-notice">
+              {{ tm("subagentPages.loading") }}
+            </div>
+            <ChatMessageList
+              v-if="selectedPart"
+              :messages="messages"
+              :is-dark="isDark"
+              :is-streaming="selectedPart.status === 'running'"
+              :session-id="detailSessionId"
+              :remote-history="Boolean(remoteScope)"
+              :remote-scope="remoteScope"
+              :remote-ready="remoteReady"
+              @open-reasoning="reasoningTarget = $event"
+            />
           </div>
-          <div v-if="loading" role="status" class="subagent-page-notice">
-            {{ tm("subagentPages.loading") }}
-          </div>
-          <ChatMessageList
-            v-if="selectedPart"
-            :messages="messages"
-            :is-dark="isDark"
-            :is-streaming="selectedPart.status === 'running'"
-            :session-id="detailSessionId"
-            :remote-history="Boolean(remoteScope)"
-            :remote-scope="remoteScope"
-            :remote-ready="remoteReady"
-            @open-reasoning="reasoningTarget = $event"
-          />
-        </div>
-      </section>
+        </section>
+        <ChatScrollMarkers
+          v-if="scrollMarkers.length"
+          :markers="scrollMarkers"
+          :container="panel"
+          :height="stripHeight"
+          :right="stripRightOffset"
+          :loading="loading"
+          :is-dark="Boolean(isDark)"
+          @jump="scrollToMarker"
+        />
+      </div>
       <ReasoningSidebar
         :model-value="Boolean(reasoningTarget)"
         :parts="reasoningParts"
@@ -326,6 +341,9 @@ import {
 } from "@/composables/useMessages";
 import { useI18n, useModuleI18n } from "@/i18n/composables";
 import ChatMessageList from "./ChatMessageList.vue";
+import ChatScrollMarkers, {
+  type ChatScrollMarker,
+} from "./ChatScrollMarkers.vue";
 import ReasoningSidebar from "./ReasoningSidebar.vue";
 import SubagentConfigurationDialog from "./SubagentConfigurationDialog.vue";
 
@@ -382,6 +400,9 @@ const loading = ref(false);
 const error = ref("");
 const panel = ref<HTMLElement | null>(null);
 const content = ref<HTMLElement | null>(null);
+const scrollMarkers = ref<ChatScrollMarker[]>([]);
+const stripHeight = ref(0);
+const stripRightOffset = ref(0);
 const reasoningTarget = ref<{
   message: ChatRecord;
   blockIndex: number;
@@ -393,6 +414,7 @@ let detailAbort: AbortController | null = null;
 let observer: ResizeObserver | null = null;
 let mutations: MutationObserver | null = null;
 let scrollFrame = 0;
+let markerTimer: ReturnType<typeof setTimeout> | null = null;
 let pointerActive = false;
 let previousTop = 0;
 let direction = 0;
@@ -574,6 +596,8 @@ async function openRun(
   selectedPart.value = null;
   detailRevision = 0;
   reasoningTarget.value = null;
+  // The previous run's ticks describe rows that are about to be replaced.
+  scrollMarkers.value = [];
   following.value = true;
   pointerActive = false;
   direction = 0;
@@ -727,6 +751,127 @@ function followBottom() {
   });
 }
 
+/**
+ * Coalesce marker rebuilds behind one short timer.
+ *
+ * Streaming changes height on every token, and the rail only needs to be
+ * roughly current; a timer keeps the observer callbacks free of layout reads
+ * without asking for an animation frame the reader may not need.
+ */
+function scheduleScrollMarkers(delay = 200) {
+  if (markerTimer) return;
+  markerTimer = setTimeout(() => {
+    markerTimer = null;
+    updateScrollMarkers();
+  }, delay);
+}
+
+/**
+ * Flatten a record's plain text into a one-line preview for the rail.
+ *
+ * Args:
+ *   record: Message whose plain parts are read.
+ *
+ * Returns:
+ *   Whitespace-collapsed text capped at 160 characters.
+ */
+function markerPreview(record?: ChatRecord | null): string {
+  if (!record) return "";
+  const text = (record.content.message || [])
+    .filter((part) => part.type === "plain")
+    .map((part) => part.text || "")
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return text.length > 160 ? `${text.slice(0, 159)}…` : text;
+}
+
+/**
+ * Rebuild this page's own marker rail from its rendered rows.
+ *
+ * The main conversation projects a session-wide index; a subagent run is a
+ * small fully-loaded page, so measuring its own rows is exact even when tool
+ * output makes heights unrelated to message order.
+ */
+function updateScrollMarkers() {
+  const container = panel.value;
+  if (!container) {
+    scrollMarkers.value = [];
+    stripHeight.value = 0;
+    stripRightOffset.value = 0;
+    return;
+  }
+  stripHeight.value = container.clientHeight;
+  // Sit beside the native scrollbar, same as the main conversation rail.
+  const scrollbarWidth = container.offsetWidth - container.clientWidth;
+  stripRightOffset.value = scrollbarWidth > 0 ? scrollbarWidth : 0;
+  const scrollable = container.scrollHeight - container.clientHeight;
+  if (scrollable <= 0) {
+    scrollMarkers.value = [];
+    return;
+  }
+  const rows = new Map<string, HTMLElement>();
+  for (const row of container.querySelectorAll<HTMLElement>(".message-row")) {
+    if (row.dataset.messageId) rows.set(row.dataset.messageId, row);
+  }
+  const containerRect = container.getBoundingClientRect();
+  const list = messages.value;
+  const markers: ChatScrollMarker[] = [];
+  for (let index = 0; index < list.length; index += 1) {
+    const message = list[index];
+    if (message.content.type !== "user" || message.id == null) continue;
+    const row = rows.get(String(message.id));
+    if (!row) continue;
+    const rowRect = row.getBoundingClientRect();
+    // A collapsed row reports a zero rect and would yield a bogus position.
+    if (rowRect.width === 0 && rowRect.height === 0) continue;
+    const offsetTop = rowRect.top - containerRect.top + container.scrollTop;
+    markers.push({
+      id: message.id,
+      index,
+      messageIndex: index,
+      ordinal: markers.length + 1,
+      topPct: (offsetTop / scrollable) * 100,
+      preview: markerPreview(message) || tm("subagentPages.noPreview"),
+      replyPreview: markerPreview(list[index + 1]),
+      replyLoading: false,
+      inherited: false,
+    });
+  }
+  scrollMarkers.value = markers;
+}
+
+/**
+ * Scroll this page to the message behind a rail marker.
+ *
+ * Args:
+ *   marker: Marker chosen on the rail.
+ */
+function scrollToMarker(marker: ChatScrollMarker) {
+  const container = panel.value;
+  if (!container) return;
+  let row: HTMLElement | null = null;
+  for (const candidate of container.querySelectorAll<HTMLElement>(
+    ".message-row",
+  )) {
+    if (candidate.dataset.messageId === String(marker.id)) {
+      row = candidate;
+      break;
+    }
+  }
+  if (!row) return;
+  // Reading an earlier message must stop the tail from pulling the viewport
+  // back down while the run is still streaming.
+  following.value = false;
+  direction = 0;
+  const offset =
+    row.getBoundingClientRect().top -
+    container.getBoundingClientRect().top +
+    container.scrollTop;
+  container.scrollTo({ top: Math.max(0, offset - 12), behavior: "smooth" });
+  previousTop = container.scrollTop;
+}
+
 function handleIntent(event: Event) {
   if (event.type === "pointerdown" && event.target !== panel.value) return;
   if (event.type === "wheel") {
@@ -833,10 +978,18 @@ watch([panel, content], ([viewport, body]) => {
   observer?.disconnect();
   mutations?.disconnect();
   if (!viewport || !body) return;
-  observer = new ResizeObserver(followBottom);
+  observer = new ResizeObserver(() => {
+    followBottom();
+    // Resize is post-layout and rare (window, sidebar slide), so the rail can
+    // follow the scrollbar immediately instead of trailing a throttle.
+    updateScrollMarkers();
+  });
   observer.observe(viewport);
   observer.observe(body);
-  mutations = new MutationObserver(followBottom);
+  mutations = new MutationObserver(() => {
+    followBottom();
+    scheduleScrollMarkers();
+  });
   mutations.observe(body, {
     subtree: true,
     childList: true,
@@ -846,6 +999,7 @@ watch([panel, content], ([viewport, body]) => {
   for (const type of ["pointerup", "pointercancel", "touchend", "touchcancel"])
     window.addEventListener(type, endGesture);
   followBottom();
+  updateScrollMarkers();
 });
 onBeforeUnmount(() => {
   listAbort?.abort();
@@ -853,6 +1007,7 @@ onBeforeUnmount(() => {
   observer?.disconnect();
   mutations?.disconnect();
   cancelAnimationFrame(scrollFrame);
+  if (markerTimer) clearTimeout(markerTimer);
   for (const type of ["pointerup", "pointercancel", "touchend", "touchcancel"])
     window.removeEventListener(type, endGesture);
 });
@@ -1123,6 +1278,13 @@ defineExpose({ openRun, getRun: (runId: string) => entries.value[runId] });
   min-width: 0;
   min-height: 0;
   overflow: hidden;
+}
+.subagent-message-pane {
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
 }
 .subagent-message-shell {
   width: var(--chat-content-width, 80%);

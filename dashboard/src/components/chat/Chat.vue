@@ -988,8 +988,11 @@
           </div>
         </section>
 
+        <!-- The rail belongs to the mounted conversation. A subagent page
+             mounts its own rows (and its own rail), so the main ticks would
+             point at nothing and cover that page's reasoning sidebar. -->
         <ChatScrollMarkers
-          v-if="scrollMarkers.length"
+          v-if="!subagentPageOpen && scrollMarkers.length"
           :key="currSessionId ?? 'scroll-markers'"
           :markers="scrollMarkers"
           :container="messagesContainer"

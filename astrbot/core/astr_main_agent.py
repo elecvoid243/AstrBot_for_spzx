@@ -113,6 +113,12 @@ from astrbot.core.tools.message_tools import (
     GetGroupMessageHistoryTool,
     SendMessageToUserTool,
 )
+from astrbot.core.tools.notes_tools import (
+    NotesListTool,
+    NotesReadTool,
+    NotesSearchTool,
+    NotesWriteTool,
+)
 from astrbot.core.tools.web_search_tools import (
     AnySearchWebSearchTool,
     BaiduWebSearchTool,
@@ -1658,7 +1664,7 @@ def _proactive_cron_job_tools(req: ProviderRequest, plugin_context: Context) -> 
 
 
 def _apply_context_tools(req: ProviderRequest, plugin_context: Context) -> None:
-    """Expose window tools only when a reset can create archives.
+    """Expose window and private-note tools only when resets can happen.
 
     Args:
         req: Provider request whose tool set is being built.
@@ -1672,6 +1678,10 @@ def _apply_context_tools(req: ProviderRequest, plugin_context: Context) -> None:
         HistoryListWindowsTool,
         HistorySearchTool,
         HistoryReadTool,
+        NotesListTool,
+        NotesReadTool,
+        NotesSearchTool,
+        NotesWriteTool,
     ):
         req.func_tool.add_tool(tool_mgr.get_builtin_tool(tool_cls))
 

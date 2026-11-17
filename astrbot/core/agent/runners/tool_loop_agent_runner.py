@@ -116,6 +116,7 @@ from ..message import (
     bind_checkpoint_messages,
     latest_window_state,
 )
+from ..notes_store import list_notes
 from ..response import AgentResponseData, AgentStats
 from ..run_context import ContextWrapper, TContext
 from ..tool_executor import BaseFunctionToolExecutor
@@ -1712,8 +1713,13 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             and message.content.startswith(_BUDGET_NOTICE_PREFIX)
         )
 
-    def _context_window_notice(self) -> str:
+    def _context_window_notice(
+        self, notes: list[dict[str, T.Any]] | None = None
+    ) -> str:
         """Render the window identity the model needs to navigate the archive.
+
+        Args:
+            notes: Newest private notes, already limited by the caller.
 
         Returns:
             A control block with the current, previous and first-step facts.
@@ -1730,8 +1736,26 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             lines.append(
                 "Earlier windows are archived; use the history tools to search them."
             )
+        if notes:
+            lines.append("Private notes (shared across windows, newest first):")
+            lines.extend(f"- {note['path']} ({note['lines']} lines)" for note in notes)
         lines.append("</context_window>")
         return "\n".join(lines)
+
+    def _note_summary(self) -> list[dict[str, T.Any]]:
+        """Return a short notes listing for the window notice.
+
+        Returns:
+            Up to three newest notes; empty when this run has no session or the
+            notes root is unreadable.
+        """
+        umo = getattr(getattr(self, "req", None), "session_id", "") or ""
+        if not umo:
+            return []
+        try:
+            return list_notes(umo, limit=3)
+        except OSError:
+            return []
 
     def _inject_context_window(self, messages: list[Message]) -> list[Message]:
         """Append the current window identity once per window.
@@ -1755,7 +1779,9 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             for message in messages
         ):
             return messages
-        message = Message(role="user", content=self._context_window_notice())
+        message = Message(
+            role="user", content=self._context_window_notice(self._note_summary())
+        )
         message.internal = True
         return [*messages, message]
 

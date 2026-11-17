@@ -1,6 +1,10 @@
 """Window identity injected into the model-visible history."""
 
+from types import SimpleNamespace
+
+from astrbot.core.agent import notes_store
 from astrbot.core.agent.message import Message, WindowState
+from astrbot.core.agent.notes_store import write_note
 from astrbot.core.agent.runners.tool_loop_agent_runner import ToolLoopAgentRunner
 
 
@@ -63,3 +67,30 @@ def test_identity_is_internal_and_never_sent_as_a_normal_turn():
 
     assert injected[-1].internal is True
     assert "_internal" not in injected[-1].model_dump(mode="json")
+
+
+def test_notes_summary_lists_the_newest_files(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        notes_store, "get_astrbot_agent_notes_path", lambda: str(tmp_path)
+    )
+    write_note("umo:a", "plan.md", "line one\nline two")
+    runner = _runner(WindowState(id="w1"))
+    runner.req = SimpleNamespace(session_id="umo:a")
+
+    injected = runner._inject_context_window([Message(role="user", content="hi")])
+
+    content = injected[-1].content
+    assert "Private notes (shared across windows, newest first):" in content
+    assert "- plan.md (2 lines)" in content
+
+
+def test_no_notes_summary_without_notes(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        notes_store, "get_astrbot_agent_notes_path", lambda: str(tmp_path)
+    )
+    runner = _runner(WindowState(id="w1"))
+    runner.req = SimpleNamespace(session_id="umo:a")
+
+    injected = runner._inject_context_window([Message(role="user", content="hi")])
+
+    assert "Private notes" not in injected[-1].content

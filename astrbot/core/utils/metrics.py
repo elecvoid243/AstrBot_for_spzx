@@ -11,6 +11,36 @@ import aiohttp
 
 from astrbot.core import db_helper, logger
 from astrbot.core.config import VERSION
+from astrbot.core.config.update_config import UpdateConfig
+
+# 官方默认更新源与官方指标端点：未自建更新源时行为与上游完全一致
+_DEFAULT_RELEASE_API = "https://api.soulter.top/releases"
+_DEFAULT_METRICS_URL = "https://tickstats.soulter.top/api/metric/90a6c2a1"
+
+
+def _derive_metrics_url() -> str:
+    """按"更新源"推导指标上报地址，不再单独暴露一个配置项.
+
+    自建更新服务器时，指标进同一台服务器（``{更新源根}/api/metric``）；
+    仍使用官方默认更新源时保持官方 TickStats 地址，避免把自建环境的数据
+    混进官方统计。``ASTRBOT_METRICS_URL`` 作为隐藏的逃生口，用于更新源
+    无法推导的极端部署。
+    """
+    override = os.environ.get("ASTRBOT_METRICS_URL", "").strip()
+    if override:
+        return override
+
+    try:
+        release_api = (UpdateConfig().get_core_release_api_url() or "").strip()
+    except Exception:
+        return _DEFAULT_METRICS_URL
+    if not release_api or release_api.rstrip("/") == _DEFAULT_RELEASE_API:
+        return _DEFAULT_METRICS_URL
+
+    root = release_api.rstrip("/")
+    if root.endswith("/releases"):
+        root = root[: -len("/releases")]
+    return f"{root}/api/metric"
 
 
 class Metric:
@@ -18,7 +48,15 @@ class Metric:
     _has_uploaded_once = False
     _upload_interval_seconds = 10 * 60
     _max_pending_metric_groups = 64
-    _counter_fields = {"llm_tick", "msg_event_tick"}
+    # 计数器字段：不参与分组键。token 三项必须在这里，否则每个 token 数值
+    # 都会生成一个新的指标分组，一次 flush 就能产生成百上千行。
+    _counter_fields = {
+        "llm_tick",
+        "msg_event_tick",
+        "token_input_other",
+        "token_input_cached",
+        "token_output",
+    }
     _pending_metrics: dict[tuple[tuple[str, str], ...], dict[str, Any]] = {}
     _flush_task: asyncio.Task | None = None
     _lock: asyncio.Lock | None = None
@@ -189,7 +227,7 @@ class Metric:
         if Metric._is_disabled():
             return
 
-        base_url = "https://tickstats.soulter.top/api/metric/90a6c2a1"
+        base_url = _derive_metrics_url()
         payload_metrics = dict(metrics_data)
         payload_metrics["v"] = VERSION
         payload_metrics["os"] = sys.platform

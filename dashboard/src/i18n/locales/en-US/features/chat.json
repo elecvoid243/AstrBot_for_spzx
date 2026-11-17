@@ -2533,6 +2533,8 @@
     },
     "settings": {
       "switch": "Record LLM request snapshots",
+      "title": "Developer mode",
+      "menuHint": "Record LLM request snapshots and show the DEV entry in the toolbar",
       "limits": "Up to {count} per session · {size} · expires after {ttl}",
       "error": "Failed to toggle developer mode"
     },

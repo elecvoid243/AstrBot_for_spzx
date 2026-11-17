@@ -1251,12 +1251,15 @@ onMounted(async () => {
     <div class="header-actions" :class="{ 'chat-header-actions': isChatPath }">
       <!-- 2026-11-16 (elecvoid243): admin-only developer-mode entry. The
            inspector itself lives in Chat.vue; this chip only owns the
-           store flag so the header does not import the panel. -->
+           store flag so the header does not import the panel. 2026-11-17:
+           opt-in — the chip exists only while the flag is on, and the flag is
+           switched from ChatSidebar → 设置. -->
       <button
-        v-if="isChatPath && chatHeader.devModeCanEdit"
+        v-if="
+          isChatPath && chatHeader.devModeCanEdit && chatHeader.devModeEnabled
+        "
         type="button"
         class="chat-action-btn dev-mode-chip"
-        :class="{ 'is-on': chatHeader.devModeEnabled }"
         :title="tm('devMode.title')"
         :aria-label="tm('devMode.title')"
         @click.stop="chatHeader.OPEN_DEV_MODE()"
@@ -2481,20 +2484,15 @@ onMounted(async () => {
   height: 24px;
   min-width: 0;
   padding: 0 8px;
-  border: 1px solid rgba(var(--v-theme-on-surface), 0.2);
+  border: 1px solid rgba(var(--v-theme-primary), 0.42);
   border-radius: 3px;
-  color: rgba(var(--v-theme-on-surface), 0.55);
+  background: rgba(var(--v-theme-primary), 0.08);
+  color: rgb(var(--v-theme-primary));
   font-family: var(--mono, ui-monospace, monospace);
   font-size: 10px;
   font-weight: 600;
   letter-spacing: 0.12em;
   text-transform: none;
-}
-
-.dev-mode-chip.chat-action-btn.is-on {
-  border-color: rgba(var(--v-theme-primary), 0.42);
-  background: rgba(var(--v-theme-primary), 0.08);
-  color: rgb(var(--v-theme-primary));
 }
 
 .dev-mode-chip:hover {

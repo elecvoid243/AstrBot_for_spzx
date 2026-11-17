@@ -726,6 +726,38 @@
                 isDark ? tm("modes.lightMode") : tm("modes.darkMode")
               }}</v-list-item-title>
             </v-list-item>
+
+            <!-- Developer mode is opt-in: until this switch is on, the header
+                 renders no DEV chip at all. Only admins can flip it (the POST
+                 needs the config scope), so other accounts never see the row. -->
+            <v-list-item
+              v-if="chatHeader.devModeCanEdit"
+              class="styled-menu-item settings-menu-item devmode-menu-item"
+              rounded="md"
+              @click="toggleDevMode()"
+            >
+              <template #prepend>
+                <Bug :size="18" class="styled-menu-lucide-icon" />
+              </template>
+              <v-list-item-title>{{
+                tm("devMode.settings.title")
+              }}</v-list-item-title>
+              <v-list-item-subtitle class="devmode-menu-hint">
+                {{ tm("devMode.settings.menuHint") }}
+              </v-list-item-subtitle>
+              <template #append>
+                <v-switch
+                  class="devmode-menu-switch"
+                  :model-value="chatHeader.devModeEnabled"
+                  density="compact"
+                  hide-details
+                  color="primary"
+                  :aria-label="tm('devMode.settings.title')"
+                  @click.stop
+                  @update:model-value="toggleDevMode"
+                />
+              </template>
+            </v-list-item>
           </div>
         </StyledMenu>
         <v-dialog v-model="showRemoteAccess" max-width="660" scrollable>
@@ -1278,6 +1310,7 @@ import {
   Archive,
   ArchiveRestore,
   Box,
+  Bug,
   Cable,
   Check,
   ChevronRight,
@@ -1520,9 +1553,17 @@ async function loadDevModeState(): Promise<void> {
   }
 }
 
-/** Flip the global capture flag; the inspector reacts to the prop change. */
-async function toggleDevMode(): Promise<void> {
-  const next = !chatHeader.devModeEnabled;
+/**
+ * Flip the global capture flag; the inspector reacts to the prop change.
+ *
+ * Args:
+ *   target: Explicit value from the settings-menu switch. Omitted means
+ *     "invert", which is what the inspector's payload-less `toggle` emits.
+ */
+async function toggleDevMode(target?: boolean | null): Promise<void> {
+  const next =
+    typeof target === "boolean" ? target : !chatHeader.devModeEnabled;
+  if (next === chatHeader.devModeEnabled) return;
   try {
     const response = await llmSnapshotsApi.setDeveloperMode(next);
     const enabled = Boolean(response.data?.data?.enabled ?? next);
@@ -7554,6 +7595,27 @@ function toggleTheme() {
 
 .settings-menu-item {
   min-height: 42px;
+}
+
+/* Two-line row: the hint wraps under the label instead of widening the menu,
+   and the switch keeps the append slot the other rows use for values. */
+.devmode-menu-item {
+  min-height: 54px;
+}
+
+.devmode-menu-hint {
+  color: var(--chat-muted);
+  font-size: 11.5px;
+  line-height: 1.35;
+}
+
+.settings-menu-content :deep(.settings-menu-item .v-list-item-subtitle) {
+  min-width: 0;
+  white-space: normal;
+}
+
+.devmode-menu-switch {
+  margin-block: 0;
 }
 
 .settings-menu-content :deep(.settings-menu-item .v-list-item__prepend) {

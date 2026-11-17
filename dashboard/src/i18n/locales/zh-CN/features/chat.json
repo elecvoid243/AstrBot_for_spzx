@@ -2566,6 +2566,8 @@
     },
     "settings": {
       "switch": "记录 LLM 请求快照",
+      "title": "开发者模式",
+      "menuHint": "记录 LLM 请求快照，并在工具栏显示 DEV 入口",
       "limits": "每会话最多 {count} 条 · {size} · {ttl} 后过期",
       "error": "切换开发者模式失败"
     },

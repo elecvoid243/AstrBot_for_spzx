@@ -693,12 +693,6 @@ async def _ensure_persona_and_skills(
     if req.system_prompt is None:
         req.system_prompt = ""
 
-    if event.get_platform_name() == "webchat":
-        req.system_prompt += CHATUI_FILE_REFERENCE_SYSTEM_PROMPT
-        _record_prompt_provenance(
-            req, "chatui_rules", CHATUI_FILE_REFERENCE_SYSTEM_PROMPT
-        )
-
     if event.get_extra("enable_inline_genui"):
         req.system_prompt += CHATUI_INLINE_GENUI_SYSTEM_PROMPT
         _record_prompt_provenance(
@@ -2429,6 +2423,15 @@ async def build_main_agent(
         req.system_prompt += f"\n{LIVE_MODE_SYSTEM_PROMPT}\n"
 
     _apply_web_search_citation_prompt(event, req)
+
+    if event.get_platform_name() == "webchat":
+        # Output-format contract, not identity or capability: it stays at the
+        # tail next to the other reply-format rules instead of preceding the
+        # persona, where it displaced the agent's own instructions.
+        req.system_prompt += CHATUI_FILE_REFERENCE_SYSTEM_PROMPT
+        _record_prompt_provenance(
+            req, "chatui_rules", CHATUI_FILE_REFERENCE_SYSTEM_PROMPT
+        )
 
     await prepare_request_images(
         req,

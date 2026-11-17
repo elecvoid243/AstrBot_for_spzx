@@ -3039,6 +3039,42 @@ class TestBuildMainAgent:
         result.reset_coro.close()
 
     @pytest.mark.asyncio
+    async def test_build_main_agent_appends_chatui_file_reference_last(
+        self, mock_event, mock_context, mock_provider
+    ):
+        """ChatUI file-reference rules trail the system prompt instead of leading it."""
+        module = ama
+        mock_event.get_platform_name.return_value = "webchat"
+        mock_context.get_provider_by_id.return_value = None
+        mock_context.get_using_provider.return_value = mock_provider
+        mock_context.get_config.return_value = {}
+
+        _setup_conversation_for_build(mock_context.conversation_manager)
+
+        with (
+            patch("astrbot.core.astr_main_agent.AgentRunner") as mock_runner_cls,
+            patch("astrbot.core.astr_main_agent.AstrAgentContext"),
+            patch("astrbot.core.astr_main_agent._handle_webchat", AsyncMock()),
+        ):
+            mock_runner = MagicMock()
+            mock_runner.reset = AsyncMock()
+            mock_runner_cls.return_value = mock_runner
+
+            result = await module.build_main_agent(
+                event=mock_event,
+                plugin_context=mock_context,
+                config=module.MainAgentBuildConfig(tool_call_timeout=60),
+                apply_reset=False,
+            )
+
+        assert result is not None
+        system_prompt = result.provider_request.system_prompt
+        assert system_prompt.endswith(module.CHATUI_FILE_REFERENCE_SYSTEM_PROMPT)
+        # Everything assembled earlier (persona, skills, tool guidance) precedes it.
+        assert system_prompt.index(module.CHATUI_FILE_REFERENCE_SYSTEM_PROMPT) > 0
+        result.reset_coro.close()
+
+    @pytest.mark.asyncio
     async def test_build_main_agent_with_existing_request(
         self, mock_event, mock_context, mock_provider
     ):

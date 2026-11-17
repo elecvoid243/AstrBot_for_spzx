@@ -27,6 +27,7 @@ from astrbot.core.astr_main_agent_resources import (
     CHATUI_FILE_REFERENCE_SYSTEM_PROMPT,
     CHATUI_INLINE_GENUI_SYSTEM_PROMPT,
     CHATUI_SPECIAL_DEFAULT_PERSONA_PROMPT,
+    CONTEXT_TOOLS_SYSTEM_PROMPT,
     LIVE_MODE_SYSTEM_PROMPT,
     LLM_SAFETY_MODE_SYSTEM_PROMPT,
     SANDBOX_MODE_PROMPT,
@@ -1666,6 +1667,10 @@ def _proactive_cron_job_tools(req: ProviderRequest, plugin_context: Context) -> 
 def _apply_context_tools(req: ProviderRequest, plugin_context: Context) -> None:
     """Expose window and private-note tools only when resets can happen.
 
+    The usage guidance ships with the tools: a tool the model cannot time is
+    worse than no tool, and the strategy that exposes these tools is the only
+    one whose resets create archives.
+
     Args:
         req: Provider request whose tool set is being built.
         plugin_context: Plugin context owning the tool manager.
@@ -1684,6 +1689,8 @@ def _apply_context_tools(req: ProviderRequest, plugin_context: Context) -> None:
         NotesWriteTool,
     ):
         req.func_tool.add_tool(tool_mgr.get_builtin_tool(tool_cls))
+    req.system_prompt = f"{req.system_prompt or ''}{CONTEXT_TOOLS_SYSTEM_PROMPT}"
+    _record_prompt_provenance(req, "context_tools", CONTEXT_TOOLS_SYSTEM_PROMPT)
 
 
 async def _apply_web_search_tools(

@@ -50,6 +50,7 @@ def _message_to_dict(
             result.pop("_compaction_id", None)
             result.pop("_tool_result_unknown", None)
             result.pop("_window", None)
+            result.pop("_created_at", None)
             result.pop("_internal", None)
         return result
     return None

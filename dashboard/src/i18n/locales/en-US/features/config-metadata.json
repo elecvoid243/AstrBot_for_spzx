@@ -409,7 +409,7 @@
         "overflow_strategy": {
           "description": "Handling for History Limits or Context Window Pressure",
           "labels": ["Compress by LLM", "Token Budget (window reset)"],
-          "hint": "Before each request, this strategy runs when context tokens exceed the compression threshold (provider compress_threshold_tokens, or min(window × 0.8, window − output budget − headroom) when unset) or when input plus output budget would overflow the model window. “Compress by LLM” produces a structured summary; “Token Budget” follows Codex: it calls no model and replaces the history with a new window that keeps only the system instructions and the current round. Truncation by turns is deprecated and remains an internal fallback for when a summary cannot be produced. The reminder threshold comes from the provider's compaction_reminder_tokens (default 16384)."
+          "hint": "Before each request, this strategy runs when context tokens exceed the compression threshold (provider compress_threshold_tokens, or min(window × 0.8, window − output budget − headroom) when unset) or when input plus output budget would overflow the model window. “Compress by LLM” produces a structured summary; “Token Budget” follows Codex: it calls no model and replaces the history with a new window that keeps only the system instructions and the current round. Truncation by turns is deprecated and remains an internal fallback for when a summary cannot be produced. At 25%, 50% and 85% of the window budget the model receives one [SYSTEM NOTICE] each: plan ahead, scope the task, then wrap up."
         },
         "keep_recent_ratio": {
           "description": "Recent Context Token Ratio to Keep",

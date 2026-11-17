@@ -133,3 +133,33 @@ async def test_manual_reset_is_consumed_once(archive_root):
     _ = [event async for event in runner.step_until_done(2)]
 
     assert runner.window_state.seq == 1
+
+
+@pytest.mark.asyncio
+async def test_manual_reset_emits_a_compression_report(archive_root):
+    """The composer readout is driven by the report, not by who reset."""
+    provider = ScriptedProvider(
+        [LLMResponse(role="assistant", completion_text="done")],
+        max_context_tokens=1000,
+    )
+    runner = await _runner(
+        provider,
+        [
+            {"role": "user", "content": "old history " * 60},
+            {"role": "assistant", "content": "old answer " * 60},
+        ],
+        context_limit_reached_strategy="token_budget",
+    )
+
+    runner.request_new_context_window()
+    events = [event async for event in runner.step_until_done(2)]
+
+    reports = [
+        event.data["chain"].chain[0].data
+        for event in events
+        if event.type == "context_compression"
+    ]
+    assert len(reports) == 1
+    assert reports[0]["strategy"] == "token_budget"
+    assert reports[0]["reason"] == "manual"
+    assert reports[0]["tokens_before"] > reports[0]["tokens_after"]

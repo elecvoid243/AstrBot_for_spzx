@@ -206,7 +206,8 @@ class WindowState(BaseModel):
     """Window number; 0 means no reset has happened yet."""
     prev_id: str | None = None
     """Window that was replaced by this one; the archive chain follows it."""
-    reminder_sent: bool = False
+    notice_level: int = 0
+    """Highest budget level already sent in this window (0, 25, 50 or 85)."""
     exhausted_sent: bool = False
 
 
@@ -240,6 +241,8 @@ class Message(BaseModel):
     """Whether this result describes an unconfirmed execution outcome."""
     window: WindowState | None = Field(default=None, alias="_window", exclude=True)
     """Context window this message belongs to; internal, never sent to providers."""
+    created_at: float | None = Field(default=None, alias="_created_at", exclude=True)
+    """Unix timestamp when the message was produced; storage-only."""
     internal: bool = Field(default=False, alias="_internal", exclude=True)
     """Kernel-injected control text: model-visible, never sent or persisted."""
 
@@ -259,6 +262,8 @@ class Message(BaseModel):
             data["_tool_result_unknown"] = True
         if self.window is not None:
             data["_window"] = self.window.model_dump()
+        if self.created_at is not None:
+            data["_created_at"] = self.created_at
         if self.internal:
             data["_internal"] = True
         return data

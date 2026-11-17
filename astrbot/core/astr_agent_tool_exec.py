@@ -100,10 +100,12 @@ def build_subagent_compression_kwargs(
 ) -> dict[str, T.Any]:
     """Resolve the compression kwargs handed to a subagent runner.
 
-    Keeps the subagent on the session's strategy: a token budget subagent must
-    not resolve a summary model it will never call, and an LLM-compressed
-    subagent prefers the configured model so its summary request shares the
-    chat requests' prefix cache.
+    Subagents never reset windows. The archive is keyed by umo, which a subagent
+    shares with the main conversation, so a reset would splice the subagent's
+    window into the main chain while the subagent has no history tools to read
+    it back. They therefore always use LLM compression, scoped to the run; the
+    configured summary model is preferred so the summary request shares the chat
+    requests' prefix cache.
 
     Args:
         compression_cfg: Output of ``resolve_context_compression_config``.
@@ -113,9 +115,6 @@ def build_subagent_compression_kwargs(
     Returns:
         Keyword arguments for the subagent runner's ``reset``.
     """
-    if compression_cfg["context_limit_reached_strategy"] == "token_budget":
-        return {"context_limit_reached_strategy": "token_budget"}
-
     compress_provider: Provider | None = None
     compress_provider_id = compression_cfg["llm_compress_provider_id"]
     if compress_provider_id:

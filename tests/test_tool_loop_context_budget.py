@@ -264,7 +264,7 @@ async def test_reset_resumes_the_persisted_window_state():
                     "_window": {
                         "id": "w9",
                         "seq": 3,
-                        "reminder_sent": True,
+                        "notice_level": 50,
                         "exhausted_sent": False,
                     },
                 },
@@ -281,7 +281,7 @@ async def test_reset_resumes_the_persisted_window_state():
     )
 
     assert runner.window_state.seq == 3
-    assert runner.window_state.reminder_sent is True
+    assert runner.window_state.notice_level == 50
 
 
 @pytest.mark.asyncio
@@ -337,8 +337,15 @@ async def test_control_notice_never_enters_the_saved_history():
     )
     _ = [event async for event in runner.step_until_done(2)]
 
-    assert any(message.internal for message in runner.run_context.messages)
+    # The window identity rides on the request's system prompt, not on history.
+    assert not any(message.internal for message in runner.run_context.messages)
+    system = provider.requests[-1]["contexts"][0]
+    role = system.get("role") if isinstance(system, dict) else system.role
+    content = system.get("content") if isinstance(system, dict) else system.content
+    assert role == "system"
+    assert "<context_window>" in content
     persisted = _persisted(runner.run_context.messages, runner.window_state)
+    assert "<context_window>" not in str(persisted)
     assert "[context budget]" not in str(persisted)
     assert "_internal" not in str(persisted)
 
@@ -368,12 +375,11 @@ async def test_provider_payload_carries_no_kernel_markers():
 
 
 @pytest.mark.asyncio
-async def test_provider_reminder_threshold_reaches_the_request_config():
+async def test_token_budget_strategy_reaches_the_request_config():
     provider = BudgetProvider(
         [LLMResponse(role="assistant", completion_text="done")],
         max_context_tokens=1000,
     )
-    provider.provider_config["compaction_reminder_tokens"] = 2048
 
     runner = await _reset_budget_runner(
         provider,
@@ -381,7 +387,6 @@ async def test_provider_reminder_threshold_reaches_the_request_config():
         context_limit_reached_strategy="token_budget",
     )
 
-    assert runner.request_context_manager.config.reminder_tokens == 2048
     assert runner.request_context_manager.config.strategy == "token_budget"
 
 

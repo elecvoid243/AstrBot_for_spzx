@@ -8,14 +8,8 @@ if TYPE_CHECKING:
     from astrbot.core.provider.provider import Provider
 
 
-DEFAULT_COMPACTION_REMINDER_TOKENS = 16384
-"""Remaining budget that triggers the one-shot window reminder."""
-
-
-def resolve_budget_strategy(
-    strategy: str, provider_config: dict
-) -> tuple[str, int]:
-    """Resolve the effective overflow strategy and reminder threshold.
+def resolve_budget_strategy(strategy: str, provider_config: dict) -> str:
+    """Resolve the effective overflow strategy.
 
     The window is a provider fact, so a token budget needs one: without a
     known window the strategy falls back to LLM compression instead of
@@ -23,30 +17,21 @@ def resolve_budget_strategy(
 
     Args:
         strategy: Configured overflow strategy.
-        provider_config: Provider configuration holding ``max_context_tokens``
-            and the optional ``compaction_reminder_tokens``.
+        provider_config: Provider configuration holding ``max_context_tokens``.
 
     Returns:
-        ``(effective strategy, reminder tokens)``.
+        The effective strategy.
     """
-    reminder_tokens = provider_config.get("compaction_reminder_tokens")
-    try:
-        reminder_tokens = int(reminder_tokens)
-    except (TypeError, ValueError):
-        reminder_tokens = DEFAULT_COMPACTION_REMINDER_TOKENS
-    if reminder_tokens <= 0:
-        reminder_tokens = DEFAULT_COMPACTION_REMINDER_TOKENS
-
     if strategy != "token_budget":
-        return strategy, reminder_tokens
+        return strategy
 
     try:
         window = int(provider_config.get("max_context_tokens", 0) or 0)
     except (TypeError, ValueError):
         window = 0
     if window <= 0:
-        return "llm_compress", reminder_tokens
-    return strategy, reminder_tokens
+        return "llm_compress"
+    return strategy
 
 
 @dataclass
@@ -85,8 +70,6 @@ class ContextConfig:
     """Fraction of the context window that triggers compaction."""
     headroom_tokens: int = 16384
     """Space kept free above the trigger for compaction work."""
-    reminder_tokens: int = DEFAULT_COMPACTION_REMINDER_TOKENS
-    """Remaining budget that triggers the one-shot reminder (token_budget only)."""
     retain_ratio: float = 0.15
     """Fraction of the message budget kept verbatim during compaction."""
     target_ratio: float = 0.55

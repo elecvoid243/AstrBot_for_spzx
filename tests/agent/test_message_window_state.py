@@ -5,7 +5,7 @@ from astrbot.core.provider.modalities import sanitize_contexts_by_modalities
 
 
 def test_window_state_round_trips_through_history():
-    state = WindowState(id="w1", seq=2, reminder_sent=True)
+    state = WindowState(id="w1", seq=2, notice_level=50)
     message = Message(role="user", content="hi")
     message.window = state
     dumped = message.model_dump_for_context()
@@ -13,10 +13,21 @@ def test_window_state_round_trips_through_history():
         "id": "w1",
         "seq": 2,
         "prev_id": None,
-        "reminder_sent": True,
+        "notice_level": 50,
         "exhausted_sent": False,
     }
     assert Message.model_validate(dumped).window == state
+
+
+def test_created_at_round_trips_through_storage_only():
+    message = Message(role="user", content="hi")
+    message.created_at = 1_700_000_000.5
+
+    dumped = message.model_dump_for_context()
+
+    assert dumped["_created_at"] == 1_700_000_000.5
+    assert "created_at" not in message.model_dump(mode="json")
+    assert Message.model_validate(dumped).created_at == 1_700_000_000.5
 
 
 def test_window_state_carries_the_previous_window_chain():

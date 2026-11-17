@@ -128,19 +128,27 @@ def _bounded_content(content: Any) -> tuple[Any, int | None]:
     return text[:MAX_ITEM_CHARS], len(text)
 
 
-def _item_payload(message: Message, ts: int) -> dict[str, Any]:
+def _item_payload(message: Message, fallback_ts: int) -> dict[str, Any]:
     """Build one stored archive item from a message.
 
     Args:
         message: Message being discarded by a reset.
-        ts: Unix timestamp shared by the batch.
+        fallback_ts: Batch timestamp used when the message carries no time.
 
     Returns:
         JSON-serializable item without window or internal markers.
     """
     data = message.model_dump(mode="json")
     content, original_chars = _bounded_content(data.get("content"))
-    payload: dict[str, Any] = {"ts": ts, "role": data.get("role")}
+    created_at = message.created_at
+    payload: dict[str, Any] = {
+        "ts": int(created_at) if created_at is not None else fallback_ts,
+        "role": data.get("role"),
+    }
+    if created_at is None:
+        # Old messages carry no production time; say so instead of pretending
+        # the batch time is when they were written.
+        payload["ts_estimated"] = True
     if content is not None:
         payload["content"] = content
     if original_chars is not None:
@@ -214,9 +222,8 @@ def _append_window_sync(umo: str, window: WindowState, messages: list[Message]) 
         window: Window that is being replaced.
         messages: Messages the reset discards.
     """
-    items = [
-        _item_payload(message, int(time.time())) for message in _archivable(messages)
-    ]
+    batch_ts = int(time.time())
+    items = [_item_payload(message, batch_ts) for message in _archivable(messages)]
     if not items:
         return
     directory = archive_dir(umo)

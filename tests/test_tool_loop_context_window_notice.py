@@ -1,4 +1,4 @@
-"""Window identity injected into the model-visible history."""
+"""Window identity appended to the provider-facing system prompt."""
 
 from types import SimpleNamespace
 
@@ -14,59 +14,104 @@ def _runner(window_state: WindowState) -> ToolLoopAgentRunner:
     return runner
 
 
-def test_first_window_announces_only_its_identity():
+def _contexts(system: str = "base prompt") -> list[dict]:
+    return [
+        {"role": "system", "content": system},
+        {"role": "user", "content": "hi"},
+    ]
+
+
+def test_first_window_appends_its_identity_to_the_system_prompt():
     runner = _runner(WindowState(id="w1", seq=0))
+    contexts = _contexts()
 
-    injected = runner._inject_context_window([Message(role="user", content="hi")])
+    runner._append_window_notice(contexts)
 
-    assert len(injected) == 2
-    notice = injected[-1]
-    assert notice.internal is True
-    assert "<context_window>" in notice.content
-    assert "Current window id: w1" in notice.content
-    assert "Window seq: 0" in notice.content
-    assert "Previous window id:" not in notice.content
-    assert "archived" not in notice.content
+    system = contexts[0]["content"]
+    assert system.startswith("base prompt\n\n<context_window>")
+    assert "Current window id: w1" in system
+    assert "Window seq: 0" in system
+    assert "Previous window id:" not in system
+    assert "archived" not in system
+
+
+def test_the_notice_never_reaches_the_history():
+    runner = _runner(WindowState(id="w1"))
+    contexts = _contexts()
+
+    runner._append_window_notice(contexts)
+
+    assert contexts[1] == {"role": "user", "content": "hi"}
 
 
 def test_later_window_links_the_previous_one_and_points_at_the_archive():
     runner = _runner(WindowState(id="w2", seq=1, prev_id="w1"))
+    contexts = _contexts()
 
-    injected = runner._inject_context_window([Message(role="user", content="hi")])
+    runner._append_window_notice(contexts)
 
-    content = injected[-1].content
-    assert "Previous window id: w1" in content
-    assert "archived" in content
+    system = contexts[0]["content"]
+    assert "Previous window id: w1" in system
+    assert "archived" in system
 
 
-def test_identity_is_announced_once_per_window():
+def test_a_new_window_renders_the_new_identity():
     runner = _runner(WindowState(id="w1"))
-
-    first = runner._inject_context_window([Message(role="user", content="hi")])
-    second = runner._inject_context_window(first)
-
-    assert len(first) == 2
-    assert len(second) == 2
-
-
-def test_a_new_window_is_announced_again():
-    runner = _runner(WindowState(id="w1"))
-    first = runner._inject_context_window([Message(role="user", content="hi")])
+    first = _contexts()
+    runner._append_window_notice(first)
 
     runner.window_state = WindowState(id="w2", seq=1, prev_id="w1")
-    second = runner._inject_context_window(first)
+    second = _contexts()
+    runner._append_window_notice(second)
 
-    assert len(second) == 3
-    assert "Current window id: w2" in second[-1].content
+    assert "Current window id: w1" in first[0]["content"]
+    assert "Current window id: w2" in second[0]["content"]
 
 
-def test_identity_is_internal_and_never_sent_as_a_normal_turn():
+def test_a_restored_view_is_not_announced_twice():
     runner = _runner(WindowState(id="w1"))
+    contexts = _contexts()
 
-    injected = runner._inject_context_window([Message(role="user", content="hi")])
+    runner._append_window_notice(contexts)
+    once = contexts[0]["content"]
+    runner._append_window_notice(contexts)
 
-    assert injected[-1].internal is True
-    assert "_internal" not in injected[-1].model_dump(mode="json")
+    assert contexts[0]["content"] == once
+
+
+def test_missing_system_message_gets_one_carrying_the_notice():
+    runner = _runner(WindowState(id="w1"))
+    contexts = [{"role": "user", "content": "hi"}]
+
+    runner._append_window_notice(contexts)
+
+    assert contexts[0]["role"] == "system"
+    assert "<context_window>" in contexts[0]["content"]
+    assert contexts[1] == {"role": "user", "content": "hi"}
+
+
+def test_message_contexts_are_supported():
+    runner = _runner(WindowState(id="w1"))
+    contexts = [
+        Message(role="system", content="base"),
+        Message(role="user", content="hi"),
+    ]
+
+    runner._append_window_notice(contexts)
+
+    assert contexts[0].content.startswith("base\n\n<context_window>")
+    assert contexts[1].content == "hi"
+
+
+def test_multimodal_system_content_gets_a_text_part():
+    runner = _runner(WindowState(id="w1"))
+    contexts = [{"role": "system", "content": [{"type": "text", "text": "base"}]}]
+
+    runner._append_window_notice(contexts)
+
+    parts = contexts[0]["content"]
+    assert parts[0] == {"type": "text", "text": "base"}
+    assert "<context_window>" in parts[-1]["text"]
 
 
 def test_notes_summary_lists_the_newest_files(tmp_path, monkeypatch):
@@ -76,12 +121,13 @@ def test_notes_summary_lists_the_newest_files(tmp_path, monkeypatch):
     write_note("umo:a", "plan.md", "line one\nline two")
     runner = _runner(WindowState(id="w1"))
     runner.req = SimpleNamespace(session_id="umo:a")
+    contexts = _contexts()
 
-    injected = runner._inject_context_window([Message(role="user", content="hi")])
+    runner._append_window_notice(contexts)
 
-    content = injected[-1].content
-    assert "Private notes (shared across windows, newest first):" in content
-    assert "- plan.md (2 lines)" in content
+    system = contexts[0]["content"]
+    assert "Private notes (shared across windows, newest first):" in system
+    assert "- plan.md (2 lines)" in system
 
 
 def test_no_notes_summary_without_notes(tmp_path, monkeypatch):
@@ -90,7 +136,8 @@ def test_no_notes_summary_without_notes(tmp_path, monkeypatch):
     )
     runner = _runner(WindowState(id="w1"))
     runner.req = SimpleNamespace(session_id="umo:a")
+    contexts = _contexts()
 
-    injected = runner._inject_context_window([Message(role="user", content="hi")])
+    runner._append_window_notice(contexts)
 
-    assert "Private notes" not in injected[-1].content
+    assert "Private notes" not in contexts[0]["content"]

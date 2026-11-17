@@ -1,4 +1,4 @@
-"""One-shot token budget notices injected into the model-visible history."""
+"""Budget water-level notices injected into the model-visible history."""
 
 from types import SimpleNamespace
 
@@ -14,8 +14,7 @@ class CharTokenCounter:
 
 def runner_factory(
     *,
-    remaining=None,
-    reminder_tokens=8192,
+    usage=None,
     strategy="token_budget",
     window_state=None,
     last_compression=None,
@@ -25,29 +24,72 @@ def runner_factory(
     runner.window_state = window_state or WindowState(id="w1")
     runner._window_just_reset = False
     runner.request_context_manager = SimpleNamespace(
-        config=SimpleNamespace(strategy=strategy, reminder_tokens=reminder_tokens),
+        config=SimpleNamespace(strategy=strategy),
         last_compression=last_compression,
-        last_remaining_tokens=remaining,
+        last_budget_usage=usage,
     )
     return runner
 
 
-def test_notice_injected_once_per_window():
-    runner = runner_factory(remaining=100)
+def test_planning_notice_injected_once_at_half_budget():
+    runner = runner_factory(usage=0.5)
 
     first = runner._inject_budget_notices([Message(role="user", content="hi")])
     second = runner._inject_budget_notices(first)
 
     assert len(first) == 2
     assert first[-1].internal is True
-    assert "100 tokens left" in first[-1].content
+    assert first[-1].content.startswith("[SYSTEM NOTICE]")
+    assert "50%" in first[-1].content
     assert len(second) == 2
-    assert runner.window_state.reminder_sent is True
+    assert runner.window_state.notice_level == 50
 
 
-def test_exhausted_notice_wins_over_the_reminder():
+def test_early_notice_at_a_quarter_budget():
+    runner = runner_factory(usage=0.3)
+
+    injected = runner._inject_budget_notices([Message(role="user", content="hi")])
+
+    assert injected[-1].internal is True
+    assert injected[-1].content.startswith("[SYSTEM NOTICE]")
+    assert "25%" in injected[-1].content
+    assert runner.window_state.notice_level == 25
+
+
+def test_wrap_up_notice_follows_the_planning_one():
+    runner = runner_factory(usage=0.5)
+    first = runner._inject_budget_notices([Message(role="user", content="hi")])
+
+    runner.request_context_manager.last_budget_usage = 0.9
+    second = runner._inject_budget_notices(
+        first
+        + [Message(role="assistant", content="a"), Message(role="user", content="next")]
+    )
+
+    assert second[-1].internal is True
+    assert "85%" in second[-1].content
+    assert runner.window_state.notice_level == 85
+
+
+def test_skipping_a_level_does_not_backfill_it():
+    runner = runner_factory(usage=0.9)
+    first = runner._inject_budget_notices([Message(role="user", content="hi")])
+    assert "85%" in first[-1].content
+
+    # A window that dropped back under 50% must not announce the lower level.
+    runner.request_context_manager.last_budget_usage = 0.4
+    second = runner._inject_budget_notices(
+        first
+        + [Message(role="assistant", content="a"), Message(role="user", content="next")]
+    )
+
+    assert len(second) == len(first) + 2
+    assert runner.window_state.notice_level == 85
+
+
+def test_exhausted_notice_wins_over_the_water_level():
     runner = runner_factory(
-        remaining=0,
+        usage=0.9,
         last_compression={
             "strategy": "token_budget",
             "insufficient": True,
@@ -61,11 +103,11 @@ def test_exhausted_notice_wins_over_the_reminder():
     assert injected[-1].internal is True
     assert "cannot be trimmed further" in injected[-1].content
     assert runner.window_state.exhausted_sent is True
-    assert runner.window_state.reminder_sent is False
+    assert runner.window_state.notice_level == 0
 
 
 def test_llm_compress_strategy_receives_no_notice():
-    runner = runner_factory(remaining=0, strategy="llm_compress")
+    runner = runner_factory(usage=0.9, strategy="llm_compress")
     messages = [Message(role="user", content="hi")]
 
     assert runner._inject_budget_notices(messages) == messages
@@ -74,8 +116,7 @@ def test_llm_compress_strategy_receives_no_notice():
 def test_missing_the_summary_target_does_not_announce_exhaustion():
     """A reset that beats the trigger but misses the summary target is fine."""
     runner = runner_factory(
-        remaining=5000,
-        reminder_tokens=1000,
+        usage=0.2,
         last_compression={
             "strategy": "token_budget",
             "insufficient": True,
@@ -90,20 +131,20 @@ def test_missing_the_summary_target_does_not_announce_exhaustion():
     assert runner.window_state.exhausted_sent is False
 
 
-def test_no_reminder_on_the_request_that_reset_the_window():
-    runner = runner_factory(remaining=100)
+def test_no_water_level_on_the_request_that_reset_the_window():
+    runner = runner_factory(usage=0.9)
 
     injected = runner._inject_budget_notices(
         [Message(role="user", content="hi")], just_reset=True
     )
 
     assert len(injected) == 1
-    assert runner.window_state.reminder_sent is False
+    assert runner.window_state.notice_level == 0
 
 
 def test_exhausted_notice_still_fires_right_after_a_reset():
     runner = runner_factory(
-        remaining=100,
+        usage=0.1,
         last_compression={
             "strategy": "token_budget",
             "insufficient": True,
@@ -121,7 +162,7 @@ def test_exhausted_notice_still_fires_right_after_a_reset():
 
 
 def test_range_selector_ignores_internal_notice():
-    notice = Message(role="user", content="[context budget] ...")
+    notice = Message(role="user", content="[SYSTEM NOTICE] ...")
     notice.internal = True
     history = [
         Message(role="user", content="old"),

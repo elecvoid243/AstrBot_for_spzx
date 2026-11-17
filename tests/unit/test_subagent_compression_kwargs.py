@@ -14,8 +14,9 @@ class _Ctx:
         return self._providers.get(provider_id)
 
 
-def test_token_budget_skips_summary_provider():
-    ctx = _Ctx({"p1": MagicMock(spec=Provider)})
+def test_token_budget_sessions_compress_subagents_with_llm():
+    provider = MagicMock(spec=Provider)
+    ctx = _Ctx({"p1": provider})
 
     kwargs = build_subagent_compression_kwargs(
         {
@@ -27,7 +28,23 @@ def test_token_budget_skips_summary_provider():
         "p2",
     )
 
-    assert kwargs == {"context_limit_reached_strategy": "token_budget"}
+    # A subagent shares the main umo, so it must never reset a window.
+    assert "context_limit_reached_strategy" not in kwargs
+    assert kwargs["llm_compress_provider"] is provider
+
+
+def test_token_budget_without_a_provider_keeps_the_runner_default():
+    kwargs = build_subagent_compression_kwargs(
+        {
+            "context_limit_reached_strategy": "token_budget",
+            "llm_compress_provider_id": "",
+            "llm_compress_keep_recent_ratio": 0.15,
+        },
+        _Ctx({}),
+        "p2",
+    )
+
+    assert kwargs == {}
 
 
 def test_llm_compress_resolves_the_configured_provider_first():

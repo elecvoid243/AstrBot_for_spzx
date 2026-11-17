@@ -40,6 +40,19 @@ TOOL_CALL_PROMPT_SKILLS_LIKE_MODE = (
     " Keep the role-play and style consistent throughout the conversation."
 )
 
+CONTEXT_TOOLS_SYSTEM_PROMPT = (
+    "\n[Context Management]\n"
+    "A context window is replaced when its budget fills; the replaced history "
+    "is archived, not summarized.\n"
+    "- `new_context`: start a fresh window when the topic changes or the "
+    "history is no longer useful.\n"
+    "- `history_list_windows` / `history_search` / `history_read`: recover "
+    "facts from archived windows; search before asking the user to repeat.\n"
+    "- `notes_list` / `notes_read` / `notes_search` / `notes_write`: keep task "
+    "state and conclusions that must survive a reset; write notes before the "
+    "budget fills, read them after a reset.\n"
+)
+
 
 CHATUI_SPECIAL_DEFAULT_PERSONA_PROMPT = (
     "You are a calm, patient friend with a systems-oriented way of thinking.\n"

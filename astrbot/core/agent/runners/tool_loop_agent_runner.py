@@ -100,12 +100,18 @@ from astrbot.core.utils.image_input import prepare_request_images
 from astrbot.core.utils.media_utils import normalize_model_image_max_size
 from astrbot.core.utils.prefix_diagnostics import record_session_request
 
-from ..context.budget_notice import EXHAUSTED_TEXT, build_reminder
+from ..context.budget_notice import (
+    EARLY_NOTICE,
+    EXHAUSTED_TEXT,
+    PLANNING_NOTICE,
+    SYSTEM_NOTICE_PREFIX,
+    WRAP_UP_NOTICE,
+)
 from ..context.compressor import ContextCompressor
 from ..context.config import ContextConfig, resolve_budget_strategy
 from ..context.manager import ContextManager, ContextUsageSnapshot
 from ..context.token_counter import EstimateTokenCounter, TokenCounter
-from ..history_archive import append_window
+from ..history_archive import append_window, list_windows
 from ..hooks import BaseAgentRunHooks
 from ..message import (
     AssistantMessageSegment,
@@ -171,7 +177,8 @@ class _ToolExecutionInterrupted(Exception):
 ToolExecutorResultT = T.TypeVar("ToolExecutorResultT")
 AwaitableResultT = T.TypeVar("AwaitableResultT")
 
-_BUDGET_NOTICE_PREFIX = "[context budget]"
+_BUDGET_NOTICE_PREFIXES = ("[context budget]", SYSTEM_NOTICE_PREFIX)
+"""Legacy and current notice prefixes; both are kernel control text."""
 _CONTEXT_WINDOW_MARKER = "Current window id:"
 
 
@@ -438,9 +445,9 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             requests out of the developer-mode snapshots.
         """
 
-        return bool(
-            (getattr(self.run_context.context, "extra", None) or {}).get("is_subagent")
-        )
+        run_context = getattr(self, "run_context", None)
+        context = getattr(run_context, "context", None)
+        return bool((getattr(context, "extra", None) or {}).get("is_subagent"))
 
     def _snapshot_scope(self, invocation_id: str, *, stage: str = "main"):
         """Build the developer-mode scope covering one provider call.
@@ -614,7 +621,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             )
             compress_threshold_tokens = 0
 
-        resolved_strategy, reminder_tokens = resolve_budget_strategy(
+        resolved_strategy = resolve_budget_strategy(
             context_limit_reached_strategy, provider.provider_config or {}
         )
         if resolved_strategy != context_limit_reached_strategy:
@@ -628,7 +635,6 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             # <=0 disables token-based guarding.
             max_context_tokens=max_context_tokens,
             strategy=resolved_strategy,
-            reminder_tokens=reminder_tokens,
             # <=0 keeps the compressors' ratio-based trigger.
             compress_threshold_tokens=compress_threshold_tokens,
             threshold_ratio=float(
@@ -751,7 +757,9 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             or request.extra_user_content_parts
         ):
             m = await self._assemble_request_context_for_provider(request)
-            messages.append(Message.model_validate(m))
+            user_message = Message.model_validate(m)
+            user_message.created_at = time.time()
+            messages.append(user_message)
         if request.system_prompt:
             messages.insert(
                 0,
@@ -1565,13 +1573,58 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
     def _load_window_state(self, messages: list[Message]) -> WindowState:
         """Resume the window the loaded history belongs to.
 
+        A missing marker means the previous window was replaced while its own
+        marker never reached storage (an aborted turn, a crash). The archive is
+        the only surviving record of that chain, so its window count and newest
+        entry decide the next seq and prev_id instead of restarting at zero.
+
         Args:
             messages: History loaded for this run.
 
         Returns:
-            The newest persisted marker, or a fresh window when none exists.
+            The newest persisted marker, or a window derived from the archive.
         """
-        return latest_window_state(messages) or WindowState(id=uuid.uuid4().hex)
+        if self._snapshot_is_subagent():
+            # A subagent shares the main umo, so the marker and the archive
+            # describe the main conversation rather than this run.
+            return WindowState(id=uuid.uuid4().hex)
+        state = latest_window_state(messages)
+        if state is not None:
+            return state
+        return self._window_from_archive()
+
+    def _window_from_archive(self) -> WindowState:
+        """Derive a fresh window from the archived chain of this session.
+
+        Returns:
+            A window continuing the archived chain, or a first window when the
+            session has no archive yet.
+        """
+        umo = getattr(getattr(self, "req", None), "session_id", "") or ""
+        windows: list[dict[str, T.Any]] = []
+        if umo:
+            try:
+                windows = list_windows(umo)
+            except OSError:
+                windows = []
+        if not windows:
+            return WindowState(id=uuid.uuid4().hex)
+        newest = max(
+            (entry for entry in windows if isinstance(entry, dict)),
+            key=lambda entry: (
+                int(entry.get("closed_at") or 0),
+                int(entry.get("seq") or 0),
+            ),
+            default=None,
+        )
+        # Count wins over the recorded seq: a chain that restarted at zero is
+        # repaired by the number of windows that actually exist.
+        highest_seq = max(int(entry.get("seq") or 0) for entry in windows) + 1
+        return WindowState(
+            id=uuid.uuid4().hex,
+            seq=max(len(windows), highest_seq),
+            prev_id=str(newest.get("window_id")) if newest else None,
+        )
 
     def _on_context_reset(self, discarded: list[Message] | None = None) -> None:
         """Start a new window; the notice flags belong to the window that ended.
@@ -1580,6 +1633,11 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             discarded: Messages the reset drops. They are archived before the
                 old window id is replaced.
         """
+        if self._snapshot_is_subagent():
+            # The archive is keyed by umo, which a subagent shares with the main
+            # conversation: a reset here would splice its window into the main
+            # chain and hand the model a window it has no tools to search.
+            return
         previous = self.window_state
         if discarded:
             self._schedule_archive(previous, discarded)
@@ -1645,18 +1703,21 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
     def _inject_budget_notices(
         self, messages: list[Message], *, just_reset: bool | None = None
     ) -> list[Message]:
-        """Append the window's one-shot budget notice when one is due.
+        """Append the window's next budget water level when one is due.
 
-        The exhausted notice wins over the low-budget reminder: when the window
-        cannot be trimmed further the model must conclude instead of planning.
+        Levels are cumulative: a window announces 25%, then 50%, then 85%, and
+        only the highest level it reached is remembered, so a request that skips
+        straight to 85% never gets the lower texts afterwards. The exhausted
+        notice wins over both: when the window cannot be trimmed further the
+        model must conclude instead of planning.
 
         Args:
             messages: Model-visible history after compaction.
             just_reset: Override for the "this request opened a new window"
                 fact; defaults to the runner's own flag so both preparation
                 passes of one model call decide alike. A fresh window must not
-                be announced as "running out of room"; only the exhausted
-                notice can still apply.
+                be announced as running out of room on the request that opened
+                it; only the exhausted notice can still apply.
 
         Returns:
             The same list, plus one internal notice when a notice is due.
@@ -1683,14 +1744,19 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         ):
             notice = EXHAUSTED_TEXT
             state.exhausted_sent = True
-        elif (
-            not state.reminder_sent
-            and not just_reset
-            and manager.last_remaining_tokens is not None
-            and manager.last_remaining_tokens <= config.reminder_tokens
-        ):
-            notice = build_reminder(manager.last_remaining_tokens)
-            state.reminder_sent = True
+        elif not just_reset and manager.last_budget_usage is not None:
+            usage = manager.last_budget_usage
+            if usage >= 0.85:
+                level, text = 85, WRAP_UP_NOTICE
+            elif usage >= 0.5:
+                level, text = 50, PLANNING_NOTICE
+            elif usage >= 0.25:
+                level, text = 25, EARLY_NOTICE
+            else:
+                level, text = 0, None
+            if level > state.notice_level:
+                notice = text
+                state.notice_level = level
         if notice is None:
             return messages
         message = Message(role="user", content=notice)
@@ -1710,7 +1776,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         return (
             message.internal
             and isinstance(message.content, str)
-            and message.content.startswith(_BUDGET_NOTICE_PREFIX)
+            and message.content.startswith(_BUDGET_NOTICE_PREFIXES)
         )
 
     def _context_window_notice(
@@ -1757,33 +1823,52 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         except OSError:
             return []
 
-    def _inject_context_window(self, messages: list[Message]) -> list[Message]:
-        """Append the current window identity once per window.
+    def _append_window_notice(self, contexts: list[T.Any]) -> None:
+        """Append the window identity to this request's system prompt.
 
-        The identity is a live fact, not an event: re-announcing it every turn
-        would grow the history without telling the model anything new, and a
-        reset already empties the history it would have been announced into.
+        The identity stays constant for the whole window, so appending it to the
+        system prefix keeps every turn byte-identical and the provider prefix
+        cache warm. Rebuilding it per request instead of storing it also keeps
+        control text out of the history, which is what makes that prefix survive
+        a reload from the database. A request without a system prompt gets one
+        carrying only the notice, so the identity never disappears.
 
         Args:
-            messages: Model-visible history after compaction.
-
-        Returns:
-            The same list, plus one internal notice when this window has not
-            been announced yet.
+            contexts: Provider-facing messages of the current request, as dicts
+                or ``Message`` objects.
         """
-        marker = f"{_CONTEXT_WINDOW_MARKER} {self.window_state.id}"
-        if any(
-            message.internal
-            and isinstance(message.content, str)
-            and marker in message.content
-            for message in messages
+        if not contexts:
+            return
+        notice = self._context_window_notice(self._note_summary())
+        first = contexts[0]
+        if isinstance(first, dict):
+            if first.get("role") != "system":
+                contexts.insert(0, {"role": "system", "content": notice})
+                return
+            content = first.get("content")
+            if isinstance(content, str):
+                if _CONTEXT_WINDOW_MARKER in content:
+                    return
+                first["content"] = f"{content}\n\n{notice}" if content else notice
+            elif isinstance(content, list) and not any(
+                isinstance(part, dict)
+                and _CONTEXT_WINDOW_MARKER in str(part.get("text"))
+                for part in content
+            ):
+                first["content"] = [*content, {"type": "text", "text": notice}]
+            return
+        if getattr(first, "role", None) != "system":
+            contexts.insert(0, Message(role="system", content=notice))
+            return
+        content = first.content
+        if isinstance(content, str):
+            if _CONTEXT_WINDOW_MARKER in content:
+                return
+            first.content = f"{content}\n\n{notice}" if content else notice
+        elif isinstance(content, list) and not any(
+            _CONTEXT_WINDOW_MARKER in getattr(part, "text", "") for part in content
         ):
-            return messages
-        message = Message(
-            role="user", content=self._context_window_notice(self._note_summary())
-        )
-        message.internal = True
-        return [*messages, message]
+            first.content = [*content, TextPart(text=notice)]
 
     async def _prepare_llm_request(
         self,
@@ -1882,11 +1967,11 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                                     else [TextPart(text=content or "")]
                                 ) + copy.deepcopy(missing_parts)
                             else:
-                                messages.append(
-                                    UserMessageSegment(
-                                        content=copy.deepcopy(missing_parts)
-                                    )
+                                segment = UserMessageSegment(
+                                    content=copy.deepcopy(missing_parts)
                                 )
+                                segment.created_at = time.time()
+                                messages.append(segment)
             self._assembled_extra_user_content_parts = copy.deepcopy(current_parts)
         contexts = self.request_context_manager.truncator.fix_messages(contexts)
         func_tool = self._func_tool_for_provider() if stage == "main" else tools
@@ -1952,9 +2037,25 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         manual_reset = False
         if stage == "main" and self._take_new_context_request():
             truncator = self.request_context_manager.truncator
+            tokens_before = self.request_context_manager.token_counter.count_tokens(
+                contexts
+            )
             self._on_context_reset(truncator.discarded_prefix(contexts))
             contexts = truncator.reset_to_latest_round(contexts)
             self.run_context.messages = contexts
+            tokens_after = self.request_context_manager.token_counter.count_tokens(
+                contexts
+            )
+            # A reset the model asked for is the same event to the composer as
+            # an automatic one: the token ring readout is driven by this report,
+            # never by which side requested the reset.
+            self._output_compression_report = {
+                "strategy": "token_budget",
+                "tokens_before": tokens_before,
+                "tokens_after": tokens_after,
+                "shadowed_tokens": max(0, tokens_before - tokens_after),
+                "reason": "manual",
+            }
             manual_reset = True
         unchanged = (
             previous_request is not None
@@ -2054,11 +2155,6 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             reset_now = manual_reset
         if stage == "main":
             checked = self._inject_budget_notices(checked, just_reset=reset_now)
-            if (
-                getattr(self.request_context_manager.config, "strategy", "")
-                == "token_budget"
-            ):
-                checked = self._inject_context_window(checked)
             self.run_context.messages = checked
         contexts = self._sanitize_contexts_for_provider(checked)
         if contexts and isinstance(contexts[0], dict):
@@ -2070,6 +2166,11 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             contexts = self.request_context_manager.truncator.fix_messages(contexts)
         # Persistence callbacks and later history appends cannot mutate this view.
         payload["contexts"] = copy.deepcopy(contexts)
+        if stage == "main" and (
+            getattr(self.request_context_manager.config, "strategy", "")
+            == "token_budget"
+        ):
+            self._append_window_notice(payload["contexts"])
         # Internal delivery metadata is removed before calling the provider.
         payload["output_token_budget"] = output_token_budget
         return payload
@@ -2110,16 +2211,16 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                         "context_position": len(self.run_context.messages),
                     }
                 )
-                self.run_context.messages.append(
-                    UserMessageSegment(
-                        content=[
-                            TextPart(
-                                text="Team member message (JSON):\n"
-                                + json.dumps(message, ensure_ascii=False)
-                            )
-                        ]
-                    )
+                member_message = UserMessageSegment(
+                    content=[
+                        TextPart(
+                            text="Team member message (JSON):\n"
+                            + json.dumps(message, ensure_ascii=False)
+                        )
+                    ]
                 )
+                member_message.created_at = time.time()
+                self.run_context.messages.append(member_message)
         contexts = self._sanitize_contexts_for_provider(self.run_context.messages)
         if restored_request:
             assert self._call_checkpoint is not None
@@ -3493,11 +3594,13 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                 parts.append(TextPart(text=llm_resp.completion_text))
             if len(parts) == 0:
                 parts = None
+            assistant_segment = AssistantMessageSegment(
+                tool_calls=llm_resp.to_openai_tool_calls_model(),
+                content=parts,
+            )
+            assistant_segment.created_at = time.time()
             tool_calls_result = ToolCallsResult(
-                tool_calls_info=AssistantMessageSegment(
-                    tool_calls=llm_resp.to_openai_tool_calls_model(),
-                    content=parts,
-                ),
+                tool_calls_info=assistant_segment,
                 tool_calls_result=tool_call_result_blocks,
             )
             # record the assistant message with tool calls
@@ -3883,6 +3986,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                 tool_call_id=tool_call_id,
                 content=visible_content,
             )
+            block.created_at = time.time()
             record_id = (
                 call_state["record_id"] + ":protocol"
                 if call_state

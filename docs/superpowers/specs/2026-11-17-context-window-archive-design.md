@@ -52,8 +52,10 @@
 | D2 | 窗 id 复用 `WindowState.id`；新增 `prev_id`；**不存** `first_id` | `seq=0` 即首窗，存 `first_id` 是第二份真源 |
 | D3 | 归档时机是换窗瞬间，对象是压缩前列表里**被丢弃的前缀** | 当前轮已保留在新窗，整份 `contexts` 归档会让同一轮出现两次 |
 | D4 | 归档内容 = 旧窗的“落库视图” | 跳过 leading system、`internal`、`_no_save`，与 `_save_to_history` 同规则，保证检索结果与 WebChat 历史同构 |
-| D5 | `<context_window>` 每窗注入一次，`internal=True` 不落库 | 窗 id 是当前状态而非历史事件；同一窗内重复注入只增长历史，换窗后历史已清空、必然重新注入 |
+| D5 | `<context_window>` 追加在 system prompt 末尾，每次请求重建、不落库 | 窗 id 在窗内不变，放 system 前缀使每轮前缀逐字节一致；放历史里会因为不落库而在下一轮重放时消失，导致从该处起缓存断链 |
 | D6 | 检索工具以运行时 umo 为隐式边界，不作为参数 | 模型只能检索自己这个会话，无法跨 umo 越权 |
+| D7 | 无 `_window` 标记时，`seq` / `prev_id` 由归档窗口数与最近关闭的窗口推导 | 标记搭在“最后一条落库消息”上，换窗后那一轮没保存就会丢；归档目录是唯一存活的窗口链 |
+| D8 | 归档条目的 `ts` 取消息自身的 `created_at`，缺失时用批次时间并标 `ts_estimated` | 伪造时间会让“按时间检索”建立在假数据上；宁可标明估算 |
 
 ## 5. 归档布局
 
@@ -111,6 +113,7 @@ umo_key = f"{safe}_{hashlib.sha1(umo.encode('utf-8')).hexdigest()[:12]}"
 ```
 
 - 字段取自 `Message.model_dump(mode="json")`，剔除 `_window`、`_internal`、`_compaction_id`。
+- `ts` 取自 `Message.created_at`（消息产生时刻）；老消息没有该字段时用归档批次时间并写 `"ts_estimated": true`，不伪装成消息时间。
 - `content` 为 list 时原样保留（图片/文本分片）。
 - 单条 `content` 文本超过 `MAX_ITEM_CHARS = 8000` 时截断，并追加 `"truncated": true, "original_chars": N`。
 - 媒体只保留引用（URL / 本地路径字符串），不复制文件。
@@ -183,6 +186,8 @@ if stage == "main" and (...).get("strategy") == "token_budget":
         self.request_context_manager.truncator.discarded_prefix(contexts)
     )
 
+无 `_window` 标记时（换窗那一轮未落库、进程崩溃），`_load_window_state` 走 `_window_from_archive()`：`seq = max(归档窗口数, 最大 seq + 1)`，`prev_id = 最近关闭的窗口 id`，而不是从 0 新建。
+
 ### 6.1 被丢弃前缀的边界
 
 `contexts` 含当前轮，`checked` 也含当前轮——直接归档 `contexts` 会把当前轮复制进旧窗，`history_search` 立刻能搜到刚刚说过的话。归档对象必须是两者的差：
@@ -208,9 +213,9 @@ def discarded_prefix(self, messages: list[Message]) -> list[Message]:
 
 ## 7. `<context_window>` 注入
 
-注入位置：`_inject_budget_notices` 之后，`stage == "main"`、`checked` 已定稿，且仅当 `strategy == "token_budget"`（只有该策略会换窗；其他策略下 `seq` 永远是 0，注入是噪声）。形态与现有预算提示一致：`Message(role="user")` + `internal = True`。
+注入位置：`_prepare_llm_request` 定稿 payload 之后，`stage == "main"` 且 `strategy == "token_budget"`（只有该策略会换窗；其他策略下 `seq` 永远是 0，注入是噪声）。形态是追加到请求 system prompt 的末尾；请求没有 system prompt 时插入一条只含该块的 system 消息。
 
-频率：历史里已存在"当前窗 id"的提示则跳过；换窗会替换历史，新窗首轮必然重新注入。
+频率：每次请求重建，不进历史。窗 id 在窗内不变，所以同窗内每轮 system 前缀逐字节一致，前缀缓存可以跨轮命中；放进历史则相反——`internal` 不落库，下一轮从库里重放时该消息消失，从它的位置往后（含上一轮 assistant 输出）全部失效。
 
 ```
 <context_window>
@@ -225,6 +230,14 @@ Earlier windows are archived; use the history tools to search them.
 - `Earlier windows are archived; …` 行仅在 `seq > 0` 时出现；`seq == 0` 时整段只有两行。
 - 不注入 umo、agent 名：umo 是平台身份，与模型决策无关，且属于不该外泄的会话键。
 - 与 codex 的差异：去掉 `Agent name` / `First context window id`（AstrBot 无 agent 路径概念；首窗由 `seq=0` 推出）。
+
+### 7.1 子代理
+
+子代理与主会话共享 umo，归档目录与 `_window` 标记描述的都是主会话，因此子代理：
+
+- 永远不换窗：`_on_context_reset` 在 `is_subagent` 时直接返回，不归档、不递增 seq；
+- 不继承窗口状态：`_load_window_state` 在 `is_subagent` 时直接返回新窗（`seq=0`），忽略标记与归档；
+- 压缩策略固定为 LLM 压缩：`build_subagent_compression_kwargs` 不再透传 `token_budget`，优先用配置的摘要 provider，取不到时回退子代理自身 provider，仍取不到则由 runner 默认截断兜底。
 
 ## 8. 检索工具面
 
@@ -249,7 +262,7 @@ Earlier windows are archived; use the history tools to search them.
 | `astrbot/core/agent/message.py` | `WindowState` 增 `prev_id` | D2 |
 | `astrbot/core/agent/context/truncator.py` | 新增 `discarded_prefix(messages)` | 6.1 |
 | `astrbot/core/agent/history_archive.py`（新） | `umo_key`、`append_window`、`list_windows`、`search`、`read_window` | 5 |
-| `astrbot/core/agent/runners/tool_loop_agent_runner.py` | `_on_context_reset(discarded)`；新增 `_schedule_archive`、`_inject_context_window`；`_archived_window_ids` | 6、7 |
+| `astrbot/core/agent/runners/tool_loop_agent_runner.py` | `_on_context_reset(discarded)`；新增 `_schedule_archive`、`_append_window_notice`；`_archived_window_ids` | 6、7 |
 | `astrbot/core/tools/history_tools.py`（新）+ `astrbot/core/tools/registry.py` | 四个 `@builtin_tool`（含 `new_context`）；模块加入 `_BUILTIN_TOOL_MODULES` | 8 |
 | `astrbot/core/utils/astrbot_path.py` | `get_astrbot_agent_history_path()` | 5 |
 | `tests/agent/test_history_archive.py`（新） | 布局、幂等、截断、越权 | 11 |
@@ -273,12 +286,15 @@ Earlier windows are archived; use the history tools to search them.
 4. `content` 超限截断并带 `truncated` / `original_chars`。
 5. `history_read` / `history_search` 跨 umo 访问返回 `No such window.`。
 6. `_on_context_reset` 后 `prev_id == 旧 id`、`seq + 1`、两个 `sent` 复位。
+7. 无 `_window` 标记时 `seq` 由归档窗口数推导、`prev_id` 指向最近关闭的窗口；标记存在时以标记为准。
+8. 归档条目保留 `created_at`；缺失时 `ts_estimated` 为 true。
 
 集成：
 
-7. 连续两次换窗：`windows.json` 出现两条记录，`prev_id` 成链，`items.jsonl` 条数与裁剪量一致。
-8. 换窗后首轮请求的 developer/user 视图中出现 `<context_window>`，且不落库（重开会话后历史无该消息）。
-9. `llm_compress` 触发压缩时不产生归档目录。
+9. 连续两次换窗：`windows.json` 出现两条记录，`prev_id` 成链，`items.jsonl` 条数与裁剪量一致。
+10. 换窗后首轮请求的 system prompt 末尾出现 `<context_window>`，历史与落库视图中都没有该块；同窗内连续两轮请求的 system 前缀完全一致。
+11. `llm_compress` 触发压缩时不产生归档目录。
+12. 子代理 runner 不换窗、不写归档、不继承主会话的 `_window` 标记；token_budget 会话下子代理仍拿到 LLM 压缩参数。
 
 ## 12. 实施顺序
 

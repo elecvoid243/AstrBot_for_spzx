@@ -67,7 +67,15 @@ class ContextManager:
         """Budget left after the last ``process()`` call.
 
         ``None`` means the call had no message budget to report (or ended in a
-        capacity error); the agent runner uses it to time window reminders.
+        capacity error). Kept for the compression report; the water levels are
+        timed from ``last_budget_usage`` instead.
+        """
+        self.last_budget_usage: float | None = None
+        """Fraction of the compaction trigger the request already used.
+
+        The trigger is the point where the window is replaced, so this is the
+        only ratio the runner needs to time the 25%, 50% and 85% water levels.
+        ``None`` when the call had no trigger to measure against.
         """
         self._last_compaction_tokens: int | None = None
         """Report of the compression performed by the latest ``process()`` call.
@@ -152,6 +160,7 @@ class ContextManager:
         """
         self.last_compression = None
         self.last_remaining_tokens = None
+        self.last_budget_usage = None
         total_tokens = None
 
         if modalities:
@@ -237,6 +246,11 @@ class ContextManager:
 
             self.last_remaining_tokens = self._remaining_tokens(
                 total_tokens, spec, output_token_budget
+            )
+            self.last_budget_usage = (
+                total_tokens / spec.threshold_tokens
+                if spec.threshold_tokens > 0
+                else None
             )
             return result
         except Exception as e:

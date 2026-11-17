@@ -74,6 +74,31 @@ async def test_append_window_is_idempotent(archive_root):
 
 
 @pytest.mark.asyncio
+async def test_items_keep_the_message_timestamp(archive_root):
+    first = Message(role="user", content="one")
+    first.created_at = 1_700_000_000.5
+    second = Message(role="assistant", content="two")
+    second.created_at = 1_700_000_060.0
+
+    await history_archive.append_window("umo:a", _window(), [first, second])
+
+    items = history_archive.read_window("umo:a", "w1")
+    assert [item["ts"] for item in items] == [1_700_000_000, 1_700_000_060]
+    assert all("ts_estimated" not in item for item in items)
+
+
+@pytest.mark.asyncio
+async def test_items_without_a_timestamp_are_marked_estimated(archive_root):
+    await history_archive.append_window(
+        "umo:a", _window(), [Message(role="user", content="old")]
+    )
+
+    item = history_archive.read_window("umo:a", "w1")[0]
+    assert item["ts_estimated"] is True
+    assert item["ts"] > 0
+
+
+@pytest.mark.asyncio
 async def test_internal_and_unsaved_messages_are_not_archived(archive_root):
     internal = Message(role="user", content="[context budget] wrap up")
     internal.internal = True

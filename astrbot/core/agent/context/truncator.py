@@ -315,6 +315,36 @@ class ContextTruncator:
             return messages
         return self.fix_messages([*system_messages, *rounds[-1]])
 
+    def discarded_prefix(self, messages: list[Message]) -> list[Message]:
+        """Return the messages a window reset would drop.
+
+        Uses the same round split as :meth:`reset_to_latest_round`, so what an
+        archive stores and what a reset discards cannot diverge.
+
+        Args:
+            messages: Model-visible history, including the current request.
+
+        Returns:
+            Everything after the leading system messages and before the newest
+            round; empty when there is only one round.
+        """
+        first_non_system = next(
+            (
+                index
+                for index, message in enumerate(messages)
+                if message.role != "system"
+            ),
+            len(messages),
+        )
+        rounds = [
+            [segment for segment in group if isinstance(segment, Message)]
+            for group in split_into_rounds(messages[first_non_system:])
+        ]
+        rounds = [group for group in rounds if group]
+        if len(rounds) < 2:
+            return []
+        return [message for group in rounds[:-1] for message in group]
+
     def truncate_by_token_budget(
         self,
         messages: list[Message],

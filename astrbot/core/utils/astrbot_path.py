@@ -105,3 +105,8 @@ def get_astrbot_knowledge_base_path() -> str:
 def get_astrbot_backups_path() -> str:
     """Return the AstrBot backups directory path."""
     return os.path.realpath(os.path.join(get_astrbot_data_path(), "backups"))
+
+
+def get_astrbot_agent_history_path() -> str:
+    """Return the per-umo context window archive root."""
+    return os.path.realpath(os.path.join(get_astrbot_data_path(), "agent_history"))

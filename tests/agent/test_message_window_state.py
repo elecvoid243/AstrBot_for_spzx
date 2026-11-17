@@ -12,10 +12,22 @@ def test_window_state_round_trips_through_history():
     assert dumped["_window"] == {
         "id": "w1",
         "seq": 2,
+        "prev_id": None,
         "reminder_sent": True,
         "exhausted_sent": False,
     }
     assert Message.model_validate(dumped).window == state
+
+
+def test_window_state_carries_the_previous_window_chain():
+    state = WindowState(id="w2", seq=1, prev_id="w1")
+    message = Message(role="user", content="hi")
+    message.window = state
+
+    restored = Message.model_validate(message.model_dump_for_context())
+
+    assert restored.window == state
+    assert restored.window.prev_id == "w1"
 
 
 def test_window_state_never_reaches_the_provider():
@@ -74,8 +86,6 @@ def test_internal_marker_survives_internal_round_trips():
     message = Message(role="user", content="[context budget] wrap up")
     message.internal = True
 
-    kept, _ = sanitize_contexts_by_modalities(
-        [message], None, preserve_internal=True
-    )
+    kept, _ = sanitize_contexts_by_modalities([message], None, preserve_internal=True)
 
     assert kept[0]["_internal"] is True

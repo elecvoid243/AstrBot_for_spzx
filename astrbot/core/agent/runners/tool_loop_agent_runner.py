@@ -105,6 +105,7 @@ from ..context.compressor import ContextCompressor
 from ..context.config import ContextConfig, resolve_budget_strategy
 from ..context.manager import ContextManager, ContextUsageSnapshot
 from ..context.token_counter import EstimateTokenCounter, TokenCounter
+from ..history_archive import append_window
 from ..hooks import BaseAgentRunHooks
 from ..message import (
     AssistantMessageSegment,
@@ -168,6 +169,9 @@ class _ToolExecutionInterrupted(Exception):
 
 ToolExecutorResultT = T.TypeVar("ToolExecutorResultT")
 AwaitableResultT = T.TypeVar("AwaitableResultT")
+
+_BUDGET_NOTICE_PREFIX = "[context budget]"
+_CONTEXT_WINDOW_MARKER = "Current window id:"
 
 
 class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
@@ -567,6 +571,9 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         self.llm_compress_provider = llm_compress_provider
         self.context_limit_reached_strategy = context_limit_reached_strategy
         self._window_just_reset = False
+        self._new_context_requested = False
+        self._archived_window_ids: set[str] = set()
+        self._archive_tasks: set[asyncio.Task] = set()
         self.target_ratio = target_ratio
         self.min_yield_ratio = min_yield_ratio
         self.max_summary_tokens = max_summary_tokens
@@ -1565,12 +1572,74 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         """
         return latest_window_state(messages) or WindowState(id=uuid.uuid4().hex)
 
-    def _on_context_reset(self) -> None:
-        """Start a new window; the notice flags belong to the window that ended."""
+    def _on_context_reset(self, discarded: list[Message] | None = None) -> None:
+        """Start a new window; the notice flags belong to the window that ended.
+
+        Args:
+            discarded: Messages the reset drops. They are archived before the
+                old window id is replaced.
+        """
+        previous = self.window_state
+        if discarded:
+            self._schedule_archive(previous, discarded)
         self.window_state = WindowState(
-            id=uuid.uuid4().hex, seq=self.window_state.seq + 1
+            id=uuid.uuid4().hex,
+            seq=previous.seq + 1,
+            prev_id=previous.id,
         )
         self._window_just_reset = True
+
+    def request_new_context_window(self) -> None:
+        """Ask the next model call to start a fresh window.
+
+        The request is consumed by the next payload preparation, so tool
+        results from the current round stay inside the new window.
+        """
+        self._new_context_requested = True
+
+    def _take_new_context_request(self) -> bool:
+        """Consume a pending manual window reset request.
+
+        Returns:
+            Whether a reset was requested since the last consumption.
+        """
+        requested = getattr(self, "_new_context_requested", False)
+        self._new_context_requested = False
+        return requested
+
+    def _schedule_archive(self, window: WindowState, discarded: list[Message]) -> None:
+        """Archive a replaced window without blocking the request.
+
+        A failed archive is logged and dropped: losing the copy must not fail
+        the request that already replaced the window.
+
+        Args:
+            window: Window being replaced.
+            discarded: Messages the reset drops.
+        """
+        archived = getattr(self, "_archived_window_ids", None)
+        if archived is None or not discarded or window.id in archived:
+            return
+        archived.add(window.id)
+        try:
+            task = asyncio.create_task(
+                append_window(self.req.session_id, window, discarded)
+            )
+        except RuntimeError:
+            # No running loop (unit-level callers): the archive is optional.
+            return
+        self._archive_tasks.add(task)
+        task.add_done_callback(self._archive_tasks.discard)
+        task.add_done_callback(self._log_archive_failure)
+
+    @staticmethod
+    def _log_archive_failure(task: asyncio.Task) -> None:
+        """Report a failed archive without raising into the loop."""
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error is not None:
+            logger.warning("Failed to archive a replaced context window: %s", error)
 
     def _inject_budget_notices(
         self, messages: list[Message], *, just_reset: bool | None = None
@@ -1595,7 +1664,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         config = manager.config
         if getattr(config, "strategy", "llm_compress") != "token_budget":
             return messages
-        if messages and messages[-1].internal:
+        if messages and self._is_budget_notice(messages[-1]):
             # Already announced for this model call: never stack two notices.
             return messages
         state = self.window_state
@@ -1624,6 +1693,69 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         if notice is None:
             return messages
         message = Message(role="user", content=notice)
+        message.internal = True
+        return [*messages, message]
+
+    @staticmethod
+    def _is_budget_notice(message: Message) -> bool:
+        """Return whether a message is a one-shot budget notice.
+
+        Args:
+            message: Last model-visible message.
+
+        Returns:
+            True for the reminder and exhausted control texts.
+        """
+        return (
+            message.internal
+            and isinstance(message.content, str)
+            and message.content.startswith(_BUDGET_NOTICE_PREFIX)
+        )
+
+    def _context_window_notice(self) -> str:
+        """Render the window identity the model needs to navigate the archive.
+
+        Returns:
+            A control block with the current, previous and first-step facts.
+        """
+        state = self.window_state
+        lines = [
+            "<context_window>",
+            f"{_CONTEXT_WINDOW_MARKER} {state.id}",
+            f"Window seq: {state.seq}",
+        ]
+        if state.prev_id:
+            lines.append(f"Previous window id: {state.prev_id}")
+        if state.seq > 0:
+            lines.append(
+                "Earlier windows are archived; use the history tools to search them."
+            )
+        lines.append("</context_window>")
+        return "\n".join(lines)
+
+    def _inject_context_window(self, messages: list[Message]) -> list[Message]:
+        """Append the current window identity once per window.
+
+        The identity is a live fact, not an event: re-announcing it every turn
+        would grow the history without telling the model anything new, and a
+        reset already empties the history it would have been announced into.
+
+        Args:
+            messages: Model-visible history after compaction.
+
+        Returns:
+            The same list, plus one internal notice when this window has not
+            been announced yet.
+        """
+        marker = f"{_CONTEXT_WINDOW_MARKER} {self.window_state.id}"
+        if any(
+            message.internal
+            and isinstance(message.content, str)
+            and marker in message.content
+            for message in messages
+        ):
+            return messages
+        message = Message(role="user", content=self._context_window_notice())
         message.internal = True
         return [*messages, message]
 
@@ -1791,6 +1923,13 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             or usage_snapshot.model != effective_model
         ):
             usage_snapshot = None
+        manual_reset = False
+        if stage == "main" and self._take_new_context_request():
+            truncator = self.request_context_manager.truncator
+            self._on_context_reset(truncator.discarded_prefix(contexts))
+            contexts = truncator.reset_to_latest_round(contexts)
+            self.run_context.messages = contexts
+            manual_reset = True
         unchanged = (
             previous_request is not None
             and not limits_changed
@@ -1872,20 +2011,28 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                             break
             self.run_context.messages = checked
             self._context_usage_snapshot = None
-            reset_now = False
+            reset_now = manual_reset
             if (
                 stage == "main"
+                and not manual_reset
                 and (self.request_context_manager.last_compression or {}).get(
                     "strategy"
                 )
                 == "token_budget"
             ):
-                self._on_context_reset()
+                self._on_context_reset(
+                    self.request_context_manager.truncator.discarded_prefix(contexts)
+                )
                 reset_now = True
         else:
-            reset_now = False
+            reset_now = manual_reset
         if stage == "main":
             checked = self._inject_budget_notices(checked, just_reset=reset_now)
+            if (
+                getattr(self.request_context_manager.config, "strategy", "")
+                == "token_budget"
+            ):
+                checked = self._inject_context_window(checked)
             self.run_context.messages = checked
         contexts = self._sanitize_contexts_for_provider(checked)
         if contexts and isinstance(contexts[0], dict):

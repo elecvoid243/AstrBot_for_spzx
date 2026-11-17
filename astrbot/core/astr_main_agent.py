@@ -99,6 +99,12 @@ from astrbot.core.tools.file_tool_mode import (
     file_tool_names,
     resolve_file_tool_mode,
 )
+from astrbot.core.tools.history_tools import (
+    HistoryListWindowsTool,
+    HistoryReadTool,
+    HistorySearchTool,
+    NewContextTool,
+)
 from astrbot.core.tools.knowledge_base_tools import (
     KnowledgeBaseQueryTool,
     retrieve_knowledge_base,
@@ -1651,6 +1657,25 @@ def _proactive_cron_job_tools(req: ProviderRequest, plugin_context: Context) -> 
     req.func_tool.add_tool(tool_mgr.get_builtin_tool(FutureTaskTool))
 
 
+def _apply_context_tools(req: ProviderRequest, plugin_context: Context) -> None:
+    """Expose window tools only when a reset can create archives.
+
+    Args:
+        req: Provider request whose tool set is being built.
+        plugin_context: Plugin context owning the tool manager.
+    """
+    if req.func_tool is None:
+        req.func_tool = ToolSet()
+    tool_mgr = plugin_context.get_llm_tool_manager()
+    for tool_cls in (
+        NewContextTool,
+        HistoryListWindowsTool,
+        HistorySearchTool,
+        HistoryReadTool,
+    ):
+        req.func_tool.add_tool(tool_mgr.get_builtin_tool(tool_cls))
+
+
 async def _apply_web_search_tools(
     event: AstrMessageEvent,
     req: ProviderRequest,
@@ -2274,6 +2299,9 @@ async def build_main_agent(
         _apply_sandbox_tools(config, req, req.session_id)
     elif config.computer_use_runtime == "local":
         _apply_local_env_tools(req, plugin_context, event.unified_msg_origin)
+
+    if config.context_limit_reached_strategy == "token_budget":
+        _apply_context_tools(req, plugin_context)
 
     agent_runner = AgentRunner()
     astr_agent_ctx = AstrAgentContext(

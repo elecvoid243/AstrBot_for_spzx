@@ -239,8 +239,8 @@ async def test_token_budget_replaces_history_without_a_summary_request():
     # a later unchanged request clears the manager's copy.
     assert sum(event.type == "context_compression" for event in events) == 1
     assert runner.window_state.seq == 1
-    assert "_window" not in str(
-        [message.model_dump(mode="json") for message in delivered]
+    assert all(
+        "_window" not in message.model_dump(mode="json") for message in delivered
     )
     # A single request: the reset never asked a model for a summary.
     assert len(provider.requests) == 1
@@ -362,9 +362,9 @@ async def test_provider_payload_carries_no_kernel_markers():
     _ = [event async for event in runner.step_until_done(2)]
 
     for request in provider.requests:
-        payload = str([message.model_dump(mode="json") for message in request["contexts"]])
-        assert "_window" not in payload
-        assert "_internal" not in payload
+        dumps = [message.model_dump(mode="json") for message in request["contexts"]]
+        assert all("_window" not in dump for dump in dumps)
+        assert all("_internal" not in dump for dump in dumps)
 
 
 @pytest.mark.asyncio

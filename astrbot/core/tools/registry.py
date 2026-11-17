@@ -12,6 +12,7 @@ TFunctionTool = TypeVar("TFunctionTool", bound=type[FunctionTool])
 _BUILTIN_TOOL_MODULES = (
     "astrbot.core.tools.computer_tools",
     "astrbot.core.tools.cron_tools",
+    "astrbot.core.tools.history_tools",
     "astrbot.core.tools.knowledge_base_tools",
     "astrbot.core.tools.message_tools",
     "astrbot.core.tools.web_search_tools",

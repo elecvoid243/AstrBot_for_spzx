@@ -204,6 +204,8 @@ class WindowState(BaseModel):
     id: str
     seq: int = 0
     """Window number; 0 means no reset has happened yet."""
+    prev_id: str | None = None
+    """Window that was replaced by this one; the archive chain follows it."""
     reminder_sent: bool = False
     exhausted_sent: bool = False
 

@@ -829,5 +829,17 @@ async def _record_internal_agent_stats(
             stats=stats.to_dict(),
             agent_type="internal",
         )
+
+        # token 用量走匿名指标通道（与 provider_stat 同源，不额外采集）
+        token_usage = stats.token_usage
+        asyncio.create_task(
+            Metric.upload(
+                token_input_other=token_usage.input_other,
+                token_input_cached=token_usage.input_cached,
+                token_output=token_usage.output,
+                model_name=provider.get_model(),
+                provider_type=provider.meta().type,
+            )
+        )
     except Exception as e:
         logger.warning("Persist provider stats failed: %s", e, exc_info=True)

@@ -32,7 +32,7 @@ def test_first_window_appends_its_identity_to_the_system_prompt():
     assert "Current window id: w1" in system
     assert "Window seq: 0" in system
     assert "Previous window id:" not in system
-    assert "archived" not in system
+    assert "Earlier windows are archived" not in system
 
 
 def test_the_notice_never_reaches_the_history():
@@ -123,6 +123,19 @@ def test_a_window_lists_the_notes_it_opened_with():
     system = contexts[0]["content"]
     assert "Private notes (shared across windows, newest first):" in system
     assert "- plan.md (2 lines)" in system
+
+
+def test_every_window_asks_the_model_to_recover_and_record_facts():
+    for state in (WindowState(id="w1"), WindowState(id="w2", seq=1, prev_id="w1")):
+        runner = _runner(state)
+        contexts = _contexts()
+
+        runner._append_window_notice(contexts)
+
+        system = contexts[0]["content"]
+        assert "may live in notes or archived windows" in system
+        assert "notes_search and history_search" in system
+        assert "notes_write" in system
 
 
 def test_writing_a_note_does_not_rewrite_the_open_window(tmp_path, monkeypatch):

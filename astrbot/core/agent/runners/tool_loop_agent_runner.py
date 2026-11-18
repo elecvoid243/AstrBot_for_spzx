@@ -1809,6 +1809,11 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             lines.extend(
                 f"- {note['path']} ({note['lines']} lines)" for note in state.notes
             )
+        lines.append(
+            "Facts this task already established may live in notes or archived "
+            "windows: call notes_search and history_search before re-deriving "
+            "them, and keep durable findings in notes with notes_write."
+        )
         lines.append("</context_window>")
         return "\n".join(lines)
 

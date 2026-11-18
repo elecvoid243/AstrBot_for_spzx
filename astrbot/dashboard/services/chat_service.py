@@ -95,7 +95,7 @@ from astrbot.dashboard.services.unified_stream import UnifiedStreamHub
 SSE_HEARTBEAT = ": heartbeat\n\n"
 CHAT_RUN_SUBSCRIBER_QUEUE_SIZE = 256
 # Uploaded chat attachments larger than this are rejected.
-MAX_UPLOAD_FILE_SIZE_MB = 512
+MAX_UPLOAD_FILE_SIZE_MB = 1024
 MAX_UPLOAD_FILE_SIZE_BYTES = MAX_UPLOAD_FILE_SIZE_MB * 1024 * 1024
 # ChatUI history windowing: the dashboard chat asks for the most recent
 # HISTORY_WINDOW_SIZE records and loads older pages on demand via

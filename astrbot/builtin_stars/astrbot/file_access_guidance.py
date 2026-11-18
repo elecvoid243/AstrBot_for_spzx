@@ -37,10 +37,13 @@ def _iter_text_blocks(content: object):
         yield content
     elif isinstance(content, list):
         for block in content:
-            if isinstance(block, dict):
-                text = block.get("text")
-                if isinstance(text, str):
-                    yield text
+            text = (
+                block.get("text")
+                if isinstance(block, dict)
+                else getattr(block, "text", None)
+            )
+            if isinstance(text, str):
+                yield text
 
 
 def _last_guidance_text(req: ProviderRequest) -> str | None:
@@ -64,9 +67,16 @@ def _last_guidance_text(req: ProviderRequest) -> str | None:
         if isinstance(part_text, str) and _MODE_MARKER in part_text:
             return part_text
     for message in reversed(req.contexts):
-        if not isinstance(message, dict):
-            continue
-        for candidate in _iter_text_blocks(message.get("content")):
+        # Contexts reach this hook either as plain dicts (persisted history) or
+        # as Message objects (runner-resumed history); both must be scanned,
+        # otherwise the dedupe misses the block already stored in history and
+        # appends a second copy on every tool-loop step.
+        content = (
+            message.get("content")
+            if isinstance(message, dict)
+            else getattr(message, "content", None)
+        )
+        for candidate in _iter_text_blocks(content):
             if _MODE_MARKER in candidate:
                 return candidate
     return None

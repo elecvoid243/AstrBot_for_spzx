@@ -698,8 +698,12 @@ class InternalAgentSubStage(Stage):
                 continue
             if message.role in ["assistant", "user"] and message._no_save:
                 continue
-            if message.internal:
-                continue
+            # Kernel notices (context-budget water levels) stay in the persisted
+            # history on purpose: they are model-visible control text, and a
+            # notice appended early in a long turn sits in the middle of the
+            # list. Dropping it here shortens the history the next turn
+            # rebuilds, shifts every later message, and costs the provider
+            # prefix cache from that index on.
             messages_to_save.append(message)
 
         cfg = repetition_cfg or RepetitionSanitizeConfig()

@@ -155,7 +155,12 @@ async def test_save_to_history_keeps_encrypted_think():
 
 
 @pytest.mark.asyncio
-async def test_save_to_history_stamps_window_and_skips_internal():
+async def test_save_to_history_stamps_window_and_keeps_internal():
+    """内核通知随历史落盘。
+
+    通知可能停在列表中间（长回合里早期插入、后面又追加了上百条），
+    保存时丢掉它会让下一轮从该位置起整体错位，前缀缓存整条失效。
+    """
     from astrbot.core.agent.message import WindowState
 
     stage, event, req = _make_stage()
@@ -174,5 +179,6 @@ async def test_save_to_history_stamps_window_and_skips_internal():
     )
 
     history = stage.conv_manager.update_conversation.call_args.kwargs["history"]
-    assert all(item.get("content") != notice.content for item in history)
+    assert [item.get("content") for item in history] == ["hi", notice.content]
+    assert history[-1]["_internal"] is True
     assert history[-1]["_window"]["seq"] == 2

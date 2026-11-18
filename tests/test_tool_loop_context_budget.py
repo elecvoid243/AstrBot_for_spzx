@@ -93,8 +93,13 @@ async def _reset_budget_runner(provider, contexts, **kwargs):
 
 
 def _persisted(messages, window_state):
-    """Mirror the save path: drop control text, stamp the window, then dump."""
-    kept = [message for message in messages if not message.internal]
+    """Mirror the save path: stamp the window on the last message, then dump.
+
+    Kernel notices stay in the persisted history on purpose: dropping them
+    shortens the rebuilt history and shifts every later message, which costs
+    the provider prefix cache from that index on.
+    """
+    kept = list(messages)
     kept[-1] = kept[-1].model_copy(update={"window": window_state.model_copy()})
     return [message.model_dump_for_context() for message in kept]
 

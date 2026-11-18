@@ -209,6 +209,14 @@ class WindowState(BaseModel):
     notice_level: int = 0
     """Highest budget level already sent in this window (0, 25, 50 or 85)."""
     exhausted_sent: bool = False
+    """The window ran out of room; the model was already told to conclude."""
+    notes: list[dict[str, Any]] = Field(default_factory=list)
+    """Notes captured when the window opened, as path and line-count pairs.
+
+    Rendered into the system prompt's window block. Freezing them here keeps
+    that prefix byte-identical for the whole window: a note written mid-window
+    must not rewrite the prompt and drop the provider's prefix cache.
+    """
 
 
 class Message(BaseModel):

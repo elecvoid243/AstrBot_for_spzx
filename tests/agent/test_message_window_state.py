@@ -15,6 +15,7 @@ def test_window_state_round_trips_through_history():
         "prev_id": None,
         "notice_level": 50,
         "exhausted_sent": False,
+        "notes": [],
     }
     assert Message.model_validate(dumped).window == state
 

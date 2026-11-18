@@ -9,6 +9,7 @@ from mcp.types import CallToolResult, TextContent
 from astrbot.core.agent.context.compressor import TruncateByTurnsCompressor
 from astrbot.core.agent.hooks import BaseAgentRunHooks
 from astrbot.core.agent.message import ImageURLPart, TextPart
+from astrbot.core.agent.notes_store import write_note
 from astrbot.core.agent.run_context import ContextWrapper
 from astrbot.core.agent.runners.tool_loop_agent_runner import ToolLoopAgentRunner
 from astrbot.core.agent.tool import FunctionTool, ToolSet
@@ -849,3 +850,69 @@ async def test_usage_baseline_remains_valid_across_multiple_tool_loop_requests()
     )
     assert sum(event.type == "context_compression" for event in events) == 1
     assert len(executor.calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_note_written_mid_window_leaves_the_system_prompt_alone(
+    tmp_path, monkeypatch
+):
+    """A note tool call must not invalidate the prompt prefix of its window."""
+    import astrbot.core.agent.notes_store as notes_store
+
+    monkeypatch.setattr(
+        notes_store, "get_astrbot_agent_notes_path", lambda: str(tmp_path)
+    )
+    provider = BudgetProvider(
+        [
+            LLMResponse(
+                role="assistant",
+                tools_call_name=["write_note"],
+                tools_call_args=[{}],
+                tools_call_ids=["one"],
+            ),
+            LLMResponse(role="assistant", completion_text="done"),
+        ],
+        max_context_tokens=1000,
+    )
+
+    class NoteWritingExecutor(BudgetToolExecutor):
+        async def execute(self, tool, run_context, **kwargs):
+            write_note("budget", "plan.md", "a\nb")
+            async for result in super().execute(tool, run_context, **kwargs):
+                yield result
+
+    runner = ToolLoopAgentRunner()
+    await runner.reset(
+        provider=provider,
+        request=ProviderRequest(
+            prompt="current task",
+            session_id="budget",
+            contexts=[],
+            conversation=SimpleNamespace(cid="budget", token_usage=0),
+            func_tool=ToolSet(
+                tools=[
+                    FunctionTool(
+                        name="write_note", description="Write a note", parameters={}
+                    )
+                ]
+            ),
+            llm_params={"max_tokens": 1},
+        ),
+        run_context=ContextWrapper(context=None),
+        tool_executor=NoteWritingExecutor("saved"),
+        agent_hooks=BaseAgentRunHooks(),
+        context_limit_reached_strategy="token_budget",
+        custom_token_counter=CharacterTokenCounter(),
+    )
+
+    _ = [event async for event in runner.step_until_done(3)]
+
+    assert len(provider.requests) == 2
+    first_system = provider.requests[0]["contexts"][0]
+    second_system = provider.requests[1]["contexts"][0]
+    if not isinstance(first_system, dict):
+        first_system = first_system.content
+        second_system = second_system.content
+    assert "<context_window>" in first_system
+    assert first_system == second_system
+    assert "Private notes" not in second_system

@@ -1587,7 +1587,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         if self._snapshot_is_subagent():
             # A subagent shares the main umo, so the marker and the archive
             # describe the main conversation rather than this run.
-            return WindowState(id=uuid.uuid4().hex)
+            return WindowState(id=uuid.uuid4().hex, notes=self._note_summary())
         state = latest_window_state(messages)
         if state is not None:
             return state
@@ -1608,7 +1608,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             except OSError:
                 windows = []
         if not windows:
-            return WindowState(id=uuid.uuid4().hex)
+            return WindowState(id=uuid.uuid4().hex, notes=self._note_summary())
         newest = max(
             (entry for entry in windows if isinstance(entry, dict)),
             key=lambda entry: (
@@ -1624,6 +1624,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             id=uuid.uuid4().hex,
             seq=max(len(windows), highest_seq),
             prev_id=str(newest.get("window_id")) if newest else None,
+            notes=self._note_summary(),
         )
 
     def _on_context_reset(self, discarded: list[Message] | None = None) -> None:
@@ -1645,6 +1646,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             id=uuid.uuid4().hex,
             seq=previous.seq + 1,
             prev_id=previous.id,
+            notes=self._note_summary(),
         )
         self._window_just_reset = True
 
@@ -1779,13 +1781,13 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             and message.content.startswith(_BUDGET_NOTICE_PREFIXES)
         )
 
-    def _context_window_notice(
-        self, notes: list[dict[str, T.Any]] | None = None
-    ) -> str:
+    def _context_window_notice(self) -> str:
         """Render the window identity the model needs to navigate the archive.
 
-        Args:
-            notes: Newest private notes, already limited by the caller.
+        The block is a pure function of ``window_state``, notes listing
+        included: nothing here reads the filesystem or the clock, so every
+        request of one window renders identical bytes and the provider prefix
+        cache survives a note written mid-window.
 
         Returns:
             A control block with the current, previous and first-step facts.
@@ -1802,24 +1804,32 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             lines.append(
                 "Earlier windows are archived; use the history tools to search them."
             )
-        if notes:
+        if state.notes:
             lines.append("Private notes (shared across windows, newest first):")
-            lines.extend(f"- {note['path']} ({note['lines']} lines)" for note in notes)
+            lines.extend(
+                f"- {note['path']} ({note['lines']} lines)" for note in state.notes
+            )
         lines.append("</context_window>")
         return "\n".join(lines)
 
     def _note_summary(self) -> list[dict[str, T.Any]]:
-        """Return a short notes listing for the window notice.
+        """Snapshot the notes listing a window opens with.
+
+        Called only when a window is created, never per request: the rendered
+        system prompt must not change while that window is open.
 
         Returns:
-            Up to three newest notes; empty when this run has no session or the
-            notes root is unreadable.
+            Up to three newest notes as path and line-count pairs; empty when
+            this run has no session or the notes root is unreadable.
         """
         umo = getattr(getattr(self, "req", None), "session_id", "") or ""
         if not umo:
             return []
         try:
-            return list_notes(umo, limit=3)
+            return [
+                {"path": note["path"], "lines": note["lines"]}
+                for note in list_notes(umo, limit=3)
+            ]
         except OSError:
             return []
 
@@ -1828,10 +1838,12 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
 
         The identity stays constant for the whole window, so appending it to the
         system prefix keeps every turn byte-identical and the provider prefix
-        cache warm. Rebuilding it per request instead of storing it also keeps
-        control text out of the history, which is what makes that prefix survive
-        a reload from the database. A request without a system prompt gets one
-        carrying only the notice, so the identity never disappears.
+        cache warm. That includes the notes listing, which the window froze when
+        it opened; only a window switch re-reads it. Rebuilding the notice per
+        request instead of storing it also keeps control text out of the
+        history, which is what makes that prefix survive a reload from the
+        database. A request without a system prompt gets one carrying only the
+        notice, so the identity never disappears.
 
         Args:
             contexts: Provider-facing messages of the current request, as dicts
@@ -1839,7 +1851,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         """
         if not contexts:
             return
-        notice = self._context_window_notice(self._note_summary())
+        notice = self._context_window_notice()
         first = contexts[0]
         if isinstance(first, dict):
             if first.get("role") != "system":

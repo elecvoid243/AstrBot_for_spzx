@@ -114,13 +114,8 @@ def test_multimodal_system_content_gets_a_text_part():
     assert "<context_window>" in parts[-1]["text"]
 
 
-def test_notes_summary_lists_the_newest_files(tmp_path, monkeypatch):
-    monkeypatch.setattr(
-        notes_store, "get_astrbot_agent_notes_path", lambda: str(tmp_path)
-    )
-    write_note("umo:a", "plan.md", "line one\nline two")
-    runner = _runner(WindowState(id="w1"))
-    runner.req = SimpleNamespace(session_id="umo:a")
+def test_a_window_lists_the_notes_it_opened_with():
+    runner = _runner(WindowState(id="w1", notes=[{"path": "plan.md", "lines": 2}]))
     contexts = _contexts()
 
     runner._append_window_notice(contexts)
@@ -128,6 +123,39 @@ def test_notes_summary_lists_the_newest_files(tmp_path, monkeypatch):
     system = contexts[0]["content"]
     assert "Private notes (shared across windows, newest first):" in system
     assert "- plan.md (2 lines)" in system
+
+
+def test_writing_a_note_does_not_rewrite_the_open_window(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        notes_store, "get_astrbot_agent_notes_path", lambda: str(tmp_path)
+    )
+    write_note("umo:a", "plan.md", "line one\nline two")
+    runner = _runner(WindowState(id="w1", notes=[{"path": "plan.md", "lines": 2}]))
+    runner.req = SimpleNamespace(session_id="umo:a")
+    first = _contexts()
+    runner._append_window_notice(first)
+
+    write_note("umo:a", "plan.md", "line one\nline two\nline three")
+    second = _contexts()
+    runner._append_window_notice(second)
+
+    # A note written mid-window must not move a single byte of the system
+    # prompt, or the provider prefix cache restarts at message zero.
+    assert first[0]["content"] == second[0]["content"]
+    assert "- plan.md (2 lines)" in second[0]["content"]
+
+
+def test_a_new_window_freezes_the_notes_at_that_moment(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        notes_store, "get_astrbot_agent_notes_path", lambda: str(tmp_path)
+    )
+    write_note("umo:a", "plan.md", "line one\nline two\nline three")
+    runner = _runner(WindowState(id="w1", notes=[]))
+    runner.req = SimpleNamespace(session_id="umo:a")
+
+    runner._on_context_reset()
+
+    assert runner.window_state.notes == [{"path": "plan.md", "lines": 3}]
 
 
 def test_no_notes_summary_without_notes(tmp_path, monkeypatch):

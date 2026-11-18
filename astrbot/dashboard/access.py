@@ -52,6 +52,22 @@ CHAT_TOOL_OPERATIONS = {
     "skill_guide_load",
     "skill_guide_clear",
 }
+
+UNIFIED_SEND_FIELDS = {
+    "mode",
+    "session_id",
+    "message_id",
+    "run_id",
+    "content",
+    "config_id",
+    "selected_provider",
+    "selected_model",
+    "thinking_effort",
+    "flags",
+    "_skip_user_history",
+    "_llm_checkpoint_id",
+}
+
 PROJECT_THREAD_OPERATIONS = {
     "list_chat_projects": (set(), set()),
     "list_dashboard_chat_projects": (set(), set()),
@@ -177,6 +193,8 @@ USER_OPERATIONS = (
         "unified_chat_stream",
         "unified_send_chat",
         "unified_run_snapshot",
+        "unified_run_tool_result",
+        "unified_message_tool_result",
         "active_chat_runs",
         "chat_configs",
         "chat_models",
@@ -488,42 +506,32 @@ async def validate_account_request(request: Request, account) -> None:
             # Epoch and cursors only replay frames the account already owns.
             if set(payload) - {"epoch", "cursors"}:
                 raise ApiError("Unsupported chat fields", status_code=400)
+            cursors = payload.get("cursors") or {}
             if not isinstance(payload.get("epoch") or "", str) or not isinstance(
-                payload.get("cursors") or {}, dict
+                cursors, dict
             ):
                 raise ApiError("Invalid stream resume hints", status_code=400)
+            if any(
+                not isinstance(session_id, str) or not isinstance(seq, int)
+                for session_id, seq in cursors.items()
+            ):
+                raise ApiError("Unsupported chat cursors", status_code=400)
             return
-        # flags, _skip_user_history, _llm_checkpoint_id, persona_prompt and the
-        # speech selectors stay admin-only: the route copies them straight into
-        # the run payload, while the ChatUI omits them for ordinary accounts.
-        if set(payload) - {
-            "mode",
-            "run_id",
-            "session_id",
-            "message_id",
-            "content",
-            "config_id",
-            "selected_provider",
-            "selected_model",
-            "thinking_effort",
-        }:
+        # flags, the edited-continuation keys and the public selectors are the
+        # ChatUI's own payload; persona_prompt and the speech selectors stay
+        # admin-only because the route copies them straight into the run.
+        if set(payload) - UNIFIED_SEND_FIELDS:
             raise ApiError("Unsupported chat fields", status_code=400)
+        if payload.get("mode", "send") not in {"send", "regenerate"}:
+            raise ApiError("Unsupported send mode", status_code=400)
         session_id = payload.get("session_id")
         if not isinstance(session_id, str) or not session_id:
             raise ApiError("Invalid session ID", status_code=400)
-        session = await request.app.state.db.get_platform_session_by_id(session_id)
-        if (
-            session is None
-            or session.creator != account.resource_owner
-            or session.platform_id != "webchat"
-        ):
-            raise ApiError("Resource is unavailable", status_code=403)
-        message_id = payload.get("message_id")
         if payload.get("mode") == "regenerate":
-            # An edited continuation carries content; a regeneration replays an
-            # existing bot message and must name it.
-            if isinstance(message_id, bool) or not isinstance(message_id, (int, str)):
-                raise ApiError("Invalid message ID", status_code=400)
+            # The chat service resolves the persisted message and rejects a
+            # target outside the caller's own sessions.
+            if payload.get("message_id") is None:
+                raise ApiError("Invalid regenerate target", status_code=400)
             return
         content = payload.get("content")
         if not isinstance(content, (str, list)) or not content:
@@ -553,6 +561,22 @@ async def validate_account_request(request: Request, account) -> None:
                 }
             ):
                 raise ApiError("Unsupported message part", status_code=400)
+        flags = payload.get("flags")
+        if flags is not None and (
+            not isinstance(flags, dict)
+            or set(flags)
+            - {
+                "enable_inline_genui",
+                "enable_default_system_prompt",
+                "enable_streaming",
+            }
+            or any(not isinstance(value, bool) for value in flags.values())
+        ):
+            raise ApiError("Unsupported chat flags", status_code=400)
+        if payload.get("_skip_user_history") is True and not isinstance(
+            payload.get("_llm_checkpoint_id"), str
+        ):
+            raise ApiError("Invalid edited continuation", status_code=400)
         return
     if operation in FILE_OPERATIONS:
         # Typed upload schemas and multipart parsers validate file operations.

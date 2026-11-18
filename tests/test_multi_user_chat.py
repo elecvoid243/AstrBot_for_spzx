@@ -583,3 +583,62 @@ async def test_websocket_entry_points_deny_unadapted_users_and_admin_foreign_bin
     assert any(payload.get("code") == "PERMISSION_DENIED" for payload in payloads)
     assert not any(payload.get("type") == "session_bound" for payload in payloads)
     assert not server.asgi_app.state.services.live_chat.sessions
+
+
+@pytest.mark.asyncio
+async def test_unified_chat_send_admits_ordinary_accounts_and_keeps_ownership(
+    ordinary_chat,
+):
+    """The unified ChatUI endpoints must not be gated as administrator-only."""
+    client, server, core, db, admin, users = ordinary_chat
+    owner, other = users
+    headers = {"Authorization": f"Bearer {owner['token']}"}
+    created = await client.get("/api/v1/chat/sessions/new", headers=headers)
+    assert created.status_code == 200, created.text
+    session_id = created.json()["data"]["session_id"]
+
+    # Admission is granted: the route validates the payload (400) instead of
+    # the middleware refusing the whole operation (403).
+    invalid = await client.post(
+        "/api/v1/chat/send", headers=headers, json={"session_id": session_id}
+    )
+    assert invalid.status_code == 400, invalid.text
+    assert "not available for this account" not in invalid.text
+
+    # Internal-only fields stay closed to ordinary accounts.
+    forged = await client.post(
+        "/api/v1/chat/send",
+        headers=headers,
+        json={
+            "session_id": session_id,
+            "content": [{"type": "plain", "text": "hello"}],
+            "persona_prompt": "forged persona",
+        },
+    )
+    assert forged.status_code == 400, forged.text
+    assert "Unsupported chat fields" in forged.text
+
+    # The stream body only carries the tab epoch and integer replay cursors.
+    bad_cursors = await client.post(
+        "/api/v1/chat/stream",
+        headers=headers,
+        json={"epoch": "e1", "cursors": {session_id: "not-a-sequence"}},
+    )
+    assert bad_cursors.status_code == 400, bad_cursors.text
+    assert "Unsupported chat cursors" in bad_cursors.text
+
+    # Ownership still rejects another account's session after admission.
+    foreign_headers = {"Authorization": f"Bearer {other['token']}"}
+    foreign_session = (
+        await client.get("/api/v1/chat/sessions/new", headers=foreign_headers)
+    ).json()["data"]["session_id"]
+    denied = await client.post(
+        "/api/v1/chat/send",
+        headers=headers,
+        json={
+            "session_id": foreign_session,
+            "content": [{"type": "plain", "text": "foreign mutation"}],
+        },
+    )
+    assert denied.status_code == 400, denied.text
+    assert "Permission denied" in denied.text

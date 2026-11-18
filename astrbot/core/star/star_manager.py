@@ -1925,6 +1925,13 @@ class PluginManager:
     ) -> None:
         """Update and reload an installed plugin.
 
+        The plugin is stopped before its files are replaced: a running plugin
+        may still hold them open (logs, SQLite files, native modules), which
+        makes the replacement fail on Windows. The activation state lives in
+        shared_preferences and is never modified here, so the reload below
+        restores it — an enabled plugin comes back enabled, a disabled one
+        stays disabled.
+
         Args:
             plugin_name: Registered plugin name.
             proxy: Optional URL-prefix mirror for archive downloads.
@@ -1944,19 +1951,49 @@ class PluginManager:
         if plugin.reserved:
             raise Exception("该插件是 AstrBot 保留插件，无法更新。")
 
-        await self._updater.update(
-            plugin,
-            proxy=proxy,
-            download_url=download_url,
-            repo_url=repo_url,
-        )
+        # Stop the plugin before touching its files so it releases whatever it
+        # still has open, and drop its modules so the new files are imported
+        # instead of the cached ones.
         if plugin.root_dir_name:
-            plugin_dir_path = os.path.join(self.plugin_store_path, plugin.root_dir_name)
-            await self._ensure_plugin_requirements(
-                plugin_dir_path,
-                plugin_name,
+            async with self._pm_lock:
+                try:
+                    await self._terminate_plugin(plugin)
+                except Exception:
+                    logger.warning(
+                        "Plugin %s did not terminate cleanly",
+                        plugin_name,
+                        exc_info=True,
+                    )
+                self._cleanup_plugin_state(plugin.root_dir_name, plugin.reserved)
+
+        try:
+            await self._updater.update(
+                plugin,
+                proxy=proxy,
+                download_url=download_url,
+                repo_url=repo_url,
             )
-        await self.reload(plugin_name)
+            if plugin.root_dir_name:
+                plugin_dir_path = os.path.join(
+                    self.plugin_store_path, plugin.root_dir_name
+                )
+                await self._ensure_plugin_requirements(
+                    plugin_dir_path,
+                    plugin_name,
+                )
+        except BaseException:
+            # A failed update must not leave the plugin unloaded.
+            if plugin.root_dir_name:
+                async with self._pm_lock:
+                    await self.load(specified_dir_name=plugin.root_dir_name)
+            raise
+
+        if not plugin.root_dir_name:
+            return
+        async with self._pm_lock:
+            success, error = await self.load(specified_dir_name=plugin.root_dir_name)
+        if not success:
+            raise Exception(error or f"更新插件 {plugin_name} 失败。")
 
     async def turn_off_plugin(self, plugin_name: str) -> None:
         """禁用一个插件。

@@ -56,8 +56,10 @@ class MockStar:
     def __init__(self):
         self.root_dir_name = TEST_PLUGIN_DIR
         self.name = TEST_PLUGIN_NAME
+        self.module_path = f"data.plugins.{TEST_PLUGIN_DIR}.main"
         self.repo = TEST_PLUGIN_REPO
         self.reserved = False
+        self.activated = True
         self.info = {"repo": TEST_PLUGIN_REPO, "readme": ""}
 
 
@@ -278,14 +280,6 @@ def _build_load_mock(events):
         return True, ""
 
     return mock_load
-
-
-def _build_reload_mock(events):
-    async def mock_reload(specified_dir_name=None):
-        events.append(("reload", specified_dir_name or TEST_PLUGIN_DIR))
-        return True, ""
-
-    return mock_reload
 
 
 def _build_dependency_install_mock(
@@ -2016,7 +2010,7 @@ async def test_update_plugin_dependency_install_flow(
         "astrbot.core.star.star_manager.pip_installer.install",
         _build_dependency_install_mock(events, dependency_install_fails),
     )
-    monkeypatch.setattr(plugin_manager_pm, "reload", _build_reload_mock(events))
+    monkeypatch.setattr(plugin_manager_pm, "load", _build_load_mock(events))
 
     if dependency_install_fails:
         with pytest.raises(PluginDependencyInstallError, match="pip failed"):
@@ -2035,7 +2029,69 @@ async def test_update_plugin_dependency_install_flow(
             expected_original_path=local_updater / "requirements.txt",
             expected_content="networkx\n",
         )
-        assert ("reload", TEST_PLUGIN_DIR) in events
+        assert ("load", TEST_PLUGIN_DIR) in events
+
+
+@pytest.mark.asyncio
+async def test_update_plugin_stops_plugin_before_replacing_files(
+    plugin_manager_pm: PluginManager,
+    local_updater: Path,
+    monkeypatch,
+):
+    """A running plugin must be terminated before its files are replaced."""
+    mock_star = MockStar()
+    cast(Any, plugin_manager_pm.context).stars.append(mock_star)
+
+    events = []
+
+    async def mock_terminate(star_metadata):
+        events.append(("terminate", star_metadata.name))
+
+    async def mock_update(plugin, proxy="", download_url="", repo_url=""):
+        del proxy, download_url, repo_url
+        events.append(("update", plugin.name))
+
+    monkeypatch.setattr(plugin_manager_pm, "_terminate_plugin", mock_terminate)
+    monkeypatch.setattr(plugin_manager_pm._updater, "update", mock_update)
+    monkeypatch.setattr(plugin_manager_pm, "load", _build_load_mock(events))
+    _write_requirements(local_updater)
+    _mock_missing_requirements(monkeypatch, set())
+
+    await plugin_manager_pm.update_plugin(TEST_PLUGIN_NAME)
+
+    assert events[:3] == [
+        ("terminate", TEST_PLUGIN_NAME),
+        ("update", TEST_PLUGIN_NAME),
+        ("load", TEST_PLUGIN_DIR),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_update_plugin_reloads_plugin_when_update_fails(
+    plugin_manager_pm: PluginManager,
+    monkeypatch,
+):
+    """A failed update must not leave the plugin unloaded."""
+    mock_star = MockStar()
+    cast(Any, plugin_manager_pm.context).stars.append(mock_star)
+
+    events = []
+
+    async def mock_terminate(star_metadata):
+        del star_metadata
+
+    async def mock_update(plugin, proxy="", download_url="", repo_url=""):
+        del plugin, proxy, download_url, repo_url
+        raise RuntimeError("archive is locked")
+
+    monkeypatch.setattr(plugin_manager_pm, "_terminate_plugin", mock_terminate)
+    monkeypatch.setattr(plugin_manager_pm._updater, "update", mock_update)
+    monkeypatch.setattr(plugin_manager_pm, "load", _build_load_mock(events))
+
+    with pytest.raises(RuntimeError, match="archive is locked"):
+        await plugin_manager_pm.update_plugin(TEST_PLUGIN_NAME)
+
+    assert events == [("load", TEST_PLUGIN_DIR)]
 
 
 @pytest.mark.asyncio

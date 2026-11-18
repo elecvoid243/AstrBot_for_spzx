@@ -79,6 +79,8 @@ CHATUI_INLINE_GENUI_SYSTEM_PROMPT = (
     "Do not wrap the block in Markdown code fences. Put complete, self-contained HTML/CSS/JavaScript inside the tag, "
     "including `<style>` and `<script>` when needed. Prefer responsive layouts that fit a chat iframe. "
     "For revisions, output the full updated `<html-genui>` block instead of a diff. "
+    "Never put the block or raw HTML into tool arguments: `ask_user_choice` fields such as "
+    "`prompt`, `options` and `extra_content` stay plain text or Markdown. "
     "Only use this block when an HTML UI preview is useful; otherwise answer normally. "
     "Use the least tokens possible to achieve the goal. "
     "No need to write <title> or <meta> tags. "

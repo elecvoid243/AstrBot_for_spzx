@@ -1231,39 +1231,6 @@ class TestEnsurePersonaAndSkills:
         assert "Custom persona." in req.system_prompt
 
     @pytest.mark.asyncio
-    async def test_inline_genui_prompt_is_added_with_custom_persona(
-        self, mock_event, mock_context
-    ):
-        """Test inline GenUI instructions are independent of persona selection."""
-        module = ama
-        persona = {"name": "conv-persona", "prompt": "Custom persona."}
-        mock_context.persona_manager.resolve_selected_persona = AsyncMock(
-            return_value=("conv-persona", persona, None, False)
-        )
-        mock_event.get_extra.side_effect = lambda key: key == "enable_inline_genui"
-        req = ProviderRequest()
-        req.conversation = MagicMock(persona_id="conv-persona")
-
-        await module._ensure_persona_and_skills(req, {}, mock_context, mock_event)
-
-        assert "Custom persona." in req.system_prompt
-        assert module.CHATUI_INLINE_GENUI_SYSTEM_PROMPT in req.system_prompt
-
-    @pytest.mark.asyncio
-    async def test_inline_genui_prompt_does_not_require_conversation(
-        self, mock_event, mock_context
-    ):
-        """Test inline GenUI instructions are added before conversation setup."""
-        module = ama
-        mock_event.get_extra.side_effect = lambda key: key == "enable_inline_genui"
-        req = ProviderRequest()
-
-        await module._ensure_persona_and_skills(req, {}, mock_context, mock_event)
-
-        assert module.CHATUI_INLINE_GENUI_SYSTEM_PROMPT in req.system_prompt
-        mock_context.persona_manager.resolve_selected_persona.assert_not_awaited()
-
-    @pytest.mark.asyncio
     async def test_default_system_prompt_can_be_disabled(
         self, mock_event, mock_context
     ):
@@ -3072,6 +3039,54 @@ class TestBuildMainAgent:
         assert system_prompt.endswith(module.CHATUI_FILE_REFERENCE_SYSTEM_PROMPT)
         # Everything assembled earlier (persona, skills, tool guidance) precedes it.
         assert system_prompt.index(module.CHATUI_FILE_REFERENCE_SYSTEM_PROMPT) > 0
+        result.reset_coro.close()
+
+    @pytest.mark.asyncio
+    async def test_build_main_agent_appends_inline_genui_before_chatui_rules(
+        self, mock_event, mock_context, mock_provider
+    ):
+        """Inline GenUI rules follow the persona and precede the tail reply rules."""
+        module = ama
+        persona = {"name": "conv-persona", "prompt": "Custom persona."}
+        mock_context.persona_manager.resolve_selected_persona = AsyncMock(
+            return_value=("conv-persona", persona, None, False)
+        )
+        mock_event.get_platform_name.return_value = "webchat"
+        mock_event.get_extra.side_effect = lambda key: (
+            True if key == "enable_inline_genui" else None
+        )
+        mock_context.get_provider_by_id.return_value = None
+        mock_context.get_using_provider.return_value = mock_provider
+        mock_context.get_config.return_value = {}
+
+        _setup_conversation_for_build(mock_context.conversation_manager)
+
+        with (
+            patch("astrbot.core.astr_main_agent.AgentRunner") as mock_runner_cls,
+            patch("astrbot.core.astr_main_agent.AstrAgentContext"),
+            patch("astrbot.core.astr_main_agent._handle_webchat", AsyncMock()),
+        ):
+            mock_runner = MagicMock()
+            mock_runner.reset = AsyncMock()
+            mock_runner_cls.return_value = mock_runner
+
+            result = await module.build_main_agent(
+                event=mock_event,
+                plugin_context=mock_context,
+                config=module.MainAgentBuildConfig(tool_call_timeout=60),
+                apply_reset=False,
+            )
+
+        assert result is not None
+        system_prompt = result.provider_request.system_prompt
+        genui_at = system_prompt.index(module.CHATUI_INLINE_GENUI_SYSTEM_PROMPT)
+        # The output-format contract no longer precedes the persona.
+        assert 0 < system_prompt.index("Custom persona.") < genui_at
+        # Both ChatUI reply-format rules sit at the tail, file references last.
+        assert genui_at < system_prompt.index(
+            module.CHATUI_FILE_REFERENCE_SYSTEM_PROMPT
+        )
+        assert system_prompt.endswith(module.CHATUI_FILE_REFERENCE_SYSTEM_PROMPT)
         result.reset_coro.close()
 
     @pytest.mark.asyncio

@@ -48,10 +48,20 @@ export interface ArchivedSessionsPayload {
   pagination: ArchivedPagination;
 }
 
+/** Sidebar page size: initial load and each scroll-to-edge increment. */
+const SESSION_PAGE_SIZE = 50;
+
 export function useSessions(chatboxMode: boolean = false) {
   const router = useRouter();
   const accountRevision = accountSessionRevision.value;
   const sessions = ref<Session[]>([]);
+  const sessionPage = ref(1);
+  const sessionPageSize = ref(SESSION_PAGE_SIZE);
+  const sessionsHasMore = ref(false);
+  const sessionsLoadingMore = ref(false);
+  // Set once the archive dialog has fetched its first page; archive
+  // refreshes stay dormant until then so opening ChatUI never queries it.
+  const archivedLoaded = ref(false);
   const archivedSessions = ref<ArchivedSession[]>([]);
   const archivedPagination = ref<ArchivedPagination>({
     page: 1,
@@ -72,18 +82,57 @@ export function useSessions(chatboxMode: boolean = false) {
     return sessions.value.find((s) => s.session_id === currSessionId.value);
   });
 
-  async function getSessions() {
+  /** Load the sidebar session list.
+   *
+   * ``append`` fetches the next page at the current page size and appends
+   * it (scroll-to-edge). A plain call refreshes page 1 while re-fetching
+   * every row already on screen in one request, so a rename/delete does
+   * not collapse a scrolled list back to the first page.
+   */
+  async function getSessions(options: { append?: boolean } = {}) {
     try {
-      const response = await chatApi.listSessions();
+      const append = options.append === true;
+      const page = append ? sessionPage.value + 1 : 1;
+      const pageSize = append
+        ? sessionPageSize.value
+        : Math.max(SESSION_PAGE_SIZE, sessions.value.length);
+      const response = await chatApi.listSessions({
+        page,
+        page_size: pageSize,
+      });
       assertCurrentAccount(accountRevision);
       if (response.data?.status !== "ok")
         throw new Error(response.data?.message || "Sessions are unavailable");
-      sessions.value = response.data.data;
+      const items: Session[] = response.data.data || [];
+      if (append) {
+        const known = new Set(sessions.value.map((s) => s.session_id));
+        sessions.value = [
+          ...sessions.value,
+          ...items.filter((s) => !known.has(s.session_id)),
+        ];
+      } else {
+        sessions.value = items;
+      }
+      sessionPage.value = page;
+      sessionPageSize.value = pageSize;
+      // A short page means the tail was reached; a full one may have more.
+      sessionsHasMore.value = items.length >= pageSize;
     } catch (err: any) {
       if (err.response?.status === 401) {
         router.push("/auth/login?redirect=/chatbox");
       }
       console.error(err);
+    }
+  }
+
+  /** Fetch the next sidebar page; no-op while one is in flight or at the end. */
+  async function loadMoreSessions() {
+    if (sessionsLoadingMore.value || !sessionsHasMore.value) return;
+    sessionsLoadingMore.value = true;
+    try {
+      await getSessions({ append: true });
+    } finally {
+      sessionsLoadingMore.value = false;
     }
   }
 
@@ -173,11 +222,22 @@ export function useSessions(chatboxMode: boolean = false) {
       };
       archivedSessions.value = items;
       archivedPagination.value = pagination;
+      archivedLoaded.value = true;
       return { items, pagination };
     } catch (err) {
       console.error(err);
       throw err;
     }
+  }
+
+  /** Refresh the archived page only if it has been loaded before.
+   *
+   * Opening ChatUI must not query the archive; mutations that touch
+   * archive state refresh it only after the user opened the dialog once.
+   */
+  async function refreshArchivedIfLoaded() {
+    if (!archivedLoaded.value) return;
+    await getArchivedSessions().catch(() => undefined);
   }
 
   /** Archive or restore a session; refreshes both lists afterwards.
@@ -198,7 +258,9 @@ export function useSessions(chatboxMode: boolean = false) {
         );
         return false;
       }
-      await Promise.allSettled([getSessions(), getArchivedSessions()]);
+      const refreshes: Promise<unknown>[] = [getSessions()];
+      if (archivedLoaded.value) refreshes.push(getArchivedSessions());
+      await Promise.allSettled(refreshes);
       return true;
     } catch (err) {
       console.error(err);
@@ -348,6 +410,10 @@ export function useSessions(chatboxMode: boolean = false) {
     accountSessionRevision,
     () => {
       sessions.value = [];
+      sessionPage.value = 1;
+      sessionPageSize.value = SESSION_PAGE_SIZE;
+      sessionsHasMore.value = false;
+      archivedLoaded.value = false;
       archivedSessions.value = [];
       selectedSessions.value = [];
       currSessionId.value = "";
@@ -371,10 +437,14 @@ export function useSessions(chatboxMode: boolean = false) {
     editingSessionId,
     getCurrentSession,
     getSessions,
+    sessionsHasMore,
+    sessionsLoadingMore,
+    loadMoreSessions,
     newSession,
     deleteSession,
     batchDeleteSessions,
     getArchivedSessions,
+    refreshArchivedIfLoaded,
     setSessionArchived,
     setSessionStarred,
     showEditTitleDialog,

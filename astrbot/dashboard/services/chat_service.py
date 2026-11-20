@@ -5247,14 +5247,35 @@ class ChatService:
     ) -> dict:
         return await self.new_session(username, platform_id or "webchat")
 
-    async def get_sessions(self, username: str, platform_id: str | None) -> list[dict]:
+    async def get_sessions(
+        self,
+        username: str,
+        platform_id: str | None,
+        page: int = 1,
+        page_size: int = 100,
+    ) -> list[dict]:
+        """List the caller's unarchived, non-project sessions.
+
+        Args:
+            username: Dashboard username owning the sessions.
+            platform_id: Optional platform filter.
+            page: 1-based page number; the ChatUI sidebar pages through it
+                as the user scrolls.
+            page_size: Sessions per page. Defaults to the historical cap so
+                API-key and third-party callers keep their old result size.
+
+        Returns:
+            Session dicts ordered by ``updated_at`` descending.
+        """
         sessions, _ = await self.db.get_platform_sessions_by_creator_paginated(
             creator=username,
             platform_id=platform_id,
-            page=1,
-            page_size=100,
+            page=max(page, 1),
+            page_size=max(page_size, 1),
             exclude_project_sessions=True,
             archived=False,
+            # The sidebar only needs the page; skip the unused count scan.
+            count_total=False,
         )
 
         sessions_data = []
@@ -7119,9 +7140,10 @@ class ChatService:
             sender_name="bot",
         )
 
-        # Keep the lazily-built relations cache in sync so the next session
-        # list reflects this branch without a rescan.
-        self.db.update_branch_relation(new_session.session_id, session_id, message_id)
+        # Session metadata carries the edge so list reads never scan messages.
+        await self.db.upsert_session_branch_relation(
+            new_session.session_id, session_id, message_id
+        )
 
         return {
             "session_id": new_session.session_id,

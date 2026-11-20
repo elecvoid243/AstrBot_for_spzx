@@ -533,6 +533,7 @@
     "archiveConfirm": "Archive \"{name}\"? You can restore it anytime from View Archive.",
     "unarchive": "Restore Session",
     "archived": "View Archive",
+    "loadingMore": "Loading more…",
     "archivedDialogTitle": "Archived Conversations",
     "archivedSearchPlaceholder": "Search archived conversation titles…",
     "archivedPagination": "Page {page}/{totalPages} · {total} total",

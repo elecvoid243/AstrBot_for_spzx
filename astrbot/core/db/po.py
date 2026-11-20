@@ -730,6 +730,12 @@ class PlatformMessageHistory(TimestampMixin, SQLModel, table=True):
             "user_id",
             "id",
         ),
+        # Branch backfill joins history to sessions on user_id alone; the
+        # composite index above cannot serve that lookup.
+        Index(
+            "ix_platform_message_history_user_id",
+            "user_id",
+        ),
     )
 
 
@@ -820,6 +826,15 @@ class PlatformSession(TimestampMixin, SQLModel, table=True):
         UniqueConstraint(
             "session_id",
             name="uix_platform_session_id",
+        ),
+        # Sidebar list: WHERE creator=? AND archived=? ORDER BY updated_at
+        # DESC. Without this the planner scans every session and sorts in a
+        # temp b-tree; with it the page is a range read.
+        Index(
+            "ix_platform_sessions_creator_archived_updated_at",
+            "creator",
+            "archived",
+            desc("updated_at"),
         ),
     )
 
@@ -1014,6 +1029,24 @@ class SessionProjectRelation(SQLModel, table=True):
             name="uix_session_project_relation",
         ),
     )
+
+
+class SessionBranchRelation(SQLModel, table=True):
+    """One branch edge: a child session inherits context from a source session.
+
+    The ``branch_info`` divider message stays in platform history for history
+    rendering; this table carries the same edge as session metadata so the
+    sidebar never has to scan message content to draw branch badges.
+    """
+
+    __tablename__: str = "session_branch_relations"
+
+    child_session_id: str = Field(primary_key=True, max_length=100)
+    """Session ID of the branch (the child)."""
+    source_session_id: str = Field(nullable=False, max_length=100)
+    """Session ID the branch inherited context from."""
+    source_message_id: int | None = Field(default=None)
+    """Platform message history ID the branch was cut at."""
 
 
 class CommandConfig(TimestampMixin, SQLModel, table=True):

@@ -497,6 +497,7 @@
     "archiveConfirm": "Архивировать «{name}»? Его можно восстановить из «Просмотра архива».",
     "unarchive": "Восстановить диалог",
     "archived": "Просмотр архива",
+    "loadingMore": "Загрузка…",
     "archivedDialogTitle": "Архивные диалоги",
     "archivedSearchPlaceholder": "Поиск по названиям архивных диалогов…",
     "archivedPagination": "Стр. {page}/{totalPages} · всего {total}",

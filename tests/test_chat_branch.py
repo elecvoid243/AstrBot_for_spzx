@@ -90,7 +90,7 @@ def _make_service(
     )
     # 2026-08-13: branch-relation cache lives on the db layer now.
     db.get_branch_relations = AsyncMock(return_value={})
-    db.update_branch_relation = Mock()
+    db.upsert_session_branch_relation = AsyncMock()
 
     conversation = SimpleNamespace(
         cid="conv-1",
@@ -285,50 +285,217 @@ async def test_get_sessions_filters_relations_to_listed_sessions():
 
 
 @pytest.mark.asyncio
-async def test_branch_session_updates_relations_cache_without_rescan():
+async def test_branch_session_persists_relation_without_message_scan():
     service = _make_service()
 
     await service.branch_session("alice", SRC_SESSION_ID, 2)
 
-    # The db-level cache is updated incrementally; the expensive full-table
-    # scan (get_webchat_branch_infos) is never touched by branch_session.
-    service.db.update_branch_relation.assert_called_once_with(
+    # The edge is written as session metadata; list reads never scan the
+    # branch_info divider message again.
+    service.db.upsert_session_branch_relation.assert_awaited_once_with(
         NEW_SESSION_ID, SRC_SESSION_ID, 2
     )
-    service.db.get_webchat_branch_infos.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_db_branch_relations_scan_once_and_update_incrementally():
-    """BaseDatabase caches relations: one scan, then incremental updates."""
+async def test_db_branch_relations_read_from_metadata_table(tmp_path):
+    """关系从元数据表读取，与消息正文无关。"""
+    from astrbot.core.db.po import PlatformSession
     from astrbot.core.db.sqlite import SQLiteDatabase
 
-    db = SQLiteDatabase(":memory:")
-    db._branch_relations = None
-    db.get_webchat_branch_infos = AsyncMock(
-        return_value=[
-            SimpleNamespace(
-                user_id=NEW_SESSION_ID,
-                content={
-                    "type": "branch_info",
-                    "source_session_id": SRC_SESSION_ID,
-                    "source_message_id": 2,
-                },
+    db = SQLiteDatabase(str(tmp_path / "branch.db"))
+    await db.initialize()
+    async with db.get_db() as session:
+        async with session.begin():
+            session.add_all(
+                [
+                    PlatformSession(
+                        session_id=SRC_SESSION_ID,
+                        platform_id="webchat",
+                        creator="alice",
+                        display_name="源会话",
+                        is_group=0,
+                        archived=0,
+                        created_at=datetime(2026, 8, 13, tzinfo=UTC),
+                        updated_at=datetime(2026, 8, 13, tzinfo=UTC),
+                    ),
+                    PlatformSession(
+                        session_id=NEW_SESSION_ID,
+                        platform_id="webchat",
+                        creator="alice",
+                        display_name="分支 · 源会话",
+                        is_group=0,
+                        archived=0,
+                        created_at=datetime(2026, 8, 13, tzinfo=UTC),
+                        updated_at=datetime(2026, 8, 13, tzinfo=UTC),
+                    ),
+                ]
             )
-        ]
+
+    await db.upsert_session_branch_relation(NEW_SESSION_ID, SRC_SESSION_ID, 2)
+
+    assert await db.get_branch_relations() == {
+        NEW_SESSION_ID: {
+            "source_session_id": SRC_SESSION_ID,
+            "source_message_id": 2,
+        }
+    }
+
+    # 删除任一端会话时关系行一并清理，不留孤儿。
+    await db.delete_platform_session(SRC_SESSION_ID)
+    assert await db.get_branch_relations() == {}
+
+
+@pytest.mark.asyncio
+async def test_db_branch_backfill_filters_archived_at_read(tmp_path):
+    """一次性回填 branch_info；归档子会话读取时过滤，恢复后立即可见。"""
+    from sqlalchemy import text
+
+    from astrbot.core.db.po import PlatformSession
+    from astrbot.core.db.sqlite import SQLiteDatabase
+
+    db = SQLiteDatabase(str(tmp_path / "branch.db"))
+    await db.initialize()
+    async with db.get_db() as session:
+        async with session.begin():
+            session.add_all(
+                [
+                    PlatformSession(
+                        session_id=SRC_SESSION_ID,
+                        platform_id="webchat",
+                        creator="alice",
+                        display_name="源会话",
+                        is_group=0,
+                        archived=0,
+                        created_at=datetime(2026, 8, 13, tzinfo=UTC),
+                        updated_at=datetime(2026, 8, 13, tzinfo=UTC),
+                    ),
+                    PlatformSession(
+                        session_id=NEW_SESSION_ID,
+                        platform_id="webchat",
+                        creator="alice",
+                        display_name="分支 · 源会话",
+                        is_group=0,
+                        archived=1,
+                        created_at=datetime(2026, 8, 13, tzinfo=UTC),
+                        updated_at=datetime(2026, 8, 13, tzinfo=UTC),
+                    ),
+                ]
+            )
+    await db.insert_platform_message_history(
+        platform_id="webchat",
+        user_id=NEW_SESSION_ID,
+        content={
+            "type": "branch_info",
+            "source_session_id": SRC_SESSION_ID,
+            "source_message_id": 2,
+        },
+        sender_id="bot",
+        sender_name="bot",
     )
 
+    # 模拟升级前就存在的库：回填标记归零后重新初始化，触发一次性回填。
+    async with db.engine.begin() as conn:
+        await conn.execute(text("PRAGMA user_version = 0"))
+    await db.initialize()
+
+    assert NEW_SESSION_ID not in await db.get_branch_relations()
+
+    # 恢复归档会话：读取时过滤，无需重扫消息正文。
+    await db.update_platform_session(NEW_SESSION_ID, archived=0)
     relations = await db.get_branch_relations()
     assert relations[NEW_SESSION_ID] == {
         "source_session_id": SRC_SESSION_ID,
         "source_message_id": 2,
     }
-    db.get_webchat_branch_infos.assert_awaited_once()
 
-    db.update_branch_relation("branch-2", "src-2", 5)
-    relations = await db.get_branch_relations()
-    assert relations["branch-2"] == {"source_session_id": "src-2", "source_message_id": 5}
-    db.get_webchat_branch_infos.assert_awaited_once()  # no rescan
+
+@pytest.mark.asyncio
+async def test_db_upgrade_from_pre_relation_schema_keeps_data(tmp_path):
+    """旧结构库升级：只新增表/索引，旧表行数与内容不变。"""
+    from sqlalchemy import text
+
+    from astrbot.core.db.po import PlatformSession
+    from astrbot.core.db.sqlite import SQLiteDatabase
+
+    db = SQLiteDatabase(str(tmp_path / "legacy.db"))
+    await db.initialize()
+    async with db.get_db() as session:
+        async with session.begin():
+            session.add_all(
+                [
+                    PlatformSession(
+                        session_id=SRC_SESSION_ID,
+                        platform_id="webchat",
+                        creator="alice",
+                        display_name="源会话",
+                        is_group=0,
+                        archived=0,
+                        created_at=datetime(2026, 8, 13, tzinfo=UTC),
+                        updated_at=datetime(2026, 8, 13, tzinfo=UTC),
+                    ),
+                    PlatformSession(
+                        session_id=NEW_SESSION_ID,
+                        platform_id="webchat",
+                        creator="alice",
+                        display_name="分支 · 源会话",
+                        is_group=0,
+                        archived=0,
+                        created_at=datetime(2026, 8, 13, tzinfo=UTC),
+                        updated_at=datetime(2026, 8, 13, tzinfo=UTC),
+                    ),
+                ]
+            )
+    await db.insert_platform_message_history(
+        platform_id="webchat",
+        user_id=SRC_SESSION_ID,
+        content={"type": "user", "message": [{"type": "plain", "text": "hello"}]},
+        sender_id="alice",
+        sender_name="alice",
+    )
+    await db.insert_platform_message_history(
+        platform_id="webchat",
+        user_id=NEW_SESSION_ID,
+        content={
+            "type": "branch_info",
+            "source_session_id": SRC_SESSION_ID,
+            "source_message_id": 1,
+        },
+        sender_id="bot",
+        sender_name="bot",
+    )
+
+    # 还原成改动前的结构：没有关系表、没有两个新索引、没有回填标记。
+    async with db.engine.begin() as conn:
+        await conn.execute(text("DROP TABLE session_branch_relations"))
+        await conn.execute(
+            text(
+                "DROP INDEX IF EXISTS ix_platform_sessions_creator_archived_updated_at"
+            )
+        )
+        await conn.execute(
+            text("DROP INDEX IF EXISTS ix_platform_message_history_user_id")
+        )
+        await conn.execute(text("PRAGMA user_version = 0"))
+        sessions_before = (
+            await conn.execute(text("SELECT count(*) FROM platform_sessions"))
+        ).scalar_one()
+        messages_before = (
+            await conn.execute(text("SELECT count(*) FROM platform_message_history"))
+        ).scalar_one()
+
+    await db.initialize()
+
+    async with db.get_db() as session:
+        sessions_after = (
+            await session.execute(text("SELECT count(*) FROM platform_sessions"))
+        ).scalar_one()
+        messages_after = (
+            await session.execute(text("SELECT count(*) FROM platform_message_history"))
+        ).scalar_one()
+
+    assert (sessions_after, messages_after) == (sessions_before, messages_before)
+    assert len(await db.get_branch_relations()) == 1
 
 
 @pytest.mark.asyncio
@@ -340,12 +507,8 @@ async def test_branch_session_inherits_project_relation():
     result = await service.branch_session("alice", SRC_SESSION_ID, 2)
 
     assert result["session_id"] == NEW_SESSION_ID
-    service.db.get_project_by_session.assert_awaited_once_with(
-        SRC_SESSION_ID, "alice"
-    )
-    service.db.add_session_to_project.assert_awaited_once_with(
-        NEW_SESSION_ID, "proj-1"
-    )
+    service.db.get_project_by_session.assert_awaited_once_with(SRC_SESSION_ID, "alice")
+    service.db.add_session_to_project.assert_awaited_once_with(NEW_SESSION_ID, "proj-1")
 
 
 @pytest.mark.asyncio
@@ -355,9 +518,7 @@ async def test_branch_session_without_project_skips_relation():
 
     await service.branch_session("alice", SRC_SESSION_ID, 2)
 
-    service.db.get_project_by_session.assert_awaited_once_with(
-        SRC_SESSION_ID, "alice"
-    )
+    service.db.get_project_by_session.assert_awaited_once_with(SRC_SESSION_ID, "alice")
     service.db.add_session_to_project.assert_not_awaited()
 
 

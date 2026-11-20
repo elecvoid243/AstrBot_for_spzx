@@ -171,7 +171,12 @@
         </div>
       </div>
 
-      <div v-if="!isSidebarCollapsed" class="sidebar-content">
+      <div
+        v-if="!isSidebarCollapsed"
+        ref="sidebarContentRef"
+        class="sidebar-content"
+        @scroll.passive="handleSidebarScroll"
+      >
         <RemoteConnectionsPanel :enabled="remote.enabled.value" :connections="remote.connections.value" :sessions="remote.sessions" :status="remote.status" :selected-connection="remoteConnectionId" :selected-session="remoteSessionId" @select="selectRemoteSession" @refresh="refreshRemoteConnections" />
         <div class="sidebar-group-header">
           <span class="sidebar-group-title">{{
@@ -544,6 +549,17 @@
               </v-list-item-title>
             </v-list-item>
           </StyledMenu>
+
+          <!-- Progressive loading: the next page is requested when this
+               list scrolls near its bottom (see handleSidebarScroll). -->
+          <div
+            v-if="sessionsHasMore || sessionsLoadingMore"
+            class="session-load-more"
+          >
+            <span v-if="sessionsLoadingMore">{{
+              tm("conversation.loadingMore")
+            }}</span>
+          </div>
         </section>
       </div>
 
@@ -1657,10 +1673,13 @@ const {
   sessions,
   currSessionId,
   getSessions,
+  sessionsHasMore,
+  sessionsLoadingMore,
+  loadMoreSessions,
   newSession,
   deleteSession,
   batchDeleteSessions,
-  getArchivedSessions,
+  refreshArchivedIfLoaded,
   setSessionArchived,
   setSessionStarred,
   updateSessionTitle,
@@ -2103,6 +2122,24 @@ const chatSidebarLayoutWidth = computed(() =>
       ? CHAT_SIDEBAR_RAIL_WIDTH
       : customizer.chatSidebarWidth,
 );
+
+// Progressive sidebar loading: the first 50 rows arrive with the page
+// load; the next page is requested when the scroll container nears its
+// bottom. The threshold starts the request before the user hits the edge.
+const SIDEBAR_LOAD_MORE_THRESHOLD = 120;
+const sidebarContentRef = ref<HTMLElement | null>(null);
+
+function handleSidebarScroll() {
+  const element = sidebarContentRef.value;
+  if (!element || sessionsLoadingMore.value || !sessionsHasMore.value) return;
+  if (
+    element.scrollTop + element.clientHeight <
+    element.scrollHeight - SIDEBAR_LOAD_MORE_THRESHOLD
+  ) {
+    return;
+  }
+  void loadMoreSessions();
+}
 
 function startSidebarResize(e: MouseEvent) {
   if (!lgAndUp.value || isSidebarCollapsed.value) return;
@@ -2772,7 +2809,6 @@ onMounted(async () => {
   try {
     await Promise.all([
       getSessions(),
-      getArchivedSessions().catch(() => undefined),
       getProjects(),
       ...(isOrdinaryUser.value ? [] : [loadTokenProviders()]),
     ]);
@@ -3847,7 +3883,7 @@ async function archiveCheckedSessions() {
     // session lists.
     await Promise.all([
       getSessions(),
-      getArchivedSessions().catch(() => undefined),
+      refreshArchivedIfLoaded(),
       ...Object.keys(projectSessionsById.value)
         .filter((projectId) =>
           (projectSessionsById.value[projectId] || []).some((session) =>
@@ -7318,6 +7354,15 @@ function toggleTheme() {
 .drag-hint-enter-from,
 .drag-hint-leave-to {
   opacity: 0;
+}
+
+.session-load-more {
+  min-height: 18px;
+  padding: 8px 4px 2px;
+  font-size: 12px;
+  line-height: 16px;
+  text-align: center;
+  color: rgba(var(--v-theme-on-surface), 0.55);
 }
 
 .session-item {

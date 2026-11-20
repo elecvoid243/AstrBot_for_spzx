@@ -197,10 +197,17 @@ async def chat_sessions(
 ):
     if auth.via != "api_key":
         try:
+            page = int(request.query_params.get("page") or 1)
+            page_size = int(request.query_params.get("page_size") or 100)
+        except ValueError:
+            return error("Invalid page or page_size")
+        try:
             return ok(
                 await chat_service.get_sessions(
                     auth.username,
                     request.query_params.get("platform_id"),
+                    page=page,
+                    page_size=page_size,
                 )
             )
         except ChatServiceError as exc:

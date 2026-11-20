@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import mimetypes
 import sqlite3
 import threading
@@ -10,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from deprecated import deprecated
-from sqlalchemy import CursorResult, Row, String, case, cast, literal, not_
+from sqlalchemy import CursorResult, Row, case, literal, not_
 from sqlalchemy.dialects.sqlite import dialect as sqlite_dialect
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -38,6 +39,7 @@ from astrbot.core.db.po import (
     PlatformStat,
     Preference,
     ProviderStat,
+    SessionBranchRelation,
     SessionProjectRelation,
     SQLModel,
     UmoAlias,
@@ -52,6 +54,8 @@ from astrbot.core.db.po import (
 from astrbot.core.sentinels import NOT_GIVEN
 from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 from astrbot.core.utils.webchat_access import webchat_resource_owner
+
+logger = logging.getLogger("astrbot")
 
 
 def _dashboard_conversation_visibility():
@@ -286,7 +290,74 @@ class SQLiteDatabase(BaseDatabase):
                     "CREATE INDEX IF NOT EXISTS ix_attachments_owner ON attachments (owner)"
                 )
             )
+            await self._ensure_session_list_indexes(conn)
             await conn.commit()
+        await self._backfill_session_branch_relations_once()
+
+    async def _ensure_session_list_indexes(self, conn) -> None:
+        """Create the sidebar/branch indexes on databases created before them.
+
+        ``SQLModel.metadata.create_all`` skips existing tables, so an upgrade
+        needs an explicit CREATE INDEX IF NOT EXISTS for each new index.
+
+        Args:
+            conn: Active SQLAlchemy connection used during SQLite initialization.
+        """
+        await conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS "
+                "ix_platform_sessions_creator_archived_updated_at "
+                "ON platform_sessions (creator, archived, updated_at DESC)"
+            )
+        )
+        await conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS "
+                "ix_platform_message_history_user_id "
+                "ON platform_message_history (user_id)"
+            )
+        )
+
+    async def _backfill_session_branch_relations_once(self) -> None:
+        """Copy legacy ``branch_info`` edges into the relation table once.
+
+        ``PRAGMA user_version`` records completion (0 = not done). The scan is
+        the only one of its kind: every later list read goes through the
+        relation table. Archived sessions are included on purpose — the read
+        path filters them, so restoring one brings its badge back.
+
+        Failures are logged and retried on the next startup instead of
+        blocking the whole database initialization.
+        """
+        try:
+            async with self.engine.begin() as conn:
+                version = int(
+                    (await conn.execute(text("PRAGMA user_version"))).scalar_one()
+                )
+                if version >= 1:
+                    return
+                await conn.execute(
+                    text(
+                        """
+                        INSERT OR IGNORE INTO session_branch_relations
+                            (child_session_id, source_session_id, source_message_id)
+                        SELECT pmh.user_id,
+                               json_extract(pmh.content, '$.source_session_id'),
+                               json_extract(pmh.content, '$.source_message_id')
+                        FROM platform_message_history pmh
+                        JOIN platform_sessions ps
+                          ON ps.session_id = pmh.user_id
+                        WHERE cast(pmh.content AS TEXT) LIKE '%"branch_info"%'
+                          AND json_valid(pmh.content)
+                          AND json_extract(pmh.content, '$.source_session_id') IS NOT NULL
+                        """
+                    )
+                )
+                await conn.execute(text("PRAGMA user_version = 1"))
+        except Exception:
+            logger.exception(
+                "Failed to backfill session_branch_relations; will retry on next start"
+            )
 
     async def _ensure_conversation_indexes(self, conn) -> None:
         """Create indexes used by the dashboard conversation list.
@@ -1413,32 +1484,59 @@ class SQLiteDatabase(BaseDatabase):
             result = await session.execute(query)
             return result.scalar_one_or_none()
 
-    async def get_webchat_branch_infos(
-        self,
-    ) -> list[PlatformMessageHistory]:
-        """Get all branch_info divider records in platform message history.
+    async def get_session_branch_relations(self) -> list[SessionBranchRelation]:
+        """Return branch edges whose child session is not archived.
 
-        This is a coarse full-table text match intended for one-time cache
-        warm-up (e.g. on first session-list load), not per-request use.
-        Callers must still validate ``content["type"] == "branch_info"``.
+        Reads the metadata table, never message content, so the cost stays
+        flat as histories grow. Archived children are filtered here so the
+        sidebar never renders relations for hidden sessions.
 
         Returns:
-            History records whose JSON content mentions ``branch_info``,
-            ordered by record ID ascending.
+            Branch relation rows ordered by child session ID.
         """
         async with self.get_db() as session:
             session: AsyncSession
             query = (
-                select(PlatformMessageHistory)
-                .where(
-                    cast(PlatformMessageHistory.content, String).like(
-                        '%"branch_info"%'
-                    ),
+                select(SessionBranchRelation)
+                .join(
+                    PlatformSession,
+                    col(PlatformSession.session_id)
+                    == col(SessionBranchRelation.child_session_id),
                 )
-                .order_by(col(PlatformMessageHistory.id))
+                .where(col(PlatformSession.archived) == 0)
+                .order_by(col(SessionBranchRelation.child_session_id))
             )
             result = await session.execute(query)
             return list(result.scalars().all())
+
+    async def upsert_session_branch_relation(
+        self,
+        child_session_id: str,
+        source_session_id: str,
+        source_message_id: int | None,
+    ) -> None:
+        """Insert or replace the branch edge owned by a child session.
+
+        Args:
+            child_session_id: Session created by the branch.
+            source_session_id: Session the context was inherited from.
+            source_message_id: Message the branch was cut at, if known.
+        """
+        async with self.get_db() as session:
+            session: AsyncSession
+            async with session.begin():
+                existing = await session.get(SessionBranchRelation, child_session_id)
+                if existing is None:
+                    session.add(
+                        SessionBranchRelation(
+                            child_session_id=child_session_id,
+                            source_session_id=source_session_id,
+                            source_message_id=source_message_id,
+                        )
+                    )
+                else:
+                    existing.source_session_id = source_session_id
+                    existing.source_message_id = source_message_id
 
     async def create_webchat_thread(
         self,
@@ -2813,6 +2911,7 @@ class SQLiteDatabase(BaseDatabase):
         exclude_project_sessions: bool = False,
         archived: bool | None = None,
         search: str | None = None,
+        count_total: bool = True,
     ) -> tuple[list[dict], int]:
         """Get paginated Platform sessions for a creator with total count.
 
@@ -2827,9 +2926,13 @@ class SQLiteDatabase(BaseDatabase):
                 sessions; False excludes archived sessions.
             search: Optional case-insensitive substring filter on the
                 session display name, applied at the database layer.
+            count_total: When False the matching-row count is skipped and
+                0 is returned. The ChatUI sidebar only needs the page, so it
+                avoids a second scan on every scroll.
 
         Returns:
-            tuple[list[dict], int]: (sessions_with_project_info, total_count)
+            tuple[list[dict], int]: (sessions_with_project_info, total_count);
+            total_count is 0 when ``count_total`` is False.
         """
         async with self.get_db() as session:
             session: AsyncSession
@@ -2843,10 +2946,13 @@ class SQLiteDatabase(BaseDatabase):
                 search=search,
             )
 
-            total_result = await session.execute(
-                select(func.count()).select_from(base_query.subquery())
-            )
-            total = int(total_result.scalar_one() or 0)
+            if count_total:
+                total_result = await session.execute(
+                    select(func.count()).select_from(base_query.subquery())
+                )
+                total = int(total_result.scalar_one() or 0)
+            else:
+                total = 0
 
             result_query = (
                 base_query.order_by(desc(PlatformSession.updated_at))
@@ -2920,6 +3026,14 @@ class SQLiteDatabase(BaseDatabase):
         async with self.get_db() as session:
             session: AsyncSession
             async with session.begin():
+                # Branch edges are metadata owned by the two sessions; drop
+                # both directions so no orphan row survives the delete.
+                await session.execute(
+                    delete(SessionBranchRelation).where(
+                        (col(SessionBranchRelation.child_session_id) == session_id)
+                        | (col(SessionBranchRelation.source_session_id) == session_id)
+                    ),
+                )
                 await session.execute(
                     delete(PlatformSession).where(
                         col(PlatformSession.session_id) == session_id,

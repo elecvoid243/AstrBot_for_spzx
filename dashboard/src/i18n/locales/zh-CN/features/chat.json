@@ -533,6 +533,7 @@
     "archiveConfirm": "确定要归档「{name}」吗？可在「查看归档」中随时恢复。",
     "unarchive": "恢复会话",
     "archived": "查看归档",
+    "loadingMore": "正在加载更多…",
     "archivedDialogTitle": "归档的对话",
     "archivedSearchPlaceholder": "搜索归档对话标题…",
     "archivedPagination": "{page}/{totalPages} 页 · 共 {total} 个",

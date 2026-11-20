@@ -27,6 +27,7 @@ from astrbot.core.db.po import (
     PlatformStat,
     Preference,
     ProviderStat,
+    SessionBranchRelation,
     SessionProjectRelation,
     Stats,
     UmoAlias,
@@ -60,11 +61,6 @@ class BaseDatabase(abc.ABC):
             class_=AsyncSession,
             expire_on_commit=False,
         )
-        # 2026-08-13: cached branch relations (child session -> source).
-        # Lives here (not on a service) so every dashboard service sharing
-        # this db instance sees the same cache; `branch_session` updates it
-        # incrementally to avoid the expensive full-table scan.
-        self._branch_relations: dict[str, dict] | None = None
         # Account bootstrap must not race replacement of the restored identities.
         self.dashboard_account_lock = asyncio.Lock()
 
@@ -315,72 +311,38 @@ class BaseDatabase(abc.ABC):
         ...
 
     @abc.abstractmethod
-    async def get_webchat_branch_infos(
+    async def get_session_branch_relations(self) -> list[SessionBranchRelation]:
+        """Return branch edges whose child session is not archived."""
+        ...
+
+    @abc.abstractmethod
+    async def upsert_session_branch_relation(
         self,
-    ) -> list[PlatformMessageHistory]:
-        """Get all branch_info divider records in platform message history.
-
-        This is a coarse full-table text match intended for one-time cache
-        warm-up, not per-request use. Callers must still validate
-        ``content["type"] == "branch_info"``.
-
-        Returns:
-            History records whose JSON content mentions ``branch_info``.
-        """
+        child_session_id: str,
+        source_session_id: str,
+        source_message_id: int | None,
+    ) -> None:
+        """Insert or replace the branch edge owned by a child session."""
         ...
 
     async def get_branch_relations(self) -> dict[str, dict]:
-        """Return cached session branch relations (child -> source).
+        """Return session branch relations (child -> source).
 
-        Scans platform history once on first use and caches the result on
-        this db instance, so all services sharing the database see the
-        same relations. ``update_branch_relation`` keeps the cache in sync
-        after a new branch is created without a rescan.
+        Reads the ``session_branch_relations`` metadata table, so the cost is
+        a handful of rows regardless of how large message histories grow.
+        Archived child sessions are filtered by the database layer.
 
         Returns:
             Mapping of child session id to ``{"source_session_id": ...,
             "source_message_id": ...}``.
         """
-        if self._branch_relations is None:
-            relations: dict[str, dict] = {}
-            for record in await self.get_webchat_branch_infos():
-                content = record.content
-                if (
-                    not isinstance(content, dict)
-                    or content.get("type") != "branch_info"
-                ):
-                    continue
-                source_id = content.get("source_session_id")
-                if not source_id:
-                    continue
-                relations[record.user_id] = {
-                    "source_session_id": source_id,
-                    "source_message_id": content.get("source_message_id"),
-                }
-            self._branch_relations = relations
-        return self._branch_relations
-
-    def update_branch_relation(
-        self,
-        child_session_id: str,
-        source_session_id: str,
-        source_message_id: int | str,
-    ) -> None:
-        """Incrementally update the cached branch relations.
-
-        No-op while the cache is cold; the next ``get_branch_relations``
-        scan picks the relation up anyway.
-
-        Args:
-            child_session_id: Newly created branch session id.
-            source_session_id: Session the branch was created from.
-            source_message_id: Bot message id the branch was created at.
-        """
-        if self._branch_relations is not None:
-            self._branch_relations[child_session_id] = {
-                "source_session_id": source_session_id,
-                "source_message_id": source_message_id,
+        return {
+            record.child_session_id: {
+                "source_session_id": record.source_session_id,
+                "source_message_id": record.source_message_id,
             }
+            for record in await self.get_session_branch_relations()
+        }
 
     @abc.abstractmethod
     async def create_webchat_thread(
@@ -976,6 +938,7 @@ class BaseDatabase(abc.ABC):
         exclude_project_sessions: bool = False,
         archived: bool | None = None,
         search: str | None = None,
+        count_total: bool = True,
     ) -> tuple[list[dict], int]:
         """Get paginated platform sessions and total count for a creator.
 
@@ -990,9 +953,12 @@ class BaseDatabase(abc.ABC):
                 sessions; False excludes archived sessions.
             search: Optional case-insensitive substring filter on the
                 session display name, applied at the database layer.
+            count_total: When False the count query is skipped and 0 is
+                returned; callers that only need the page avoid the extra scan.
 
         Returns:
-            tuple[list[dict], int]: (sessions_with_project_info, total_count)
+            tuple[list[dict], int]: (sessions_with_project_info, total_count);
+            total_count is 0 when ``count_total`` is False.
         """
         ...
 

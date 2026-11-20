@@ -99,6 +99,24 @@ async def test_get_archived_sessions_keeps_project_members():
 
 
 @pytest.mark.asyncio
+async def test_get_sessions_forwards_pagination():
+    """侧栏分页参数原样下推到 DB（ChatUI 滚动加载用）。"""
+    service = _make_chat_service()
+    service.db.get_platform_sessions_by_creator_paginated = AsyncMock(
+        return_value=([], 0)
+    )
+    service.get_branch_relations = AsyncMock(return_value={})
+
+    await service.get_sessions("alice", "webchat", page=2, page_size=50)
+
+    kwargs = service.db.get_platform_sessions_by_creator_paginated.await_args.kwargs
+    assert kwargs["page"] == 2
+    assert kwargs["page_size"] == 50
+    # 侧栏不需要总数：COUNT 扫描必须被跳过。
+    assert kwargs["count_total"] is False
+
+
+@pytest.mark.asyncio
 async def test_get_archived_sessions_paginates_at_db_layer():
     """归档列表把 page/page_size/archived 下推到 DB，不再内存切片。"""
     service = _make_chat_service()

@@ -23,6 +23,7 @@ from astrbot.core.db.po import (
     RemoteChatConnection,
     RemoteChatCredential,
     RemoteChatExposure,
+    SessionBranchRelation,
     SessionProjectRelation,
     UmoAlias,
     WebChatSubagentRun,
@@ -535,6 +536,13 @@ async def delete_account_data(app, account: DashboardAccount) -> None:
                     col(SessionProjectRelation.project_id).in_(project_ids),
                 ),
             ),
+            (
+                SessionBranchRelation,
+                or_(
+                    col(SessionBranchRelation.child_session_id).in_(ids),
+                    col(SessionBranchRelation.source_session_id).in_(ids),
+                ),
+            ),
             (WebChatThread, WebChatThread.creator == owner),
             (WebChatSubagentRun, col(WebChatSubagentRun.session_id).in_(ids)),
             (ChatUIProject, ChatUIProject.creator == owner),
@@ -570,7 +578,3 @@ async def delete_account_data(app, account: DashboardAccount) -> None:
     for sid in ids:
         chat.chat_runs_by_session.pop(sid, None)
         chat.running_convs.pop(sid, None)
-    if db._branch_relations is not None:
-        for child, relation in list(db._branch_relations.items()):
-            if child in ids or relation.get("source_session_id") in ids:
-                db._branch_relations.pop(child, None)

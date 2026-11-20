@@ -2187,6 +2187,13 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             getattr(self.request_context_manager.config, "strategy", "")
             == "token_budget"
         ):
+            # The usage snapshot must describe the view the next preparation
+            # compares against, which is this one before the window notice is
+            # appended. Recording the notice-injected copy would make the first
+            # system message differ on every turn, so the provider's real input
+            # usage could never be reused and the threshold would run on
+            # estimates alone.
+            payload["usage_contexts"] = copy.deepcopy(contexts)
             self._append_window_notice(payload["contexts"])
         # Internal delivery metadata is removed before calling the provider.
         payload["output_token_budget"] = output_token_budget
@@ -2280,6 +2287,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                 return
             payload.update(prepared)
             payload.pop("output_token_budget", None)
+            usage_contexts = payload.pop("usage_contexts", None)
             contexts = payload["contexts"]
             func_tool = payload["func_tool"]
             before_admission = {
@@ -2323,6 +2331,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             payload.update(prepared)
             output_token_budget = payload.pop("output_token_budget")
             self._snapshot_output_budget = output_token_budget
+            usage_contexts = payload.pop("usage_contexts", None)
             contexts = payload["contexts"]
             func_tool = payload["func_tool"]
             await self._save_call_checkpoint(
@@ -2352,7 +2361,9 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                     [
                         message.model_dump(mode="json")
                         for message in bind_checkpoint_messages(
-                            dump_call_messages(contexts)
+                            dump_call_messages(
+                                contexts if usage_contexts is None else usage_contexts
+                            )
                         )
                     ]
                 ),

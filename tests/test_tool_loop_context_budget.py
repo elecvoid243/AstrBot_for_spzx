@@ -921,3 +921,57 @@ async def test_note_written_mid_window_leaves_the_system_prompt_alone(
     assert "<context_window>" in first_system
     assert first_system == second_system
     assert "Private notes" not in second_system
+
+
+@pytest.mark.asyncio
+async def test_real_input_usage_survives_the_window_notice():
+    """The usage snapshot must describe the view the next turn compares against.
+
+    Recording the notice-injected copy makes the first system message differ on
+    every turn, so the provider's real input usage is never reused and a 256k
+    trigger waits for estimates that read far lower.
+    """
+    provider = BudgetProvider(
+        [
+            LLMResponse(
+                role="assistant",
+                tools_call_name=["read"],
+                tools_call_args=[{}],
+                tools_call_ids=["one"],
+                usage=TokenUsage(input_other=265_000),
+            ),
+            LLMResponse(role="assistant", completion_text="done"),
+        ],
+        max_context_tokens=700_000,
+    )
+    provider.provider_config["compress_threshold_tokens"] = 256_000
+    provider.provider_config["custom_extra_body"] = {"max_tokens": 256_000}
+    runner = ToolLoopAgentRunner()
+    await runner.reset(
+        provider=provider,
+        request=ProviderRequest(
+            prompt="current task",
+            contexts=[{"role": "user", "content": "old " * 40}],
+            conversation=SimpleNamespace(cid="budget", token_usage=0),
+            func_tool=ToolSet(
+                tools=[FunctionTool(name="read", description="Read", parameters={})]
+            ),
+            llm_params={"max_tokens": 256_000},
+        ),
+        run_context=ContextWrapper(context=None),
+        tool_executor=BudgetToolExecutor("small result"),
+        agent_hooks=BaseAgentRunHooks(),
+        context_limit_reached_strategy="token_budget",
+        custom_token_counter=CharacterTokenCounter(),
+    )
+
+    _ = [event async for event in runner.step_until_done(3)]
+
+    assert len(provider.requests) == 2
+    # The real 265k input already exceeds the 256k trigger; this fixture is far
+    # too small for the estimator to reach it on its own.
+    assert runner.window_state.seq == 1
+    assert not any(
+        "old old" in str(message.content)
+        for message in provider.requests[1]["contexts"]
+    )

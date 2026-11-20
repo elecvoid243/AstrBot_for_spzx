@@ -79,7 +79,7 @@ AstrBot 管理面板具有管理插件、查看日志、可视化配置、查看
 
 ![新会话在两个同账号连接中可见并执行首条消息](./images/chat-remote-created.jpg)
 
-普通 Agent 工具 `list_chat_sessions`、`read_chat_session`、`create_chat_session` 支持本地及直接绑定远端。发现结果提供 `connection_id`、`connection_revision`、稳定 `target_id`、`project_id` 和项目目录标题 `project_name`。远端读取和创建须同时复制两个连接字段，省略时保持本地行为。远端创建须明确给出 `project_id`（null 表示无项目）或完整精确的 `project_name`，同一连接内重名目录须用 ID。远端模型默认值取自远端，不继承本机来源模型。创建成功后可使用 `send_chat_message` 给新会话发送首条 Agent 消息。
+普通 Agent 工具 `list_chat_sessions`、`read_chat_session`、`create_chat_session` 支持本地及直接绑定远端。发现结果提供 `connection_id`、`connection_revision`、稳定 `target_id`、`project_id` 和项目目录标题 `project_name`。结果末尾的 `self` 描述调用方自身会话（`session_id`、`display_name`、`project_id`、`project_name`、`target_id`），会话列表本身不含它。远端读取和创建须同时复制两个连接字段，省略时保持本地行为。远端创建须明确给出 `project_id`（null 表示无项目）或完整精确的 `project_name`，同一连接内重名目录须用 ID。远端模型默认值取自远端，不继承本机来源模型。创建成功后可使用 `send_chat_message` 给新会话发送首条 Agent 消息。
 
 Agent 操作要求两端均开启远端连接及 Agent 跨会话访问，目标逐次校验账号暴露范围和创建权限；真人操作不受 Agent 开关限制。工具不会递归发现远端绑定的第三方。读取仅返回已保存展示历史，工具结果默认省略，支持排他 `before_id` 分页；每页最多 50 条（默认 20）、每条最多 8000 字符（默认 2000）、总响应最多 40000 字符。截断标记及 `next_before_id` 可继续访问更早记录，不暴露模型检查点、文件路径或附件访问能力。撤销授权、账号变更和连接重绑会使读取与缓存创建结果失效。
 
@@ -419,7 +419,7 @@ AstrBot WebUI支持基于 TOTP（Time-based One-Time Password）的双因素认�
 
 ### 已有会话之间互发消息
 
-让会话 A 的 Agent 通过 `list_chat_sessions` 查找已有会话，返回项包含 `project_id` 和 `project_name`（左侧项目文件夹的标题，无项目时均为 `null`），再调用 `send_chat_message(session_id, text)` 发送文本。目标会话使用自己的配置、模型、思考强度、项目和历史，也可用同一工具回复 A。工具沿用现有插件工具启停、人格工具选择和成员/管理员权限。
+让会话 A 的 Agent 通过 `list_chat_sessions` 查找已有会话，返回项包含 `project_id` 和 `project_name`（左侧项目文件夹的标题，无项目时均为 `null`），再调用 `send_chat_message(session_id, text)` 发送文本。结果末尾的 `self` 描述 A 自身（`session_id`、标题、项目 ID/名称和 `target_id`），列表项不含 A 自己。目标会话使用自己的配置、模型、思考强度、项目和历史，也可用同一工具回复 A。工具沿用现有插件工具启停、人格工具选择和成员/管理员权限。
 
 接收方会在 Agent 消息上方显示紧凑的来源卡片，主行是来源会话标题，次行是 **Agent 消息来源** 和可信账号。点击卡片任意位置即可打开来源会话。过长的标题和账号会以省略号显示，悬停可读取完整来源标签，屏幕阅读器也会获得完整标签；空标题会回退为会话 ID。模型输入也会标注来源，刷新历史后仍保留。Agent 文本不能执行真人聊天命令，也不能代答 `ask_user_choice`；目标正在等用户回答时会明确拒收。仅支持本人未归档的普通会话（包括项目内会话），拒绝自发自收、跨账号、已删除、侧聊和隐藏团队会话。也可以让 Agent 创建目标会话，见下文。
 
@@ -449,7 +449,7 @@ read_chat_session(session_id="<session_id>", include_tool_results=True,
                   max_chars_per_message=4000)
 ```
 
-`123` 只是示例游标，应使用实际返回的 ID。首屏取最近的已保存记录，页内按消息 ID 升序返回；`before_id` 不包含该条记录，沿 `next_before_id` 可继续读取更早的页而不重复。`limit` 计算记录条数，不保证完整轮次，默认 20、最多 50；空会话返回空页。可读取本人普通会话，包括项目会话、归档会话和当前会话；拒绝他人、其他平台、侧聊、隐藏团队及已删除会话。发现列表仍不包含归档会话和当前会话。工具沿用现有插件启停、人格工具选择及成员/管理员权限。
+`123` 只是示例游标，应使用实际返回的 ID。首屏取最近的已保存记录，页内按消息 ID 升序返回；`before_id` 不包含该条记录，沿 `next_before_id` 可继续读取更早的页而不重复。`limit` 计算记录条数，不保证完整轮次，默认 20、最多 50；空会话返回空页。可读取本人普通会话，包括项目会话、归档会话和当前会话；拒绝他人、其他平台、侧聊、隐藏团队及已删除会话。发现列表仍不包含归档会话和当前会话，当前会话的身份见结果末尾的 `self`。工具沿用现有插件启停、人格工具选择及成员/管理员权限。
 
 输出有上限，不保证包含完整内容。正文、可见选择题的问题/选项及附件类型/文件名摘要会保留，不会打开文件或返回二进制数据。默认省略工具调用详情；`include_tool_results=True` 可返回已保存的名称、参数和结果文本，不返回内部思考、系统提示、请求参数或检查点。每条记录的全部消息段和工具字段共享一份文字预算：`max_chars_per_message` 默认 2,000，接受 1–8,000；消息段和选项也有固定数量上限。`truncated`、`omitted` 标明截断或省略，过长的显示名称截为 512 字符并标记 `metadata_truncated`，稳定 ID 保持不变。整份响应最多 40,000 字符；总预算使当前页提前结束时，`response_budget_limited` 为真，返回的旧页游标仍可读到未返回的记录。执行中的会话只返回当前已保存部分，可能尚不完整；`is_running` 不代表回复已完成。
 

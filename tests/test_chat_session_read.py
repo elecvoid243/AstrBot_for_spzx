@@ -122,6 +122,12 @@ async def test_agent_discovers_and_reads_actual_human_agent_history(reader):
         m.user["resource_owner"], {"title": "Research project"}
     )
     await m.db.add_session_to_project(b, project["project_id"], 0)
+    source_project = (
+        await m.server.asgi_app.state.services.chat_projects.create_project(
+            m.user["resource_owner"], {"title": "Source project"}
+        )
+    )
+    await m.db.add_session_to_project(a, source_project["project_id"])
 
     async def finish(kwargs):
         return LLMResponse(role="assistant", completion_text="B saved response")
@@ -149,6 +155,18 @@ async def test_agent_discovers_and_reads_actual_human_agent_history(reader):
             return tool_call("list_chat_sessions", {})
         if len(tools) == 1:
             assert b in json.dumps(tools)
+            payload = json.loads(tools[-1]["content"])
+            assert payload["self"] == {
+                "session_id": a,
+                "display_name": "A",
+                "project_id": source_project["project_id"],
+                "project_name": "Source project",
+                "connection_id": None,
+                "connection_name": "This instance",
+                "target_id": "local:" + a,
+            }
+            assert list(payload)[-1] == "self"
+            assert all(row["session_id"] != a for row in payload["sessions"])
             return tool_call("read_chat_session", {"session_id": b})
         payload = json.loads(tools[-1]["content"])
         text = json.dumps(payload, ensure_ascii=False)

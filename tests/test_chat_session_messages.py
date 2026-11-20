@@ -973,7 +973,11 @@ async def test_rejections_stop_limit_and_human_restart(messaging, monkeypatch):
     foreign = await m.db.create_platform_session(creator=m.foreign["resource_owner"])
     archived = await m.db.create_platform_session(creator=account.resource_owner)
     await m.db.update_platform_session(archived.session_id, archived=1)
-    for sid in (a, foreign.session_id, archived.session_id, "deleted", "side-thread"):
+    self_send = await tool.call(context, session_id=a, text="test")
+    assert "own session" in self_send, self_send
+    with pytest.raises(ChatServiceError, match="own session"):
+        await m.service.send_session_message(source, a, "test")
+    for sid in (foreign.session_id, archived.session_id, "deleted", "side-thread"):
         result = await tool.call(context, session_id=sid, text="test")
         assert result.startswith("error:"), result
     assert "Only session_id and text" in await tool.call(

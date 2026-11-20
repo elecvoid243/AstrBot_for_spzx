@@ -261,7 +261,9 @@ class ListChatSessionsTool(FunctionTool[AstrAgentContext]):
         "Each session returns project_id and project_name (the ChatUI sidebar folder title, "
         "null for no project). config_profiles lists local profile id and display name; "
         "pass a display name as config_profile when creating. Archived, side and "
-        "hidden team chats are excluded. Use read_chat_session to inspect saved history."
+        "hidden team chats are excluded. self is the caller's own local session with the "
+        "same identity and project fields: it is never listed and send_chat_message rejects "
+        "it as a target. Use read_chat_session to inspect saved history."
     )
     parameters: dict = field(
         default_factory=lambda: {"type": "object", "properties": {}}
@@ -290,6 +292,7 @@ class ListChatSessionsTool(FunctionTool[AstrAgentContext]):
                 if getattr(service, "remote_chat", None) is not None
                 else await service.list_message_sessions(context.context.event)
             )
+            identity = await service.message_source(context.context.event)
             manager = service.core_lifecycle.astrbot_config_mgr
             return json.dumps(
                 {
@@ -299,6 +302,7 @@ class ListChatSessionsTool(FunctionTool[AstrAgentContext]):
                         for info in manager.get_conf_list()
                         if info["id"] in manager.confs
                     ],
+                    "self": identity,
                 },
                 ensure_ascii=False,
             )

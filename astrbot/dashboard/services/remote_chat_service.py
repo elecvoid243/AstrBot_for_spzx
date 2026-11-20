@@ -110,6 +110,10 @@ class RemoteChatService:
             raise ChatServiceError("Source execution was stopped by the user")
         principal = event.get_extra("_dashboard_account")
         source_id, _ = parse_webchat_turn_session(event.unified_msg_origin)
+        # A binding that points back at this instance exposes the source session
+        # as an ordinary remote target, so the same ID comparison applies here.
+        if session_id == source_id:
+            raise ChatServiceError("An Agent cannot send a message to its own session")
         chain = event.get_extra("_session_message_chain")
         if not isinstance(chain, SessionMessageChain):
             chain = SessionMessageChain(sessions={source_id})

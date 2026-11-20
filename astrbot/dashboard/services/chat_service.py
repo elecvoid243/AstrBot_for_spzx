@@ -3500,6 +3500,35 @@ class ChatService:
                 return result
             page += 1
 
+    async def message_source(self, event) -> dict:
+        """Describe the executing Agent's own session for discovery output.
+
+        Args:
+            event: Server-created event of the sending main Agent.
+
+        Returns:
+            The caller's own local session descriptor, keyed like a discovery row.
+
+        Raises:
+            ChatServiceError: The execution has no current trusted account or source.
+        """
+        from astrbot.core.cron.webchat_turn import parse_webchat_turn_session
+
+        # Reuse the ordinary-execution identity and account revalidation boundary.
+        await self.list_message_sessions(event)
+        source_id, owner = parse_webchat_turn_session(event.unified_msg_origin)
+        source = await self.require_owned_chat_session(owner, source_id)
+        project = await self.db.get_project_by_session(source_id, owner)
+        return {
+            "session_id": source_id,
+            "display_name": source.display_name,
+            "project_id": project.project_id if project is not None else None,
+            "project_name": project.title if project is not None else None,
+            "connection_id": None,
+            "connection_name": "This instance",
+            "target_id": "local:" + source_id,
+        }
+
     async def create_session_from_agent(
         self, event, payload: dict, effective_selection: dict
     ) -> dict:
@@ -3707,12 +3736,16 @@ class ChatService:
             raise ChatServiceError("A target session ID and nonempty text are required")
         stop_revision = self.session_message_stop_revisions.get(session_id, 0)
         sessions = await self.list_message_sessions(event)
+        source_id, _ = parse_webchat_turn_session(event.unified_msg_origin)
+        # Discovery never lists the source session, so self-send also fails the
+        # membership check below; compare IDs first to name the actual reason.
+        if session_id == source_id:
+            raise ChatServiceError("An Agent cannot send a message to its own session")
         if not any(item["session_id"] == session_id for item in sessions):
             raise ChatServiceError(
-                "Target session is unavailable (self, archived or unsupported)"
+                "Target session is unavailable (archived or unsupported)"
             )
         account = event.get_extra("_dashboard_account")
-        source_id, _ = parse_webchat_turn_session(event.unified_msg_origin)
         source = await self.require_owned_chat_session(
             account.resource_owner, source_id
         )

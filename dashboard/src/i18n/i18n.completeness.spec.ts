@@ -248,7 +248,14 @@ describe("context compression chip i18n completeness (2026-10-08)", () => {
       const strategy = compression?.strategy as
         | Record<string, unknown>
         | undefined;
-      for (const key of ["llm", "truncate", "halving", "generic"]) {
+      for (const key of [
+        "llm",
+        "truncate",
+        "halving",
+        "generic",
+        "token_budget",
+        "prune",
+      ]) {
         expect(
           typeof strategy?.[key],
           `${locale} missing contextCompression.strategy.${key} string`,

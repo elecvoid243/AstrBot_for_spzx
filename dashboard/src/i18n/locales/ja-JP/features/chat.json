@@ -404,6 +404,7 @@
       "llm": "要約",
       "truncate": "切り詰め",
       "halving": "再切り詰め",
+      "prune": "ツール整理",
       "generic": "圧縮",
       "token_budget": "ウィンドウリセット"
     }

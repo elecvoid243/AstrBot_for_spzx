@@ -698,6 +698,7 @@
       "llm": "摘要",
       "truncate": "截断",
       "halving": "二次截断",
+      "prune": "工具整理",
       "generic": "压缩",
       "token_budget": "换窗"
     }

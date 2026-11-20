@@ -121,6 +121,7 @@ const STRATEGY_KEYS: Record<string, string> = {
   llm_compress: "llm",
   truncate_by_turns: "truncate",
   truncate_by_halving: "halving",
+  tool_result_prune: "prune",
   token_budget: "token_budget",
 };
 

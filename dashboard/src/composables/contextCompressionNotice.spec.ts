@@ -153,6 +153,20 @@ describe("contextCompressionChip", () => {
     );
   });
 
+  it("names tool-result offloading as its own event", () => {
+    const chip = contextCompressionChip(
+      { strategy: "tool_result_prune", tokensBefore: 1000, tokensAfter: 500 },
+      translate,
+    );
+
+    // The full output still lives in a file the model can re-read, so this is
+    // a preview swap, not lost history.
+    expect(chip.lossy).toBe(false);
+    expect(chip.description).toBe(
+      "contextCompression.readout · contextCompression.strategy.prune\n1k → 500 tokens",
+    );
+  });
+
   it("never reports a negative delta", () => {
     const chip = contextCompressionChip(
       { strategy: "llm_compress", tokensBefore: 1000, tokensAfter: 1200 },

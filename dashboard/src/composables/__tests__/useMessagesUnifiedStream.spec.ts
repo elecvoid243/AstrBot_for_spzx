@@ -544,6 +544,65 @@ describe("unified chat stream", () => {
     messages.cleanupConnections();
   });
 
+  it("dispatches live session-scoped pushes before the run-id gate", async () => {
+    localStorage.setItem("chat.streamMode", "unified");
+    let streamController!: ReadableStreamDefaultController<Uint8Array>;
+    vi.mocked(fetchWithAuth).mockImplementation(async (url) => {
+      if (String(url).includes("/chat/stream")) {
+        return new Response(
+          new ReadableStream({
+            start(controller) {
+              streamController = controller;
+            },
+          }),
+          { headers: { "content-type": "text/event-stream" } },
+        );
+      }
+      return new Response(null, { status: 404 });
+    });
+    const onGoal = vi.fn();
+    const onShell = vi.fn();
+    const onSessionsChanged = vi.fn();
+    const messages = useMessages({
+      currentSessionId: ref("s1"),
+      onGoalStateChanged: onGoal,
+      onShellSessionsChanged: onShell,
+      onSessionsChanged,
+    });
+    messages.messagesBySession["s1"] = [];
+    messages.startUnifiedStream();
+    await vi.waitFor(() => expect(streamController).toBeDefined());
+    pushSse(streamController, { type: "stream_ready", epoch: "e1" });
+    pushSse(streamController, {
+      type: "goal_state_changed",
+      session_id: "s1",
+      seq: 1,
+      data: { goal: { text: "live goal" } },
+    });
+    pushSse(streamController, {
+      type: "shell_sessions_changed",
+      session_id: "s1",
+      seq: 2,
+      data: { sessions: [{ session_id: "sh_1", status: "terminated" }] },
+    });
+    pushSse(streamController, {
+      type: "chat_session_created",
+      session_id: "s1",
+      seq: 3,
+      data: { project_id: "project-a" },
+    });
+
+    await vi.waitFor(() =>
+      expect(onShell).toHaveBeenCalledWith("s1", [
+        { session_id: "sh_1", status: "terminated" },
+      ]),
+    );
+    expect(onGoal).toHaveBeenCalledWith("s1", { text: "live goal" });
+    expect(onSessionsChanged).toHaveBeenCalledWith("project-a");
+    expect(messages.messagesBySession["s1"] ?? []).toEqual([]);
+    messages.cleanupConnections();
+  });
+
   it("fetches a large run_snapshot ref before rendering", async () => {
     localStorage.setItem("chat.streamMode", "unified");
     let streamController!: ReadableStreamDefaultController<Uint8Array>;

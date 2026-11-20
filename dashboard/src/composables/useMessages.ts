@@ -1569,6 +1569,21 @@ export function useMessages(options: UseMessagesOptions) {
       scheduleUnifiedReconnect(100);
       return;
     }
+    // Session-scoped events carry no run identity. Dispatch them before the
+    // message-id gate, mirroring the legacy system-stream handler, otherwise
+    // live shell/goal/session-list pushes are dropped until a refresh.
+    if (msgType === "chat_session_created") {
+      void options.onSessionsChanged?.(payload.data?.project_id ?? null);
+      return;
+    }
+    if (msgType === "goal_state_changed") {
+      options.onGoalStateChanged?.(sessionId, payload.data?.goal ?? null);
+      return;
+    }
+    if (msgType === "shell_sessions_changed") {
+      options.onShellSessionsChanged?.(sessionId, payload.data?.sessions ?? []);
+      return;
+    }
     const messageId = String(payload.message_id || payload.data?.run_id || "");
     if (!messageId) return;
 

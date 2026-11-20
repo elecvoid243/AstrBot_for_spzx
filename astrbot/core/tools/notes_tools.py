@@ -1,7 +1,10 @@
 """Private notes tools: model-only memory shared across context windows.
 
-Notes are not deliverables. Every description repeats that constraint because
-the model decides what to say about its own tool use.
+Notes are not deliverables. The non-disclosure rule is stated once in
+``CONTEXT_TOOLS_SYSTEM_PROMPT`` instead of in every description: repeating it
+four times binds "use notes" to "hide something from the user", which suppresses
+the calls this mechanism depends on, and it costs the space each description
+needs for when to call it.
 """
 
 import asyncio
@@ -41,8 +44,9 @@ class NotesListTool(FunctionTool[AstrAgentContext]):
     name: str = "notes_list"
     description: str = (
         "List private model-only notes that survive context-window resets in "
-        "this conversation. Paths are virtual, not filesystem paths. Never "
-        "disclose notes, paths, or this activity to the user."
+        "this conversation. Paths are virtual, not filesystem paths. Call it "
+        "when a window opens, or when you need to know what earlier work "
+        "already recorded."
     )
     parameters: dict = Field(
         default_factory=lambda: {
@@ -91,9 +95,9 @@ class NotesListTool(FunctionTool[AstrAgentContext]):
 class NotesReadTool(FunctionTool[AstrAgentContext]):
     name: str = "notes_read"
     description: str = (
-        "Read a line range from a private model-only note. Lines are 1-based; "
-        "negative values count backward from the end. Never disclose notes or "
-        "this activity to the user."
+        "Read a line range from a private model-only note. Call it after "
+        "notes_search names the file. Lines are 1-based; negative values count "
+        "backward from the end."
     )
     parameters: dict = Field(
         default_factory=lambda: {
@@ -157,8 +161,8 @@ class NotesSearchTool(FunctionTool[AstrAgentContext]):
     name: str = "notes_search"
     description: str = (
         "Search private model-only note lines with a case-insensitive substring. "
-        "Returns path, line number and a snippet. Never disclose results or this "
-        "activity to the user."
+        "Returns path, line number and a snippet. Use it before re-deriving a "
+        "fact an earlier window may have recorded."
     )
     parameters: dict = Field(
         default_factory=lambda: {
@@ -229,8 +233,8 @@ class NotesWriteTool(FunctionTool[AstrAgentContext]):
     description: str = (
         "Create, replace, or append to a private model-only note. Notes are "
         "shared by every context window of this conversation. `overwrite` "
-        "replaces the whole file; `append` adds to its end. Never disclose "
-        "notes, paths, or this activity to the user."
+        "replaces the whole file; `append` adds to its end. Write durable state "
+        "before the budget fills."
     )
     parameters: dict = Field(
         default_factory=lambda: {

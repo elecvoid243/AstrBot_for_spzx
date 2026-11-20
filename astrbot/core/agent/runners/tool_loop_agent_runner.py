@@ -1802,7 +1802,8 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             lines.append(f"Previous window id: {state.prev_id}")
         if state.seq > 0:
             lines.append(
-                "Earlier windows are archived; use the history tools to search them."
+                "Earlier windows are archived: list them with "
+                "history_list_windows, then history_search or history_read."
             )
         if state.notes:
             lines.append("Private notes (shared across windows, newest first):")

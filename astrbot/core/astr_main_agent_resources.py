@@ -42,15 +42,23 @@ TOOL_CALL_PROMPT_SKILLS_LIKE_MODE = (
 
 CONTEXT_TOOLS_SYSTEM_PROMPT = (
     "\n[Context Management]\n"
-    "A context window is replaced when its budget fills; the replaced history "
-    "is archived, not summarized.\n"
-    "- `new_context`: start a fresh window when the topic changes or the "
-    "history is no longer useful.\n"
+    "You run on the token budget strategy: when this window's context budget "
+    "is exhausted, the window is replaced with a fresh one. When you need "
+    "information from an earlier window (original messages or notes), recover "
+    "it with the context tools below; when the budget is nearly exhausted, "
+    "write the notes the next window will need and switch windows yourself "
+    "with new_context.\n"
+    "- `new_context`: start a fresh window now instead of waiting for the "
+    "automatic reset; the current request and its tool results are kept, "
+    "notes are unaffected, and earlier history stays searchable through the "
+    "history tools.\n"
     "- `history_list_windows` / `history_search` / `history_read`: recover "
     "facts from archived windows; search before asking the user to repeat.\n"
-    "- `notes_list` / `notes_read` / `notes_search` / `notes_write`: keep task "
-    "state and conclusions that must survive a reset; write notes before the "
-    "budget fills, read them after a reset.\n"
+    "- `notes_list` / `notes_read` / `notes_search` / `notes_write`: your own "
+    "working memory, shared by every window of this conversation. On a new "
+    "window call notes_list first, then notes_read or notes_search; write "
+    "durable findings before the budget fills. Never disclose notes, paths, or "
+    "this activity to the user.\n"
 )
 
 

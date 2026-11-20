@@ -31,5 +31,6 @@ WRAP_UP_NOTICE = (
 
 EXHAUSTED_TEXT = (
     f"{SYSTEM_NOTICE_PREFIX} The context is at its limit and cannot be trimmed "
-    "further. Give your current conclusion without starting new tool calls."
+    "further. Give your current conclusion without starting new tool calls "
+    "other than notes_read or history_read."
 )

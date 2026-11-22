@@ -801,14 +801,27 @@ class WorkflowService:
                         )
                     elif kind == "workflow" and not autonomous:
                         try:
-                            validate_graph(
-                                GraphDefinition.model_validate(child_definition),
-                                result_requirement="reachable",
-                            )
+                            pinned_results = [child]
+                            if task.id == definition.result_task_id:
+                                included = await self._asset_closure(
+                                    username, child, public_result_chain=True
+                                )
+                                pinned_results = list(included.values())
+                            for pinned in pinned_results:
+                                pinned_definition = pinned["definition"]
+                                if pinned_definition.get("kind") == "autonomous":
+                                    raise RoleAssetError(
+                                        "A pinned result call must reference a workflow"
+                                    )
+                                validate_graph(
+                                    GraphDefinition.model_validate(pinned_definition),
+                                    result_requirement="reachable",
+                                )
                         except RoleAssetError as exc:
                             fields.extend(
                                 {**field, "path": f"{path}.workflow"}
                                 for field in exc.fields
+                                or [{"code": "REFERENCE", "message": str(exc)}]
                             )
                     if set(task.inputs) != set(
                         child_definition.get("required_inputs", [])
@@ -1166,14 +1179,20 @@ class WorkflowService:
         return {"assets": [asset for asset in assets if not asset["deleted"]]}
 
     async def _asset_closure(
-        self, username: str, asset: dict, *, asset_limit: int | None = None
+        self,
+        username: str,
+        asset: dict,
+        *,
+        asset_limit: int | None = None,
+        public_result_chain: bool = False,
     ) -> dict:
-        """Read an authorized fixed asset closure for export and execution.
+        """Read authorized fixed dependencies for export or publication.
 
         Args:
             username: Owner used for every pinned reference lookup.
             asset: Authorized saved entry returned by get_asset.
-            asset_limit: Optional package export ceiling; execution keeps its limits.
+            asset_limit: Optional package export ceiling.
+            public_result_chain: Follow only workflow calls selected as public results.
 
         Returns:
             Independent asset copies keyed by local identity and version.
@@ -1206,14 +1225,22 @@ class WorkflowService:
                 and "tasks" not in content
             ):
                 raise RoleAssetError("Legacy workflow definitions cannot be exported")
-            references = [
-                *content.get("allowed_workflows", []),
-                *[
-                    task.get("team") or task.get("workflow")
+            if public_result_chain:
+                references = [
+                    task["workflow"]
                     for task in content.get("tasks", [])
-                    if task.get("team") or task.get("workflow")
-                ],
-            ]
+                    if task["id"] == content.get("result_task_id")
+                    and task.get("workflow")
+                ]
+            else:
+                references = [
+                    *content.get("allowed_workflows", []),
+                    *[
+                        task.get("team") or task.get("workflow")
+                        for task in content.get("tasks", [])
+                        if task.get("team") or task.get("workflow")
+                    ],
+                ]
             for reference in references:
                 pending.append(
                     (

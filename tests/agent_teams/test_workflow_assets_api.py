@@ -383,6 +383,109 @@ async def test_legacy_unreachable_result_keeps_run_semantics_but_cannot_be_pinne
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "select_call", [True, False], ids=["public-result", "conditional-branch"]
+)
+async def test_draft_publication_checks_nested_pinned_public_result(
+    workflow_env, publication_client, select_call
+):
+    env = workflow_env
+    grandchild = {
+        **env.asset["definition"],
+        "tasks": [
+            *env.asset["definition"]["tasks"],
+            {"id": "join", "name": "Join", "control": {"kind": "join"}},
+        ],
+        "edges": [{"source": "join", "target": "writer"}],
+    }
+    child = {
+        "name": "Historical child",
+        "result_task_id": "call",
+        "tasks": [
+            {
+                "id": "call",
+                "name": "Call",
+                "workflow": {"asset_id": "historical-grandchild", "version": 1},
+            }
+        ],
+    }
+    async with env.db.get_db() as session:
+        session.add_all(
+            [
+                AgentWorkflowVersion(
+                    asset_id=asset_id,
+                    version=1,
+                    owner_username="alice",
+                    definition=definition,
+                )
+                for asset_id, definition in (
+                    ("historical-grandchild", grandchild),
+                    ("historical-child", child),
+                )
+            ]
+        )
+        await session.commit()
+
+    repaired = await publication_client.put(
+        "/api/v1/workflow_assets/historical-grandchild",
+        json={"definition": env.asset["definition"], "expected_version": 1},
+    )
+    assert repaired.status_code == 200, repaired.text
+    assert repaired.json()["data"]["version"] == 2
+
+    parent = {
+        "name": "New parent",
+        "result_task_id": "call",
+        "tasks": [
+            {
+                "id": "call",
+                "name": "Call",
+                "workflow": {"asset_id": "historical-child", "version": 1},
+            }
+        ],
+    }
+    if not select_call:
+        parent["result_task_id"] = "writer"
+        parent["tasks"].extend(env.asset["definition"]["tasks"])
+        parent["edges"] = [
+            {
+                "source": "writer",
+                "target": "call",
+                "condition": {"field": "text", "value": "Follow up"},
+            }
+        ]
+    saved = await publication_client.post(
+        "/api/v1/agent_drafts/workflow", json={"body": {"definition": parent}}
+    )
+    assert saved.status_code == 200, saved.text
+    asset_id = saved.json()["data"]["asset_id"]
+    draft_path = f"/api/v1/agent_drafts/workflow/{asset_id}"
+    asset_path = f"/api/v1/workflow_assets/{asset_id}"
+    published = await publication_client.post(
+        f"{draft_path}/publish", json={"revision": 1}
+    )
+    if not select_call:
+        assert published.status_code == 200, published.text
+        started = await publication_client.post(
+            f"{asset_path}/runs", json={"version": 1}
+        )
+        assert started.status_code == 200, started.text
+        finished = await completed_run(env.service, started.json()["data"]["run_id"])
+        assert finished["status"] == "completed"
+        assert {task["node_id"]: task["status"] for task in finished["tasks"]} == {
+            "call": "skipped",
+            "writer": "completed",
+        }
+        return
+    assert published.status_code == 400, published.text
+    assert {
+        (field["path"], field["code"]) for field in published.json()["data"]["fields"]
+    } == {("definition.tasks.0.workflow", "UNREACHABLE")}
+    assert (await publication_client.get(asset_path)).status_code == 404
+    assert (await publication_client.get(draft_path)).json()["data"]["revision"] == 1
+
+
+@pytest.mark.asyncio
 async def test_inline_graph_http_start_and_read_original_result(workflow_env):
     env = workflow_env
     app = FastAPI()

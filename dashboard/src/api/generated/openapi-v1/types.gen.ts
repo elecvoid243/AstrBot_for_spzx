@@ -6197,7 +6197,21 @@ export type OpenChatBrowserApiV1WorkflowChatRunsRunIdConnectionPostData = {
     };
 };
 
-export type OpenChatBrowserApiV1WorkflowChatRunsRunIdConnectionPostResponse = (unknown);
+export type OpenChatBrowserApiV1WorkflowChatRunsRunIdConnectionPostResponse = ({
+    data: {
+        session_id: string;
+        token: string;
+        command: string;
+        /**
+         * Expiration as a Unix timestamp in seconds.
+         */
+        expires_at: number;
+        /**
+         * Connection lifetime in seconds from issuance.
+         */
+        expires_in: number;
+    };
+});
 
 export type OpenChatBrowserApiV1WorkflowChatRunsRunIdConnectionPostError = (HTTPValidationError);
 
@@ -6209,7 +6223,7 @@ export type ChatBrowserStatusApiV1WorkflowChatRunsRunIdConnectionGetData = {
 
 export type ChatBrowserStatusApiV1WorkflowChatRunsRunIdConnectionGetResponse = (unknown);
 
-export type ChatBrowserStatusApiV1WorkflowChatRunsRunIdConnectionGetError = (HTTPValidationError);
+export type ChatBrowserStatusApiV1WorkflowChatRunsRunIdConnectionGetError = (ErrorEnvelope | HTTPValidationError);
 
 export type GetChatRunApiV1WorkflowChatRunsRunIdGetData = {
     path: {
@@ -6219,7 +6233,7 @@ export type GetChatRunApiV1WorkflowChatRunsRunIdGetData = {
 
 export type GetChatRunApiV1WorkflowChatRunsRunIdGetResponse = (unknown);
 
-export type GetChatRunApiV1WorkflowChatRunsRunIdGetError = (HTTPValidationError);
+export type GetChatRunApiV1WorkflowChatRunsRunIdGetError = (ErrorEnvelope | HTTPValidationError);
 
 export type AnswerChatTodoApiV1WorkflowChatRunsRunIdTodosTodoIdAnswerPostData = {
     body: HumanAnswerRequest;
@@ -6231,7 +6245,7 @@ export type AnswerChatTodoApiV1WorkflowChatRunsRunIdTodosTodoIdAnswerPostData = 
 
 export type AnswerChatTodoApiV1WorkflowChatRunsRunIdTodosTodoIdAnswerPostResponse = (unknown);
 
-export type AnswerChatTodoApiV1WorkflowChatRunsRunIdTodosTodoIdAnswerPostError = (HTTPValidationError);
+export type AnswerChatTodoApiV1WorkflowChatRunsRunIdTodosTodoIdAnswerPostError = (ErrorEnvelope | HTTPValidationError);
 
 export type PreviewChatApprovalApiV1WorkflowChatRunsRunIdTodosTodoIdArtifactGetData = {
     path: {
@@ -6242,7 +6256,7 @@ export type PreviewChatApprovalApiV1WorkflowChatRunsRunIdTodosTodoIdArtifactGetD
 
 export type PreviewChatApprovalApiV1WorkflowChatRunsRunIdTodosTodoIdArtifactGetResponse = (unknown);
 
-export type PreviewChatApprovalApiV1WorkflowChatRunsRunIdTodosTodoIdArtifactGetError = (HTTPValidationError);
+export type PreviewChatApprovalApiV1WorkflowChatRunsRunIdTodosTodoIdArtifactGetError = (ErrorEnvelope | HTTPValidationError);
 
 export type PreviewChatApprovalFileApiV1WorkflowChatRunsRunIdTodosTodoIdArtifactFilesFileIdGetData = {
     path: {
@@ -6254,7 +6268,7 @@ export type PreviewChatApprovalFileApiV1WorkflowChatRunsRunIdTodosTodoIdArtifact
 
 export type PreviewChatApprovalFileApiV1WorkflowChatRunsRunIdTodosTodoIdArtifactFilesFileIdGetResponse = (unknown);
 
-export type PreviewChatApprovalFileApiV1WorkflowChatRunsRunIdTodosTodoIdArtifactFilesFileIdGetError = (HTTPValidationError);
+export type PreviewChatApprovalFileApiV1WorkflowChatRunsRunIdTodosTodoIdArtifactFilesFileIdGetError = (ErrorEnvelope | HTTPValidationError);
 
 export type GetChatResultFileApiV1WorkflowChatRunsRunIdResultFilesFileIdGetData = {
     path: {
@@ -6268,7 +6282,7 @@ export type GetChatResultFileApiV1WorkflowChatRunsRunIdResultFilesFileIdGetData 
 
 export type GetChatResultFileApiV1WorkflowChatRunsRunIdResultFilesFileIdGetResponse = ((Blob | File));
 
-export type GetChatResultFileApiV1WorkflowChatRunsRunIdResultFilesFileIdGetError = (HTTPValidationError);
+export type GetChatResultFileApiV1WorkflowChatRunsRunIdResultFilesFileIdGetError = (ErrorEnvelope | HTTPValidationError);
 
 export type ListAssetsApiV1WorkflowAssetsGetResponse = (unknown);
 

@@ -20,6 +20,14 @@
     "status": "Run status",
     "result": "Final result",
     "missing": "Open the run link returned by /asset.",
+    "retry": "Could not refresh this run. The page will retry using the same connection.",
+    "checkingAnswer": "Checking whether your answer was saved.",
+    "access": {
+      "expired": "This browser connection has expired. Reconnect from the original chat.",
+      "invalid": "This browser connection is no longer valid. Reconnect from the original chat.",
+      "revoked": "Access to this run has been revoked.",
+      "identity_mismatch": "This connection no longer matches the initiating sender and source chat."
+    },
     "failed": "Could not access this chat run. Reconnect and confirm from the original chat."
   },
   "chatAccess": {

@@ -7,7 +7,7 @@ import json
 import secrets
 import time
 from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 from urllib.parse import quote
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -57,6 +57,27 @@ class ChatAccessRequest(BaseModel):
     source: str = Field(min_length=1, max_length=512)
 
 
+class ChatSourceAccessError(RoleAssetError):
+    """Denial of the connection or source grant, independent of the resource."""
+
+    def __init__(
+        self,
+        reason: Literal["expired", "invalid", "revoked", "identity_mismatch"],
+        message: str,
+        *,
+        status: int,
+    ):
+        """Identify a scope-wide denial while preserving the HTTP status.
+
+        Args:
+            reason: Stable reason shared by the restricted HTTP endpoints.
+            message: User-visible explanation of the denial.
+            status: HTTP status for this denial.
+        """
+        super().__init__(message, status=status)
+        self.reason = reason
+
+
 class WorkflowChat:
     """Platform admission to existing assets without another execution engine."""
 
@@ -103,7 +124,8 @@ class WorkflowChat:
             )
         session_id = secrets.token_hex(16)
         token = secrets.token_urlsafe(32)
-        expires_at = now + 1800
+        expires_in = 1800
+        expires_at = now + expires_in
         self._browser_sessions[session_id] = {
             "run_id": run_id,
             "token_hash": hashlib.sha256(token.encode()).hexdigest(),
@@ -114,6 +136,7 @@ class WorkflowChat:
             "session_id": session_id,
             "token": token,
             "expires_at": expires_at,
+            "expires_in": expires_in,
             "command": "/asset connect " + session_id,
         }
 
@@ -135,7 +158,15 @@ class WorkflowChat:
             raise RoleAssetError(
                 "Browser connection expired; open the run link again", status=401
             )
-        projection = await self.get_run(caller, connection["run_id"])
+        try:
+            projection = await self.get_run(caller, connection["run_id"])
+        except ChatSourceAccessError as exc:
+            if exc.reason != "identity_mismatch" or exc.status != 404:
+                raise
+            raise RoleAssetError(
+                "Confirm this browser as the initiating sender in the original chat",
+                status=exc.status,
+            ) from exc
         connection["caller"] = caller.model_dump()
         return {
             "status": "connected",
@@ -165,19 +196,28 @@ class WorkflowChat:
             not separator
             or not token
             or connection is None
-            or connection["expires_at"] <= time.time()
             or not hmac.compare_digest(
                 connection["token_hash"], hashlib.sha256(token.encode()).hexdigest()
             )
         ):
-            raise RoleAssetError("Browser connection required", status=401)
+            raise ChatSourceAccessError(
+                "invalid", "Browser connection required", status=401
+            )
+        if connection["expires_at"] <= time.time():
+            raise ChatSourceAccessError(
+                "expired",
+                "Browser connection expired; open the run link again",
+                status=401,
+            )
         if connection["run_id"] != run_id:
-            raise RoleAssetError("Run not found", status=404)
+            raise ChatSourceAccessError(
+                "identity_mismatch", "Run not found", status=404
+            )
         if connection["caller"] is None:
             if allow_pending:
                 return None
-            raise RoleAssetError(
-                "Confirm this browser in the original chat", status=403
+            raise ChatSourceAccessError(
+                "invalid", "Confirm this browser in the original chat", status=403
             )
         caller = ChatCaller.model_validate(connection["caller"])
         await self.get_run(caller, run_id)
@@ -544,10 +584,16 @@ class WorkflowChat:
             grant is None
             or grant.owner_username != username
             or grant.version != chat["version"]
-            or grant.source != caller.source
-            or grant.profile_id != caller.profile_id
         ):
-            raise RoleAssetError("Chat access is no longer available", status=403)
+            raise ChatSourceAccessError(
+                "revoked", "Chat access is no longer available", status=403
+            )
+        if grant.source != caller.source or grant.profile_id != caller.profile_id:
+            raise ChatSourceAccessError(
+                "identity_mismatch",
+                "The caller's authorized source has changed",
+                status=403,
+            )
         core = self.service.roles.core_lifecycle
         if core is not None:
             platform = next(
@@ -567,7 +613,8 @@ class WorkflowChat:
                     )
                 )
             ):
-                raise RoleAssetError(
+                raise ChatSourceAccessError(
+                    "identity_mismatch",
                     "This platform source does not identify a unique audience or account",
                     status=403,
                 )
@@ -576,7 +623,11 @@ class WorkflowChat:
             and core.astrbot_config_mgr.get_conf_info(caller.source)["id"]
             != caller.profile_id
         ):
-            raise RoleAssetError("The caller's source profile has changed", status=403)
+            raise ChatSourceAccessError(
+                "identity_mismatch",
+                "The caller's source profile has changed",
+                status=403,
+            )
 
     async def get_run(
         self, caller: ChatCaller, run_id: str, *, include_todos: bool = False
@@ -597,12 +648,12 @@ class WorkflowChat:
         """
         async with self.service.db.get_db() as session:
             row = await session.get(AgentWorkflowRun, run_id)
-            if (
-                row is None
-                or row.snapshot.get("parent_run_id") is not None
-                or row.snapshot.get("chat", {}).get("caller") != caller.model_dump()
-            ):
-                raise RoleAssetError("Run not found", status=404)
+            if row is None or row.snapshot.get("parent_run_id") is not None:
+                raise ChatSourceAccessError("invalid", "Run not found", status=404)
+            if row.snapshot.get("chat", {}).get("caller") != caller.model_dump():
+                raise ChatSourceAccessError(
+                    "identity_mismatch", "Run not found", status=404
+                )
         await self.require_access(row.snapshot["chat"], row.owner_username)
         run = await self.service.get_run(row.owner_username, run_id)
         projection = {

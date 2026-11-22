@@ -8301,7 +8301,26 @@ paths:
           description: Successful Response
           content:
             application/json:
-              schema: {}
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [session_id, token, command, expires_at, expires_in]
+                    properties:
+                      session_id:
+                        type: string
+                      token:
+                        type: string
+                      command:
+                        type: string
+                      expires_at:
+                        type: number
+                        description: Expiration as a Unix timestamp in seconds.
+                      expires_in:
+                        type: integer
+                        description: Connection lifetime in seconds from issuance.
         '422':
           description: Validation Error
           content:
@@ -8333,6 +8352,12 @@ paths:
           content:
             application/json:
               schema: {}
+        '401':
+          $ref: '#/components/responses/ChatBrowserAccessError'
+        '403':
+          $ref: '#/components/responses/ChatBrowserAccessError'
+        '404':
+          $ref: '#/components/responses/ChatBrowserAccessError'
         '422':
           description: Validation Error
           content:
@@ -8365,6 +8390,12 @@ paths:
           content:
             application/json:
               schema: {}
+        '401':
+          $ref: '#/components/responses/ChatBrowserAccessError'
+        '403':
+          $ref: '#/components/responses/ChatBrowserAccessError'
+        '404':
+          $ref: '#/components/responses/ChatBrowserAccessError'
         '422':
           description: Validation Error
           content:
@@ -8410,6 +8441,12 @@ paths:
           content:
             application/json:
               schema: {}
+        '401':
+          $ref: '#/components/responses/ChatBrowserAccessError'
+        '403':
+          $ref: '#/components/responses/ChatBrowserAccessError'
+        '404':
+          $ref: '#/components/responses/ChatBrowserAccessError'
         '422':
           description: Validation Error
           content:
@@ -8448,6 +8485,12 @@ paths:
           content:
             application/json:
               schema: {}
+        '401':
+          $ref: '#/components/responses/ChatBrowserAccessError'
+        '403':
+          $ref: '#/components/responses/ChatBrowserAccessError'
+        '404':
+          $ref: '#/components/responses/ChatBrowserAccessError'
         '422':
           description: Validation Error
           content:
@@ -8493,6 +8536,12 @@ paths:
           content:
             application/json:
               schema: {}
+        '401':
+          $ref: '#/components/responses/ChatBrowserAccessError'
+        '403':
+          $ref: '#/components/responses/ChatBrowserAccessError'
+        '404':
+          $ref: '#/components/responses/ChatBrowserAccessError'
         '422':
           description: Validation Error
           content:
@@ -8542,6 +8591,12 @@ paths:
               schema:
                 type: string
                 format: binary
+        '401':
+          $ref: '#/components/responses/ChatBrowserAccessError'
+        '403':
+          $ref: '#/components/responses/ChatBrowserAccessError'
+        '404':
+          $ref: '#/components/responses/ChatBrowserAccessError'
         '422':
           description: Validation Error
           content:
@@ -10108,6 +10163,18 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/ErrorEnvelope"
+    ChatBrowserAccessError:
+      description: Restricted chat run access or resource error.
+      headers:
+        X-AstrBot-Chat-Access-Error:
+          description: Reason access to the run was denied. Omitted for resource-specific errors.
+          schema:
+            type: string
+            enum: [expired, invalid, revoked, identity_mismatch]
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
     Text:
       description: Text response
       content:

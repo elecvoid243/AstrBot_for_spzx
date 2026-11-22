@@ -1,15 +1,15 @@
 import axios from "axios";
-import type { HumanAnswerRequest } from "./generated/openapi-v1";
+import type {
+  HumanAnswerRequest,
+  OpenChatBrowserApiV1WorkflowChatRunsRunIdConnectionPostResponse,
+} from "./generated/openapi-v1";
 
 // Source-browser sessions must not inherit Dashboard login interceptors.
 const client = axios.create();
+const requestTimeout = 15_000;
 
-export interface ChatRunConnection {
-  session_id: string;
-  token: string;
-  command: string;
-  expires_at: number;
-}
+export type ChatRunConnection =
+  OpenChatBrowserApiV1WorkflowChatRunsRunIdConnectionPostResponse["data"];
 
 export interface ChatRunView {
   run_id: string;
@@ -31,8 +31,10 @@ export interface ChatResultFile {
 export const chatRunApi = {
   async connection(runId: string): Promise<ChatRunConnection> {
     return (
-      await client.post(
+      await client.post<OpenChatBrowserApiV1WorkflowChatRunsRunIdConnectionPostResponse>(
         `/api/v1/workflow_chat_runs/${encodeURIComponent(runId)}/connection`,
+        undefined,
+        { timeout: requestTimeout },
       )
     ).data.data;
   },
@@ -45,6 +47,7 @@ export const chatRunApi = {
         `/api/v1/workflow_chat_runs/${encodeURIComponent(runId)}/connection`,
         {
           headers: { "X-AstrBot-Chat-Session": credential },
+          timeout: requestTimeout,
         },
       )
     ).data.data;
@@ -55,6 +58,7 @@ export const chatRunApi = {
         `/api/v1/workflow_chat_runs/${encodeURIComponent(runId)}`,
         {
           headers: { "X-AstrBot-Chat-Session": credential },
+          timeout: requestTimeout,
         },
       )
     ).data.data;
@@ -73,6 +77,7 @@ export const chatRunApi = {
         payload,
         {
           headers: { "X-AstrBot-Chat-Session": credential },
+          timeout: requestTimeout,
         },
       )
     ).data.data;

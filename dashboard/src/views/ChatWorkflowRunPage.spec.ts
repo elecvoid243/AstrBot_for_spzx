@@ -30,6 +30,7 @@ const stubs = {
   VCardActions: slot,
   VAlert: slot,
   VSpacer: slot,
+  VDialog: true,
   VBtn: {
     props: ["disabled", "loading"],
     template: '<button :disabled="disabled || loading"><slot /></button>',
@@ -46,6 +47,30 @@ const stubs = {
     template:
       '<select :value="modelValue" @change="$emit(\'update:modelValue\', $event.target.value)"><option value=""/><option v-for="item in items" :key="item" :value="item">{{ item }}</option></select>',
   },
+};
+
+const confirmedBrowser = {
+  session_id: "nonce",
+  token: "browser-secret",
+  command: "/asset connect nonce",
+  expires_at: 2000000000,
+  expires_in: 1800,
+};
+const waiting = {
+  run_id: "root-run",
+  status: "blocked",
+  control_status: "active",
+  result: null,
+  result_files: [],
+  todos: [
+    {
+      todo_id: "original-todo",
+      kind: "question",
+      question: "Which region?",
+      status: "pending",
+      constraints: { choices: [], max_length: 100 },
+    },
+  ],
 };
 
 describe("source-confirmed run details", () => {
@@ -70,12 +95,7 @@ describe("source-confirmed run details", () => {
       todos: [todo],
       result: null,
     };
-    api.connection.mockResolvedValue({
-      session_id: "nonce",
-      token: "browser-secret",
-      command: "/asset connect nonce",
-      expires_at: 2000000000,
-    });
+    api.connection.mockResolvedValue(confirmedBrowser);
     api.status
       .mockResolvedValueOnce({ confirmed: false })
       .mockResolvedValue({ confirmed: true });
@@ -126,6 +146,7 @@ describe("source-confirmed run details", () => {
       token: "secret",
       command: "/asset connect nonce",
       expires_at: 2000000000,
+      expires_in: 1800,
     });
     api.status.mockResolvedValue({ confirmed: true });
     const run = {
@@ -177,14 +198,60 @@ describe("source-confirmed run details", () => {
       wrapper.unmount();
     }
   });
+  it.each(["status", "run"] as const)(
+    "resumes the original run and pending answer after a temporary %s failure",
+    async (operation) => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      api.connection.mockResolvedValue(confirmedBrowser);
+      api.status.mockResolvedValue({ confirmed: true });
+      api.run.mockResolvedValue(waiting);
+      api.answer.mockResolvedValue({
+        ...waiting,
+        todos: [],
+        status: "completed",
+      });
+      const wrapper = mount(ChatWorkflowRunPage, { global: { stubs } });
+      try {
+        await flushPromises();
+        await wrapper.get('[data-testid="human-answer"]').setValue("Asia");
+        api[operation].mockRejectedValueOnce(
+          operation === "status"
+            ? new Error("Network Error")
+            : { response: { status: 503 } },
+        );
+        const refresh = wrapper.get('[data-testid="chat-refresh"]');
+        await refresh.trigger("click");
+        await flushPromises();
+        expect(wrapper.get('[role="alert"]').text()).toContain("chatRun.retry");
+        expect(wrapper.text()).toContain("Which region?");
+
+        if (operation === "status") await refresh.trigger("click");
+        else await vi.advanceTimersByTimeAsync(1_500);
+        await flushPromises();
+        expect(wrapper.find('[role="alert"]').exists()).toBe(false);
+        expect(wrapper.findAll('[data-testid="human-todo"]')).toHaveLength(1);
+        expect(api.connection).toHaveBeenCalledTimes(1);
+        expect(api.run).toHaveBeenLastCalledWith(
+          "root-run",
+          "nonce.browser-secret",
+        );
+        await wrapper.get('[data-testid="human-submit"]').trigger("click");
+        await flushPromises();
+        expect(api.answer).toHaveBeenCalledWith(
+          "root-run",
+          "nonce.browser-secret",
+          "original-todo",
+          expect.objectContaining({ answer: "Asia" }),
+        );
+      } finally {
+        wrapper.unmount();
+        vi.useRealTimers();
+      }
+    },
+  );
   it("removes actionable content when the confirmed source grant is denied", async () => {
     localStorage.setItem("token", "unrelated-dashboard-session");
-    api.connection.mockResolvedValue({
-      session_id: "nonce",
-      token: "browser-secret",
-      command: "/asset connect nonce",
-      expires_at: 2000000000,
-    });
+    api.connection.mockResolvedValue(confirmedBrowser);
     api.status.mockResolvedValue({ confirmed: true });
     api.run.mockRejectedValue({
       response: { status: 403, data: { message: "Chat grant revoked" } },
@@ -203,12 +270,220 @@ describe("source-confirmed run details", () => {
       localStorage.removeItem("token");
     }
   });
+  it("hides the original todo when an answer is denied and ignores a late refresh", async () => {
+    api.connection.mockResolvedValue(confirmedBrowser);
+    api.status.mockResolvedValue({ confirmed: true });
+    api.run.mockResolvedValue(waiting);
+    api.answer.mockRejectedValue({
+      response: {
+        status: 403,
+        headers: { "x-astrbot-chat-access-error": "revoked" },
+      },
+    });
+    const wrapper = mount(ChatWorkflowRunPage, { global: { stubs } });
+    try {
+      await flushPromises();
+      let finishRefresh!: (view: typeof waiting) => void;
+      api.run.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finishRefresh = resolve;
+          }),
+      );
+      await wrapper.get('[data-testid="chat-refresh"]').trigger("click");
+      await flushPromises();
+      await wrapper.get('[data-testid="human-answer"]').setValue("Asia");
+      await wrapper.get('[data-testid="human-submit"]').trigger("click");
+      await flushPromises();
+      expect(wrapper.get('[role="alert"]').text()).toBe(
+        "chatRun.access.revoked",
+      );
+      expect(wrapper.find('[data-testid="human-todo"]').exists()).toBe(false);
+      finishRefresh(waiting);
+      await flushPromises();
+      expect(wrapper.find('[data-testid="chat-run-status"]').exists()).toBe(
+        false,
+      );
+    } finally {
+      wrapper.unmount();
+    }
+  });
+  it("checks the original todo after an uncertain answer without resending it", async () => {
+    api.connection.mockResolvedValue(confirmedBrowser);
+    api.status.mockResolvedValue({ confirmed: true });
+    api.run.mockResolvedValue(waiting);
+    api.answer.mockRejectedValue(new Error("timeout"));
+    const wrapper = mount(ChatWorkflowRunPage, { global: { stubs } });
+    try {
+      await flushPromises();
+      let finishRefresh!: (view: typeof waiting) => void;
+      api.run.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finishRefresh = resolve;
+          }),
+      );
+      await wrapper.get('[data-testid="human-answer"]').setValue("Asia");
+      const submit = wrapper.get('[data-testid="human-submit"]');
+      await submit.trigger("click");
+      await flushPromises();
+      expect(submit.attributes("disabled")).toBeDefined();
+      expect(api.run).toHaveBeenLastCalledWith(
+        "root-run",
+        "nonce.browser-secret",
+      );
+      finishRefresh({ ...waiting, status: "completed", todos: [] });
+      await flushPromises();
+      expect(wrapper.find('[data-testid="human-todo"]').exists()).toBe(false);
+      expect(api.answer).toHaveBeenCalledTimes(1);
+    } finally {
+      wrapper.unmount();
+    }
+  });
+  it("keeps the completed result after a missing file and clears it after a denied download", async () => {
+    api.connection.mockResolvedValue(confirmedBrowser);
+    api.status.mockResolvedValue({ confirmed: true });
+    api.run.mockResolvedValue({
+      run_id: "root-run",
+      status: "completed",
+      control_status: "active",
+      result: { text: "Original result" },
+      todos: [],
+      result_files: [
+        { file_id: "published", filename: "report.txt", version: 1 },
+      ],
+    });
+    api.resultFile
+      .mockRejectedValueOnce({ response: { status: 404 } })
+      .mockRejectedValueOnce({
+        response: {
+          status: 404,
+          headers: { "x-astrbot-chat-access-error": "identity_mismatch" },
+          data: new Blob(),
+        },
+      });
+    const wrapper = mount(ChatWorkflowRunPage, { global: { stubs } });
+    try {
+      await flushPromises();
+      await wrapper.get('[data-testid="chat-result-preview"]').trigger("click");
+      await flushPromises();
+      expect(wrapper.get('[data-testid="chat-final-result"]').text()).toContain(
+        "Original result",
+      );
+      await wrapper
+        .get('[data-testid="chat-result-download"]')
+        .trigger("click");
+      await flushPromises();
+      expect(wrapper.get('[role="alert"]').text()).toBe(
+        "chatRun.access.identity_mismatch",
+      );
+      expect(wrapper.find('[data-testid="chat-final-result"]').exists()).toBe(
+        false,
+      );
+      expect(
+        wrapper.find('[data-testid="chat-result-download"]').exists(),
+      ).toBe(false);
+      expect(api.status).toHaveBeenCalledTimes(1);
+    } finally {
+      wrapper.unmount();
+    }
+  });
+  it("uses the server lifetime to expire a completed result even when the browser clock is ahead", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    api.connection.mockResolvedValue({
+      ...confirmedBrowser,
+      expires_at: Date.now() / 1000 - 3600 + 2,
+      expires_in: 2,
+    });
+    api.status.mockResolvedValue({ confirmed: true });
+    api.run.mockResolvedValue({
+      run_id: "root-run",
+      status: "completed",
+      control_status: "active",
+      result: { text: "Original result" },
+      todos: [],
+      result_files: [],
+    });
+    const wrapper = mount(ChatWorkflowRunPage, { global: { stubs } });
+    try {
+      await flushPromises();
+      expect(wrapper.find('[data-testid="chat-final-result"]').exists()).toBe(
+        true,
+      );
+      await vi.advanceTimersByTimeAsync(1_999);
+      expect(wrapper.find('[data-testid="chat-final-result"]').exists()).toBe(
+        true,
+      );
+      expect(api.status).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(wrapper.find('[data-testid="chat-final-result"]').exists()).toBe(
+        false,
+      );
+      expect(wrapper.get('[role="alert"]').text()).toBe(
+        "chatRun.access.expired",
+      );
+    } finally {
+      wrapper.unmount();
+      vi.useRealTimers();
+    }
+  });
+  it("clears the approval and its preview when the approval file is denied", async () => {
+    api.connection.mockResolvedValue(confirmedBrowser);
+    api.status.mockResolvedValue({ confirmed: true });
+    api.run.mockResolvedValue({
+      run_id: "root-run",
+      status: "blocked",
+      control_status: "active",
+      result: null,
+      result_files: [],
+      todos: [
+        {
+          todo_id: "original-todo",
+          kind: "approval",
+          status: "pending",
+          constraints: {},
+          artifact_ref: { artifact_id: "artifact", version: 1 },
+        },
+      ],
+    });
+    api.preview.mockResolvedValue({
+      content: { text: "Private preview" },
+      files: [{ file_id: "attachment", filename: "attachment.txt" }],
+    });
+    api.file.mockRejectedValue({
+      response: {
+        status: 401,
+        headers: { "x-astrbot-chat-access-error": "expired" },
+      },
+    });
+    const wrapper = mount(ChatWorkflowRunPage, { global: { stubs } });
+    try {
+      await flushPromises();
+      await wrapper.get('[data-testid="human-preview"]').trigger("click");
+      await flushPromises();
+      expect(wrapper.text()).toContain("Private preview");
+      const file = wrapper
+        .findAll("button")
+        .find((b) => b.text().includes("attachment.txt"));
+      expect(file).toBeDefined();
+      await file!.trigger("click");
+      await flushPromises();
+      expect(wrapper.get('[role="alert"]').text()).toBe(
+        "chatRun.access.expired",
+      );
+      expect(wrapper.text()).not.toContain("Private preview");
+      expect(wrapper.find('[data-testid="human-todo"]').exists()).toBe(false);
+    } finally {
+      wrapper.unmount();
+    }
+  });
   it("connects the next run while an answer to the previous run is still pending", async () => {
     api.connection.mockImplementation(async (runId: string) => ({
       session_id: "session-" + runId,
       token: "secret",
       command: "/asset connect " + runId,
       expires_at: 2000000000,
+      expires_in: 1800,
     }));
     api.status.mockResolvedValue({ confirmed: true });
     api.run.mockImplementation(async (runId: string) => ({
@@ -278,12 +553,7 @@ describe("source-confirmed run details", () => {
     async (type) => {
       const content =
         "<script>window.finalInjected = true</script>COMPLETE_FINAL_FILE_CONTENT";
-      api.connection.mockResolvedValue({
-        session_id: "nonce",
-        token: "browser-secret",
-        command: "/asset connect nonce",
-        expires_at: 2000000000,
-      });
+      api.connection.mockResolvedValue(confirmedBrowser);
       api.status.mockResolvedValue({ confirmed: true });
       api.run.mockResolvedValue({
         run_id: "root-run",

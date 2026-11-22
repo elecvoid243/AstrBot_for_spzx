@@ -183,13 +183,15 @@ async def test_initiator_connects_through_returned_entry_and_answers_original_to
     ).status_code == 401
     response = await client.post(path + "/connection")
     assert response.status_code == 200
+    assert response.headers["Cache-Control"] == "no-store"
     connection = response.json()["data"]
+    assert connection["expires_in"] == 1800
     headers = {
         "X-AstrBot-Chat-Session": connection["session_id"] + "." + connection["token"]
     }
-    assert (await client.get(path + "/connection", headers=headers)).json()["data"][
-        "confirmed"
-    ] is False
+    pending = await client.get(path + "/connection", headers=headers)
+    assert pending.headers["Cache-Control"] == "no-store"
+    assert pending.json()["data"]["confirmed"] is False
     assert (await client.get(path, headers=headers)).status_code == 403
     await send_chat_command(
         service, connection["command"], sender="54321", source="54321"
@@ -204,6 +206,7 @@ async def test_initiator_connects_through_returned_entry_and_answers_original_to
     await send_chat_command(service, connection["command"])
     detail = await client.get(path, headers=headers)
     assert detail.status_code == 200
+    assert detail.headers["Cache-Control"] == "no-store"
     data = detail.json()["data"]
     assert set(data) == {
         "run_id",
@@ -338,18 +341,31 @@ async def test_confirmed_browser_loses_read_and_answer_access_after_source_chang
             "astrbot.core.agent_teams.chat.time.time",
             lambda: connection["expires_at"] + 1,
         )
-    denied_status = 401 if change == "expiry" else 403
-    assert (await client.get(path, headers=headers)).status_code == denied_status
-    assert (
-        await client.get(path + "/result/files/unknown", headers=headers)
-    ).status_code == denied_status
-    assert (
-        await client.post(
-            path + "/todos/" + todo["todo_id"] + "/answer",
-            headers=headers,
-            json={"request_id": "denied", "action": "answer", "answer": "Unauthorized"},
-        )
-    ).status_code == denied_status
+    denied_status, reason = {
+        "revoke": (403, "revoked"),
+        "profile": (403, "identity_mismatch"),
+        "expiry": (401, "expired"),
+    }[change]
+    todo_path = path + "/todos/" + todo["todo_id"]
+    for url in [
+        path + "/connection",
+        path,
+        todo_path + "/artifact",
+        todo_path + "/artifact/files/unknown",
+        path + "/result/files/unknown",
+    ]:
+        response = await client.get(url, headers=headers)
+        assert response.status_code == denied_status
+        assert response.headers["Cache-Control"] == "no-store"
+        assert response.headers["X-AstrBot-Chat-Access-Error"] == reason
+    response = await client.post(
+        todo_path + "/answer",
+        headers=headers,
+        json={"request_id": "denied", "action": "answer", "answer": "Unauthorized"},
+    )
+    assert response.status_code == denied_status
+    assert response.headers["Cache-Control"] == "no-store"
+    assert response.headers["X-AstrBot-Chat-Access-Error"] == reason
     original = await service.get_run("operator", run["run_id"])
     assert original["todos"][0]["todo_id"] == todo["todo_id"]
     assert original["todos"][0]["status"] == "pending"
@@ -445,6 +461,7 @@ async def test_browser_previews_only_the_version_named_by_its_approval_request(
     preview_path = path + "/todos/" + todo["todo_id"] + "/artifact"
     preview = await client.get(preview_path, headers=headers)
     assert preview.status_code == 200
+    assert preview.headers["Cache-Control"] == "no-store"
     assert preview.json()["data"]["version"] == 1
     assert preview.json()["data"]["content"] == {"text": "Verified final report."}
     assert "UNAPPROVED_OTHER_VERSION" not in preview.text
@@ -545,22 +562,21 @@ async def test_other_authorized_group_sender_cannot_connect_or_read_the_initiato
             + connection["token"]
         }
         if not accepted:
-            await send_chat_command(
-                service,
-                connection["command"],
-                sender="54321",
-                source="88888",
-                group=True,
-            )
-            assert (await client.get(path, headers=headers)).status_code == 403
-            await send_chat_command(
-                service,
-                connection["command"],
-                sender="12345",
-                source="99999",
-                group=True,
-            )
-            assert (await client.get(path, headers=headers)).status_code == 403
+            for sender, source in [("54321", "88888"), ("12345", "99999")]:
+                _, messages = await send_chat_command(
+                    service,
+                    connection["command"],
+                    sender=sender,
+                    source=source,
+                    group=True,
+                )
+                assert (
+                    "initiating sender in the original chat"
+                    in (messages[0]["message"][0]["data"]["text"])
+                )
+                status = await client.get(path + "/connection", headers=headers)
+                assert status.json()["data"] == {"confirmed": False}
+                assert (await client.get(path, headers=headers)).status_code == 403
         await send_chat_command(
             service,
             connection["command"],
@@ -572,7 +588,9 @@ async def test_other_authorized_group_sender_cannot_connect_or_read_the_initiato
         accepted.append((run["run_id"], headers))
     first_path = "/api/v1/workflow_chat_runs/" + accepted[0][0]
     first = (await client.get(first_path, headers=accepted[0][1])).json()["data"]
-    assert (await client.get(first_path, headers=accepted[1][1])).status_code == 404
+    denied = await client.get(first_path, headers=accepted[1][1])
+    assert denied.status_code == 404
+    assert denied.headers["X-AstrBot-Chat-Access-Error"] == "identity_mismatch"
     assert (
         await client.post(
             first_path + "/todos/" + first["todos"][0]["todo_id"] + "/answer",

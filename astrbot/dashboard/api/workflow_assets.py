@@ -6,12 +6,13 @@ from typing import Literal
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Query, Request, Security
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.security import APIKeyHeader
 from starlette.background import BackgroundTask
 
 from astrbot.core.agent_teams.assets import RoleAssetError
-from astrbot.core.agent_teams.chat import ChatAccessRequest
+from astrbot.core.agent_teams.chat import ChatAccessRequest, ChatSourceAccessError
 from astrbot.core.agent_teams.history import RunHistoryService
 from astrbot.core.agent_teams.workflows import (
     ArtifactRevisionRequest,
@@ -84,6 +85,43 @@ async def list_history(
     return ok(await service.list_records(username, limit, offset))
 
 
+_CHAT_NO_STORE = {"Cache-Control": "no-store"}
+
+
+def _chat_json(data: object) -> JSONResponse:
+    """Keep restricted chat data and credentials out of HTTP caches.
+
+    Args:
+        data: Result of a restricted chat operation.
+
+    Returns:
+        The success envelope with caching disabled.
+    """
+    return JSONResponse(jsonable_encoder(ok(data)), headers=_CHAT_NO_STORE)
+
+
+def _chat_error_response(
+    exc: RoleAssetError, *, include_fields: bool = False
+) -> JSONResponse:
+    """Mark a connection denial even when the client is expecting file bytes.
+
+    Args:
+        exc: Error from a restricted run endpoint.
+        include_fields: Preserve the answer endpoint's validation diagnostics.
+
+    Returns:
+        The original failure with a reason header for scope-wide denials.
+    """
+    headers = _CHAT_NO_STORE.copy()
+    if isinstance(exc, ChatSourceAccessError):
+        headers["X-AstrBot-Chat-Access-Error"] = exc.reason
+    return JSONResponse(
+        error(str(exc), {"fields": exc.fields} if include_fields else None),
+        status_code=exc.status,
+        headers=headers,
+    )
+
+
 @router.post("/workflow_chat_runs/{run_id}/connection")
 async def open_chat_browser(
     run_id: str, service: WorkflowService = Depends(get_workflow_service)
@@ -98,9 +136,9 @@ async def open_chat_browser(
         A browser credential and source confirmation command, without run content.
     """
     try:
-        return ok(await service.chat.open_browser(run_id))
+        return _chat_json(await service.chat.open_browser(run_id))
     except RoleAssetError as exc:
-        return JSONResponse(error(str(exc)), status_code=exc.status)
+        return _chat_error_response(exc)
 
 
 @router.get("/workflow_chat_runs/{run_id}/connection")
@@ -123,9 +161,9 @@ async def chat_browser_status(
         caller = await service.chat.authenticate_browser(
             run_id, credential or "", allow_pending=True
         )
-        return ok({"confirmed": caller is not None})
+        return _chat_json({"confirmed": caller is not None})
     except RoleAssetError as exc:
-        return JSONResponse(error(str(exc)), status_code=exc.status)
+        return _chat_error_response(exc)
 
 
 @router.get("/workflow_chat_runs/{run_id}")
@@ -147,9 +185,11 @@ async def get_chat_run(
     try:
         caller = await service.chat.authenticate_browser(run_id, credential or "")
         assert caller is not None
-        return ok(await service.chat.get_run(caller, run_id, include_todos=True))
+        return _chat_json(
+            await service.chat.get_run(caller, run_id, include_todos=True)
+        )
     except RoleAssetError as exc:
-        return JSONResponse(error(str(exc)), status_code=exc.status)
+        return _chat_error_response(exc)
 
 
 @router.post("/workflow_chat_runs/{run_id}/todos/{todo_id}/answer")
@@ -175,15 +215,13 @@ async def answer_chat_todo(
     try:
         caller = await service.chat.authenticate_browser(run_id, credential or "")
         assert caller is not None
-        return ok(
+        return _chat_json(
             await service.chat.answer_browser_todo(
                 caller, run_id, todo_id, payload.model_dump()
             )
         )
     except RoleAssetError as exc:
-        return JSONResponse(
-            error(str(exc), {"fields": exc.fields}), status_code=exc.status
-        )
+        return _chat_error_response(exc, include_fields=True)
 
 
 @router.get("/workflow_chat_runs/{run_id}/todos/{todo_id}/artifact")
@@ -207,9 +245,11 @@ async def preview_chat_approval(
     try:
         caller = await service.chat.authenticate_browser(run_id, credential or "")
         assert caller is not None
-        return ok(await service.chat.read_browser_artifact(caller, run_id, todo_id))
+        return _chat_json(
+            await service.chat.read_browser_artifact(caller, run_id, todo_id)
+        )
     except RoleAssetError as exc:
-        return JSONResponse(error(str(exc)), status_code=exc.status)
+        return _chat_error_response(exc)
 
 
 @router.get("/workflow_chat_runs/{run_id}/todos/{todo_id}/artifact/files/{file_id}")
@@ -242,6 +282,7 @@ async def preview_chat_approval_file(
             file["content"],
             media_type=file["media_type"],
             headers={
+                **_CHAT_NO_STORE,
                 "X-Content-Type-Options": "nosniff",
                 "Content-Security-Policy": "sandbox; default-src 'none'",
                 "Content-Disposition": "inline; filename*=UTF-8''"
@@ -249,7 +290,7 @@ async def preview_chat_approval_file(
             },
         )
     except RoleAssetError as exc:
-        return JSONResponse(error(str(exc)), status_code=exc.status)
+        return _chat_error_response(exc)
 
 
 @router.get(
@@ -293,6 +334,7 @@ async def get_chat_result_file(
             file["content"],
             media_type=file["media_type"],
             headers={
+                **_CHAT_NO_STORE,
                 "X-Content-Type-Options": "nosniff",
                 "Content-Security-Policy": "sandbox; default-src 'none'",
                 "Content-Disposition": f"{disposition}; filename*=UTF-8''"
@@ -300,7 +342,7 @@ async def get_chat_result_file(
             },
         )
     except RoleAssetError as exc:
-        return JSONResponse(error(str(exc)), status_code=exc.status)
+        return _chat_error_response(exc)
 
 
 @router.get("/workflow_assets/{asset_id}/chat_access")

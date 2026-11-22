@@ -17,6 +17,7 @@ from sqlmodel import select, text
 
 from astrbot.core import logger
 from astrbot.core.agent_teams.assets import RoleAssetError
+from astrbot.core.agent_teams.graph import NATIVE_NODE_OUTPUTS
 from astrbot.core.db.po import (
     AgentAssetTombstone,
     AgentWorkflowChatAccess,
@@ -30,6 +31,9 @@ if TYPE_CHECKING:
 
 
 _BROWSER_EXPIRED = "Browser connection expired; open the run link again"
+_NATIVE_NODES_DASHBOARD_ONLY = (
+    "Start workflows with native document or knowledge nodes from the Dashboard"
+)
 
 
 class ChatCaller(BaseModel):
@@ -347,13 +351,18 @@ class WorkflowChat:
             The saved local access grant.
 
         Raises:
-            RoleAssetError: The owner cannot access that asset version.
+            RoleAssetError: The asset version is unavailable or requires Dashboard access.
         """
         try:
             request = ChatAccessRequest.model_validate(payload)
         except ValidationError as exc:
             raise RoleAssetError("Invalid chat access") from exc
-        await self.service.get_asset(username, asset_id, request.version)
+        asset = await self.service.get_asset(username, asset_id, request.version)
+        if any(
+            task.get("transform") in NATIVE_NODE_OUTPUTS
+            for task in asset["definition"].get("tasks", [])
+        ):
+            raise RoleAssetError(_NATIVE_NODES_DASHBOARD_ONLY, status=403)
         grant = AgentWorkflowChatAccess(
             asset_id=asset_id, owner_username=username, **request.model_dump()
         )
@@ -546,12 +555,17 @@ class WorkflowChat:
             chat: Verified caller and fixed grant identity.
 
         Raises:
-            RoleAssetError: Any reachable member uses another source profile.
+            RoleAssetError: A reachable node requires Dashboard access or uses another profile.
         """
         caller = ChatCaller.model_validate(chat["caller"])
         pending = [frozen]
         while pending:
             scope = pending.pop()
+            if any(
+                task.get("transform") in NATIVE_NODE_OUTPUTS
+                for task in scope["definition"].get("tasks", [])
+            ):
+                raise RoleAssetError(_NATIVE_NODES_DASHBOARD_ONLY, status=403)
             scope["chat"] = chat
             scope["initiator"] = caller.principal
             members = (

@@ -531,6 +531,10 @@
   "graph": {
     "finiteJsonNumbers": "请使用有限的 JSON 数字。",
     "enableStructuredPorts": "使用结构化端口",
+    "read_document_v1": "读取文档",
+    "read_document_v1Hint": "连接受管理文件的精确版本，节点输出提取的文本和文件名。",
+    "retrieve_knowledge_v1": "检索知识库",
+    "retrieve_knowledge_v1Hint": "连接查询并选择本地知识库，节点输出文本和结构化命中项。",
     "parse_json": "解析 JSON 对象",
     "parse_jsonHint": "将 JSON 文本连到 text 端口，并声明解析后返回的字段。",
     "map_fields": "映射字段",

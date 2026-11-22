@@ -287,6 +287,7 @@ class KnowledgeBaseManager:
         top_m_final: int = 5,
         *,
         kb_ids: list[str] | None = None,
+        warnings: list[str] | None = None,
     ) -> dict | None:
         """Retrieve from either names or exact knowledge base identities.
 
@@ -296,6 +297,7 @@ class KnowledgeBaseManager:
             top_k_fusion: Candidate count before final ranking.
             top_m_final: Maximum number of final results.
             kb_ids: Exact selected identities, including an empty selection.
+            warnings: Optional diagnostics from a degraded search.
 
         Returns:
             Formatted context and results, or no matching content.
@@ -342,6 +344,7 @@ class KnowledgeBaseManager:
             kb_id_helper_map=kb_id_helper_map,
             top_k_fusion=top_k_fusion,
             top_m_final=top_m_final,
+            **({"warnings": warnings} if warnings is not None else {}),
         )
         if not results:
             return None

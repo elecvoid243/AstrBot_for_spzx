@@ -10,6 +10,67 @@ vi.mock("@/i18n/composables", () => ({
 }));
 
 describe("canvas asset editing", () => {
+  it("adds native nodes with typed ports and an exact knowledge base selection", async () => {
+    const wrapper = mount(WorkflowGraphCanvas, {
+      props: {
+        definition: {
+          name: "Inspect documents",
+          port_contract_version: 2,
+          input_contract: {
+            type: "object",
+            properties: { document: { type: "object", format: "astrbot-file" } },
+          },
+          tasks: [],
+        },
+        catalog: { knowledge_bases: [{ id: "kb-local", name: "Local reference" }] },
+      },
+      global: {
+        stubs: {
+          TeamsFlowCanvas: {
+            name: "TeamsFlowCanvas",
+            props: ["nodes"],
+            emits: ["connect", "select-node"],
+            template: "<div />",
+          },
+          WorkflowLoopPanel: true,
+          "v-select": { props: ["items"], emits: ["update:modelValue"], template: "<div />" },
+          "v-btn": { emits: ["click"], template: '<button @click="$emit(\'click\')"><slot /></button>' },
+          "v-alert": true, "v-chip": true, "v-icon": true, "v-spacer": true,
+          "v-switch": true, "v-textarea": true, "v-text-field": true,
+        },
+      },
+    });
+    try {
+      await wrapper.get('[data-testid="add-read_document_v1"]').trigger("click");
+      const canvas = wrapper.getComponent({ name: "TeamsFlowCanvas" });
+      const graph = () => wrapper.emitted("update:definition")!.at(-1)![0] as {
+        tasks: { id: string }[];
+      };
+      expect(canvas.props("nodes")).toEqual(expect.arrayContaining([
+        expect.objectContaining({ data: expect.objectContaining({
+          inputPorts: [expect.objectContaining({ id: "data-in:file", types: ["astrbot-file"] })],
+          outputPorts: expect.arrayContaining([
+            expect.objectContaining({ id: "data-out:filename", types: ["string"] }),
+          ]),
+        }) }),
+      ]));
+      canvas.vm.$emit("connect", {
+        from: "__input", to: graph().tasks[0].id,
+        sourceHandle: "data-out:document", targetHandle: "data-in:file",
+      });
+      await wrapper.get('[data-testid="add-retrieve_knowledge_v1"]').trigger("click");
+      const picker = wrapper.getComponent('[data-testid="native-knowledge-base"]') as VueWrapper;
+      expect(picker.props()).toMatchObject({ items: [{ id: "kb-local", name: "Local reference" }] });
+      picker.vm.$emit("update:modelValue", "kb-local");
+      expect(graph().tasks).toEqual([
+        expect.objectContaining({ transform: "read_document_v1", inputs: { file: { input: "document" } } }),
+        expect.objectContaining({ transform: "retrieve_knowledge_v1", knowledge_base_id: "kb-local" }),
+      ]);
+    } finally {
+      wrapper.unmount();
+    }
+  });
+
   it("keeps clipboard task identity, shared members and detached gates consistent", async () => {
     const wrapper = mount(WorkflowGraphCanvas, {
       props: {

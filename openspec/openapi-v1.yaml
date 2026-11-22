@@ -13774,7 +13774,14 @@ components:
         transform:
           anyOf:
           - type: string
-            enum: [parse_json, map_fields, json_text]
+            enum: [parse_json, map_fields, json_text, read_document_v1, retrieve_knowledge_v1]
+          - type: 'null'
+        knowledge_base_id:
+          description: Exact local knowledge base selected by a retrieval node.
+          anyOf:
+          - type: string
+            minLength: 1
+            maxLength: 128
           - type: 'null'
         input_contract:
           description: Explicit V2 input ports for an Agent, field mapping, or fixed child call. A fixed child call uses the pinned input contract.

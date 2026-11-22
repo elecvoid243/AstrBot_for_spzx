@@ -1011,7 +1011,11 @@ export type GraphTask = {
     output_contract?: ({
     [key: string]: unknown;
 } | null);
-    transform?: ('parse_json' | 'map_fields' | 'json_text' | null);
+    transform?: ('parse_json' | 'map_fields' | 'json_text' | 'read_document_v1' | 'retrieve_knowledge_v1' | null);
+    /**
+     * Exact local knowledge base selected by a retrieval node.
+     */
+    knowledge_base_id?: (string | null);
     /**
      * Explicit V2 input ports for an Agent, field mapping, or fixed child call. A fixed child call uses the pinned input contract.
      */

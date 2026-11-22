@@ -77,6 +77,53 @@ TRANSFORM_INPUTS = {
 }
 
 
+# Versioned native nodes share the same port contracts at every entry point.
+NATIVE_NODE_OUTPUTS = {
+    "read_document_v1": {
+        "type": "object",
+        "properties": {"text": {"type": "string"}, "filename": {"type": "string"}},
+        "required": ["text", "filename"],
+    },
+    "retrieve_knowledge_v1": {
+        "type": "object",
+        "properties": {
+            "text": {"type": "string"},
+            "warnings": {"type": "array", "items": {"type": "string"}},
+            "matches": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "kb_id": {"type": "string"},
+                        "doc_id": {"type": "string"},
+                        "chunk_id": {"type": "string"},
+                        "content": {"type": "string"},
+                    },
+                    "required": ["kb_id", "doc_id", "chunk_id", "content"],
+                },
+            },
+        },
+        "required": ["text", "matches", "warnings"],
+    },
+}
+TRANSFORM_INPUTS.update(
+    {
+        "read_document_v1": {
+            "type": "object",
+            "properties": {"file": {"type": "object", "format": "astrbot-file"}},
+            "required": ["file"],
+        },
+        "retrieve_knowledge_v1": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "minLength": 1, "maxLength": 2000}
+            },
+            "required": ["query"],
+        },
+    }
+)
+
+
 class TaskInput(BaseModel):
     """A declared workflow input or an upstream validated result field."""
 
@@ -160,8 +207,21 @@ class GraphTask(BaseModel):
     dispatch: DispatchLimits | None = Field(
         default=None, exclude_if=lambda value: value is None
     )
-    transform: Literal["parse_json", "map_fields", "json_text"] | None = Field(
-        default=None, exclude_if=lambda value: value is None
+    transform: (
+        Literal[
+            "parse_json",
+            "map_fields",
+            "json_text",
+            "read_document_v1",
+            "retrieve_knowledge_v1",
+        ]
+        | None
+    ) = Field(default=None, exclude_if=lambda value: value is None)
+    knowledge_base_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=128,
+        exclude_if=lambda value: value is None,
     )
     input_contract: dict | None = Field(
         default=None, exclude_if=lambda value: value is None
@@ -205,6 +265,11 @@ class GraphTask(BaseModel):
         Raises:
             ValueError: The selected node kind has missing or conflicting fields.
         """
+        if (
+            self.knowledge_base_id is not None
+            and self.transform != "retrieve_knowledge_v1"
+        ):
+            raise ValueError("Only knowledge retrieval can select a knowledge base")
         if self.dispatch is not None and (
             self.transform
             or self.control
@@ -235,6 +300,14 @@ class GraphTask(BaseModel):
                 or (self.output_contract is not None and self.transform == "json_text")
             ):
                 raise ValueError("Transform nodes cannot configure other execution")
+            if self.transform in NATIVE_NODE_OUTPUTS:
+                contract = NATIVE_NODE_OUTPUTS[self.transform]
+                if (
+                    self.output_contract is not None
+                    and self.output_contract != contract
+                ):
+                    raise ValueError("The native node has a fixed output contract")
+                self.output_contract = copy.deepcopy(contract)
             return self
         if self.input_contract is not None and (self.control or self.human):
             raise ValueError("Control and human nodes cannot declare an input contract")
@@ -1343,6 +1416,18 @@ def validate_graph(
         node_contract = task_input_contract(
             task.input_contract, task.transform, dispatch=bool(task.dispatch)
         )
+        if (
+            task.transform == "retrieve_knowledge_v1"
+            and not task.knowledge_base_id
+            and (text_port_scope is None or task.id in text_port_scope)
+        ):
+            fields.append(
+                {
+                    "path": path + ".knowledge_base_id",
+                    "code": "REQUIRED",
+                    "message": "Choose an existing knowledge base",
+                }
+            )
         if task.dispatch and entries is None:
             fields.append(
                 {

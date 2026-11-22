@@ -11,8 +11,9 @@ import uuid
 from collections.abc import Callable
 from contextlib import nullcontext
 from datetime import datetime, timezone
+from pathlib import Path
 from string import Formatter
-from typing import Literal, cast
+from typing import TYPE_CHECKING, Literal, cast
 
 from jsonschema import Draft202012Validator, SchemaError
 from mcp.types import CallToolResult, TextContent
@@ -64,6 +65,7 @@ from astrbot.core.agent_teams.graph import (
     DISPATCH_INPUT,
     JOIN_OUTPUT,
     MISSING_PORT_VALUE,
+    NATIVE_NODE_OUTPUTS,
     REFERENCE_OUTPUTS,
     GraphDefinition,
     GraphTask,
@@ -121,10 +123,27 @@ from astrbot.core.db.po import (
     AgentWorkflowUsage,
     AgentWorkflowVersion,
     ConversationV2,
+    DashboardAccount,
     PlatformSession,
 )
+from astrbot.core.knowledge_base.parsers.util import select_parser
 from astrbot.core.platform.sources.webchat.webchat_queue_mgr import webchat_queue_mgr
 from astrbot.dashboard.services.agent_team_ports import TeamPorts, build_ports_for_test
+
+if TYPE_CHECKING:
+    from astrbot.core.knowledge_base.kb_mgr import KnowledgeBaseManager
+
+
+def _uses_execution_slot(snapshot: dict) -> bool:
+    """Identify tasks eligible for the shared asynchronous execution slots.
+
+    Args:
+        snapshot: Frozen task snapshot.
+
+    Returns:
+        True for an Agent or a versioned native task.
+    """
+    return "member" in snapshot or snapshot.get("engine") == "native_task_v2"
 
 
 def _capacity_key(snapshot: dict) -> tuple:
@@ -136,6 +155,8 @@ def _capacity_key(snapshot: dict) -> tuple:
     Returns:
         A namespace-qualified identity used for concurrency accounting.
     """
+    if snapshot.get("engine") == "native_task_v2":
+        return ("component", snapshot["node_id"])
     definition = snapshot["definition"]
     if definition.get("role_id"):
         return ("role", definition["role_id"], definition["role_version"])
@@ -725,6 +746,7 @@ class WorkflowService:
         self._executions: dict[str, asyncio.Task] = {}
         self._dispatching: dict[str, asyncio.Task] = {}
         self._closing = False
+        self._document_parser_slot = asyncio.Semaphore(1)
         from astrbot.core.agent_teams.chat import WorkflowChat
 
         self.chat = WorkflowChat(self)
@@ -909,6 +931,12 @@ class WorkflowService:
         elif isinstance(definition, GraphDefinition):
             validate_graph(definition, result_requirement="reachable")
             for task_index, task in enumerate(definition.tasks):
+                if task.knowledge_base_id:
+                    await self._require_native_knowledge_base(
+                        username,
+                        task.knowledge_base_id,
+                        f"definition.tasks.{task_index}.knowledge_base_id",
+                    )
                 if task.human or task.control or task.transform:
                     continue
                 call = task.team or task.workflow
@@ -1438,6 +1466,8 @@ class WorkflowService:
                     else "optional",
                 )
             for member in members:
+                if member.get("knowledge_base_id"):
+                    resources.add(("knowledge_bases", member["knowledge_base_id"]))
                 if member.get("role_id"):
                     role_key = (member["role_id"], member["role_version"])
                     if role_key not in roles:
@@ -1793,6 +1823,7 @@ class WorkflowService:
             ("default_provider_id", "models"),
             ("persona_id", "personas"),
             ("profile_id", "profiles"),
+            ("knowledge_base_id", "knowledge_bases"),
         ):
             if config.get(field) is not None:
                 config[field] = selections[(kind, config[field])]
@@ -1943,6 +1974,8 @@ class WorkflowService:
                     else local_asset["tasks"]
                 )
                 for member in members:
+                    if member.get("knowledge_base_id"):
+                        self._rewrite_package_config(member, choices)
                     if member.get("role_id"):
                         role = copy.deepcopy(
                             contents["roles"][
@@ -2475,6 +2508,8 @@ class WorkflowService:
                             member["role_id"], member["role_version"] = role_map[
                                 (member["role_id"], member["role_version"])
                             ]
+                        if member.get("knowledge_base_id"):
+                            self._rewrite_package_config(member, choices)
                         for field in ("role", "installation", "overrides"):
                             if member.get(field) is not None:
                                 self._rewrite_package_config(member[field], choices)
@@ -4343,6 +4378,17 @@ class WorkflowService:
                         }
                         break
                     budget = limits.get("token_budget")
+                    if (
+                        budget is not None
+                        and row.snapshot.get("transform") == "retrieve_knowledge_v1"
+                    ):
+                        reason = {
+                            "limit": "token_budget",
+                            "scope_run_id": scope.run_id,
+                            "value": budget,
+                            "message": "Knowledge retrieval does not report token use",
+                        }
+                        break
                     committed = sum(
                         r["reported_tokens"]
                         if r.get("reported_tokens") is not None
@@ -4414,9 +4460,10 @@ class WorkflowService:
                         )
                     )
                     await session.commit()
-                    raise RoleAssetError(
-                        f"Execution limit reached: {reason['limit']}", status=409
-                    )
+                    message = f"Execution limit reached: {reason['limit']}"
+                    if reason.get("message"):
+                        message += f". {reason['message']}"
+                    raise RoleAssetError(message, status=409)
                 if row.state.get("usage_wait"):
                     parent_id = row.snapshot.get("parent_run_id")
                     if parent_id:
@@ -4427,18 +4474,21 @@ class WorkflowService:
                             r
                             for r in family
                             if r.status == "running"
-                            and "member" in r.snapshot
+                            and _uses_execution_slot(r.snapshot)
                             and not r.state.get("capacity_released")
                             and r.run_id != run_id
                         ]
                         if not _has_scope_capacity(root, scope, active):
                             return {"waiting": True, "scope_run_id": scope.run_id}
                         role_id = _capacity_key(row.snapshot)
-                        role_limit = row.snapshot["effective"].get("max_parallel")
+                        role_limit = row.snapshot.get("effective", {}).get(
+                            "max_parallel"
+                        )
+                        member_id = row.snapshot.get("member", {}).get("member_id")
                         if (
-                            any(
-                                r.snapshot["member"]["member_id"]
-                                == row.snapshot["member"]["member_id"]
+                            member_id is not None
+                            and any(
+                                r.snapshot["member"]["member_id"] == member_id
                                 for r in family
                                 if r.status == "running"
                                 and "member" in r.snapshot
@@ -4478,7 +4528,7 @@ class WorkflowService:
                         "name": request.name,
                         "task_id": row.state["task_id"],
                         "scope_id": row.state["scope_id"],
-                        "member_id": row.snapshot["member"]["member_id"],
+                        "member_id": row.snapshot.get("member", {}).get("member_id"),
                         "quality": "in_flight",
                         "max_output_tokens": output_cap
                         if request.kind == "model"
@@ -4660,9 +4710,10 @@ class WorkflowService:
             if permitted:
                 if "chat" in row.snapshot:
                     await self.chat.require_access(row.snapshot["chat"], username)
-                await self.roles.validate_frozen_role(
-                    row.snapshot["role"], row.snapshot.get("profile")
-                )
+                if row.snapshot.get("engine") != "native_task_v2":
+                    await self.roles.validate_frozen_role(
+                        row.snapshot["role"], row.snapshot.get("profile")
+                    )
                 return
             await asyncio.sleep(0.1)
 
@@ -6333,6 +6384,15 @@ class WorkflowService:
             if compiled["feedback"]
             else {}
         )
+        for index, node in enumerate(compiled["draft"]["body"]["definition"]["tasks"]):
+            if node["id"] in compiled["selected_nodes"] and node.get(
+                "knowledge_base_id"
+            ):
+                await self._require_native_knowledge_base(
+                    username,
+                    node["knowledge_base_id"],
+                    f"definition.tasks.{index}.knowledge_base_id",
+                )
         frozen = await self._freeze_graph(
             username,
             asset,
@@ -6553,6 +6613,12 @@ class WorkflowService:
         members = {}
         role_counts: dict[tuple, int] = {}
         for index, task in enumerate(definition.tasks):
+            if task.knowledge_base_id and not trial:
+                await self._require_native_knowledge_base(
+                    username,
+                    task.knowledge_base_id,
+                    f"definition.tasks.{index}.knowledge_base_id",
+                )
             if (
                 task.human is not None
                 or task.team is not None
@@ -7129,6 +7195,8 @@ class WorkflowService:
                         if task.human
                         else "control_task_v2"
                         if task.control or task.dispatch
+                        else "native_task_v2"
+                        if task.transform in NATIVE_NODE_OUTPUTS
                         else "transform_task_v2"
                         if task.transform
                         else "single_task_v2",
@@ -7174,7 +7242,14 @@ class WorkflowService:
                             if task.workflow is not None
                             else {"control": task.control.model_dump()}
                             if task.control is not None
-                            else {"transform": task.transform}
+                            else {
+                                "transform": task.transform,
+                                **(
+                                    {"knowledge_base_id": task.knowledge_base_id}
+                                    if task.knowledge_base_id
+                                    else {}
+                                ),
+                            }
                             if task.transform
                             else task_member or members[task.member]
                         ),
@@ -8235,7 +8310,7 @@ class WorkflowService:
                         for task in await _descendant_runs(session, whole_root)
                         if task.run_id != run_id
                         and task.status == "running"
-                        and "member" in task.snapshot
+                        and _uses_execution_slot(task.snapshot)
                         and not task.state.get("capacity_released")
                     ]
                     role_limit = caller.snapshot["effective"].get("max_parallel")
@@ -8578,10 +8653,10 @@ class WorkflowService:
                     for row in family
                     if row is not None
                     and row.status == "running"
-                    and "member" in row.snapshot
+                    and _uses_execution_slot(row.snapshot)
                     and not row.state.get("capacity_released")
                 ]
-                occupied = {row.snapshot["member"]["member_id"] for row in active}
+                occupied = set()
                 # Quota waits free execution slots but retain their session lock.
                 # A sibling must not claim this member until the parked turn exits.
                 occupied.update(
@@ -9099,6 +9174,7 @@ class WorkflowService:
                                 progress = True
                                 continue
                             transform = task.get("transform")
+                            native = transform in NATIVE_NODE_OUTPUTS
                             member_id = row.snapshot.get("member", {}).get("member_id")
                             role_id = (
                                 _capacity_key(row.snapshot)
@@ -9108,8 +9184,9 @@ class WorkflowService:
                             role_limit = row.snapshot.get("effective", {}).get(
                                 "max_parallel"
                             )
-                            if not (
-                                child_call or transform or task.get("dispatch")
+                            if (
+                                native
+                                or not (child_call or transform or task.get("dispatch"))
                             ) and (
                                 not _has_scope_capacity(whole_root, root, active)
                                 or member_id in occupied
@@ -9407,7 +9484,7 @@ class WorkflowService:
                                 path = f"definition.tasks.{task_index}"
                                 contract = task.get("output_contract")
                                 try:
-                                    if transform:
+                                    if transform and not native:
                                         inputs, result = execute_port_transform(
                                             task, inputs, path
                                         )
@@ -9446,7 +9523,14 @@ class WorkflowService:
                                         "issues": exc.fields,
                                     }
                                 else:
-                                    if transform:
+                                    if native:
+                                        row.status = "running"
+                                        row.snapshot = {
+                                            **row.snapshot,
+                                            "component_path": path,
+                                        }
+                                        active.append(row)
+                                    elif transform:
                                         row.status = "completed"
                                         row.result = result
                                         session.add(
@@ -9767,7 +9851,7 @@ class WorkflowService:
                     for row in rows.values()
                     if row is not None
                     and row.status == "running"
-                    and "member" in row.snapshot
+                    and _uses_execution_slot(row.snapshot)
                     and not row.state.get("execution_id")
                 ]
                 break
@@ -10331,8 +10415,9 @@ class WorkflowService:
                     )
                     .where(
                         col(AgentWorkflowRun.status) == "running",
-                        AgentWorkflowRun.snapshot["engine"].as_string()
-                        == "single_task_v2",
+                        AgentWorkflowRun.snapshot["engine"]
+                        .as_string()
+                        .in_(["single_task_v2", "native_task_v2"]),
                         AgentWorkflowRun.state["execution_id"].as_string().is_(None),
                         col(scope.status).in_(["running", "blocked"]),
                         AgentWorkflowControl.status == "active",
@@ -11335,6 +11420,10 @@ class WorkflowService:
             raise RoleAssetError(
                 "Recover an interrupted task in the workflow", status=409
             )
+        if run["snapshot"]["engine"] == "native_task_v2":
+            raise RoleAssetError(
+                "Retry the native node with its frozen inputs", status=409
+            )
         if run["snapshot"]["engine"] == "human_task_v2":
             raise RoleAssetError(
                 "Answer the persistent human request instead of recovering an agent checkpoint",
@@ -11477,7 +11566,7 @@ class WorkflowService:
                     task
                     for task in family
                     if task.status == "running"
-                    and "member" in task.snapshot
+                    and _uses_execution_slot(task.snapshot)
                     and not task.state.get("capacity_released")
                 ]
                 role_id = _capacity_key(row.snapshot)
@@ -12374,6 +12463,33 @@ class WorkflowService:
                 await session.refresh(run)
                 if run.status not in {"running", "interrupted"}:
                     continue
+                if run.snapshot.get(
+                    "engine"
+                ) == "native_task_v2" and await session.scalar(
+                    select(AgentWorkflowUsage.receipt_id)
+                    .where(
+                        AgentWorkflowUsage.run_id == run.run_id,
+                        AgentWorkflowUsage.attempt_id == run.state["attempt_id"],
+                    )
+                    .limit(1)
+                ):
+                    # A receipt proves admission reached the call boundary even
+                    # when a result was never committed. Do not silently replay it.
+                    reason = "Native task stopped after call admission. Retry with the original inputs."
+                    run.status = "failed"
+                    run.state = {**run.state, "reason": reason}
+                    session.add(run)
+                    session.add(
+                        AgentWorkflowEvent(
+                            run_id=run.run_id,
+                            kind="task.failed",
+                            data={
+                                "attempt_id": run.state["attempt_id"],
+                                "reason": reason,
+                            },
+                        )
+                    )
+                    continue
                 checkpoint = await session.get(AgentWorkflowCheckpoint, run.run_id)
                 if (
                     run.snapshot.get("parent_run_id")
@@ -12537,6 +12653,275 @@ class WorkflowService:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
 
+    async def _require_native_knowledge_base(
+        self, username: str, kb_id: str, path: str
+    ) -> "KnowledgeBaseManager":
+        """Resolve one exact KB under the Dashboard knowledge access policy.
+
+        Args:
+            username: Stable resource owner who selected the knowledge base.
+            kb_id: Local knowledge base identity frozen in the node.
+            path: Original canvas field for diagnostics.
+
+        Returns:
+            The live knowledge base manager for this selection.
+
+        Raises:
+            RoleAssetError: The owner or selected knowledge base is unavailable.
+        """
+        async with self.db.get_db() as session:
+            account = await session.scalar(
+                select(DashboardAccount).where(
+                    or_(
+                        DashboardAccount.legacy_owner == username,
+                        and_(
+                            col(DashboardAccount.legacy_owner).is_(None),
+                            DashboardAccount.account_id == username,
+                        ),
+                    )
+                )
+            )
+        if account is None or not account.enabled or account.role != "admin":
+            message = "The workflow owner cannot access knowledge bases"
+            raise RoleAssetError(
+                message,
+                [{"path": path, "code": "FORBIDDEN", "message": message}],
+                status=403,
+            )
+        manager = getattr(self.roles.core_lifecycle, "kb_manager", None)
+        kb = await manager.get_kb(kb_id) if manager else None
+        if kb is None or kb.init_error:
+            message = "The selected knowledge base is unavailable"
+            raise RoleAssetError(
+                message, [{"path": path, "code": "UNAVAILABLE", "message": message}]
+            )
+        return manager
+
+    async def _read_native_document(self, username: str, reference: dict) -> dict:
+        """Read and parse an authorized immutable file in the shared parser slot.
+
+        Args:
+            username: Stable owner of the exact artifact.
+            reference: Bound artifact identity, version, and file identity.
+
+        Returns:
+            Extracted text and the managed filename.
+
+        Raises:
+            RoleAssetError: The file is unavailable or its version is not approved.
+            ValueError: The document format or its size is unsupported.
+            TimeoutError: The parser did not finish within the node's time limit.
+        """
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + 60
+        await asyncio.wait_for(self._document_parser_slot.acquire(), timeout=60)
+        try:
+            file = await self.get_file(username, **reference)
+            if len(file["content"]) > 10 * 1024 * 1024:
+                raise ValueError("Document exceeds 10 MiB")
+            filename = file["filename"]
+            parser = await select_parser(Path(filename).suffix.lower())
+            conversion = asyncio.create_task(
+                asyncio.to_thread(
+                    lambda: asyncio.run(parser.parse(file["content"], filename))
+                )
+            )
+        except BaseException:
+            self._document_parser_slot.release()
+            raise
+
+        def release_parser_slot(task: asyncio.Task) -> None:
+            """Release capacity and observe errors from a late conversion.
+
+            Args:
+                task: Conversion that is no longer using the parser slot.
+            """
+            self._document_parser_slot.release()
+            if not task.cancelled():
+                task.exception()
+
+        # A cancelled or timed-out attempt leaves the lease with the parser
+        # until the actual CPU work stops. It cannot publish a late result.
+        conversion.add_done_callback(release_parser_slot)
+        parsed = await asyncio.wait_for(
+            asyncio.shield(conversion), timeout=max(0, deadline - loop.time())
+        )
+        if len(parsed.text) > 100_000:
+            raise ValueError("Extracted text exceeds 100,000 characters")
+        return {"text": parsed.text, "filename": filename}
+
+    async def _execute_native_node(
+        self, username: str, run_id: str, execution_id: str, snapshot: dict, state: dict
+    ) -> None:
+        """Execute a bound native node and commit a result under the attempt fence.
+
+        Args:
+            username: Authenticated workflow owner.
+            run_id: Persisted task identity.
+            execution_id: Current durable executor fence.
+            snapshot: Frozen configuration, inputs and provenance.
+            state: Current task attempt identity.
+
+        Raises:
+            RoleAssetError: Admission, resource or component execution failed.
+        """
+        path = snapshot["component_path"]
+        inputs = snapshot["inputs"]
+        transform = snapshot["transform"]
+        attempt = state["attempt_id"]
+
+        reads_file = transform == "read_document_v1"
+        diagnostic_path = (
+            f"{path}.inputs.file" if reads_file else f"{path}.knowledge_base_id"
+        )
+        invocation = uuid.uuid4().hex
+        while True:
+            await self._await_execution_permission(username, run_id, execution_id)
+            if not reads_file:
+                kb_id = snapshot["knowledge_base_id"]
+                manager = await self._require_native_knowledge_base(
+                    username, kb_id, diagnostic_path
+                )
+            try:
+                receipt = await self.begin_usage(
+                    username,
+                    run_id,
+                    attempt,
+                    execution_id,
+                    {
+                        "receipt_id": invocation,
+                        "invocation_id": invocation,
+                        "kind": "tool" if reads_file else "query",
+                        "name": transform,
+                    },
+                )
+            except RoleAssetError as exc:
+                if any(issue["code"] == "PAUSED" for issue in exc.fields):
+                    continue
+                raise
+            if not receipt.get("waiting"):
+                break
+            await asyncio.sleep(0.1)
+
+        try:
+            if reads_file:
+                result = await self._read_native_document(username, inputs["file"])
+            else:
+                warnings: list[str] = []
+                search = (
+                    await asyncio.wait_for(
+                        manager.retrieve(
+                            query=inputs["query"], kb_ids=[kb_id], warnings=warnings
+                        ),
+                        timeout=60,
+                    )
+                    or {}
+                )
+                if not search.get("results") and warnings:
+                    message = "Knowledge retrieval failed without usable matches"
+                    raise RoleAssetError(
+                        message,
+                        [
+                            {
+                                "path": diagnostic_path,
+                                "code": warnings[0],
+                                "message": message,
+                            }
+                        ],
+                    )
+                result = {
+                    "text": search.get("context_text", ""),
+                    "matches": search.get("results", []),
+                    "warnings": warnings,
+                }
+        except RoleAssetError as exc:
+            if exc.fields:
+                raise
+            raise RoleAssetError(
+                str(exc),
+                [{"path": diagnostic_path, "code": "REFERENCE", "message": str(exc)}],
+                status=exc.status,
+            ) from exc
+        except asyncio.TimeoutError as exc:
+            message = (
+                "Document parsing timed out"
+                if reads_file
+                else "Knowledge retrieval timed out"
+            )
+            raise RoleAssetError(
+                message,
+                [{"path": diagnostic_path, "code": "TIMEOUT", "message": message}],
+            ) from exc
+        except Exception as exc:
+            logger.warning(
+                "Native workflow node %s failed: %s", transform, type(exc).__name__
+            )
+            message = (
+                "Could not parse this document. Choose a supported file up to 10 MiB with at most 100,000 extracted characters."
+                if reads_file
+                else "Knowledge retrieval failed"
+            )
+            raise RoleAssetError(
+                message,
+                [{"path": diagnostic_path, "code": "EXECUTION", "message": message}],
+            ) from exc
+        finally:
+            await self.report_usage(
+                username,
+                invocation,
+                execution_id,
+                {"total_tokens": 0} if reads_file else {},
+            )
+
+        contract = snapshot["definition"]["output_contract"]
+        fields = validate_result(contract, result, port_formats=True)
+        if fields:
+            raise RoleAssetError(
+                "Native node returned invalid data",
+                [
+                    {
+                        **field,
+                        "path": f"{path}.output_contract"
+                        + field["path"].removeprefix("result"),
+                    }
+                    for field in fields
+                ],
+            )
+        await self._await_execution_permission(username, run_id, execution_id)
+        async with self.db.get_db() as session:
+            row = await session.get(AgentWorkflowRun, run_id)
+            assert row is not None
+            control = await self._lock_control(session, row)
+            await self._require_execution_owner(session, run_id, execution_id)
+            await session.refresh(row)
+            if control.status == "cancelled":
+                raise RoleAssetError("Run was cancelled", status=409)
+            row.status = "completed"
+            row.result = result
+            row.state = {**row.state, "reason": None}
+            session.add(row)
+            session.add(
+                AgentWorkflowArtifact(
+                    artifact_id=run_id,
+                    version=1,
+                    run_id=run_id,
+                    submission_id=attempt,
+                    contract=contract,
+                    content=result,
+                )
+            )
+            session.add(
+                AgentWorkflowEvent(
+                    run_id=run_id,
+                    kind="task.completed",
+                    data={
+                        "attempt_id": attempt,
+                        "reference": {"artifact_id": run_id, "version": 1},
+                    },
+                )
+            )
+            await session.commit()
+
     async def _execute(
         self, username: str, run_id: str, execution_id: str | None = None
     ) -> None:
@@ -12586,7 +12971,7 @@ class WorkflowService:
                 return
             saved = await session.get(AgentWorkflowCheckpoint, run_id)
             checkpoint = copy.deepcopy(saved.data) if saved else None
-        member, effective = snapshot["member"], snapshot["effective"]
+        member = snapshot.get("member", {})
         ports = None
         tools: list[FunctionTool] = []
         status = "failed"
@@ -12596,7 +12981,13 @@ class WorkflowService:
         assert current_task is not None
         self._executions[run_id] = current_task
         try:
+            if snapshot.get("engine") == "native_task_v2":
+                await self._execute_native_node(
+                    username, run_id, execution_id, snapshot, state
+                )
+                return
             await self._await_execution_permission(username, run_id, execution_id)
+            effective = snapshot["effective"]
             ports = self.ports_factory(snapshot.get("initiator", username))
 
             async def accept(payload: dict) -> None:

@@ -868,6 +868,16 @@
           </template>
           <template v-else-if="selectedTask.transform">
             <p class="text-caption">{{ tm(`graph.${selectedTask.transform}Hint`) }}</p>
+            <v-select
+              v-if="selectedTask.transform === 'retrieve_knowledge_v1'"
+              v-model="selectedTask.knowledge_base_id"
+              data-testid="native-knowledge-base"
+              :items="catalog.knowledge_bases ?? []"
+              item-title="name"
+              item-value="id"
+              :label="tm('roles.knowledge_bases')"
+              @update:model-value="checkpoint"
+            />
             <v-textarea
               v-for="contract in transformContracts"
               :key="`${selectedTask.id}:${contract}`"
@@ -1338,7 +1348,19 @@ const typedPorts = computed(() => !!draft.value.port_contract_version);
 const explicitControl = computed(() => Array.isArray(draft.value.entry_task_ids));
 const dispatchLimits = ["max_items", "max_parallel"] as const;
 const maxDispatchItems = 30;
-const transformKinds = ["parse_json", "map_fields", "json_text"] as const;
+const nativePorts = {
+  read_document_v1: {
+    inputs: { file: { type: "object", format: "astrbot-file" } },
+    outputs: { text: { type: "string" }, filename: { type: "string" } },
+  },
+  retrieve_knowledge_v1: {
+    inputs: { query: { type: "string" } },
+    outputs: { text: { type: "string" }, matches: { type: "array" }, warnings: { type: "array" } },
+  },
+};
+const transformKinds = [
+  "parse_json", "map_fields", "json_text", "read_document_v1", "retrieve_knowledge_v1",
+] as const;
 const scalarTypes = ["boolean", "integer", "null", "number", "string"];
 const jsonTypes = ["array", ...scalarTypes, "object"].sort();
 const semanticPortTypes = ["astrbot-message", "astrbot-artifact", "astrbot-file"];
@@ -1711,9 +1733,13 @@ function fieldsForTask(
   const task = draft.value.tasks.find((item) => item.id === id);
   if (!task) return [];
   const aggregate = task.dispatch || (explicitControl.value && task.control?.kind === "join");
+  const native = nativePorts[task.transform as keyof typeof nativePorts];
+  const outputContract = task.output_contract ?? (native
+    ? { type: "object", properties: native.outputs, required: Object.keys(native.outputs) }
+    : undefined);
   const fields: { title: string; value: string; type: string; required?: boolean }[] = aggregate
     ? [{ title: "results · array", value: "results", type: "array" }]
-    : task.output_contract
+    : outputContract
     ? []
     : [
         ...(task.human?.kind === "approval"
@@ -1743,7 +1769,7 @@ function fieldsForTask(
       if (field?.type === "object") visit(field, path, required);
     }
   };
-  if (task.output_contract) visit(task.output_contract);
+  if (outputContract) visit(outputContract);
   if (structuredPorts.value && (!task.control || aggregate)) {
     fields.push({ title: tm("graph.artifactReferencePort"), value: "$artifact", type: "astrbot-artifact" });
     const properties = task.output_contract?.properties;
@@ -1908,6 +1934,7 @@ const taskNodes = computed<FlowNode[]>(() =>
               task.transform === "map_fields" ? {} :
               task.transform === "parse_json" ? { text: { type: "string" } } :
               task.transform === "json_text" ? { value: { type: jsonTypes } } :
+              nativePorts[task.transform as keyof typeof nativePorts]?.inputs ??
               Object.fromEntries(agentInputNames(task).map((name) => [name, { type: "string" }]))
             ).map(([alias, schema]) => {
               const format = "format" in schema && semanticPortTypes.includes(String(schema.format))
@@ -2679,7 +2706,8 @@ function addTask(roleId: string, position?: { x: number; y: number }) {
       ? {
           transform,
           ...(transform === "map_fields" ? { input_contract: { type: "object" as const, properties: {} } } : {}),
-          ...(transform !== "json_text" ? { output_contract: { type: "object", properties: {} } } : {}),
+          ...(transform === "parse_json" || transform === "map_fields"
+            ? { output_contract: { type: "object", properties: {} } } : {}),
         }
       : controlKind
       ? {

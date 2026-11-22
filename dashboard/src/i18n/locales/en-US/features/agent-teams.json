@@ -531,6 +531,10 @@
   "graph": {
     "finiteJsonNumbers": "Use finite JSON numbers.",
     "enableStructuredPorts": "Use structured ports",
+    "read_document_v1": "Read document",
+    "read_document_v1Hint": "Connect an exact managed file. The node returns the extracted text and filename.",
+    "retrieve_knowledge_v1": "Retrieve knowledge",
+    "retrieve_knowledge_v1Hint": "Connect a search query and select a local knowledge base. The node returns text and structured matches.",
     "parse_json": "Parse JSON object",
     "parse_jsonHint": "Connect JSON text to the text port and declare the fields returned by the parser.",
     "map_fields": "Map fields",

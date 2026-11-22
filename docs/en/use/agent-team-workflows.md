@@ -65,6 +65,26 @@ Hold Shift and drag on empty canvas space to select multiple nodes, or Ctrl/Cmd-
 
 ![Real Dashboard canvas with a group and a note](/images/agent-workflow-reuse-en.jpg)
 
+### Document workflow example
+
+From an empty instance, configure a tool-capable chat model and an embedding model. In **Knowledge Base**, create a local knowledge base with the embedding model. Upload `threshold.md` containing “The inspection threshold is 40.”
+
+In **More Features → Agent Teams → Assets → Workflows → New Workflow**, create a one-Agent workflow with the chat model. Set the Agent as the result node and declare a structured result with `text` (string) and `files` (array). Give it the task “Use `store_task_file` to save `inspection.md` with the exact text ‘The gauge value is 42.’ Submit a short text summary and include the returned file ID as `files: [{file_id: ...}]`.” Run a full draft test and verify the attachment on the completed task. Its exact artifact version supplies the file picker below.
+
+1. On the canvas, select **Use structured ports** and declare required inputs `document` (`{"type":"object","format":"astrbot-file"}`) and `query` (string). Add **Read document** and **Retrieve knowledge**. Connect `document → file` and `query → query`, then select the local knowledge base.
+2. Connect both `text` outputs to separate Agent inputs and write a task prompt asking it to compare the gauge value with the threshold. Select an existing role, model, Skills, and any required tools. Declare integer output fields `gauge` and `threshold`. Connect them to a **Map fields** node with matching input and output schemas, and select it as the workflow result. Connect the control paths through the Agent and map. The retrieval node also exposes a structured `matches` array with knowledge base, document, and chunk IDs.
+3. Save the draft and choose **Test draft → Full workflow**. Enter the exact file reference and the query `inspection threshold`. Inspect the parser and retrieval results, the Agent's actual context and tool calls, and the final `{"gauge":42,"threshold":40}`. Then choose **From selected node**, start at the Agent, and select the exact output artifacts of both upstream nodes. Only the Agent and field mapping run.
+4. Publish and start the fixed version with the same inputs. The fixed version keeps the local knowledge base ID, role version, and resource selections. Retrieval uses the current index contents. The retrieval node exposes a `warnings` array when vector retrieval or reranking fails and the remaining search still returns usable results.
+
+![The document workflow canvas with the local knowledge base selected](/images/agent-teams-native-document-en.jpg)
+
+Document reading uses the existing Markdown, text, PDF, EPUB, DOCX, and XLS/XLSX parsers. The node extracts up to 100,000 characters from a managed file up to 10 MiB. An approval-governed file requires approval for the exact artifact version. Check the affected node or its tool timeline for resource, file, and tool failures. Correct the draft or input and test again.
+
+Start workflows containing these document or knowledge nodes from the Dashboard. Platform chat grants do not supply the Dashboard owner's file or knowledge base access.
+
+Both native nodes count toward the root run's concurrency and step limits. Parsing uses zero model tokens. Retrieval shows unknown token usage because the knowledge base interface supplies no embedding or reranking consumption. An active token budget blocks explicit retrieval before the call. If a restart interrupts a recorded call before its output is saved, retry the failed node with the original inputs. A retry counts as another call under the root limit.
+
+
 ## Drafts, fixed versions and tests
 
 Edits to assets and canvas layouts are saved automatically as drafts, including new drafts without a saved version. Check the save status: retry a failure, or retain local content or explicitly load the server draft when there is a conflict. If a fixed version changes, compare the original base and latest version, then keep the whole draft against the selected base or load the latest version and edit again. Fields are not merged.

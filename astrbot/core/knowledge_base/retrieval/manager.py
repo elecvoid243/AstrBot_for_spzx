@@ -68,6 +68,7 @@ class RetrievalManager:
         kb_id_helper_map: dict[str, KBHelper],
         top_k_fusion: int = 20,
         top_m_final: int = 5,
+        warnings: list[str] | None = None,
     ) -> list[RetrievalResult]:
         """混合检索
 
@@ -81,7 +82,7 @@ class RetrievalManager:
             query: 查询文本
             kb_ids: 知识库 ID 列表
             top_m_final: 最终返回数量
-            enable_rerank: 是否启用 Rerank
+            warnings: Optional non-sensitive diagnostics for degraded retrieval.
 
         Returns:
             List[RetrievalResult]: 检索结果列表
@@ -115,6 +116,7 @@ class RetrievalManager:
             query=query,
             kb_ids=kb_ids,
             kb_options=kb_options,
+            warnings=warnings,
         )
         time_end = time.time()
         logger.debug(
@@ -188,6 +190,8 @@ class RetrievalManager:
                     rerank_provider=first_rerank,
                 )
             except Exception as e:
+                if warnings is not None:
+                    warnings.append("RERANK_FAILED")
                 logger.warning(f"Rerank 执行失败，已跳过重排序并使用融合结果: {e}")
 
         return retrieval_results[:top_m_final]
@@ -197,6 +201,7 @@ class RetrievalManager:
         query: str,
         kb_ids: list[str],
         kb_options: dict,
+        warnings: list[str] | None = None,
     ):
         """稠密检索 (向量相似度)
 
@@ -205,7 +210,7 @@ class RetrievalManager:
         Args:
             query: 查询文本
             kb_ids: 知识库 ID 列表
-            top_k: 返回结果数量
+            warnings: Optional non-sensitive diagnostics for degraded retrieval.
 
         Returns:
             List[Result]: 检索结果列表
@@ -228,6 +233,8 @@ class RetrievalManager:
 
                 all_results.extend(vec_results)
             except Exception as e:
+                if warnings is not None and "DENSE_RETRIEVAL_FAILED" not in warnings:
+                    warnings.append("DENSE_RETRIEVAL_FAILED")
                 logger.error(
                     f"知识库 {kb_id} 稠密检索失败: {type(e).__name__}: {e}",
                     exc_info=True,

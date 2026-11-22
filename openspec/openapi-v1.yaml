@@ -8962,7 +8962,12 @@ paths:
       tags:
       - Agent Teams workflows
       summary: Get Run
-      description: Run details include at most 128 recent process observations. Read older observations through the process page endpoint. The snapshot cursor is the committed event high-water mark.
+      description: >-
+        Run details include at most 128 recent process observations. Read older
+        observations through the process page endpoint. The snapshot cursor is
+        the committed event high-water mark. The recovery.has_saved_tool_results
+        flag accounts for saved results from all tool invocations of the current
+        attempt.
       operationId: get_run_api_v1_workflow_runs__run_id__get
       parameters:
       - name: run_id
@@ -9248,8 +9253,8 @@ paths:
         \nArgs:\n    run_id: Failed task within the root run or an existing workflow.\n\
         \    payload: Idempotent request with the failed attempt and input policy.\n\
         \    username: Authenticated owner.\n    service: Core-owned public run service.\n\
-        \nReturns:\n    New attempt and preserved failure history; uncertain tools require\
-        \ resolution."
+        \nReturns:\n    New attempt and preserved failure history, or HTTP 409 when uncertain\
+        \ effects or saved tool results require handling in the original attempt."
       operationId: retry_task_api_v1_workflow_runs__run_id__retry_post
       parameters:
       - name: run_id
@@ -9282,12 +9287,13 @@ paths:
       - Agent Teams workflows
       summary: Recover Run
       description: "Continue the same attempt from saved model and per-tool boundaries.\n\
-        \nArgs:\n    run_id: Interrupted task; no new attempt or iteration is created.\n\
+        \nArgs:\n    run_id: Task with a resumable checkpoint in its original attempt.\n\
         \    username: Authenticated owner of the original run.\n    service: Shared\
         \ public run service.\n\nReturns:\n    Persisted progress with per-call intents, results, context positions and\n\
         \    execution ownership. Saved results are reused, unstarted calls may run,\n\
-        \    and unknown effects require confirmation. Contracted submissions finish\n\
-        \    through the existing idempotent result protocol."
+        \    and unknown effects require confirmation. A failed model request may be\n\
+        \    sent again with the saved tool results in context. Contracted submissions\n\
+        \    finish through the existing idempotent result protocol."
       operationId: recover_run_api_v1_workflow_runs__run_id__recover_post
       parameters:
       - name: run_id

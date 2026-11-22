@@ -722,15 +722,16 @@ async def recover_run(
     """Continue the same attempt from saved model and per-tool boundaries.
 
     Args:
-        run_id: Interrupted task; no new attempt or iteration is created.
+        run_id: Task with a resumable checkpoint in its original attempt.
         username: Authenticated owner of the original run.
         service: Shared public run service.
 
     Returns:
         Persisted progress with per-call intents, results, context positions and
         execution ownership. Saved results are reused, unstarted calls may run,
-        and unknown effects require confirmation. Contracted submissions finish
-        through the existing idempotent result protocol.
+        and unknown effects require confirmation. A failed model request may be
+        sent again with the saved tool results in context. Contracted submissions
+        finish through the existing idempotent result protocol.
     """
     try:
         await service.recover_run(username, run_id)
@@ -839,7 +840,8 @@ async def retry_task(
         service: Core-owned public run service.
 
     Returns:
-        New attempt and preserved failure history; uncertain tools require resolution.
+        New attempt and preserved failure history, or HTTP 409 when uncertain
+        effects or saved tool results require handling in the original attempt.
     """
     try:
         await service.retry_task(username, run_id, payload.model_dump())

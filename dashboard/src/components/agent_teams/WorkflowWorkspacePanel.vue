@@ -384,10 +384,7 @@
             >{{ tm("resolution.savedWaiting") }}</v-alert
           >
           <v-alert
-            v-if="
-              detailRun.recovery &&
-              ['interrupted', 'failed', 'blocked'].includes(detailRun.status)
-            "
+            v-if="showRecovery"
             type="info"
             variant="tonal"
             class="my-3"
@@ -440,7 +437,7 @@
               }}</v-btn
             >
           </v-alert>
-          <details v-if="!['interrupted', 'failed', 'blocked'].includes(detailRun.status)" class="my-3">
+          <details v-if="!showRecovery" class="my-3">
             <summary>{{ tm('workbench.executionDetails') }}</summary>
           <RunnerCapabilities
             :runner="detailRun.snapshot.effective?.runner"
@@ -979,6 +976,13 @@ const detailRun = computed(
     selectedRun.value?.tasks?.[0] ??
     selectedRun.value,
 );
+const showRecovery = computed(() => {
+  const task = detailRun.value;
+  return task?.recovery && (
+    ["interrupted", "failed", "blocked"].includes(task.status) ||
+    (task.status === "awaiting_result" && task.recovery.has_saved_tool_results)
+  );
+});
 function runViews(root: any): any[] {
   if (!root) return [];
   return [root, ...(root.tasks ?? []),

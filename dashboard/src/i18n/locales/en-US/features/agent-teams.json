@@ -641,6 +641,8 @@
     },
     "inFlight": "In-flight external calls may still finish. Pausing or cancelling does not undo external effects.",
     "semantics": "Continue resumes this run. Retry starts a new attempt.",
+    "recoverSavedTools": "Continue the same attempt to reuse its saved tool results.",
+    "reviewSavedTools": "This attempt has saved tool results. Review them before starting another run.",
     "resolveFirst": "Resolve uncertain tool effects in Saved member process before retrying this task.",
     "previous": "Previous attempt",
     "originalInputs": "Original frozen inputs and exact artifact versions",

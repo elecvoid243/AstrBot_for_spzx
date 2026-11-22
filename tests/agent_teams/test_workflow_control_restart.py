@@ -19,6 +19,8 @@ import pytest
         "control_continue",
         "control_cancel",
         "control_retry",
+        "control_saved_receipt",
+        "control_saved_receipt_terminal",
         "control_unknown",
         "control_request",
         "control_capacity",
@@ -67,22 +69,35 @@ def test_control_decision_survives_process_termination(
                     response = {
                         "error": "Verified provider failure for UI retry acceptance"
                     }
-                elif (
+                elif not retry_allowed and (
                     scenario == "control_retry"
-                    and not retry_allowed
-                    and len(effects) == 1
+                    or scenario == "control_saved_receipt"
                     and "evidence-original" in context
                 ):
                     response = {
                         "error": "Verified provider rejection after saved evidence"
                     }
+                elif (
+                    scenario == "control_saved_receipt_terminal"
+                    and "evidence-original" in context
+                ):
+                    response = {
+                        "role": "assistant",
+                        "completion_text": "Missing task submission.",
+                    }
                 elif "submit-original" in context:
                     response = {"role": "assistant", "completion_text": "Submitted."}
-                elif "evidence-original" in context:
+                elif (
+                    "evidence-original" in context
+                    or scenario == "control_saved_receipt"
+                    and "Deliver without a connector." in context
+                ):
                     result = (
                         "Verified final report"
                         if scenario == "dispatch_commit"
                         and "Finish the report for Frozen field notes." in context
+                        else "Verified delivery"
+                        if "Deliver without a connector." in context
                         else "Verified report"
                     )
                     response = {
@@ -164,7 +179,13 @@ def test_control_decision_survives_process_termination(
         if scenario == "dispatch_commit":
             assert len(requests) == 3
         retry_allowed = True
-        assert effects_before == (0 if scenario in {"control_request", "control_capacity"} else 2 if scenario == "control_mixed" else 1)
+        assert effects_before == (
+            0
+            if scenario in {"control_request", "control_capacity", "control_retry"}
+            else 2
+            if scenario == "control_mixed"
+            else 1
+        )
         if preview:
             with (tmp_path / "preview.log").open("w", encoding="utf-8") as log:
                 worker = subprocess.Popen(
@@ -253,6 +274,63 @@ def test_control_decision_survives_process_termination(
                 "Finish the report for Frozen field notes." in json.dumps(request)
                 for request in requests[3:]
             )
+        elif scenario == "control_saved_receipt_terminal":
+            assert before == after
+            assert evidence["retry_error"]["status"] == 409
+            assert evidence["recovery_error"]["status"] == 409
+            assert "original checkpoint" in evidence["recovery_error"]["message"]
+            assert effects == [{"value": "original-plan"}]
+            assert len(requests) == 2
+        elif scenario == "control_saved_receipt":
+            original, pending = before["tasks"]
+            resumed, delivered = after["tasks"]
+            assert original["status"] == "awaiting_result"
+            assert pending["status"] != "completed"
+            assert evidence["retry_error"]["status"] == 409
+            assert "saved tool results" in evidence["retry_error"]["body"]["message"]
+            assert after["status"] == "completed"
+            assert resumed["run_id"] == original["run_id"]
+            assert resumed["state"]["attempt_id"] == original["state"]["attempt_id"]
+            assert delivered["run_id"] == pending["run_id"]
+            assert delivered["state"]["attempt_id"] == pending["state"]["attempt_id"]
+            assert resumed["attempts"] == []
+            [saved] = original["tool_calls"]
+            reused = next(
+                call
+                for call in resumed["tool_calls"]
+                if call["record_id"] == saved["record_id"]
+            )
+            assert saved["status"] == reused["status"] == "applied"
+            assert saved["raw_results"] == reused["raw_results"]
+            assert (
+                saved["raw_results"][0]["content"][0]["text"]
+                == "External effect receipt"
+            )
+            assert (
+                sum(
+                    record["kind"] == "tool_result"
+                    and record["data"].get("tool_record_id") == saved["record_id"]
+                    for record in resumed["process"]
+                )
+                == 1
+            )
+            assert effects == [{"value": "original-plan"}]
+            assert "External effect receipt" in json.dumps(requests[2]["contexts"])
+            assert evidence["result"] == {"text": "Verified delivery"}
+            assert after["result_ref"] == delivered["result_ref"]
+            for task in (resumed, delivered):
+                accepted = [
+                    event["data"]
+                    for event in task["events"]
+                    if event["kind"] == "result.accepted"
+                ]
+                assert [event["attempt_id"] for event in accepted] == [
+                    task["state"]["attempt_id"]
+                ]
+                assert (
+                    sum(event["kind"] == "task.completed" for event in task["events"])
+                    == 1
+                )
         elif scenario == "control_mixed":
             assert after["control"]["status"] == "active"
             assert after["tasks"][0]["status"] == "interrupted"
@@ -273,7 +351,23 @@ def test_control_decision_survives_process_termination(
             assert len(requests) == 1
         elif scenario == "control_cancel":
             assert after["status"] == "cancelled"
-            assert len(effects) == effects_before
+            original, pending = before["tasks"]
+            cancelled, successor = after["tasks"]
+            assert successor["run_id"] == pending["run_id"]
+            assert successor["state"]["attempt_id"] == pending["state"]["attempt_id"]
+            assert successor["result_ref"] is None
+            assert not any(event["kind"] == "task.running" for event in successor["events"])
+            assert cancelled["run_id"] == original["run_id"]
+            assert cancelled["state"]["attempt_id"] == original["state"]["attempt_id"]
+            [call] = cancelled["tool_calls"]
+            assert call["status"] in {"started", "unknown"}
+            assert call["raw_results"] == call["available_actions"] == []
+            assert cancelled["result_ref"] is None
+            assert not any(
+                event["kind"] == "result.accepted" for event in cancelled["events"]
+            )
+            assert sum(event["kind"] == "run.cancel" for event in after["events"]) == 1
+            assert effects == [{"value": "original-plan"}]
         elif scenario == "control_unknown":
             assert after["status"] == "interrupted"
             assert after["tool_calls"][0]["status"] == "unknown"
@@ -320,7 +414,7 @@ def test_control_decision_survives_process_termination(
                     after["attempts"][0]["checkpoint"]["stats"]["token_usage"][
                         "input_other"
                     ]
-                    == 17
+                    == 0
                 )
                 assert any(
                     record["attempt_id"] == after["attempts"][0]["attempt_id"]

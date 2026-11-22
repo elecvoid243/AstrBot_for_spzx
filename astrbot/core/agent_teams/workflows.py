@@ -3028,6 +3028,12 @@ class WorkflowService:
                             col(AgentWorkflowCheckpoint.invocation_id),
                             col(AgentWorkflowCheckpoint.started_tools),
                             col(AgentWorkflowCheckpoint.result_submission),
+                            AgentWorkflowCheckpoint.data["response"]["role"]
+                            .as_string()
+                            .label("response_role"),
+                            AgentWorkflowCheckpoint.data["stage"]
+                            .as_string()
+                            .label("stage"),
                             (
                                 case(
                                     (
@@ -3201,16 +3207,43 @@ class WorkflowService:
                 current_calls = [
                     call for call in calls if call.run_id == current.run_id
                 ]
-                pending_calls = [
+                invocation_calls = [
                     call
                     for call in current_calls
                     if boundary
                     and call.attempt_id == current.state.get("attempt_id")
                     and call.invocation_id == boundary.invocation_id
-                    and not recovery_data.get(call.record_id, {}).get(
+                ]
+                pending_calls = [
+                    call
+                    for call in invocation_calls
+                    if not recovery_data.get(call.record_id, {}).get(
                         "replacement_record_id"
                     )
                 ]
+                has_saved_tool_results = any(
+                    call.attempt_id == current.state.get("attempt_id")
+                    and call.status in {"result_saved", "applied"}
+                    and (
+                        call.raw_results
+                        or recovery_data.get(call.record_id, {}).get("identity")
+                    )
+                    for call in current_calls
+                )
+                awaiting_saved_tool_recovery = (
+                    current.status == "awaiting_result"
+                    and has_saved_tool_results
+                    and boundary is not None
+                    and not boundary.remote_runner
+                    and (
+                        boundary.phase == "request"
+                        or boundary.phase == "response"
+                        and boundary.response_role == "err"
+                        and boundary.stage == "main"
+                        and not boundary.started_tools
+                        and not invocation_calls
+                    )
+                )
                 unknown_calls = [
                     call
                     for call in pending_calls
@@ -3327,8 +3360,12 @@ class WorkflowService:
                                 else "saved_model_response"
                                 if "member" in current.snapshot
                                 else "task_boundaries",
-                                "available": current.status
-                                in {"interrupted", "failed", "blocked"}
+                                "has_saved_tool_results": has_saved_tool_results,
+                                "available": (
+                                    current.status
+                                    in {"interrupted", "failed", "blocked"}
+                                    or awaiting_saved_tool_recovery
+                                )
                                 and not result_issues
                                 and boundary is not None
                                 and (
@@ -3392,6 +3429,10 @@ class WorkflowService:
                                 and not boundary.result_submission
                                 else "No saved execution checkpoint."
                                 if boundary is None
+                                else "The original checkpoint cannot continue producing a task result."
+                                if current.status == "awaiting_result"
+                                and has_saved_tool_results
+                                and not awaiting_saved_tool_recovery
                                 else None,
                             },
                             "snapshot": current.snapshot,
@@ -4666,37 +4707,57 @@ class WorkflowService:
                         status=409,
                     )
                 calls = (
-                    (
-                        await session.execute(
-                            select(AgentWorkflowToolCall).where(
-                                col(AgentWorkflowToolCall.run_id) == run_id,
-                                col(AgentWorkflowToolCall.attempt_id)
-                                == request.attempt_id,
-                                col(AgentWorkflowToolCall.status).in_(
-                                    ["started", "unknown"]
-                                ),
+                    await session.execute(
+                        select(AgentWorkflowToolCall, AgentWorkflowToolRecovery.data)
+                        .outerjoin(
+                            AgentWorkflowToolRecovery,
+                            col(AgentWorkflowToolRecovery.record_id)
+                            == col(AgentWorkflowToolCall.record_id),
+                        )
+                        .where(
+                            col(AgentWorkflowToolCall.run_id) == run_id,
+                            col(AgentWorkflowToolCall.attempt_id) == request.attempt_id,
+                            col(AgentWorkflowToolCall.status).in_(
+                                ["started", "unknown", "result_saved", "applied"]
+                            ),
+                        )
+                    )
+                ).all()
+                saved_tool_results = False
+                for call, metadata in calls:
+                    recovery = metadata or {}
+                    if call.status in {"started", "unknown"}:
+                        if not recovery.get("replacement_record_id"):
+                            raise RoleAssetError(
+                                "Resolve uncertain tool effects before retrying the task",
+                                status=409,
                             )
-                        )
+                    elif call.raw_results or recovery.get("identity"):
+                        # A new attempt would lose the saved result and use a
+                        # different connector identity for any repeated call.
+                        saved_tool_results = True
+                if saved_tool_results:
+                    raise RoleAssetError(
+                        "This attempt has saved tool results. Continue the original attempt "
+                        "if recovery is available.",
+                        status=409,
                     )
-                    .scalars()
-                    .all()
-                )
-                for call in calls:
-                    metadata = await session.get(
-                        AgentWorkflowToolRecovery, call.record_id
-                    )
-                    if metadata is None or not metadata.data.get(
-                        "replacement_record_id"
-                    ):
-                        raise RoleAssetError(
-                            "Resolve uncertain tool effects before retrying the task",
-                            status=409,
-                        )
                 if row.status not in {"failed", "awaiting_result", "blocked"}:
                     raise RoleAssetError(
                         "Only the current failed task can be retried", status=409
                     )
                 checkpoint = await session.get(AgentWorkflowCheckpoint, run_id)
+                if (
+                    checkpoint is not None
+                    and checkpoint.attempt_id == request.attempt_id
+                    and checkpoint.started_tools
+                    and not checkpoint.data.get("tool_calls")
+                ):
+                    raise RoleAssetError(
+                        "This checkpoint has unverified tool effects. Review the original "
+                        "attempt before starting another run.",
+                        status=409,
+                    )
                 session.add(
                     AgentWorkflowAttempt(
                         attempt_id=request.attempt_id,
@@ -10044,7 +10105,29 @@ class WorkflowService:
                         "Continue the whole run before recovering a task", status=409
                     )
             checkpoint = await session.get(AgentWorkflowCheckpoint, run_id)
-            if row is None or row.status not in {
+            retry_model_request = (
+                row is not None
+                and row.status == "awaiting_result"
+                and checkpoint is not None
+                and checkpoint.phase == "response"
+                and (checkpoint.data.get("response") or {}).get("role") == "err"
+                and checkpoint.data.get("stage") == "main"
+                and not checkpoint.started_tools
+                and not checkpoint.data.get("tool_calls")
+            )
+            if row is not None and row.status == "awaiting_result":
+                if (
+                    row.state["attempt_id"] != run["state"]["attempt_id"]
+                    or not run["recovery"]["has_saved_tool_results"]
+                    or checkpoint is None
+                    or "remote" in checkpoint.data
+                    or (checkpoint.phase != "request" and not retry_model_request)
+                ):
+                    raise RoleAssetError(
+                        "The original checkpoint cannot continue producing a task result",
+                        status=409,
+                    )
+            elif row is None or row.status not in {
                 "interrupted",
                 "failed",
                 "blocked",
@@ -10196,6 +10279,21 @@ class WorkflowService:
                 raise RoleAssetError(
                     "Unsupported execution checkpoint format", status=409
                 )
+            if retry_model_request:
+                # Retry only the failed model request. Its frozen context already
+                # includes saved tool results, and the failed observation keeps its ID.
+                checkpoint.invocation_id = uuid.uuid4().hex
+                checkpoint.phase = "request"
+                checkpoint.data.update(
+                    invocation_id=checkpoint.invocation_id,
+                    phase=checkpoint.phase,
+                    model_calls=checkpoint.data["model_calls"] + 1,
+                    # Frozen contexts retain the messages. Their consumption
+                    # receipts already belong to the original invocation.
+                    member_messages=[],
+                    response=None,
+                    response_receipt_id=None,
+                )
             for call in calls:
                 if call["name"] == "submit_task_result" and call["status"] in {
                     "started",
@@ -10276,6 +10374,10 @@ class WorkflowService:
                 "reason": None,
                 "resolution_pending": False,
             }
+            if row.status == "awaiting_result":
+                # The previous response ended safely, but this execution has
+                # not reached a safe point for any future submission.
+                state["safe_to_finish"] = False
             finish_result = (
                 checkpoint.result_submission and row.pending_result is not None
             )

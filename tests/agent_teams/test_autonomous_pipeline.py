@@ -28,6 +28,7 @@ import pytest
         "team_inputs",
         "team_message_pipeline",
         "team_message_live",
+        "team_message_saved_receipt",
         "team_message_delivery_pre",
         "team_message_delivery_post",
         "team_message_tool_pre",
@@ -54,6 +55,7 @@ def test_autonomous_team_uses_main_pipeline_and_recovers_without_duplicate_decis
         preview: Keep the real dashboard and external model available for UI checks.
     """
     requests, effects, parameter_plans = [], [], {}
+    initial_worker_terminated = threading.Event()
 
     class Recorder(BaseHTTPRequestHandler):
         """Independent external model and tool boundary."""
@@ -307,13 +309,26 @@ def test_autonomous_team_uses_main_pipeline_and_recovers_without_duplicate_decis
                         ]
                         if name in json.dumps(user)
                     )
-                    if scenario == "team_message_live" and goal == "writer-one-first" and "effect-" + goal not in results and not (tmp_path / "model-held").exists():
+                    if (
+                        scenario in {"team_message_live", "team_message_saved_receipt"}
+                        and goal == "writer-one-first"
+                        and "effect-" + goal not in results
+                        and not (tmp_path / "model-held").exists()
+                    ):
                         (tmp_path / "model-held").write_text("ready", encoding="utf-8")
                         deadline = time.monotonic() + 15
                         while not (tmp_path / "mid-model-sent").exists():
                             assert time.monotonic() < deadline
                             time.sleep(0.02)
-                    if "effect-" + goal not in results:
+                    if (
+                        scenario == "team_message_saved_receipt"
+                        and goal == "writer-one-first"
+                        and "effect-" + goal in results
+                        and not initial_worker_terminated.is_set()
+                    ):
+                        assert "MID_MODEL_MESSAGE" in json.dumps(messages)
+                        response = {"error": "Provider failed after receiving saved evidence"}
+                    elif "effect-" + goal not in results:
                         response = call(
                             "effect-plan-" + goal,
                             [("external_evidence", {"value": goal}, "effect-" + goal)],
@@ -414,6 +429,7 @@ def test_autonomous_team_uses_main_pipeline_and_recovers_without_duplicate_decis
                     if worker.poll() is None:
                         worker.kill()
                         worker.wait(timeout=10)
+            initial_worker_terminated.set()
             resumed = subprocess.run(
                 [*command, "recover", scenario],
                 cwd=root,
@@ -428,6 +444,37 @@ def test_autonomous_team_uses_main_pipeline_and_recovers_without_duplicate_decis
             (tmp_path / "team-evidence.json").read_text(encoding="utf-8")
         )
         current = evidence["after"]
+        if scenario == "team_message_saved_receipt":
+            [original] = [
+                message for message in evidence["before"]["messages"]
+                if message["text"] == "MID_MODEL_MESSAGE"
+            ]
+            [preserved] = [
+                message for message in current["messages"]
+                if message["text"] == "MID_MODEL_MESSAGE"
+            ]
+            assert original == preserved
+            receipt = preserved["consumption"]
+            old_task = next(
+                task for task in evidence["before"]["tasks"]
+                if task["run_id"] == receipt["task_run_id"]
+            )
+            task = next(
+                task for task in current["tasks"] if task["run_id"] == receipt["task_run_id"]
+            )
+            assert old_task["status"] == "awaiting_result"
+            assert task["status"] == "completed"
+            assert task["state"]["attempt_id"] == receipt["attempt_id"]
+            assert task["result"]["text"].startswith("Complete evidence writer-one-first")
+            assert effects.count({"value": "writer-one-first"}) == 1
+            writer_requests = [
+                request for request in requests
+                if request["member_id"] == preserved["recipient_member_id"]
+            ]
+            assert "MID_MODEL_MESSAGE" not in json.dumps(writer_requests[0]["contexts"])
+            assert "MID_MODEL_MESSAGE" in json.dumps(writer_requests[1]["contexts"])
+            assert writer_requests[1]["contexts"] == writer_requests[2]["contexts"]
+            return
         if scenario in {"team_message_pause", "team_message_cancel", "team_message_replace"}:
             admission = json.loads((tmp_path / "message-admission.json").read_text(encoding="utf-8"))
             assert admission["requests_while_paused"] == 0

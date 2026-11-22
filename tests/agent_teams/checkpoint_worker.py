@@ -603,6 +603,16 @@ async def run_worker(
                 }
             )
             definition["edges"] = [{"source": "write", "target": "deliver"}]
+        if scenario in {"control_saved_receipt", "control_cancel"}:
+            definition["result_task_id"] = "deliver"
+            definition["tasks"].append(
+                {
+                    **definition["tasks"][0],
+                    "id": "deliver",
+                    "task": "Deliver without a connector.",
+                }
+            )
+            definition["edges"] = [{"source": "write", "target": "deliver"}]
         if limits is not None:
             definition["limits"] = limits
         if scenario in {"usage_reservation_failure", "usage_report_failure"}:
@@ -977,6 +987,76 @@ async def run_worker(
                 elif scenario == "control_retry":
                     old = before["tasks"][0]["attempts"][0]
                     await service.retry_task("alice", before["tasks"][0]["run_id"], {"request_id": "retry-control", "attempt_id": old["attempt_id"], "input_policy": "original"})
+                elif scenario.startswith("control_saved_receipt"):
+                    original = stopped["tasks"][0]
+                    attempt_id = original["state"]["attempt_id"]
+                    from fastapi import FastAPI
+
+                    from astrbot.dashboard.api.auth import require_dashboard_user
+                    from astrbot.dashboard.api.workflow_assets import router
+
+                    app = FastAPI()
+                    app.state.services = SimpleNamespace(workflow_assets=service)
+                    app.include_router(router, prefix="/api/v1")
+                    app.dependency_overrides[require_dashboard_user] = lambda: "alice"
+                    async with httpx.AsyncClient(
+                        transport=httpx.ASGITransport(app=app), base_url="http://test"
+                    ) as client:
+                        url = f"/api/v1/workflow_runs/{original['run_id']}"
+                        snapshot = (await client.get(url)).json()["data"]
+                        assert snapshot["recovery"]["has_saved_tool_results"]
+                        terminal = scenario.endswith("_terminal")
+                        assert snapshot["recovery"]["available"] is not terminal
+                        retry = await client.post(
+                            url + "/retry",
+                            json={
+                                "request_id": "unsafe-retry",
+                                "attempt_id": attempt_id,
+                                "input_policy": "original",
+                            },
+                        )
+                        assert retry.status_code == 409, retry.text
+                        retry_error = {
+                            "status": retry.status_code,
+                            "body": retry.json(),
+                        }
+                        recovered = await client.post(url + "/recover")
+                        if terminal:
+                            assert recovered.status_code == 409, recovered.text
+                            assert "cannot continue" in snapshot["recovery"]["reason"]
+                            (folder / "recovered.json").write_text(
+                                json.dumps(
+                                    {
+                                        "before": before,
+                                        "after": await service.get_run("alice", run_id),
+                                        "retry_error": retry_error,
+                                        "recovery_error": {
+                                            "status": recovered.status_code,
+                                            "message": recovered.json()["message"],
+                                        },
+                                    }
+                                ),
+                                encoding="utf-8",
+                            )
+                            return
+                        assert recovered.status_code == 200, recovered.text
+                    for _ in range(500):
+                        current = await service.get_run("alice", run_id)
+                        if current["status"] == "completed":
+                            break
+                        await asyncio.sleep(0.02)
+                    (folder / "recovered.json").write_text(
+                        json.dumps(
+                            {
+                                "before": before,
+                                "after": current,
+                                "retry_error": retry_error,
+                                "result": await service.get_result("alice", run_id),
+                            }
+                        ),
+                        encoding="utf-8",
+                    )
+                    return
                 elif scenario == "control_unknown":
                     with contextlib.suppress(RoleAssetError):
                         await service.recover_run("alice", run_id)

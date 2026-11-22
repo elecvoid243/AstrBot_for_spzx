@@ -1378,7 +1378,7 @@ describe("workflow workspace", () => {
     },
   );
 
-  it("explicitly retries original inputs on HTTP deployments and blocks unknown tools", async () => {
+  it("retries original inputs only before effects need resolution or have saved results", async () => {
     const router = createRouter({
       history: createMemoryHistory(),
       routes: [{ path: "/", component: slotStub }],
@@ -1431,6 +1431,38 @@ describe("workflow workspace", () => {
       expect(wrapper.get('[data-testid="run-controls"]').text()).toContain(
         "controls.resolveFirst",
       );
+
+      const savedReceipt = {
+        ...stopped,
+        status: "awaiting_result",
+        tool_calls: [],
+        recovery: { has_saved_tool_results: true, available: false },
+      };
+      api.run.mockResolvedValue(savedReceipt);
+      const openDetails = () =>
+        wrapper.findAll("button")
+          .find((button) => button.text() === "v2.details")!
+          .trigger("click");
+      await openDetails();
+      await flushPromises();
+      expect(wrapper.get('[data-testid="retry-task"]').attributes("disabled")).toBeDefined();
+      expect(wrapper.get('[data-testid="run-controls"]').text()).toContain("controls.reviewSavedTools");
+      expect(wrapper.find('[data-testid="recover-attempt"]').exists()).toBe(false);
+
+      const resumable = {
+        ...savedReceipt,
+        recovery: { ...savedReceipt.recovery, available: true },
+      };
+      api.run.mockResolvedValue(resumable);
+      api.recover.mockResolvedValue(resumable);
+      await openDetails();
+      await flushPromises();
+      expect(wrapper.get('[data-testid="retry-task"]').attributes("disabled")).toBeDefined();
+      expect(wrapper.get('[data-testid="run-controls"]').text()).toContain("controls.recoverSavedTools");
+      await wrapper.get('[data-testid="recover-attempt"]').trigger("click");
+      await flushPromises();
+      expect(api.recover).toHaveBeenCalledWith("run-1");
+      expect(api.retry).toHaveBeenCalledTimes(2);
     } finally {
       wrapper.unmount();
       vi.unstubAllGlobals();

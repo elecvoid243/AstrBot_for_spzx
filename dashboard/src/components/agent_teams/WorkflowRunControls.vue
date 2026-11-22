@@ -44,7 +44,7 @@
       <v-btn
         v-if="failed && !terminal"
         variant="tonal"
-        :disabled="busy || uncertain || !!task.pending_result"
+        :disabled="busy || uncertain || savedToolResults || !!task.pending_result"
         data-testid="retry-task"
         @click="
           confirmationAction = 'retry';
@@ -55,6 +55,15 @@
     </div>
     <p v-if="failed && uncertain" class="text-body-2 mt-3">
       {{ tm("controls.resolveFirst") }}
+    </p>
+    <p v-else-if="failed && savedToolResults" class="text-body-2 mt-3">
+      {{
+        tm(
+          task.recovery?.available
+            ? "controls.recoverSavedTools"
+            : "controls.reviewSavedTools",
+        )
+      }}
     </p>
     <p class="text-caption mt-3">{{ tm("controls.semantics") }}</p>
     <details
@@ -171,6 +180,9 @@ const uncertain = computed(() =>
       ["started", "unknown"].includes(call.status) &&
       !call.recovery?.replacement_record_id,
   ),
+);
+const savedToolResults = computed(
+  () => props.task.recovery?.has_saved_tool_results,
 );
 const confirming = ref(false);
 const confirmationAction = ref<"cancel" | "retry">("cancel");

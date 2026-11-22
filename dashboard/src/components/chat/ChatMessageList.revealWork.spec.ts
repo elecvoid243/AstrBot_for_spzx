@@ -26,6 +26,7 @@ import { defineComponent, h } from "vue";
 import axios from "axios";
 import ChatMessageList from "@/components/chat/ChatMessageList.vue";
 import type { ChatContent, ChatRecord } from "@/composables/useMessages";
+import { OPEN_FILE_REFERENCE } from "@/composables/fileReference";
 
 // The list mirrors pending interactive choices into Pinia on mount; the
 // reveal under test is independent of that store surface.
@@ -103,12 +104,36 @@ const vuetifyStubs = Object.fromEntries(
   ].map((tag) => [tag, passthrough(tag)]),
 );
 
-function mountList(props: Record<string, unknown> = {}) {
+function mountList(props: Record<string, unknown> = {}, openFile = vi.fn()) {
   return mount(ChatMessageList, {
     props: { messages: [userRecord("u1"), workedBotRecord("b1")], ...props },
-    global: { components: vuetifyStubs },
+    global: {
+      components: vuetifyStubs,
+      provide: { [OPEN_FILE_REFERENCE as symbol]: openFile },
+    },
   });
 }
+
+it("rebuilds assistant comments from a saved reply and opens the exact source range", async () => {
+  const directive = '::code-comment{title="Finding" body="Explanation" file="app.py" start=1}';
+  const comment = {
+    title: "Finding", body: "Explanation", path: "G:/repo/app.py", file: "app.py",
+    start_line: 1, end_line: 1, priority: null, revision: "a".repeat(64), directive,
+  };
+  const record: ChatRecord = { id: 1, content: { type: "bot", message: [
+    TEXT(`Review complete.\n\n\`\`\`text\n${directive}\n\`\`\`\n\n${directive}`),
+    { type: "assistant_file_comments", comments: [comment] },
+  ] } };
+  const openFile = vi.fn();
+  const wrapper = mountList({ messages: [record] }, openFile);
+  const prose = wrapper.getComponent({ name: "MarkdownMessagePart" });
+  expect(String(prose.props("content")).split(directive)).toHaveLength(2);
+  await wrapper.get(".assistant-file-comments button").trigger("click");
+  expect(openFile).toHaveBeenCalledWith({
+    path: comment.path, startLine: 1, endLine: 1, assistantComment: comment,
+  });
+  wrapper.unmount();
+});
 
 /** `aria-expanded` is the capsule's own view of the collapsed state. */
 function capsuleExpanded(wrapper: ReturnType<typeof mountList>) {

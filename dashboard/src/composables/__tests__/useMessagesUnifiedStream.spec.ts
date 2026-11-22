@@ -128,16 +128,28 @@ describe("unified chat stream", () => {
       message_id: "m1",
       data: "world",
     });
+    const annotation = {
+      type: "assistant_file_comments",
+      comments: [{ title: "A finding" }],
+    };
+    pushSse(streamController, {
+      type: annotation.type,
+      session_id: "s1",
+      seq: 3,
+      message_id: "m1",
+      data: annotation,
+    });
     pushSse(streamController, {
       type: "end",
       session_id: "s1",
-      seq: 3,
+      seq: 4,
       message_id: "m1",
       data: { status: "completed" },
     });
 
     await vi.waitFor(() => expect(onStreamEnd).toHaveBeenCalledWith("s1"));
     expect(plainText(exchange.botRecord)).toContain("world");
+    expect(exchange.botRecord.content.message).toContainEqual(annotation);
     expect(exchange.botRecord.content.isLoading).toBe(false);
     expect(exchange.userRecord.id).toBe(42);
     expect(messages.isSessionRunning("s1")).toBe(false);

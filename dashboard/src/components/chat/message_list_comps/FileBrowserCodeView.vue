@@ -20,6 +20,7 @@ import {
 } from "@/composables/useInlineAnnotations";
 import SelectionActionMenu from "./SelectionActionMenu.vue";
 import MarkdownView from "@/components/shared/MarkdownView.vue";
+import type { AssistantFileComment } from "@/utils/assistantFileComments";
 
 const props = withDefaults(
   defineProps<{
@@ -44,11 +45,14 @@ const props = withDefaults(
     selectionCommentable?: boolean;
     /** 2026-07-30 inline-ask: annotations for this file. */
     annotations?: InlineAnnotation[];
+    assistantComments?: AssistantFileComment[];
+    focusedAssistantComment?: AssistantFileComment;
   }>(),
   {
     scrollToLine: null,
     selectionCommentable: true,
     annotations: () => [],
+    assistantComments: () => [],
   },
 );
 
@@ -85,6 +89,34 @@ const lineCount = computed<number>(() => {
 
 const codeContentRef = ref<HTMLElement | null>(null);
 const hoveredLine = ref<number | null>(null);
+const assistantCommentsByLine = computed(() => {
+  const byLine = new Map<number, AssistantFileComment[]>();
+  for (const comment of props.assistantComments) {
+    if (comment.end_line > lineCount.value) continue;
+    const comments = byLine.get(comment.start_line) ?? [];
+    comments.push(comment);
+    byLine.set(comment.start_line, comments);
+  }
+  return byLine;
+});
+const openAssistantLine = ref<number | null>(null);
+watch(
+  [() => props.focusedAssistantComment, () => props.filePath],
+  ([comment]) => {
+    openAssistantLine.value = comment?.start_line ?? null;
+  },
+  { immediate: true },
+);
+const openAssistantComments = computed(() =>
+  assistantCommentsByLine.value.get(openAssistantLine.value ?? 0) ?? [],
+);
+const highlightedStart = computed(() =>
+  openAssistantComments.value.length ? openAssistantLine.value : props.scrollToLine,
+);
+const highlightedEnd = computed(() => {
+  if (!openAssistantComments.value.length) return props.scrollToEndLine;
+  return Math.max(...openAssistantComments.value.map((comment) => comment.end_line));
+});
 
 // 2026-07-30 inline-ask: tooltip state for annotation bubbles
 const annotationTooltip = ref<{
@@ -480,8 +512,8 @@ watch(
 // `behavior: 'smooth'` is gated on the document's reduced-motion
 // preference to respect accessibility settings.
 watch(
-  [() => props.scrollToLine, () => props.filePath, () => props.highlightedHtml,
-    () => props.scrollToEndLine, () => codeContentRef.value],
+  [highlightedStart, () => props.filePath, () => props.highlightedHtml,
+    highlightedEnd, () => codeContentRef.value],
   async ([line, path, html]) => {
     if (!codeContentRef.value || !html) return;
     // Wait for the v-for + v-html to commit the .line spans to the
@@ -491,10 +523,10 @@ watch(
     if (!codeContentRef.value) return;
     const lineEls = codeContentRef.value.querySelectorAll<HTMLElement>(".line");
     lineEls.forEach((element) => element.classList.remove("line-referenced"));
-    if (!line || line < 1 || line !== props.scrollToLine ||
+    if (!line || line < 1 || line !== highlightedStart.value ||
       path !== props.filePath || html !== props.highlightedHtml) return;
     const idx = line - 1;
-    const end = props.scrollToEndLine ?? line;
+    const end = highlightedEnd.value ?? line;
     if (end > lineEls.length || end < line) return;
     for (let i = idx; i < end; i++) lineEls[i].classList.add("line-referenced");
     const reduceMotion =
@@ -511,11 +543,25 @@ watch(
 <template>
   <div
     class="code-view"
-    :class="{ dark: isDark }"
+    :class="{ dark: isDark, 'has-assistant-comments': assistantCommentsByLine.size }"
     @mousemove="onMouseMove"
     @mouseleave="onMouseLeave"
     @scroll="closeMenu"
   >
+    <div v-if="assistantCommentsByLine.size" class="code-gutter assistant-comment-gutter">
+      <div v-for="line in lineCount" :key="line" class="gutter-cell">
+        <button
+          v-if="assistantCommentsByLine.has(line)"
+          type="button"
+          class="gutter-comment-indicator"
+          :aria-label="tm('assistantFileComments.openLine', { line })"
+          :aria-expanded="openAssistantLine === line"
+          @click="openAssistantLine = openAssistantLine === line ? null : line"
+        >
+          <v-icon size="14">mdi-comment-text-outline</v-icon>
+        </button>
+      </div>
+    </div>
     <div class="code-gutter">
       <div v-for="line in lineCount" :key="line" class="gutter-cell">
         <button
@@ -556,6 +602,25 @@ watch(
       @mouseup="onContentMouseUp"
       @click="onCodeContentClick"
     />
+    <aside
+      v-if="openAssistantComments.length"
+      class="assistant-comment-overlay"
+      :style="{ insetBlockStart: `calc(${openAssistantLine} * 1.55em)` }"
+      :aria-label="tm('assistantFileComments.openLine', { line: openAssistantLine ?? '' })"
+    >
+      <header>
+        <span>{{ tm("assistantFileComments.author") }}</span>
+        <button type="button" :aria-label="tm('assistantFileComments.close')" @click="openAssistantLine = null">
+          <v-icon size="16">mdi-close</v-icon>
+        </button>
+      </header>
+      <div v-for="(comment, index) in openAssistantComments" :key="index">
+        <strong>
+          <template v-if="comment.priority !== null">[P{{ comment.priority }}] </template>{{ comment.title }}
+        </strong>
+        <p>{{ comment.body }}</p>
+      </div>
+    </aside>
     <!-- 2026-07-17 selection-comment: action menu opens at the
          mouse-up position when the user drags across one or more
          .line spans. Position is fixed (viewport-anchored), so
@@ -643,10 +708,42 @@ watch(
 .code-view {
   flex: 1;
   display: grid;
+  position: relative;
   grid-template-columns: 24px auto 1fr;
   min-height: 0;
   overflow: auto;
   background: transparent;
+}
+.code-view.has-assistant-comments {
+  grid-template-columns: 20px 24px auto 1fr;
+}
+.assistant-comment-gutter .gutter-comment-indicator {
+  color: rgb(var(--v-theme-primary));
+}
+.assistant-comment-overlay {
+  position: absolute;
+  z-index: 1;
+  inset-inline-start: 2.8rem;
+  width: min(34rem, calc(100% - 3.5rem));
+  max-height: 16rem;
+  overflow: auto;
+  padding: 0.6rem 0.8rem;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.2);
+  border-radius: 8px;
+  background: rgb(var(--v-theme-surface));
+  color: rgb(var(--v-theme-on-surface));
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.12);
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+}
+.assistant-comment-overlay header {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 0.3rem;
+}
+.assistant-comment-overlay p {
+  margin: 0.15rem 0 0.35rem;
+  white-space: pre-wrap;
 }
 .code-gutter,
 .line-numbers {

@@ -47,6 +47,10 @@ import {
 // leaf module so the ask_user_choice history-reload filter can be
 // unit-tested without pulling in `@/api`.
 import { normalizeMessageParts as normalizeMessagePartsFromLeaf } from "./normalizeMessageParts";
+import {
+  assistantFileComments,
+  withoutAssistantFileDirectives,
+} from "@/utils/assistantFileComments";
 // Author: elecvoid243
 // Date: 2026-10-08
 // Live-only context compression notice: the leaf owns the wire parsing and
@@ -206,6 +210,7 @@ const UNIFIED_NO_MERGE_CHAINS = new Set([
 
 export interface MessagePart {
   type: string;
+  comments?: unknown;
   text?: string;
   think?: string;
   message_id?: string | number;
@@ -494,6 +499,7 @@ const STREAM_REVISION_TYPES = new Set([
   "tool_call",
   "agent_stats",
   "file_changes",
+  "assistant_file_comments",
   "llm_request_injections",
   "message_saved",
   "run_snapshot",
@@ -3172,6 +3178,13 @@ export function useMessages(options: UseMessagesOptions) {
         parseLlmRequestInjections(data) ?? undefined;
       return;
     }
+    if (msgType === "assistant_file_comments") {
+      if (data?.type === msgType && Array.isArray(data.comments)) {
+        markMessageStarted(botRecord);
+        messageContent(botRecord).message.push(data);
+      }
+      return;
+    }
     if (msgType === "file_changes" || chainType === "file_changes") {
       markMessageStarted(botRecord);
       const files = parseFileChangesPayload(data);
@@ -3643,12 +3656,17 @@ export function messageBlocks(content: ChatContent): MessageDisplayBlock[] {
   const parts = Array.isArray(content.message)
     ? content.message
     : normalizeMessageParts(content.message, content.reasoning || "");
+  const comments = content.type === "bot" ? assistantFileComments(parts) : [];
 
   const blocks: MessageDisplayBlock[] = [];
   let currentKind: MessageDisplayBlock["kind"] | null = null;
   let currentParts: MessagePart[] = [];
 
-  for (const part of parts) {
+  for (const source of parts) {
+    if (source.type === "assistant_file_comments") continue;
+    const part = comments.length && source.type === "plain" && source.text
+      ? { ...source, text: withoutAssistantFileDirectives(source.text, comments) }
+      : source;
     if (isEmptyPlainPart(part)) continue;
 
     const nextKind: MessageDisplayBlock["kind"] = isThinkingPart(part)

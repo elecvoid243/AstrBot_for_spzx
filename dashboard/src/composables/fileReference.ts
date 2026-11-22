@@ -1,10 +1,12 @@
-import type { InjectionKey } from "vue";
+import type { InjectionKey, Ref } from "vue";
+import type { AssistantFileComment } from "@/utils/assistantFileComments";
 
 /** A host path and its optional one-based, closed source-line range. */
 export interface FileReferenceTarget {
   path: string;
   startLine: number | null;
   endLine: number | null;
+  assistantComment?: AssistantFileComment;
 }
 
 export interface FileReferenceNavigation extends FileReferenceTarget {
@@ -14,6 +16,10 @@ export interface FileReferenceNavigation extends FileReferenceTarget {
 export const OPEN_FILE_REFERENCE: InjectionKey<
   (target: FileReferenceTarget) => void
 > = Symbol("openFileReference");
+
+export const ASSISTANT_FILE_COMMENTS: InjectionKey<
+  Readonly<Ref<AssistantFileComment[]>>
+> = Symbol("assistantFileComments");
 
 /** Parse an explicit Markdown destination; never resolve it against a project. */
 export function parseFileReference(href: string): FileReferenceTarget | null {

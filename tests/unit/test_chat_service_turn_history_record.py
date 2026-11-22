@@ -125,6 +125,23 @@ async def _drive_turn(payloads: list[dict]) -> _FakeHistoryManager:
 
 
 @pytest.mark.asyncio
+async def test_assistant_comments_are_persisted_with_the_reply() -> None:
+    part = {"type": "assistant_file_comments", "comments": [{"title": "Finding"}]}
+    manager = await _drive_turn(
+        [
+            _text("Review complete"),
+            {"type": part["type"], "data": part, "message_id": RUN_ID},
+            _text("Review complete", msg_type="complete"),
+            {"type": "end", "message_id": RUN_ID},
+        ]
+    )
+
+    assert manager.inserts == 1
+    [content] = manager.rows.values()
+    assert content["message"] == [{"type": "plain", "text": "Review complete"}, part]
+
+
+@pytest.mark.asyncio
 async def test_turn_with_several_choices_writes_one_history_record() -> None:
     manager = await _drive_turn(
         [

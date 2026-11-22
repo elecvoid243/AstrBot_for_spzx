@@ -1,4 +1,11 @@
 {
+  "assistantFileComments": {
+    "count": "Assistant comments ({count})",
+    "author": "Assistant",
+    "openLine": "Assistant comments on line {line}",
+    "close": "Close comments",
+    "stale": "The original source location is unavailable for this file version. The comment is still in the conversation."
+  },
   "agentBrowser": {
     "staleInput": "The page moved. This input was not executed; wait for the new image and try again.",
     "staleWheel": "Page moved · old wheel input rejected. Wait for the new image and scroll again.",

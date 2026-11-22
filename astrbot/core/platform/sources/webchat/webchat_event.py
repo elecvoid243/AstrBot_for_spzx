@@ -64,6 +64,7 @@ async def _persist_bot_reply_if_orphan(
     message_chain: MessageChain | None = None,
     plain_text: str = "",
     reasoning_text: str = "",
+    assistant_file_comments: dict | None = None,
 ) -> None:
     """Persist a bot reply whose back queue has no dashboard consumer.
 
@@ -109,6 +110,8 @@ async def _persist_bot_reply_if_orphan(
             parts.append({"type": "think", "think": reasoning_text})
         if plain_text:
             parts.append({"type": "plain", "text": plain_text})
+    if assistant_file_comments:
+        parts.append(assistant_file_comments)
     if not parts:
         return
     try:
@@ -127,9 +130,40 @@ async def _persist_bot_reply_if_orphan(
 
 
 class WebChatMessageEvent(AstrMessageEvent):
+    _assistant_file_comments: list[dict] | None = None
+
     def __init__(self, message_str, message_obj, platform_meta, session_id) -> None:
         super().__init__(message_str, message_obj, platform_meta, session_id)
         os.makedirs(attachments_dir, exist_ok=True)
+
+    def stage_assistant_file_comments(self, comments: list[dict]) -> None:
+        """Stage validated comments until the assistant reply is delivered.
+
+        Args:
+            comments: Comments and source revisions verified by the workspace provider.
+        """
+        self._assistant_file_comments = comments
+
+    async def _publish_assistant_file_comments(self) -> dict | None:
+        """Send the staged annotations with the reply that produced them.
+
+        Returns:
+            The same message part for orphan history persistence, if present.
+        """
+        comments = self._assistant_file_comments
+        if not comments:
+            return None
+        self._assistant_file_comments = None
+        message_id = self.message_obj.message_id
+        part = {"type": "assistant_file_comments", "comments": comments}
+        payload = {
+            "type": "assistant_file_comments",
+            "data": part,
+            "message_id": message_id,
+        }
+        await webchat_queue_mgr.put_back_queue(str(message_id), payload)
+        await self._mirror_system(_extract_conversation_id(self.session_id), payload)
+        return part
 
     @staticmethod
     async def _mirror_system(system_cid: str | None, payload: dict) -> None:
@@ -331,12 +365,21 @@ class WebChatMessageEvent(AstrMessageEvent):
             await WebChatMessageEvent._mirror_system(
                 _extract_conversation_id(self.session_id), payload
             )
-        await WebChatMessageEvent._send(message_id, message, session_id=self.session_id)
+        sent_text = await WebChatMessageEvent._send(
+            message_id, message, session_id=self.session_id
+        )
         if message is not None:
+            result = self.get_result()
+            comments = (
+                await self._publish_assistant_file_comments()
+                if sent_text and result is not None and result.is_llm_result()
+                else None
+            )
             await _persist_bot_reply_if_orphan(
                 session_id=self.session_id,
                 request_id=str(message_id),
                 message_chain=message,
+                assistant_file_comments=comments,
             )
         await super().send(MessageChain([]))
 
@@ -429,6 +472,7 @@ class WebChatMessageEvent(AstrMessageEvent):
                     snapshot.append({"type": "plain", "text": final_data})
                 orphan_run_registry.update(request_id, snapshot)
 
+        comments = await self._publish_assistant_file_comments() if final_data else None
         payload = {
             "type": "complete",  # complete means we return the final result
             "data": final_data,
@@ -450,5 +494,6 @@ class WebChatMessageEvent(AstrMessageEvent):
             request_id=request_id,
             plain_text=final_data,
             reasoning_text=reasoning_content,
+            assistant_file_comments=comments,
         )
         await super().send_streaming(generator, use_fallback)

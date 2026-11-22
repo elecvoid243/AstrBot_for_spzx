@@ -6,6 +6,10 @@ from PIL import Image as PILImage
 
 from astrbot.api.event import MessageChain
 from astrbot.api.message_components import Image, Plain
+from astrbot.core.message.message_event_result import (
+    MessageEventResult,
+    ResultContentType,
+)
 from astrbot.core.platform.sources.webchat import webchat_event
 from astrbot.core.platform.sources.webchat.webchat_queue_mgr import (
     OrphanRunRegistry,
@@ -103,6 +107,7 @@ async def test_webchat_image_completion_contains_only_reply_text(
             request_id=request_id,
             plain_text=expected_text,
             reasoning_text="",
+            assistant_file_comments=None,
         )
 
     payloads = [queue.get_nowait() for _ in range(queue.qsize())]
@@ -115,3 +120,40 @@ async def test_webchat_image_completion_contains_only_reply_text(
         filename = payload["data"].removeprefix("[IMAGE]")
         assert filename.endswith(".png")
         assert (attachments_dir / filename).read_bytes() == image_path.read_bytes()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streaming", [True, False])
+async def test_assistant_comments_follow_the_delivered_reply(monkeypatch, streaming):
+    manager = WebChatQueueMgr()
+    queue = manager.get_or_create_back_queue("request", "conversation")
+    monkeypatch.setattr(webchat_event, "webchat_queue_mgr", manager)
+    monkeypatch.setattr(webchat_event, "_persist_bot_reply_if_orphan", AsyncMock())
+    monkeypatch.setattr(webchat_event.AstrMessageEvent, "send", AsyncMock())
+    monkeypatch.setattr(webchat_event.AstrMessageEvent, "send_streaming", AsyncMock())
+    event = webchat_event.WebChatMessageEvent.__new__(webchat_event.WebChatMessageEvent)
+    event.message_obj = SimpleNamespace(message_id="request")
+    event.session = SimpleNamespace(session_id="webchat!user!conversation")
+    event._extras = {}
+    event._result = MessageEventResult(result_content_type=ResultContentType.LLM_RESULT)
+    chain = MessageChain([Plain("Review complete")])
+    comments = [{"title": "Finding"}]
+
+    async def generate():
+        yield chain
+        event.stage_assistant_file_comments(comments)
+
+    if streaming:
+        await event.send_streaming(generate())
+    else:
+        event.stage_assistant_file_comments(comments)
+        await event.send(chain)
+
+    payloads = [queue.get_nowait() for _ in range(queue.qsize())]
+    assert [payload["type"] for payload in payloads] == (
+        ["plain", "assistant_file_comments", "complete"]
+        if streaming
+        else ["plain", "assistant_file_comments"]
+    )
+    assert payloads[1]["data"]["comments"] == comments
+    assert await event._publish_assistant_file_comments() is None

@@ -397,6 +397,7 @@ export function processSystemPayload(
     type !== "complete" &&
     type !== "end" &&
     type !== "agent_stats" &&
+    type !== "assistant_file_comments" &&
     type !== "run_snapshot"
   ) {
     return false;
@@ -451,6 +452,14 @@ export function processSystemPayload(
   const data = payload?.data;
   const streaming = Boolean(payload?.streaming);
   const chainType = payload?.chain_type;
+
+  if (type === "assistant_file_comments") {
+    if (data?.type === type && Array.isArray(data.comments)) {
+      entry.record.content.message.push(data);
+      entry.record.content.isLoading = false;
+    }
+    return true;
+  }
 
   if (type === "agent_stats") {
     // Primary republishes agent_stats as `{type: "agent_stats", data: {...}}`

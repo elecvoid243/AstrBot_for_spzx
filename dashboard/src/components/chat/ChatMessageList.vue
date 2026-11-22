@@ -487,6 +487,11 @@
                   </template>
                 </template>
 
+                <AssistantFileCommentsCard
+                  v-if="commentsByMessage.get(msg)?.length"
+                  :comments="commentsByMessage.get(msg) || []"
+                  :read-only="remoteHistory || messageContent(msg).fileChangeSourceUnavailable"
+                />
                 <FileChangeSummaryCard
                   v-if="messageContent(msg).fileChangeSummary?.length"
                   :files="messageContent(msg).fileChangeSummary || []"
@@ -740,6 +745,7 @@ import GenerationIndicator from "@/components/chat/GenerationIndicator.vue";
 import ThinkingIndicator from "@/components/chat/ThinkingIndicator.vue";
 import ThreadedMarkdownMessagePart from "@/components/chat/ThreadedMarkdownMessagePart.vue";
 import ReasoningBlock from "@/components/chat/message_list_comps/ReasoningBlock.vue";
+import AssistantFileCommentsCard from "@/components/chat/message_list_comps/AssistantFileCommentsCard.vue";
 import FileChangeSummaryCard from "@/components/chat/message_list_comps/FileChangeSummaryCard.vue";
 import ToolCallCard from "@/components/chat/message_list_comps/ToolCallCard.vue";
 import SubAgentRunBlock from "@/components/chat/message_list_comps/SubAgentRunBlock.vue";
@@ -782,6 +788,7 @@ import type {
 } from "@/composables/useMessages";
 import { useI18n, useModuleI18n } from "@/i18n/composables";
 import { copyToClipboard } from "@/utils/clipboard";
+import { assistantFileComments, type AssistantFileComment } from "@/utils/assistantFileComments";
 
 const props = withDefaults(
   defineProps<{
@@ -1322,6 +1329,16 @@ function messageParts(message: ChatRecord): MessagePart[] {
   if (typeof parts === "string") return [{ type: "plain", text: parts }];
   return [];
 }
+
+const commentsByMessage = computed(() => {
+  const comments = new Map<ChatRecord, AssistantFileComment[]>();
+  for (const message of props.messages) {
+    if (isUserMessage(message)) continue;
+    const items = assistantFileComments(messageParts(message));
+    if (items.length) comments.set(message, items);
+  }
+  return comments;
+});
 
 function isAttachmentPart(part: MessagePart) {
   return ["image", "record", "audio", "video", "file"].includes(part.type);

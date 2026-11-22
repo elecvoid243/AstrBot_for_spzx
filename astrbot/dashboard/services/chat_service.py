@@ -649,8 +649,8 @@ class BotMessageAccumulator:
         else:
             self.pending_text = result_text
 
-    def add_attachment(self, part: dict | None) -> None:
-        if not part:
+    def add_part(self, part: dict | None) -> None:
+        if not isinstance(part, dict) or not part:
             return
         self._flush_pending_text()
         self.parts.append(part)
@@ -2786,6 +2786,9 @@ class ChatService:
                     if isinstance(event_data, dict):
                         for accumulator in (pending_accumulator, display_accumulator):
                             accumulator.add_subagent_event(event_data)
+                elif msg_type == "assistant_file_comments":
+                    for accumulator in (pending_accumulator, display_accumulator):
+                        accumulator.add_part(result_text)
                 elif msg_type == "plain":
                     for accumulator in (pending_accumulator, display_accumulator):
                         accumulator.add_plain(
@@ -2810,7 +2813,7 @@ class ChatService:
                         display_name=display_name,
                     )
                     for accumulator in (pending_accumulator, display_accumulator):
-                        accumulator.add_attachment(part)
+                        accumulator.add_part(part)
                     if part and part.get("attachment_id") and part.get("type"):
                         attachment_saved_payload = {
                             "type": "attachment_saved",
@@ -3123,6 +3126,8 @@ class ChatService:
                             chain_type=chain_type,
                             streaming=streaming,
                         )
+                    elif msg_type == "assistant_file_comments":
+                        acc.add_part(payload.get("data"))
                     elif msg_type in ("complete", "end"):
                         if (
                             msg_type == "complete"

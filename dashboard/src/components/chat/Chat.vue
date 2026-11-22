@@ -1420,10 +1420,12 @@ import RefsSidebar from "@/components/chat/message_list_comps/RefsSidebar.vue";
 import GoalBar from "@/components/chat/GoalBar.vue";
 import GitDiffSidebar from "@/components/chat/GitDiffSidebar.vue";
 import {
+  ASSISTANT_FILE_COMMENTS,
   OPEN_FILE_REFERENCE,
   type FileReferenceNavigation,
   type FileReferenceTarget,
 } from "@/composables/fileReference";
+import { assistantFileComments } from "@/utils/assistantFileComments";
 import ChatMessageSearchDialog from "@/components/chat/ChatMessageSearchDialog.vue";
 import ArchivedSessionsDialog from "@/components/chat/ArchivedSessionsDialog.vue";
 import ImportSessionsDialog from "@/components/chat/ImportSessionsDialog.vue";
@@ -2389,6 +2391,14 @@ const {
   },
 });
 
+provide(ASSISTANT_FILE_COMMENTS, computed(() =>
+  activeMessages.value.flatMap((message) =>
+    isUserMessage(message) || message.content.fileChangeSourceUnavailable
+      ? []
+      : assistantFileComments(messageParts(message)),
+  ),
+));
+
 // Inline file-review comments (Chunk 4). The store is a module-level
 // singleton (see useFileComments.ts header); FileBrowserFilePreview
 // (inside GitDiffSidebar → FileBrowserView) and this ChatInput share
@@ -2406,6 +2416,9 @@ const inlineAnnotations = useInlineAnnotations();
 watch(currSessionId, (newId, oldId) => {
   chatError.value = "";
   if (oldId && newId !== oldId) {
+    if (fileReferenceNavigation.value?.assistantComment) {
+      fileReferenceNavigation.value = null;
+    }
     fileComments.resetForSession();
     fileReferences.resetForSession();
     inlineAnnotations.resetForSession();

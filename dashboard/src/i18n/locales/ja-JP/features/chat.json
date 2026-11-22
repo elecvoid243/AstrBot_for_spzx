@@ -1,4 +1,11 @@
 {
+  "assistantFileComments": {
+    "count": "アシスタントのコメント（{count} 件）",
+    "author": "アシスタント",
+    "openLine": "{line} 行目のアシスタントのコメント",
+    "close": "コメントを閉じる",
+    "stale": "現在のファイルバージョンでは元の位置を表示できません。コメントはチャットで確認できます。"
+  },
   "spcodeProjectLoad": {
     "dialog": {
       "loadHint": "プロジェクト内に AGENTS.md がある場合のみシステムプロンプトへ注入します。存在しない場合は生成しません。codegraph インデックスはサービスメニューから手動で初期化してください。"

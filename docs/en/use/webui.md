@@ -343,6 +343,8 @@ menu to open that project file instead of the previous reference. These explicit
 actions preserve the existing check for unsaved edits; background project or
 worktree refreshes leave the reference in place.
 
+When reviewing a loaded SPCode project, the Agent can leave comments on source lines. Select a finding under **Assistant comments** to open the file, highlight its lines and read the comment beside the source. The line marker in the source view reopens the comment. Comments are saved with the reply. If the file has changed, the reply still shows the finding and the file pane marks the original location as unavailable.
+
 ### Preview images, documents and spreadsheets
 
 Absolute references to images, PDF, DOCX, XLSX, CSV and Markdown open the

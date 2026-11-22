@@ -2205,7 +2205,11 @@ async function openHostPath(path: string): Promise<void> {
 watch(
   () => props.fileReference,
   async (target) => {
-    if (!target || !(await confirmLeaveEditing())) return;
+    if (!target) {
+      if (hostFileTarget.value?.assistantComment) hostFileTarget.value = null;
+      return;
+    }
+    if (!(await confirmLeaveEditing()) || props.fileReference !== target) return;
     hostFileTarget.value = { ...target, requestId: ++hostNavigationId };
     viewMode.value = "files";
   },

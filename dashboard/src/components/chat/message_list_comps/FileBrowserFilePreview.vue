@@ -12,7 +12,11 @@ import {
 } from "@/utils/shiki";
 import { copyToClipboard } from "@/utils/clipboard";
 import type { FileBrowserFetchState } from "@/composables/useSpcodeFileBrowser";
-import type { FileReferenceNavigation } from "@/composables/fileReference";
+import {
+  ASSISTANT_FILE_COMMENTS,
+  type FileReferenceNavigation,
+} from "@/composables/fileReference";
+import { assistantCommentPathKey } from "@/utils/assistantFileComments";
 import { useDisplay } from "vuetify";
 import {
   extractLineContext,
@@ -942,6 +946,39 @@ const referenceRangeInvalid = computed(() => {
   return (props.hostReference.endLine ?? props.hostReference.startLine) > count;
 });
 
+const assistantComments = inject(ASSISTANT_FILE_COMMENTS, undefined);
+const focusedAssistantComment = computed(() => props.hostReference?.assistantComment);
+const assistantCommentsForFile = computed(() => {
+  if (props.state.kind !== "file" || typeof props.state.snapshot.content !== "string") {
+    return [];
+  }
+  const { path, revision } = props.state.snapshot.meta;
+  const pathKey = assistantCommentPathKey(path);
+  const selected = focusedAssistantComment.value;
+  const comments = (assistantComments?.value ?? []).filter((comment) =>
+    assistantCommentPathKey(comment.path) === pathKey &&
+    comment.revision === revision,
+  );
+  if (
+    selected && selected.revision === revision &&
+    assistantCommentPathKey(selected.path) === pathKey &&
+    !comments.some((comment) => comment.directive === selected.directive)
+  ) {
+    comments.push(selected);
+  }
+  return comments;
+});
+const assistantCommentStale = computed(() => {
+  const comment = focusedAssistantComment.value;
+  if (!comment || props.state.kind !== "file") return false;
+  const { path, revision } = props.state.snapshot.meta;
+  return (
+    comment.revision !== revision ||
+    assistantCommentPathKey(comment.path) !== assistantCommentPathKey(path) ||
+    referenceRangeInvalid.value || referenceLineUnavailable.value
+  );
+});
+
 // --- inline comments (Chunk 3) ---
 // The file-comments store is a module-level singleton (see
 // useFileComments.ts header for why provide/inject was abandoned).
@@ -1602,11 +1639,14 @@ onBeforeUnmount(() => {
           </div>
 
       <div
-        v-if="hostReference && (referenceLineUnavailable || referenceRangeInvalid)"
+        v-if="hostReference && (assistantCommentStale || referenceLineUnavailable || referenceRangeInvalid)"
         class="pa-2 text-caption"
         role="status"
       >
-        <span v-if="referenceLineUnavailable" class="text-warning">
+        <span v-if="assistantCommentStale" class="text-warning">
+          {{ tm("assistantFileComments.stale") }}
+        </span>
+        <span v-else-if="referenceLineUnavailable" class="text-warning">
           {{ tm("spcodeProjectLoad.fileBrowser.reference.lineUnavailable") }}
         </span>
         <span v-else-if="referenceRangeInvalid" class="text-error">
@@ -1909,8 +1949,10 @@ onBeforeUnmount(() => {
             :active-edit-line="activeEditLine"
             :active-edit-comment-id="activeEditCommentId"
             :is-dark="isDark"
-            :scroll-to-line="referenceRangeInvalid ? null : props.scrollToLine ?? null"
+            :scroll-to-line="referenceRangeInvalid || assistantCommentStale ? null : props.scrollToLine ?? null"
             :scroll-to-end-line="props.scrollToEndLine ?? null"
+            :assistant-comments="assistantCommentsForFile"
+            :focused-assistant-comment="assistantCommentStale ? undefined : focusedAssistantComment"
             :annotations="inlineAnnotations.annotationsForFile(state.snapshot.meta.path)"
             @request-add="onRequestAdd"
             @request-edit="onRequestEdit"

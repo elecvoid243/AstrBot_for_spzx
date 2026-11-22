@@ -2,6 +2,7 @@ import asyncio
 import json
 import re
 import time
+import uuid
 from collections import deque
 from typing import Any, cast
 
@@ -213,7 +214,7 @@ class MattermostPlatformAdapter(Platform):
         abm.self_id = self.bot_self_id
         abm.sender = MessageMember(user_id=sender_id, nickname=sender_name)
         abm.session_id = channel_id
-        abm.message_id = str(post.get("id") or channel_id)
+        abm.message_id = str(post.get("id") or uuid.uuid4().hex)
         abm.raw_message = post
         abm.timestamp = self._parse_timestamp(post.get("create_at"))
         abm.message = self._parse_text_components(message_text)

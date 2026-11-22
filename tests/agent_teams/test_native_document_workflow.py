@@ -173,6 +173,8 @@ async def test_native_document_reads_the_bound_version(
         },
     )
     assert refused.status_code == 403, refused.text
+    refused = await api.put(f"{asset}/api_access/fixture-key", json={"version": 1})
+    assert refused.status_code == 403, refused.text
 
     conversion_started = Event()
     release_conversion = Event()

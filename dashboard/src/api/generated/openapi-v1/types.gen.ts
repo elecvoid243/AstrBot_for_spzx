@@ -1893,6 +1893,35 @@ export type ValidationError = {
     };
 };
 
+export type WorkflowApiGrantRequest = {
+    version: number;
+};
+
+export type WorkflowApiRunResponse = {
+    status: "ok";
+    message?: (string | null);
+    data: {
+        run_id: string;
+        asset_id: string;
+        asset_version: number;
+        status: string;
+        result: ({
+    [key: string]: unknown;
+} | null);
+    };
+};
+
+export type WorkflowApiStartRequest = {
+    version: number;
+    /**
+     * Unique identity for one explicit launch by this API key.
+     */
+    request_id: string;
+    inputs?: {
+        [key: string]: unknown;
+    };
+};
+
 /**
  * An exact workflow version invoked in an independent scope.
  */
@@ -2032,7 +2061,19 @@ export type WorkflowStartRequest = {
     inputs?: {
         [key: string]: unknown;
     };
+    /**
+     * Stable request identity for retrying one Dashboard launch.
+     */
+    request_id?: (string | null);
+    /**
+     * The server assigns the Dashboard source.
+     * @deprecated
+     */
     source?: string;
+    /**
+     * Return and wake a matching committed launch without creating a new run.
+     */
+    replay_only?: boolean;
     /**
      * Fixed full-artifact inputs for autonomous teams. Workflow graphs use explicitly selected node inputs.
      */
@@ -6584,6 +6625,50 @@ export type RevokeChatAccessApiV1WorkflowAssetsAssetIdChatAccessPlatformIdSender
 
 export type RevokeChatAccessApiV1WorkflowAssetsAssetIdChatAccessPlatformIdSenderIdDeleteError = (HTTPValidationError);
 
+export type SaveWorkflowApiAccessApiV1WorkflowAssetsAssetIdApiAccessKeyIdPutData = {
+    body: WorkflowApiGrantRequest;
+    path: {
+        asset_id: string;
+        key_id: string;
+    };
+};
+
+export type SaveWorkflowApiAccessApiV1WorkflowAssetsAssetIdApiAccessKeyIdPutResponse = (unknown);
+
+export type SaveWorkflowApiAccessApiV1WorkflowAssetsAssetIdApiAccessKeyIdPutError = (unknown);
+
+export type RevokeWorkflowApiAccessApiV1WorkflowAssetsAssetIdApiAccessKeyIdDeleteData = {
+    path: {
+        asset_id: string;
+        key_id: string;
+    };
+};
+
+export type RevokeWorkflowApiAccessApiV1WorkflowAssetsAssetIdApiAccessKeyIdDeleteResponse = (unknown);
+
+export type RevokeWorkflowApiAccessApiV1WorkflowAssetsAssetIdApiAccessKeyIdDeleteError = (unknown);
+
+export type StartPublicWorkflowApiV1WorkflowsAssetIdRunsPostData = {
+    body: WorkflowApiStartRequest;
+    path: {
+        asset_id: string;
+    };
+};
+
+export type StartPublicWorkflowApiV1WorkflowsAssetIdRunsPostResponse = (WorkflowApiRunResponse);
+
+export type StartPublicWorkflowApiV1WorkflowsAssetIdRunsPostError = (WorkflowValidationError | unknown);
+
+export type GetPublicWorkflowRunApiV1WorkflowsRunsRunIdGetData = {
+    path: {
+        run_id: string;
+    };
+};
+
+export type GetPublicWorkflowRunApiV1WorkflowsRunsRunIdGetResponse = (WorkflowApiRunResponse);
+
+export type GetPublicWorkflowRunApiV1WorkflowsRunsRunIdGetError = (unknown);
+
 export type StartRunApiV1WorkflowAssetsAssetIdRunsPostData = {
     body: WorkflowStartRequest;
     path: {
@@ -6593,7 +6678,7 @@ export type StartRunApiV1WorkflowAssetsAssetIdRunsPostData = {
 
 export type StartRunApiV1WorkflowAssetsAssetIdRunsPostResponse = (unknown);
 
-export type StartRunApiV1WorkflowAssetsAssetIdRunsPostError = (WorkflowValidationError | HTTPValidationError);
+export type StartRunApiV1WorkflowAssetsAssetIdRunsPostError = (WorkflowValidationError | unknown | HTTPValidationError);
 
 export type PreviewTrialApiV1WorkflowAssetsAssetIdTrialsPreviewPostData = {
     body: TrialRunRequest;

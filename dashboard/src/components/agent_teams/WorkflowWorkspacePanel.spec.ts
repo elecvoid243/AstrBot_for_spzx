@@ -3535,7 +3535,7 @@ describe("workflow workspace", () => {
   });
 
   it("corrects an input error and starts the saved inline workflow version", async () => {
-    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/', component: slotStub }] });
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/', component: slotStub }, { path: '/chat', component: slotStub }] });
     await router.push('/');
     const saved = {
       asset_id: "inline-1",
@@ -3559,15 +3559,18 @@ describe("workflow workspace", () => {
       },
     };
     api.list.mockResolvedValue({ assets: [saved] });
-    const wrapper = mount(WorkflowWorkspacePanel, { props: { mode: 'assets' }, global: { plugins: [router], stubs } });
-    await flushPromises();
-    await wrapper
-      .findAll("button")
-      .find((button) => button.text() === "v2.start")!
-      .trigger("click");
-    await flushPromises();
+    const mountAssets = () =>
+      mount(WorkflowWorkspacePanel, { props: { mode: "assets" }, global: { plugins: [router], stubs } });
+    let wrapper = mountAssets();
+    const openStart = async () => {
+      await flushPromises();
+      await wrapper.findAll("button").find((button) => button.text() === "v2.start")!.trigger("click");
+      await flushPromises();
+    };
+    await openStart();
     api.start.mockRejectedValueOnce({
       response: {
+        status: 400,
         data: {
           message: "Invalid run inputs",
           data: {
@@ -3584,20 +3587,72 @@ describe("workflow workspace", () => {
       .trigger("click");
     await flushPromises();
     expect(wrapper.text()).toContain("inputs.input: Provide non-empty text");
-    api.start.mockResolvedValue({ run_id: "inline-run" });
+    const invalidRequestId = api.start.mock.calls.at(-1)?.[1].request_id;
+    api.start.mockRejectedValueOnce(new Error("Lost launch response"));
     await wrapper.find(".dialog input").setValue("energy");
-    await wrapper
+    const startButton = () => wrapper
       .findAll(".dialog button")
-      .find((button) => button.text() === "v2.start")!
-      .trigger("click");
+      .find((button) => button.text() === "v2.start")!;
+    await startButton().trigger("click");
+    await flushPromises();
+    const requestId = api.start.mock.calls.at(-1)?.[1].request_id;
+    expect(requestId).toEqual(expect.any(String));
+    expect(requestId).not.toBe(invalidRequestId);
+    wrapper.unmount();
+    api.readiness.mockResolvedValue({ ready: false, issues: [], roles: [] });
+    wrapper = mountAssets();
+    await openStart();
+    expect(wrapper.find('[data-testid="runner-readiness-blocked"]').exists()).toBe(true);
+    await wrapper.find(".dialog input").setValue("energy");
+    api.start.mockResolvedValue({ run_id: "inline-run" });
+    await startButton().trigger("click");
     await flushPromises();
     expect(api.start).toHaveBeenLastCalledWith("inline-1", {
       version: 3,
       inputs: { input: "energy" },
       source: "dashboard",
+      request_id: requestId,
+      replay_only: true,
     });
     expect(wrapper.emitted("started")).toEqual([["inline-run"]]);
     expect(router.currentRoute.value.query.workflow_run).toBe("inline-run");
+    wrapper.unmount();
+
+    await router.push("/");
+    api.readiness.mockResolvedValue({ ready: true, issues: [], roles: [] });
+    wrapper = mountAssets();
+    await openStart();
+    await wrapper.find(".dialog input").setValue("energy");
+    let finishLaunch!: (run: { run_id: string }) => void;
+    api.start.mockReturnValueOnce(new Promise((resolve) => { finishLaunch = resolve; }));
+    await startButton().trigger("click");
+    await flushPromises();
+    const laterId = api.start.mock.calls.at(-1)?.[1].request_id;
+    expect(laterId).not.toBe(requestId);
+    await router.push("/chat");
+    finishLaunch({ run_id: "later-root" });
+    await flushPromises();
+    expect(router.currentRoute.value.fullPath).toBe("/chat");
+    expect(wrapper.emitted("started")).toBeUndefined();
+    const pendingKeys = Array.from({ length: sessionStorage.length }, (_, index) => sessionStorage.key(index))
+      .filter((key): key is string => !!key?.startsWith("astrbot:workflow-start:"));
+    expect(pendingKeys).toHaveLength(1);
+    expect(pendingKeys[0]).not.toContain("energy");
+    expect(sessionStorage.getItem(pendingKeys[0])).toBe(laterId);
+
+    wrapper.unmount();
+    await router.push("/");
+    wrapper = mountAssets();
+    await openStart();
+    await wrapper.find(".dialog input").setValue("changed energy");
+    api.start.mockResolvedValueOnce({ run_id: "changed-root" });
+    await startButton().trigger("click");
+    await flushPromises();
+    const changed = api.start.mock.calls.at(-1)?.[1];
+    expect(changed.request_id).not.toBe(laterId);
+    expect(changed.replay_only).toBeUndefined();
+    expect(sessionStorage.getItem(pendingKeys[0])).toBe(laterId);
+    sessionStorage.removeItem(pendingKeys[0]);
     wrapper.unmount();
   });
 

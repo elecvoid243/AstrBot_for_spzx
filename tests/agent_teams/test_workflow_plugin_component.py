@@ -8,6 +8,7 @@ import pytest
 from astrbot.api.star import WorkflowComponent
 from astrbot.core.db.po import DashboardAccount
 from astrbot.core.star.star import StarMetadata
+from astrbot.dashboard.services.api_key_service import ApiKeyService
 from tests.agent_teams.test_workflow_assets import completed_run
 from tests.agent_teams.test_workflow_assets_api import (
     publication_client as publication_client,
@@ -128,6 +129,12 @@ async def test_installed_component_is_pinned_and_passes_structured_values(
     assert started.status_code == 200, started.text
     result = await completed_run(service, started.json()["data"]["run_id"])
     assert result["result"] == {"count": 5}, result
+
+    key = await ApiKeyService(service.db).create_api_key(
+        {"scopes": ["workflow"]}, created_by="alice"
+    )
+    refused = await api.put(f"{runs}/api_access/{key['key_id']}", json={"version": 1})
+    assert refused.status_code == 403, refused.text
 
     plugin.activated = False
     blocked = await api.post(f"{runs}/runs", json={"version": 1, "inputs": inputs})

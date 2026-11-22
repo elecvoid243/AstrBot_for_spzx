@@ -202,6 +202,23 @@ AstrBot 管理员先在**插件**中安装并启用插件。在工作流编辑�
 
 Satori 会话和 Misskey note 会话当前不能唯一保留所需来源身份，不能用于资产调用；Misskey 私聊和聊天室可用。企业微信智能机器人须有可用的原会话响应通道：HTTP 回调模式需关闭仅 webhook 发送并设置非空初始响应；通道过期或重启后，在原授权会话发送 `/asset status <运行 ID>` 取回待发送内容。
 
+## 从 Bot、消息平台和公开 API 启动同一固定版本
+
+三个入口均校验已发布的输入契约，并在启动时冻结有效输入和固定依赖。按声明的字段名和类型提交 JSON 对象。缺省字段使用已声明的默认值。显式传入的 `null` 保留原值，输入类型须允许空值。消息平台的 `/asset list` 会列出授权的固定版本、必填字段和结构化输入类型。平台用同一上游消息 ID 重投时复用原运行。另发一条命令会独立启动。无法提供稳定上游消息 ID 的适配器无法识别重投。
+
+Bot 启动请求丢失响应时，在原浏览器标签页重新打开同一资产和版本并提交原输入。Dashboard 会先查询待确认回执，再检查当前本地资源。每次独立启动有单独的根运行和 Chat 运行会话。固定子调用归入所属根运行，沿用其预算和可见性边界。
+
+![真实 Dashboard Chat 中的三次独立启动](/images/agent-teams-authorized-launch-zh.jpg)
+
+### 授权公开 API 调用者
+
+1. 在 Dashboard **设置 → OpenAPI** 创建带 `workflow` 权限的 API Key，生成时复制密钥。用已登录的 Dashboard 管理员会话请求 `GET /api/apikey/list` 取得 `key_id`。授权时使用该标识符，调用公开 API 时使用密钥。
+2. 用 Dashboard 资产所有者的会话发送 `PUT /api/v1/workflow_assets/{asset_id}/api_access/{key_id}`，请求体为 `{"version":1}`。使用该 Dashboard 会话的 Cookie 或 JWT 认证。启动需要同时具备 scope 和固定版本授权。资产 ID 和已发布版本可从卡片或所有者端点 `GET /api/v1/workflow_assets` 核对。
+3. 带上 `Authorization: ApiKey <密钥>`，发送 `POST /api/v1/workflows/{asset_id}/runs`，例如 `{"version":1,"request_id":"inspection-001","inputs":{"query":{"gauge":42}}}`。根据资产契约填写 `inputs`。用相同 `request_id` 重发有效输入相同的请求。对已提交的请求 ID 改动有效载荷会返回 HTTP 409，独立启动请使用新 ID。
+4. 使用原 API Key 查询 `GET /api/v1/workflows/runs/{run_id}`，获取根运行状态和完成后的发布结果。Dashboard 所有者可以打开该运行会话。公开 API Key 无权打开 Dashboard 工作台、读取子运行或取得消息平台连接凭据。
+
+使用资产所有者的 Dashboard 会话执行 `DELETE /api/v1/workflow_assets/{asset_id}/api_access/{key_id}` 可撤销单项授权，也可在 **设置 → OpenAPI** 撤销 API Key。撤权阻止重放、读取结果，以及通过下一次执行准入启动新工作。已获准发出的调用可以完成。外部启动授权仅适用于允许的输入和节点。Dashboard 历史产物和文件输入、原生文档或知识库节点、已安装插件组件仍限站内，包括固定子调用里的节点。AstrBot 现有提醒和 Agent 定时任务没有固定工作流版本启动入口。
+
 ## 导入、导出与删除
 
 在 **资产 → 团队／工作流** 选择 **导出资产 JSON**，包包含入口的固定子资产和角色及资源需求，不包含凭证、资源内容、授权或运行历史。在目标实例选择 **导入资产包 → 校验并预览**，逐项选择兼容的本机配置档案、模型、人格、工具、技能和知识库，即使 ID 相同也须选择。缺少资源时先配置，再确认安装。安装完整依赖或整体失败；导入不会安装插件、执行脚本或启动运行。

@@ -202,6 +202,23 @@ In the asset's **Scope limits**, optionally set call steps, members, loop iterat
 
 Satori conversations and Misskey note conversations cannot currently retain the required unique source identity and cannot invoke assets; Misskey direct messages and chat rooms can. A WeCom intelligent bot needs an available original conversation response channel: HTTP callback mode requires webhook-only sending to be disabled and a nonempty initial response. If the channel expires or the service restarts, send `/asset status <run ID>` in the original authorized conversation to retrieve pending content.
 
+## Start the same fixed version from Bot, a platform or the API
+
+All three entries check the published input contract and freeze its effective inputs and fixed dependencies at launch. Send a JSON object with the declared names and types. A missing field receives its declared default. An explicit `null` remains null and must be allowed by the input type. In platform chat, `/asset list` shows the granted fixed version, required names and the types of structured inputs. Platform redelivery with the same upstream message ID reuses the original run. Sending the command as a separate message starts a separate run. An adapter without a stable upstream ID cannot identify redelivery.
+
+For Bot, reopen the same asset and version in the original browser tab and resubmit the same inputs after a lost response. The Dashboard checks the pending request before checking local resources again. Each independent start gets its own run and Chat conversation. Fixed child calls use the root's budgets and appear inside that run conversation.
+
+![Three independent starts in the live Dashboard Chat](/images/agent-teams-authorized-launch-en.jpg)
+
+### Authorize a public API caller
+
+1. In Dashboard **Settings → OpenAPI**, create a key with the `workflow` scope. Copy the key secret when issued. Use your signed-in Dashboard administrator session to read `GET /api/apikey/list` and obtain its `key_id`. Use the identifier when granting access and the secret when calling the public API.
+2. As the Dashboard asset owner, send `PUT /api/v1/workflow_assets/{asset_id}/api_access/{key_id}` with `{"version":1}`. Authenticate this management request with the owner's Dashboard session, using its cookie or Dashboard JWT. The scope and the fixed-version grant are both required. Get the asset ID and its published version from its Dashboard card or the owner-only `GET /api/v1/workflow_assets` endpoint.
+3. With `Authorization: ApiKey <key-secret>`, send `POST /api/v1/workflows/{asset_id}/runs` with `{"version":1,"request_id":"inspection-001","inputs":{"query":{"gauge":42}}}`, adapting `inputs` to the asset. Keep the same `request_id` for a retry with the same effective inputs. A changed effective payload under a committed ID returns HTTP 409. Use a new ID for an independent launch.
+4. Poll `GET /api/v1/workflows/runs/{run_id}` with the originating key. The response gives the root status and its published result upon completion. The Dashboard owner can open the root's Chat conversation. The API key has no access to the Dashboard workbench, child runs, or platform connection credentials.
+
+Revoke an individual grant with the owner's Dashboard session using `DELETE /api/v1/workflow_assets/{asset_id}/api_access/{key_id}`, or revoke the key in **Settings → OpenAPI**. Revocation blocks replays, result reads and further work at the next admission check. Calls already admitted can finish. External launch grants do not include historical Dashboard artifact or file inputs, native document or knowledge nodes, or installed workflow plugins, including inside fixed child calls. AstrBot's existing reminder and Agent schedule do not start fixed workflow versions.
+
 ## Import, export and delete
 
 Under **Assets → Teams / Workflows**, choose **Export asset JSON**. The package includes the entry's fixed child assets, roles and resource requirements, but not credentials, resource contents, grants or run history. On the destination, choose **Import asset package → Validate and preview** and explicitly select compatible local profiles, models, personas, tools, skills and knowledge bases for every requirement, even if IDs match. Configure missing resources first, then confirm installation. The complete dependency closure is installed or the operation fails as a whole; import does not install plugins, execute scripts or start a run.

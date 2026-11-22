@@ -9,9 +9,10 @@ from fastapi import APIRouter, Depends, Query, Request, Security
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.security import APIKeyHeader
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError
 from starlette.background import BackgroundTask
 
+from astrbot.core.agent_teams import WORKFLOW_API_SCOPE
 from astrbot.core.agent_teams.assets import RoleAssetError
 from astrbot.core.agent_teams.chat import ChatAccessRequest, ChatSourceAccessError
 from astrbot.core.agent_teams.graph import GraphDefinition, validate_graph
@@ -30,11 +31,12 @@ from astrbot.core.agent_teams.workflows import (
     WorkflowStartRequest,
 )
 from astrbot.core.provider.provider import Provider
-from astrbot.dashboard.responses import error, ok
+from astrbot.dashboard.responses import ApiError, error, ok
 
-from .auth import require_dashboard_user
+from .auth import AuthContext, ScopeDependency, require_dashboard_user
 
 router = APIRouter(tags=["Agent Teams workflows"])
+require_workflow_scope = ScopeDependency(WORKFLOW_API_SCOPE)
 _process_observers = asyncio.Semaphore(32)
 chat_browser_header = APIKeyHeader(
     name="X-AstrBot-Chat-Session",
@@ -748,15 +750,172 @@ async def import_asset(
         )
 
 
+class DashboardWorkflowStartRequest(WorkflowStartRequest):
+    replay_only: bool = False
+
+
+class WorkflowApiGrantRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    version: int = Field(ge=1)
+
+
+class WorkflowApiStartRequest(WorkflowApiGrantRequest):
+    request_id: str = Field(min_length=1, max_length=128, pattern=r"^\S+$")
+    inputs: dict[str, JsonValue] = Field(default_factory=dict)
+
+
+class WorkflowApiRun(BaseModel):
+    run_id: str
+    asset_id: str
+    asset_version: int
+    status: str
+    result: dict | None
+
+
+class WorkflowApiRunResponse(BaseModel):
+    status: Literal["ok"] = "ok"
+    message: str | None = None
+    data: WorkflowApiRun
+
+
+@router.put("/workflow_assets/{asset_id}/api_access/{key_id}")
+async def save_workflow_api_access(
+    asset_id: str,
+    key_id: str,
+    payload: WorkflowApiGrantRequest,
+    username: str = Depends(require_dashboard_user),
+    service: WorkflowService = Depends(get_workflow_service),
+):
+    """Delegate launch and result access for one published asset version.
+
+    Args:
+        asset_id: Owned workflow asset.
+        key_id: Identifier of the authorized API key.
+        payload: Fixed asset version being opened.
+        username: Dashboard asset owner.
+        service: Shared workflow service.
+
+    Returns:
+        The authorized version.
+    """
+    try:
+        await service.set_api_access(username, asset_id, key_id, payload.version)
+        return ok(payload.model_dump())
+    except RoleAssetError as exc:
+        return JSONResponse(
+            error(str(exc), {"fields": exc.fields}), status_code=exc.status
+        )
+
+
+@router.delete("/workflow_assets/{asset_id}/api_access/{key_id}")
+async def revoke_workflow_api_access(
+    asset_id: str,
+    key_id: str,
+    username: str = Depends(require_dashboard_user),
+    service: WorkflowService = Depends(get_workflow_service),
+):
+    """Revoke launches, replays and result access under an API key grant.
+
+    Args:
+        asset_id: Owned workflow asset.
+        key_id: Identifier of the previously authorized key.
+        username: Dashboard asset owner.
+        service: Shared workflow service.
+
+    Returns:
+        An empty confirmation.
+    """
+    try:
+        await service.set_api_access(username, asset_id, key_id, None)
+        return ok()
+    except RoleAssetError as exc:
+        return JSONResponse(
+            error(str(exc), {"fields": exc.fields}), status_code=exc.status
+        )
+
+
+@router.post("/workflows/{asset_id}/runs", response_model=WorkflowApiRunResponse)
+async def start_public_workflow(
+    asset_id: str,
+    payload: WorkflowApiStartRequest,
+    auth: AuthContext = Depends(require_workflow_scope),
+    service: WorkflowService = Depends(get_workflow_service),
+):
+    """Start a fixed published workflow on behalf of an explicitly granted key.
+
+    Args:
+        asset_id: Authorized workflow asset.
+        payload: Exact version, declared JSON inputs and request identity.
+        auth: Authenticated caller with workflow scope.
+        service: Shared workflow service.
+
+    Returns:
+        Root run identity and restricted result projection.
+    """
+    key_id = auth.api_key_id
+    if key_id is None:
+        raise ApiError("Workflow API key required", status_code=401)
+    try:
+        async with service.db.get_db() as session:
+            grant = await service.require_api_access(
+                session, key_id, asset_id, payload.version
+            )
+        run = await service.start_run(
+            grant.owner_username,
+            asset_id,
+            {**payload.model_dump(), "source": "api"},
+            api_key_id=key_id,
+        )
+        return ok(await service.get_api_run(key_id, run["run_id"]))
+    except RoleAssetError as exc:
+        return JSONResponse(
+            error(str(exc), {"fields": exc.fields}), status_code=exc.status
+        )
+
+
+@router.get("/workflows/runs/{run_id}", response_model=WorkflowApiRunResponse)
+async def get_public_workflow_run(
+    run_id: str,
+    auth: AuthContext = Depends(require_workflow_scope),
+    service: WorkflowService = Depends(get_workflow_service),
+):
+    """Read the root result using the same key and current fixed-version grant.
+
+    Args:
+        run_id: Root identity returned by the launch.
+        auth: Authenticated caller with workflow scope.
+        service: Shared workflow service.
+
+    Returns:
+        Restricted status and the completed root's result.
+    """
+    key_id = auth.api_key_id
+    if key_id is None:
+        raise ApiError("Workflow API key required", status_code=401)
+    try:
+        return ok(await service.get_api_run(key_id, run_id))
+    except RoleAssetError as exc:
+        return JSONResponse(
+            error(str(exc), {"fields": exc.fields}), status_code=exc.status
+        )
+
+
 @router.post("/workflow_assets/{asset_id}/runs")
 async def start_run(
     asset_id: str,
-    payload: WorkflowStartRequest,
+    payload: DashboardWorkflowStartRequest,
     username: str = Depends(require_dashboard_user),
     service: WorkflowService = Depends(get_workflow_service),
 ):
     try:
-        return ok(await service.start_run(username, asset_id, payload.model_dump()))
+        return ok(
+            await service.start_run(
+                username,
+                asset_id,
+                payload.model_dump(exclude={"source", "replay_only"}),
+                replay_only=payload.replay_only,
+            )
+        )
     except RoleAssetError as exc:
         return JSONResponse(
             error(str(exc), {"fields": exc.fields}), status_code=exc.status

@@ -11,6 +11,7 @@ from sqlmodel import select
 
 from astrbot import logger
 from astrbot.core import DEMO_MODE
+from astrbot.core.agent_teams import WORKFLOW_API_SCOPE
 from astrbot.core.config.astrbot_config import AstrBotConfig
 from astrbot.core.db import BaseDatabase
 from astrbot.core.db.po import DashboardAccount
@@ -76,6 +77,7 @@ ALL_OPEN_API_SCOPES = (
     *DEFAULT_OPEN_API_SCOPES,
     CHAT_ADMIN_SCOPE,
     CONFIG_EDIT_ADMIN_SCOPE,
+    WORKFLOW_API_SCOPE,
 )
 
 OPEN_API_SCOPE_INCLUDES = {

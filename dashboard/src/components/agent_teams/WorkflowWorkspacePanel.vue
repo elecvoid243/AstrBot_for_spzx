@@ -683,7 +683,7 @@
             variant="tonal"
             color="primary"
             :loading="saving"
-            :disabled="checkingReadiness || !readiness?.ready"
+            :disabled="!hasPendingLaunch && (checkingReadiness || !readiness?.ready)"
             @click="start"
             >{{ tm("v2.start") }}</v-btn
           >
@@ -786,6 +786,7 @@ import PdfPreview from "@/components/chat/message_list_comps/binary_preview/PdfP
 import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { isAxiosError } from "axios";
+import { serialize, sha256 } from "ohash";
 import { accountSessionRevision } from "@/utils/accountSession";
 import { roleAssetsApi } from "@/api/roleAssets";
 import { draftApi } from "@/composables/useAssetDraft";
@@ -1635,7 +1636,18 @@ async function checkReadiness() {
   }
 }
 
+const hasPendingLaunch = ref(false);
+let launchStorageKey = "";
+
+function refreshPendingLaunch() {
+  const keys = Array.from({ length: sessionStorage.length }, (_, index) => sessionStorage.key(index));
+  hasPendingLaunch.value = keys.some((key) => key?.startsWith(launchStorageKey));
+}
+
 function prepareRun(asset: any) {
+  const account = localStorage.getItem("account_id") || localStorage.getItem("resource_owner");
+  launchStorageKey = `astrbot:workflow-start:${JSON.stringify([account, asset.asset_id, asset.version])}:`;
+  refreshPendingLaunch();
   runAsset.value = asset;
   structuredInputs.value = "{}";
   inputs.value = Object.fromEntries(
@@ -1651,9 +1663,19 @@ async function start() {
   if (saving.value || !runAsset.value) return;
   saving.value = true;
   formError.value = "";
+  const assetId = runAsset.value.asset_id;
+  const storageKey = launchStorageKey;
+  const launchRoute = route.fullPath;
+  const account = localStorage.getItem("account_id") || localStorage.getItem("resource_owner");
+  const isCurrent = () =>
+    !disposed && starting.value && storageKey === launchStorageKey &&
+    route.fullPath === launchRoute &&
+    account === (localStorage.getItem("account_id") || localStorage.getItem("resource_owner"));
+  let pendingKey: string | undefined;
+  let requestId: string | null = null;
+
   try {
-    if (!(await checkReadiness())) return;
-    const run = await workflowAssetsApi.start(runAsset.value.asset_id, {
+    const payload = {
       version: runAsset.value.version,
       inputs: runAsset.value.definition.input_contract
         ? parseWorkflowInputs(structuredInputs.value) : inputs.value,
@@ -1665,14 +1687,65 @@ async function start() {
             ),
           }
         : {}),
-    });
-    starting.value = false;
-    await router.replace({
+    };
+    const properties: Record<string, { default?: unknown }> =
+      runAsset.value.definition.input_contract?.properties ?? {};
+    const effectiveInputs = {
+      ...Object.fromEntries(Object.entries(properties)
+        .filter(([, declared]) => "default" in declared)
+        .map(([name, declared]) => [name, declared.default])),
+      ...payload.inputs,
+    };
+    const fingerprint = sha256(serialize({ ...payload, inputs: effectiveInputs }));
+    pendingKey = storageKey + fingerprint;
+    requestId = sessionStorage.getItem(pendingKey);
+    let run;
+    if (requestId) {
+      try {
+        run = await workflowAssetsApi.start(assetId, {
+          ...payload,
+          request_id: requestId,
+          replay_only: true,
+        });
+      } catch (err) {
+        const { fields } = extractApiError(err, tm("errors.operationFailed"));
+        if (fields.some((field) => field.code === "LAUNCH_CONFLICT")) {
+          requestId = null;
+        } else if (!fields.some((field) => field.code === "LAUNCH_NOT_COMMITTED")) {
+          throw err;
+        }
+      }
+    }
+    if (!run) {
+      if (!isCurrent() || !(await checkReadiness()) || !isCurrent()) return;
+      requestId ??= crypto.randomUUID?.() ?? crypto.getRandomValues(new Uint32Array(4)).join("-");
+      sessionStorage.setItem(pendingKey, requestId);
+      hasPendingLaunch.value = true;
+      run = await workflowAssetsApi.start(assetId, { ...payload, request_id: requestId });
+    }
+    if (!isCurrent()) return;
+    const navigationFailure = await router.replace({
       query: { ...route.query, workflow_run: run.run_id },
     });
-    emit("started", run.run_id);
+    if (!navigationFailure && sessionStorage.getItem(pendingKey) === requestId) {
+      sessionStorage.removeItem(pendingKey);
+      refreshPendingLaunch();
+    }
+    if (!disposed && router.currentRoute.value.query.workflow_run === run.run_id) {
+      starting.value = false;
+      emit("started", run.run_id);
+    }
   } catch (err) {
+    if (!isCurrent()) return;
     const failure = extractApiError(err, tm("errors.operationFailed"));
+    const status = (err as { response?: { status?: number } } | null)?.response?.status;
+    if (
+      (status === 400 || status === 422) &&
+      pendingKey && sessionStorage.getItem(pendingKey) === requestId
+    ) {
+      sessionStorage.removeItem(pendingKey);
+      refreshPendingLaunch();
+    }
     formError.value = `${failure.message} ${failure.fields
       .map((field) => `${field.path}: ${field.message}`)
       .join("; ")}`;

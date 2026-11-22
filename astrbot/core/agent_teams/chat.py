@@ -359,12 +359,7 @@ class WorkflowChat:
         except ValidationError as exc:
             raise RoleAssetError("Invalid chat access") from exc
         asset = await self.service.get_asset(username, asset_id, request.version)
-        if any(
-            task.get("transform") in NATIVE_NODE_OUTPUTS
-            or task.get("transform") == PLUGIN_COMPONENT
-            for task in asset["definition"].get("tasks", [])
-        ):
-            raise RoleAssetError(_NATIVE_NODES_DASHBOARD_ONLY, status=403)
+        self.require_external_definition(asset["definition"])
         grant = AgentWorkflowChatAccess(
             asset_id=asset_id, owner_username=username, **request.model_dump()
         )
@@ -418,14 +413,26 @@ class WorkflowChat:
             )
             if asset["deleted"]:
                 continue
-            assets.append(
-                {
-                    "asset_id": grant.asset_id,
-                    "version": grant.version,
-                    "name": asset["definition"]["name"],
-                    "required_inputs": asset["definition"]["required_inputs"],
+            definition = asset["definition"]
+            entry = {
+                "asset_id": grant.asset_id,
+                "version": grant.version,
+                "name": definition["name"],
+                "required_inputs": definition["required_inputs"],
+            }
+            if definition.get("port_contract_version") == 2:
+                contract = definition["input_contract"]
+                properties = contract["properties"]
+                entry["required_inputs"] = [
+                    name
+                    for name in contract.get("required", [])
+                    if "default" not in properties[name]
+                ]
+                entry["input_types"] = {
+                    name: schema.get("type", "any")
+                    for name, schema in properties.items()
                 }
-            )
+            assets.append(entry)
         return {"assets": assets}
 
     async def list_access(self, username: str, asset_id: str) -> dict:
@@ -484,13 +491,21 @@ class WorkflowChat:
                 await session.delete(grant)
                 await session.commit()
 
-    async def invoke(self, caller: ChatCaller, selector: str, inputs: dict) -> dict:
+    async def invoke(
+        self,
+        caller: ChatCaller,
+        selector: str,
+        inputs: dict,
+        *,
+        request_id: str | None = None,
+    ) -> dict:
         """Resolve an explicit selection and clarify before admitting execution.
 
         Args:
             caller: Actual platform event identity.
             selector: Exact accessible asset ID or name.
-            inputs: Explicit named text inputs.
+            inputs: Explicit named JSON inputs.
+            request_id: Stable upstream message ID within the verified source.
 
         Returns:
             A clarification or the accepted run identity.
@@ -507,21 +522,6 @@ class WorkflowChat:
         if len(choices) > 1:
             return {"status": "clarification", "choices": choices}
         asset = choices[0]
-        fields = [
-            {
-                "path": f"inputs.{name}",
-                "code": "REQUIRED",
-                "message": "Provide non-empty text",
-            }
-            for name in asset["required_inputs"]
-            if not isinstance(inputs.get(name), str) or not inputs[name].strip()
-        ]
-        if fields:
-            return {
-                "status": "clarification",
-                "asset_id": asset["asset_id"],
-                "fields": fields,
-            }
         async with self.service.db.get_db() as session:
             grant = await session.get(
                 AgentWorkflowChatAccess,
@@ -533,44 +533,82 @@ class WorkflowChat:
             or grant.profile_id != caller.profile_id
         ):
             raise RoleAssetError("Asset is not available to this caller", status=404)
-        run = await self.service.start_run(
-            grant.owner_username,
-            grant.asset_id,
-            {"version": grant.version, "inputs": inputs, "source": caller.source},
-            chat={
-                "caller": caller.model_dump(),
+        try:
+            run = await self.service.start_run(
+                grant.owner_username,
+                grant.asset_id,
+                {
+                    "version": grant.version,
+                    "inputs": inputs,
+                    "source": caller.source,
+                    "request_id": request_id,
+                },
+                chat={
+                    "caller": caller.model_dump(),
+                    "asset_id": grant.asset_id,
+                    "version": grant.version,
+                },
+            )
+        except RoleAssetError as exc:
+            if (
+                exc.status != 400
+                or not exc.fields
+                or not all(
+                    issue["path"] == "inputs" or issue["path"].startswith("inputs.")
+                    for issue in exc.fields
+                )
+            ):
+                raise
+            return {
+                "status": "clarification",
                 "asset_id": grant.asset_id,
-                "version": grant.version,
-            },
-        )
+                "fields": exc.fields,
+            }
         return {
             "status": "accepted",
             "run_id": run["run_id"],
             "detail_path": "/#/asset-run?workflow_run=" + run["run_id"],
         }
 
-    def prepare(self, frozen: dict, chat: dict) -> None:
-        """Constrain every frozen member and nested scope to the caller profile.
+    @staticmethod
+    def require_external_definition(definition: dict) -> None:
+        """Keep installed components and native document resources inside Dashboard.
+
+        Args:
+            definition: Definition of one fixed asset or nested scope.
+
+        Raises:
+            RoleAssetError: The definition uses a Dashboard-only node.
+        """
+        if any(
+            task.get("transform") in NATIVE_NODE_OUTPUTS
+            or task.get("transform") == PLUGIN_COMPONENT
+            for task in definition.get("tasks", [])
+        ):
+            raise RoleAssetError(_NATIVE_NODES_DASHBOARD_ONLY, status=403)
+
+    def prepare(
+        self, frozen: dict, chat: dict | None, api_principal: str | None
+    ) -> None:
+        """Apply external member restrictions throughout the frozen graph.
 
         Args:
             frozen: Resolved launch snapshot, before any execution is persisted.
-            chat: Verified caller and fixed grant identity.
+            chat: Verified platform caller and grant, if this is a platform launch.
+            api_principal: Independent caller identity for public API launches.
 
         Raises:
-            RoleAssetError: A reachable node requires Dashboard access or uses another profile.
+            RoleAssetError: A member uses a different profile from the platform caller.
         """
-        caller = ChatCaller.model_validate(chat["caller"])
+        caller = ChatCaller.model_validate(chat["caller"]) if chat is not None else None
         pending = [frozen]
         while pending:
             scope = pending.pop()
-            if any(
-                task.get("transform") in NATIVE_NODE_OUTPUTS
-                or task.get("transform") == PLUGIN_COMPONENT
-                for task in scope["definition"].get("tasks", [])
-            ):
-                raise RoleAssetError(_NATIVE_NODES_DASHBOARD_ONLY, status=403)
-            scope["chat"] = chat
-            scope["initiator"] = caller.principal
+            if caller is not None:
+                scope["chat"] = chat
+                scope["initiator"] = caller.principal
+            elif api_principal is not None:
+                scope["initiator"] = api_principal
             members = (
                 [scope]
                 if "role" in scope
@@ -580,7 +618,7 @@ class WorkflowChat:
                 ]
             )
             for member in members:
-                if member["profile_id"] != caller.profile_id:
+                if caller is not None and member["profile_id"] != caller.profile_id:
                     raise RoleAssetError(
                         "Asset resources are outside the caller's source profile",
                         status=403,
@@ -806,6 +844,8 @@ class WorkflowChat:
                 if run_id is not None:
                     query = query.where(AgentWorkflowChatDelivery.run_id == run_id)
                 deliveries = (await session.execute(query)).scalars().all()
+            if run_id is not None and not deliveries:
+                self._live_senders.pop(run_id, None)
             for delivery in deliveries:
                 try:
                     async with self.service.db.get_db() as session:

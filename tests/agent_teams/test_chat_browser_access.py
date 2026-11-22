@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import uuid
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlsplit
 
@@ -63,7 +64,9 @@ async def browser_http(chat_env, monkeypatch):
         yield client, app.state.jwt_secret
 
 
-async def send_chat_command(service, text, sender="12345", source="12345", group=False):
+async def send_chat_command(
+    service, text, sender="12345", source="12345", group=False, *, message_id=None
+):
     """Dispatch the real command with trusted platform identity and source.
 
     Args:
@@ -72,6 +75,7 @@ async def send_chat_command(service, text, sender="12345", source="12345", group
         sender: Actual OneBot sender ID.
         source: Actual private conversation ID.
         group: Use a real group event with an independently identified sender.
+        message_id: Optional stable upstream ID to simulate transport redelivery.
 
     Returns:
         The consumed platform event and externally sent messages.
@@ -89,7 +93,7 @@ async def send_chat_command(service, text, sender="12345", source="12345", group
         message.group_id = source
     message.self_id = "9999"
     message.sender = MessageMember(sender, "Caller")
-    message.message_id = "chat-browser-command"
+    message.message_id = message_id or uuid.uuid4().hex
     message.message_str = text
     message.message = [Plain(text)]
     event = AiocqhttpMessageEvent(

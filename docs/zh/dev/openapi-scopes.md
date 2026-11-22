@@ -383,3 +383,12 @@ outline: deep
 | `GET` | `/api/v1/skills/{skill_name}/files` | — |
 | `GET` | `/api/v1/skills/{skill_name}/files/{file_path}` | — |
 | `PUT` | `/api/v1/skills/{skill_name}/files/{file_path}` | — |
+
+## `workflow`
+
+启动和读取显式授予此 API Key 的固定版本工作流运行。
+
+| 方法 | 接口 | 条件性敏感子权限 |
+| --- | --- | --- |
+| `GET` | `/api/v1/workflows/runs/{run_id}` | — |
+| `POST` | `/api/v1/workflows/{asset_id}/runs` | — |

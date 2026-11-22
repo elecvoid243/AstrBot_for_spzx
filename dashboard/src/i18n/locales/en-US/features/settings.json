@@ -306,6 +306,7 @@
     "createConfirm": "Create an API key with the following scopes?\n\n{scopes}",
     "sensitiveCreateConfirm": "You are about to create an API key with these high-risk scopes:\n\n{scopes}\n\nThe holder may gain administrator capabilities. Continue?",
     "scopeDescriptions": {
+      "workflow": "Start and read workflow runs with a separate fixed-version grant",
       "bot": "Read and manage bot and platform configurations.",
       "provider": "Read and manage model providers.",
       "persona": "Read and manage personas.",

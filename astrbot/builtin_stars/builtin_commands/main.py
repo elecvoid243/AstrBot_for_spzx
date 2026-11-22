@@ -1,3 +1,4 @@
+import hashlib
 import json
 import uuid
 from typing import cast
@@ -51,7 +52,7 @@ class Main(star.Star):
 
         Args:
             event: Actual platform sender and source conversation.
-            request: Asset name/ID followed by optional pipe and JSON text inputs.
+            request: Asset name/ID followed by an optional pipe and JSON inputs.
         """
         if event.get_extra("agent_team_execution") is not None:
             return
@@ -165,13 +166,25 @@ class Main(star.Star):
             else:
                 selector, separator, raw_inputs = request.partition("|")
                 inputs = json.loads(raw_inputs) if separator else {}
-                if not isinstance(inputs, dict) or any(
-                    not isinstance(v, str) for v in inputs.values()
-                ):
-                    raise ValueError("Inputs must be a JSON object of text values")
-                response = await service.chat.invoke(caller, selector.strip(), inputs)
+                if not isinstance(inputs, dict):
+                    raise ValueError("Inputs must be a JSON object")
+                message_id = getattr(event.message_obj, "message_id", None)
+                request_id = (
+                    hashlib.sha256(str(message_id).encode()).hexdigest()
+                    if message_id and message_id != "unknown"
+                    else None
+                )
+                response = await service.chat.invoke(
+                    caller, selector.strip(), inputs, request_id=request_id
+                )
                 if response["status"] == "accepted":
-                    await service.chat.deliver_pending(send_source, response["run_id"])
+                    run_id = response["run_id"]
+                    if not await service.chat.deliver_pending(send_source, run_id):
+                        projected = await service.chat.get_run(caller, run_id)
+                        await send_source(
+                            caller,
+                            f"Run {run_id}: {projected['status']}. Details: {response['detail_path']}",
+                        )
                 else:
                     await send_source(caller, json.dumps(response, ensure_ascii=False))
         except (RoleAssetError, ValueError, ValidationError) as exc:

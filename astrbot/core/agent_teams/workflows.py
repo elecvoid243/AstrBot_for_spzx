@@ -10,6 +10,7 @@ import time
 import uuid
 from collections.abc import Callable
 from contextlib import nullcontext
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from string import Formatter
@@ -53,6 +54,7 @@ from astrbot.core.agent_team_execution import (
     execute_team_turn,
 )
 from astrbot.core.agent_team_tools import AgentTeamToolRegistry
+from astrbot.core.agent_teams import WORKFLOW_API_SCOPE
 from astrbot.core.agent_teams.assets import (
     HumanWaitPolicy,
     RoleAssetError,
@@ -116,6 +118,7 @@ from astrbot.core.db.po import (
     AgentAssetTombstone,
     AgentRoleInstallation,
     AgentRoleVersion,
+    AgentWorkflowApiAccess,
     AgentWorkflowArtifact,
     AgentWorkflowAttempt,
     AgentWorkflowChatDelivery,
@@ -123,6 +126,7 @@ from astrbot.core.db.po import (
     AgentWorkflowControl,
     AgentWorkflowEvent,
     AgentWorkflowFile,
+    AgentWorkflowLaunchReceipt,
     AgentWorkflowMessage,
     AgentWorkflowPackage,
     AgentWorkflowProcess,
@@ -134,12 +138,14 @@ from astrbot.core.db.po import (
     AgentWorkflowToolRecovery,
     AgentWorkflowUsage,
     AgentWorkflowVersion,
+    ApiKey,
     ConversationV2,
     DashboardAccount,
     PlatformSession,
 )
 from astrbot.core.knowledge_base.parsers.util import select_parser
 from astrbot.core.platform.sources.webchat.webchat_queue_mgr import webchat_queue_mgr
+from astrbot.core.workspace import API_KEY_USERNAME_PREFIX
 from astrbot.dashboard.services.agent_team_ports import TeamPorts, build_ports_for_test
 
 if TYPE_CHECKING:
@@ -380,9 +386,38 @@ class WorkflowStartRequest(BaseModel):
     version: int = Field(ge=1)
     inputs: dict[str, JsonValue] = Field(default_factory=dict)
     source: str = Field(default="dashboard", min_length=1, max_length=512)
+    request_id: str | None = Field(
+        default=None, min_length=1, max_length=128, pattern=r"^\S+$"
+    )
     input_artifacts: list[ArtifactReference] = Field(
         default_factory=list, max_length=30
     )
+
+
+@dataclass
+class WorkflowLaunchIdentity:
+    """Authenticated source and request, before or after input normalization."""
+
+    principal: str
+    request_id: str
+    fingerprint: str | None = None
+
+
+class WorkflowLaunchConflict(RoleAssetError):
+    """A committed source request was presented with different inputs."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "Launch request ID was reused with a different payload",
+            [
+                {
+                    "path": "request_id",
+                    "code": "LAUNCH_CONFLICT",
+                    "message": "Use a new request ID",
+                }
+            ],
+            status=409,
+        )
 
 
 class WorkflowRerunRequest(BaseModel):
@@ -2744,6 +2779,159 @@ class WorkflowService:
             "ready": True,
         }
 
+    async def set_api_access(
+        self, username: str, asset_id: str, key_id: str, version: int | None
+    ) -> None:
+        """Grant an API key one fixed workflow version, or revoke its grant.
+
+        Args:
+            username: Dashboard owner changing the grant.
+            asset_id: Owned workflow asset.
+            key_id: Public identifier of the API key to authorize.
+            version: Exact published version, or None to revoke.
+
+        Raises:
+            RoleAssetError: The key, asset or version is ineligible for a grant.
+        """
+        asset = await self.get_asset(username, asset_id, version)
+        if version is not None:
+            self.chat.require_external_definition(asset["definition"])
+        async with self.db.get_db() as session:
+            await session.execute(text("BEGIN IMMEDIATE"))
+            if version is None:
+                grant = await session.get(AgentWorkflowApiAccess, (asset_id, key_id))
+                if grant is not None and grant.owner_username == username:
+                    await session.delete(grant)
+            else:
+                if await session.get(AgentAssetTombstone, ("workflow", asset_id)):
+                    raise RoleAssetError("Asset has been deleted", status=409)
+                key = (
+                    await session.execute(select(ApiKey).where(ApiKey.key_id == key_id))
+                ).scalar_one_or_none()
+                if key is None or not {WORKFLOW_API_SCOPE, "*"}.intersection(
+                    key.scopes or []
+                ):
+                    raise RoleAssetError(
+                        "API key with workflow scope not found", status=404
+                    )
+                await session.merge(
+                    AgentWorkflowApiAccess(
+                        asset_id=asset_id,
+                        key_id=key_id,
+                        owner_username=username,
+                        version=version,
+                    )
+                )
+            await session.commit()
+
+    @staticmethod
+    async def require_api_access(
+        session: AsyncSession, key_id: str, asset_id: str, version: int
+    ) -> AgentWorkflowApiAccess:
+        """Resolve the owner from an active key and its exact workflow grant.
+
+        Args:
+            session: Session used for the launch or result authorization.
+            key_id: Authenticated API key ID.
+            asset_id: Requested workflow asset.
+            version: Exact version to launch or inspect.
+
+        Returns:
+            Current grant and its owner.
+
+        Raises:
+            RoleAssetError: The key or grant is no longer authorized.
+        """
+        key = (
+            await session.execute(
+                select(ApiKey).where(
+                    ApiKey.key_id == key_id,
+                    col(ApiKey.revoked_at).is_(None),
+                    or_(
+                        col(ApiKey.expires_at).is_(None),
+                        col(ApiKey.expires_at) > datetime.now(timezone.utc),
+                    ),
+                )
+            )
+        ).scalar_one_or_none()
+        if key is None:
+            raise RoleAssetError("Invalid API key", status=401)
+        if not {WORKFLOW_API_SCOPE, "*"}.intersection(key.scopes or []):
+            raise RoleAssetError("Insufficient API key scope", status=403)
+        grant = await session.get(AgentWorkflowApiAccess, (asset_id, key_id))
+        if grant is None or grant.version != version:
+            raise RoleAssetError(
+                "Workflow version is not available to this API key", status=404
+            )
+        return grant
+
+    async def _require_api_run_access(
+        self, session: AsyncSession, run: AgentWorkflowRun
+    ) -> None:
+        """Recheck an API grant for a root or its admitted execution scopes.
+
+        Args:
+            session: Current read or execution admission transaction.
+            run: Persisted run whose root holds the original grant identity.
+
+        Raises:
+            RoleAssetError: The original key no longer has the root's grant.
+        """
+        root_id = _root_run_id(run)
+        root = (
+            run
+            if run.run_id == root_id
+            else await session.get(AgentWorkflowRun, root_id)
+        )
+        if root is None or root.owner_username != run.owner_username:
+            raise RoleAssetError("Run not found", status=404)
+        key_id = root.snapshot.get("api_key_id")
+        if key_id is not None:
+            grant = await self.require_api_access(
+                session,
+                key_id,
+                root.snapshot["asset_id"],
+                root.snapshot["asset_version"],
+            )
+            if grant.owner_username != root.owner_username:
+                raise RoleAssetError(
+                    "Workflow version is not available to this API key", status=404
+                )
+
+    async def get_api_run(self, key_id: str, run_id: str) -> dict:
+        """Project only the originating API key's authorized root result.
+
+        Args:
+            key_id: Authenticated API key ID.
+            run_id: Root identity returned by the API launch.
+
+        Returns:
+            Fixed version, status and published result after completion.
+
+        Raises:
+            RoleAssetError: The key cannot access this run.
+        """
+        async with self.db.get_db() as session:
+            await session.execute(text("BEGIN"))
+            run = await session.get(AgentWorkflowRun, run_id)
+            if (
+                run is None
+                or run.snapshot.get("root_run_id") != run_id
+                or run.snapshot.get("parent_run_id") is not None
+                or run.snapshot.get("api_key_id") != key_id
+            ):
+                raise RoleAssetError("Run not found", status=404)
+            asset_id = run.snapshot["asset_id"]
+            version = run.snapshot["asset_version"]
+            await self._require_api_run_access(session, run)
+            return {
+                "run_id": run_id,
+                "asset_id": asset_id,
+                "asset_version": version,
+                "status": run.status,
+                "result": run.result if run.status == "completed" else None,
+            }
+
     async def start_run(
         self,
         username: str,
@@ -2751,16 +2939,20 @@ class WorkflowService:
         payload: dict,
         *,
         chat: dict | None = None,
+        api_key_id: str | None = None,
         rerun_key: tuple[str, str] | None = None,
+        replay_only: bool = False,
     ) -> dict:
         """Persist all execution identities and the effective snapshot before dispatch.
 
         Args:
             username: Authenticated asset owner retaining Dashboard control.
             asset_id: Saved asset identity.
-            payload: Pinned version, text inputs and source.
+            payload: Pinned version, declared inputs, source and request ID.
             chat: Trusted platform identity verified by the explicit chat entry.
+            api_key_id: Authenticated API key identity, when invoked by the API.
             rerun_key: Completed source run and request ID for an authorized rerun.
+            replay_only: Look up a committed Dashboard request without admitting new work.
 
         Returns:
             The new independent run's persisted snapshot.
@@ -2791,10 +2983,112 @@ class WorkflowService:
                 raise RoleAssetError(
                     "Chat invocation does not match its grant", status=403
                 )
-            await self.chat.require_access(chat, username)
-        asset = await self.get_asset(username, asset_id, request.version)
+        launch = None
+        if request.request_id is not None:
+            if chat is not None:
+                caller = chat["caller"]
+                principal = [
+                    "platform",
+                    caller["platform_id"],
+                    caller["source"],
+                    caller["sender_id"],
+                ]
+            elif api_key_id is not None:
+                principal = ["api", api_key_id]
+            else:
+                principal = ["dashboard", username]
+            launch = WorkflowLaunchIdentity(
+                principal=json.dumps(principal, separators=(",", ":")),
+                request_id=request.request_id,
+            )
+        prior = None
+        previous = None
+        external = chat is not None or api_key_id is not None
+        if launch is not None or external:
+            async with self.db.get_db() as session:
+                previous = await self._find_launch(
+                    session,
+                    username,
+                    asset_id,
+                    request.version,
+                    launch,
+                    chat,
+                    api_key_id,
+                )
+                if previous is not None:
+                    prior = await session.get(AgentWorkflowRun, previous.run_id)
+                    if prior is None or prior.owner_username != username:
+                        raise RoleAssetError("Run not found", status=404)
+                    if (
+                        chat is not None
+                        and prior.snapshot.get("chat", {}).get("caller")
+                        != chat["caller"]
+                    ):
+                        raise RoleAssetError(
+                            "Launch request's original platform source authorization changed",
+                            status=403,
+                        )
+                    if (
+                        prior.snapshot["asset_id"],
+                        prior.snapshot["asset_version"],
+                    ) != (asset_id, request.version):
+                        raise WorkflowLaunchConflict()
+        if replay_only and prior is None:
+            raise RoleAssetError(
+                "Launch request has no committed run",
+                [
+                    {
+                        "path": "request_id",
+                        "code": "LAUNCH_NOT_COMMITTED",
+                        "message": "No committed run",
+                    }
+                ],
+                status=404,
+            )
+        asset = (
+            prior.snapshot
+            if prior is not None
+            else await self.get_asset(username, asset_id, request.version)
+        )
         definition = asset["definition"]
+        structured = definition.get("port_contract_version") == 2
+        input_error = None
+        if structured:
+            try:
+                request.inputs = normalize_port_inputs(
+                    definition["input_contract"], request.inputs, "inputs"
+                )
+            except RoleAssetError as exc:
+                input_error = exc
+        if launch is not None:
+            launch.fingerprint = hashlib.sha256(
+                json.dumps(
+                    [
+                        username,
+                        asset_id,
+                        chat["caller"]["profile_id"] if chat is not None else None,
+                        request.model_dump(exclude={"request_id"}),
+                    ],
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    ensure_ascii=True,
+                ).encode()
+            ).hexdigest()
+        if prior is not None:
+            assert previous is not None and launch is not None
+            if input_error is not None or previous.fingerprint != launch.fingerprint:
+                raise WorkflowLaunchConflict()
+            await self.advance_run(username, prior.run_id)
+            return await self.get_run(username, prior.run_id)
+        if input_error is not None:
+            raise input_error
+
         input_refs = [ref.model_dump() for ref in request.input_artifacts]
+        if external and input_refs:
+            raise RoleAssetError(
+                "Historical reference inputs require Dashboard authorization",
+                status=403,
+            )
         if input_refs and definition.get("kind") != "autonomous":
             raise RoleAssetError(
                 "Workflow graphs require explicit node inputs",
@@ -2808,11 +3102,8 @@ class WorkflowService:
             )
         for ref in input_refs:
             await self.read_artifact(username, **ref)
-        if definition.get("port_contract_version") == 2:
-            request.inputs = normalize_port_inputs(
-                definition["input_contract"], request.inputs, "inputs"
-            )
-            if chat is not None and any(
+        if structured:
+            if external and any(
                 definition["input_contract"]["properties"][name].get("format")
                 in REFERENCE_OUTPUTS.values()
                 for name in request.inputs
@@ -2821,35 +3112,89 @@ class WorkflowService:
                     "Historical reference inputs require Dashboard authorization",
                     status=403,
                 )
-            return await self._start_graph(
-                username, asset, request, chat=chat, rerun_key=rerun_key
-            )
-        required = definition["required_inputs"]
-        fields = [
-            {
-                "path": f"inputs.{name}",
-                "code": "REQUIRED",
-                "message": "Provide non-empty text",
-            }
-            for name in required
-            if not isinstance(request.inputs.get(name), str)
-            or not request.inputs[name].strip()
-        ] + [
-            {
-                "path": f"inputs.{name}",
-                "code": "UNKNOWN",
-                "message": "Input is not declared",
-            }
-            for name in request.inputs
-            if name not in required
-        ]
-        if fields:
-            raise RoleAssetError("Invalid run inputs", fields)
+        else:
+            required = definition["required_inputs"]
+            fields = [
+                {
+                    "path": f"inputs.{name}",
+                    "code": "REQUIRED",
+                    "message": "Provide non-empty text",
+                }
+                for name in required
+                if not isinstance(request.inputs.get(name), str)
+                or not request.inputs[name].strip()
+            ] + [
+                {
+                    "path": f"inputs.{name}",
+                    "code": "UNKNOWN",
+                    "message": "Input is not declared",
+                }
+                for name in request.inputs
+                if name not in required
+            ]
+            if fields:
+                raise RoleAssetError("Invalid run inputs", fields)
         if "tasks" in definition or definition.get("kind") == "autonomous":
             return await self._start_graph(
-                username, asset, request, chat=chat, rerun_key=rerun_key
+                username,
+                asset,
+                request,
+                chat=chat,
+                api_key_id=api_key_id,
+                launch=launch,
+                rerun_key=rerun_key,
             )
         raise RoleAssetError("Legacy workflow definitions are not supported")
+
+    async def _find_launch(
+        self,
+        session: AsyncSession,
+        username: str,
+        asset_id: str,
+        version: int,
+        launch: WorkflowLaunchIdentity | None,
+        chat: dict | None,
+        api_key_id: str | None,
+    ) -> AgentWorkflowLaunchReceipt | None:
+        """Check source authorization and the durable request before dispatch.
+
+        Args:
+            session: Session for the preliminary read or final write transaction.
+            username: Owner of the pinned workflow version.
+            asset_id: Pinned asset identity.
+            version: Exact published version.
+            launch: Candidate receipt for the verified source and request ID.
+            chat: Exact platform caller and grant, when used.
+            api_key_id: Validated API key ID, when used.
+
+        Returns:
+            Existing receipt if this request already committed.
+
+        Raises:
+            RoleAssetError: Source authorization changed or the payload conflicts.
+        """
+        if chat is not None:
+            await self.chat.require_access(chat, username, _session=session)
+        if api_key_id is not None:
+            grant = await self.require_api_access(
+                session, api_key_id, asset_id, version
+            )
+            if grant.owner_username != username:
+                raise RoleAssetError(
+                    "Workflow version is not available to this API key", status=404
+                )
+        if launch is None:
+            return None
+        receipt = await session.get(
+            AgentWorkflowLaunchReceipt, (launch.principal, launch.request_id)
+        )
+        if (
+            receipt is not None
+            and launch.fingerprint
+            and receipt.fingerprint != launch.fingerprint
+        ):
+            raise WorkflowLaunchConflict()
+        return receipt
 
     async def rerun(
         self, username: str, run_id: str, request: WorkflowRerunRequest
@@ -4479,6 +4824,10 @@ class WorkflowService:
                     raise RoleAssetError(
                         "Execution cannot admit another call", status=409
                     )
+                root = await session.get(AgentWorkflowRun, _root_run_id(row))
+                assert root is not None
+                if root.snapshot.get("api_key_id"):
+                    await self._require_api_run_access(session, root)
                 previous = await session.get(AgentWorkflowUsage, request.receipt_id)
                 if previous:
                     if (
@@ -4499,8 +4848,6 @@ class WorkflowService:
                         **previous.model_dump(mode="json", exclude={"data"}),
                         **previous.data,
                     }
-                root = await session.get(AgentWorkflowRun, _root_run_id(row))
-                assert root is not None
                 ancestors = [row]
                 current = row
                 while current.snapshot.get("parent_run_id"):
@@ -4874,6 +5221,10 @@ class WorkflowService:
                 if control.status == "cancelled":
                     raise RoleAssetError("Run was cancelled", status=409)
                 permitted = control.status == "active"
+                if permitted and (row.snapshot.get("initiator") or "").startswith(
+                    API_KEY_USERNAME_PREFIX
+                ):
+                    await self._require_api_run_access(session, row)
                 if not permitted and not row.state.get("paused_resume"):
                     row.state = {**row.state, "paused_resume": True}
                     session.add(row)
@@ -6629,6 +6980,8 @@ class WorkflowService:
         request: WorkflowStartRequest,
         *,
         chat: dict | None = None,
+        api_key_id: str | None = None,
+        launch: WorkflowLaunchIdentity | None = None,
         rerun_key: tuple[str, str] | None = None,
     ) -> dict:
         """Freeze all referenced resources before atomically starting a root scope.
@@ -6638,6 +6991,8 @@ class WorkflowService:
             asset: Saved immutable asset version.
             request: Validated launch inputs and source.
             chat: Verified platform caller, when launched from explicit chat.
+            api_key_id: Authenticated API key identity, when invoked by the API.
+            launch: Source request receipt to commit with the new root.
             rerun_key: Completed source run and request ID to commit with the new run.
 
         Returns:
@@ -6646,9 +7001,18 @@ class WorkflowService:
         Raises:
             RoleAssetError: A pinned definition, limit or resource is unavailable.
         """
-        frozen = await self._freeze_graph(username, asset, request)
-        if chat is not None:
-            self.chat.prepare(frozen, chat)
+        external = chat is not None or api_key_id is not None
+        frozen = await self._freeze_graph(username, asset, request, external=external)
+        if external:
+            self.chat.prepare(
+                frozen,
+                chat,
+                f"{API_KEY_USERNAME_PREFIX}{api_key_id}"
+                if api_key_id is not None
+                else None,
+            )
+        if api_key_id is not None:
+            frozen["api_key_id"] = api_key_id
         max_depth = frozen["definition"].get("max_depth", 3)
         for child in frozen["child_assets"].values():
             for member in [
@@ -6660,9 +7024,17 @@ class WorkflowService:
                     raise RoleAssetError("Nested team exceeds the frozen depth limit")
         async with self.db.get_db() as session:
             await session.execute(text("BEGIN IMMEDIATE"))
-            receipt = (
-                await session.get(AgentWorkflowRerun, rerun_key) if rerun_key else None
+            receipt = await self._find_launch(
+                session,
+                username,
+                asset["asset_id"],
+                request.version,
+                launch,
+                chat,
+                api_key_id,
             )
+            if rerun_key is not None:
+                receipt = await session.get(AgentWorkflowRerun, rerun_key)
             if receipt is not None:
                 run_id = receipt.run_id
             else:
@@ -6671,6 +7043,16 @@ class WorkflowService:
                 ):
                     raise RoleAssetError("Asset has been deleted", status=409)
                 run_id = await self._create_scope(session, username, frozen)
+                if launch is not None:
+                    assert launch.fingerprint is not None
+                    session.add(
+                        AgentWorkflowLaunchReceipt(
+                            principal=launch.principal,
+                            request_id=launch.request_id,
+                            fingerprint=launch.fingerprint,
+                            run_id=run_id,
+                        )
+                    )
                 if rerun_key is not None:
                     session.add(
                         AgentWorkflowRerun(
@@ -6694,6 +7076,7 @@ class WorkflowService:
         external_sources: dict[str, GraphTask] | None = None,
         feedback_inputs: dict[str, dict[str, TaskInput]] | None = None,
         trial: bool = False,
+        external: bool = False,
     ) -> dict:
         """Resolve a complete graph and its pinned child resources before any write.
 
@@ -6706,6 +7089,7 @@ class WorkflowService:
             external_sources: Trusted trial boundary contracts for this scope.
             feedback_inputs: Trusted initial feedback for a single-node trial.
             trial: Whether this is a draft trial root.
+            external: Enforce the external source boundary before resolving resources.
 
         Returns:
             Frozen scope template; member identities are assigned at scope creation.
@@ -6717,6 +7101,8 @@ class WorkflowService:
             raise RoleAssetError("Nested references exceed the supported depth limit")
         if depth_limit is not None and nesting_depth > depth_limit:
             raise RoleAssetError("Nested references exceed the declared depth limit")
+        if external:
+            self.chat.require_external_definition(asset["definition"])
         team = (
             asset["definition"]
             if asset["definition"].get("kind") == "autonomous"
@@ -6974,6 +7360,7 @@ class WorkflowService:
                     min(depth_limit, definition.max_depth)
                     if depth_limit is not None
                     else None,
+                    external=external,
                 )
             except RoleAssetError as exc:
                 raise RoleAssetError(
@@ -7010,6 +7397,7 @@ class WorkflowService:
                     )
                     if depth_limit is not None
                     else None,
+                    external=external,
                 )
             except RoleAssetError as exc:
                 raise RoleAssetError(
@@ -8580,6 +8968,31 @@ class WorkflowService:
                 if root.status not in {"running", "blocked"}:
                     break
                 previous_outcome = (root.status, root.state.get("reason"))
+                if (root.snapshot.get("initiator") or "").startswith(
+                    API_KEY_USERNAME_PREFIX
+                ):
+                    try:
+                        await self._require_api_run_access(session, root)
+                    except RoleAssetError:
+                        reason = "The initiating API key no longer has access to this workflow version."
+                        if previous_outcome != ("blocked", reason):
+                            root.status = "blocked"
+                            root.state = {**root.state, "reason": reason}
+                            session.add(root)
+                            session.add(
+                                AgentWorkflowEvent(
+                                    run_id=run_id, kind="run.blocked", data={}
+                                )
+                            )
+                        await session.commit()
+                        break
+                external_root_id = (
+                    _root_run_id(root)
+                    if (root.snapshot.get("initiator") or "").startswith(
+                        ("platform:", API_KEY_USERNAME_PREFIX)
+                    )
+                    else None
+                )
                 schedule = await session.get(AgentWorkflowSchedule, run_id)
                 assert schedule is not None
                 changed = await session.execute(
@@ -9709,6 +10122,7 @@ class WorkflowService:
                                             username,
                                             value,
                                             f"{path}.inputs.{name}",
+                                            external_root_id=external_root_id,
                                         )
                                         port_sources.setdefault(name, {})[
                                             "reference"
@@ -9802,6 +10216,7 @@ class WorkflowService:
                                                 username,
                                                 value,
                                                 f"{path}.{name}",
+                                                external_root_id=external_root_id,
                                             )
                                             port_sources.setdefault(name, {})[
                                                 "reference"
@@ -11009,7 +11424,13 @@ class WorkflowService:
         raise RoleAssetError("Artifact source is unavailable", status=409)
 
     async def _require_port_reference(
-        self, session: AsyncSession, username: str, value: dict, path: str
+        self,
+        session: AsyncSession,
+        username: str,
+        value: dict,
+        path: str,
+        *,
+        external_root_id: str | None = None,
     ) -> None:
         """Check the exact owned artifact and the file's membership in that version.
 
@@ -11018,12 +11439,20 @@ class WorkflowService:
             username: Authenticated owner of the workflow run.
             value: Already type-checked artifact or file reference.
             path: Diagnostic path of the selected input.
+            external_root_id: The sole root that an external launch may reference.
 
         Raises:
             RoleAssetError: The exact version or managed file is unavailable.
         """
         ref = {key: value[key] for key in ("artifact_id", "version")}
         try:
+            if external_root_id is not None:
+                artifact_source, _ = await self._artifact_source(session, username, ref)
+                if _root_run_id(artifact_source) != external_root_id:
+                    raise RoleAssetError(
+                        "Historical reference inputs require Dashboard authorization",
+                        status=403,
+                    )
             artifact = await self.read_artifact(username, **ref, _session=session)
         except RoleAssetError as exc:
             raise RoleAssetError(

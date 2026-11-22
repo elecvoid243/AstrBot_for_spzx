@@ -65,6 +65,10 @@
     "skill": {
       "description": "Manage Skills, archives, files, and Shipyard Neo Skill workflows.",
       "description_zh": "管理 Skills、Skill 压缩包、Skill 文件和 Shipyard Neo Skill 流程。"
+    },
+    "workflow": {
+      "description": "Start and read published workflow runs explicitly granted to this API key.",
+      "description_zh": "启动和读取显式授予此 API Key 的固定版本工作流运行。"
     }
   },
   "servers": [
@@ -8647,6 +8651,109 @@
         },
         "description": "**Required scope:** `config`"
       }
+    },
+    "/api/v1/workflows/{asset_id}/runs": {
+      "post": {
+        "tags": [
+          "Agent Teams workflows"
+        ],
+        "summary": "Start an authorized fixed workflow version",
+        "operationId": "start_public_workflow_api_v1_workflows__asset_id__runs_post",
+        "description": "The API key needs an explicit grant for this asset and exact published version. The request ID is scoped to the key. Retrying it with the same effective inputs returns the original root run.\n\n**Required scope:** `workflow`",
+        "x-astrbot-scope": "workflow",
+        "parameters": [
+          {
+            "name": "asset_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkflowApiStartRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Committed root run and restricted result projection.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkflowApiRunResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/WorkflowValidationFailure"
+          },
+          "401": {
+            "description": "Invalid or missing API key"
+          },
+          "403": {
+            "description": "Insufficient scope or Dashboard-only inputs or resources"
+          },
+          "404": {
+            "description": "Workflow version not granted to this key"
+          },
+          "409": {
+            "description": "Changed payload under the same request ID or deleted asset"
+          },
+          "422": {
+            "description": "Invalid request envelope"
+          }
+        }
+      }
+    },
+    "/api/v1/workflows/runs/{run_id}": {
+      "get": {
+        "tags": [
+          "Agent Teams workflows"
+        ],
+        "summary": "Read the root run started by this API key",
+        "operationId": "get_public_workflow_run_api_v1_workflows_runs__run_id__get",
+        "description": "Returns status and the published result when complete. Requires the original API key and a current grant for the same fixed version.\n\n**Required scope:** `workflow`",
+        "x-astrbot-scope": "workflow",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Restricted root status and result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkflowApiRunResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or missing API key"
+          },
+          "403": {
+            "description": "Insufficient scope"
+          },
+          "404": {
+            "description": "Run or fixed version not available to this key"
+          }
+        }
+      }
     }
   },
   "components": {
@@ -8675,6 +8782,16 @@
       }
     },
     "responses": {
+      "WorkflowValidationFailure": {
+        "description": "Workflow validation failed",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/WorkflowValidationError"
+            }
+          }
+        }
+      },
       "Ok": {
         "description": "Standard AstrBot success response",
         "content": {
@@ -10870,6 +10987,141 @@
           }
         },
         "additionalProperties": true
+      },
+      "WorkflowValidationError": {
+        "type": "object",
+        "required": [
+          "status",
+          "message",
+          "data"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "const": "error"
+          },
+          "message": {
+            "type": "string"
+          },
+          "data": {
+            "type": "object",
+            "required": [
+              "fields"
+            ],
+            "properties": {
+              "fields": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/WorkflowFieldDiagnostic"
+                }
+              }
+            }
+          }
+        }
+      },
+      "WorkflowFieldDiagnostic": {
+        "type": "object",
+        "required": [
+          "path",
+          "code",
+          "message"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Definition path, including task index and input alias for input port errors."
+          },
+          "code": {
+            "type": "string",
+            "description": "Port diagnostics use REQUIRED, REFERENCE, or INCOMPATIBLE."
+          },
+          "message": {
+            "type": "string"
+          }
+        }
+      },
+      "WorkflowApiStartRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "version",
+          "request_id"
+        ],
+        "properties": {
+          "version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "request_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^\\S+$",
+            "description": "Unique identity for one explicit launch by this API key."
+          },
+          "inputs": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        }
+      },
+      "WorkflowApiRunResponse": {
+        "type": "object",
+        "required": [
+          "status",
+          "data"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "const": "ok"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "data": {
+            "type": "object",
+            "required": [
+              "run_id",
+              "asset_id",
+              "asset_version",
+              "status",
+              "result"
+            ],
+            "properties": {
+              "run_id": {
+                "type": "string"
+              },
+              "asset_id": {
+                "type": "string"
+              },
+              "asset_version": {
+                "type": "integer"
+              },
+              "status": {
+                "type": "string"
+              },
+              "result": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "additionalProperties": true
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            }
+          }
+        }
       },
       "ChatAgentMessageSource": {
         "type": "object",

@@ -374,6 +374,16 @@ class AgentWorkflowChatAccess(SQLModel, table=True):
     source: str
 
 
+class AgentWorkflowApiAccess(SQLModel, table=True):
+    """Explicit permission for an API key to start one fixed asset version."""
+
+    __tablename__: str = "agent_workflow_api_access"  # pyright: ignore[reportIncompatibleVariableOverride]
+    asset_id: str = Field(primary_key=True)
+    key_id: str = Field(primary_key=True)
+    owner_username: str
+    version: int
+
+
 class AgentWorkflowChatDelivery(SQLModel, table=True):
     """Durable delivery cursor; platform messages can be retried after restart."""
 
@@ -442,6 +452,16 @@ class AgentWorkflowRunArchive(SQLModel, table=True):
 
     __tablename__: str = "agent_workflow_run_archives"
     run_id: str = Field(primary_key=True, foreign_key="agent_workflow_runs.run_id")
+
+
+class AgentWorkflowLaunchReceipt(SQLModel, table=True):
+    """Bind an authenticated source request to its atomically committed root."""
+
+    __tablename__: str = "agent_workflow_launch_receipts"  # pyright: ignore[reportIncompatibleVariableOverride]
+    principal: str = Field(primary_key=True)
+    request_id: str = Field(primary_key=True)
+    fingerprint: str
+    run_id: str
 
 
 class AgentWorkflowRerun(SQLModel, table=True):

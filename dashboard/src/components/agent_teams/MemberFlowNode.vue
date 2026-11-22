@@ -3,7 +3,7 @@
     <!-- Handles only render inside a real Vue Flow node context; hiding them
          via `interactive === false` doubles as the provider-free test seam. -->
     <Handle
-      v-if="data.interactive !== false"
+      v-if="data.interactive !== false && !data.interfaceNode"
       type="target"
       :position="Position.Left"
       class="at-node-handle"
@@ -17,7 +17,7 @@
       <Handle id="matched-false" type="source" :position="Position.Right" class="at-node-handle control-handle-false" :aria-label="data.falseLabel" />
     </template>
     <Handle
-      v-else-if="data.interactive !== false"
+      v-else-if="data.interactive !== false && !data.interfaceNode"
       type="source"
       :position="Position.Right"
       class="at-node-handle"
@@ -65,7 +65,36 @@
 
     <p v-if="data.taskPreview" class="at-node-task at-node-task-clamp">{{ data.taskPreview }}</p>
 
-    <div class="at-node-footer">
+    <div v-if="data.inputPorts?.length || data.outputPorts?.length" class="at-data-ports">
+      <div>
+        <div v-for="port in data.inputPorts" :key="port.id" class="at-data-port" :class="{ 'at-port-invalid': port.invalid }">
+          <Handle
+            v-if="data.interactive !== false"
+            :id="port.id"
+            type="target"
+            :position="Position.Left"
+            :aria-label="port.label"
+            :aria-invalid="port.invalid || undefined"
+            class="at-node-handle at-data-handle"
+          />
+          <span>{{ port.label }}</span>
+        </div>
+      </div>
+      <div>
+        <div v-for="port in data.outputPorts" :key="port.id" class="at-data-port at-data-output">
+          <Handle
+            v-if="data.interactive !== false"
+            :id="port.id"
+            type="source"
+            :position="Position.Right"
+            :aria-label="port.label"
+            class="at-node-handle at-data-handle"
+          />
+          <span>{{ port.label }}</span>
+        </div>
+      </div>
+    </div>
+    <div v-else class="at-node-footer">
       <template v-if="data.inputLabel || data.outputLabel">
         <span class="at-node-indegree">{{ data.inputLabel }}</span>
         <span class="at-node-indegree">{{ data.outputLabel }}</span>
@@ -81,6 +110,12 @@
  * (WorkflowEditor / RunMonitor) enrich their node lists with these fields;
  * everything except `memberName`/`memberColor` is optional.
  */
+export interface FlowPort {
+  id: string;
+  label: string;
+  invalid?: boolean;
+}
+
 export interface MemberFlowNodeData {
   /** Legacy default-node label (header fallback when `nodeTitle` is unset). */
   label?: string;
@@ -105,6 +140,9 @@ export interface MemberFlowNodeData {
   falseLabel?: string;
   missingMember?: boolean;
   inDegree?: number;
+  interfaceNode?: boolean;
+  inputPorts?: FlowPort[];
+  outputPorts?: FlowPort[];
   /**
    * False hides the connect handles (test seam); production always passes
    * true / leaves it undefined, which keeps the handles visible.
@@ -155,6 +193,28 @@ const cardClasses = computed(() => ({
 </script>
 
 <style scoped>
+.at-data-ports {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  margin: 8px -12px 0;
+  padding-top: 4px;
+  border-top: 1px solid var(--at-line, #d8e2eb);
+}
+
+.at-data-port {
+  position: relative;
+  padding: 3px 9px;
+  color: var(--at-ink, #263849);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.at-data-output { text-align: right; }
+.at-data-port .at-node-handle.at-data-handle { top: 50%; border-color: #087d74; background: #d7f2ef; }
+.at-port-invalid { color: rgb(var(--v-theme-error)); font-weight: 700; }
+.at-port-invalid .at-node-handle.at-data-handle { border-color: currentColor; background: currentColor; }
+
 .is-control { border-style: dashed; border-color: #7c3aed; }
 .control-handle-true { top: 32%; }
 .control-handle-false { top: 68%; }

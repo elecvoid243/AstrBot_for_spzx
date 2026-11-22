@@ -917,6 +917,10 @@ export type GraphDefinition = {
     name: string;
     default_provider_id?: (string | null);
     required_inputs?: Array<(string)>;
+    /**
+     * Enables the named text port contract. Omit for legacy bindings.
+     */
+    port_contract_version?: (1 | null);
     result_task_id?: (string | null);
     max_parallel?: number;
     max_depth?: number;
@@ -1858,6 +1862,18 @@ export type WorkflowEdge = {
     to: string;
 };
 
+export type WorkflowFieldDiagnostic = {
+    /**
+     * Definition path, including task index and input alias for input port errors.
+     */
+    path: string;
+    /**
+     * Port diagnostics use REQUIRED, REFERENCE, or INCOMPATIBLE.
+     */
+    code: string;
+    message: string;
+};
+
 export type WorkflowGraph = {
     nodes?: Array<WorkflowNode>;
     edges?: Array<WorkflowEdge>;
@@ -1929,6 +1945,14 @@ export type WorkflowStartRequest = {
      * Fixed full-artifact inputs for autonomous teams. Workflow graphs use explicitly selected node inputs.
      */
     input_artifacts?: Array<ArtifactReference>;
+};
+
+export type WorkflowValidationError = {
+    status: "error";
+    message: string;
+    data: {
+        fields: Array<WorkflowFieldDiagnostic>;
+    };
 };
 
 export type AnswerConnectionHumanChoiceApiV1ChatRemoteConnectionsConnectionIdSessionsSessionIdHumanChoicesRequestIdPostData = {
@@ -6345,6 +6369,18 @@ export type GetChatResultFileApiV1WorkflowChatRunsRunIdResultFilesFileIdGetRespo
 
 export type GetChatResultFileApiV1WorkflowChatRunsRunIdResultFilesFileIdGetError = (ErrorEnvelope | HTTPValidationError);
 
+export type PublishAgentAssetDraftData = {
+    body: DraftPublishRequest;
+    path: {
+        asset_id: string;
+        kind: 'role' | 'workflow' | 'autonomous';
+    };
+};
+
+export type PublishAgentAssetDraftResponse = (unknown);
+
+export type PublishAgentAssetDraftError = (WorkflowValidationError);
+
 export type ListAssetsApiV1WorkflowAssetsGetResponse = (unknown);
 
 export type ListAssetsApiV1WorkflowAssetsGetError = unknown;
@@ -6358,7 +6394,7 @@ export type SaveAssetApiV1WorkflowAssetsPostData = {
 
 export type SaveAssetApiV1WorkflowAssetsPostResponse = (unknown);
 
-export type SaveAssetApiV1WorkflowAssetsPostError = (HTTPValidationError);
+export type SaveAssetApiV1WorkflowAssetsPostError = (WorkflowValidationError | HTTPValidationError);
 
 export type GetAssetApiV1WorkflowAssetsAssetIdGetData = {
     path: {
@@ -6382,7 +6418,7 @@ export type SaveAssetApiV1WorkflowAssetsAssetIdPutData = {
 
 export type SaveAssetApiV1WorkflowAssetsAssetIdPutResponse = (unknown);
 
-export type SaveAssetApiV1WorkflowAssetsAssetIdPutError = (HTTPValidationError);
+export type SaveAssetApiV1WorkflowAssetsAssetIdPutError = (WorkflowValidationError | HTTPValidationError);
 
 export type DeleteWorkflowAssetData = {
     path: {
@@ -6436,7 +6472,7 @@ export type StartRunApiV1WorkflowAssetsAssetIdRunsPostData = {
 
 export type StartRunApiV1WorkflowAssetsAssetIdRunsPostResponse = (unknown);
 
-export type StartRunApiV1WorkflowAssetsAssetIdRunsPostError = (HTTPValidationError);
+export type StartRunApiV1WorkflowAssetsAssetIdRunsPostError = (WorkflowValidationError | HTTPValidationError);
 
 export type PreviewTrialApiV1WorkflowAssetsAssetIdTrialsPreviewPostData = {
     body: TrialRunRequest;
@@ -6447,7 +6483,7 @@ export type PreviewTrialApiV1WorkflowAssetsAssetIdTrialsPreviewPostData = {
 
 export type PreviewTrialApiV1WorkflowAssetsAssetIdTrialsPreviewPostResponse = (unknown);
 
-export type PreviewTrialApiV1WorkflowAssetsAssetIdTrialsPreviewPostError = (unknown);
+export type PreviewTrialApiV1WorkflowAssetsAssetIdTrialsPreviewPostError = (WorkflowValidationError | HTTPValidationError);
 
 export type StartTrialApiV1WorkflowAssetsAssetIdTrialsPostData = {
     body: TrialRunRequest;
@@ -6458,7 +6494,7 @@ export type StartTrialApiV1WorkflowAssetsAssetIdTrialsPostData = {
 
 export type StartTrialApiV1WorkflowAssetsAssetIdTrialsPostResponse = (unknown);
 
-export type StartTrialApiV1WorkflowAssetsAssetIdTrialsPostError = (unknown);
+export type StartTrialApiV1WorkflowAssetsAssetIdTrialsPostError = (WorkflowValidationError | HTTPValidationError);
 
 export type ListHumanRequestsApiV1WorkflowHumanRequestsGetResponse = (unknown);
 

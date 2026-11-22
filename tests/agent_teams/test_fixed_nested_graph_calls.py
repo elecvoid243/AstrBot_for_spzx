@@ -26,6 +26,7 @@ async def test_fixed_graph_calls_reuse_and_isolate_public_results(workflow_env):
         {
             "definition": {
                 "name": "Leaf",
+                "port_contract_version": 1,
                 "required_inputs": ["value"],
                 "result_task_id": "public",
                 "tasks": [

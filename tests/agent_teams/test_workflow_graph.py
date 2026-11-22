@@ -365,6 +365,83 @@ async def wait_graph(service, run_id):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("source_skipped", [False, True])
+async def test_text_binding_reads_only_the_selected_control_predecessor(
+    graph_script, source_skipped
+):
+    env = graph_script.env
+    agent = env.asset["definition"]["tasks"][0]
+    graph_script.outputs = {
+        "selected": {"text": "selected-text", "private": "private-field"},
+        "other": {"text": "unbound-predecessor"},
+    }
+    definition = {
+        "name": "Explicit text",
+        "port_contract_version": 1,
+        "result_task_id": "consumer",
+        "tasks": [
+            {
+                **agent,
+                "id": "selected",
+                "output_contract": {
+                    "type": "object",
+                    "properties": {
+                        "text": {"type": "string"},
+                        "private": {"type": "string"},
+                    },
+                    "required": ["text", "private"],
+                },
+            },
+            {
+                **agent,
+                "id": "other",
+                "output_contract": {
+                    "type": "object",
+                    "properties": {"text": {"type": "string"}},
+                    "required": ["text"],
+                },
+            },
+            {
+                **agent,
+                "id": "consumer",
+                "task": "Use {source}",
+                "inputs": {"source": {"task_id": "selected", "field": "text"}},
+            },
+        ],
+        "edges": [
+            {"source": "selected", "target": "consumer"},
+            {"source": "other", "target": "consumer"},
+        ],
+    }
+    if source_skipped:
+        definition["edges"].append(
+            {
+                "source": "other",
+                "target": "selected",
+                "condition": {"field": "text", "value": "does-not-match"},
+            }
+        )
+    asset = await env.service.save_asset("alice", {"definition": definition})
+    started = await env.service.start_run("alice", asset["asset_id"], {"version": 1})
+    run = await wait_graph(env.service, started["run_id"])
+    tasks = {task["node_id"]: task for task in run["tasks"]}
+    consumer = tasks["consumer"]
+    if source_skipped:
+        assert tasks["selected"]["status"] == consumer["status"] == "skipped"
+        assert [binding.node_id for binding in graph_script.starts] == ["other"]
+    else:
+        assert run["status"] == "completed", run
+        assert consumer["snapshot"]["inputs"] == {"source": "selected-text"}
+        assert consumer["snapshot"]["input_artifacts"] == [
+            tasks["selected"]["result_ref"]
+        ]
+        assert consumer["snapshot"]["selected_fields"] == {
+            tasks["selected"]["run_id"]: ["text"]
+        }
+        assert "Use selected-text" in graph_script.texts
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("reverse", [False, True])
 @pytest.mark.parametrize("source", ["workflow", "result"])
 async def test_task_aliases_resolve_from_frozen_workflow_inputs(

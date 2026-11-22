@@ -152,7 +152,7 @@
 import { computed, ref, watch } from "vue";
 import { workflowAssetsApi } from "@/api/workflowAssets";
 import { useModuleI18n } from "@/i18n/composables";
-import { extractApiError } from "@/utils/extractApiError";
+import { extractApiError, type ApiErrorField } from "@/utils/extractApiError";
 import type { TrialRunRequest } from "@/api/generated/openapi-v1";
 
 const props = defineProps<{
@@ -166,6 +166,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   "update:modelValue": [boolean];
   started: [string];
+  validationIssues: [ApiErrorField[]];
 }>();
 const { tm } = useModuleI18n("features/agent-teams");
 const mode = ref<"full" | "single" | "partial">("full");
@@ -276,6 +277,7 @@ watch(
     } catch (cause) {
       if (token === generation) {
         const failure = extractApiError(cause, tm("errors.operationFailed"));
+        emit("validationIssues", failure.fields);
         error.value = [
           failure.message,
           ...failure.fields.map((field) => `${field.path}: ${field.message}`),
@@ -379,6 +381,7 @@ async function start() {
     emit("started", result.run_id);
   } catch (cause) {
     const failure = extractApiError(cause, tm("errors.operationFailed"));
+    emit("validationIssues", failure.fields);
     error.value = [
       failure.message,
       ...failure.fields.map((field) => `${field.path}: ${field.message}`),

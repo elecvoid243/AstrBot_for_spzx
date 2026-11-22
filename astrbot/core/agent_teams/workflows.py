@@ -1324,7 +1324,13 @@ class WorkflowService:
                 if len(allowed) != len(set(allowed)):
                     raise RoleAssetError("Allowed workflow versions must be unique")
             else:
-                validate_graph(GraphDefinition.model_validate(definition))
+                graph = GraphDefinition.model_validate(definition)
+                validate_graph(
+                    graph,
+                    result_requirement="reachable"
+                    if graph.port_contract_version
+                    else "optional",
+                )
             for member in members:
                 if member.get("role_id"):
                     role_key = (member["role_id"], member["role_version"])
@@ -5680,9 +5686,6 @@ class WorkflowService:
                     for item in exc.errors()
                 ],
             ) from exc
-        validate_graph(
-            graph, result_requirement="reachable" if full_trial else "optional"
-        )
         tasks = {task.id: task for task in graph.tasks}
         if full_trial:
             if request.node_id is not None:
@@ -5716,6 +5719,11 @@ class WorkflowService:
                                 }
                             ],
                         )
+        validate_graph(
+            graph,
+            result_requirement="reachable" if full_trial else "optional",
+            text_port_scope=None if full_trial else selected,
+        )
         feedback = {}
         loops = []
         for loop in graph.loops:
@@ -5813,7 +5821,9 @@ class WorkflowService:
         ]
         selected_definition["loops"] = [loop.model_dump() for loop in loops]
         selected_inputs = [
-            name for name in graph.required_inputs if name in required_inputs
+            name
+            for name in graph.required_inputs
+            if (full_trial and graph.port_contract_version) or name in required_inputs
         ]
         if not full_trial:
             result = (
@@ -5838,7 +5848,10 @@ class WorkflowService:
             else {}
         )
         validate_graph(
-            compiled, external_sources=external, feedback_inputs=feedback_inputs
+            compiled,
+            external_sources=external,
+            feedback_inputs=feedback_inputs,
+            text_port_scope=None if full_trial else selected,
         )
         return {
             "draft": draft,
@@ -6200,9 +6213,16 @@ class WorkflowService:
             )
         validate_graph(
             definition,
-            result_requirement="optional" if team or trial else "required",
+            result_requirement=(
+                "optional"
+                if team or trial
+                else "reachable"
+                if definition.port_contract_version
+                else "required"
+            ),
             external_sources=external_sources,
             feedback_inputs=feedback_inputs,
+            text_port_scope={task.id for task in definition.tasks} if trial else None,
         )
         members = {}
         role_counts: dict[tuple, int] = {}

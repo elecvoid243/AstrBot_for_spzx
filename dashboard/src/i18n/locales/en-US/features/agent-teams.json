@@ -594,6 +594,11 @@
     "invalidField": "Unavailable field",
     "complexContract": "This contract contains optional or complex fields; it is preserved but cannot be edited with this form.",
     "invalidResult": "Select an existing result task before starting",
+    "dataLink": "Data",
+    "contractType": "Schema type",
+    "disconnectData": "Disconnect data",
+    "invalidPortConnection": "Connect compatible text ports",
+    "dataSourceUpstream": "Connect a text output from a control predecessor",
     "invalidSource": "Unavailable input source"
   },
   "resolution": {

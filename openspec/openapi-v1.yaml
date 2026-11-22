@@ -8648,6 +8648,33 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/agent_drafts/{kind}/{asset_id}/publish:
+    post:
+      tags: [Agent Teams drafts]
+      summary: Publish the given draft revision
+      operationId: publishAgentAssetDraft
+      parameters:
+      - name: kind
+        in: path
+        required: true
+        schema: {type: string, enum: [role, workflow, autonomous]}
+      - name: asset_id
+        in: path
+        required: true
+        schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DraftPublishRequest'
+      responses:
+        '200':
+          description: Published fixed version
+        '400':
+          $ref: '#/components/responses/WorkflowValidationFailure'
+        '409':
+          $ref: '#/components/responses/WorkflowValidationFailure'
   /api/v1/workflow_assets:
     get:
       tags:
@@ -8686,6 +8713,8 @@ paths:
           content:
             application/json:
               schema: {}
+        '400':
+          $ref: '#/components/responses/WorkflowValidationFailure'
         '422':
           description: Validation Error
           content:
@@ -8752,6 +8781,8 @@ paths:
           content:
             application/json:
               schema: {}
+        '400':
+          $ref: '#/components/responses/WorkflowValidationFailure'
         '422':
           description: Validation Error
           content:
@@ -8905,6 +8936,8 @@ paths:
           content:
             application/json:
               schema: {}
+        '400':
+          $ref: '#/components/responses/WorkflowValidationFailure'
         '422':
           description: Validation Error
           content:
@@ -8929,7 +8962,14 @@ paths:
               $ref: '#/components/schemas/TrialRunRequest'
       responses:
         '200': {description: Successful Response}
-        '422': {description: Validation Error}
+        '400':
+          $ref: '#/components/responses/WorkflowValidationFailure'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/workflow_assets/{asset_id}/trials:
     post:
       tags: [Agent Teams workflows]
@@ -8948,7 +8988,14 @@ paths:
               $ref: '#/components/schemas/TrialRunRequest'
       responses:
         '200': {description: Successful Response}
-        '422': {description: Validation Error}
+        '400':
+          $ref: '#/components/responses/WorkflowValidationFailure'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/workflow_human_requests:
     get:
       tags:
@@ -10242,6 +10289,12 @@ components:
       bearerFormat: JWT
 
   responses:
+    WorkflowValidationFailure:
+      description: Workflow validation failed
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/WorkflowValidationError'
     Ok:
       description: Standard AstrBot success response
       content:
@@ -13351,6 +13404,12 @@ components:
           type: array
           maxItems: 30
           title: Required Inputs
+        port_contract_version:
+          anyOf:
+          - type: integer
+            const: 1
+          - type: 'null'
+          description: Enables the named text port contract. Omit for legacy bindings.
         result_task_id:
           anyOf:
           - type: string
@@ -13579,6 +13638,32 @@ components:
           type: string
       title: TaskInput
       type: object
+    WorkflowValidationError:
+      type: object
+      required: [status, message, data]
+      properties:
+        status: {type: string, const: error}
+        message: {type: string}
+        data:
+          type: object
+          required: [fields]
+          properties:
+            fields:
+              type: array
+              items:
+                $ref: '#/components/schemas/WorkflowFieldDiagnostic'
+    WorkflowFieldDiagnostic:
+      type: object
+      required: [path, code, message]
+      properties:
+        path:
+          type: string
+          description: Definition path, including task index and input alias for input port errors.
+        code:
+          type: string
+          description: Port diagnostics use REQUIRED, REFERENCE, or INCOMPATIBLE.
+        message:
+          type: string
     WorkflowSaveRequest:
       additionalProperties: false
       description: Create an asset or append an immutable version using optimistic locking.

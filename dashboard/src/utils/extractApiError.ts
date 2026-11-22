@@ -8,11 +8,11 @@
 // Callers use this in catch blocks so users see the backend reason instead of
 // axios's generic "Request failed with status code N".
 
-/** One structured validation entry carried by the error envelope (Plan 2). */
-export interface ApiErrorField {
-  path: string;
-  message: string;
-}
+import type { WorkflowFieldDiagnostic } from "@/api/generated/openapi-v1";
+
+/** The envelope carries a code for workflow diagnostics. Other routes may omit it. */
+export type ApiErrorField = Pick<WorkflowFieldDiagnostic, "path" | "message"> &
+  Partial<Pick<WorkflowFieldDiagnostic, "code">>;
 
 export interface ExtractedApiError {
   /** Best available human-readable reason; always a non-empty string. */

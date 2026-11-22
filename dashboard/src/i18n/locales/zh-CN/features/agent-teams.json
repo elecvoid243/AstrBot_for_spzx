@@ -594,6 +594,11 @@
     "invalidField": "不可用的字段",
     "complexContract": "此契约包含可选或复杂字段，将保留原内容但无法在此表单中编辑。",
     "invalidResult": "启动前请选择有效的结果任务",
+    "dataLink": "数据",
+    "contractType": "由契约指定",
+    "disconnectData": "断开数据线",
+    "invalidPortConnection": "请连接兼容的文本端口",
+    "dataSourceUpstream": "请选择控制路径上游的文本输出",
     "invalidSource": "不可用的输入来源"
   },
   "resolution": {

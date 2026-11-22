@@ -173,6 +173,7 @@
       kind="workflow"
       :nodes="form.tasks"
       :initial-node="selectedNode"
+      @validation-issues="showIssues"
       @started="
         router.push({ path: '/agent-teams', query: { workflow_run: $event } })
       "
@@ -197,7 +198,7 @@ import {
 import { roleAssetsApi } from "@/api/roleAssets";
 import { workflowAssetsApi } from "@/api/workflowAssets";
 import type { GraphDefinition } from "@/api/generated/openapi-v1";
-import { extractApiError } from "@/utils/extractApiError";
+import { extractApiError, type ApiErrorField } from "@/utils/extractApiError";
 import DraftStatus from "@/components/agent_teams/DraftStatus.vue";
 import WorkflowGraphCanvas from "@/components/agent_teams/WorkflowGraphCanvas.vue";
 import RunLimitsForm from "@/components/agent_teams/RunLimitsForm.vue";
@@ -215,7 +216,7 @@ const invalid = ref(false);
 const usageInvalid = ref(false);
 const settingsOpen = ref(false);
 const error = ref("");
-const issues = ref<{ path: string; message: string }[]>([]);
+const issues = ref<ApiErrorField[]>([]);
 const assets = ref<any[]>([]);
 const roles = ref<any[]>([]);
 const catalog = ref<Record<string, any[]>>({
@@ -279,6 +280,7 @@ async function loadEditor() {
         name: "",
         default_provider_id: null,
         required_inputs: ["input"],
+        port_contract_version: 1,
         result_task_id: "agent",
         max_parallel: 4,
         max_depth: 3,
@@ -331,7 +333,11 @@ watch(
 watch(
   form,
   () => {
-    if (ready.value) draft.change({ definition: form.value });
+    if (ready.value) {
+      if (issues.value.length) error.value = "";
+      issues.value = [];
+      draft.change({ definition: form.value });
+    }
   },
   { deep: true },
 );
@@ -385,6 +391,18 @@ async function openTrial() {
   }
 }
 
+function showIssues(fields: ApiErrorField[]) {
+  issues.value = fields
+    .filter((field) => !field.path.includes(".AutonomousDefinition."))
+    .map((field) => ({
+      ...field,
+      path: field.path
+        .replace(/^body\./, "")
+        .replace("definition.GraphDefinition.", "definition.")
+        .replace(/^tasks\./, "definition.tasks."),
+    }));
+}
+
 async function publish() {
   if (saving.value || invalid.value || usageInvalid.value) return;
   saving.value = true;
@@ -396,14 +414,7 @@ async function publish() {
     published = true;
   } catch (cause) {
     const failure = extractApiError(cause, tm("errors.operationFailed"));
-    issues.value = failure.fields
-      .filter((field) => !field.path.includes(".AutonomousDefinition."))
-      .map((field) => ({
-        ...field,
-        path: field.path
-          .replace(/^body\./, "")
-          .replace("definition.GraphDefinition.", "definition."),
-      }));
+    showIssues(failure.fields);
     error.value = failure.message;
   } finally {
     saving.value = false;

@@ -258,6 +258,9 @@ class GraphDefinition(BaseModel):
     name: str = Field(min_length=1, max_length=128)
     default_provider_id: str | None = Field(default=None, min_length=1, max_length=128)
     required_inputs: list[str] = Field(default_factory=list, max_length=30)
+    port_contract_version: int | None = Field(
+        default=None, ge=1, le=1, exclude_if=lambda value: value is None
+    )
     result_task_id: str | None = Field(default=None, min_length=1, max_length=128)
     max_parallel: int = Field(default=4, ge=1, le=100)
     max_depth: int = Field(default=3, ge=1, le=20)
@@ -380,6 +383,7 @@ def validate_graph(
     result_requirement: Literal["optional", "required", "reachable"] = "optional",
     external_sources: dict[str, GraphTask] | None = None,
     feedback_inputs: dict[str, dict[str, TaskInput]] | None = None,
+    text_port_scope: set[str] | None = None,
 ) -> None:
     """Validate references, member identity, field rules and acyclic dependencies.
 
@@ -389,6 +393,8 @@ def validate_graph(
             must name an existing result, or must also give it a possible path.
         external_sources: Trusted boundary contracts supplied by the trial compiler.
         feedback_inputs: Trusted single-node trial feedback bindings.
+        text_port_scope: Executed tasks in a bounded trial, which may omit the
+            workflow's public result and leave other required ports unbound.
 
     Raises:
         RoleAssetError: Field-specific graph diagnostics before saving or running.
@@ -593,6 +599,19 @@ def validate_graph(
                 feedback_schema = field_schema(
                     tasks[feedback.source].output_contract, feedback.field
                 )
+                if (
+                    definition.port_contract_version == 1
+                    and not (target.control or target.team or target.workflow)
+                    and (text_port_scope is None or target.id in text_port_scope)
+                    and set(feedback_schema["type"]) != {"string"}
+                ):
+                    fields.append(
+                        {
+                            "path": f"definition.tasks.{definition.tasks.index(target)}.inputs.{feedback.input}",
+                            "code": "INCOMPATIBLE",
+                            "message": "Loop feedback for this port must provide text",
+                        }
+                    )
                 if target.control and target.control.kind == "condition":
                     kinds = set(feedback_schema["type"])
                     value = target.control.value
@@ -701,18 +720,32 @@ def validate_graph(
             )
         if not task.team and not task.control:
             members[task.member] = config
+        typed_agent = definition.port_contract_version == 1 and not (
+            task.control or task.team or task.workflow
+        )
+        check_text_ports = typed_agent and (
+            text_port_scope is None or task.id in text_port_scope
+        )
         for key, ref in task.inputs.items():
+            code = "REFERENCE"
             try:
                 feedback_ref = feedback_inputs.get(task.id, {}).get(key)
                 if feedback_ref is not None:
                     ref = feedback_ref
                 if not key.isidentifier():
                     raise ValueError("Input names must be identifiers")
+                if typed_agent and ref.input is None and ref.task_id is None:
+                    if check_text_ports:
+                        code = "REQUIRED"
+                        raise ValueError("Connect a text source to this input port")
+                    continue
                 if ref.input is not None:
                     if ref.input not in names or ref.task_id is not None:
                         raise ValueError(
                             "Reference exactly one declared workflow input"
                         )
+                    if check_text_ports and ref.field != "text":
+                        raise ValueError("Workflow inputs expose only the text field")
                 elif (
                     ref.task_id not in ancestors.get(task.id, set())
                     and ref.task_id not in external_sources
@@ -724,12 +757,17 @@ def validate_graph(
                 else:
                     if data_sources[ref.task_id].control:
                         raise ValueError("Control nodes cannot be referenced as data")
-                    field_schema(data_sources[ref.task_id].output_contract, ref.field)
+                    schema = field_schema(
+                        data_sources[ref.task_id].output_contract, ref.field
+                    )
+                    if check_text_ports and set(schema["type"]) != {"string"}:
+                        code = "INCOMPATIBLE"
+                        raise ValueError("Connect an output guaranteed to provide text")
             except ValueError as exc:
                 fields.append(
                     {
                         "path": path + f".inputs.{key}",
-                        "code": "REFERENCE",
+                        "code": code,
                         "message": str(exc),
                     }
                 )
@@ -769,11 +807,33 @@ def validate_graph(
                     }
                 )
         try:
+            missing_ports = set()
             for _, field, spec, conversion in Formatter().parse(task.task):
-                if field is not None and (
-                    field not in task.inputs or spec or conversion
+                if field is None:
+                    continue
+                if (
+                    spec
+                    or conversion
+                    or (
+                        not field.isidentifier()
+                        if typed_agent
+                        else field not in task.inputs
+                    )
                 ):
                     raise ValueError("Use only declared {input_name} placeholders")
+                if (
+                    check_text_ports
+                    and field not in task.inputs
+                    and field not in missing_ports
+                ):
+                    missing_ports.add(field)
+                    fields.append(
+                        {
+                            "path": path + f".inputs.{field}",
+                            "code": "REQUIRED",
+                            "message": "Connect a text source to this input port",
+                        }
+                    )
         except ValueError as exc:
             fields.append(
                 {"path": path + ".task", "code": "INVALID", "message": str(exc)}
@@ -783,7 +843,12 @@ def validate_graph(
         fields.append(
             {
                 "path": "definition.result_task_id",
-                "code": "REFERENCE",
+                "code": (
+                    "REQUIRED"
+                    if definition.port_contract_version == 1
+                    and not definition.result_task_id
+                    else "REFERENCE"
+                ),
                 "message": "Select an existing task as the workflow result",
             }
         )
@@ -795,7 +860,23 @@ def validate_graph(
                 "message": "Control nodes cannot be workflow results",
             }
         )
-    elif result_requirement == "reachable" and result is not None and not fields:
+    elif (
+        result is not None
+        and definition.port_contract_version == 1
+        and text_port_scope is None
+    ):
+        try:
+            if set(field_schema(result.output_contract, "text")["type"]) != {"string"}:
+                raise ValueError("The result port requires text")
+        except ValueError:
+            fields.append(
+                {
+                    "path": "definition.result_task_id",
+                    "code": "INCOMPATIBLE",
+                    "message": "Connect a task with a required text output",
+                }
+            )
+    if result_requirement == "reachable" and result is not None and not fields:
         loop_exits = {
             task_id: loop.exit_task_id
             for loop in definition.loops

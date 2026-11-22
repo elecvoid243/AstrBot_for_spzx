@@ -43,6 +43,183 @@ async def publication_client(workflow_env):
 
 
 @pytest.mark.asyncio
+async def test_text_port_draft_and_published_run_share_validation(
+    workflow_env, publication_client
+):
+    definition = {
+        **workflow_env.asset["definition"],
+        "port_contract_version": 1,
+        "required_inputs": ["topic", "other"],
+        "result_task_id": "writer",
+        "tasks": [
+            {
+                **workflow_env.asset["definition"]["tasks"][0],
+                "task": "Write about {subject}",
+                "inputs": {},
+            }
+        ],
+    }
+    created = await publication_client.post(
+        "/api/v1/agent_drafts/workflow", json={"body": {"definition": definition}}
+    )
+    assert created.status_code == 200, created.text
+    asset_id = created.json()["data"]["asset_id"]
+    draft_path = f"/api/v1/agent_drafts/workflow/{asset_id}"
+    asset_path = f"/api/v1/workflow_assets/{asset_id}"
+    preview_path = f"{asset_path}/trials/preview"
+    publish_path = f"{draft_path}/publish"
+    trial = {"kind": "workflow", "mode": "full"}
+
+    async def assert_rejected(revision, path, code):
+        for url, payload in ((preview_path, trial), (publish_path, {})):
+            response = await publication_client.post(
+                url, json={**payload, "revision": revision}
+            )
+            assert response.status_code == 400, response.text
+            assert [
+                (f["path"], f["code"]) for f in response.json()["data"]["fields"]
+            ] == [(path, code)]
+
+    await assert_rejected(1, "definition.tasks.0.inputs.subject", "REQUIRED")
+    writer = definition["tasks"][0]
+    writer["inputs"]["subject"] = {"input": "deleted"}
+    saved = await publication_client.put(
+        draft_path, json={"body": {"definition": definition}, "expected_revision": 1}
+    )
+    assert saved.status_code == 200, saved.text
+    await assert_rejected(2, "definition.tasks.0.inputs.subject", "REFERENCE")
+
+    writer["inputs"]["subject"] = {"input": "topic"}
+    writer["output_contract"] = {
+        "type": "object",
+        "properties": {"text": {"type": "boolean"}},
+        "required": ["text"],
+    }
+    saved = await publication_client.put(
+        draft_path, json={"body": {"definition": definition}, "expected_revision": 2}
+    )
+    assert saved.status_code == 200, saved.text
+    await assert_rejected(3, "definition.result_task_id", "INCOMPATIBLE")
+
+    writer["output_contract"] = None
+    saved = await publication_client.put(
+        draft_path, json={"body": {"definition": definition}, "expected_revision": 3}
+    )
+    assert saved.status_code == 200, saved.text
+    preview = await publication_client.post(preview_path, json={**trial, "revision": 4})
+    assert preview.json()["data"]["required_inputs"] == ["topic", "other"]
+    for mode in ("single", "partial"):
+        bounded = await publication_client.post(
+            preview_path,
+            json={**trial, "revision": 4, "mode": mode, "node_id": "writer"},
+        )
+        assert bounded.status_code == 200, bounded.text
+        assert bounded.json()["data"]["required_inputs"] == ["topic"]
+    tested = await publication_client.post(
+        f"{asset_path}/trials",
+        json={
+            **trial,
+            "revision": 4,
+            "inputs": {"topic": "trial-topic", "other": "unbound-trial"},
+        },
+    )
+    assert tested.status_code == 200, tested.text
+    published = await publication_client.post(publish_path, json={"revision": 4})
+    assert published.status_code == 200, published.text
+    version = published.json()["data"]
+    assert version["definition"]["port_contract_version"] == 1
+    started = await publication_client.post(
+        f"{asset_path}/runs",
+        json={"version": 1, "inputs": {"topic": "live-topic", "other": "unbound-live"}},
+    )
+    assert started.status_code == 200, started.text
+
+    for response, value in ((tested, "trial-topic"), (started, "live-topic")):
+        run = await completed_run(
+            workflow_env.service, response.json()["data"]["run_id"]
+        )
+        assert run["status"] == "completed", run
+        assert run["result_ref"] == run["tasks"][0]["result_ref"]
+        assert run["tasks"][0]["snapshot"]["inputs"] == {"subject": value}
+    assert [turn[1] for turn in workflow_env.observations[-2:]] == [
+        "Write about trial-topic",
+        "Write about live-topic",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_typed_agent_loop_feedback_uses_the_same_text_rule_in_every_scope(
+    workflow_env, publication_client
+):
+    agent = workflow_env.asset["definition"]["tasks"][0]
+    definition = {
+        "name": "Loop with typed input",
+        "port_contract_version": 1,
+        "required_inputs": ["topic"],
+        "result_task_id": "review",
+        "tasks": [
+            {**agent, "task": "{topic}", "inputs": {"topic": {"input": "topic"}}},
+            {
+                **agent,
+                "id": "review",
+                "output_contract": {
+                    "type": "object",
+                    "properties": {
+                        "text": {"type": "string"},
+                        "approved": {"type": "boolean"},
+                    },
+                    "required": ["text", "approved"],
+                },
+            },
+        ],
+        "edges": [{"source": "writer", "target": "review"}],
+        "loops": [
+            {
+                "id": "rework",
+                "name": "Rework",
+                "body": ["writer", "review"],
+                "exit_task_id": "review",
+                "exit_condition": {"field": "approved", "value": True},
+                "max_iterations": 2,
+                "feedback": [
+                    {
+                        "target": "writer",
+                        "input": "topic",
+                        "source": "review",
+                        "field": "approved",
+                    }
+                ],
+            }
+        ],
+    }
+    created = await publication_client.post(
+        "/api/v1/agent_drafts/workflow", json={"body": {"definition": definition}}
+    )
+    assert created.status_code == 200, created.text
+    asset_id = created.json()["data"]["asset_id"]
+    preview = f"/api/v1/workflow_assets/{asset_id}/trials/preview"
+    for url, payload in (
+        (f"/api/v1/agent_drafts/workflow/{asset_id}/publish", {}),
+        (preview, {"kind": "workflow", "mode": "full"}),
+        (preview, {"kind": "workflow", "mode": "single", "node_id": "writer"}),
+    ):
+        response = await publication_client.post(url, json={"revision": 1, **payload})
+        assert response.status_code == 400, response.text
+        fields = response.json()["data"]["fields"]
+        assert [(field["path"], field["code"]) for field in fields] == [
+            ("definition.tasks.0.inputs.topic", "INCOMPATIBLE")
+        ]
+
+    # Existing fixed graphs can still supply boolean feedback through a placeholder.
+    del definition["port_contract_version"]
+    legacy = await publication_client.post(
+        "/api/v1/workflow_assets", json={"definition": definition}
+    )
+    assert legacy.status_code == 200, legacy.text
+    assert "port_contract_version" not in legacy.json()["data"]["definition"]
+
+
+@pytest.mark.asyncio
 async def test_deletion_http_checks_ownership_and_hides_both_directories(workflow_env):
     env = workflow_env
     app = FastAPI()

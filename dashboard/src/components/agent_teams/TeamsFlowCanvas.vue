@@ -51,6 +51,8 @@ export interface FlowNode {
     /** Bound team member id; empty when the node is not bound yet. */
     memberId?: string;
     task?: string;
+    inputPorts?: FlowPort[];
+    outputPorts?: FlowPort[];
     [key: string]: unknown;
   };
   /** Extra CSS class rendered on the node (e.g. `at-node-missing`). */
@@ -62,12 +64,14 @@ export interface FlowEdgePayload {
   id: string;
   source: string;
   target: string;
+  style?: Record<string, string | number>;
   [key: string]: unknown;
 }
 
 import { markRaw } from 'vue';
 import type { NodeComponent, NodeTypesObject } from '@vue-flow/core';
 import MemberFlowNode from './MemberFlowNode.vue';
+import type { FlowPort } from './MemberFlowNode.vue';
 
 /**
  * Custom node renderer registry. Declared at module level and markRaw'd so
@@ -105,7 +109,7 @@ export default {};
 //   `data.status`/`data.error` (enriched by the caller), so the card owns the
 //   status ring and native error tooltip. Edges get arrow markers and animate
 //   out of running nodes.
-import { computed } from 'vue';
+import { computed, watch } from 'vue';
 import { VueFlow, MarkerType, useVueFlow, SelectionMode } from '@vue-flow/core';
 import type { Connection, EdgeMouseEvent, NodeChange } from '@vue-flow/core';
 import { useModuleI18n } from '@/i18n/composables';
@@ -153,7 +157,7 @@ const props = withDefaults(
 );
 
 const emit = defineEmits<{
-  (e: 'connect', params: { from: string; to: string; sourceHandle?: string | null }): void;
+  (e: 'connect', params: { from: string; to: string; sourceHandle?: string | null; targetHandle?: string | null }): void;
   (e: 'positionChange', positions: Record<string, { x: number; y: number }>): void;
   (e: 'selectNode', nodeId: string | null): void;
   (e: 'dropAt', memberId: string, position: { x: number; y: number }): void;
@@ -166,7 +170,15 @@ const emit = defineEmits<{
 // This component owns the <VueFlow> instance: calling useVueFlow() here
 // creates the store that the inner VueFlow component adopts, so the drop
 // handler can translate screen coordinates through the live viewport.
-const { screenToFlowCoordinate, setCenter, fitView } = useVueFlow();
+const { screenToFlowCoordinate, setCenter, fitView, updateNodeInternals } = useVueFlow();
+
+watch(
+  () => JSON.stringify(props.nodes.map(({ id, data }) => [
+    id, data.inputPorts?.map((port) => port.id), data.outputPorts?.map((port) => port.id),
+  ])),
+  () => updateNodeInternals?.(),
+  { flush: 'post' },
+);
 const { tm } = useModuleI18n('features/agent-teams');
 
 /**
@@ -231,9 +243,11 @@ const displayEdges = computed(() => {
       next.type = 'smoothstep';
       const selected = props.selectedEdgeId === edge.id;
       next.selected = selected;
-      next.style = selected
-        ? { stroke: '#287fad', strokeWidth: 2.5 }
-        : { stroke: '#a9c2d3', strokeWidth: 1.7 };
+      next.style = {
+        stroke: selected ? '#287fad' : '#a9c2d3',
+        ...edge.style,
+        strokeWidth: selected ? 2.8 : 1.7,
+      };
     }
     if (!isEdit.value && statusByNodeId.get(edge.source) === 'running') {
       next.animated = true;
@@ -246,7 +260,12 @@ const displayEdges = computed(() => {
 function onConnect(connection: Connection) {
   const { source, target } = connection ?? ({} as Connection);
   if (!source || !target || source === target) return;
-  emit('connect', { from: source, to: target, ...(connection.sourceHandle ? { sourceHandle: connection.sourceHandle } : {}) });
+  emit('connect', {
+    from: source,
+    to: target,
+    ...(connection.sourceHandle ? { sourceHandle: connection.sourceHandle } : {}),
+    ...(connection.targetHandle ? { targetHandle: connection.targetHandle } : {}),
+  });
 }
 
 /**
@@ -295,13 +314,12 @@ function onNodeClick(event: { node: { id: string } }) {
 }
 
 /**
- * Select an edge (edit mode): highlight the target edge and clear any node
- * selection so the inspector closes — the edit intent switched to the edge.
+ * Replace the node selection with the edge selection in edit mode.
  */
 function onEdgeClick(event: EdgeMouseEvent) {
   if (!isEdit.value) return;
-  emit('selectEdge', event.edge.id);
   emit('selectNode', null);
+  emit('selectEdge', event.edge.id);
 }
 
 /** Confirm and delete an edge on double-click (edit mode). */

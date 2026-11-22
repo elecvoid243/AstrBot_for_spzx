@@ -1,4 +1,4 @@
-import { flushPromises, mount } from "@vue/test-utils";
+import { flushPromises, mount, type VueWrapper } from "@vue/test-utils";
 import { describe, expect, it, vi } from "vitest";
 import { reactive } from "vue";
 import WorkflowGraphCanvas from "./WorkflowGraphCanvas.vue";
@@ -10,6 +10,94 @@ vi.mock("@/i18n/composables", () => ({
 }));
 
 describe("canvas asset editing", () => {
+  it("connects named data handles and restores their bindings on undo and reopen", async () => {
+    const stubs = {
+      TeamsFlowCanvas: {
+        name: "TeamsFlowCanvas",
+        props: ["edges"],
+        emits: ["connect", "delete-edge", "select-node"],
+        template: "<div />",
+      },
+      WorkflowLoopPanel: true,
+      RoleResourcesEditor: true,
+      "v-btn": { template: "<button><slot /></button>" },
+      "v-icon": true, "v-chip": true, "v-select": true, "v-text-field": true,
+      "v-textarea": true, "v-spacer": true, "v-alert": true, "v-switch": true,
+      "v-expansion-panels": true,
+    };
+    const definition = {
+      name: "Text ports",
+      port_contract_version: 1 as const,
+      required_inputs: ["topic", "other"],
+      tasks: [{ id: "agent", name: "Agent", member: "agent", task: "Echo {subject:}" }],
+      edges: [],
+    };
+    const wrapper = mount(WorkflowGraphCanvas, { props: { definition }, global: { stubs } });
+    try {
+      const canvas = wrapper.getComponent({ name: "TeamsFlowCanvas" });
+      const saved = () => wrapper.emitted("update:definition")!.at(-1)![0];
+      expect(canvas.props("edges")).toEqual([]);
+      canvas.vm.$emit("connect", {
+        from: "__input", to: "agent", sourceHandle: "data-out:topic", targetHandle: "data-in:subject",
+      });
+      canvas.vm.$emit("connect", {
+        from: "agent", to: "__output", sourceHandle: "data-out:text", targetHandle: "data-in:text",
+      });
+      await flushPromises();
+      expect(saved()).toMatchObject({
+        tasks: [{ inputs: { subject: { input: "topic" } } }],
+        result_task_id: "agent", edges: [],
+      });
+      expect(canvas.props("edges")).toMatchObject([
+        { sourceHandle: "data-out:topic", targetHandle: "data-in:subject" },
+        { sourceHandle: "data-out:text", targetHandle: "data-in:text" },
+      ]);
+
+      await wrapper.findAll("button").find((button) => button.text() === "graph.undo")!.trigger("click");
+      expect(canvas.props("edges")).toHaveLength(1);
+      await wrapper.findAll("button").find((button) => button.text() === "graph.redo")!.trigger("click");
+      const reopenedDefinition = JSON.parse(JSON.stringify(saved()));
+      reopenedDefinition.tasks[0].output_contract = {
+        allOf: [
+          { type: "object", properties: { text: { type: "string" } }, required: ["text"] },
+        ],
+      };
+      const reopened = mount(WorkflowGraphCanvas, {
+        props: { definition: reopenedDefinition },
+        global: { stubs },
+      });
+      try {
+        const restored = reopened.getComponent({ name: "TeamsFlowCanvas" });
+        expect(restored.props("edges")).toEqual(canvas.props("edges"));
+        restored.vm.$emit("select-node", "__input");
+        await flushPromises();
+        const workflowInputs = reopened.getComponent(
+          '[data-testid="workflow-input-names"]',
+        ) as VueWrapper;
+        workflowInputs.vm.$emit("update:modelValue", "");
+        await flushPromises();
+        expect(restored.props("edges")[0]).toMatchObject({ sourceHandle: "data-out:topic" });
+        workflowInputs.vm.$emit("update:modelValue", "renamed, other");
+        workflowInputs.vm.$emit("update:focused", false);
+        await flushPromises();
+        expect(restored.props("edges")[0]).toMatchObject({ sourceHandle: "data-out:renamed" });
+        expect(reopened.emitted("update:definition")!.at(-1)![0]).toMatchObject({
+          tasks: [{ inputs: { subject: { input: "renamed" } } }],
+        });
+        restored.vm.$emit("delete-edge", restored.props("edges")[0].id);
+        await flushPromises();
+        expect(restored.props("edges")).toHaveLength(1);
+        expect(reopened.emitted("update:definition")!.at(-1)![0]).toMatchObject({
+          tasks: [{ inputs: { subject: {} } }], result_task_id: "agent", edges: [],
+        });
+      } finally {
+        reopened.unmount();
+      }
+    } finally {
+      wrapper.unmount();
+    }
+  });
+
   it("adds a directly configured Agent without any role templates", async () => {
     const wrapper = mount(WorkflowGraphCanvas, {
       props: { definition: { name: "Direct", tasks: [], edges: [], required_inputs: [] }, roles: [] },

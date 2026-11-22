@@ -528,6 +528,13 @@ async def run_worker(
                 None after recording any matching kill boundary on the session.
             """
             for row in [*session.new, *session.dirty]:
+                if (
+                    scenario == "dispatch_commit"
+                    and isinstance(row, AgentWorkflowEvent)
+                    and row.kind == "task.running"
+                    and row.data["node_id"] == "deliver"
+                ):
+                    session.info["kill_boundary"] = row.run_id
                 if isinstance(row, AgentWorkflowUsage) and row.data["kind"] == "model" and ((scenario == "usage_reserved" and row.data["quality"] == "in_flight") or (scenario == "usage_reported" and row.data["quality"] == "reported")):
                     session.info["kill_boundary"] = row.run_id
                 if scenario.startswith("overflow") and not scenario.endswith("request") and isinstance(row, AgentWorkflowCheckpoint) and row.phase == ("tools_applied" if scenario.endswith("applied") else "tool_result") and row.data["response"]["id"] == "plan-original":
@@ -583,6 +590,19 @@ async def run_worker(
             "installation": {"profile_id": "default"},
         })
         definition = {"name": "Original report", "result_task_id": "write", "tasks": [{"id": "write", "name": "Writer", "member": "writer", "role_id": role["role_id"], "role_version": 1, "task": "Read evidence and submit a report."}], "edges": []}
+        if scenario == "dispatch_commit":
+            definition["required_inputs"] = ["topic"]
+            definition["result_task_id"] = "deliver"
+            definition["tasks"].append(
+                {
+                    **definition["tasks"][0],
+                    "id": "deliver",
+                    "name": "Deliver",
+                    "task": "Finish the report for {topic}.",
+                    "inputs": {"topic": {"input": "topic"}},
+                }
+            )
+            definition["edges"] = [{"source": "write", "target": "deliver"}]
         if limits is not None:
             definition["limits"] = limits
         if scenario in {"usage_reservation_failure", "usage_report_failure"}:
@@ -779,9 +799,51 @@ async def run_worker(
             await serve(app, config)
             return
         if action == "start":
-            run = await service.start_run("alice", asset["asset_id"], {"version": 1})
+            launch = {"version": 1}
+            if scenario == "dispatch_commit":
+                launch["inputs"] = {"topic": "Frozen field notes"}
+            run = await service.start_run("alice", asset["asset_id"], launch)
         else:
             run_id = json.loads((folder / "kill-ready.json").read_text(encoding="utf-8"))["run_id"]
+            if scenario == "dispatch_commit":
+                from astrbot.core.agent_teams.history import RunHistoryService
+
+                history = RunHistoryService(db, service)
+                [record] = (await history.list_records("alice"))["records"]
+                root_id = record["source"]["id"]
+                previous = await service.get_run("alice", root_id)
+                assert run_id == previous["tasks"][1]["run_id"]
+                await service.boot_sweep()
+                deadline = time.monotonic() + 15
+                while time.monotonic() < deadline:
+                    current = await service.get_run("alice", root_id)
+                    if current["status"] != "running":
+                        break
+                    await asyncio.sleep(0.02)
+                else:
+                    raise TimeoutError("Startup did not dispatch the committed task")
+                await asyncio.gather(
+                    service.sweep_pending_dispatches(),
+                    service.advance_run("alice", root_id),
+                    service.advance_run("alice", root_id),
+                )
+                [reopened] = (await history.list_records("alice"))["records"]
+                evidence = {
+                    "before": previous,
+                    "after": current,
+                    "reopened": {
+                        "source": reopened["source"],
+                        "status": reopened["status"],
+                    },
+                    "result": await service.get_result("alice", root_id),
+                    "predecessor_result": await service.get_result(
+                        "alice", previous["tasks"][0]["run_id"]
+                    ),
+                }
+                (folder / "recovered.json").write_text(
+                    json.dumps(evidence), encoding="utf-8"
+                )
+                return
             before = await service.get_run("alice", run_id)
             if scenario in {"usage_parallel", "usage_compression", "usage_shared_wait"} or scenario.startswith("usage_native_"):
                 await service.boot_sweep()

@@ -164,6 +164,8 @@ async def test_cleanup_failure_preserves_workflow_outcome(
     assert replayed["result_ref"] == finished["result_ref"]
     assert replayed["tasks"] == finished["tasks"]
     assert started == [task["node_id"] for task in executed]
+    if outcome == "failed":
+        assert sum(event["kind"] == "run.blocked" for event in replayed["events"]) == 1
 
     fail_execution = False
     release.set()

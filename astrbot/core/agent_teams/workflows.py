@@ -33,6 +33,7 @@ from sqlalchemy import select as sa_select
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 from sqlmodel import col, select, text, update
 
 from astrbot.core import logger
@@ -571,6 +572,7 @@ class WorkflowService:
         )
         self._tasks: set[asyncio.Task] = set()
         self._executions: dict[str, asyncio.Task] = {}
+        self._dispatching: dict[str, asyncio.Task] = {}
         self._closing = False
         from astrbot.core.agent_teams.chat import WorkflowChat
 
@@ -7668,6 +7670,7 @@ class WorkflowService:
                     break
                 if root.status not in {"running", "blocked"}:
                     break
+                previous_outcome = (root.status, root.state.get("reason"))
                 schedule = await session.get(AgentWorkflowSchedule, run_id)
                 assert schedule is not None
                 changed = await session.execute(
@@ -8521,7 +8524,6 @@ class WorkflowService:
                                 occupied.add(member_id)
                                 role_active[role_id] = role_active.get(role_id, 0) + 1
                                 active.append(row)
-                                claimed.append(row.run_id)
                         session.add(row)
                         session.add(
                             AgentWorkflowEvent(
@@ -8637,21 +8639,28 @@ class WorkflowService:
                             else result_id
                         ].result
                     session.add(root)
-                    session.add(
-                        AgentWorkflowEvent(
-                            run_id=run_id, kind="run." + root.status, data={}
+                    if (root.status, root.state["reason"]) != previous_outcome:
+                        session.add(
+                            AgentWorkflowEvent(
+                                run_id=run_id, kind="run." + root.status, data={}
+                            )
                         )
-                    )
                 await session.commit()
+                # A previous notification may have stopped after committing a
+                # claim. Dispatch its frozen snapshot without admitting it again.
+                claimed = [
+                    row.run_id
+                    for row in rows.values()
+                    if row is not None
+                    and row.status == "running"
+                    and "member" in row.snapshot
+                    and not row.state.get("execution_id")
+                ]
                 break
         else:
             raise RoleAssetError("Scheduling contention; notify again", status=409)
         for identity in claimed:
-            task = asyncio.create_task(
-                self._execute_graph_task(username, run_id, identity)
-            )
-            self._tasks.add(task)
-            task.add_done_callback(self._tasks.discard)
+            self._dispatch_graph_task(username, run_id, identity)
         for identity in dict.fromkeys(child_scopes):
             child = await self.advance_run(username, identity, wake_parent=False)
             if child["status"] in {"completed", "blocked"}:
@@ -9164,8 +9173,45 @@ class WorkflowService:
             await self.answer_todo(owner, run_id, todo_id, {}, timed_out=True)
         return len(rows)
 
-    async def run_human_deadlines(self) -> None:
-        """Check persisted deadlines during the core lifetime, even without viewers.
+    async def sweep_pending_dispatches(self) -> None:
+        """Dispatch persisted claims that no executor has acquired.
+
+        The executor rechecks root control and ownership under the write lock.
+        """
+        scope = aliased(AgentWorkflowRun)
+        async with self.db.get_db() as session:
+            candidates = (
+                await session.execute(
+                    select(
+                        AgentWorkflowRun.owner_username,
+                        scope.run_id,
+                        AgentWorkflowRun.run_id,
+                    )
+                    .join(
+                        scope,
+                        col(scope.run_id)
+                        == AgentWorkflowRun.snapshot["parent_run_id"].as_string(),
+                    )
+                    .join(
+                        AgentWorkflowControl,
+                        col(AgentWorkflowControl.run_id)
+                        == AgentWorkflowRun.snapshot["root_run_id"].as_string(),
+                    )
+                    .where(
+                        col(AgentWorkflowRun.status) == "running",
+                        AgentWorkflowRun.snapshot["engine"].as_string()
+                        == "single_task_v2",
+                        AgentWorkflowRun.state["execution_id"].as_string().is_(None),
+                        col(scope.status).in_(["running", "blocked"]),
+                        AgentWorkflowControl.status == "active",
+                    )
+                )
+            ).all()
+        for username, scope_id, task_id in candidates:
+            self._dispatch_graph_task(username, scope_id, task_id)
+
+    async def run_maintenance(self) -> None:
+        """Check persisted dispatches and human deadlines even without viewers.
 
         Returns:
             None when the workflow service is closing.
@@ -9176,12 +9222,52 @@ class WorkflowService:
         try:
             while not self._closing:
                 try:
+                    await self.sweep_pending_dispatches()
+                except Exception:
+                    logger.exception("Failed to scan committed workflow dispatches")
+                try:
                     await self.sweep_human_deadlines()
                 except Exception:
                     logger.exception("Failed to process persisted human deadlines")
                 await asyncio.sleep(1)
         finally:
             self._tasks.discard(task)
+
+    def _dispatch_graph_task(
+        self,
+        username: str,
+        run_id: str,
+        task_run_id: str,
+        execution_id: str | None = None,
+    ) -> None:
+        """Queue a graph task and coalesce local notifications for unowned claims.
+
+        Args:
+            username: Owner of the frozen run.
+            run_id: Graph scope that owns scheduling for the task.
+            task_run_id: Persisted task to dispatch.
+            execution_id: Durable execution owner already acquired by recovery.
+        """
+        if self._closing or (execution_id is None and task_run_id in self._dispatching):
+            return
+
+        def forget_dispatch(task: asyncio.Task) -> None:
+            """Release local bookkeeping when the dispatch task ends.
+
+            Args:
+                task: Dispatch task that ended or was cancelled before starting.
+            """
+            self._tasks.discard(task)
+            if self._dispatching.get(task_run_id) is task:
+                del self._dispatching[task_run_id]
+
+        task = asyncio.create_task(
+            self._execute_graph_task(username, run_id, task_run_id, execution_id)
+        )
+        if execution_id is None:
+            self._dispatching[task_run_id] = task
+        self._tasks.add(task)
+        task.add_done_callback(forget_dispatch)
 
     async def _execute_graph_task(
         self,
@@ -10091,13 +10177,12 @@ class WorkflowService:
                 )
                 await session.commit()
                 parent_id = row.snapshot.get("parent_run_id")
-                task = asyncio.create_task(
-                    self._execute_graph_task(username, parent_id, run_id)
-                    if parent_id
-                    else self._execute(username, run_id)
-                )
-                self._tasks.add(task)
-                task.add_done_callback(self._tasks.discard)
+                if parent_id:
+                    self._dispatch_graph_task(username, parent_id, run_id)
+                else:
+                    task = asyncio.create_task(self._execute(username, run_id))
+                    self._tasks.add(task)
+                    task.add_done_callback(self._tasks.discard)
                 return await self.get_run(username, run_id)
             if checkpoint is None or checkpoint.attempt_id != row.state["attempt_id"]:
                 raise RoleAssetError("No resumable execution checkpoint", status=409)
@@ -10372,13 +10457,12 @@ class WorkflowService:
                 await self.advance_run(username, parent_id)
             return finished
         parent_id = run["snapshot"].get("parent_run_id")
-        task = asyncio.create_task(
-            self._execute_graph_task(username, parent_id, run_id, execution_id)
-            if parent_id
-            else self._execute(username, run_id, execution_id)
-        )
-        self._tasks.add(task)
-        task.add_done_callback(self._tasks.discard)
+        if parent_id:
+            self._dispatch_graph_task(username, parent_id, run_id, execution_id)
+        else:
+            task = asyncio.create_task(self._execute(username, run_id, execution_id))
+            self._tasks.add(task)
+            task.add_done_callback(self._tasks.discard)
         return await self.get_run(username, run_id)
 
     async def resolve_tool_call(
@@ -10826,6 +10910,8 @@ class WorkflowService:
     async def boot_sweep(self) -> None:
         """Interrupt abandoned executions and resume already accepted decisions.
 
+        Startup must be exclusive because this sweep fences previous owners.
+
         Returns:
             None. Paused or uncertain calls remain stopped; accepted continuations
             use the original attempt when whole-run admission permits execution.
@@ -10908,6 +10994,9 @@ class WorkflowService:
                     and checkpoint is None
                     and run.pending_result is None
                 ):
+                    if run.status == "running" and not run.state.get("execution_id"):
+                        # A committed claim without an owner is still dispatchable.
+                        continue
                     # The built-in executor saves its first request before any
                     # external model/tool call. Ownership alone is not work;
                     # fence it and reclaim the same frozen attempt if no request
@@ -11080,7 +11169,11 @@ class WorkflowService:
             row = await session.get(AgentWorkflowRun, run_id)
             assert row is not None
             control = await self._lock_control(session, row)
-            if control.status == "cancelled":
+            if control.status == "cancelled" or (
+                control.status == "paused"
+                and execution_id is None
+                and snapshot.get("parent_run_id")
+            ):
                 return
             await session.refresh(row)
             if row.state.get("attempt_id") != state.get("attempt_id"):

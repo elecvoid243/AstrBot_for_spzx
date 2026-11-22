@@ -24,16 +24,17 @@ import pytest
         "control_capacity",
         "control_mixed",
         "control_shutdown",
+        "dispatch_commit",
     ],
 )
 def test_control_decision_survives_process_termination(
     tmp_path, scenario, preview=False
 ):
-    """Kill and rebuild a pipeline after a public whole-run or retry decision.
+    """Kill and rebuild a pipeline after a committed control or dispatch decision.
 
     Args:
         tmp_path: Isolated SQLite and worker communication directory.
-        scenario: Pause during a tool, cancellation, or committed retry before dispatch.
+        scenario: Control or scheduling boundary where the worker stops.
         preview: Keep the external service and actual dashboard available for UI QA.
     """
     effects = []
@@ -78,11 +79,17 @@ def test_control_decision_survives_process_termination(
                 elif "submit-original" in context:
                     response = {"role": "assistant", "completion_text": "Submitted."}
                 elif "evidence-original" in context:
+                    result = (
+                        "Verified final report"
+                        if scenario == "dispatch_commit"
+                        and "Finish the report for Frozen field notes." in context
+                        else "Verified report"
+                    )
                     response = {
                         "role": "tool",
                         "id": "submission-original",
                         "tools_call_name": ["submit_task_result"],
-                        "tools_call_args": [{"text": "Verified report"}],
+                        "tools_call_args": [{"text": result}],
                         "tools_call_ids": ["submit-original"],
                         "usage": {"input_other": 11, "output": 5},
                     }
@@ -154,6 +161,8 @@ def test_control_decision_survives_process_termination(
                     worker.kill()
                     worker.wait(timeout=10)
         effects_before = len(effects)
+        if scenario == "dispatch_commit":
+            assert len(requests) == 3
         retry_allowed = True
         assert effects_before == (0 if scenario in {"control_request", "control_capacity"} else 2 if scenario == "control_mixed" else 1)
         if preview:
@@ -211,7 +220,40 @@ def test_control_decision_survives_process_termination(
         evidence = json.loads((tmp_path / "recovered.json").read_text(encoding="utf-8"))
         before, after = evidence["before"], evidence["after"]
         assert after["snapshot"] == before["snapshot"]
-        if scenario == "control_mixed":
+        if scenario == "dispatch_commit":
+            assert (
+                before["run_id"]
+                == after["run_id"]
+                == evidence["reopened"]["source"]["id"]
+            )
+            assert before["status"] == "running"
+            assert after["status"] == evidence["reopened"]["status"] == "completed"
+            predecessor, claimed = before["tasks"]
+            saved, delivered = after["tasks"]
+            assert predecessor == saved
+            assert saved["status"] == "completed"
+            assert claimed["status"] == "running"
+            assert claimed["state"].get("execution_id") is None
+            assert delivered["status"] == "completed"
+            assert delivered["run_id"] == claimed["run_id"]
+            assert delivered["state"]["attempt_id"] == claimed["state"]["attempt_id"]
+            assert delivered["snapshot"] == claimed["snapshot"]
+            assert delivered["snapshot"]["inputs"] == {"topic": "Frozen field notes"}
+            assert evidence["predecessor_result"] == {"text": "Verified report"}
+            assert evidence["result"] == {"text": "Verified final report"}
+            assert after["result_ref"] == delivered["result_ref"]
+            assert [
+                event["kind"]
+                for event in delivered["events"]
+                if event["kind"] in {"task.running", "result.accepted", "task.completed"}
+            ] == ["task.running", "result.accepted", "task.completed"]
+            assert len(effects) == 2
+            assert len(requests) == 6
+            assert all(
+                "Finish the report for Frozen field notes." in json.dumps(request)
+                for request in requests[3:]
+            )
+        elif scenario == "control_mixed":
             assert after["control"]["status"] == "active"
             assert after["tasks"][0]["status"] == "interrupted"
             assert after["tasks"][0]["tool_calls"][0]["status"] == "unknown"

@@ -10,6 +10,68 @@ vi.mock("@/i18n/composables", () => ({
 }));
 
 describe("canvas asset editing", () => {
+  it("keeps clipboard task identity, shared members and detached gates consistent", async () => {
+    const wrapper = mount(WorkflowGraphCanvas, {
+      props: {
+        definition: {
+          name: "Clipboard",
+          tasks: [
+            { id: "gate", name: "Gate" },
+            { id: "a", name: "A", member: "shared", inputs: { external: { task_id: "gate" } } },
+            { id: "b", name: "B", member: "shared", inputs: { text: { task_id: "a", field: "text" } } },
+          ],
+          result_task_id: "b",
+          edges: [{ source: "gate", target: "a" }, { source: "a", target: "b" }],
+        },
+      },
+      global: {
+        stubs: {
+          TeamsFlowCanvas: {
+            name: "TeamsFlowCanvas",
+            emits: ["select-node", "selection-change"],
+            template: "<div />",
+          },
+          WorkflowLoopPanel: true,
+          "v-btn": true, "v-alert": true, "v-text-field": true, "v-select": true,
+          "v-chip": true, "v-spacer": true, "v-checkbox": true, "v-icon": true,
+        },
+      },
+    });
+    try {
+      const canvas = wrapper.getComponent({ name: "TeamsFlowCanvas" });
+      const stage = wrapper.get(".graph-stage");
+      const graph = () => wrapper.emitted("update:definition")!.at(-1)![0] as {
+        tasks: { id: string; member?: string; inputs?: Record<string, { task_id: string }> }[];
+        edges: { source: string; target: string }[];
+        result_task_id: string;
+      };
+      canvas.vm.$emit("selection-change", ["a", "b"]);
+      await stage.trigger("keydown", { key: "c", ctrlKey: true });
+      await stage.trigger("keydown", { key: "v", ctrlKey: true });
+      const [, , , a, b] = graph().tasks;
+      expect(a.member).toBe(b.member);
+      expect(a.member).not.toBe("shared");
+      expect(a.inputs?.external.task_id).toBe("__detached:gate");
+      expect(b.inputs?.text.task_id).toBe(a.id);
+      expect(graph().edges.slice(-2)).toEqual([
+        { source: "__detached:gate", target: a.id },
+        { source: a.id, target: b.id },
+      ]);
+      expect(graph().result_task_id).toBe("b");
+      await stage.trigger("keydown", { key: "z", ctrlKey: true });
+      expect(graph().tasks).toHaveLength(3);
+      await stage.trigger("keydown", { key: "Z", ctrlKey: true, shiftKey: true });
+      expect(graph().tasks).toHaveLength(5);
+      await stage.trigger("keydown", { key: "z", ctrlKey: true });
+      canvas.vm.$emit("select-node", "a");
+      canvas.vm.$emit("selection-change", ["b"]);
+      await stage.trigger("keydown", { key: "Delete" });
+      expect(graph().tasks.map(({ id }) => id)).toEqual(["gate", "a"]);
+    } finally {
+      wrapper.unmount();
+    }
+  });
+
   it("keeps V2 control entry, boolean data, and result links independent", async () => {
     const wrapper = mount(WorkflowGraphCanvas, {
       props: {

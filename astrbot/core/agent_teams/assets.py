@@ -1308,9 +1308,15 @@ class RoleAssetService:
         return saved
 
     async def rebase_draft(
-        self, username: str, kind: str, asset_id: str, revision: int, version: int
+        self,
+        username: str,
+        kind: str,
+        asset_id: str,
+        revision: int,
+        version: int,
+        restore_version: int | None = None,
     ) -> dict:
-        """Explicitly move a saved draft onto a reviewed published version.
+        """Move a draft onto a reviewed version and optionally restore its body.
 
         Args:
             username: Authenticated owner.
@@ -1318,15 +1324,18 @@ class RoleAssetService:
             asset_id: Stable asset identity.
             revision: Expected current draft revision.
             version: Latest published version reviewed by the caller.
+            restore_version: Optional fixed workflow version to copy into the draft.
 
         Returns:
-            The updated draft without changing its body.
+            The updated draft.
 
         Raises:
             RoleAssetError: The draft or reviewed published version changed.
         """
         if kind not in {"role", "workflow", "autonomous"}:
             raise RoleAssetError("Invalid draft kind")
+        if restore_version is not None and kind != "workflow":
+            raise RoleAssetError("Only workflow drafts can restore a fixed version")
         model = AgentRoleVersion if kind == "role" else AgentWorkflowVersion
         identity = model.role_id if kind == "role" else model.asset_id
         matching = exists().where(
@@ -1347,11 +1356,51 @@ class RoleAssetService:
             ):
                 raise RoleAssetError("Asset has been deleted", status=409)
             draft = await session.get(AgentAssetDraft, (kind, asset_id))
+            values: dict[str, int | dict] = {
+                "base_version": version,
+                "revision": revision + 1,
+            }
+            restored = None
+            if restore_version is not None:
+                source = await session.get(
+                    AgentWorkflowVersion, (asset_id, restore_version)
+                )
+                if (
+                    not source
+                    or source.owner_username != username
+                    or (
+                        isinstance(source.definition, dict)
+                        and source.definition.get("kind") == "autonomous"
+                    )
+                ):
+                    raise RoleAssetError("Workflow version not found", status=404)
+                from astrbot.core.agent_teams.graph import GraphDefinition
+
+                try:
+                    GraphDefinition.model_validate(source.definition)
+                except ValidationError as exc:
+                    raise RoleAssetError(
+                        "Stored workflow format is unsupported; recreate it in the current editor",
+                        [
+                            {
+                                "path": "definition."
+                                + ".".join(map(str, issue["loc"])),
+                                "code": "UNSUPPORTED_FORMAT",
+                                "message": issue["msg"],
+                            }
+                            for issue in exc.errors()
+                        ],
+                        status=409,
+                    ) from exc
+                restored = source.definition
+                values["body"] = {"definition": restored}
             if kind != "role" and draft and draft.owner_username == username:
                 target = await session.get(AgentWorkflowVersion, (asset_id, version))
                 if target and target.owner_username == username:
                     await self.check_active_references(
-                        session, draft.body.get("definition", {}), target.definition
+                        session,
+                        values.get("body", draft.body).get("definition", {}),
+                        restored if restored is not None else target.definition,
                     )
             result = await session.execute(
                 update(AgentAssetDraft)
@@ -1363,7 +1412,7 @@ class RoleAssetService:
                     matching,
                     ~newer,
                 )
-                .values(base_version=version, revision=revision + 1)
+                .values(**values)
                 .returning(AgentAssetDraft)
             )
             row = result.scalars().first()

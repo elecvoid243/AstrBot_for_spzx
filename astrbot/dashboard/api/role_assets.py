@@ -55,6 +55,7 @@ class DraftRebaseRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     expected_revision: int = Field(ge=1)
     published_version: int = Field(ge=1)
+    restore_version: int | None = Field(default=None, ge=1)
 
 
 DraftKind = Literal["role", "workflow", "autonomous"]
@@ -137,6 +138,7 @@ async def rebase_draft(
                 asset_id,
                 payload.expected_revision,
                 payload.published_version,
+                payload.restore_version,
             )
         )
     except RoleAssetError as exc:

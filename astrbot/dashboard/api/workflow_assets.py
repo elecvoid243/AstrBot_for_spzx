@@ -9,10 +9,12 @@ from fastapi import APIRouter, Depends, Query, Request, Security
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.security import APIKeyHeader
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from starlette.background import BackgroundTask
 
 from astrbot.core.agent_teams.assets import RoleAssetError
 from astrbot.core.agent_teams.chat import ChatAccessRequest, ChatSourceAccessError
+from astrbot.core.agent_teams.graph import GraphDefinition, validate_graph
 from astrbot.core.agent_teams.history import RunHistoryService
 from astrbot.core.agent_teams.workflows import (
     ArtifactRevisionRequest,
@@ -27,6 +29,7 @@ from astrbot.core.agent_teams.workflows import (
     WorkflowService,
     WorkflowStartRequest,
 )
+from astrbot.core.provider.provider import Provider
 from astrbot.dashboard.responses import error, ok
 
 from .auth import require_dashboard_user
@@ -439,6 +442,142 @@ async def list_assets(
     service: WorkflowService = Depends(get_workflow_service),
 ):
     return ok(await service.list_assets(username))
+
+
+class WorkflowDraftGenerationRequest(BaseModel):
+    """A workflow description and the locally configured model to answer it."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    description: str = Field(min_length=1, max_length=4000)
+    provider_id: str = Field(min_length=1, max_length=128)
+
+
+class GeneratedWorkflowStep(BaseModel):
+    """One reviewable Agent task proposed by the model."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    name: str = Field(min_length=1, max_length=128)
+    instructions: str = Field(min_length=1, max_length=6000)
+
+
+class GeneratedWorkflowPlan(BaseModel):
+    """A bounded sequence of tasks over a user-supplied text input."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    name: str = Field(min_length=1, max_length=128)
+    steps: list[GeneratedWorkflowStep] = Field(min_length=1, max_length=8)
+
+
+@router.post("/workflow_assets/generate_draft")
+async def generate_workflow_draft(
+    payload: WorkflowDraftGenerationRequest,
+    _username: str = Depends(require_dashboard_user),
+    service: WorkflowService = Depends(get_workflow_service),
+):
+    """Return an editable graph proposal without creating an asset or a run.
+
+    Args:
+        payload: Description and explicit local model selection.
+        _username: Authenticated Dashboard user.
+        service: Provider of the live workflow resource catalog.
+
+    Returns:
+        The generated native definition or a structured request error.
+    """
+    core = service.roles.core_lifecycle
+    if not core:
+        return JSONResponse(error("Choose an available model"), status_code=422)
+    role = {
+        "name": "Workflow draft",
+        "prompt": "Follow the task instructions and submit the result.",
+        "tools": [],
+        "skills": [],
+        "knowledge_bases": [],
+        "model_capabilities": ["tool_use"],
+    }
+    installation = {"profile_id": "default"}
+    resolved = await service.roles.preview_role(
+        {
+            "definition": {**role, "provider_id": payload.provider_id},
+            "installation": installation,
+        }
+    )
+    if resolved["issues"] or resolved["effective"]["runner"]["type"] != "local":
+        return JSONResponse(
+            error(
+                "Selected model is unavailable to the default local workflow profile",
+                {"fields": resolved["issues"]},
+            ),
+            status_code=422,
+        )
+    provider = await core.provider_manager.get_provider_by_id(payload.provider_id)
+    if not isinstance(provider, Provider):
+        return JSONResponse(error("Choose an available chat model"), status_code=422)
+    try:
+        response = await asyncio.wait_for(
+            provider.text_chat(
+                system_prompt=(
+                    "Design a short sequential workflow for the user's request. "
+                    "Return only JSON with a name and a steps array of 1 to 8 objects. "
+                    "Each step has a name and instructions in the user's language. "
+                    "The first step gets the workflow's input text. Later steps get "
+                    "the previous step's text. Do not name tools, resources or IDs."
+                ),
+                prompt=payload.description,
+                request_max_retries=1,
+            ),
+            timeout=60,
+        )
+    except Exception:
+        return JSONResponse(
+            error("Model could not generate a workflow draft"), status_code=502
+        )
+    content = (response.completion_text or "").strip()
+    if content.startswith("```") and content.endswith("```"):
+        content = content.partition("\n")[2][:-3].strip()
+    try:
+        plan = GeneratedWorkflowPlan.model_validate_json(content)
+        tasks = []
+        edges = []
+        for index, step in enumerate(plan.steps, start=1):
+            identity = f"step-{index}"
+            source = f"step-{index - 1}"
+            if index > 1:
+                edges.append({"source": source, "target": identity})
+            instructions = step.instructions.replace("{", "{{").replace("}", "}}")
+            tasks.append(
+                {
+                    "id": identity,
+                    "name": step.name,
+                    "member": identity,
+                    "role": {**role, "name": step.name},
+                    "installation": installation,
+                    "task": instructions + "\n\n{input}",
+                    "inputs": {
+                        "input": {"input": "input"}
+                        if index == 1
+                        else {"task_id": source}
+                    },
+                    "position": {"x": index * 300.0, "y": 100.0},
+                }
+            )
+        graph = GraphDefinition.model_validate(
+            {
+                "name": plan.name,
+                "default_provider_id": payload.provider_id,
+                "required_inputs": ["input"],
+                "port_contract_version": 1,
+                "result_task_id": tasks[-1]["id"],
+                "tasks": tasks,
+                "edges": edges,
+            }
+        )
+        validate_graph(graph, result_requirement="reachable")
+    except (ValidationError, RoleAssetError):
+        return JSONResponse(
+            error("Model returned an invalid workflow draft"), status_code=422
+        )
+    return ok(graph.model_dump())
 
 
 @router.get("/workflow_assets/{asset_id}")

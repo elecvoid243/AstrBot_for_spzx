@@ -279,6 +279,26 @@ export type BrowserControlTarget = {
     position_revision?: (number | null);
 };
 
+export type CanvasAnnotations = {
+    groups?: Array<CanvasGroup>;
+    notes?: Array<CanvasNote>;
+};
+
+export type CanvasGroup = {
+    id: string;
+    title: string;
+    task_ids: Array<(string)>;
+};
+
+export type CanvasNote = {
+    id: string;
+    text: string;
+    position?: {
+        x?: number;
+        y?: number;
+    };
+};
+
 /**
  * A deliberate local grant; importing an asset never grants access.
  */
@@ -875,6 +895,7 @@ export type DraftPublishRequest = {
 export type DraftRebaseRequest = {
     expected_revision: number;
     published_version: number;
+    restore_version?: (number | null);
 };
 
 /**
@@ -941,6 +962,7 @@ export type GraphDefinition = {
     tasks: Array<GraphTask>;
     edges?: Array<GraphEdge>;
     loops?: Array<GraphLoop>;
+    canvas?: (CanvasAnnotations | null);
 };
 
 /**
@@ -1878,6 +1900,11 @@ export type WorkflowControlRequest = {
 };
 
 export type action4 = 'pause' | 'continue' | 'cancel';
+
+export type WorkflowDraftGenerationRequest = {
+    description: string;
+    provider_id: string;
+};
 
 export type WorkflowEdge = {
     from: string;
@@ -6405,6 +6432,18 @@ export type GetChatResultFileApiV1WorkflowChatRunsRunIdResultFilesFileIdGetRespo
 
 export type GetChatResultFileApiV1WorkflowChatRunsRunIdResultFilesFileIdGetError = (ErrorEnvelope | HTTPValidationError);
 
+export type RebaseAgentAssetDraftData = {
+    body: DraftRebaseRequest;
+    path: {
+        asset_id: string;
+        kind: 'role' | 'workflow' | 'autonomous';
+    };
+};
+
+export type RebaseAgentAssetDraftResponse = (unknown);
+
+export type RebaseAgentAssetDraftError = (WorkflowValidationError);
+
 export type PublishAgentAssetDraftData = {
     body: DraftPublishRequest;
     path: {
@@ -6416,6 +6455,16 @@ export type PublishAgentAssetDraftData = {
 export type PublishAgentAssetDraftResponse = (unknown);
 
 export type PublishAgentAssetDraftError = (WorkflowValidationError);
+
+export type GenerateWorkflowDraftData = {
+    body: WorkflowDraftGenerationRequest;
+};
+
+export type GenerateWorkflowDraftResponse = ({
+    data: GraphDefinition;
+});
+
+export type GenerateWorkflowDraftError = (WorkflowValidationError | unknown);
 
 export type ListAssetsApiV1WorkflowAssetsGetResponse = (unknown);
 

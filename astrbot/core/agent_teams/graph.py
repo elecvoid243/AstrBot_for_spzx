@@ -366,6 +366,32 @@ class GraphLoop(BaseModel):
     feedback: list[LoopFeedback] = Field(default_factory=list, max_length=100)
 
 
+class CanvasGroup(BaseModel):
+    """A visual group of workflow tasks."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    id: str = Field(min_length=1, max_length=128)
+    title: str = Field(min_length=1, max_length=128)
+    task_ids: list[str] = Field(min_length=1, max_length=100)
+
+
+class CanvasNote(BaseModel):
+    """Plain text positioned independently on the workflow canvas."""
+
+    model_config = ConfigDict(extra="forbid", strict=True, allow_inf_nan=False)
+    id: str = Field(min_length=1, max_length=128)
+    text: str = Field(max_length=4000)
+    position: dict[Literal["x", "y"], float] = Field(default_factory=dict)
+
+
+class CanvasAnnotations(BaseModel):
+    """Editor annotations carried with the definition and native asset package."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    groups: list[CanvasGroup] = Field(default_factory=list, max_length=100)
+    notes: list[CanvasNote] = Field(default_factory=list, max_length=100)
+
+
 class GraphDefinition(BaseModel):
     """A bounded, versioned workflow graph with persisted editor layout."""
 
@@ -389,6 +415,9 @@ class GraphDefinition(BaseModel):
     tasks: list[GraphTask] = Field(min_length=1, max_length=100)
     edges: list[GraphEdge] = Field(default_factory=list, max_length=500)
     loops: list[GraphLoop] = Field(default_factory=list, max_length=30)
+    canvas: CanvasAnnotations | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
 
 def matches_condition(value: str | bool | int | float | None, rule: dict) -> bool:

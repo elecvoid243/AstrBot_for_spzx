@@ -27,6 +27,12 @@
         />
       </div>
       <div class="editor-actions">
+        <v-btn variant="text" :disabled="!ready || saving || draft.busy.value" @click="sourcesOpen = true">
+          {{ tm("reuse.sources") }}
+        </v-btn>
+        <v-btn v-if="publishedAsset" variant="text" :disabled="!ready || saving || draft.busy.value" @click="versionsOpen = true">
+          {{ tm("reuse.versions") }}
+        </v-btn>
         <v-btn
           variant="text"
           prepend-icon="mdi-cog-outline"
@@ -165,6 +171,18 @@
         </div>
       </aside>
     </div>
+    <WorkflowDraftSources v-if="sourcesOpen"
+      :models="catalog.models.filter((model) => model.enabled !== false && model.capabilities?.includes('tool_use'))"
+      :default-provider="form.default_provider_id"
+      @close="sourcesOpen = false"
+      @apply="form = $event; sourcesOpen = false"
+    />
+    <WorkflowVersionDialog v-if="versionsOpen && openedId"
+      :asset-id="openedId"
+      :blocked="draft.status.value === 'conflict' || draft.status.value === 'failed'"
+      :restore-version="restoreFixedVersion"
+      @close="versionsOpen = false"
+    />
     <TrialRunDialog
       v-if="trialDraft"
       v-model="trialOpen"
@@ -200,6 +218,8 @@ import { workflowAssetsApi } from "@/api/workflowAssets";
 import type { GraphDefinition } from "@/api/generated/openapi-v1";
 import { extractApiError, type ApiErrorField } from "@/utils/extractApiError";
 import DraftStatus from "@/components/agent_teams/DraftStatus.vue";
+import WorkflowDraftSources from "@/components/agent_teams/WorkflowDraftSources.vue";
+import WorkflowVersionDialog from "@/components/agent_teams/WorkflowVersionDialog.vue";
 import WorkflowGraphCanvas from "@/components/agent_teams/WorkflowGraphCanvas.vue";
 import RunLimitsForm from "@/components/agent_teams/RunLimitsForm.vue";
 import TrialRunDialog from "@/components/agent_teams/TrialRunDialog.vue";
@@ -229,6 +249,9 @@ const catalog = ref<Record<string, any[]>>({
 });
 const form = ref<GraphDefinition>({ name: "", tasks: [], edges: [] });
 const openedId = ref<string | null>(null);
+const publishedAsset = computed(() => assets.value.some((asset) => asset.asset_id === openedId.value));
+const sourcesOpen = ref(false);
+const versionsOpen = ref(false);
 const teams = computed(() =>
   assets.value.filter((asset) => asset.definition.kind === "autonomous"),
 );
@@ -256,6 +279,7 @@ async function loadEditor() {
   selectedNode.value = null;
   trialDraft.value = null;
   trialOpen.value = false;
+  sourcesOpen.value = versionsOpen.value = false;
   invalid.value = false;
   draft.close();
   try {
@@ -344,6 +368,15 @@ watch(
 watch(usageInvalid, (value) => {
   if (value) settingsOpen.value = true;
 });
+
+async function restoreFixedVersion(source: number, latest: number) {
+  const restored = await draft.restoreVersion(source, latest);
+  form.value = JSON.parse(JSON.stringify(restored.body.definition));
+  editorKey.value++;
+  selectedNode.value = null;
+  error.value = "";
+  issues.value = [];
+}
 
 async function reloadDraft() {
   try {

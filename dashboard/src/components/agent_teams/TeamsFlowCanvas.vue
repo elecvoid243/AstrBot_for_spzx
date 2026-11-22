@@ -8,6 +8,7 @@
       :nodes-connectable="isEdit"
       :elements-selectable="isEdit"
       :selection-mode="SelectionMode.Partial"
+      :delete-key-code="null"
       :snap-to-grid="isEdit && snapToGrid"
       :snap-grid="[16, 16]"
       :fit-view-on-init="true"
@@ -19,9 +20,11 @@
       @node-click="onNodeClick"
       @edge-click="onEdgeClick"
       @edge-double-click="onEdgeDoubleClick"
-      @selection-drag-stop="onSelectionDragStop"
       @pane-click="onPaneClick"
     >
+      <template #node-annotation="{ data }">
+        <div class="flow-annotation" :class="'flow-annotation--' + data.kind">{{ data.label }}</div>
+      </template>
       <Background :gap="16" />
       <Controls :show-interactive="isEdit">
         <template #icon-zoom-in><span aria-hidden="true">+</span><span class="canvas-control-label">{{ tm('graph.zoomIn') }}</span></template>
@@ -43,8 +46,13 @@
 export interface FlowNode {
   id: string;
   position: { x: number; y: number };
-  /** Renderer type; the canvas forces the custom `member` card. */
+  /** Optional renderer type for editor annotations. */
   type?: string;
+  style?: Record<string, string | number>;
+  zIndex?: number;
+  draggable?: boolean;
+  selectable?: boolean;
+  connectable?: boolean;
   data: {
     label: string;
     memberName?: string;
@@ -87,6 +95,25 @@ export default {};
 </script>
 
 <style scoped>
+.flow-annotation {
+  width: 100%;
+  height: 100%;
+  padding: 8px 12px;
+  overflow: hidden;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  border-radius: 8px;
+}
+.flow-annotation--group {
+  border: 1px dashed rgb(var(--v-theme-primary));
+  background: rgba(var(--v-theme-primary), 0.07);
+  font-weight: 600;
+}
+.flow-annotation--note {
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.22);
+  background: rgb(var(--v-theme-surface));
+  box-shadow: 0 1px 4px #0002;
+}
 .canvas-control-label {
   position: absolute;
   width: 1px;
@@ -159,6 +186,7 @@ const props = withDefaults(
 const emit = defineEmits<{
   (e: 'connect', params: { from: string; to: string; sourceHandle?: string | null; targetHandle?: string | null }): void;
   (e: 'positionChange', positions: Record<string, { x: number; y: number }>): void;
+  (e: 'dimensionsChange', dimensions: Record<string, { width: number; height: number }>): void;
   (e: 'selectNode', nodeId: string | null): void;
   (e: 'dropAt', memberId: string, position: { x: number; y: number }): void;
   (e: 'deleteEdge', edgeId: string): void;
@@ -170,7 +198,7 @@ const emit = defineEmits<{
 // This component owns the <VueFlow> instance: calling useVueFlow() here
 // creates the store that the inner VueFlow component adopts, so the drop
 // handler can translate screen coordinates through the live viewport.
-const { screenToFlowCoordinate, setCenter, fitView, updateNodeInternals } = useVueFlow();
+const { screenToFlowCoordinate, setCenter, fitView, updateNodeInternals, getSelectedNodes } = useVueFlow();
 
 watch(
   () => JSON.stringify(props.nodes.map(({ id, data }) => [
@@ -216,7 +244,7 @@ const isEdit = computed(() => props.mode === 'edit');
 const displayNodes = computed(() =>
   props.nodes.map((node) => ({
     ...node,
-    type: 'member',
+    type: node.type ?? 'member',
   })),
 );
 
@@ -273,15 +301,20 @@ function onConnect(connection: Connection) {
  * id -> position map so the parent can keep its layout up to date.
  */
 function onNodesChange(changes: NodeChange[]) {
-  if (props.commitPositionsOnDragStop) return;
   let positions: Record<string, { x: number; y: number }> | null = null;
+  const dimensions: Record<string, { width: number; height: number }> = {};
   for (const change of changes ?? []) {
-    if (change?.type === 'position' && change.position) {
+    if (change.type === 'dimensions' && change.dimensions) {
+      dimensions[change.id] = change.dimensions;
+    }
+    if (change.type === 'position' && change.position &&
+        (!props.commitPositionsOnDragStop || !change.dragging)) {
       positions ??= {};
       positions[change.id] = { x: change.position.x, y: change.position.y };
     }
   }
   if (positions) emit('positionChange', positions);
+  if (Object.keys(dimensions).length) emit('dimensionsChange', dimensions);
 }
 
 /**
@@ -309,8 +342,6 @@ function onNodeDragStop(event: {
 function onNodeClick(event: { node: { id: string } }) {
   emit('selectEdge', null);
   emit('selectNode', event?.node?.id ?? null);
-  // Clicking a node defeats any active box selection.
-  if (isEdit.value) emit('selectionChange', []);
 }
 
 /**
@@ -333,11 +364,10 @@ function onEdgeDoubleClick(event: EdgeMouseEvent) {
   }
 }
 
-/** Forward a Shift-drag box selection as the selected node id list. */
-function onSelectionDragStop(event: { nodes?: { id: string }[] }) {
-  const ids = (event?.nodes ?? []).map((node) => node.id).filter((id): id is string => Boolean(id));
-  emit('selectionChange', ids);
-}
+watch(
+  () => getSelectedNodes.value.map((node) => node.id),
+  (ids) => { if (isEdit.value) emit('selectionChange', ids); },
+);
 
 function onPaneClick() {
   emit('selectEdge', null);

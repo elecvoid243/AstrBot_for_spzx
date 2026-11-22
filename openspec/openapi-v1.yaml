@@ -8648,6 +8648,33 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/agent_drafts/{kind}/{asset_id}/rebase:
+    post:
+      tags: [Agent Teams drafts]
+      summary: Rebase a draft or restore a fixed workflow version into it
+      operationId: rebaseAgentAssetDraft
+      parameters:
+      - name: kind
+        in: path
+        required: true
+        schema: {type: string, enum: [role, workflow, autonomous]}
+      - name: asset_id
+        in: path
+        required: true
+        schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DraftRebaseRequest'
+      responses:
+        '200':
+          description: Updated draft
+        '404':
+          $ref: '#/components/responses/WorkflowValidationFailure'
+        '409':
+          $ref: '#/components/responses/WorkflowValidationFailure'
   /api/v1/agent_drafts/{kind}/{asset_id}/publish:
     post:
       tags: [Agent Teams drafts]
@@ -8675,6 +8702,32 @@ paths:
           $ref: '#/components/responses/WorkflowValidationFailure'
         '409':
           $ref: '#/components/responses/WorkflowValidationFailure'
+  /api/v1/workflow_assets/generate_draft:
+    post:
+      tags: [Agent Teams workflows]
+      summary: Propose a workflow definition using a selected local model
+      operationId: generateWorkflowDraft
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WorkflowDraftGenerationRequest'
+      responses:
+        '200':
+          description: Editable workflow proposal
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/GraphDefinition'
+        '422':
+          $ref: '#/components/responses/WorkflowValidationFailure'
+        '502':
+          description: Model call failed
   /api/v1/workflow_assets:
     get:
       tags:
@@ -10911,6 +10964,10 @@ components:
           type: integer
           minimum: 1.0
           title: Published Version
+        restore_version:
+          anyOf:
+          - {type: integer, minimum: 1}
+          - {type: 'null'}
       additionalProperties: false
       type: object
       required:
@@ -10935,6 +10992,13 @@ components:
       - body
       title: DraftCreateRequest
       description: Initial editable snapshot and optional existing asset identity.
+    WorkflowDraftGenerationRequest:
+      type: object
+      additionalProperties: false
+      required: [description, provider_id]
+      properties:
+        description: {type: string, minLength: 1, maxLength: 4000}
+        provider_id: {type: string, minLength: 1, maxLength: 128}
     DraftPublishRequest:
       properties:
         revision:
@@ -13418,6 +13482,45 @@ components:
       - value
       title: FieldCondition
       type: object
+    CanvasGroup:
+      type: object
+      additionalProperties: false
+      required: [id, title, task_ids]
+      properties:
+        id: {type: string, minLength: 1, maxLength: 128}
+        title: {type: string, minLength: 1, maxLength: 128}
+        task_ids:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items: {type: string}
+    CanvasNote:
+      type: object
+      additionalProperties: false
+      required: [id, text]
+      properties:
+        id: {type: string, minLength: 1, maxLength: 128}
+        text: {type: string, maxLength: 4000}
+        position:
+          type: object
+          additionalProperties: false
+          properties:
+            x: {type: number}
+            y: {type: number}
+    CanvasAnnotations:
+      type: object
+      additionalProperties: false
+      properties:
+        groups:
+          type: array
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/CanvasGroup'
+        notes:
+          type: array
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/CanvasNote'
     GraphDefinition:
       properties:
         name:
@@ -13496,6 +13599,10 @@ components:
           type: array
           maxItems: 30
           title: Loops
+        canvas:
+          anyOf:
+          - $ref: '#/components/schemas/CanvasAnnotations'
+          - type: 'null'
       additionalProperties: false
       type: object
       required:

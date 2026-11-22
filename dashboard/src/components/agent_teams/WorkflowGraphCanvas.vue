@@ -2,6 +2,7 @@
   <section
     class="graph-workbench"
     :aria-label="tm(readonly ? 'v2.snapshot' : 'graph.canvas')"
+    @keydown="canvasKeydown"
   >
     <div class="graph-toolbar">
       <v-chip size="small" color="primary" variant="tonal">{{
@@ -47,6 +48,10 @@
           @click="restore(1)"
           >{{ tm("graph.redo") }}</v-btn
         >
+        <v-btn variant="text" size="small" :disabled="!copyable" @click="copySelection">{{ tm("reuse.copy") }}</v-btn>
+        <v-btn variant="text" size="small" :disabled="!clipboard" @click="pasteSelection">{{ tm("reuse.paste") }}</v-btn>
+        <v-btn variant="text" size="small" :disabled="selectedTaskIds.length < 2" @click="addGroup">{{ tm("reuse.group") }}</v-btn>
+        <v-btn variant="text" size="small" @click="addNote">{{ tm("reuse.note") }}</v-btn>
         <v-btn
           v-if="draft.port_contract_version === 1"
           variant="text"
@@ -69,6 +74,22 @@
         >{{ tm("graph.minimap") }}</v-btn
       >
       <v-btn variant="text" size="small" :aria-expanded="structureOpen" aria-controls="graph-structure-panel" @click="structureOpen = !structureOpen">{{ tm('editor.structure') }}<span v-if="draft.loops?.length"> · {{ draft.loops.length }}</span></v-btn>
+    </div>
+    <div v-if="!readonly && (copiedBindingIssues.length || detachedControlEdges.length)" class="graph-diagnostics">
+      <v-alert type="warning" variant="tonal" density="compact">
+        <v-btn v-for="item in copiedBindingIssues" :key="item.task.id + ':' + item.field"
+          variant="text" size="small" @click="locateCopiedBinding(item.task.id, item.field)">
+          {{ tm("reuse.detached", { task: item.task.name, field: item.field }) }}
+        </v-btn>
+        <div v-for="edge in detachedControlEdges" :key="edge.source + ':' + edge.target">
+          <v-btn variant="text" size="small" @click="locateCopiedBinding(edge.target)">
+            {{ tm("reuse.detachedGate", { task: draft.tasks.find((task) => task.id === edge.target)?.name ?? edge.target, source: edge.source.slice(detachedPrefix.length) }) }}
+          </v-btn>
+          <v-btn variant="text" size="small" @click="removeEdge(edge.source + ':' + edge.target)">
+            {{ tm("reuse.removeDetachedGate") }}
+          </v-btn>
+        </div>
+      </v-alert>
     </div>
     <div
       v-if="localError || Object.keys(contractErrors).length || issues.length || (!readonly && !validResultTask)"
@@ -208,68 +229,30 @@
     </aside>
       <details v-if="!readonly" class="graph-toolbox" :open="!narrow">
         <summary>{{ tm("graph.toolbox") }}</summary>
-        <p class="text-caption my-3">{{ tm("graph.dragHint") }}</p>
-        <v-btn
-          variant="tonal"
-          color="primary"
-          size="small"
-          class="mb-3"
-          prepend-icon="mdi-robot-outline"
-          data-testid="add-inline-agent"
-          @click="addTask('agent:inline')"
-        ><span class="graph-node-option"><strong>{{ tm("graph.addAgent") }}</strong><small>{{ tm("guide.agentNode") }}</small></span></v-btn>
-        <v-btn
-          v-if="structuredPorts"
-          variant="tonal"
-          size="small"
-          class="mb-3"
-          prepend-icon="mdi-format-list-numbered"
-          data-testid="add-list-dispatch"
-          @click="addTask('agent:dispatch')"
-        >{{ tm("graph.listDispatch") }}</v-btn>
-        <v-btn
-          variant="tonal"
-          size="small"
-          class="mb-3"
-          prepend-icon="mdi-account-question-outline"
-          data-testid="add-human-question"
-          @click="addTask('human:question')"
-          ><span class="graph-node-option"><strong>{{ tm("human.questionNode") }}</strong><small>{{ tm("guide.humanNode") }}</small></span></v-btn>
-        <v-btn
-          variant="tonal"
-          size="small"
-          class="mb-3"
-          prepend-icon="mdi-account-check-outline"
-          data-testid="add-human-approval"
-          @click="addTask('human:approval')"
-          ><span class="graph-node-option"><strong>{{ tm("human.approvalNode") }}</strong><small>{{ tm("guide.approvalNode") }}</small></span></v-btn>
-        <template v-if="structuredPorts">
-          <v-btn
-            v-for="kind in transformKinds"
-            :key="kind"
-            :data-testid="`add-${kind}`"
-            variant="tonal"
-            size="small"
-            class="mb-3"
-            @click="addTask(`transform:${kind}`)"
-          >{{ tm(`graph.${kind}`) }}</v-btn>
+        <p class="text-caption my-3">{{ tm("reuse.shortcuts") }}</p>
+        <v-text-field v-model="nodeQuery" :label="tm('reuse.search')" density="compact" hide-details class="mb-3" />
+        <template v-if="nodeQuery.trim()">
+          <v-btn v-for="item in matchingNodes" :key="item.id" variant="text" size="small" draggable="true"
+            @dragstart="dragNode($event, item.id)" @click="addTask(item.id)">{{ item.label }}</v-btn>
+          <p v-if="!matchingNodes.length" class="text-caption">{{ tm("reuse.noNodes") }}</p>
         </template>
+        <template v-else>
         <v-btn
+          v-for="item in builtinNodes"
+          :key="item.id"
           variant="tonal"
+          :color="item.id === 'agent:inline' ? 'primary' : undefined"
           size="small"
           class="mb-3"
-          prepend-icon="mdi-source-branch"
-          data-testid="add-condition"
-          @click="addTask('control:condition')"
-          ><span class="graph-node-option"><strong>{{ tm("graph.conditionNode") }}</strong><small>{{ tm("guide.conditionNode") }}</small></span></v-btn>
-        <v-btn
-          variant="tonal"
-          size="small"
-          class="mb-3"
-          prepend-icon="mdi-source-merge"
-          data-testid="add-join"
-          @click="addTask('control:join')"
-          ><span class="graph-node-option"><strong>{{ tm("graph.joinNode") }}</strong><small>{{ tm("guide.joinNode") }}</small></span></v-btn>
+          :prepend-icon="item.icon"
+          :data-testid="item.testId"
+          draggable="true"
+          @dragstart="dragNode($event, item.id)"
+          @click="addTask(item.id)"
+        >
+          <span v-if="item.hint" class="graph-node-option"><strong>{{ item.label }}</strong><small>{{ item.hint }}</small></span>
+          <template v-else>{{ item.label }}</template>
+        </v-btn>
         <details class="graph-library">
           <summary>{{ tm('editor.library') }} <span>{{ teams.length + workflows.length + roles.length }}</span></summary>
           <p class="at-field-guide">{{ tm('guide.roleVersion') }}</p>
@@ -281,6 +264,8 @@
           class="graph-team-button mb-3"
           prepend-icon="mdi-account-group-outline"
           data-testid="add-team-call"
+          draggable="true"
+          @dragstart="dragNode($event, 'team:' + team.asset_id)"
           @click="addTask(`team:${team.asset_id}`)"
           >{{ tm("child.call") }}: {{ team.definition.name }} · v{{
             team.version
@@ -294,6 +279,8 @@
           class="graph-team-button mb-3"
           prepend-icon="mdi-graph-outline"
           data-testid="add-workflow-call"
+          draggable="true"
+          @dragstart="dragNode($event, 'workflow:' + workflow.asset_id)"
           @click="addTask(`workflow:${workflow.asset_id}`)"
         >
           {{ tm("workflowCall.call") }}: {{ workflow.definition.name }} · v{{
@@ -305,7 +292,7 @@
           :key="role.role_id"
           class="graph-role"
           draggable="true"
-          @dragstart="dragRole($event, role.role_id)"
+          @dragstart="dragNode($event, role.role_id)"
           @click="addTask(role.role_id)"
         >
           <v-icon size="20" color="primary">mdi-account-outline</v-icon>
@@ -319,8 +306,9 @@
           {{ tm("graph.noRoles") }}
         </p>
         </details>
+        </template>
       </details>
-      <div class="graph-stage">
+      <div class="graph-stage" tabindex="0" :aria-label="tm('graph.canvas')">
         <TeamsFlowCanvas
           ref="canvas"
           :nodes="nodes"
@@ -332,7 +320,9 @@
           @drop-at="addTask"
           @connect="connect"
           @position-change="move"
+          @dimensions-change="measureNodes"
           @select-node="selectNode"
+          @selection-change="setSelection"
           @select-edge="selectEdge"
           @delete-edge="removeEdge"
         />
@@ -347,7 +337,14 @@
         @toggle="inspectorOpen = ($event.target as HTMLDetailsElement).open"
       >
         <summary>{{ tm("graph.properties") }}</summary>
-        <template v-if="selectedTask">
+        <template v-if="selectedNote || selectedGroup">
+          <v-textarea v-if="selectedNote" v-model="selectedNote.text" :label="tm('reuse.noteText')"
+            maxlength="4000" @update:model-value="checkpoint" />
+          <v-text-field v-if="selectedGroup" :model-value="selectedGroup.title" :label="tm('reuse.groupTitle')"
+            maxlength="128" @update:model-value="selectedGroup.title = $event.trim() || tm('reuse.groupTitle'); checkpoint()" />
+          <v-btn variant="text" @click="removeAnnotation">{{ tm("reuse.removeAnnotation") }}</v-btn>
+        </template>
+        <template v-else-if="selectedTask">
           <div class="graph-inspector-heading">
             <v-icon color="primary">mdi-account-outline</v-icon
             ><strong>{{ selectedTask.name }}</strong
@@ -1369,6 +1366,78 @@ watch(
   },
 );
 const selectedEdgeKey = ref<string | null>(null);
+const selectedIds = ref<string[]>([]);
+const nodeDimensions = ref<Record<string, { width: number; height: number }>>({});
+const nodeQuery = ref("");
+const builtinNodes = computed<{
+  id: string;
+  label: string;
+  testId: string;
+  icon?: string;
+  hint?: string;
+}[]>(() => [
+  {
+    id: "agent:inline", label: tm("graph.addAgent"), testId: "add-inline-agent",
+    icon: "mdi-robot-outline", hint: tm("guide.agentNode"),
+  },
+  ...(structuredPorts.value ? [{
+    id: "agent:dispatch", label: tm("graph.listDispatch"), testId: "add-list-dispatch",
+    icon: "mdi-format-list-numbered",
+  }] : []),
+  {
+    id: "human:question", label: tm("human.questionNode"), testId: "add-human-question",
+    icon: "mdi-account-question-outline", hint: tm("guide.humanNode"),
+  },
+  {
+    id: "human:approval", label: tm("human.approvalNode"), testId: "add-human-approval",
+    icon: "mdi-account-check-outline", hint: tm("guide.approvalNode"),
+  },
+  ...(structuredPorts.value ? transformKinds.map((kind) => ({
+    id: "transform:" + kind, label: tm("graph." + kind), testId: "add-" + kind,
+  })) : []),
+  {
+    id: "control:condition", label: tm("graph.conditionNode"), testId: "add-condition",
+    icon: "mdi-source-branch", hint: tm("guide.conditionNode"),
+  },
+  {
+    id: "control:join", label: tm("graph.joinNode"), testId: "add-join",
+    icon: "mdi-source-merge", hint: tm("guide.joinNode"),
+  },
+]);
+const matchingNodes = computed(() => [
+  ...builtinNodes.value,
+  ...props.roles.map((role) => ({ id: role.role_id, label: role.definition.name })),
+  ...props.teams.map((team) => ({ id: "team:" + team.asset_id, label: team.definition.name })),
+  ...props.workflows.map((workflow) => ({ id: "workflow:" + workflow.asset_id, label: workflow.definition.name })),
+].filter(({ label }) => label.toLocaleLowerCase().includes(nodeQuery.value.trim().toLocaleLowerCase())));
+const selectedTaskIds = computed(() => {
+  const selected = new Set(selectedIds.value.length ? selectedIds.value : [selectedNode.value]);
+  for (const group of draft.value.canvas?.groups ?? []) {
+    if (selected.has("group:" + group.id)) group.task_ids.forEach((id) => selected.add(id));
+  }
+  for (const loop of draft.value.loops ?? []) {
+    if (selected.has("loop:" + loop.id)) loop.body.forEach((id) => selected.add(id));
+  }
+  return draft.value.tasks.filter((task) => selected.has(task.id)).map((task) => task.id);
+});
+const selectedNote = computed(() => draft.value.canvas?.notes?.find((note) => selectedNode.value === "note:" + note.id));
+const selectedGroup = computed(() => draft.value.canvas?.groups?.find((group) => selectedNode.value === "group:" + group.id));
+const copyable = computed(() => selectedTaskIds.value.length || selectedNote.value ||
+  selectedIds.value.some((id) => id.startsWith("note:")));
+const clipboard = ref<Pick<GraphDefinition, "tasks" | "edges" | "loops" | "entry_task_ids" | "canvas"> | null>(null);
+let pasteCount = 0;
+const detachedPrefix = "__detached:";
+const detachedControlEdges = computed(() => draft.value.edges?.filter((edge) =>
+  edge.source.startsWith(detachedPrefix),
+) ?? []);
+const copiedBindingIssues = computed(() => draft.value.tasks.flatMap((task) => {
+  const fields = Object.entries(task.inputs ?? {})
+    .filter(([, binding]) => binding.task_id?.startsWith(detachedPrefix))
+    .map(([field]) => field);
+  if (task.human?.artifact_task_id?.startsWith(detachedPrefix)) fields.push("artifact_task_id");
+  if (task.human?.recommendation_task_id?.startsWith(detachedPrefix)) fields.push("recommendation_task_id");
+  return fields.map((field) => ({ task, field }));
+}));
 const minimap = ref(props.definition.tasks.length > 5);
 const collapsedLoops = ref<string[]>([]);
 const localError = ref("");
@@ -1852,7 +1921,7 @@ const taskNodes = computed<FlowNode[]>(() =>
                 id: `data-in:${alias}`,
                 label: `${alias} · ${type}`,
                 types,
-                invalid: invalidPortPath.value === path ||
+                invalid: invalidPortPath.value === path || task.inputs?.[alias]?.task_id?.startsWith(detachedPrefix) ||
                   [...props.issues, ...runtimeIssues].some(
                     (issue) => typeof issue.path === "string" && (issue.path === path || issue.path.startsWith(path + ".")),
                   ),
@@ -2048,6 +2117,31 @@ const nodes = computed<FlowNode[]>(() => [
         },
       ]
     : []),
+  ...(draft.value.canvas?.groups ?? []).flatMap((group) => {
+    const members = taskNodes.value.filter((node) =>
+      group.task_ids.includes(node.id) &&
+      !collapsedGroups.value.some((loop) => loop.body.includes(node.id)),
+    );
+    if (!members.length) return [];
+    const left = Math.min(...members.map((node) => node.position.x)) - 20;
+    const top = Math.min(...members.map((node) => node.position.y)) - 36;
+    const right = Math.max(...members.map((node) => node.position.x + (nodeDimensions.value[node.id]?.width ?? 220))) + 20;
+    const bottom = Math.max(...members.map((node) => node.position.y + (nodeDimensions.value[node.id]?.height ?? 150))) + 20;
+    return [{
+      id: "group:" + group.id, type: "annotation",
+      position: { x: left, y: top },
+      draggable: false, connectable: false, zIndex: -1,
+      style: { width: (right - left) + "px", height: (bottom - top) + "px" },
+      data: { label: group.title, kind: "group" },
+    }];
+  }),
+  ...(draft.value.canvas?.notes ?? []).map((note) => ({
+    id: "note:" + note.id, type: "annotation",
+    position: { x: note.position?.x ?? 0, y: note.position?.y ?? 0 },
+    connectable: false,
+    style: { width: "184px", minHeight: "48px" },
+    data: { label: note.text || tm("reuse.noteText"), kind: "note" },
+  })),
   ...taskNodes.value.filter(
     (node) =>
       !collapsedGroups.value.some((loop) => loop.body.includes(node.id)),
@@ -2123,6 +2217,7 @@ const edges = computed<FlowEdgePayload[]>(() => [
       ...(draft.value.edges ?? []),
     ] as NonNullable<GraphDefinition["edges"]>
   )
+    .filter((edge) => !edge.source.startsWith(detachedPrefix))
     .map<FlowEdgePayload>((edge) => {
       const sourceGroup = collapsedGroups.value.find((loop) =>
         loop.body.includes(edge.source),
@@ -2251,6 +2346,169 @@ watch(
   },
   { immediate: true, deep: true },
 );
+
+function measureNodes(dimensions: Record<string, { width: number; height: number }>) {
+  for (const [id, size] of Object.entries(dimensions)) {
+    if (id.startsWith("__") || id.includes(":")) continue;
+    const previous = nodeDimensions.value[id];
+    if (previous?.width !== size.width || previous.height !== size.height) nodeDimensions.value[id] = size;
+  }
+}
+
+function setSelection(ids: string[]) {
+  const previous = selectedIds.value;
+  if (ids.length === previous.length && ids.every((id, index) => id === previous[index])) return;
+  selectedIds.value = ids;
+  if (ids.length === 1) {
+    if (!ids[0].startsWith("loop:")) selectNode(ids[0]);
+  } else if (ids.length > 1 || (selectedNode.value && previous.includes(selectedNode.value))) {
+    selectNode(null);
+  }
+}
+
+function canvasId() {
+  return crypto.getRandomValues(new Uint32Array(4)).join("-");
+}
+
+function locateCopiedBinding(taskId: string, field?: string) {
+  selectNode(taskId);
+  const index = draft.value.tasks.findIndex((task) => task.id === taskId);
+  invalidPortPath.value = field ? ["definition.tasks", index, "inputs", field].join(".") : "";
+  const node = taskNodes.value.find((item) => item.id === taskId);
+  if (node) canvas.value?.panTo(node.position.x + 90, node.position.y + 40);
+}
+
+function addGroup() {
+  if (props.readonly || selectedTaskIds.value.length < 2) return;
+  const groups = ((draft.value.canvas ??= {}).groups ??= []);
+  if (groups.length >= 100) return;
+  const id = canvasId();
+  groups.push({ id, title: tm("reuse.groupTitle"), task_ids: selectedTaskIds.value });
+  selectNode("group:" + id);
+  checkpoint();
+}
+
+function addNote() {
+  if (props.readonly) return;
+  const notes = ((draft.value.canvas ??= {}).notes ??= []);
+  if (notes.length >= 100) return;
+  const id = canvasId();
+  const anchor = taskNodes.value.find((node) => node.id === selectedNode.value) ?? taskNodes.value[0];
+  notes.push({ id, text: "", position: { x: anchor?.position.x ?? 0, y: (anchor?.position.y ?? 0) - 108 } });
+  selectNode("note:" + id);
+  checkpoint();
+}
+
+function removeAnnotation() {
+  const annotations = draft.value.canvas;
+  if (props.readonly || !annotations) return;
+  annotations.notes = annotations.notes?.filter((item) => item.id !== selectedNote.value?.id);
+  annotations.groups = annotations.groups?.filter((item) => item.id !== selectedGroup.value?.id);
+  selectNode(null);
+  checkpoint();
+}
+
+function copySelection() {
+  if (props.readonly || !copyable.value) return;
+  const ids = new Set(selectedTaskIds.value);
+  clipboard.value = JSON.parse(JSON.stringify({
+    tasks: draft.value.tasks.filter((task) => ids.has(task.id)).map((task) => ({
+      ...task, position: taskNodes.value.find((node) => node.id === task.id)?.position,
+    })),
+    edges: draft.value.edges?.filter((edge) => ids.has(edge.target)),
+    loops: draft.value.loops?.filter((loop) => loop.body.every((id) => ids.has(id))),
+    entry_task_ids: draft.value.entry_task_ids?.filter((id) => ids.has(id)),
+    canvas: {
+      groups: draft.value.canvas?.groups?.filter((group) => group.task_ids.every((id) => ids.has(id))),
+      notes: draft.value.canvas?.notes?.filter((note) =>
+        selectedIds.value.includes("note:" + note.id) || note.id === selectedNote.value?.id),
+    },
+  }));
+  pasteCount = 0;
+}
+
+/** Paste one selection and preserve references wholly inside it. */
+function pasteSelection() {
+  if (props.readonly || !clipboard.value) return;
+  const copy: NonNullable<typeof clipboard.value> = JSON.parse(JSON.stringify(clipboard.value));
+  const graph = draft.value;
+  if (graph.tasks.length + copy.tasks.length > 100 ||
+      (graph.edges?.length ?? 0) + (copy.edges?.length ?? 0) > 500 ||
+      (graph.loops?.length ?? 0) + (copy.loops?.length ?? 0) > 30 ||
+      (graph.canvas?.groups?.length ?? 0) + (copy.canvas?.groups?.length ?? 0) > 100 ||
+      (graph.canvas?.notes?.length ?? 0) + (copy.canvas?.notes?.length ?? 0) > 100) {
+    localError.value = tm("reuse.capacity");
+    return;
+  }
+  const ids = new Map(copy.tasks.map(({ id }) => [id, "task-" + canvasId()]));
+  // A detached source preserves its old identity for repair and cannot resolve as an executable task.
+  const remap = (id: string) => ids.get(id) ?? (id.startsWith(detachedPrefix) ? id : detachedPrefix + id);
+  const members = new Map(copy.tasks.filter((task) => task.member).map(({ member }) => [
+    member, "member-" + canvasId(),
+  ]));
+  const offset = 48 * ++pasteCount;
+  for (const task of copy.tasks) {
+    task.id = remap(task.id);
+    if (task.member) task.member = members.get(task.member);
+    task.position = { x: (task.position?.x ?? 0) + offset, y: (task.position?.y ?? 0) + offset };
+    for (const binding of Object.values(task.inputs ?? {})) {
+      if (binding.task_id) binding.task_id = remap(binding.task_id);
+    }
+    if (task.human?.artifact_task_id) task.human.artifact_task_id = remap(task.human.artifact_task_id);
+    if (task.human?.recommendation_task_id) task.human.recommendation_task_id = remap(task.human.recommendation_task_id);
+    graph.tasks.push(task);
+  }
+  for (const edge of copy.edges ?? []) {
+    (graph.edges ??= []).push({ ...edge, source: remap(edge.source), target: remap(edge.target) });
+  }
+  for (const loop of copy.loops ?? []) {
+    (graph.loops ??= []).push({
+      ...loop, id: "loop-" + canvasId(),
+      body: loop.body.map(remap), exit_task_id: remap(loop.exit_task_id),
+      feedback: loop.feedback?.map((item) => ({ ...item, source: remap(item.source), target: remap(item.target) })),
+    });
+  }
+  if (graph.entry_task_ids) graph.entry_task_ids.push(...(copy.entry_task_ids ?? []).map(remap));
+  for (const group of copy.canvas?.groups ?? []) {
+    ((graph.canvas ??= {}).groups ??= []).push({ ...group, id: canvasId(), task_ids: group.task_ids.map(remap) });
+  }
+  for (const note of copy.canvas?.notes ?? []) {
+    ((graph.canvas ??= {}).notes ??= []).push({
+      ...note, id: canvasId(),
+      position: { x: (note.position?.x ?? 0) + offset, y: (note.position?.y ?? 0) + offset },
+    });
+  }
+  checkpoint();
+}
+
+function canvasKeydown(event: KeyboardEvent) {
+  if (props.readonly || event.defaultPrevented || event.isComposing ||
+      (event.target instanceof HTMLElement &&
+        event.target.closest("input, textarea, select, [contenteditable]"))) return;
+  const key = event.key.toLowerCase();
+  if ((event.ctrlKey || event.metaKey) && !event.altKey) {
+    if (key === "c" && copyable.value) copySelection();
+    else if (key === "v" && clipboard.value) pasteSelection();
+    else if (key === "z") restore(event.shiftKey ? 1 : -1);
+    else if (key === "y") restore(1);
+    else return;
+  } else if (key === "delete" || key === "backspace") {
+    const id = selectedIds.value.length === 1 ? selectedIds.value[0] : null;
+    if (id?.startsWith("group:") || id?.startsWith("note:")) {
+      selectNode(id);
+      removeAnnotation();
+    } else if (id && draft.value.tasks.some((task) => task.id === id)) {
+      selectNode(id);
+      removeTask();
+    } else if (selectedEdgeKey.value) {
+      removeEdge(selectedEdgeKey.value);
+    } else return;
+  } else {
+    return;
+  }
+  event.preventDefault();
+  event.stopPropagation();
+}
 
 function toggleLoop(id: string) {
   collapsedLoops.value = collapsedLoops.value.includes(id)
@@ -2390,7 +2648,7 @@ function addTask(roleId: string, position?: { x: number; y: number }) {
   if (!inline && !role && !humanKind && !team && !workflow && !controlKind && !transform) return;
   const seed =
     typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
-      ? crypto.randomUUID().replace(/-/g, "").slice(0, 8)
+      ? canvasId().replace(/-/g, "").slice(0, 8)
       : `${Date.now()}_${Math.random().toString(16).slice(2)}`;
   let id = `task_${seed}`;
   let suffix = 1;
@@ -2569,8 +2827,8 @@ async function changeTeam(assetId: string, version?: number) {
   }
 }
 
-function dragRole(event: DragEvent, roleId: string) {
-  event.dataTransfer?.setData("application/x-member-id", roleId);
+function dragNode(event: DragEvent, nodeId: string) {
+  event.dataTransfer?.setData("application/x-member-id", nodeId);
 }
 function selectNode(id: string | null) {
   if (id) inspectorOpen.value = true;
@@ -2824,6 +3082,10 @@ function setWorkflowInputs(value: string) {
 }
 function move(positions: Record<string, { x: number; y: number }>) {
   if (props.readonly) return;
+  for (const note of draft.value.canvas?.notes ?? []) {
+    const position = positions["note:" + note.id];
+    if (position) note.position = position;
+  }
   for (const task of draft.value.tasks)
     if (positions[task.id]) task.position = positions[task.id];
   checkpoint();
@@ -2850,6 +3112,11 @@ function removeEdge(key: string) {
 }
 function removeTask() {
   const removed = selectedNode.value;
+  if (removed && draft.value.canvas) {
+    draft.value.canvas.groups = (draft.value.canvas.groups ?? [])
+      .map((group) => ({ ...group, task_ids: group.task_ids.filter((id) => id !== removed) }))
+      .filter((group) => group.task_ids.length > 0);
+  }
   if (explicitControl.value) {
     draft.value.entry_task_ids = draft.value.entry_task_ids?.filter((id) => id !== removed);
   }

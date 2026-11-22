@@ -57,6 +57,14 @@ In **Test draft**, an upstream node outside the selected scope can use an **Exac
 
 ![A bound managed file and its exact source version in the run workbench](/images/agent-teams-reference-ports-en.jpg)
 
+## Reuse a workflow canvas
+
+Use **Search nodes** in the toolbox. Drag a match onto the canvas or focus its button and press Enter. **Start from** offers the **Parse a JSON title** template and draft generation from a description. The template accepts the workflow input `text`, for example `{"title":"Quarterly report"}` encoded as a string. For generation, choose a model with tool use enabled and available to the default local workflow profile. AstrBot sends your description to that model and proposes a sequence of text-processing Agents. Review the tasks and bindings on the canvas, then use **Test draft** and **Save version**.
+
+Hold Shift and drag on empty canvas space to select multiple nodes, or Ctrl/Cmd-click to add a node. Choose **Group selection** to label the set. **Add note** creates plain text you can edit in the inspector and move on the canvas. Copy and paste using the toolbar or Ctrl/Cmd+C and Ctrl/Cmd+V. Internal data and control connections follow the pasted nodes. If a dependency was outside the selection, use the diagnostic to find the pasted node and reconnect it. After reconnecting a missing control link, remove its diagnostic placeholder. Ctrl/Cmd+Z undoes the complete paste and Shift+Ctrl/Cmd+Z redoes it. With a canvas node focused, Enter selects it and the arrow keys move it.
+
+![Real Dashboard canvas with a group and a note](/images/agent-workflow-reuse-en.jpg)
+
 ## Drafts, fixed versions and tests
 
 Edits to assets and canvas layouts are saved automatically as drafts, including new drafts without a saved version. Check the save status: retry a failure, or retain local content or explicitly load the server draft when there is a conflict. If a fixed version changes, compare the original base and latest version, then keep the whole draft against the selected base or load the latest version and edit again. Fields are not merged.
@@ -70,6 +78,10 @@ Tests make real model and tool calls and may incur costs or external effects. Th
 Approval targets and recommendations require real artifacts. An isolated ALL join, an incomplete loop, or a partial scope missing a parallel predecessor cannot start. Testing an Agent inside a loop on its own runs it once and requires explicit initial feedback.
 
 ![Live partial draft trial](/images/agent-teams-live-trial-en.png)
+
+Open **Fixed versions** in a published workflow's editor, select any two versions, and expand changed sections to compare them. The comparison includes task order and control links. **Restore to draft** copies the selected version into the draft after confirmation. If another editor saved the draft or published a version in the meantime, reload and review before retrying. The restored draft can be tested and published as a new version. Existing runs retain their original definitions.
+
+![Fixed version comparison in the Dashboard](/images/agent-workflow-versions-en.jpg)
 
 ## Connect inputs, outputs and control paths
 

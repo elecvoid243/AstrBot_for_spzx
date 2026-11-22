@@ -1,6 +1,7 @@
 """Ownership, input diagnostics and pinned workflow versions over HTTP."""
 
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
@@ -12,6 +13,7 @@ from astrbot.core.agent_teams.assets import RoleAssetService
 from astrbot.core.agent_teams.workflows import WorkflowService
 from astrbot.core.db.po import AgentWorkflowVersion
 from astrbot.core.db.sqlite import SQLiteDatabase
+from astrbot.core.provider.provider import Provider
 from astrbot.dashboard.api.auth import require_dashboard_user
 from astrbot.dashboard.api.role_assets import router as roles_router
 from astrbot.dashboard.api.workflow_assets import router
@@ -1307,3 +1309,200 @@ async def test_human_inbox_http_owner_and_answer(workflow_env):
         assert (await client.get("/api/v1/workflow_human_requests")).json()["data"][
             "requests"
         ] == []
+
+
+@pytest.mark.asyncio
+async def test_fixed_version_restore_uses_draft_and_head_cas(
+    publication_client, workflow_env
+):
+    """Restore the immutable source, preserving both fixed definitions on conflicts.
+
+    Args:
+        publication_client: Owner-authenticated HTTP client with isolated SQLite.
+        workflow_env: Database holding the fixed definitions.
+    """
+    client = publication_client
+    definition = {
+        "name": "First",
+        "port_contract_version": 2,
+        "input_contract": {
+            "type": "object",
+            "properties": {"value": {"type": "string"}},
+            "required": ["value"],
+        },
+        "entry_task_ids": ["map"],
+        "result_task_id": "map",
+        "tasks": [
+            {
+                "id": "map",
+                "name": "Map",
+                "transform": "map_fields",
+                "input_contract": {
+                    "type": "object",
+                    "properties": {"value": {"type": "string"}},
+                    "required": ["value"],
+                },
+                "output_contract": {
+                    "type": "object",
+                    "properties": {"value": {"type": "string"}},
+                    "required": ["value"],
+                },
+                "inputs": {"value": {"input": "value"}},
+            }
+        ],
+        "canvas": {
+            "groups": [{"id": "map-group", "title": "Mapping", "task_ids": ["map"]}],
+            "notes": [{"id": "example", "text": "First note", "position": {"x": 42.0}}],
+        },
+    }
+    created = await client.post(
+        "/api/v1/agent_drafts/workflow", json={"body": {"definition": definition}}
+    )
+    draft_path = f"/api/v1/agent_drafts/workflow/{created.json()['data']['asset_id']}"
+    first = (await client.post(f"{draft_path}/publish", json={"revision": 1})).json()[
+        "data"
+    ]
+    updated = await client.put(
+        draft_path,
+        json={
+            "expected_revision": 1,
+            "body": {"definition": {**definition, "name": "Second"}},
+        },
+    )
+    assert updated.status_code == 200, updated.text
+    second = await client.post(f"{draft_path}/publish", json={"revision": 2})
+    assert second.json()["data"]["version"] == 2
+    payload = {"expected_revision": 2, "published_version": 2, "restore_version": 1}
+    for stale in ({"expected_revision": 1}, {"published_version": 1}):
+        response = await client.post(f"{draft_path}/rebase", json={**payload, **stale})
+        assert response.status_code == 409
+    current = (await client.get(draft_path)).json()["data"]
+    assert current["body"]["definition"]["name"] == "Second"
+    restored = await client.post(f"{draft_path}/rebase", json=payload)
+    assert restored.status_code == 200, restored.text
+    draft = restored.json()["data"]
+    assert draft["body"]["definition"] == first["definition"]
+    assert draft["base_version"] == 2
+    published = await client.post(
+        f"{draft_path}/publish", json={"revision": draft["revision"]}
+    )
+    assert published.json()["data"]["version"] == 3
+    assert published.json()["data"]["definition"] == first["definition"]
+    old = await client.get(f"/api/v1/workflow_assets/{first['asset_id']}?version=2")
+    assert old.json()["data"]["definition"]["name"] == "Second"
+    before = (await client.get(draft_path)).json()["data"]
+    for shape in (
+        {"name": "Old unsupported storage", "obsolete_slots": []},
+        ["Old layout"],
+    ):
+        async with workflow_env.db.get_db() as session:
+            damaged = await session.get(AgentWorkflowVersion, (first["asset_id"], 1))
+            damaged.definition = shape
+            await session.commit()
+        rejected = await client.post(
+            f"{draft_path}/rebase",
+            json={
+                "expected_revision": before["revision"],
+                "published_version": 3,
+                "restore_version": 1,
+            },
+        )
+        assert rejected.status_code == 409
+        assert rejected.json()["data"]["fields"][0]["code"] == "UNSUPPORTED_FORMAT"
+        assert (await client.get(draft_path)).json()["data"] == before
+
+
+@pytest.mark.asyncio
+async def test_model_proposes_editable_draft_without_saving(
+    publication_client, workflow_env, monkeypatch
+):
+    """Check native bindings and provider selection while leaving the draft list empty.
+
+    Args:
+        publication_client: Owner-authenticated HTTP client with isolated SQLite.
+        workflow_env: Workflow services backing that client.
+        monkeypatch: Temporary replacement for the local provider manager.
+    """
+    model = MagicMock(spec=Provider)
+    model.text_chat = AsyncMock(
+        return_value=SimpleNamespace(
+            completion_text='{"name":"Research","steps":[{"name":"Read","instructions":"Read."},{"name":"Summarize","instructions":"Keep {labels}."}]}'
+        )
+    )
+    select_model = AsyncMock(return_value=model)
+    monkeypatch.setattr(
+        workflow_env.roles,
+        "core_lifecycle",
+        SimpleNamespace(
+            provider_manager=SimpleNamespace(get_provider_by_id=select_model)
+        ),
+    )
+    workflow_env.inventory["models"][0]["capabilities"] = ["text", "tool_use"]
+    catalog = await workflow_env.roles.get_resources()
+    provider_id = catalog["models"][0]["id"]
+    path = "/api/v1/workflow_assets/generate_draft"
+    request = {"description": "Read and summarize", "provider_id": provider_id}
+    response = await publication_client.post(path, json=request)
+    assert response.status_code == 200, response.text
+    graph = response.json()["data"]
+    assert graph["default_provider_id"] == provider_id
+    assert graph["tasks"][1]["inputs"]["input"]["task_id"] == "step-1"
+    assert graph["tasks"][1]["task"] == "Keep {{labels}}.\n\n{input}"
+    assert graph["edges"][0]["source"] == "step-1"
+    select_model.assert_awaited_once_with(provider_id)
+    assert (await publication_client.get("/api/v1/agent_drafts/workflow")).json()[
+        "data"
+    ] == []
+    invalid = await publication_client.post(
+        path, json={**request, "provider_id": "unknown"}
+    )
+    assert invalid.status_code == 422
+    assert model.text_chat.await_count == 1
+    workflow_env.inventory["profiles"][0]["provider_pool"] = ["some-other-model"]
+    rejected = await publication_client.post(path, json=request)
+    assert rejected.status_code == 422
+    assert rejected.json()["data"]["fields"][0]["code"] == "FORBIDDEN"
+    assert model.text_chat.await_count == 1
+    workflow_env.inventory["profiles"][0]["provider_pool"] = [provider_id]
+    workflow_env.inventory["models"][0]["capabilities"] = ["text"]
+    rejected = await publication_client.post(path, json=request)
+    assert rejected.status_code == 422
+    assert rejected.json()["data"]["fields"][0]["code"] == "INCOMPATIBLE"
+    assert model.text_chat.await_count == 1
+    workflow_env.inventory["models"][0]["capabilities"] = ["text", "tool_use"]
+    monkeypatch.setattr(workflow_env.roles, "core_lifecycle", None)
+    graph["name"] = "Reviewed report"
+    draft = (
+        await publication_client.post(
+            "/api/v1/agent_drafts/workflow", json={"body": {"definition": graph}}
+        )
+    ).json()["data"]
+    asset_path = f"/api/v1/workflow_assets/{draft['asset_id']}"
+    tested = await publication_client.post(
+        f"{asset_path}/trials",
+        json={
+            "revision": draft["revision"],
+            "mode": "full",
+            "kind": "workflow",
+            "inputs": {"input": "A passage"},
+        },
+    )
+    assert tested.status_code == 200, tested.text
+    published = await publication_client.post(
+        f"/api/v1/agent_drafts/workflow/{draft['asset_id']}/publish",
+        json={"revision": draft["revision"]},
+    )
+    assert published.status_code == 200, published.text
+    started = await publication_client.post(
+        f"{asset_path}/runs", json={"version": 1, "inputs": {"input": "A passage"}}
+    )
+    assert started.status_code == 200, started.text
+    for response in (tested, started):
+        run = await completed_run(
+            workflow_env.service, response.json()["data"]["run_id"]
+        )
+        assert run["status"] == "completed", run
+        assert run["snapshot"]["definition"]["name"] == "Reviewed report"
+        assert run["tasks"][1]["snapshot"]["inputs"]["input"].startswith(
+            "Complete report."
+        )

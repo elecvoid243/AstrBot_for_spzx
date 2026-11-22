@@ -72,11 +72,15 @@ Closing or refreshing the page does not cancel execution. Reopen the run to read
 
 ### Open the same run in Dashboard Chat
 
-In the Bot run workbench, choose **Open in Chat**. Dashboard Chat shows one conversation per root run, even when the same asset runs several times. Open a conversation from the Chat sidebar or its direct link (`#/chat/runs/<root-run-id>`) to see the asset, fixed version, root ID and current state. For draft tests, Chat shows the draft revision. Choose **Open Run Workbench** to return to that exact run and inspect its child workflows, team scopes and task attempts.
+In the Bot run workbench, choose **Open in Chat**. Dashboard Chat shows one conversation per root run, even when the same asset runs several times. Open a conversation from the Chat sidebar or its direct link (`#/chat/runs/<root-run-id>`) to see the asset, fixed version, root ID and current state. For draft tests, Chat shows the draft revision. Choose **Open run workbench** to return to that exact run.
+
+In Chat, the task list expands child workflows, team scopes and loop rounds. The execution panel shows the selected task's saved events, attempts and recorded input sources. Use **Load older process** to page back. The right panel shows the run's requests and lets you open an exact artifact version and download its authorized files. On narrow screens, switch panels with **Tasks**, **Execution**, and **Inbox & artifacts**. Use the workbench to respond to requests or retry tasks.
+
+If the connection drops, the open conversation will resume from the last applied event. You can also close or refresh Chat and reopen the same run from the sidebar.
 
 ![Open a run conversation from the Bot workbench](/images/agent-teams-run-bot-en.png)
 
-![Run conversation and its link back to the workbench](/images/agent-teams-run-chat-en.png)
+![Run conversation showing saved execution, an artifact, and the link back to the workbench](/images/agent-teams-run-chat-en.png)
 
 The run owner can open the conversation with an administrator Dashboard session. The external source-authorized link described below has its own access checks. Chat uses a dedicated **Cancel run** action. **Archive Session** moves the conversation to **View Archive** and execution continues. Restore the conversation from the archive to show it in the sidebar again.
 

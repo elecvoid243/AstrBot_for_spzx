@@ -3,7 +3,13 @@
     <v-alert v-if="unavailable" type="error" variant="tonal">
       {{ tm("runConversation.unavailable") }}
     </v-alert>
-    <v-progress-circular v-else-if="!summary" indeterminate size="24" />
+    <div v-else-if="!summary">
+      <v-alert v-if="loadError" type="error" variant="tonal">
+        {{ tm("errors.operationFailed") }}
+        <v-btn variant="text" @click="loadSession">{{ tm("page.refresh") }}</v-btn>
+      </v-alert>
+      <v-progress-circular v-else indeterminate size="24" />
+    </div>
     <template v-else>
       <h1 class="text-h4 mb-4">{{ title }}</h1>
       <dl class="run-summary">
@@ -24,10 +30,18 @@
         <v-btn v-if="archived" variant="text" :disabled="busy" @click="restoreSession">
           {{ chatLabel("conversation.unarchive") }}
         </v-btn>
-        <v-btn v-if="canCancel" variant="text" color="error" :disabled="busy" @click="cancel">
+        <v-btn v-if="canCancel" variant="text" color="error" :disabled="busy || !observed" @click="cancel">
           {{ tm("controls.cancel") }}
         </v-btn>
       </div>
+      <WorkflowWorkspacePanel
+        ref="workbench"
+        class="agent-teams-page mt-4"
+        mode="runs"
+        :readonly-run-id="runId"
+        @run-status="status = $event; observed = true"
+        @run-unavailable="unavailable = true"
+      />
       <v-alert v-if="operationError" type="error" variant="tonal" class="mt-4">
         {{ tm("runConversation.updateFailed") }}
       </v-alert>
@@ -36,7 +50,9 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import WorkflowWorkspacePanel from "@/components/agent_teams/WorkflowWorkspacePanel.vue";
+import "@/styles/agent-teams-workbench.css";
 import { isAxiosError } from "axios";
 import { chatApi } from "@/api/v1";
 import { workflowAssetsApi } from "@/api/workflowAssets";
@@ -52,46 +68,46 @@ const confirm = useConfirmDialog();
 const account = accountSessionRevision.value;
 const title = ref("");
 const summary = ref<RunConversationSummary | null>(null);
-const statusLabel = computed(() => {
-  const status = summary.value?.status ?? "";
-  return getRaw(`v2.states.${status}`) ?? status;
-});
+const status = ref("");
+const observed = ref(false);
+const statusLabel = computed(() => getRaw(`v2.states.${status.value}`) ?? status.value);
+const workbench = ref<InstanceType<typeof WorkflowWorkspacePanel> | null>(null);
 const archived = ref(false);
 const unavailable = ref(false);
+const loadError = ref(false);
 const operationError = ref(false);
 const busy = ref(false);
 const canCancel = computed(() =>
-  summary.value && !["completed", "cancelled"].includes(summary.value.status),
+  summary.value && !["completed", "cancelled"].includes(status.value),
 );
-let refreshTimer: ReturnType<typeof setInterval>;
+const observation = new AbortController();
 let loading = false;
-let disposed = false;
 let cancelRequestId: string | undefined;
 
-async function refresh() {
-  if (loading || disposed) return;
+async function loadSession() {
+  if (loading || observation.signal.aborted) return;
   loading = true;
+  loadError.value = false;
   try {
-    const { data } = await chatApi.getRunConversation(props.runId);
+    const { data } = await chatApi.getRunConversation(props.runId, observation.signal);
     assertCurrentAccount(account);
     const session = data?.data?.session;
-    if (disposed) return;
-    if (data?.status !== "ok" || session?.session_type !== "workflow_run" || !session.run_conversation) {
+    if (observation.signal.aborted) return;
+    if (data?.status !== "ok" || session?.session_type !== "workflow_run" || session.run_conversation?.run_id !== props.runId) {
       unavailable.value = true;
       summary.value = null;
       return;
     }
     title.value = session.display_name ?? "";
     summary.value = session.run_conversation;
+    status.value = session.run_conversation.status;
     archived.value = Boolean(session.archived);
     unavailable.value = false;
   } catch (error) {
-    if (disposed) return;
-    const status = isAxiosError(error) ? error.response?.status : undefined;
-    if (account !== accountSessionRevision.value || [401, 403, 404].includes(status ?? 0)) {
-      summary.value = null;
-    }
-    if (!summary.value) unavailable.value = true;
+    if (observation.signal.aborted) return;
+    const httpStatus = isAxiosError(error) ? error.response?.status : undefined;
+    unavailable.value = [401, 403, 404].includes(httpStatus ?? 0);
+    loadError.value = !unavailable.value;
   } finally {
     loading = false;
   }
@@ -101,38 +117,37 @@ async function restoreSession() {
   if (busy.value) return;
   busy.value = true;
   try {
-    if (await props.restore()) archived.value = false;
+    if (await props.restore() && !observation.signal.aborted) archived.value = false;
   } finally {
     busy.value = false;
   }
 }
 
 async function cancel() {
-  if (!canCancel.value || busy.value || !summary.value) return;
+  if (!canCancel.value || !observed.value || busy.value || !summary.value) return;
   const runId = summary.value.run_id;
   busy.value = true;
   operationError.value = false;
   try {
-    if (!(await askForConfirmation(tm("controls.cancelHint"), confirm)) || disposed) return;
+    if (!(await askForConfirmation(tm("controls.cancelHint"), confirm)) || observation.signal.aborted) return;
     assertCurrentAccount(account);
     cancelRequestId ??= crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    await workflowAssetsApi.control(runId, { action: "cancel", request_id: cancelRequestId });
-    await refresh();
+    const snapshot = await workflowAssetsApi.control(runId, { action: "cancel", request_id: cancelRequestId });
+    if (!observation.signal.aborted) workbench.value?.applyOperationSnapshot(snapshot);
   } catch {
-    if (!disposed) operationError.value = true;
+    if (!observation.signal.aborted) operationError.value = true;
   } finally {
     busy.value = false;
   }
 }
 
-onMounted(() => {
-  void refresh();
-  refreshTimer = setInterval(() => void refresh(), 3000);
-});
-onBeforeUnmount(() => {
-  disposed = true;
-  clearInterval(refreshTimer);
-});
+watch(accountSessionRevision, () => {
+  observation.abort();
+  unavailable.value = true;
+  summary.value = null;
+}, { flush: "sync" });
+onMounted(loadSession);
+onBeforeUnmount(() => observation.abort());
 </script>
 
 <style scoped>

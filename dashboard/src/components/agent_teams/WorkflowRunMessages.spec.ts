@@ -54,7 +54,7 @@ describe("member communication in official task process", () => {
     expect(record.text()).toContain("communication.consumed");
     await record.find("button").trigger("click");
     await flushPromises();
-    expect(api.artifact).toHaveBeenCalledWith("evidence", 2);
+    expect(api.artifact).toHaveBeenCalledWith("evidence", 2, undefined);
     expect(record.text()).toContain(complete);
   });
 });

@@ -218,7 +218,8 @@
     </div>
     <details class="mt-4" :open="!!run.usage?.stops?.length">
       <summary>{{ tm("usage.title") }}</summary>
-      <RunUsagePanel :run="run" />
+      <RunUsagePanel v-if="run.usage" :key="run.run_id" :run="run" :signal="signal" />
+      <p v-else class="text-caption">{{ tm("usage.unknown") }}</p>
     </details>
     <WorkflowLoopHistory :run="run" @select="$emit('select', $event)" />
     <details
@@ -242,6 +243,10 @@
       <p class="run-text text-caption my-3">
         {{ tm("child.root") }}: {{ scope.control.root_run_id }} ·
         {{ tm("child.scope") }}: {{ scope.state.scope_id }}
+      </p>
+      <p class="run-text text-caption my-3" data-testid="child-scope-usage">
+        {{ tm("child.modelCalls") }}: {{ scope.usage?.model_calls ?? tm("child.unknownUsage") }} ·
+        {{ tm("child.steps") }}: {{ scope.usage?.steps_used ?? tm("child.unknownUsage") }}
       </p>
       <p v-if="scope.state.reason" class="run-text mb-3">
         {{ scope.state.reason }}
@@ -293,7 +298,7 @@ import { computed } from "vue";
 import { useModuleI18n } from "@/i18n/composables";
 import WorkflowGraphCanvas from "./WorkflowGraphCanvas.vue";
 import WorkflowLoopHistory from "./WorkflowLoopHistory.vue";
-const props = defineProps<{ run: any; selectedTask: string | null; compact?: boolean }>();
+const props = defineProps<{ run: any; selectedTask: string | null; compact?: boolean; signal?: AbortSignal }>();
 defineEmits<{ select: [nodeId: string | null] }>();
 const { tm } = useModuleI18n("features/agent-teams");
 const tasks = computed<any[]>(() => [

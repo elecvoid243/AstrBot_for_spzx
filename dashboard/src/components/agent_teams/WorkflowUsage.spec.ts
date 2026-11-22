@@ -82,7 +82,7 @@ it("pages prior usage without changing the accurate summary", async () => {
   const wrapper = mount(RunUsagePanel, {props:{run:{run_id:"task", control:{root_run_id:"root"}, usage:{tokens:{reported:100}, ledger_before:"boundary", ledger:[{receipt_id:"new",created_at:"2026-01-02",kind:"model",quality:"reported",reported_tokens:5}]}}},global:{stubs:{"v-btn":{template:"<button><slot /></button>"}}}});
   await wrapper.find("button").trigger("click");
   await flushPromises();
-  expect(historyApi).toHaveBeenCalledWith("root", "task", "usage", "boundary");
+  expect(historyApi).toHaveBeenCalledWith("root", "task", "usage", "boundary", undefined);
   expect(wrapper.find('[data-testid="reported-tokens"]').text()).toContain("100");
   expect(wrapper.text()).toContain("old");
   expect(wrapper.text()).toContain("new");

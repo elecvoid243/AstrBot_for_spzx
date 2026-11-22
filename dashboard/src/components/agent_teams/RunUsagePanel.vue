@@ -123,7 +123,7 @@ import { computed, ref, watch } from "vue";
 import { useModuleI18n } from "@/i18n/composables";
 import { workflowAssetsApi } from "@/api/workflowAssets";
 import { extractApiError } from "@/utils/extractApiError";
-const props = defineProps<{ run: any }>();
+const props = defineProps<{ run: any; signal?: AbortSignal }>();
 const { tm } = useModuleI18n("features/agent-teams");
 const older = ref<any[]>([]);
 const next = ref<string | null | undefined>(undefined);
@@ -140,21 +140,23 @@ watch(() => older.value.length + (props.run.usage?.ledger?.length ?? 0), (count)
   if (count > 512) truncated.value = true;
 });
 async function loadOlder() {
-  if (!nextBefore.value || loading.value) return;
+  const signal = props.signal;
+  if (!nextBefore.value || loading.value || signal?.aborted) return;
   const taskId = props.run.run_id;
   const rootId = props.run.control?.root_run_id ?? taskId;
   loading.value = true;
   error.value = "";
   try {
-    const page = await workflowAssetsApi.runHistoryPage(rootId, taskId, "usage", nextBefore.value);
-    if (props.run.run_id !== taskId) return;
+    const page = await workflowAssetsApi.runHistoryPage(rootId, taskId, "usage", nextBefore.value, signal);
+    if (signal?.aborted || props.run.run_id !== taskId) return;
     const entries = new Map([...page.items, ...older.value].map((receipt: any) => [receipt.receipt_id, receipt]));
     const merged = [...entries.values()].sort((a: any, b: any) => String(a.created_at ?? "").localeCompare(String(b.created_at ?? "")) || a.receipt_id.localeCompare(b.receipt_id));
     if (merged.length + (props.run.usage?.ledger?.length ?? 0) > 512) truncated.value = true;
     older.value = merged.slice(0, 512);
     next.value = page.next_before;
   } catch (cause) {
-    error.value = extractApiError(cause, tm("errors.operationFailed")).message;
+    if (!signal?.aborted && props.run.run_id === taskId)
+      error.value = extractApiError(cause, tm("errors.operationFailed")).message;
   } finally {
     loading.value = false;
   }

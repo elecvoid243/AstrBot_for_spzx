@@ -127,7 +127,7 @@
           >{{ JSON.stringify(call.recovery, null, 2) }}</pre
         >
         <WorkflowToolResolution
-          v-if="call.available_actions?.length"
+          v-if="!readonly && call.available_actions?.length"
           :key="call.record_id"
           :actions="call.available_actions"
           :busy="busy ?? false"
@@ -169,6 +169,7 @@
               </details>
               <details class="mt-2"><summary>{{ tm("progress.contextTools") }}</summary><pre class="process-text">{{ JSON.stringify(item.context.observation.value.tools ?? [], null, 2) }}</pre></details>
               <p class="text-caption mt-3">{{ tm("progress.sourceNote") }}</p>
+              <p v-if="!item.context.assembly.value.sources?.length" class="text-caption">{{ tm("progress.sourceAbsent") }}</p>
               <p v-if="item.context.assembly.truncated" class="text-warning">{{ tm("progress.contextTruncated", { limit: item.context.assembly.limit, length: item.context.assembly.original_length }) }}</p>
               <details v-for="(source, index) in item.context.assembly.value.sources ?? []" :key="index" class="mt-2">
                 <summary>{{ tm(`progress.sourceKinds.${source.kind}`) }} <span v-if="source.id">· {{ source.id }}</span><span v-if="source.ids?.length">· {{ source.ids.join(", ") }}</span></summary>
@@ -261,6 +262,42 @@
         JSON.stringify(run.state.response, null, 2)
       }}</pre>
     </details>
+    <details v-if="run.state.attempt_id || run.attempts?.length || readonly" class="process-record">
+      <summary>{{ tm("progress.attempts") }}</summary>
+      <p class="process-text px-4 py-2" data-testid="current-attempt">
+        {{ tm("v2.attempt") }} · {{ run.state.attempt_id ?? tm("progress.sourceAbsent") }}
+      </p>
+      <details v-for="attempt in run.attempts ?? []" :key="attempt.attempt_id" class="px-4 py-2" data-testid="saved-attempt">
+        <summary>{{ attempt.attempt_id }} · {{ getRaw(`v2.states.${attempt.status}`) ?? attempt.status }}</summary>
+        <p v-if="attempt.state?.reason" class="process-text">{{ attempt.state.reason }}</p>
+        <p class="text-caption">{{ tm("graph.inputs") }}</p>
+        <pre v-if="attempt.snapshot?.inputs != null" class="process-text">{{ JSON.stringify(attempt.snapshot.inputs, null, 2) }}</pre>
+        <p v-else class="text-caption">{{ tm("progress.sourceAbsent") }}</p>
+        <p class="text-caption">{{ tm("usage.title") }} · {{ attempt.checkpoint?.stats?.token_usage ?? tm("usage.unknown") }}</p>
+        <div v-if="attempt.snapshot?.input_artifacts?.length" class="text-caption">
+          <p>{{ tm("v2.pinnedInputs") }}</p>
+          <p v-for="ref in attempt.snapshot.input_artifacts" :key="`${ref.artifact_id}:${ref.version}`">
+            {{ ref.artifact_id }} · v{{ ref.version }}
+          </p>
+        </div>
+        <p class="text-caption">{{ tm("progress.attemptOutputUnavailable") }}</p>
+      </details>
+    </details>
+    <details v-if="readonly" class="process-record">
+      <summary>{{ tm("graph.inputs") }}</summary>
+      <pre v-if="Object.keys(run.snapshot?.inputs ?? {}).length" class="process-text pa-4">{{ JSON.stringify(run.snapshot.inputs, null, 2) }}</pre>
+      <p v-else class="text-caption pa-4">{{ tm("progress.sourceAbsent") }}</p>
+      <div v-if="Object.keys(selectedFields).length" class="px-4 pb-4">
+        <p class="text-caption">{{ tm("progress.sourceKinds.upstream") }}</p>
+        <p v-for="(fields, artifactId) in selectedFields" :key="artifactId" class="process-text">
+          {{ artifactId }} · {{ fields.join(", ") }}
+        </p>
+      </div>
+      <div v-if="Object.keys(run.snapshot?.trial_input_sources ?? {}).length" class="px-4 pb-4">
+        <p class="text-caption">{{ tm("trial.source") }}</p>
+        <pre class="process-text">{{ JSON.stringify(run.snapshot.trial_input_sources, null, 2) }}</pre>
+      </div>
+    </details>
     <details class="process-record">
       <summary>{{ tm("progress.events") }} · {{ run.cursor ?? 0 }}</summary>
       <p class="text-caption pa-4">{{ tm("progress.observation") }}</p>
@@ -283,9 +320,10 @@ import { extractApiError } from "@/utils/extractApiError";
 import { useModuleI18n } from "@/i18n/composables";
 import WorkflowToolResolution from "./WorkflowToolResolution.vue";
 import type { ToolResolutionRequest } from "@/api/generated/openapi-v1";
-const props = defineProps<{ run: any; busy?: boolean }>();
+const props = defineProps<{ run: any; busy?: boolean; readonly?: boolean; signal?: AbortSignal }>();
 const customizer = useCustomizerStore();
 const isDark = computed(() => customizer.isDark);
+const selectedFields = computed<Record<string, string[]>>(() => props.run.snapshot?.selected_fields ?? {});
 const deliveries = computed(() => {
   const groups = new Map<string, any>();
   for (const [order, record] of (props.run.process ?? []).entries()) {
@@ -421,7 +459,7 @@ const otherRecords = computed(() =>
 const emit = defineEmits<{
   (event: "resolve", recordId: string, payload: ToolResolutionRequest): void;
 }>();
-const { tm } = useModuleI18n("features/agent-teams");
+const { tm, getRaw } = useModuleI18n("features/agent-teams");
 const artifactReads = reactive<
   Record<string, { loading: boolean; artifact?: any; error?: string }>
 >({});
@@ -429,15 +467,19 @@ async function readMessageArtifact(reference: {
   artifact_id: string;
   version: number;
 }) {
+  const signal = props.signal;
   const key = JSON.stringify(reference);
-  if (artifactReads[key]?.loading) return;
+  if (signal?.aborted || artifactReads[key]?.loading) return;
   artifactReads[key] = { loading: true };
   try {
-    artifactReads[key].artifact = await workflowAssetsApi.artifact(
+    const artifact = await workflowAssetsApi.artifact(
       reference.artifact_id,
       reference.version,
+      signal,
     );
+    if (!signal?.aborted) artifactReads[key].artifact = artifact;
   } catch (error) {
+    if (signal?.aborted) return;
     artifactReads[key].error = extractApiError(
       error,
       tm("errors.operationFailed"),

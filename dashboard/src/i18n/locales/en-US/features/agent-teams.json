@@ -388,6 +388,7 @@
       "dependency_failed": "Upstream task failed",
       "cancelled": "Cancelled",
       "waiting_human": "Waiting for human",
+      "paused": "Paused",
       "rejected": "Human rejected",
       "waiting_child": "Waiting for child scope"
     },
@@ -429,6 +430,8 @@
     "modelResponse": "Model response",
     "missingChunks": "Some stream pieces are missing from the displayed history. Load older records or reconnect to inspect the gap.",
     "historyHint": "The latest observations are shown first. Load older process to read earlier records.",
+    "attemptOutputUnavailable": "Saved output is unavailable for this attempt.",
+    "attempts": "Attempts",
     "loadAttempts": "Load older attempts",
     "loadMessages": "Load older messages",
     "loadEvents": "Load older events",

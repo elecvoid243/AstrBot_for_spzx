@@ -131,28 +131,28 @@ export const workflowAssetsApi = {
       )
     ).data.data;
   },
-  async run(runId: string) {
+  async run(runId: string, signal?: AbortSignal) {
     return (
-      await httpClient.get(`/api/v1/workflow_runs/${encodeURIComponent(runId)}`)
+      await httpClient.get(`/api/v1/workflow_runs/${encodeURIComponent(runId)}`, { signal })
     ).data.data;
   },
-  async runHistoryPage(runId: string, taskRunId: string, kind: "events" | "messages" | "usage" | "attempts", before?: string | null) {
+  async runHistoryPage(runId: string, taskRunId: string, kind: "events" | "messages" | "usage" | "attempts", before?: string | null, signal?: AbortSignal) {
     return (await httpClient.get(
       `/api/v1/workflow_runs/${encodeURIComponent(runId)}/history`,
-      { params: { task_run_id: taskRunId, kind, before } },
+      { params: { task_run_id: taskRunId, kind, before }, signal },
     )).data.data;
   },
-  async processPage(runId: string, taskRunId: string, before: number) {
+  async processPage(runId: string, taskRunId: string, before: number, signal?: AbortSignal) {
     return (await httpClient.get(
       `/api/v1/workflow_runs/${encodeURIComponent(runId)}/process`,
-      { params: { task_run_id: taskRunId, before } },
+      { params: { task_run_id: taskRunId, before }, signal },
     )).data.data;
   },
-  async events(runId: string, after: number) {
+  async events(runId: string, after: number, signal?: AbortSignal) {
     return (
       await httpClient.get(
         `/api/v1/workflow_runs/${encodeURIComponent(runId)}/events`,
-        { params: { after } },
+        { params: { after }, signal },
       )
     ).data.data;
   },
@@ -198,12 +198,13 @@ export const workflowAssetsApi = {
       )
     ).data.data;
   },
-  async artifact(artifactId: string, version: number) {
+  async artifact(artifactId: string, version: number, signal?: AbortSignal) {
     return (
       await httpClient.get(
         `/api/v1/workflow_artifacts/${encodeURIComponent(
           artifactId,
         )}/versions/${version}`,
+        { signal },
       )
     ).data.data;
   },
@@ -246,12 +247,13 @@ export const workflowAssetsApi = {
     version: number,
     fileId: string,
     download: boolean,
+    signal?: AbortSignal,
   ) {
     return await httpClient.get(
       `/api/v1/workflow_artifacts/${encodeURIComponent(
         artifactId,
       )}/versions/${version}/files/${encodeURIComponent(fileId)}`,
-      { params: { download }, responseType: "blob" },
+      { params: { download }, responseType: "blob", signal },
     );
   },
 };

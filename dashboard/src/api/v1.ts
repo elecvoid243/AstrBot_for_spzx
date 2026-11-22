@@ -1035,8 +1035,8 @@ export const chatApi = {
       }),
     );
   },
-  getRunConversation(runId: string) {
-    return openApiV1.getChatRunConversation({ path: { run_id: runId } });
+  getRunConversation(runId: string, signal?: AbortSignal) {
+    return openApiV1.getChatRunConversation({ path: { run_id: runId }, signal });
   },
   setRunConversationArchived(runId: string, archived: boolean) {
     return openApiV1.archiveChatRunConversation({ path: { run_id: runId }, body: { archived } });

@@ -9,6 +9,10 @@
     "unavailable": "Этот сеанс запуска недоступен.",
     "updateFailed": "Не удалось обновить запуск."
   },
+  "progress": {
+    "attemptOutputUnavailable": "Сохранённый результат этой попытки недоступен.",
+    "attempts": "Попытки"
+  },
   "page": {
     "title": "Команды агентов",
     "incomplete": "В разработке",

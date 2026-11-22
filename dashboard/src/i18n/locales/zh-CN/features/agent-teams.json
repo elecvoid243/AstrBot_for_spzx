@@ -388,6 +388,7 @@
       "dependency_failed": "上游任务失败",
       "cancelled": "已取消",
       "waiting_human": "等待人工",
+      "paused": "已暂停",
       "rejected": "人工拒绝",
       "waiting_child": "等待子作用域"
     },
@@ -429,6 +430,8 @@
     "modelResponse": "模型回复",
     "missingChunks": "当前显示的历史缺少部分流式片段。加载更早记录或重新连接以检查缺口。",
     "historyHint": "首先显示最近的过程记录；点击加载更早过程查看之前的记录。",
+    "attemptOutputUnavailable": "此尝试的已保存输出不可用。",
+    "attempts": "运行尝试",
     "loadAttempts": "加载更早尝试",
     "loadMessages": "加载更早消息",
     "loadEvents": "加载更早事件",

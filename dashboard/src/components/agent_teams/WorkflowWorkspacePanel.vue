@@ -1,6 +1,6 @@
 <template>
   <section class="workflow-workspace">
-    <div v-if="mode === 'assets' || !selectedRun" class="at-asset-toolbar">
+    <div v-if="!readonlyRunId && (mode === 'assets' || !selectedRun)" class="at-asset-toolbar">
       <h2 class="text-h5">
         {{
           tm(
@@ -58,7 +58,8 @@
       role="alert"
       >{{ error }}</v-alert
     >
-    <p v-if="mode === 'assets' || !selectedRun" class="at-asset-intro">
+    <v-progress-circular v-if="readonlyRunId && !selectedRun && loading" indeterminate size="24" />
+    <p v-if="!readonlyRunId && (mode === 'assets' || !selectedRun)" class="at-asset-intro">
       {{
         tm(
           mode === "runs"
@@ -118,6 +119,7 @@
 
     <DeleteAssetDialog :name="deleteTarget?.definition.name || (deleteTarget ? tm('draft.untitled') : null)" :busy="deleting" :error="deleteError" @cancel="deleteTarget = null; deleteError = ''" @confirm="deleteAsset" />
     <template v-if="mode !== 'assets'">
+      <template v-if="!readonlyRunId">
       <nav
         class="at-run-filters"
         :aria-label="tm('workbench.runs')"
@@ -232,6 +234,7 @@
           </v-card-text>
         </v-card>
       </details>
+      </template>
       <v-card
         v-if="selectedRun && runView !== 'history'"
         variant="outlined"
@@ -240,14 +243,14 @@
       >
         <v-card-text class="workbench-body">
           <div class="at-run-header">
-            <h2 class="text-h5 font-weight-bold flex-grow-1">{{ selectedRun.snapshot.definition.name }}</h2>
+            <h2 v-if="!readonlyRunId" class="text-h5 font-weight-bold flex-grow-1">{{ selectedRun.snapshot.definition.name }}</h2>
             <v-btn
-              v-if="selectedRun.snapshot.root_run_id === selectedRun.run_id"
+              v-if="!readonlyRunId && selectedRun.snapshot.root_run_id === selectedRun.run_id"
               variant="text"
               :to="{ name: 'ChatRunConversation', params: { runId: selectedRun.run_id } }"
             >{{ tm('runConversation.openChat') }}</v-btn>
-            <v-chip v-if="selectedRun.snapshot.trial" size="small" color="primary" variant="outlined">{{ tm('trial.test') }} · r{{ selectedRun.snapshot.trial.draft_revision }}</v-chip>
-            <v-chip variant="tonal" :color="selectedRun.status === 'completed' ? 'success' : 'primary'">{{ tm(`v2.states.${selectedRun.status}`) }}</v-chip>
+            <v-chip v-if="!readonlyRunId && selectedRun.snapshot.trial" size="small" color="primary" variant="outlined">{{ tm('trial.test') }} · r{{ selectedRun.snapshot.trial.draft_revision }}</v-chip>
+            <v-chip v-if="!readonlyRunId" variant="tonal" :color="observedStatus === 'completed' ? 'success' : 'primary'">{{ tm(`v2.states.${observedStatus}`) }}</v-chip>
             <v-btn variant="text" :aria-pressed="runDisplay === 'workbench'" @click="runDisplay = 'workbench'">{{ tm('workbench.workspace') }}</v-btn>
             <v-btn variant="text" :aria-pressed="runDisplay === 'graph'" @click="runDisplay = 'graph'">{{ tm('progress.graph') }}</v-btn>
           </div>
@@ -264,6 +267,7 @@
               <WorkflowRunProgress
                 compact
                 :run="selectedRun"
+                :signal="observation.signal"
                 :selected-task="selectedTaskNode"
                 @select="selectRunTask"
               />
@@ -280,7 +284,7 @@
               <p v-if="historyTruncated[detailRun.run_id]" class="text-warning">{{ tm("progress.historyWindow") }}</p>
               <p v-else-if="historyOlderHidden[detailRun.run_id]" class="text-caption">{{ tm("progress.olderHistoryHidden") }}</p>
               <p v-if="historyErrors[detailRun.run_id]" role="alert">{{ historyErrors[detailRun.run_id] }}</p>
-              <WorkflowRunProcess :run="detailRun" :busy="!!currentOperation" @resolve="resolveTool" />
+              <WorkflowRunProcess :key="detailRun.run_id" :run="detailRun" :readonly="!!readonlyRunId" :signal="observation.signal" :busy="!!currentOperation" @resolve="resolveTool" />
             </div>
             <div class="workbench-column workbench-results">
           <section
@@ -289,9 +293,14 @@
             class="at-human-section"
           >
             <h3 class="text-h6">{{ tm("human.title") }}</h3>
-            <p class="text-body-2">{{ tm("human.localWait") }}</p>
+            <template v-if="readonlyRunId">
+              <p v-for="todo in selectedRun.todos" :key="todo.todo_id">
+                {{ todo.question }} · {{ tm(`human.status.${todo.status}`) }}
+              </p>
+            </template>
+            <p v-if="!readonlyRunId" class="text-body-2">{{ tm("human.localWait") }}</p>
             <WorkflowHumanTodo
-              v-for="todo in selectedRun.todos"
+              v-for="todo in readonlyRunId ? [] : selectedRun.todos"
               :key="todo.todo_id"
               :todo="todo"
               :paused="selectedRun.control?.status === 'paused'"
@@ -301,6 +310,7 @@
             />
           </section>
           <WorkflowRunControls
+            v-if="!readonlyRunId"
             :key="selectedRun.run_id"
             :run="selectedRun"
             :task="detailRun"
@@ -419,7 +429,7 @@
               {{ tm("recovery.limits") }}
             </p>
             <v-btn
-              v-if="detailRun.recovery.available"
+              v-if="!readonlyRunId && detailRun.recovery.available"
               variant="tonal"
               class="mt-3"
               :loading="
@@ -459,7 +469,8 @@
           >
           <details v-if="detailRun.run_id !== selectedRun.run_id" class="my-3">
             <summary>{{ tm("usage.title") }}</summary>
-            <RunUsagePanel :run="detailRun" />
+            <RunUsagePanel v-if="detailRun.usage" :key="detailRun.run_id" :run="detailRun" :signal="observation.signal" />
+            <p v-else-if="readonlyRunId">{{ tm("usage.unknown") }}</p>
           </details>
           <p class="text-body-2 text-medium-emphasis mb-3">
             {{ detailRun.snapshot.definition.name }} · {{ tm("v2.result") }}
@@ -482,6 +493,7 @@
             data-testid="artifact-version"
             @update:model-value="loadArtifact"
           />
+          <p v-if="fileError" role="alert" class="text-error">{{ fileError }}</p>
           <pre
             v-if="
               selectedArtifact || (!detailRun.result_ref && detailRun.result)
@@ -509,7 +521,7 @@
             }}</v-btn>
           </div>
           <v-btn
-            v-if="selectedArtifact"
+            v-if="!readonlyRunId && selectedArtifact"
             variant="tonal"
             class="mt-2"
             @click="prepareRevision"
@@ -657,6 +669,7 @@
     <v-dialog
       class="workbench-dialog"
       scrollable
+      v-if="!readonlyRunId"
       v-model="revising"
       max-width="720"
       :persistent="saving"
@@ -698,6 +711,7 @@
       scrollable
       v-model="previewing"
       max-width="900"
+      @update:model-value="!$event && clearFilePreview()"
     >
       <v-card>
         <v-card-title class="text-h3 pa-4 pb-0 pl-6">{{
@@ -716,13 +730,14 @@
           />
         </v-card-text>
         <v-card-actions
-          ><v-spacer /><v-btn variant="text" @click="previewing = false">{{
+          ><v-spacer /><v-btn variant="text" @click="clearFilePreview">{{
             tm("v2.close")
           }}</v-btn></v-card-actions
         >
       </v-card>
     </v-dialog>
     <WorkflowPackageDialog
+      v-if="!readonlyRunId"
       v-model="packageDialog"
       :exported-package="exportedPackage"
       @installed="
@@ -744,8 +759,10 @@
 import UnifiedRunHistory from "./UnifiedRunHistory.vue";
 import ImagePreview from "@/components/chat/message_list_comps/binary_preview/ImagePreview.vue";
 import PdfPreview from "@/components/chat/message_list_comps/binary_preview/PdfPreview.vue";
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
+import { isAxiosError } from "axios";
+import { accountSessionRevision } from "@/utils/accountSession";
 import { roleAssetsApi } from "@/api/roleAssets";
 import { draftApi } from "@/composables/useAssetDraft";
 import { workflowAssetsApi } from "@/api/workflowAssets";
@@ -771,13 +788,15 @@ import type {
   WorkflowPackage,
 } from "@/api/generated/openapi-v1";
 
-const props = defineProps<{
-  mode: "assets" | "runs";
-  assetKind?: "teams" | "workflows";
-}>();
+const props = defineProps<
+  | { mode: "assets"; assetKind?: "teams" | "workflows"; readonlyRunId?: never }
+  | { mode: "runs"; readonlyRunId?: string; assetKind?: never }
+>();
 const emit = defineEmits<{
   (event: "started", runId: string): void;
   (event: "installed", directory: "teams" | "workflows"): void;
+  (event: "run-status", status: string): void;
+  (event: "run-unavailable"): void;
 }>();
 const { tm } = useModuleI18n("features/agent-teams");
 const route = useRoute();
@@ -871,7 +890,7 @@ async function answerInbox(
   inboxBusy.value = true;
   try {
     const updated = await workflowAssetsApi.answer(rootId, todoId, payload);
-    if (selectedRun.value?.run_id === rootId) selectedRun.value = updated;
+    if (!disposed && !openingRun && selectedRun.value?.run_id === rootId) applyOperationSnapshot(updated);
     humanRequests.value = (await workflowAssetsApi.humanRequests()).requests;
   } catch (err) {
     error.value = extractApiError(err, tm("errors.operationFailed")).message;
@@ -918,7 +937,23 @@ const visibleRuns = computed(() =>
     return true;
   }),
 );
+const observation = shallowRef(new AbortController());
 const selectedRun = ref<any>(null);
+const observedStatus = computed(() => {
+  const run = selectedRun.value;
+  if (!run) return "";
+  if (run.control?.status === "paused" && !["completed", "cancelled", "failed", "skipped"].includes(run.status)) {
+    return "paused";
+  }
+  if (run.status === "running" && run.progress?.running === 0 &&
+      run.todos?.some((todo: { status: string }) => todo.status === "pending")) {
+    return "waiting_human";
+  }
+  return run.status;
+});
+watch(observedStatus, (status) => {
+  if (props.readonlyRunId && status) emit("run-status", status);
+});
 const runDisplay = ref<'workbench' | 'graph'>('workbench');
 const activeRunPanel = ref<'tasks' | 'process' | 'results'>('process');
 const runOperations = ref(
@@ -956,6 +991,7 @@ watch(() => selectedRun.value?.cursor, async () => {
 const allRunTasks = computed<any[]>(() => [
   ...new Map(
     [
+      ...(props.readonlyRunId && selectedRun.value ? [selectedRun.value] : []),
       ...(selectedRun.value?.tasks ?? []),
       ...(selectedRun.value?.scopes ?? []).flatMap((scope: any) => scope.tasks),
       ...[selectedRun.value, ...(selectedRun.value?.scopes ?? [])].flatMap((scope: any) =>
@@ -1014,7 +1050,8 @@ const historyOlderHidden = ref<Record<string, boolean>>({});
 const historyRestoring = ref<Record<string, boolean>>({});
 const historyReturning = ref<Record<string, boolean>>({});
 const historyPending = ref<Record<string, Partial<Record<"process" | "events" | "messages" | "attempts", any[]>>>>({});
-watch(() => selectedRun.value?.run_id, () => {
+watch([() => selectedRun.value?.run_id, () => observation.value], () => {
+  historyBusy.value = false;
   historyDone.value = {};
   historyNext.value = {};
   historyErrors.value = {};
@@ -1081,7 +1118,9 @@ function mergeHistoryWindow(target: any, kind: "process" | "events" | "messages"
 }
 
 async function loadOlderProcess() {
-  if (historyBusy.value || !selectedRun.value || !detailRun.value) return;
+  if (openingRun || historyBusy.value || !selectedRun.value || !detailRun.value) return;
+  const signal = observation.value.signal;
+  if (signal.aborted) return;
   const rootId = selectedRun.value.run_id;
   const taskId = detailRun.value.run_id;
   const cursors = (detailRun.value.process ?? []).map((record: any) => record.cursor).filter((cursor: any) => Number.isInteger(cursor));
@@ -1092,8 +1131,8 @@ async function loadOlderProcess() {
   followProcess.value = false;
   delete historyErrors.value[taskId];
   try {
-    const page = await workflowAssetsApi.processPage(rootId, taskId, before);
-    if (selectedRun.value?.run_id !== rootId || detailRun.value?.run_id !== taskId || !historyReading.value[taskId]) return;
+    const page = await workflowAssetsApi.processPage(rootId, taskId, before, signal);
+    if (signal.aborted || selectedRun.value?.run_id !== rootId || detailRun.value?.run_id !== taskId || !historyReading.value[taskId]) return;
     const pane = processPane.value;
     const height = pane?.scrollHeight ?? 0;
     const top = pane?.scrollTop ?? 0;
@@ -1103,29 +1142,34 @@ async function loadOlderProcess() {
     }
     historyDone.value = { ...historyDone.value, [taskId]: page.next_before === null };
     await nextTick();
-    if (pane && detailRun.value?.run_id === taskId) pane.scrollTop = top + pane.scrollHeight - height;
+    if (!signal.aborted && pane && detailRun.value?.run_id === taskId) pane.scrollTop = top + pane.scrollHeight - height;
   } catch (cause) {
-    historyErrors.value[taskId] = extractApiError(cause, tm("errors.operationFailed")).message;
+    if (!signal.aborted && detailRun.value?.run_id === taskId)
+      historyErrors.value[taskId] = extractApiError(cause, tm("errors.operationFailed")).message;
   } finally {
-    historyBusy.value = false;
+    if (!signal.aborted) historyBusy.value = false;
   }
 }
 async function loadOlderHistory(kind: "events" | "messages" | "attempts") {
-  if (historyBusy.value || !selectedRun.value || !detailRun.value) return;
+  if (openingRun || historyBusy.value || !selectedRun.value || !detailRun.value) return;
+  const signal = observation.value.signal;
+  if (signal.aborted) return;
   const rootId = selectedRun.value.run_id;
   const taskId = detailRun.value.run_id;
   const key = `${taskId}:${kind}`;
   const next = historyNext.value[key];
   if (next === null) return;
-  const before = next ?? String(detailRun.value[kind === "events" ? "event_history_before" : kind === "messages" ? "message_history_before" : "attempt_history_before"] ?? 1);
+  const floor = detailRun.value[kind === "events" ? "event_history_before" : kind === "messages" ? "message_history_before" : "attempt_history_before"] ?? 1;
+  const applied = selectedRun.value.cursor;
+  const before = next ?? String(Number.isInteger(applied) ? Math.min(floor, applied + 1) : floor);
   historyBusy.value = true;
   historyReading.value[taskId] = true;
   historyPinned.value[taskId] = true;
   followProcess.value = false;
   delete historyErrors.value[taskId];
   try {
-    const page = await workflowAssetsApi.runHistoryPage(rootId, taskId, kind, before);
-    if (selectedRun.value?.run_id !== rootId || detailRun.value?.run_id !== taskId || !historyReading.value[taskId]) return;
+    const page = await workflowAssetsApi.runHistoryPage(rootId, taskId, kind, before, signal);
+    if (signal.aborted || selectedRun.value?.run_id !== rootId || detailRun.value?.run_id !== taskId || !historyReading.value[taskId]) return;
     const pane = processPane.value;
     const height = pane?.scrollHeight ?? 0;
     const top = pane?.scrollTop ?? 0;
@@ -1134,28 +1178,30 @@ async function loadOlderHistory(kind: "events" | "messages" | "attempts") {
     }
     historyNext.value[key] = page.next_before;
     await nextTick();
-    if (pane && detailRun.value?.run_id === taskId) pane.scrollTop = top + pane.scrollHeight - height;
+    if (!signal.aborted && pane && detailRun.value?.run_id === taskId) pane.scrollTop = top + pane.scrollHeight - height;
   } catch (cause) {
-    historyErrors.value[taskId] = extractApiError(cause, tm("errors.operationFailed")).message;
+    if (!signal.aborted && detailRun.value?.run_id === taskId)
+      historyErrors.value[taskId] = extractApiError(cause, tm("errors.operationFailed")).message;
   } finally {
-    historyBusy.value = false;
+    if (!signal.aborted) historyBusy.value = false;
   }
 }
 async function restoreLatest(taskId: string) {
   const root = selectedRun.value;
-  if (!root || historyRestoring.value[taskId]) return;
+  const signal = observation.value.signal;
+  if (!root || signal.aborted || historyRestoring.value[taskId]) return;
   const rootId = root.run_id;
   const boundary = root.cursor;
   historyRestoring.value[taskId] = true;
   delete historyErrors.value[taskId];
   try {
     const [process, events, messages, attempts] = await Promise.all([
-      workflowAssetsApi.processPage(rootId, taskId, boundary + 1),
-      workflowAssetsApi.runHistoryPage(rootId, taskId, "events", String(boundary + 1)),
-      workflowAssetsApi.runHistoryPage(rootId, taskId, "messages", String(boundary + 1)),
-      workflowAssetsApi.runHistoryPage(rootId, taskId, "attempts", String(boundary + 1)),
+      workflowAssetsApi.processPage(rootId, taskId, boundary + 1, signal),
+      workflowAssetsApi.runHistoryPage(rootId, taskId, "events", String(boundary + 1), signal),
+      workflowAssetsApi.runHistoryPage(rootId, taskId, "messages", String(boundary + 1), signal),
+      workflowAssetsApi.runHistoryPage(rootId, taskId, "attempts", String(boundary + 1), signal),
     ]);
-    if (selectedRun.value?.run_id !== rootId || historyReading.value[taskId]) return;
+    if (signal.aborted || selectedRun.value?.run_id !== rootId || historyReading.value[taskId]) return;
     const pages = { process: process.records, events: events.items, messages: messages.items, attempts: attempts.items };
     for (const target of runViews(selectedRun.value).filter((view: any) => view.run_id === taskId)) {
       for (const kind of ["process", "events", "messages", "attempts"] as const) {
@@ -1182,11 +1228,11 @@ async function restoreLatest(taskId: string) {
     if (detailRun.value?.run_id === taskId) {
       followProcess.value = true;
       await nextTick();
-      if (detailRun.value?.run_id === taskId && followProcess.value && processPane.value)
+      if (!signal.aborted && detailRun.value?.run_id === taskId && followProcess.value && processPane.value)
         processPane.value.scrollTop = processPane.value.scrollHeight;
     }
   } catch (cause) {
-    if (selectedRun.value?.run_id === rootId) {
+    if (!signal.aborted && selectedRun.value?.run_id === rootId) {
       historyErrors.value[taskId] = extractApiError(cause, tm("errors.operationFailed")).message;
       if (detailRun.value?.run_id === taskId) {
         historyReading.value[taskId] = true;
@@ -1194,20 +1240,23 @@ async function restoreLatest(taskId: string) {
       }
     }
   } finally {
-    delete historyRestoring.value[taskId];
-    delete historyPending.value[taskId];
+    if (!signal.aborted) {
+      delete historyRestoring.value[taskId];
+      delete historyPending.value[taskId];
+    }
   }
 }
 async function reloadLatestProcess() {
+  const signal = observation.value.signal;
   const taskId = detailRun.value?.run_id;
-  if (!taskId || historyBusy.value || historyRestoring.value[taskId]) return;
+  if (signal.aborted || !taskId || historyBusy.value || historyRestoring.value[taskId]) return;
   delete historyReading.value[taskId];
   historyReturning.value[taskId] = true;
   followProcess.value = false;
   try {
     await restoreLatest(taskId);
   } finally {
-    delete historyReturning.value[taskId];
+    if (!signal.aborted) delete historyReturning.value[taskId];
   }
 }
 const teamEditing = ref(false);
@@ -1231,11 +1280,21 @@ const revising = ref(false);
 const revisionText = ref("");
 const revisionFiles = ref<File[]>([]);
 const revisionRequestId = ref("");
+const fileError = ref("");
+let previewRead = 0;
 const previewing = ref(false);
 const previewText = ref("");
 const previewUrl = ref("");
 const previewBlob = ref<Blob | null>(null);
 const previewFilename = ref("");
+function clearFilePreview() {
+  previewRead++;
+  previewing.value = false;
+  if (previewUrl.value) URL.revokeObjectURL(previewUrl.value);
+  previewUrl.value = "";
+  previewText.value = "";
+  previewBlob.value = null;
+}
 const availableInputs = computed(() =>
   runs.value.flatMap((run) =>
     (run.artifacts ?? []).map((artifact: any) => ({
@@ -1257,7 +1316,16 @@ const runAsset = ref<any>(null);
 const inputs = ref<Record<string, string>>({});
 let timer: ReturnType<typeof setInterval> | undefined;
 let disposed = false;
+watch(accountSessionRevision, () => {
+  disposed = true;
+  observation.value.abort();
+  selectedRun.value = null;
+  selectedArtifact.value = null;
+  clearFilePreview();
+  if (timer) clearInterval(timer);
+}, { flush: "sync" });
 let artifactRead = 0;
+let pendingArtifact: { key: string; signal: AbortSignal; result: Promise<boolean> } | undefined;
 let runRead = 0;
 let refreshingRead: number | null = null;
 let openingRun = false;
@@ -1273,6 +1341,7 @@ let openingRun = false;
  */
 async function refresh(background = false) {
   if (
+    observation.value.signal.aborted ||
     loading.value ||
     refreshingRead === runRead ||
     currentOperation.value ||
@@ -1280,6 +1349,7 @@ async function refresh(background = false) {
     (background && runView.value === "history")
   )
     return;
+  const signal = observation.value.signal;
   const read = ++runRead;
   refreshingRead = read;
   if (!background) loading.value = true;
@@ -1300,21 +1370,18 @@ async function refresh(background = false) {
       runs.value = runData.runs;
       if (resources) catalog.value = resources;
     } else {
-      const [runData, inboxData] = await Promise.all([
-        workflowAssetsApi.runs(),
-        workflowAssetsApi.humanRequests(),
-      ]);
-      if (
-        disposed ||
-        read !== runRead ||
-        (background && runView.value === "history")
-      )
-        return;
-      runs.value = runData.runs;
-      humanRequests.value = inboxData.requests;
-      const id = route.query.workflow_run ?? selectedRun.value?.run_id;
+      if (!props.readonlyRunId) {
+        const [runData, inboxData] = await Promise.all([
+          workflowAssetsApi.runs(),
+          workflowAssetsApi.humanRequests(),
+        ]);
+        if (signal.aborted || read !== runRead || (background && runView.value === "history")) return;
+        runs.value = runData.runs;
+        humanRequests.value = inboxData.requests;
+      }
+      const id = props.readonlyRunId ?? route.query.workflow_run ?? selectedRun.value?.run_id;
       if (typeof id === "string" && id) {
-        const artifactId = detailRun.value?.result_ref?.artifact_id;
+        const previousResult = detailRun.value?.result_ref;
         if (
           selectedRun.value?.run_id === id &&
           selectedRun.value.cursor !== undefined
@@ -1322,15 +1389,18 @@ async function refresh(background = false) {
           const changes = await workflowAssetsApi.events(
             id,
             selectedRun.value.cursor,
+            signal,
           );
-          if (disposed || read !== runRead || (background && runView.value === "history")) return;
+          if (signal.aborted || read !== runRead || (background && runView.value === "history")) return;
+          let snapshotAhead = false;
           if (!changes.snapshot && changes.events?.some((event: any) =>
             typeof event.kind === "string" && !event.kind.startsWith("process.") &&
-            !event.kind.startsWith("checkpoint.") &&
-            !["usage.started", "usage.reported", "usage.resumed"].includes(event.kind),
+            !event.kind.startsWith("checkpoint."),
           )) {
-            const state = await workflowAssetsApi.run(id);
-            if (disposed || read !== runRead || (background && runView.value === "history")) return;
+            const state = await workflowAssetsApi.run(id, signal);
+            if (signal.aborted || read !== runRead || (background && runView.value === "history")) return;
+            // A newer state can update status, but its tail must wait for replay.
+            snapshotAhead = state.cursor > changes.cursor;
             changes.snapshot = { ...state, cursor: changes.cursor };
           }
           if (changes.snapshot) {
@@ -1343,7 +1413,9 @@ async function refresh(background = false) {
                 for (const target of newViews) {
                   const old = oldViews.find((view: any) => view.run_id === target.run_id);
                   for (const kind of ["process", "events", "messages", "attempts"] as const) {
-                    const incoming = [...(target[kind] ?? [])];
+                    const incoming = (target[kind] ?? []).filter(
+                      (entry: any) => !snapshotAhead || !Number.isInteger(entry.cursor) || entry.cursor <= changes.cursor,
+                    );
                     if (kind === "process") incoming.push(...(changes.records ?? []).filter((record: any) => record.run_id === target.run_id));
                     else if (kind === "events") incoming.push(...(changes.events ?? []).filter((event: any) => target.run_id === snapshot.run_id || target.run_id === event.run_id));
                     else if (kind === "messages") incoming.push(...(changes.messages ?? []).filter((message: any) => messageBelongs(snapshot, target, message)));
@@ -1373,7 +1445,7 @@ async function refresh(background = false) {
             root.cursor = changes.cursor;
           }
         } else {
-          const snapshot = await workflowAssetsApi.run(id);
+          const snapshot = await workflowAssetsApi.run(id, signal);
           if (
             disposed ||
             read !== runRead ||
@@ -1383,26 +1455,27 @@ async function refresh(background = false) {
           selectedRun.value = snapshot;
           selectedTaskNode.value = snapshot.tasks?.[0]?.run_id ?? null;
         }
-        if (artifactId !== detailRun.value.result_ref?.artifact_id) {
-          artifactVersion.value = detailRun.value.result_ref?.version ?? 1;
+        const result = detailRun.value?.result_ref;
+        if (previousResult?.artifact_id !== result?.artifact_id ||
+            (previousResult?.version !== result?.version && artifactVersion.value === previousResult?.version)) {
+          artifactVersion.value = result?.version ?? 1;
         }
-        if (
-          !selectedArtifact.value ||
-          selectedArtifact.value.artifact_id !==
-            detailRun.value.result_ref?.artifact_id
-        ) {
+        if (result && (selectedArtifact.value?.artifact_id !== result.artifact_id ||
+            selectedArtifact.value?.version !== artifactVersion.value)) {
           if (!(await loadArtifact())) return;
         }
       }
     }
     if (!disposed && read === runRead) error.value = "";
   } catch (err) {
-    if (
-      !disposed &&
-      read === runRead &&
-      !(background && runView.value === "history")
-    )
-      error.value = extractApiError(err, tm("errors.operationFailed")).message;
+    if (!signal.aborted && read === runRead && !(background && runView.value === "history")) {
+      if (props.readonlyRunId && isAxiosError(err) && [401, 403, 404].includes(err.response?.status ?? 0)) {
+        observation.value.abort();
+        emit("run-unavailable");
+      } else {
+        error.value = extractApiError(err, tm("errors.operationFailed")).message;
+      }
+    }
   } finally {
     if (read === runRead) loading.value = false;
     if (refreshingRead === read) refreshingRead = null;
@@ -1433,8 +1506,7 @@ function selectRunTask(nodeId: string | null) {
 watch(
   () => detailRun.value?.run_id,
   async () => {
-    artifactRead++;
-    selectedArtifact.value = null;
+    clearFilePreview();
     artifactVersion.value = detailRun.value?.result_ref?.version ?? 1;
     await loadArtifact();
   },
@@ -1522,12 +1594,19 @@ async function start() {
 function applyOperationSnapshot(next: any) {
   const previous = selectedRun.value;
   const snapshot = { ...next };
+  if (props.readonlyRunId) {
+    if (observation.value.signal.aborted || previous?.run_id !== snapshot.run_id || snapshot.cursor < previous.cursor) return;
+    runRead++;
+    loading.value = false;
+  }
   if (previous?.run_id === snapshot.run_id && Number.isInteger(previous.cursor) && snapshot.cursor >= previous.cursor) {
     const oldViews = runViews(previous);
     for (const target of runViews(snapshot)) {
       const old = oldViews.find((view: any) => view.run_id === target.run_id);
       for (const kind of ["process", "events", "messages", "attempts"] as const) {
-        const incoming = target[kind] ?? [];
+        const incoming = (target[kind] ?? []).filter(
+          (entry: any) => !Number.isInteger(entry.cursor) || entry.cursor <= previous.cursor,
+        );
         target[kind] = old?.[kind] ?? [];
         mergeHistoryWindow(target, kind, incoming);
       }
@@ -1547,12 +1626,18 @@ function applyOperationSnapshot(next: any) {
 }
 
 async function openRun(runId: string) {
+  observation.value.abort();
+  observation.value = new AbortController();
+  const signal = observation.value.signal;
+  historyBusy.value = false;
+  selectedArtifact.value = null;
+  clearFilePreview();
   const read = ++runRead;
   openingRun = true;
   loading.value = true;
   try {
     error.value = "";
-    const snapshot = await workflowAssetsApi.run(runId);
+    const snapshot = await workflowAssetsApi.run(runId, signal);
     if (disposed || read !== runRead) return;
     selectedRun.value = snapshot;
     historyDone.value = {};
@@ -1568,7 +1653,6 @@ async function openRun(runId: string) {
     await router.replace({ query: { ...route.query, workflow_run: runId } });
     if (disposed || read !== runRead) return;
     artifactVersion.value = detailRun.value.result_ref?.version ?? 1;
-    selectedArtifact.value = null;
     await loadArtifact();
   } catch (err) {
     if (!disposed && read === runRead)
@@ -1596,8 +1680,9 @@ async function recoverAttempt() {
   try {
     error.value = "";
     const recovered = await workflowAssetsApi.recover(taskId);
+    if (disposed || read !== runRead) return;
     const snapshot =
-      rootId === taskId ? recovered : await workflowAssetsApi.run(rootId);
+      rootId === taskId ? recovered : await workflowAssetsApi.run(rootId, observation.value.signal);
     if (!disposed && read === runRead) applyOperationSnapshot(snapshot);
   } catch (err) {
     if (!disposed && read === runRead)
@@ -1622,8 +1707,9 @@ async function resolveTool(recordId: string, payload: ToolResolutionRequest) {
       recordId,
       payload,
     );
+    if (disposed || read !== runRead) return;
     const snapshot =
-      rootId === taskId ? resolved : await workflowAssetsApi.run(rootId);
+      rootId === taskId ? resolved : await workflowAssetsApi.run(rootId, observation.value.signal);
     if (!disposed && read === runRead) applyOperationSnapshot(snapshot);
   } catch (err) {
     if (!disposed && read === runRead)
@@ -1672,7 +1758,7 @@ async function applyRunControl(
     if (disposed || read !== runRead) return;
     const snapshot =
       retry && rootId !== taskId
-        ? await workflowAssetsApi.run(rootId)
+        ? await workflowAssetsApi.run(rootId, observation.value.signal)
         : updated;
     if (!disposed && read === runRead) applyOperationSnapshot(snapshot);
   } catch (err) {
@@ -1691,26 +1777,39 @@ async function applyRunControl(
  *   Whether the artifact read succeeded or no artifact was required.
  */
 async function loadArtifact() {
-  const read = ++artifactRead;
+  const signal = observation.value.signal;
+  if (signal.aborted) return false;
   const ref = detailRun.value?.result_ref;
-  if (!ref) return true;
+  const version = Number(artifactVersion.value);
+  if (ref && selectedArtifact.value?.artifact_id === ref.artifact_id && selectedArtifact.value?.version === version) return true;
+  const key = JSON.stringify([ref?.artifact_id, version]);
+  if (pendingArtifact?.key === key && pendingArtifact.signal === signal) return pendingArtifact.result;
+
+  const read = ++artifactRead;
+  fileError.value = "";
+  clearFilePreview();
   selectedArtifact.value = null;
-  try {
-    const artifact = await workflowAssetsApi.artifact(
-      ref.artifact_id,
-      Number(artifactVersion.value),
-    );
-    // A slower response must not overwrite a more recent version selection.
-    if (!disposed && read === artifactRead && runView.value !== "history") {
+  if (!ref) {
+    pendingArtifact = undefined;
+    return true;
+  }
+  const result = Promise.resolve()
+    .then(() => workflowAssetsApi.artifact(ref.artifact_id, version, signal))
+    .then((artifact) => {
+      if (signal.aborted || read !== artifactRead || runView.value === "history") return false;
       selectedArtifact.value = artifact;
       return true;
-    }
-  } catch (err) {
-    if (!disposed && read === artifactRead && runView.value !== "history") {
-      error.value = extractApiError(err, tm("errors.operationFailed")).message;
-    }
-  }
-  return false;
+    })
+    .catch((err) => {
+      if (!signal.aborted && read === artifactRead && runView.value !== "history")
+        error.value = extractApiError(err, tm("errors.operationFailed")).message;
+      return false;
+    })
+    .finally(() => {
+      if (pendingArtifact?.result === result) pendingArtifact = undefined;
+    });
+  pendingArtifact = { key, signal, result };
+  return result;
 }
 
 function prepareRevision() {
@@ -1758,14 +1857,21 @@ async function saveRevision() {
 }
 
 async function readFile(fileId: string, download: boolean) {
+  const signal = observation.value.signal;
+  const artifact = selectedArtifact.value;
+  const read = artifactRead;
+  if (signal.aborted || !artifact || openingRun) return;
+  const preview = download ? null : ++previewRead;
+  fileError.value = "";
   try {
-    const ref = selectedArtifact.value;
     const response = await workflowAssetsApi.file(
-      ref.artifact_id,
-      ref.version,
+      artifact.artifact_id,
+      artifact.version,
       fileId,
       download,
+      signal,
     );
+    if (signal.aborted || read !== artifactRead || (preview !== null && preview !== previewRead)) return;
     if (download) {
       const url = URL.createObjectURL(response.data);
       const link = document.createElement("a");
@@ -1777,13 +1883,13 @@ async function readFile(fileId: string, download: boolean) {
       link.click();
       URL.revokeObjectURL(url);
     } else {
-      if (previewUrl.value) URL.revokeObjectURL(previewUrl.value);
-      previewText.value = response.data.type.startsWith("text/")
-        ? await response.data.text()
-        : "";
+      const text = response.data.type.startsWith("text/") ? await response.data.text() : "";
+      if (signal.aborted || read !== artifactRead || preview !== previewRead) return;
+      clearFilePreview();
+      previewText.value = text;
       previewBlob.value = response.data.type.startsWith("image/") || response.data.type === "application/pdf"
         ? response.data : null;
-      const files = ref.files ?? ref.content?.files ?? [];
+      const files = artifact.files ?? artifact.content?.files ?? [];
       previewFilename.value = files.find((file: any) => file.file_id === fileId)?.filename ?? fileId;
       previewUrl.value = previewText.value || previewBlob.value
         ? ""
@@ -1791,9 +1897,12 @@ async function readFile(fileId: string, download: boolean) {
       previewing.value = true;
     }
   } catch (err) {
-    error.value = extractApiError(err, tm("errors.operationFailed")).message;
+    if (!signal.aborted && read === artifactRead && (preview === null || preview === previewRead))
+      fileError.value = extractApiError(err, tm("errors.operationFailed")).message;
   }
 }
+
+defineExpose({ applyOperationSnapshot });
 
 onMounted(async () => {
   await refresh();
@@ -1804,7 +1913,8 @@ onMounted(async () => {
 onUnmounted(() => {
   disposed = true;
   if (timer) clearInterval(timer);
-  if (previewUrl.value) URL.revokeObjectURL(previewUrl.value);
+  observation.value.abort();
+  clearFilePreview();
 });
 </script>
 

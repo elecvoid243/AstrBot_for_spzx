@@ -11654,7 +11654,28 @@ class WorkflowService:
             if tools and AgentTeamToolRegistry.get_tools(member["umo"]) == tools:
                 AgentTeamToolRegistry.unregister(member["umo"])
             if ports and ports.close:
-                await ports.close()
+                try:
+                    await ports.close()
+                except Exception as exc:
+                    logger.error("Workflow task %s cleanup failed: %s", run_id, exc)
+                    # Cleanup is diagnostic even if the task already committed.
+                    try:
+                        async with self.db.get_db() as session:
+                            session.add(
+                                AgentWorkflowEvent(
+                                    run_id=run_id,
+                                    kind="task.cleanup_failed",
+                                    data={
+                                        "attempt_id": state["attempt_id"],
+                                        "reason": str(exc),
+                                    },
+                                )
+                            )
+                            await session.commit()
+                    except Exception:
+                        logger.exception(
+                            "Failed to save workflow task %s cleanup diagnostic", run_id
+                        )
         async with self.db.get_db() as session:
             row = await session.get(AgentWorkflowRun, run_id)
             if row is None:

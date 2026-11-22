@@ -5,6 +5,7 @@ import type {
   ArtifactRevisionRequest,
   ToolResolutionRequest,
   WorkflowControlRequest,
+  WorkflowRerunRequest,
   WorkflowRetryRequest,
   HumanAnswerRequest,
   WorkflowImportRequest,
@@ -167,6 +168,14 @@ export const workflowAssetsApi = {
     return (
       await httpClient.post(
         `/api/v1/workflow_runs/${encodeURIComponent(runId)}/control`,
+        payload,
+      )
+    ).data.data;
+  },
+  async rerun(runId: string, payload: WorkflowRerunRequest) {
+    return (
+      await httpClient.post(
+        `/api/v1/workflow_runs/${encodeURIComponent(runId)}/rerun`,
         payload,
       )
     ).data.data;

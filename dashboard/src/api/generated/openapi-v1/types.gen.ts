@@ -1893,6 +1893,13 @@ export type WorkflowPackage = {
 };
 
 /**
+ * Start one new root from the completed run's exact launch inputs.
+ */
+export type WorkflowRerunRequest = {
+    request_id: string;
+};
+
+/**
  * Explicit new attempt using the failed attempt's exact frozen inputs.
  */
 export type WorkflowRetryRequest = {
@@ -6556,6 +6563,17 @@ export type ControlRunApiV1WorkflowRunsRunIdControlPostData = {
 export type ControlRunApiV1WorkflowRunsRunIdControlPostResponse = (unknown);
 
 export type ControlRunApiV1WorkflowRunsRunIdControlPostError = (HTTPValidationError);
+
+export type RerunWorkflowApiV1WorkflowRunsRunIdRerunPostData = {
+    body: WorkflowRerunRequest;
+    path: {
+        run_id: string;
+    };
+};
+
+export type RerunWorkflowApiV1WorkflowRunsRunIdRerunPostResponse = (unknown);
+
+export type RerunWorkflowApiV1WorkflowRunsRunIdRerunPostError = (unknown | HTTPValidationError);
 
 export type RetryTaskApiV1WorkflowRunsRunIdRetryPostData = {
     body: WorkflowRetryRequest;

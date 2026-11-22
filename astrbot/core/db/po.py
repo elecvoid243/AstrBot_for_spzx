@@ -444,6 +444,15 @@ class AgentWorkflowRunArchive(SQLModel, table=True):
     run_id: str = Field(primary_key=True, foreign_key="agent_workflow_runs.run_id")
 
 
+class AgentWorkflowRerun(SQLModel, table=True):
+    """Map one request against a completed root to its committed new run."""
+
+    __tablename__: str = "agent_workflow_reruns"  # pyright: ignore[reportIncompatibleVariableOverride]
+    source_run_id: str = Field(primary_key=True)
+    request_id: str = Field(primary_key=True)
+    run_id: str
+
+
 class AgentWorkflowControl(SQLModel, table=True):
     """Durable whole-run admission decision and idempotent control requests."""
 

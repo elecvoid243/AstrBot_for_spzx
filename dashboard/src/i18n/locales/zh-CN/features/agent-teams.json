@@ -641,6 +641,17 @@
     }
   },
   "controls": {
+    "rerun": "再次启动",
+    "refreshAfterOperation": "操作已保存，连接恢复后将刷新运行状态。",
+    "rerunHint": "使用原运行的固定版本和输入启动新会话。原运行及其产物仍可查看。",
+    "selectFailedTask": "请选择具有当前尝试的失败执行任务。",
+    "recoverPendingResult": "请在 Bot 工作台继续原尝试，以恢复已接受的结果。",
+    "applied": {
+      "pause": "已暂停运行。",
+      "continue": "已继续运行。",
+      "cancel": "已取消运行。",
+      "retry": "已保存新的任务尝试。"
+    },
     "title": "整个运行控制",
     "pause": "暂停运行",
     "continue": "继续运行",
@@ -648,6 +659,7 @@
     "retry": "重试失败任务",
     "confirm": "确认决定",
     "states": {
+      "completed": "运行已完成",
       "active": "全局控制：活动",
       "paused": "已暂停：停止放行新工作",
       "cancelled": "已取消：不再启动新工作"

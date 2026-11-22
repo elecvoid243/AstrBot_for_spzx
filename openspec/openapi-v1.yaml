@@ -9289,6 +9289,46 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/workflow_runs/{run_id}/rerun:
+    post:
+      tags:
+      - Agent Teams workflows
+      summary: Rerun Workflow
+      description: Start an independent run with a completed root's exact asset version and frozen inputs. Reusing the request ID for the same source run returns the same new run.
+      operationId: rerun_workflow_api_v1_workflow_runs__run_id__rerun_post
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Run Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WorkflowRerunRequest'
+      responses:
+        '200':
+          description: The new run's persisted snapshot.
+          content:
+            application/json:
+              schema: {}
+        '401':
+          description: A Dashboard session is required.
+        '403':
+          description: This account cannot control workflow runs.
+        '404':
+          description: The run, asset version, or input artifact is unavailable.
+        '409':
+          description: The source is not a completed published root or its asset cannot start a new run.
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/workflow_runs/{run_id}/retry:
     post:
       tags:
@@ -13621,6 +13661,19 @@ components:
       - action
       title: WorkflowControlRequest
       description: Idempotent whole-run decision, optionally conditional on its revision.
+    WorkflowRerunRequest:
+      properties:
+        request_id:
+          type: string
+          maxLength: 128
+          minLength: 1
+          title: Request Id
+      additionalProperties: false
+      type: object
+      required:
+      - request_id
+      title: WorkflowRerunRequest
+      description: Start one new root from the completed run's exact launch inputs.
     WorkflowRetryRequest:
       properties:
         request_id:

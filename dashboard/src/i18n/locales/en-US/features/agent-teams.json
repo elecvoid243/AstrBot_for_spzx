@@ -641,6 +641,17 @@
     }
   },
   "controls": {
+    "rerun": "Run again",
+    "refreshAfterOperation": "The operation was saved. The run will refresh when the connection recovers.",
+    "rerunHint": "Start a new conversation using the original fixed version and inputs. You can revisit the original run and its artifacts.",
+    "selectFailedTask": "Select a failed executable task with a current attempt to retry.",
+    "recoverPendingResult": "Continue the original attempt from the Bot workbench to recover the accepted result.",
+    "applied": {
+      "pause": "Run paused.",
+      "continue": "Run continued.",
+      "cancel": "Run cancelled.",
+      "retry": "New task attempt saved."
+    },
     "title": "Whole run controls",
     "pause": "Pause run",
     "continue": "Continue run",
@@ -648,6 +659,7 @@
     "retry": "Retry failed task",
     "confirm": "Confirm decision",
     "states": {
+      "completed": "Run completed",
       "active": "Whole-run control: active",
       "paused": "Paused — new work is stopped",
       "cancelled": "Cancelled — no new work will start"

@@ -30,21 +30,14 @@
         <v-btn v-if="archived" variant="text" :disabled="busy" @click="restoreSession">
           {{ chatLabel("conversation.unarchive") }}
         </v-btn>
-        <v-btn v-if="canCancel" variant="text" color="error" :disabled="busy || !observed" @click="cancel">
-          {{ tm("controls.cancel") }}
-        </v-btn>
       </div>
       <WorkflowWorkspacePanel
-        ref="workbench"
         class="agent-teams-page mt-4"
         mode="runs"
         :conversation-run-id="runId"
-        @run-status="status = $event; observed = true"
+        @run-status="status = $event"
         @run-unavailable="unavailable = true"
       />
-      <v-alert v-if="operationError" type="error" variant="tonal" class="mt-4">
-        {{ tm("runConversation.updateFailed") }}
-      </v-alert>
     </template>
   </section>
 </template>
@@ -55,34 +48,24 @@ import WorkflowWorkspacePanel from "@/components/agent_teams/WorkflowWorkspacePa
 import "@/styles/agent-teams-workbench.css";
 import { isAxiosError } from "axios";
 import { chatApi } from "@/api/v1";
-import { workflowAssetsApi } from "@/api/workflowAssets";
 import type { RunConversationSummary } from "@/api/generated/openapi-v1";
 import { useModuleI18n } from "@/i18n/composables";
 import { accountSessionRevision, assertCurrentAccount } from "@/utils/accountSession";
-import { askForConfirmation, useConfirmDialog } from "@/utils/confirmDialog";
 
 const props = defineProps<{ runId: string; restore: () => Promise<boolean> }>();
 const { tm, getRaw } = useModuleI18n("features/agent-teams");
 const { tm: chatLabel } = useModuleI18n("features/chat");
-const confirm = useConfirmDialog();
 const account = accountSessionRevision.value;
 const title = ref("");
 const summary = ref<RunConversationSummary | null>(null);
 const status = ref("");
-const observed = ref(false);
 const statusLabel = computed(() => getRaw(`v2.states.${status.value}`) ?? status.value);
-const workbench = ref<InstanceType<typeof WorkflowWorkspacePanel> | null>(null);
 const archived = ref(false);
 const unavailable = ref(false);
 const loadError = ref(false);
-const operationError = ref(false);
 const busy = ref(false);
-const canCancel = computed(() =>
-  summary.value && !["completed", "cancelled"].includes(status.value),
-);
 const observation = new AbortController();
 let loading = false;
-let cancelRequestId: string | undefined;
 
 async function loadSession() {
   if (loading || observation.signal.aborted) return;
@@ -118,24 +101,6 @@ async function restoreSession() {
   busy.value = true;
   try {
     if (await props.restore() && !observation.signal.aborted) archived.value = false;
-  } finally {
-    busy.value = false;
-  }
-}
-
-async function cancel() {
-  if (!canCancel.value || !observed.value || busy.value || !summary.value) return;
-  const runId = summary.value.run_id;
-  busy.value = true;
-  operationError.value = false;
-  try {
-    if (!(await askForConfirmation(tm("controls.cancelHint"), confirm)) || observation.signal.aborted) return;
-    assertCurrentAccount(account);
-    cancelRequestId ??= crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    const snapshot = await workflowAssetsApi.control(runId, { action: "cancel", request_id: cancelRequestId });
-    if (!observation.signal.aborted) workbench.value?.applyOperationSnapshot(snapshot);
-  } catch {
-    if (!observation.signal.aborted) operationError.value = true;
   } finally {
     busy.value = false;
   }

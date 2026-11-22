@@ -101,6 +101,7 @@ from astrbot.core.db.po import (
     AgentWorkflowMessage,
     AgentWorkflowPackage,
     AgentWorkflowProcess,
+    AgentWorkflowRerun,
     AgentWorkflowRun,
     AgentWorkflowSchedule,
     AgentWorkflowTodo,
@@ -340,6 +341,13 @@ class WorkflowStartRequest(BaseModel):
     input_artifacts: list[ArtifactReference] = Field(
         default_factory=list, max_length=30
     )
+
+
+class WorkflowRerunRequest(BaseModel):
+    """Start one new root from the completed run's exact launch inputs."""
+
+    model_config = ConfigDict(extra="forbid", strict=True, str_strip_whitespace=True)
+    request_id: str = Field(min_length=1, max_length=128)
 
 
 class TrialSource(BaseModel):
@@ -2439,7 +2447,13 @@ class WorkflowService:
         }
 
     async def start_run(
-        self, username: str, asset_id: str, payload: dict, *, chat: dict | None = None
+        self,
+        username: str,
+        asset_id: str,
+        payload: dict,
+        *,
+        chat: dict | None = None,
+        rerun_key: tuple[str, str] | None = None,
     ) -> dict:
         """Persist all execution identities and the effective snapshot before dispatch.
 
@@ -2448,6 +2462,7 @@ class WorkflowService:
             asset_id: Saved asset identity.
             payload: Pinned version, text inputs and source.
             chat: Trusted platform identity verified by the explicit chat entry.
+            rerun_key: Completed source run and request ID for an authorized rerun.
 
         Returns:
             The new independent run's persisted snapshot.
@@ -2516,8 +2531,58 @@ class WorkflowService:
         if fields:
             raise RoleAssetError("Invalid run inputs", fields)
         if "tasks" in definition or definition.get("kind") == "autonomous":
-            return await self._start_graph(username, asset, request, chat=chat)
+            return await self._start_graph(
+                username, asset, request, chat=chat, rerun_key=rerun_key
+            )
         raise RoleAssetError("Legacy workflow definitions are not supported")
+
+    async def rerun(
+        self, username: str, run_id: str, request: WorkflowRerunRequest
+    ) -> dict:
+        """Start a new Dashboard run from a completed published root.
+
+        Args:
+            username: Current authenticated resource owner.
+            run_id: Completed root whose frozen launch inputs should be reused.
+            request: Idempotency identity for one explicit launch.
+
+        Returns:
+            The new run associated with the request.
+
+        Raises:
+            RoleAssetError: The source is inaccessible or cannot be started again.
+        """
+        rerun_key = (run_id, request.request_id)
+        async with self.db.get_db() as session:
+            source = await session.get(AgentWorkflowRun, run_id)
+            if source is None or source.owner_username != username:
+                raise RoleAssetError("Run not found", status=404)
+            snapshot = source.snapshot
+            if (
+                source.status != "completed"
+                or snapshot.get("parent_run_id")
+                or snapshot.get("trial")
+                or snapshot.get("engine") != "graph_v2"
+            ):
+                raise RoleAssetError(
+                    "Only completed published root runs can be started again",
+                    status=409,
+                )
+            receipt = await session.get(AgentWorkflowRerun, rerun_key)
+        if receipt is not None:
+            # The first request may have committed without reaching the scheduler.
+            await self.advance_run(username, receipt.run_id)
+            return await self.get_run(username, receipt.run_id)
+        return await self.start_run(
+            username,
+            snapshot["asset_id"],
+            {
+                "version": snapshot["asset_version"],
+                "inputs": snapshot["inputs"],
+                "input_artifacts": snapshot.get("input_artifacts", []),
+            },
+            rerun_key=rerun_key,
+        )
 
     async def _freeze_member(
         self,
@@ -4684,12 +4749,30 @@ class WorkflowService:
                     raise RoleAssetError(
                         "Control request identity was reused", status=409
                     )
+                # Re-notify a saved attempt if its first dispatch was interrupted.
+                dispatch = (
+                    control.status == "active"
+                    and row.state.get("previous_attempt_id") == request.attempt_id
+                    and bool(row.state.get("retry_pending"))
+                    and row.status in {"pending", "running"}
+                )
             else:
                 if control.status == "cancelled":
                     raise RoleAssetError("The run was cancelled", status=409)
-                if row.snapshot.get("engine") == "human_task_v2":
+                root = (
+                    row
+                    if control.run_id == run_id
+                    else await session.get(AgentWorkflowRun, control.run_id)
+                )
+                if root is None or root.status in {"completed", "cancelled"}:
+                    raise RoleAssetError("The run is already terminal", status=409)
+                if row.snapshot.get("engine") in {
+                    "graph_v2",
+                    "human_task_v2",
+                    "control_task_v2",
+                } or not row.state.get("attempt_id"):
                     raise RoleAssetError(
-                        "Human requests retain their original answer and cannot be retried as agent tasks",
+                        "Select a failed executable task with a current attempt",
                         status=409,
                     )
                 if row.snapshot.get("engine") in {
@@ -5958,6 +6041,7 @@ class WorkflowService:
         request: WorkflowStartRequest,
         *,
         chat: dict | None = None,
+        rerun_key: tuple[str, str] | None = None,
     ) -> dict:
         """Freeze all referenced resources before atomically starting a root scope.
 
@@ -5966,6 +6050,7 @@ class WorkflowService:
             asset: Saved immutable asset version.
             request: Validated launch inputs and source.
             chat: Verified platform caller, when launched from explicit chat.
+            rerun_key: Completed source run and request ID to commit with the new run.
 
         Returns:
             Persisted run and its initial tasks.
@@ -5987,10 +6072,26 @@ class WorkflowService:
                     raise RoleAssetError("Nested team exceeds the frozen depth limit")
         async with self.db.get_db() as session:
             await session.execute(text("BEGIN IMMEDIATE"))
-            if await session.get(AgentAssetTombstone, ("workflow", asset["asset_id"])):
-                raise RoleAssetError("Asset has been deleted", status=409)
-            run_id = await self._create_scope(session, username, frozen)
-            await session.commit()
+            receipt = (
+                await session.get(AgentWorkflowRerun, rerun_key) if rerun_key else None
+            )
+            if receipt is not None:
+                run_id = receipt.run_id
+            else:
+                if await session.get(
+                    AgentAssetTombstone, ("workflow", asset["asset_id"])
+                ):
+                    raise RoleAssetError("Asset has been deleted", status=409)
+                run_id = await self._create_scope(session, username, frozen)
+                if rerun_key is not None:
+                    session.add(
+                        AgentWorkflowRerun(
+                            source_run_id=rerun_key[0],
+                            request_id=rerun_key[1],
+                            run_id=run_id,
+                        )
+                    )
+                await session.commit()
         await self.advance_run(username, run_id)
         return await self.get_run(username, run_id)
 

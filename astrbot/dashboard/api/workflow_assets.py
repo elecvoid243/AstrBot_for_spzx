@@ -21,6 +21,7 @@ from astrbot.core.agent_teams.workflows import (
     TrialRunRequest,
     WorkflowControlRequest,
     WorkflowImportRequest,
+    WorkflowRerunRequest,
     WorkflowRetryRequest,
     WorkflowSaveRequest,
     WorkflowService,
@@ -595,6 +596,32 @@ async def start_run(
 ):
     try:
         return ok(await service.start_run(username, asset_id, payload.model_dump()))
+    except RoleAssetError as exc:
+        return JSONResponse(
+            error(str(exc), {"fields": exc.fields}), status_code=exc.status
+        )
+
+
+@router.post("/workflow_runs/{run_id}/rerun")
+async def rerun_workflow(
+    run_id: str,
+    payload: WorkflowRerunRequest,
+    username: str = Depends(require_dashboard_user),
+    service: WorkflowService = Depends(get_workflow_service),
+):
+    """Start an independent run with the completed root's version and inputs.
+
+    Args:
+        run_id: Completed published root run.
+        payload: Idempotency identity for the new run.
+        username: Current authenticated resource owner.
+        service: Shared public run service.
+
+    Returns:
+        The new run's persisted snapshot.
+    """
+    try:
+        return ok(await service.rerun(username, run_id, payload))
     except RoleAssetError as exc:
         return JSONResponse(
             error(str(exc), {"fields": exc.fields}), status_code=exc.status

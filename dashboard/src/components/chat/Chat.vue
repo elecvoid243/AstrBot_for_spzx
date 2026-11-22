@@ -2951,6 +2951,7 @@ watch(
       gitDiffSidebarOpen.value = false;
       closeTodoMenu();
       closeMobileSidebar();
+      if (includeRunConversations.value) void getSessions();
       return;
     }
     const routeSessionId = getRouteSessionId();

@@ -9,6 +9,8 @@ from fastapi import FastAPI
 
 from astrbot.core.agent_team_execution import AgentTeamExecutionRegistry
 from astrbot.core.agent_teams.assets import RoleAssetError
+from astrbot.core.agent_teams.workflows import WorkflowService
+from astrbot.core.db.sqlite import SQLiteDatabase
 from astrbot.dashboard.api.auth import require_dashboard_user
 from astrbot.dashboard.api.workflow_assets import router
 from astrbot.dashboard.services.agent_team_ports import TeamPorts
@@ -86,11 +88,14 @@ async def test_pause_stops_dispatch_and_continue_keeps_the_original_attempt(
 
 
 @pytest.mark.asyncio
-async def test_retry_retains_failed_attempt_usage_and_fixed_inputs(workflow_env):
+async def test_retry_retains_failed_attempt_usage_and_fixed_inputs(
+    workflow_env, monkeypatch
+):
     """Retain failure evidence and exact artifact versions in a new Attempt.
 
     Args:
         workflow_env: Public services and real SQLite with scripted execution ports.
+        monkeypatch: Inject one lost scheduling wake after the retry commits.
     """
     env = workflow_env
     source = await env.service.start_run("alice", env.asset["asset_id"], {"version": 1})
@@ -162,6 +167,14 @@ async def test_retry_retains_failed_attempt_usage_and_fixed_inputs(workflow_env)
         "attempt_id": failed["state"]["attempt_id"],
         "input_policy": "original",
     }
+
+    async def drop_wake(*args):
+        raise RuntimeError("Lost retry scheduling wake")
+
+    with monkeypatch.context() as fault:
+        fault.setattr(env.service, "advance_run", drop_wake)
+        with pytest.raises(RuntimeError, match="Lost retry scheduling wake"):
+            await env.service.retry_task("alice", failed["run_id"], payload)
     retried = await env.service.retry_task("alice", failed["run_id"], payload)
     await asyncio.wait_for(stopped.wait(), 3)
     repeated = await env.service.retry_task("alice", failed["run_id"], payload)
@@ -509,3 +522,134 @@ async def test_resumed_reply_budget_excludes_a_previously_paused_poll(workflow_e
     finished = await completed_run(env.service, run["run_id"])
     assert finished["status"] == "completed", finished
     assert finished["result"] == {"text": "Completed after paused interval"}
+
+
+@pytest.mark.asyncio
+async def test_rerun_reopens_the_exact_version_once_per_request(
+    workflow_env, monkeypatch
+):
+    """Launch a new root from a completed run's frozen inputs through Dashboard API.
+
+    Args:
+        workflow_env: Isolated database, execution ports and public workflow service.
+        monkeypatch: Inject one lost scheduling wake after the new root commits.
+    """
+    env = workflow_env
+    source = await env.service.start_run("alice", env.asset["asset_id"], {"version": 1})
+    source = await completed_run(env.service, source["run_id"])
+    original_ref = source["result_ref"]
+    definition = {
+        "kind": "autonomous",
+        "name": "Pinned rerun",
+        "coordinator": {
+            "id": "coordinator",
+            "role_id": env.role["role_id"],
+            "role_version": 1,
+        },
+        "allowed_roles": [
+            {"id": "writer", "role_id": env.role["role_id"], "role_version": 1}
+        ],
+    }
+    asset = await env.service.save_asset("alice", {"definition": definition})
+    original = await env.service.start_run(
+        "alice",
+        asset["asset_id"],
+        {
+            "version": 1,
+            "inputs": {"goal": "Frozen rerun subject"},
+            "input_artifacts": [original_ref],
+        },
+    )
+    original = await completed_run(env.service, original["run_id"])
+    assert original["status"] == "completed"
+    await env.service.revise_artifact(
+        "alice",
+        original_ref["artifact_id"],
+        {
+            "request_id": "source-revision",
+            "expected_version": 1,
+            "content": {"text": "New source version"},
+        },
+    )
+    await env.service.save_asset(
+        "alice",
+        {"definition": {**definition, "name": "Published V2"}, "expected_version": 1},
+        asset["asset_id"],
+    )
+
+    app = FastAPI()
+    app.state.services = SimpleNamespace(workflow_assets=env.service)
+    app.include_router(router, prefix="/api/v1")
+    app.dependency_overrides[require_dashboard_user] = lambda: "alice"
+    url = f"/api/v1/workflow_runs/{original['run_id']}/rerun"
+    payload = {"request_id": "rerun-first"}
+    advance = env.service.advance_run
+    interrupted = []
+
+    async def drop_first_wake(username, run_id):
+        if not interrupted:
+            interrupted.append(run_id)
+            raise RuntimeError("Lost scheduling wake before claim")
+        return await advance(username, run_id)
+
+    monkeypatch.setattr(env.service, "advance_run", drop_first_wake)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, raise_app_exceptions=False),
+        base_url="http://test",
+    ) as client:
+        assert (await client.post(url, json=payload)).status_code == 500
+        responses = await asyncio.gather(
+            *(client.post(url, json=payload) for _ in range(4))
+        )
+        assert all(response.status_code == 200 for response in responses)
+        new_ids = {response.json()["data"]["run_id"] for response in responses}
+        assert len(new_ids) == 1
+        new_id = new_ids.pop()
+        assert interrupted == [new_id]
+        assert new_id != original["run_id"]
+        other = await client.post(url, json={"request_id": "rerun-second"})
+        assert other.status_code == 200
+        assert other.json()["data"]["run_id"] not in {new_id, original["run_id"]}
+        app.dependency_overrides[require_dashboard_user] = lambda: "bob"
+        assert (await client.post(url, json=payload)).status_code == 404
+
+    rerun = await completed_run(env.service, new_id)
+    assert rerun["status"] == "completed"
+    assert rerun["snapshot"]["root_run_id"] == new_id
+    assert rerun["snapshot"]["asset_version"] == 1
+    assert rerun["snapshot"]["definition"]["name"] == "Pinned rerun"
+    assert rerun["snapshot"]["inputs"] == {"goal": "Frozen rerun subject"}
+    assert rerun["snapshot"]["input_artifacts"] == [original_ref]
+    prompts = [
+        prompt
+        for binding, prompt, _ in env.observations
+        if binding.run_id == rerun["tasks"][0]["run_id"]
+    ]
+    assert len(prompts) == 1
+    assert "Frozen rerun subject" in prompts[0]
+    assert await env.service.get_result("alice", new_id) == {
+        "text": "Complete report. " * 1000
+    }
+    assert rerun["result_ref"] != original["result_ref"]
+    previous = await env.service.get_run("alice", original["run_id"])
+    assert previous["result_ref"] == original["result_ref"]
+    assert previous["cursor"] == original["cursor"]
+    assert (await env.service.read_artifact("alice", **original_ref))["content"] == {
+        "text": "Complete report. " * 1000
+    }
+
+    await env.roles.delete_asset("alice", "workflow", asset["asset_id"])
+    reopened = SQLiteDatabase(env.db.db_path)
+    try:
+        app.state.services.workflow_assets = WorkflowService(reopened, env.roles)
+        app.dependency_overrides[require_dashboard_user] = lambda: "alice"
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            saved = await client.post(url, json=payload)
+            assert saved.status_code == 200
+            assert saved.json()["data"]["run_id"] == new_id
+            denied = await client.post(url, json={"request_id": "after-delete"})
+            assert denied.status_code == 409
+    finally:
+        await reopened.engine.dispose()

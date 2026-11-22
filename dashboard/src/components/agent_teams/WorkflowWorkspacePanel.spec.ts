@@ -1,4 +1,5 @@
 import { flushPromises, mount } from "@vue/test-utils";
+import { AxiosError } from "axios";
 import { createMemoryHistory, createRouter } from "vue-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { accountSessionRevision } from "@/utils/accountSession";
@@ -26,6 +27,7 @@ const api = vi.hoisted(() => ({
   resolveTool: vi.fn(),
   control: vi.fn(),
   retry: vi.fn(),
+  rerun: vi.fn(),
   answer: vi.fn(),
   delete: vi.fn(),
 }));
@@ -217,6 +219,217 @@ describe("workflow workspace", () => {
     expect(api.humanRequests).not.toHaveBeenCalled();
     wrapper.unmount();
   });
+
+
+  it.each(["Bot", "Chat"])("uses the same pause control in %s", async (surface) => {
+    vi.useFakeTimers();
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: "/", component: slotStub }],
+    });
+    await router.push("/?workflow_run=run-1");
+    const initial = { ...run, cursor: 5, control: { status: "active", revision: 2 } };
+    api.run.mockResolvedValue(initial);
+    api.control.mockResolvedValue({ ...initial, cursor: 6, control: { status: "paused", revision: 3 } });
+    const wrapper = mount(WorkflowWorkspacePanel, {
+      props: { mode: "runs", ...(surface === "Chat" ? { conversationRunId: "run-1" } : {}) },
+      global: { plugins: [router], stubs },
+    });
+    try {
+      await flushPromises();
+      await wrapper.get('[data-testid="pause-run"]').trigger("click");
+      await flushPromises();
+      expect(api.control).toHaveBeenCalledWith("run-1", {
+        action: "pause", expected_revision: 2, request_id: expect.any(String),
+      });
+      expect(wrapper.find('[data-testid="continue-run"]').exists()).toBe(true);
+      expect(wrapper.text()).toContain("controls.applied.pause");
+      api.events.mockResolvedValue({
+        cursor: 7,
+        reset: false,
+        events: [],
+        snapshot: { ...initial, cursor: 7, control: { status: "active", revision: 4 } },
+      });
+      await vi.advanceTimersByTimeAsync(2000);
+      await flushPromises();
+      expect(wrapper.find('[data-testid="pause-run"]').exists()).toBe(true);
+      expect(wrapper.text()).not.toContain("controls.applied.pause");
+    } finally {
+      wrapper.unmount();
+    }
+  });
+
+  it("replays a lost rerun across surfaces and uses a fresh ID for the next explicit launch", async () => {
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [
+        { path: "/", component: slotStub },
+        { name: "ChatRunConversation", path: "/chat/runs/:runId", component: slotStub },
+      ],
+    });
+    await router.push("/chat/runs/run-1");
+    api.run.mockResolvedValue({
+      ...run,
+      status: "completed",
+      snapshot: { ...run.snapshot, engine: "graph_v2", root_run_id: "run-1" },
+    });
+    api.rerun.mockRejectedValueOnce(
+      Object.assign(new AxiosError("Scheduling contention after commit"), { response: { status: 409 } }),
+    )
+      .mockResolvedValueOnce({ run_id: "new-root" })
+      .mockResolvedValueOnce({ run_id: "another-root" });
+    localStorage.setItem("account_id", "rerun-owner");
+    const storageKey = 'astrbot:workflow-rerun:["rerun-owner","run-1"]';
+    let wrapper = mount(WorkflowWorkspacePanel, {
+      props: { mode: "runs", conversationRunId: "run-1" },
+      global: { plugins: [router], stubs },
+    });
+    try {
+      await flushPromises();
+      await wrapper.get('[data-testid="rerun-workflow"]').trigger("click");
+      await wrapper.get('[data-testid="confirm-run-control"]').trigger("click");
+      await flushPromises();
+      expect(localStorage.getItem(storageKey)).toBe(api.rerun.mock.calls[0][1].request_id);
+
+      wrapper.unmount();
+      await router.push("/?workflow_run=run-1");
+      wrapper = mount(WorkflowWorkspacePanel, {
+        props: { mode: "runs" },
+        global: { plugins: [router], stubs },
+      });
+      await flushPromises();
+      await wrapper.get('[data-testid="rerun-workflow"]').trigger("click");
+      await wrapper.get('[data-testid="confirm-run-control"]').trigger("click");
+      await flushPromises();
+      expect(api.rerun.mock.calls[0]).toEqual(api.rerun.mock.calls[1]);
+      expect(router.currentRoute.value.params.runId).toBe("new-root");
+      expect(localStorage.getItem(storageKey)).toBeNull();
+
+      await router.push("/?workflow_run=run-1");
+      await wrapper.get('[data-testid="rerun-workflow"]').trigger("click");
+      await wrapper.get('[data-testid="confirm-run-control"]').trigger("click");
+      await flushPromises();
+      expect(api.rerun.mock.calls[2][1].request_id).not.toBe(api.rerun.mock.calls[1][1].request_id);
+      expect(router.currentRoute.value.params.runId).toBe("another-root");
+    } finally {
+      wrapper.unmount();
+      localStorage.removeItem(storageKey);
+      localStorage.removeItem("account_id");
+    }
+  });
+
+  it("ignores rerun navigation after a Bot route query selects another root", async () => {
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [
+        { path: "/", component: slotStub },
+        { name: "ChatRunConversation", path: "/chat/runs/:runId", component: slotStub },
+      ],
+    });
+    await router.push("/?workflow_run=run-1");
+    let finishOther!: (result: typeof run) => void;
+    const otherRun = new Promise((resolve) => { finishOther = resolve; });
+    api.run.mockImplementation(async (runId) => runId === "run-2" ? otherRun : {
+      ...run,
+      status: "completed",
+      snapshot: { ...run.snapshot, engine: "graph_v2", root_run_id: runId },
+    });
+    let finish!: (result: { run_id: string }) => void;
+    api.rerun.mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
+    const wrapper = mount(WorkflowWorkspacePanel, {
+      props: { mode: "runs" },
+      global: { plugins: [router], stubs },
+    });
+    try {
+      await flushPromises();
+      await wrapper.get('[data-testid="rerun-workflow"]').trigger("click");
+      await wrapper.get('[data-testid="confirm-run-control"]').trigger("click");
+      await flushPromises();
+      await router.push("/?workflow_run=run-2");
+      finish({ run_id: "new-from-run-1" });
+      await flushPromises();
+      expect(router.currentRoute.value.query.workflow_run).toBe("run-2");
+      expect(api.run).toHaveBeenLastCalledWith("run-2", expect.any(AbortSignal));
+
+      await router.push("/?workflow_run=run-1");
+      finishOther({ ...run, run_id: "run-2" });
+      await flushPromises();
+      expect(router.currentRoute.value.query.workflow_run).toBe("run-1");
+      expect(api.run).toHaveBeenLastCalledWith("run-1", expect.any(AbortSignal));
+    } finally {
+      wrapper.unmount();
+      localStorage.removeItem('astrbot:workflow-rerun:[null,"run-1"]');
+    }
+  });
+
+  it("reports a committed task retry through a temporary root refresh failure", async () => {
+    vi.useFakeTimers();
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: "/", component: slotStub }],
+    });
+    await router.push("/?workflow_run=run-1");
+    const child = { ...run, run_id: "child-1", status: "failed" };
+    const root = { ...run, tasks: [child], status: "blocked", cursor: 5 };
+    const restarted = { ...child, status: "running", state: { attempt_id: "attempt-2" } };
+    api.run.mockResolvedValueOnce(root).mockRejectedValueOnce(new Error("Temporary root read failure"));
+    api.retry.mockResolvedValue(restarted);
+    const wrapper = mount(WorkflowWorkspacePanel, {
+      props: { mode: "runs", conversationRunId: "run-1" },
+      global: { plugins: [router], stubs },
+    });
+    try {
+      await flushPromises();
+      await wrapper.get('[data-testid="retry-task"]').trigger("click");
+      await wrapper.get('[data-testid="confirm-run-control"]').trigger("click");
+      await flushPromises();
+      expect(api.retry).toHaveBeenCalledWith("child-1", expect.objectContaining({ attempt_id: "attempt-1" }));
+      expect(wrapper.text()).toContain("controls.applied.retry");
+      expect(wrapper.text()).toContain("controls.refreshAfterOperation");
+      expect(wrapper.text()).not.toContain("Temporary root read failure");
+
+      api.events.mockResolvedValueOnce({
+        cursor: 6,
+        reset: false,
+        events: [],
+        snapshot: { ...root, cursor: 6, status: "running", tasks: [restarted] },
+      });
+      await vi.advanceTimersByTimeAsync(2000);
+      await flushPromises();
+      expect(wrapper.text()).toContain("attempt-2");
+      expect(wrapper.text()).not.toContain("controls.refreshAfterOperation");
+    } finally {
+      wrapper.unmount();
+    }
+  });
+
+  it.each(["graph_v2", "human_task_v2", "control_task_v2"])(
+    "explains why a blocked %s without an attempt cannot be retried",
+    async (engine) => {
+      const router = createRouter({
+        history: createMemoryHistory(),
+        routes: [{ path: "/", component: slotStub }],
+      });
+      await router.push("/?workflow_run=run-1");
+      api.run.mockResolvedValue({
+        ...run,
+        status: "blocked",
+        snapshot: { ...run.snapshot, engine },
+        state: {},
+      });
+      const wrapper = mount(WorkflowWorkspacePanel, {
+        props: { mode: "runs", conversationRunId: "run-1" },
+        global: { plugins: [router], stubs },
+      });
+      try {
+        await flushPromises();
+        expect(wrapper.find('[data-testid="retry-task"]').exists()).toBe(false);
+        expect(wrapper.text()).toContain("controls.selectFailedTask");
+      } finally {
+        wrapper.unmount();
+      }
+    },
+  );
 
   it.each(["Bot", "Chat"])(
     "shows the saved nested approval after a conflicting %s decision",

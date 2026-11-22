@@ -74,11 +74,9 @@ Closing or refreshing the page does not cancel execution. Reopen the run to read
 
 In the Bot run workbench, choose **Open in Chat**. Dashboard Chat shows one conversation per root run, even when the same asset runs several times. Open a conversation from the Chat sidebar or its direct link (`#/chat/runs/<root-run-id>`) to see the asset, fixed version, root ID and current state. For draft tests, Chat shows the draft revision. Choose **Open run workbench** to return to that exact run.
 
-In Chat, the task list expands child workflows, team scopes and loop rounds. The execution panel shows the selected task's saved events, attempts and recorded input sources. Use **Load older process** to page back. On narrow screens, switch panels with **Tasks**, **Execution**, and **Inbox & artifacts**. The right panel also opens exact artifact versions and downloads authorized files. Use the workbench to retry tasks.
+In Chat, the task list expands child workflows, team scopes and loop rounds. The execution panel shows the selected task's saved events, attempts and recorded input sources. Use **Load older process** to page back. On narrow screens, switch panels with **Tasks**, **Execution**, and **Inbox & artifacts**. The right panel opens exact artifact versions and downloads authorized files.
 
 In **Inbox & artifacts**, answer a specific human request or preview the exact version before approving or returning it with feedback. Bot and Chat show the same requests, including those from nested workflows. If another tab has already decided, the card refreshes to show the saved decision. A conflict from the Bot inbox opens the corresponding run if it is not already open. If the workflow sends revised work for review, open its new request and preview that version before deciding.
-
-![An approval request in Chat with the pinned version, file preview and feedback field](/images/agent-teams-chat-approval-en.png)
 
 If the connection drops, the open conversation will resume from the last applied event. You can also close or refresh Chat and reopen the same run from the sidebar.
 
@@ -86,7 +84,13 @@ If the connection drops, the open conversation will resume from the last applied
 
 ![Run conversation showing saved execution, an artifact, and the link back to the workbench](/images/agent-teams-run-chat-en.png)
 
-The run owner can open the conversation with an administrator Dashboard session. The external source-authorized link described below has its own access checks. Chat uses a dedicated **Cancel run** action. **Archive Session** moves the conversation to **View Archive** and execution continues. Restore the conversation from the archive to show it in the sidebar again.
+In **Inbox & artifacts**, use **Whole run controls** to pause, continue or cancel the run. **Cancel run** moved here from beneath the Chat conversation heading. Select a failed task to retry it in the same conversation. The controls show the outcome and explain when you need to review a saved result or resolve a tool call in the Bot workbench.
+
+![Shared run controls and the failed task retry in Chat](/images/agent-teams-chat-controls-en.png)
+
+After a published run completes, choose **Run again** and confirm the displayed version. The new conversation uses the original fixed asset version and inputs, including exact input artifact versions. Open the original conversation to compare its process and artifacts with the new run. If the launch response is lost, reopen the original conversation in the same browser and choose **Run again** to recover the same launch.
+
+The run owner can open the conversation with an administrator Dashboard session. The external source-authorized link described below has its own access checks. **Archive Session** moves the conversation to **View Archive** and execution continues. Restore the conversation from the archive to show it in the sidebar again.
 
 ## Recovery and usage
 

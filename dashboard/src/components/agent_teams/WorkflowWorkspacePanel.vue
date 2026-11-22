@@ -305,11 +305,11 @@
             />
           </section>
           <WorkflowRunControls
-            v-if="!conversationRunId"
             :key="selectedRun.run_id"
             :run="selectedRun"
             :task="detailRun"
             :busy="!!currentOperation"
+            :feedback="visibleControlFeedback"
             @submit="applyRunControl"
           />
           <details class="my-3 text-caption">
@@ -778,6 +778,7 @@ import DeleteAssetDialog from "./DeleteAssetDialog.vue";
 import type {
   ToolResolutionRequest,
   WorkflowControlRequest,
+  WorkflowRerunRequest,
   WorkflowRetryRequest,
   HumanAnswerRequest,
   WorkflowPackage,
@@ -890,7 +891,7 @@ async function answerInbox(
       updated = await workflowAssetsApi.answer(rootId, todoId, payload);
     } catch (err) {
       if (!isAxiosError(err) || err.response?.status !== 409) throw err;
-      if (signal.aborted || openingRun || runView.value !== "pending") return;
+      if (signal.aborted || openingRunId || runView.value !== "pending") return;
       if (selectedRun.value?.run_id === rootId) {
         updated = await workflowAssetsApi.run(rootId, signal);
       } else {
@@ -898,7 +899,7 @@ async function answerInbox(
       }
     }
     if (disposed) return;
-    if (updated && !signal.aborted && !openingRun && selectedRun.value?.run_id === rootId) {
+    if (updated && !signal.aborted && !openingRunId && selectedRun.value?.run_id === rootId) {
       applyOperationSnapshot(updated);
     }
     const inbox = await workflowAssetsApi.humanRequests();
@@ -952,6 +953,18 @@ const visibleRuns = computed(() =>
 );
 const observation = shallowRef(new AbortController());
 const selectedRun = ref<any>(null);
+const controlFeedback = ref<{
+  runId: string;
+  message: string;
+  error: boolean;
+  revision?: number;
+}>();
+const visibleControlFeedback = computed(() => {
+  const feedback = controlFeedback.value;
+  if (!feedback || feedback.runId !== selectedRun.value?.run_id) return;
+  if (feedback.revision !== undefined && feedback.revision !== selectedRun.value.control?.revision) return;
+  return feedback;
+});
 const observedStatus = computed(() => {
   const run = selectedRun.value;
   if (!run) return "";
@@ -1131,7 +1144,7 @@ function mergeHistoryWindow(target: any, kind: "process" | "events" | "messages"
 }
 
 async function loadOlderProcess() {
-  if (openingRun || historyBusy.value || !selectedRun.value || !detailRun.value) return;
+  if (openingRunId || historyBusy.value || !selectedRun.value || !detailRun.value) return;
   const signal = observation.value.signal;
   if (signal.aborted) return;
   const rootId = selectedRun.value.run_id;
@@ -1164,7 +1177,7 @@ async function loadOlderProcess() {
   }
 }
 async function loadOlderHistory(kind: "events" | "messages" | "attempts") {
-  if (openingRun || historyBusy.value || !selectedRun.value || !detailRun.value) return;
+  if (openingRunId || historyBusy.value || !selectedRun.value || !detailRun.value) return;
   const signal = observation.value.signal;
   if (signal.aborted) return;
   const rootId = selectedRun.value.run_id;
@@ -1341,7 +1354,7 @@ let artifactRead = 0;
 let pendingArtifact: { key: string; signal: AbortSignal; result: Promise<boolean> } | undefined;
 let runRead = 0;
 let refreshingRead: number | null = null;
-let openingRun = false;
+let openingRunId: string | undefined;
 
 /**
  * Refresh visible data while keeping timer-driven observations quiet.
@@ -1358,7 +1371,7 @@ async function refresh(background = false) {
     loading.value ||
     refreshingRead === runRead ||
     currentOperation.value ||
-    openingRun ||
+    openingRunId ||
     (background && runView.value === "history")
   )
     return;
@@ -1646,7 +1659,7 @@ async function openRun(runId: string) {
   selectedArtifact.value = null;
   clearFilePreview();
   const read = ++runRead;
-  openingRun = true;
+  openingRunId = runId;
   loading.value = true;
   try {
     error.value = "";
@@ -1672,16 +1685,25 @@ async function openRun(runId: string) {
       error.value = extractApiError(err, tm("errors.operationFailed")).message;
   } finally {
     if (read === runRead) {
-      openingRun = false;
+      openingRunId = undefined;
       loading.value = false;
     }
   }
 }
 
+watch(() => route.query.workflow_run, (runId) => {
+  if (
+    props.mode === "runs" && !props.conversationRunId && typeof runId === "string" &&
+    runId && runId !== (openingRunId ?? selectedRun.value?.run_id)
+  ) {
+    void openRun(runId);
+  }
+}, { flush: "sync" });
+
 async function recoverAttempt() {
   if (
     currentOperation.value ||
-    openingRun ||
+    openingRunId ||
     !detailRun.value?.recovery?.available
   )
     return;
@@ -1708,7 +1730,7 @@ async function recoverAttempt() {
 
 async function resolveTool(recordId: string, payload: ToolResolutionRequest) {
   const taskId = detailRun.value?.run_id;
-  if (!taskId || openingRun || currentOperation.value) return;
+  if (!taskId || openingRunId || currentOperation.value) return;
   const rootId = selectedRun.value.run_id;
   const read = ++runRead;
   runOperations.value.set(rootId, { kind: "resolve", taskId });
@@ -1735,7 +1757,7 @@ async function resolveTool(recordId: string, payload: ToolResolutionRequest) {
 
 async function answerTodo(todoId: string, payload: HumanAnswerRequest) {
   const rootId = selectedRun.value?.run_id;
-  if (!rootId || openingRun || currentOperation.value) return;
+  if (!rootId || openingRunId || currentOperation.value) return;
   const read = ++runRead;
   runOperations.value.set(rootId, { kind: "answer", taskId: todoId });
   loading.value = true;
@@ -1744,7 +1766,7 @@ async function answerTodo(todoId: string, payload: HumanAnswerRequest) {
     const updated = await workflowAssetsApi.answer(rootId, todoId, payload);
     if (!disposed && read === runRead) applyOperationSnapshot(updated);
   } catch (err) {
-    if (disposed || openingRun || selectedRun.value?.run_id !== rootId) return;
+    if (disposed || openingRunId || selectedRun.value?.run_id !== rootId) return;
     error.value = extractApiError(err, tm("errors.operationFailed")).message;
     if (isAxiosError(err) && err.response?.status === 409) {
       const signal = observation.value.signal;
@@ -1769,29 +1791,71 @@ async function answerTodo(todoId: string, payload: HumanAnswerRequest) {
 }
 
 async function applyRunControl(
-  payload: WorkflowControlRequest | WorkflowRetryRequest,
+  payload: WorkflowControlRequest | WorkflowRetryRequest | WorkflowRerunRequest,
 ) {
   const rootId = selectedRun.value?.run_id;
-  if (!rootId || openingRun || currentOperation.value) return;
+  const signal = observation.value.signal;
+  if (!rootId || signal.aborted || openingRunId || currentOperation.value) return;
   const taskId = detailRun.value.run_id;
+  const retry = "attempt_id" in payload;
+  const rerun = !retry && !("action" in payload);
   const read = ++runRead;
   runOperations.value.set(rootId, { kind: "control", taskId });
+  controlFeedback.value = undefined;
   loading.value = true;
+  let requestStorageKey: string | undefined;
+  let rerunRequestId: string | undefined;
+  let committed = false;
   try {
-    error.value = "";
-    const retry = "attempt_id" in payload;
+    if (rerun) {
+      const account = localStorage.getItem("account_id") ?? localStorage.getItem("resource_owner");
+      requestStorageKey = `astrbot:workflow-rerun:${JSON.stringify([account, rootId])}`;
+      rerunRequestId = localStorage.getItem(requestStorageKey) ?? payload.request_id;
+      localStorage.setItem(requestStorageKey, rerunRequestId);
+      const started = await workflowAssetsApi.rerun(rootId, { request_id: rerunRequestId });
+      if (signal.aborted || read !== runRead) return;
+      const navigationFailure = await router.push({
+        name: "ChatRunConversation",
+        params: { runId: started.run_id },
+      });
+      if (!navigationFailure && localStorage.getItem(requestStorageKey) === rerunRequestId) {
+        localStorage.removeItem(requestStorageKey);
+      }
+      return;
+    }
     const updated = retry
       ? await workflowAssetsApi.retry(taskId, payload)
       : await workflowAssetsApi.control(rootId, payload);
-    if (disposed || read !== runRead) return;
-    const snapshot =
-      retry && rootId !== taskId
-        ? await workflowAssetsApi.run(rootId, observation.value.signal)
-        : updated;
-    if (!disposed && read === runRead) applyOperationSnapshot(snapshot);
+    if (signal.aborted || read !== runRead) return;
+    committed = true;
+    controlFeedback.value = {
+      runId: rootId,
+      message: tm(`controls.applied.${retry ? "retry" : payload.action}`),
+      error: false,
+      revision: retry ? undefined : (payload.expected_revision ?? 0) + 1,
+    };
+    const snapshot = retry && rootId !== taskId
+      ? await workflowAssetsApi.run(rootId, signal)
+      : updated;
+    if (!signal.aborted && read === runRead) applyOperationSnapshot(snapshot);
   } catch (err) {
-    if (!disposed && read === runRead)
-      error.value = extractApiError(err, tm("errors.operationFailed")).message;
+    if (signal.aborted || read !== runRead) return;
+    if (committed) {
+      error.value = tm("controls.refreshAfterOperation");
+      return;
+    }
+    // Only request validation guarantees rejection before any launch was committed.
+    if (
+      requestStorageKey && isAxiosError(err) && err.response?.status === 422 &&
+      localStorage.getItem(requestStorageKey) === rerunRequestId
+    ) {
+      localStorage.removeItem(requestStorageKey);
+    }
+    controlFeedback.value = {
+      runId: rootId,
+      message: extractApiError(err, tm("errors.operationFailed")).message,
+      error: true,
+    };
   } finally {
     if (read === runRead) loading.value = false;
     runOperations.value.delete(rootId);
@@ -1888,7 +1952,7 @@ async function readFile(fileId: string, download: boolean) {
   const signal = observation.value.signal;
   const artifact = selectedArtifact.value;
   const read = artifactRead;
-  if (signal.aborted || !artifact || openingRun) return;
+  if (signal.aborted || !artifact || openingRunId) return;
   const preview = download ? null : ++previewRead;
   fileError.value = "";
   try {
@@ -1929,8 +1993,6 @@ async function readFile(fileId: string, download: boolean) {
       fileError.value = extractApiError(err, tm("errors.operationFailed")).message;
   }
 }
-
-defineExpose({ applyOperationSnapshot });
 
 onMounted(async () => {
   await refresh();

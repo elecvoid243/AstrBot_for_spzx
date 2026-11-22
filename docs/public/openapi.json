@@ -1906,6 +1906,7 @@
           "Chat"
         ],
         "summary": "List webchat sessions",
+        "description": "Dashboard sessions may send cursor=start to pin the order for scrolling. Cursor requests return items and next_cursor in data, or expired=true when the client should restart with cursor=start. Numbered pages retain their existing response format.\n\n**Required scope:** `chat`",
         "operationId": "listChatSessions",
         "x-astrbot-scope": "chat",
         "parameters": [
@@ -1916,10 +1917,27 @@
             "$ref": "#/components/parameters/PageSize"
           },
           {
+            "name": "cursor",
+            "in": "query",
+            "description": "Dashboard-only pagination cursor, or start for a new list.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "username",
             "in": "query",
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "name": "include_run_conversations",
+            "in": "query",
+            "description": "Include owned root run conversations when using a Dashboard cursor and administrator session.",
+            "schema": {
+              "type": "boolean",
+              "default": false
             }
           }
         ],
@@ -1927,8 +1945,7 @@
           "200": {
             "$ref": "#/components/responses/Ok"
           }
-        },
-        "description": "**Required scope:** `chat`"
+        }
       }
     },
     "/api/v1/chat/active-runs": {
@@ -2121,7 +2138,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/ChatSessionBatchDeleteRequest"
+                "$ref": "#/components/schemas/ChatSessionBatchArchiveRequest"
               }
             }
           }
@@ -2147,7 +2164,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/ChatSessionBatchDeleteRequest"
+                "$ref": "#/components/schemas/ChatSessionBatchArchiveRequest"
               }
             }
           }
@@ -2198,6 +2215,15 @@
             "schema": {
               "type": "string",
               "default": ""
+            }
+          },
+          {
+            "name": "include_run_conversations",
+            "in": "query",
+            "description": "Include owned root run conversations for Dashboard administrators.",
+            "schema": {
+              "type": "boolean",
+              "default": false
             }
           }
         ],
@@ -3142,7 +3168,7 @@
         "tags": [
           "Chat"
         ],
-        "summary": "Deliver a user follow-up message into a running foreground subagent",
+        "summary": "Retain an owned subagent or send it a follow-up",
         "operationId": "postSubagentFollowUp",
         "description": "Requires current account ownership of the persisted WebChat session. Run and subagent identifiers do not grant access to another account.\n\n**Required scope:** `chat`",
         "x-astrbot-scope": "chat",
@@ -9391,6 +9417,27 @@
         },
         "additionalProperties": false
       },
+      "ChatSessionBatchArchiveRequest": {
+        "type": "object",
+        "required": [
+          "session_ids"
+        ],
+        "properties": {
+          "session_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "run_ids": {
+            "description": "Owned root run IDs, accepted only for administrator Dashboard sessions.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
       "ChatSessionPatchRequest": {
         "type": "object",
         "properties": {
@@ -9419,8 +9466,7 @@
         "type": "object",
         "required": [
           "session_id",
-          "subagent_run_id",
-          "text"
+          "subagent_run_id"
         ],
         "properties": {
           "session_id": {
@@ -9431,6 +9477,14 @@
           },
           "text": {
             "type": "string"
+          },
+          "keep_alive": {
+            "type": "boolean",
+            "description": "Set instance retention for the current server lifetime."
+          },
+          "continue_conversation": {
+            "type": "boolean",
+            "description": "Start a new turn on a retained invocation after its current turn."
           }
         },
         "additionalProperties": false
@@ -10903,6 +10957,92 @@
           }
         }
       },
+      "RunConversationSummary": {
+        "type": "object",
+        "required": [
+          "run_id",
+          "asset_id",
+          "asset_version",
+          "status"
+        ],
+        "properties": {
+          "run_id": {
+            "type": "string"
+          },
+          "asset_id": {
+            "type": "string"
+          },
+          "asset_version": {
+            "type": "integer"
+          },
+          "status": {
+            "type": "string"
+          },
+          "draft_revision": {
+            "type": "integer"
+          }
+        }
+      },
+      "ChatSessionMetadata": {
+        "type": "object",
+        "required": [
+          "session_id",
+          "platform_id",
+          "creator",
+          "display_name",
+          "is_group",
+          "created_at",
+          "updated_at",
+          "starred"
+        ],
+        "properties": {
+          "session_id": {
+            "type": "string"
+          },
+          "platform_id": {
+            "type": "string"
+          },
+          "creator": {
+            "type": "string"
+          },
+          "display_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "is_group": {
+            "type": "integer"
+          },
+          "created_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "updated_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "starred": {
+            "type": "boolean"
+          },
+          "session_type": {
+            "type": "string",
+            "enum": [
+              "workflow_run"
+            ]
+          },
+          "run_conversation": {
+            "$ref": "#/components/schemas/RunConversationSummary"
+          },
+          "archived": {
+            "type": "boolean"
+          }
+        }
+      },
       "ChatHistoryPage": {
         "type": "object",
         "additionalProperties": true,
@@ -10912,6 +11052,9 @@
             "items": {
               "$ref": "#/components/schemas/ChatHistoryRecord"
             }
+          },
+          "session": {
+            "$ref": "#/components/schemas/ChatSessionMetadata"
           }
         }
       },

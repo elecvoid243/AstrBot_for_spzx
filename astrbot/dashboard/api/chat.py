@@ -46,6 +46,7 @@ from astrbot.dashboard.schemas import (
     ChatMessagePatchRequest,
     ChatMessageRegenerateRequest,
     ChatOpenFileRequest,
+    ChatSessionBatchArchiveRequest,
     ChatSessionBatchDeleteRequest,
     ChatSessionConfigRequest,
     ChatSessionPatchRequest,
@@ -61,6 +62,7 @@ from astrbot.dashboard.schemas import (
     FileAccessRootsSetRequest,
     GoalActionRequest,
     GoalSetRequest,
+    RunConversationArchiveRequest,
 )
 from astrbot.dashboard.services.auth_service import CONFIG_EDIT_ADMIN_SCOPE
 from astrbot.dashboard.services.chat_service import (
@@ -76,7 +78,12 @@ from astrbot.dashboard.services.chatui_settings import (
     validate_quick_messages,
 )
 
-from .auth import AuthContext, ScopeDependency, require_dashboard_user
+from .auth import (
+    AuthContext,
+    ScopeDependency,
+    can_access_run_conversations,
+    require_dashboard_user,
+)
 from .multipart import single_upload
 
 router = APIRouter(tags=["Chat"])
@@ -550,7 +557,7 @@ async def batch_delete_chat_sessions(
 
 @router.post("/chat/sessions/batch-archive")
 async def batch_archive_chat_sessions(
-    payload: ChatSessionBatchDeleteRequest,
+    payload: ChatSessionBatchArchiveRequest,
     auth: AuthContext = Depends(require_chat_scope),
     service: ChatService = Depends(get_service),
 ):
@@ -558,13 +565,14 @@ async def batch_archive_chat_sessions(
         lambda: service.batch_archive_sessions_from_dashboard_payload(
             auth.username,
             _model_dict(payload),
+            allow_run_conversations=can_access_run_conversations(auth),
         )
     )
 
 
 @router.post("/chat/sessions/batch-unarchive")
 async def batch_unarchive_chat_sessions(
-    payload: ChatSessionBatchDeleteRequest,
+    payload: ChatSessionBatchArchiveRequest,
     auth: AuthContext = Depends(require_chat_scope),
     service: ChatService = Depends(get_service),
 ):
@@ -572,6 +580,7 @@ async def batch_unarchive_chat_sessions(
         lambda: service.batch_unarchive_sessions_from_dashboard_payload(
             auth.username,
             _model_dict(payload),
+            allow_run_conversations=can_access_run_conversations(auth),
         )
     )
 
@@ -582,6 +591,7 @@ async def get_archived_chat_sessions(
     page: int = Query(default=1),
     page_size: int = Query(default=20),
     search: str = Query(default=""),
+    include_run_conversations: bool = False,
     auth: AuthContext = Depends(require_chat_scope),
     service: ChatService = Depends(get_service),
 ):
@@ -592,6 +602,8 @@ async def get_archived_chat_sessions(
             page,
             page_size,
             search,
+            include_run_conversations=include_run_conversations
+            and can_access_run_conversations(auth),
         )
     )
 
@@ -740,6 +752,40 @@ async def unarchive_chat_session(
     return await _run(
         lambda: service.set_session_archived(auth.username, session_id, False)
     )
+
+
+@router.get(
+    "/chat/run-conversations/{run_id}",
+    response_model=ChatHistoryResponse,
+    response_model_exclude_unset=True,
+)
+async def get_chat_run_conversation(
+    run_id: str,
+    auth: AuthContext = Depends(require_chat_scope),
+    service: ChatService = Depends(get_service),
+):
+    if can_access_run_conversations(auth):
+        try:
+            return ok(await service.get_run_conversation(auth.username, run_id))
+        except ChatServiceError:
+            pass
+    return JSONResponse(error("Run conversation not found"), status_code=404)
+
+
+@router.patch("/chat/run-conversations/{run_id}")
+async def archive_chat_run_conversation(
+    run_id: str,
+    payload: RunConversationArchiveRequest,
+    auth: AuthContext = Depends(require_chat_scope),
+    service: ChatService = Depends(get_service),
+):
+    if can_access_run_conversations(
+        auth
+    ) and await service.db.set_run_conversation_archived(
+        auth.username, run_id, payload.archived
+    ):
+        return ok()
+    return JSONResponse(error("Run conversation not found"), status_code=404)
 
 
 @router.get(

@@ -1,3 +1,4 @@
+import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -416,6 +417,31 @@ class AgentWorkflowSchedule(SQLModel, table=True):
     __tablename__: str = "agent_workflow_schedules"  # pyright: ignore[reportIncompatibleVariableOverride]
     run_id: str = Field(primary_key=True)
     revision: int = 0
+
+
+RUN_CONVERSATION_PREFIX = "workflow-run-"
+
+
+def is_run_conversation_id(session_id: str) -> bool:
+    """Recognize reserved IDs for projected root runs.
+
+    Args:
+        session_id: Chat session identity supplied by a caller.
+
+    Returns:
+        Whether the ID contains the namespace and a full root UUID.
+    """
+    return (
+        re.fullmatch(rf"{RUN_CONVERSATION_PREFIX}[0-9a-f]{{32}}", session_id)
+        is not None
+    )
+
+
+class AgentWorkflowRunArchive(SQLModel, table=True):
+    """Store sidebar visibility for an archived root run conversation."""
+
+    __tablename__: str = "agent_workflow_run_archives"
+    run_id: str = Field(primary_key=True, foreign_key="agent_workflow_runs.run_id")
 
 
 class AgentWorkflowControl(SQLModel, table=True):

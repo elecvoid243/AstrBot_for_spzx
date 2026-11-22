@@ -142,6 +142,7 @@ const isChatPath = computed(
 const isDarkTheme = computed(
   () => theme.global.current.value.dark || customizer.uiTheme.includes("Dark"),
 );
+const isRunConversation = computed(() => route.name === "ChatRunConversation");
 const chatHeaderStyle = computed(() => {
   if (!isChatPath.value) return undefined;
   // 2026-07-21 chatui toolbar align (elecvoid243): previously this
@@ -1213,7 +1214,7 @@ onMounted(async () => {
     </v-btn>
 
     <div v-if="isChatPath" class="chat-header-context">
-      <ProviderModelMenu v-if="!route.query.remoteConnection" variant="header" />
+      <ProviderModelMenu v-if="!route.query.remoteConnection && !isRunConversation" variant="header" />
       <div v-if="chatHeaderSubtitleText" class="chat-header-subtitle">
         {{ chatHeaderSubtitleText }}
       </div>
@@ -1256,7 +1257,7 @@ onMounted(async () => {
            switched from ChatSidebar → 设置. -->
       <button
         v-if="
-          isChatPath && chatHeader.devModeCanEdit && chatHeader.devModeEnabled
+          isChatPath && !isRunConversation && chatHeader.devModeCanEdit && chatHeader.devModeEnabled
         "
         type="button"
         class="chat-action-btn dev-mode-chip"

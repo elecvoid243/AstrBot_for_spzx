@@ -19,7 +19,7 @@ from astrbot.dashboard.services.open_api_service import (
     OpenApiWebSocketChatBridge,
 )
 
-from .auth import AuthContext, ScopeDependency
+from .auth import AuthContext, ScopeDependency, can_access_run_conversations
 from .multipart import UploadFileAdapter
 
 router = APIRouter(tags=["Open API"])
@@ -191,6 +191,7 @@ async def chat(
 @router.get("/chat/sessions")
 async def chat_sessions(
     request: Request,
+    include_run_conversations: bool = False,
     auth: AuthContext = Depends(require_chat_scope),
     service: OpenApiService = Depends(get_service),
     chat_service: ChatService = Depends(get_chat_service),
@@ -209,6 +210,12 @@ async def chat_sessions(
                         request.query_params.get("platform_id"),
                         page_size,
                         cursor,
+                        **(
+                            {"include_run_conversations": True}
+                            if include_run_conversations
+                            and can_access_run_conversations(auth)
+                            else {}
+                        ),
                     )
                 )
             return ok(

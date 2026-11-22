@@ -10,6 +10,7 @@ from uuid import uuid4
 from astrbot.core import logger
 from astrbot.core.core_lifecycle import AstrBotCoreLifecycle
 from astrbot.core.db import BaseDatabase
+from astrbot.core.db.po import is_run_conversation_id
 from astrbot.core.platform.message_session import MessageSesion
 from astrbot.core.platform.sources.webchat.message_parts_helper import (
     build_message_chain_from_payload,
@@ -196,6 +197,9 @@ class OpenApiService:
             if session.creator != username:
                 return "session_id belongs to another username"
             return None
+
+        if is_run_conversation_id(session_id):
+            return "Run conversations do not accept chat messages"
 
         try:
             await self.db.create_platform_session(

@@ -241,6 +241,11 @@
         <v-card-text class="workbench-body">
           <div class="at-run-header">
             <h2 class="text-h5 font-weight-bold flex-grow-1">{{ selectedRun.snapshot.definition.name }}</h2>
+            <v-btn
+              v-if="selectedRun.snapshot.root_run_id === selectedRun.run_id"
+              variant="text"
+              :to="{ name: 'ChatRunConversation', params: { runId: selectedRun.run_id } }"
+            >{{ tm('runConversation.openChat') }}</v-btn>
             <v-chip v-if="selectedRun.snapshot.trial" size="small" color="primary" variant="outlined">{{ tm('trial.test') }} · r{{ selectedRun.snapshot.trial.draft_revision }}</v-chip>
             <v-chip variant="tonal" :color="selectedRun.status === 'completed' ? 'success' : 'primary'">{{ tm(`v2.states.${selectedRun.status}`) }}</v-chip>
             <v-btn variant="text" :aria-pressed="runDisplay === 'workbench'" @click="runDisplay = 'workbench'">{{ tm('workbench.workspace') }}</v-btn>

@@ -99,6 +99,34 @@ describe("useSessions sidebar pagination", () => {
     expect(state.sessionsHasMore.value).toBe(false);
   });
 
+  it("requests run conversations across Dashboard pages while ChatBox keeps ordinary sessions", async () => {
+    const legacy = { ...rows(1)[0], session_id: "workflow-run-example" };
+    const run: Session = {
+      ...legacy,
+      session_type: "workflow_run",
+      run_conversation: { run_id: "example", asset_id: "asset", asset_version: 1, status: "running" },
+    };
+    vi.mocked(chatApi.listSessions)
+      .mockResolvedValueOnce(sessionsOk([legacy, ...rows(49, 1)], "snapshot:50"))
+      .mockResolvedValueOnce(sessionsOk([run]))
+      .mockResolvedValueOnce(sessionsOk([legacy]));
+    const dashboard = scope.run(() => useSessions(false, true))!;
+    const chatbox = scope.run(() => useSessions(true))!;
+
+    await dashboard.getSessions();
+    await dashboard.loadMoreSessions();
+    await chatbox.getSessions();
+
+    expect(vi.mocked(chatApi.listSessions).mock.calls.map(([params]) => params)).toEqual([
+      { cursor: "start", page_size: 50, include_run_conversations: true },
+      { cursor: "snapshot:50", page_size: 50, include_run_conversations: true },
+      { cursor: "start", page_size: 50 },
+    ]);
+    expect(dashboard.sessions.value.at(-1)).toEqual(run);
+    expect(dashboard.ordinarySessions.value[0]).toEqual(legacy);
+    expect(chatbox.sessions.value).toEqual([legacy]);
+  });
+
   it("refreshes the loaded rows in batches within the API limit", async () => {
     vi.mocked(chatApi.listSessions)
       .mockResolvedValueOnce(sessionsOk(rows(200), "fresh:200"))

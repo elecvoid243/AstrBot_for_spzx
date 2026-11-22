@@ -2946,6 +2946,10 @@ paths:
           in: query
           schema:
             type: string
+        - name: include_run_conversations
+          in: query
+          description: Include owned root run conversations when using a Dashboard cursor and administrator session.
+          schema: { type: boolean, default: false }
       responses:
         "200":
           $ref: "#/components/responses/Ok"
@@ -3072,7 +3076,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/ChatSessionBatchDeleteRequest"
+              $ref: "#/components/schemas/ChatSessionBatchArchiveRequest"
       responses:
         "200":
           $ref: "#/components/responses/Ok"
@@ -3092,7 +3096,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/ChatSessionBatchDeleteRequest"
+              $ref: "#/components/schemas/ChatSessionBatchArchiveRequest"
       responses:
         "200":
           $ref: "#/components/responses/Ok"
@@ -3126,6 +3130,10 @@ paths:
           schema:
             type: string
             default: ""
+        - name: include_run_conversations
+          in: query
+          description: Include owned root run conversations for Dashboard administrators.
+          schema: { type: boolean, default: false }
       responses:
         "200":
           $ref: "#/components/responses/Ok"
@@ -3159,6 +3167,43 @@ paths:
       responses:
         "200":
           $ref: "#/components/responses/Ok"
+
+  /api/v1/chat/run-conversations/{run_id}:
+    parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [Chat]
+      summary: Open a root run conversation owned by a Dashboard administrator
+      operationId: getChatRunConversation
+      security: [{ BearerAuth: [] }]
+      responses:
+        "200":
+          description: Scoped run conversation metadata.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChatHistoryResponse"
+        "404":
+          description: Run conversation unavailable.
+    patch:
+      tags: [Chat]
+      summary: Archive or restore an owned run conversation
+      operationId: archiveChatRunConversation
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RunConversationArchiveRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/Ok"
+        "404":
+          description: Run conversation unavailable.
 
   /api/v1/chat/sessions/{session_id}:
     get:
@@ -11538,6 +11583,22 @@ components:
             type: string
       additionalProperties: false
 
+    ChatSessionBatchArchiveRequest:
+      type: object
+      required: [session_ids]
+      properties:
+        session_ids:
+          type: array
+          items: { type: string }
+        run_ids:
+          description: Owned root run IDs, accepted only for administrator Dashboard sessions.
+          type: array
+          items: { type: string }
+    RunConversationArchiveRequest:
+      type: object
+      required: [archived]
+      properties:
+        archived: { type: boolean }
     ChatSessionPatchRequest:
       type: object
       properties:
@@ -14313,6 +14374,15 @@ components:
       properties:
         id: { type: integer }
         content: { $ref: "#/components/schemas/ChatHistoryContent" }
+    RunConversationSummary:
+      type: object
+      required: [run_id, asset_id, asset_version, status]
+      properties:
+        run_id: { type: string }
+        asset_id: { type: string }
+        asset_version: { type: integer }
+        status: { type: string }
+        draft_revision: { type: integer }
     ChatSessionMetadata:
       type: object
       required: [session_id, platform_id, creator, display_name, is_group, created_at, updated_at, starred]
@@ -14325,6 +14395,9 @@ components:
         created_at: { type: [string, "null"] }
         updated_at: { type: [string, "null"] }
         starred: { type: boolean }
+        session_type: { type: string, enum: [workflow_run] }
+        run_conversation: { $ref: "#/components/schemas/RunConversationSummary" }
+        archived: { type: boolean }
     ChatHistoryPage:
       type: object
       additionalProperties: true

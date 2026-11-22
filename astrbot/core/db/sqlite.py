@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from deprecated import deprecated
-from sqlalchemy import CursorResult, Row, case, literal, not_
+from sqlalchemy import CursorResult, Row, case, literal, not_, union_all
 from sqlalchemy.dialects.sqlite import dialect as sqlite_dialect
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession
@@ -24,6 +24,9 @@ from astrbot.core.db.po import (
     AgentTeamRun,
     AgentTeamRunMessage,
     AgentTeamWorkflow,
+    AgentWorkflowControl,
+    AgentWorkflowRun,
+    AgentWorkflowRunArchive,
     ApiKey,
     Attachment,
     ChatUIProject,
@@ -44,6 +47,7 @@ from astrbot.core.db.po import (
     SQLModel,
     UmoAlias,
     WebChatThread,
+    is_run_conversation_id,
 )
 from astrbot.core.db.po import (
     Platform as DeprecatedPlatformStat,
@@ -2830,6 +2834,8 @@ class SQLiteDatabase(BaseDatabase):
         is_group: int = 0,
     ) -> PlatformSession:
         """Create a new Platform session."""
+        if isinstance(session_id, str) and is_run_conversation_id(session_id):
+            raise ValueError("Run conversation IDs are reserved")
         kwargs = {}
         if session_id:
             kwargs["session_id"] = session_id
@@ -3033,6 +3039,208 @@ class SQLiteDatabase(BaseDatabase):
 
             sessions_with_projects = self._rows_to_session_dicts(result.all())
             return sessions_with_projects, total
+
+    @staticmethod
+    def _run_conversations_query(creator: str, archived: bool | None = None):
+        """Build the owner-scoped root query shared by list, detail and archive.
+
+        Args:
+            creator: Authenticated Dashboard run owner.
+            archived: Optional conversation visibility filter.
+
+        Returns:
+            A query for root runs and their optional archive flags.
+        """
+        snapshot = col(AgentWorkflowRun.snapshot)
+        archive_id = col(AgentWorkflowRunArchive.run_id)
+        query = (
+            select(AgentWorkflowRun, archive_id.is_not(None).label("archived"))
+            .outerjoin(
+                AgentWorkflowRunArchive,
+                archive_id == col(AgentWorkflowRun.run_id),
+            )
+            .where(
+                col(AgentWorkflowRun.owner_username) == creator,
+                snapshot["root_run_id"].as_string() == col(AgentWorkflowRun.run_id),
+                snapshot["parent_run_id"].as_string().is_(None),
+            )
+        )
+        if archived is not None:
+            query = query.where(
+                archive_id.is_not(None) if archived else archive_id.is_(None)
+            )
+        return query
+
+    @staticmethod
+    def _workflow_member_session_ids(creator: str):
+        """Find the private Chat storage used by a workflow's execution members.
+
+        Args:
+            creator: Dashboard owner of the workflow executions.
+
+        Returns:
+            IDs from task snapshots, frozen teams and spawned team members.
+        """
+        owned = col(AgentWorkflowRun.owner_username) == creator
+        snapshot = col(AgentWorkflowRun.snapshot)
+        frozen = func.json_each(snapshot["members"].as_json()).table_valued("value")
+        spawned = func.json_each(
+            col(AgentWorkflowRun.state)["members"].as_json()
+        ).table_valued("value")
+        members = union_all(
+            select(
+                snapshot["member"]["session_id"].as_string().label("session_id")
+            ).where(owned),
+            select(func.json_extract(frozen.c.value, "$.member.session_id"))
+            .select_from(AgentWorkflowRun)
+            .join(frozen, literal(True))
+            .where(owned),
+            select(func.json_extract(spawned.c.value, "$.member.session_id"))
+            .select_from(AgentWorkflowRun)
+            .join(spawned, literal(True))
+            .where(owned),
+        ).subquery()
+        return select(members.c.session_id).where(members.c.session_id.is_not(None))
+
+    async def get_mixed_chat_session_ids(
+        self,
+        creator: str,
+        platform_id: str | None,
+        *,
+        archived: bool = False,
+        search: str | None = None,
+        offset: int = 0,
+        limit: int | None = None,
+    ) -> tuple[list[str], int]:
+        """Order both session types before taking a sidebar snapshot or archive page.
+
+        Args:
+            creator: Authenticated Dashboard owner.
+            platform_id: Optional chat platform filter.
+            archived: Whether to include archived sessions.
+            search: Optional title substring.
+            offset: Starting position for a numbered archive page.
+            limit: Archive page size, or None to capture all sidebar IDs.
+
+        Returns:
+            Ordered typed keys and the total count when paginating the archive.
+        """
+        chats = self._build_platform_sessions_query(
+            creator, platform_id, not archived, archived, search
+        ).with_only_columns(
+            (literal("chat:") + col(PlatformSession.session_id)).label("key"),
+            col(PlatformSession.updated_at).label("updated_at"),
+        )
+        if platform_id in (None, "", "webchat", "workflow_run"):
+            if platform_id == "workflow_run":
+                chats = chats.where(literal(False))
+            else:
+                chats = chats.where(
+                    ~col(PlatformSession.session_id).in_(
+                        self._workflow_member_session_ids(creator)
+                    )
+                )
+            runs = self._run_conversations_query(creator, archived).with_only_columns(
+                (literal("run:") + col(AgentWorkflowRun.run_id)).label("key"),
+                col(AgentWorkflowRun.updated_at).label("updated_at"),
+            )
+            if search:
+                runs = runs.where(
+                    col(AgentWorkflowRun.snapshot)["definition"]["name"]
+                    .as_string()
+                    .ilike(f"%{search}%")
+                )
+            rows = union_all(chats, runs).subquery()
+        else:
+            rows = chats.subquery()
+
+        query = select(rows.c.key).order_by(rows.c.updated_at.desc(), rows.c.key)
+        async with self.get_db() as session:
+            total = 0
+            if limit is not None:
+                await session.execute(text("BEGIN"))
+                total = (
+                    await session.execute(select(func.count()).select_from(rows))
+                ).scalar_one()
+                query = query.offset(offset).limit(limit)
+            return list((await session.execute(query)).scalars()), total
+
+    async def get_run_conversations(
+        self, creator: str, run_ids: list[str], *, archived: bool | None = None
+    ) -> list[dict]:
+        """Load a page of authorized summaries without deserializing run snapshots.
+
+        Args:
+            creator: Authenticated Dashboard owner.
+            run_ids: Requested root IDs.
+            archived: Optional archive state filter.
+
+        Returns:
+            Current summaries with their persisted archive flags.
+        """
+        if not run_ids:
+            return []
+        snapshot = col(AgentWorkflowRun.snapshot)
+        run_id = col(AgentWorkflowRun.run_id)
+        control_status = col(AgentWorkflowControl.status)
+        query = (
+            self._run_conversations_query(creator, archived)
+            .with_only_columns(
+                run_id,
+                col(AgentWorkflowRun.owner_username),
+                col(AgentWorkflowRun.created_at),
+                col(AgentWorkflowRun.updated_at),
+                col(AgentWorkflowRunArchive.run_id).is_not(None).label("archived"),
+                snapshot["asset_id"].as_string().label("asset_id"),
+                snapshot["asset_version"].as_integer().label("asset_version"),
+                snapshot["definition"]["name"].as_string().label("display_name"),
+                snapshot["trial"]["draft_revision"]
+                .as_integer()
+                .label("draft_revision"),
+                case(
+                    (control_status == "paused", "paused"),
+                    else_=col(AgentWorkflowRun.status),
+                ).label("status"),
+            )
+            .outerjoin(AgentWorkflowControl, col(AgentWorkflowControl.run_id) == run_id)
+            .where(run_id.in_(run_ids))
+        )
+        async with self.get_db() as session:
+            result = await session.execute(query)
+            return [dict(row) for row in result.mappings()]
+
+    async def set_run_conversation_archived(
+        self, creator: str, run_id: str, archived: bool
+    ) -> bool:
+        """Change sidebar visibility without writing to the run.
+
+        Args:
+            creator: Authenticated Dashboard owner.
+            run_id: Root run whose conversation visibility is changing.
+            archived: True to archive the conversation, False to restore it.
+
+        Returns:
+            Whether the root run exists and belongs to the owner.
+        """
+        root = (
+            self._run_conversations_query(creator)
+            .with_only_columns(col(AgentWorkflowRun.run_id))
+            .where(col(AgentWorkflowRun.run_id) == run_id)
+        )
+        async with self.get_db() as session, session.begin():
+            if archived:
+                await session.execute(
+                    sqlite_insert(AgentWorkflowRunArchive)
+                    .from_select(["run_id"], root)
+                    .on_conflict_do_nothing(index_elements=["run_id"])
+                )
+            else:
+                await session.execute(
+                    delete(AgentWorkflowRunArchive).where(
+                        col(AgentWorkflowRunArchive.run_id).in_(root)
+                    )
+                )
+            return (await session.execute(root)).scalar_one_or_none() is not None
 
     async def get_sidebar_session_ids(
         self, creator: str, platform_id: str | None

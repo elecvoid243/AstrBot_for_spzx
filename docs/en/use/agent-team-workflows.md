@@ -70,6 +70,16 @@ Waits for predecessors, capacity or people show their reasons; a human wait bloc
 
 Closing or refreshing the page does not cancel execution. Reopen the run to read saved process and results. Permission to answer a todo does not grant the run owner's process permissions.
 
+### Open the same run in Dashboard Chat
+
+In the Bot run workbench, choose **Open in Chat**. Dashboard Chat shows one conversation per root run, even when the same asset runs several times. Open a conversation from the Chat sidebar or its direct link (`#/chat/runs/<root-run-id>`) to see the asset, fixed version, root ID and current state. For draft tests, Chat shows the draft revision. Choose **Open Run Workbench** to return to that exact run and inspect its child workflows, team scopes and task attempts.
+
+![Open a run conversation from the Bot workbench](/images/agent-teams-run-bot-en.png)
+
+![Run conversation and its link back to the workbench](/images/agent-teams-run-chat-en.png)
+
+The run owner can open the conversation with an administrator Dashboard session. The external source-authorized link described below has its own access checks. Chat uses a dedicated **Cancel run** action. **Archive Session** moves the conversation to **View Archive** and execution continues. Restore the conversation from the archive to show it in the sidebar again.
+
 ## Recovery and usage
 
 In run details, pause, continue or cancel the whole run. Pause stops new work from being admitted, but already dispatched external calls may finish; cancellation cannot undo effects already produced. After checking frozen inputs, **Retry failed task** creates a new attempt. For tasks that use the built-in executor, select **Continue same attempt** when a resumable checkpoint is available. Continuing reuses saved tool results. If a model request failed after a tool result was saved, continuing can resend that request with the saved result in context. Model requests may incur charges. When the current attempt has saved tool results, the workbench disables ordinary retry. If continuation is unavailable, review the saved results and external ledger before deciding whether to start a new run.

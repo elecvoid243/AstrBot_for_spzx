@@ -6,6 +6,7 @@ import jaJPNavigation from './core/navigation.json';
 import jaJPHeader from './core/header.json';
 import jaJPShared from './core/shared.json';
 import jaJPChat from './features/chat.json';
+import enUSAgentTeams from '../en-US/features/agent-teams.json';
 import jaJPExtension from './features/extension.json';
 import jaJPConversation from './features/conversation.json';
 import jaJPSessionManagement from './features/session-management.json';
@@ -48,6 +49,7 @@ export default {
     },
     features: {
       chat: jaJPChat,
+      'agent-teams': enUSAgentTeams,
       extension: jaJPExtension,
       conversation: jaJPConversation,
       'session-management': jaJPSessionManagement,

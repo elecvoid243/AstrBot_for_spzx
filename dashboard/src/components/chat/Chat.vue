@@ -197,13 +197,13 @@
             @update:model-value="toggleSelectAll"
           />
           <span class="batch-select-count">
-            {{ tm("batch.selected", { count: checkedSessionIds.size }) }}
+            {{ tm("batch.selected", { count: checkedSessionKeys.size }) }}
           </span>
           <v-btn
             size="x-small"
             variant="text"
             class="batch-select-archive"
-            :disabled="checkedSessionIds.size === 0"
+            :disabled="checkedSessionKeys.size === 0"
             :loading="archivingCheckedSessions"
             @click="archiveCheckedSessions"
           >
@@ -214,7 +214,7 @@
             variant="text"
             color="error"
             class="batch-select-delete"
-            :disabled="checkedSessionIds.size === 0"
+            :disabled="!canDeleteCheckedSessions"
             :loading="deletingCheckedSessions"
             @click="deleteCheckedSessions"
           >
@@ -239,7 +239,7 @@
           :active-session-id="currSessionId"
           :is-session-running="isSessionRunning"
           :selection-mode="selectionMode"
-          :checked-session-ids="checkedSessionIds"
+          :checked-session-ids="checkedChatSessionIds"
           :dragging-session-id="draggingSessionId"
           :drag-over-project-id="dragOverProjectId"
           :drag-over-session-id="dragOverSessionId"
@@ -254,7 +254,7 @@
           @edit-session-title="editProjectSessionTitle"
           @export-session="exportSidebarSession"
           @delete-session="deleteProjectSession"
-          @toggle-session-checked="toggleSessionChecked"
+          @toggle-session-checked="toggleSessionChecked(sessionRowKey({ session_id: $event }))"
           @archive-session="archiveProjectSession"
           @toggle-session-star="toggleSessionStarred"
           @drag-session-start="onSessionDragStart"
@@ -294,16 +294,19 @@
           </Transition>
           <div
             v-for="session in sessions"
-            :key="session.session_id"
+            :key="sessionRowKey(session)"
             class="session-item"
             :class="{
               active:
-                !isProviderWorkspace && currSessionId === session.session_id,
+                !isProviderWorkspace && (session.run_conversation
+                  ? runConversationId === session.run_conversation.run_id
+                  : !isRunConversation && currSessionId === session.session_id),
               selection: selectionMode,
               checked:
-                selectionMode && checkedSessionIds.has(session.session_id),
-              'needs-choice': choiceAttention.hasAttention(session.session_id),
+                selectionMode && checkedSessionKeys.has(sessionRowKey(session)),
+              'needs-choice': !session.run_conversation && choiceAttention.hasAttention(session.session_id),
               'has-finished-run':
+                !session.run_conversation &&
                 !choiceAttention.hasAttention(session.session_id) &&
                 sessionHasUnreadMarker(session.session_id),
               'has-branch-meta':
@@ -313,31 +316,31 @@
             }"
             role="button"
             tabindex="0"
-            :draggable="!selectionMode"
-            @click="handleSidebarSessionClick(session.session_id)"
+            :draggable="!selectionMode && session.session_type !== 'workflow_run'"
+            @click="handleSidebarSessionClick(session)"
             @contextmenu.prevent="openSessionContextMenu(session, $event)"
-            @dragstart="onSidebarSessionDragStart(session.session_id, $event)"
+            @dragstart="onSidebarSessionDragStart(session, $event)"
             @dragend="onSessionDragEnd"
-            @keydown.enter="handleSidebarSessionClick(session.session_id)"
+            @keydown.enter="handleSidebarSessionClick(session)"
             @keydown.space.prevent="
-              handleSidebarSessionClick(session.session_id)
+              handleSidebarSessionClick(session)
             "
           >
             <v-checkbox-btn
               v-if="selectionMode"
-              :model-value="checkedSessionIds.has(session.session_id)"
+              :model-value="checkedSessionKeys.has(sessionRowKey(session))"
               density="compact"
               class="session-select-checkbox"
               @click.stop
-              @update:model-value="toggleSessionChecked(session.session_id)"
+              @update:model-value="toggleSessionChecked(sessionRowKey(session))"
             />
             <span
-              v-if="choiceAttention.hasAttention(session.session_id)"
+              v-if="!session.run_conversation && choiceAttention.hasAttention(session.session_id)"
               class="session-choice-dot"
               aria-hidden="true"
             />
             <span
-              v-else-if="sessionHasUnreadMarker(session.session_id)"
+              v-else-if="!session.run_conversation && sessionHasUnreadMarker(session.session_id)"
               class="session-finished-dot"
               aria-hidden="true"
             />
@@ -349,7 +352,18 @@
               class="session-star-badge"
               :aria-label="tm('conversation.starred')"
             />
+            <v-icon
+              v-if="session.session_type === 'workflow_run'"
+              icon="mdi-source-branch"
+              size="16"
+              :title="teamsLabel('runConversation.type')"
+            />
             <span class="session-title">{{ sessionTitle(session) }}</span>
+            <span
+              v-if="session.run_conversation && !selectionMode"
+              class="text-caption text-medium-emphasis"
+              :title="session.run_conversation.run_id"
+            >{{ session.run_conversation.run_id.slice(0, 8) }}</span>
             <div
               v-if="
                 !selectionMode &&
@@ -417,6 +431,7 @@
                 variant="text"
                 class="session-action-btn"
                 :title="tm('conversation.editDisplayName')"
+                v-if="session.session_type !== 'workflow_run'"
                 @click="editSidebarSessionTitle(session)"
               >
                 <Pencil :size="15" />
@@ -434,8 +449,10 @@
             </div>
             <v-progress-circular
               v-if="
-                isSessionRunning(session.session_id) ||
-                hasLiveSystemRecord(session.session_id)
+                !session.run_conversation && (
+                  isSessionRunning(session.session_id) ||
+                  hasLiveSystemRecord(session.session_id)
+                )
               "
               class="session-progress"
               indeterminate
@@ -452,27 +469,29 @@
             :target="sessionContextMenu.target"
             location="end"
           >
-            <v-list-item
-              class="styled-menu-item"
-              rounded="md"
-              @click="editSidebarSessionTitle(sessionContextMenu.session!)"
-            >
-              <template #prepend>
-                <Pencil :size="16" />
-              </template>
-              <v-list-item-title>
-                {{ tm("conversation.editDisplayName") }}
-              </v-list-item-title>
-            </v-list-item>
-            <!-- 2026-10-04 (elecvoid243): the menu is split into lifetime
-               actions (rename / export / archive / delete) above, and the two
-               lightweight markers (star / unread) below the divider. -->
-            <SessionExportButton
-              :session-id="sessionContextMenu.session!.session_id"
-              variant="menu-item"
-              :size="16"
-              @export="exportSidebarSession"
-            />
+            <template v-if="sessionContextMenu.session && sessionContextMenu.session.session_type !== 'workflow_run'">
+              <v-list-item
+                class="styled-menu-item"
+                rounded="md"
+                @click="editSidebarSessionTitle(sessionContextMenu.session!)"
+              >
+                <template #prepend>
+                  <Pencil :size="16" />
+                </template>
+                <v-list-item-title>
+                  {{ tm("conversation.editDisplayName") }}
+                </v-list-item-title>
+              </v-list-item>
+              <!-- 2026-10-04 (elecvoid243): the menu is split into lifetime
+                 actions (rename / export / archive / delete) above, and the two
+                 lightweight markers (star / unread) below the divider. -->
+              <SessionExportButton
+                :session-id="sessionContextMenu.session!.session_id"
+                variant="menu-item"
+                :size="16"
+                @export="exportSidebarSession"
+              />
+            </template>
             <v-list-item
               class="styled-menu-item"
               rounded="md"
@@ -486,6 +505,7 @@
               </v-list-item-title>
             </v-list-item>
             <v-list-item
+              v-if="sessionContextMenu.session && sessionContextMenu.session.session_type !== 'workflow_run'"
               class="styled-menu-item text-error"
               rounded="md"
               @click="deleteSidebarSession(sessionContextMenu.session!)"
@@ -497,57 +517,59 @@
                 {{ tm("actions.deleteChat") }}
               </v-list-item-title>
             </v-list-item>
-            <v-divider class="my-1" />
-            <!-- 2026-09-18 (elecvoid243): star toggle; the mark is persisted
-               server-side so it survives reloads and other browsers.
-               2026-10-04: grouped with "mark unread" — both write a marker on
-               the session rather than acting on its content. -->
-            <v-list-item
-              class="styled-menu-item"
-              rounded="md"
-              @click="toggleSessionStarred(sessionContextMenu.session!)"
-            >
-              <template #prepend>
-                <StarOff
-                  v-if="sessionContextMenu.session!.starred"
-                  :size="16"
-                />
-                <Star v-else :size="16" />
-              </template>
-              <v-list-item-title>
-                {{
-                  sessionContextMenu.session!.starred
-                    ? tm("conversation.removeStar")
-                    : tm("conversation.addStar")
-                }}
-              </v-list-item-title>
-            </v-list-item>
-            <v-list-item
-              class="styled-menu-item"
-              rounded="md"
-              @click="
-                toggleSessionUnread(sessionContextMenu.session!.session_id)
-              "
-            >
-              <template #prepend>
-                <MailOpen
-                  v-if="
-                    sessionHasUnreadMarker(
-                      sessionContextMenu.session!.session_id,
-                    )
-                  "
-                  :size="16"
-                />
-                <Mail v-else :size="16" />
-              </template>
-              <v-list-item-title>
-                {{
-                  sessionHasUnreadMarker(sessionContextMenu.session!.session_id)
-                    ? tm("conversation.markRead")
-                    : tm("conversation.markUnread")
-                }}
-              </v-list-item-title>
-            </v-list-item>
+            <template v-if="sessionContextMenu.session && sessionContextMenu.session.session_type !== 'workflow_run'">
+              <v-divider class="my-1" />
+              <!-- 2026-09-18 (elecvoid243): star toggle; the mark is persisted
+                 server-side so it survives reloads and other browsers.
+                 2026-10-04: grouped with "mark unread" — both write a marker on
+                 the session rather than acting on its content. -->
+              <v-list-item
+                class="styled-menu-item"
+                rounded="md"
+                @click="toggleSessionStarred(sessionContextMenu.session!)"
+              >
+                <template #prepend>
+                  <StarOff
+                    v-if="sessionContextMenu.session!.starred"
+                    :size="16"
+                  />
+                  <Star v-else :size="16" />
+                </template>
+                <v-list-item-title>
+                  {{
+                    sessionContextMenu.session!.starred
+                      ? tm("conversation.removeStar")
+                      : tm("conversation.addStar")
+                  }}
+                </v-list-item-title>
+              </v-list-item>
+              <v-list-item
+                class="styled-menu-item"
+                rounded="md"
+                @click="
+                  toggleSessionUnread(sessionContextMenu.session!.session_id)
+                "
+              >
+                <template #prepend>
+                  <MailOpen
+                    v-if="
+                      sessionHasUnreadMarker(
+                        sessionContextMenu.session!.session_id,
+                      )
+                    "
+                    :size="16"
+                  />
+                  <Mail v-else :size="16" />
+                </template>
+                <v-list-item-title>
+                  {{
+                    sessionHasUnreadMarker(sessionContextMenu.session!.session_id)
+                      ? tm("conversation.markRead")
+                      : tm("conversation.markUnread")
+                  }}
+                </v-list-item-title>
+              </v-list-item>
+            </template>
           </StyledMenu>
 
           <!-- Progressive loading: the next page is requested when this
@@ -792,11 +814,11 @@
     <main
       class="chat-main"
       :class="{ 'empty-chat': isEmptyChat }"
-      v-on="remoteConnectionId ? {} : dragEvents"
+      v-on="remoteConnectionId || isRunConversation ? {} : dragEvents"
     >
       <transition name="drop-fade">
         <div
-          v-if="isDragging && !isProviderWorkspace && !remoteConnectionId"
+          v-if="isDragging && !isProviderWorkspace && !remoteConnectionId && !isRunConversation"
           class="chat-drop-overlay"
         >
           <div class="chat-drop-overlay-content">
@@ -808,6 +830,17 @@
       <template v-if="remoteConnectionId">
         <RemoteConversation v-if="activeRemoteConnection && activeRemoteSession" :key="remoteIdentity" :connection="activeRemoteConnection" :session="activeRemoteSession" :is-dark="isDark" :send-shortcut="sendShortcut" @presentation="remotePresentation = $event; chatHeader.informationOnly = true" @unavailable="remote.refreshConnection(remoteConnectionId)" />
         <div v-else class="pa-6" role="status">{{ tm(`remoteConnections.status.${remote.enabled.value ? remote.status[remoteConnectionId] || 'remote_unavailable' : 'disabled'}`) }}</div>
+      </template>
+      <template v-else-if="isRunConversation && !isProviderWorkspace">
+        <RunConversation
+          v-if="includeRunConversations"
+          :key="runConversationId"
+          :run-id="runConversationId"
+          :restore="restoreRunConversation"
+        />
+        <v-alert v-else type="error" variant="tonal" class="ma-4">
+          {{ teamsLabel('runConversation.unavailable') }}
+        </v-alert>
       </template>
       <section v-else-if="isProviderWorkspace" class="provider-workspace-shell">
         <ProviderChatCompletionPanel
@@ -1287,6 +1320,7 @@
   </v-dialog>
   <ArchivedSessionsDialog
     v-model="archivedDialogOpen"
+    :include-run-conversations="includeRunConversations"
     @restore="onArchivedRestored"
     @delete="onArchivedDeleted"
     @open="openArchivedSession"
@@ -1428,6 +1462,8 @@ import {
 import { assistantFileComments } from "@/utils/assistantFileComments";
 import ChatMessageSearchDialog from "@/components/chat/ChatMessageSearchDialog.vue";
 import ArchivedSessionsDialog from "@/components/chat/ArchivedSessionsDialog.vue";
+import RunConversation from "@/components/chat/RunConversation.vue";
+import { selectedSessionIds, sessionRowKey } from "@/utils/runConversation";
 import ImportSessionsDialog from "@/components/chat/ImportSessionsDialog.vue";
 import RemoteConnectionsPanel from "@/components/chat/RemoteConnectionsPanel.vue";
 import RemoteConversation from "@/components/chat/RemoteConversation.vue";
@@ -1501,6 +1537,10 @@ const props = withDefaults(
 );
 
 const route = useRoute();
+const includeRunConversations = computed(
+  () => auth.role === "admin" && !props.chatboxMode && /^\/chat(?:\/|$)/.test(route.path),
+);
+const { tm: teamsLabel } = useModuleI18n("features/agent-teams");
 const remote = useRemoteConnections();
 onMounted(() => {
   watch(remoteConnectionId, (id) => {
@@ -1673,6 +1713,7 @@ const { languageOptions, currentLanguage, switchLanguage, locale } =
   useLanguageSwitcher();
 const {
   sessions,
+  ordinarySessions,
   currSessionId,
   getSessions,
   sessionsHasMore,
@@ -1685,19 +1726,26 @@ const {
   setSessionArchived,
   setSessionStarred,
   updateSessionTitle,
-} = useSessions(props.chatboxMode);
+} = useSessions(props.chatboxMode, includeRunConversations);
+const runConversationId = computed(() =>
+  route.name === "ChatRunConversation" && typeof route.params.runId === "string"
+    ? route.params.runId
+    : "",
+);
+const isRunConversation = computed(() => Boolean(runConversationId.value));
+const ordinaryChatId = computed(() => isRunConversation.value ? "" : currSessionId.value);
 
 // ── goal 循环状态 (顶栏徽标 + composer 上方的 GoalBar) ────────
 // Push-first: the backend emits goal_state_changed over the system stream
 // on every mutation; GET /goal is only the cold-start path on session switch.
-const { currentGoal, applyPushedGoal } = useSessionGoal(currSessionId);
+const { currentGoal, applyPushedGoal } = useSessionGoal(ordinaryChatId);
 
 // ── Background shell session awareness (app-bar indicator) ──────
 // Push-first: the backend emits shell_sessions_changed over the system
 // stream on every session lifecycle transition; GET /shell-sessions is only
 // the cold-start path on session switch.
 const { currentSessions: shellSessions, applyPushedShellSessions } =
-  useShellSessions(currSessionId);
+  useShellSessions(ordinaryChatId);
 
 const {
   projects,
@@ -1803,6 +1851,7 @@ const draft = ref("");
 // created on send / "new chat".
 const chatDrafts = useChatDrafts();
 watch(draft, (text) => {
+  if (isRunConversation.value) return;
   chatDrafts.setDraft(currSessionId.value || NEW_CHAT_DRAFT_KEY, text);
 });
 const tokenProviderConfigs = ref<TokenProviderConfig[]>([]);
@@ -1815,7 +1864,7 @@ const {
   setSelection: setSessionModelSelection,
   setThinkingEffort: setSessionThinkingEffort,
   prepareSend: prepareModelSelection,
-} = useProviderModelSelection(currSessionId);
+} = useProviderModelSelection(ordinaryChatId);
 const commandSending = ref(false);
 const messagesContainer = ref<HTMLElement | null>(null);
 const remotePresentation = ref<{
@@ -1824,7 +1873,9 @@ const remotePresentation = ref<{
 }>({ goal: null, todo: null });
 watch(remoteIdentity, () => {
   remotePresentation.value = { goal: null, todo: null };
-  chatHeader.informationOnly = Boolean(remoteConnectionId.value);
+});
+watch([remoteConnectionId, isRunConversation], ([remoteId, run]) => {
+  chatHeader.informationOnly = Boolean(remoteId || run);
 });
 const subagentPageOpen = ref(false);
 const subagentPagesRef = ref<InstanceType<typeof SubagentPages> | null>(null);
@@ -2273,7 +2324,7 @@ const {
   latestTodoSnapshotBySession,
   latestTodoCreateTickBySession,
 } = useMessages({
-  currentSessionId: currSessionId,
+  currentSessionId: ordinaryChatId,
   accountRole: auth.role,
   onError: (message, sessionId) => {
     if (sessionId === currSessionId.value) chatError.value = message;
@@ -2506,7 +2557,7 @@ const canSend = computed(
 );
 const currentSession = computed(
   () =>
-    sessions.value.find(
+    ordinarySessions.value.find(
       (session) => session.session_id === currSessionId.value,
     ) ||
     projectSessions.value.find(
@@ -2574,7 +2625,9 @@ const isEmptyChat = computed(
     !activeMessages.value.length,
 );
 const chatHeaderTitle = computed(
-  () => currentSessionTitle.value || selectedProject.value?.title || "",
+  () => isRunConversation.value
+    ? sessions.value.find((session) => session.run_conversation?.run_id === runConversationId.value)?.display_name ?? ""
+    : currentSessionTitle.value || selectedProject.value?.title || "",
 );
 const chatHeaderSubtitle = computed(() =>
   currentSessionTitle.value
@@ -2721,6 +2774,7 @@ async function onSubagentViewChange(open: boolean) {
 }
 
 async function scrollToMessageFromQuery() {
+  if (isRunConversation.value) return;
   const idxStr = route.query.scrollToIndex as string | undefined;
   if (!idxStr) return;
   const target = parseInt(idxStr, 10);
@@ -2753,7 +2807,7 @@ async function scrollToMessageFromQuery() {
 }
 
 watch(
-  [chatHeaderTitle, chatHeaderSubtitle, activeProject, currSessionId],
+  [chatHeaderTitle, chatHeaderSubtitle, activeProject, ordinaryChatId],
   ([title, subtitle, project, sessionId]) => {
     chatHeader.SET_CONTEXT({
       title,
@@ -2833,7 +2887,7 @@ onMounted(async () => {
     } else if (routeSessionId) {
       await selectSession(routeSessionId, false);
       await scrollToMessageFromQuery();
-    } else {
+    } else if (!isRunConversation.value) {
       // Fresh "/chat" landing: restore the no-session draft slot so a
       // half-typed message survives a reload.
       draft.value = chatDrafts.draftFor(NEW_CHAT_DRAFT_KEY);
@@ -2879,9 +2933,26 @@ watch(composerShell, (element, previousElement) => {
   if (element) composerResizeObserver.observe(element);
 });
 
+watch(() => props.active, (active) => {
+  if (active && includeRunConversations.value) void getSessions();
+});
+
 watch(
-  () => route.params.conversationId,
-  async () => {
+  [() => route.params.conversationId, runConversationId],
+  async (_, [, previousRunId]) => {
+    if (isRunConversation.value) {
+      showChatWorkspace();
+      currSessionId.value = "";
+      pendingViewportSessionId = "";
+      selectedProjectId.value = null;
+      draft.value = "";
+      replyTarget.value = null;
+      closeSecondaryPanels();
+      gitDiffSidebarOpen.value = false;
+      closeTodoMenu();
+      closeMobileSidebar();
+      return;
+    }
     const routeSessionId = getRouteSessionId();
     if (routeSessionId === "models") {
       activeWorkspace.value = "providers";
@@ -2892,7 +2963,7 @@ watch(
       selectedProjectId.value = null;
       await selectSession(routeSessionId, false);
       await scrollToMessageFromQuery();
-    } else if (!routeSessionId && currSessionId.value) {
+    } else if (!routeSessionId && (currSessionId.value || (previousRunId && route.path === basePath()))) {
       showChatWorkspace();
       currSessionId.value = "";
       // No-session landing: show the fresh-chat draft slot, not the
@@ -3236,7 +3307,7 @@ function resolveCurrentUmo(sessionId: string): string | null {
   // folders previously resolved to null — leaving the spcode chip on
   // the stale "most-recently-loaded" backend fallback.
   return resolveSessionUmo(sessionId, {
-    sessions: sessions.value,
+    sessions: ordinarySessions.value,
     projectSessions: projectSessions.value,
     projectSessionsById: projectSessionsById.value,
     sessionDetails,
@@ -3365,7 +3436,7 @@ async function startNewChat() {
   // session), which makes the sidebar flicker and piles up blank
   // sessions. Reuse keeps the list untouched until the first message is
   // sent.
-  const oldSessionId = currSessionId.value;
+  const oldSessionId = ordinaryChatId.value;
   const isCurrentSessionEmpty =
     Boolean(oldSessionId) &&
     !loadingMessages.value &&
@@ -3481,7 +3552,12 @@ function onSessionDragStart(sessionId: string, projectId: string): void {
 /** Sidebar (unsorted) session rows set the dataTransfer themselves — the
  * ProjectList rows do it in their own component, so this is only needed
  * here. Unsorted sessions are never inside a project. */
-function onSidebarSessionDragStart(sessionId: string, event: DragEvent): void {
+function onSidebarSessionDragStart(session: Session, event: DragEvent): void {
+  if (session.session_type === "workflow_run") {
+    event.preventDefault();
+    return;
+  }
+  const sessionId = session.session_id;
   draggingSessionId.value = sessionId;
   draggingSessionProjectId.value = null;
   if (event.dataTransfer) {
@@ -3756,17 +3832,18 @@ function openSessionContextMenu(session: Session, event: MouseEvent) {
 // user check multiple conversations (sidebar list + project sessions) and
 // delete or archive them via the batch endpoints in one request.
 const selectionMode = ref(false);
-const checkedSessionIds = ref<Set<string>>(new Set());
+const checkedSessionKeys = ref<Set<string>>(new Set());
 const deletingCheckedSessions = ref(false);
 const archivingCheckedSessions = ref(false);
 
-/** All session ids the batch bar can act on: sidebar list plus every
- * project session list that has been loaded so far. */
-const selectableSessionIds = computed(() => {
-  const ids = sessions.value.map((session) => session.session_id);
+const checkedSessions = computed(() => selectedSessionIds(checkedSessionKeys.value));
+const checkedChatSessionIds = computed(() => new Set(checkedSessions.value.session_ids));
+/** Sidebar conversations and the project sessions loaded so far. */
+const selectableSessionKeys = computed(() => {
+  const ids = sessions.value.map(sessionRowKey);
   for (const projectSessionList of Object.values(projectSessionsById.value)) {
     for (const session of projectSessionList) {
-      ids.push(session.session_id);
+      ids.push(sessionRowKey(session));
     }
   }
   return ids;
@@ -3774,50 +3851,60 @@ const selectableSessionIds = computed(() => {
 
 const allChecked = computed(
   () =>
-    selectableSessionIds.value.length > 0 &&
-    selectableSessionIds.value.every((id) => checkedSessionIds.value.has(id)),
+    selectableSessionKeys.value.length > 0 &&
+    selectableSessionKeys.value.every((id) => checkedSessionKeys.value.has(id)),
 );
 
 const someChecked = computed(
-  () => checkedSessionIds.value.size > 0 && !allChecked.value,
+  () => checkedSessionKeys.value.size > 0 && !allChecked.value,
 );
 
 function toggleSelectionMode() {
   selectionMode.value = !selectionMode.value;
   if (!selectionMode.value) {
-    checkedSessionIds.value = new Set();
+    checkedSessionKeys.value = new Set();
   }
 }
 
 function toggleSessionChecked(sessionId: string) {
-  const next = new Set(checkedSessionIds.value);
+  const next = new Set(checkedSessionKeys.value);
   if (next.has(sessionId)) {
     next.delete(sessionId);
   } else {
     next.add(sessionId);
   }
-  checkedSessionIds.value = next;
+  checkedSessionKeys.value = next;
 }
 
 function toggleSelectAll() {
-  checkedSessionIds.value = allChecked.value
+  checkedSessionKeys.value = allChecked.value
     ? new Set()
-    : new Set(selectableSessionIds.value);
+    : new Set(selectableSessionKeys.value);
 }
 
 /** Row click dispatcher: in selection mode a click toggles the checkbox
  * instead of opening the session. */
-function handleSidebarSessionClick(sessionId: string) {
+async function handleSidebarSessionClick(session: Session) {
   if (selectionMode.value) {
-    toggleSessionChecked(sessionId);
+    toggleSessionChecked(sessionRowKey(session));
     return;
   }
-  selectSession(sessionId);
+  if (session.run_conversation) {
+    if (!(await confirmFileNavigation())) return;
+    await router.push({ name: "ChatRunConversation", params: { runId: session.run_conversation.run_id } });
+    return;
+  }
+  await selectSession(session.session_id);
 }
 
+const canDeleteCheckedSessions = computed(() =>
+  checkedSessionKeys.value.size > 0 && !checkedSessions.value.run_ids.length,
+);
+
 async function deleteCheckedSessions() {
+  if (!canDeleteCheckedSessions.value) return;
   if (!(await confirmFileNavigation())) return;
-  const ids = [...checkedSessionIds.value];
+  const ids = checkedSessions.value.session_ids;
   if (!ids.length) return;
   const message = tm("batch.confirmDelete", { count: ids.length });
   if (!(await askForConfirmation(message, confirmDialog))) return;
@@ -3861,7 +3948,7 @@ async function deleteCheckedSessions() {
     }
 
     selectionMode.value = false;
-    checkedSessionIds.value = new Set();
+    checkedSessionKeys.value = new Set();
   } catch (error) {
     console.error("Failed to batch delete sessions:", error);
     toast.error(tm("batch.requestFailed"));
@@ -3874,14 +3961,15 @@ async function deleteCheckedSessions() {
  * via the batch endpoint, then refreshes the lists and badge. */
 async function archiveCheckedSessions() {
   if (!(await confirmFileNavigation())) return;
-  const ids = [...checkedSessionIds.value];
-  if (!ids.length) return;
-  const message = tm("batch.confirmArchive", { count: ids.length });
+  const { session_ids: ids, run_ids: runIds } = checkedSessions.value;
+  const count = ids.length + runIds.length;
+  if (!count) return;
+  const message = tm("batch.confirmArchive", { count });
   if (!(await askForConfirmation(message, confirmDialog))) return;
 
   archivingCheckedSessions.value = true;
   try {
-    const response = await chatApi.batchArchiveSessions({ session_ids: ids });
+    const response = await chatApi.batchArchiveSessions({ session_ids: ids, run_ids: runIds });
     if (response.data?.status !== "ok") {
       throw new Error(
         response.data?.message || "Failed to batch archive sessions",
@@ -3910,7 +3998,9 @@ async function archiveCheckedSessions() {
     ]);
 
     // Archiving the active session leaves the chat view.
-    if (currSessionId.value && archivedIds.has(currSessionId.value)) {
+    const activeRunArchived = runIds.includes(runConversationId.value) &&
+      !(data.failed_items || []).some((item: { run_id?: string }) => item.run_id === runConversationId.value);
+    if (activeRunArchived || (currSessionId.value && archivedIds.has(currSessionId.value))) {
       selectedProjectId.value = null;
       await router.push(basePath());
     }
@@ -3919,7 +4009,7 @@ async function archiveCheckedSessions() {
       toast.error(
         tm("batch.partialFailure", {
           failed: data.failed_count,
-          total: ids.length,
+          total: count,
         }),
       );
     } else {
@@ -3927,7 +4017,7 @@ async function archiveCheckedSessions() {
     }
 
     selectionMode.value = false;
-    checkedSessionIds.value = new Set();
+    checkedSessionKeys.value = new Set();
   } catch (error) {
     console.error("Failed to batch archive sessions:", error);
     toast.error(tm("batch.requestFailed"));
@@ -3963,11 +4053,23 @@ async function restoreReadonlySession() {
   toast.success(tm("conversation.unarchiveToast"));
 }
 
-/** Dialog "view full session": close the dialog and open the session in the
- * main chat area (read-only because it is still archived). */
+async function restoreRunConversation() {
+  if (await setSessionArchived(runConversationId.value, false, "workflow_run")) {
+    toast.success(tm("conversation.unarchiveToast"));
+    return true;
+  }
+  toast.error(tm("conversation.unarchiveFailed"));
+  return false;
+}
+
+/** Close the archive and display the selected conversation. */
 function openArchivedSession(session: ArchivedSession) {
   archivedDialogOpen.value = false;
-  selectSession(session.session_id);
+  if (session.run_conversation) {
+    void router.push({ name: "ChatRunConversation", params: { runId: session.run_conversation.run_id } });
+  } else {
+    void selectSession(session.session_id);
+  }
 }
 
 async function archiveSidebarSession(session: Session | ArchivedSession) {
@@ -3976,7 +4078,8 @@ async function archiveSidebarSession(session: Session | ArchivedSession) {
     name: sessionTitle(session),
   });
   if (!(await askForConfirmation(message, confirmDialog))) return;
-  const ok = await setSessionArchived(session.session_id, true);
+  const runId = session.run_conversation?.run_id;
+  const ok = await setSessionArchived(runId ?? session.session_id, true, session.session_type);
   if (!ok) {
     toast.error(tm("conversation.archiveFailed"));
     return;
@@ -3990,7 +4093,7 @@ async function archiveSidebarSession(session: Session | ArchivedSession) {
     await loadProjectSessions(projectId);
   }
   // Archiving the active session leaves the chat view.
-  if (currSessionId.value === session.session_id) {
+  if (runId ? runId === runConversationId.value : currSessionId.value === session.session_id) {
     selectedProjectId.value = null;
     await router.push(basePath());
   }
@@ -4063,6 +4166,7 @@ async function archiveProjectSession(sessionId: string, projectId: string) {
 }
 
 async function deleteSidebarSession(session: Session) {
+  if (session.session_type === "workflow_run") return;
   if (!(await confirmFileNavigation())) return;
   const title = sessionTitle(session);
   const message = tm("conversation.confirmDelete", { name: title });
@@ -4382,6 +4486,7 @@ async function selectSession(sessionId: string, pushRoute = true) {
 }
 
 async function sendCurrentMessage(skillNames: string[] = []) {
+  if (isRunConversation.value) return;
   if (isOrdinaryUser.value && (sending.value || !!chatError.value)) return;
   // D13 guard: allow sending when draft is empty if there are staged
   // files OR file-review comments OR queued skill nudges (2026-10-01:
@@ -4562,6 +4667,7 @@ async function sendCurrentMessage(skillNames: string[] = []) {
  *   command: The command text to send (e.g. "/plan", "/build").
  */
 async function sendSystemCommand(command: string) {
+  if (isRunConversation.value) return;
   if (!command.trim()) return;
 
   // Prevent overlapping system-command sends. The chip remains disabled
@@ -4691,7 +4797,7 @@ function buildOutgoingParts(text: string): MessagePart[] {
 }
 
 function updateTitleFromText(sessionId: string, text: string) {
-  const session = sessions.value.find((item) => item.session_id === sessionId);
+  const session = ordinarySessions.value.find((item) => item.session_id === sessionId);
   const projectSession = projectSessions.value.find(
     (item) => item.session_id === sessionId,
   );
@@ -5479,7 +5585,7 @@ async function handleRegenerateMessage(
   message: ChatRecord,
   selection?: RegenerateModelSelection,
 ) {
-  if (!currSessionId.value || isUserMessage(message)) return;
+  if (!ordinaryChatId.value || isUserMessage(message)) return;
   const effectiveSelection = selection ?? getSelectedProviderSelection();
   try {
     const configId = await inputRef.value?.prepareConfig?.();
@@ -6697,7 +6803,7 @@ async function openLiveMode() {
 }
 
 async function stopCurrentSession() {
-  if (!currSessionId.value) return;
+  if (!ordinaryChatId.value) return;
   try {
     await stopSession(currSessionId.value);
   } catch (error) {

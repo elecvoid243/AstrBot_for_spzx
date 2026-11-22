@@ -554,6 +554,14 @@ export type ChatRequest = {
     _thread_selected_text?: string;
 };
 
+export type ChatSessionBatchArchiveRequest = {
+    session_ids: Array<(string)>;
+    /**
+     * Owned root run IDs, accepted only for administrator Dashboard sessions.
+     */
+    run_ids?: Array<(string)>;
+};
+
 export type ChatSessionBatchDeleteRequest = {
     session_ids: Array<(string)>;
 };
@@ -579,7 +587,12 @@ export type ChatSessionMetadata = {
     created_at: (string) | null;
     updated_at: (string) | null;
     starred: boolean;
+    session_type?: 'workflow_run';
+    run_conversation?: RunConversationSummary;
+    archived?: boolean;
 };
+
+export type session_type = 'workflow_run';
 
 export type ChatSessionPatchRequest = {
     display_name?: string;
@@ -1561,6 +1574,18 @@ export type RoleSaveRequest = {
     definition: RoleDefinition;
     installation?: RoleInstallation;
     expected_version?: (number | null);
+};
+
+export type RunConversationArchiveRequest = {
+    archived: boolean;
+};
+
+export type RunConversationSummary = {
+    run_id: string;
+    asset_id: string;
+    asset_version: number;
+    status: string;
+    draft_revision?: number;
 };
 
 /**
@@ -3113,6 +3138,10 @@ export type ListChatSessionsData = {
          * Dashboard-only pagination cursor, or start for a new list.
          */
         cursor?: string;
+        /**
+         * Include owned root run conversations when using a Dashboard cursor and administrator session.
+         */
+        include_run_conversations?: boolean;
         page?: number;
         page_size?: number;
         username?: string;
@@ -3178,7 +3207,7 @@ export type BatchDeleteChatSessionsResponse = (SuccessEnvelope);
 export type BatchDeleteChatSessionsError = unknown;
 
 export type BatchArchiveChatSessionsData = {
-    body: ChatSessionBatchDeleteRequest;
+    body: ChatSessionBatchArchiveRequest;
 };
 
 export type BatchArchiveChatSessionsResponse = (SuccessEnvelope);
@@ -3186,7 +3215,7 @@ export type BatchArchiveChatSessionsResponse = (SuccessEnvelope);
 export type BatchArchiveChatSessionsError = unknown;
 
 export type BatchUnarchiveChatSessionsData = {
-    body: ChatSessionBatchDeleteRequest;
+    body: ChatSessionBatchArchiveRequest;
 };
 
 export type BatchUnarchiveChatSessionsResponse = (SuccessEnvelope);
@@ -3195,6 +3224,10 @@ export type BatchUnarchiveChatSessionsError = unknown;
 
 export type ListArchivedChatSessionsData = {
     query?: {
+        /**
+         * Include owned root run conversations for Dashboard administrators.
+         */
+        include_run_conversations?: boolean;
         page?: number;
         page_size?: number;
         platform_id?: string;
@@ -3225,6 +3258,27 @@ export type UnarchiveChatSessionData = {
 export type UnarchiveChatSessionResponse = (SuccessEnvelope);
 
 export type UnarchiveChatSessionError = unknown;
+
+export type GetChatRunConversationData = {
+    path: {
+        run_id: string;
+    };
+};
+
+export type GetChatRunConversationResponse = (ChatHistoryResponse);
+
+export type GetChatRunConversationError = (unknown);
+
+export type ArchiveChatRunConversationData = {
+    body: RunConversationArchiveRequest;
+    path: {
+        run_id: string;
+    };
+};
+
+export type ArchiveChatRunConversationResponse = (SuccessEnvelope);
+
+export type ArchiveChatRunConversationError = (unknown);
 
 export type GetChatSessionData = {
     path: {

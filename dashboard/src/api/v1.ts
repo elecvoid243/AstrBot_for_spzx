@@ -22,6 +22,7 @@ import {
   type ChatMessageRegenerateRequest,
   type ChatProjectRequest,
   type ChatRequest,
+  type ChatSessionBatchArchiveRequest,
   type ChatSessionBatchDeleteRequest,
   type ChatSessionPatchRequest,
   type ChatSubagentFollowUpRequest,
@@ -218,6 +219,7 @@ export interface ChatSessionListParams {
   page_size?: number;
   username?: string;
   cursor?: string;
+  include_run_conversations?: boolean;
 }
 
 /** Serialized kernel standing-goal state (mirrors core GoalState). */
@@ -1033,6 +1035,12 @@ export const chatApi = {
       }),
     );
   },
+  getRunConversation(runId: string) {
+    return openApiV1.getChatRunConversation({ path: { run_id: runId } });
+  },
+  setRunConversationArchived(runId: string, archived: boolean) {
+    return openApiV1.archiveChatRunConversation({ path: { run_id: runId }, body: { archived } });
+  },
   getHistory(sessionId: string, params?: { before_id?: number; limit?: number }) {
     return typed<any>(
       openApiV1.getChatSessionHistory({
@@ -1140,6 +1148,7 @@ export const chatApi = {
     page?: number;
     page_size?: number;
     search?: string;
+    include_run_conversations?: boolean;
   }) {
     return typed<any>(
       openApiV1.listArchivedChatSessions({ query: generatedQuery(params) }),
@@ -1158,11 +1167,15 @@ export const chatApi = {
   batchDeleteSessions(payload: ChatSessionBatchDeleteRequest) {
     return typed<any>(openApiV1.batchDeleteChatSessions({ body: payload }));
   },
-  batchArchiveSessions(payload: ChatSessionBatchDeleteRequest) {
-    return typed<any>(openApiV1.batchArchiveChatSessions({ body: payload }));
+  batchArchiveSessions({ session_ids, run_ids }: ChatSessionBatchArchiveRequest) {
+    return typed<any>(openApiV1.batchArchiveChatSessions({
+      body: run_ids?.length ? { session_ids, run_ids } : { session_ids },
+    }));
   },
-  batchUnarchiveSessions(payload: ChatSessionBatchDeleteRequest) {
-    return typed<any>(openApiV1.batchUnarchiveChatSessions({ body: payload }));
+  batchUnarchiveSessions({ session_ids, run_ids }: ChatSessionBatchArchiveRequest) {
+    return typed<any>(openApiV1.batchUnarchiveChatSessions({
+      body: run_ids?.length ? { session_ids, run_ids } : { session_ids },
+    }));
   },
   stopSession(sessionId: string) {
     return typed<any>(

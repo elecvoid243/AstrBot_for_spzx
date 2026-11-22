@@ -315,6 +315,11 @@ const MainRoutes = {
       component: () => import('@/views/ChatPage.vue'),
       children: [
         {
+          path: 'runs/:runId',
+          name: 'ChatRunConversation',
+          component: () => import('@/views/ChatPage.vue'),
+        },
+        {
           path: ':conversationId',
           name: 'ChatDetail',
           component: () => import('@/views/ChatPage.vue'),

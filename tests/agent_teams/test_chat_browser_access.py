@@ -263,7 +263,9 @@ async def test_initiator_connects_through_returned_entry_and_answers_original_to
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("change", ["revoke", "revoke_in_flight", "profile", "expiry"])
+@pytest.mark.parametrize(
+    "change", ["revoke", "revoke_in_flight", "profile", "expiry", "expiry_in_flight"]
+)
 async def test_confirmed_browser_loses_read_and_answer_access_after_source_changes(
     chat_env, browser_http, tmp_path, monkeypatch, change
 ):
@@ -320,30 +322,44 @@ async def test_confirmed_browser_loses_read_and_answer_access_after_source_chang
     todo = (await client.get(path, headers=headers)).json()["data"]["todos"][0]
     todo_path = path + "/todos/" + todo["todo_id"]
     answer = {"request_id": "denied", "action": "answer", "answer": "Unauthorized"}
-    if change == "revoke_in_flight":
+    denied_status, reason = {
+        "revoke": (403, "revoked"),
+        "revoke_in_flight": (403, "revoked"),
+        "profile": (403, "identity_mismatch"),
+        "expiry": (401, "expired"),
+        "expiry_in_flight": (401, "expired"),
+    }[change]
+    if change in {"revoke_in_flight", "expiry_in_flight"}:
         entered = asyncio.Event()
         released = asyncio.Event()
         original_answer = service.answer_todo
 
-        async def answer_after_revocation(*args, **kwargs):
+        async def answer_after_access_change(*args, **kwargs):
             entered.set()
             await released.wait()
             return await original_answer(*args, **kwargs)
 
-        monkeypatch.setattr(service, "answer_todo", answer_after_revocation)
+        monkeypatch.setattr(service, "answer_todo", answer_after_access_change)
         in_flight = asyncio.create_task(
             client.post(todo_path + "/answer", headers=headers, json=answer)
         )
         try:
             await asyncio.wait_for(entered.wait(), timeout=5)
-            await service.chat.revoke_access(
-                "operator", asset["asset_id"], caller.platform_id, caller.sender_id
-            )
+            if change == "revoke_in_flight":
+                await service.chat.revoke_access(
+                    "operator", asset["asset_id"], caller.platform_id, caller.sender_id
+                )
+            else:
+                monkeypatch.setattr(
+                    "astrbot.core.agent_teams.chat.time.time",
+                    lambda: connection["expires_at"] + 1,
+                )
         finally:
             released.set()
             response = await asyncio.wait_for(in_flight, timeout=5)
-        assert response.status_code == 403
-        assert response.headers["X-AstrBot-Chat-Access-Error"] == "revoked"
+        assert response.status_code == denied_status
+        assert response.headers["Cache-Control"] == "no-store"
+        assert response.headers["X-AstrBot-Chat-Access-Error"] == reason
     elif change == "revoke":
         await service.chat.revoke_access(
             "operator", asset["asset_id"], caller.platform_id, caller.sender_id
@@ -367,12 +383,6 @@ async def test_confirmed_browser_loses_read_and_answer_access_after_source_chang
             "astrbot.core.agent_teams.chat.time.time",
             lambda: connection["expires_at"] + 1,
         )
-    denied_status, reason = {
-        "revoke": (403, "revoked"),
-        "revoke_in_flight": (403, "revoked"),
-        "profile": (403, "identity_mismatch"),
-        "expiry": (401, "expired"),
-    }[change]
     for url in [
         path + "/connection",
         path,

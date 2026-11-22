@@ -8934,6 +8934,7 @@ class WorkflowService:
         *,
         timed_out: bool = False,
         caller: dict | None = None,
+        browser_expires_at: float | None = None,
     ) -> dict:
         """Save a human response before attempting any dependency release.
 
@@ -8945,6 +8946,7 @@ class WorkflowService:
             timed_out: Trusted service scheduler requesting the saved deadline action;
                 never accepted from the external answer payload.
             caller: Verified platform event identity, if submitted from chat.
+            browser_expires_at: Server-issued expiry when submitted from a browser.
 
         Returns:
             Current persisted run, including a response awaiting resume if paused.
@@ -8969,7 +8971,12 @@ class WorkflowService:
                     raise RoleAssetError("Run not found", status=404)
                 # Check the grant after acquiring the SQLite write lock, so a
                 # committed revocation cannot be overtaken by a late decision.
-                await self.chat.require_access(chat, username, _session=session)
+                await self.chat.require_access(
+                    chat,
+                    username,
+                    browser_expires_at=browser_expires_at,
+                    _session=session,
+                )
             todo = await session.get(AgentWorkflowTodo, todo_id)
             if todo is None or todo.root_run_id != run_id:
                 raise RoleAssetError("Human request not found", status=404)

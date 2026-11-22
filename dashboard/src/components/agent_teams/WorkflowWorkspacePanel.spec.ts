@@ -799,6 +799,85 @@ describe("workflow workspace", () => {
     wrapper.unmount();
   });
 
+  it.each(["conflict", "late snapshot", "late poll"])(
+    "keeps the latest saved decision after a global inbox %s",
+    async (outcome) => {
+      vi.useFakeTimers();
+      const lateSnapshot = outcome === "late snapshot";
+      const latePoll = outcome === "late poll";
+      const router = createRouter({
+        history: createMemoryHistory(),
+        routes: [{ path: "/", component: slotStub }],
+      });
+      await router.push(outcome === "conflict" ? "/" : "/?workflow_run=run-1");
+      const todo = {
+        todo_id: "question",
+        task_run_id: "task",
+        root_run_id: "run-1",
+        kind: "question",
+        question: "Which region?",
+        status: "pending",
+        constraints: { choices: [], max_length: 100 },
+      };
+      const saved = {
+        ...run,
+        cursor: 30,
+        todos: [{ ...todo, status: "completed", response: { answer: "Saved answer" } }],
+        events: [{ cursor: 30, run_id: "run-1", kind: "human.consumed" }],
+      };
+      api.humanRequests.mockResolvedValueOnce({ requests: [todo] })
+        .mockResolvedValue({ requests: [] });
+      api.run.mockResolvedValue(outcome === "conflict" ? saved : { ...run, cursor: 10, todos: [todo] });
+      let finishPoll!: (value: unknown) => void;
+      if (latePoll) {
+        api.events.mockImplementationOnce(() => new Promise((resolve) => { finishPoll = resolve; }))
+          .mockResolvedValue({ cursor: 30, snapshot: saved });
+      } else {
+        api.events.mockResolvedValueOnce({ cursor: 30, snapshot: saved })
+          .mockResolvedValue({ cursor: 30, snapshot: null });
+      }
+      let complete!: () => void;
+      api.answer.mockImplementationOnce(() => new Promise((resolve, reject) => {
+        complete = () => {
+          if (lateSnapshot) resolve({ ...run, cursor: 20, todos: [{ ...todo, status: "answered" }] });
+          else if (latePoll) resolve(saved);
+          else reject({ isAxiosError: true, response: { status: 409 } });
+        };
+      }));
+
+      const wrapper = mount(WorkflowWorkspacePanel, {
+        props: { mode: "runs" },
+        global: { plugins: [router], stubs },
+      });
+      try {
+        await flushPromises();
+        await wrapper.get('[data-testid="runs-pending"]').trigger("click");
+        const inbox = wrapper.get('[data-testid="human-inbox"]');
+        await inbox.get('[data-testid="human-answer"]').setValue("Europe");
+        await inbox.get('[data-testid="human-submit"]').trigger("click");
+        if (lateSnapshot || latePoll) await vi.advanceTimersByTimeAsync(2000);
+        if (lateSnapshot) {
+          expect(wrapper.get('[data-testid="run-detail"]').text()).toContain("Saved answer");
+        }
+        complete();
+        await flushPromises();
+        const detail = wrapper.get('[data-testid="run-detail"]');
+        expect(detail.text()).toContain("Saved answer");
+        if (latePoll) {
+          finishPoll({ cursor: 15, snapshot: { ...run, cursor: 15, todos: [todo] } });
+          await flushPromises();
+          expect(detail.text()).toContain("Saved answer");
+          expect(detail.find('[data-testid="human-submit"]').exists()).toBe(false);
+        }
+        await vi.advanceTimersByTimeAsync(2000);
+        expect(api.events).toHaveBeenLastCalledWith("run-1", latePoll ? 10 : 30, expect.any(AbortSignal));
+        expect(detail.text()).toContain("human.consumed");
+      } finally {
+        wrapper.unmount();
+      }
+    },
+  );
+
   it("opens the exact recommendation task from the inbox in the workbench", async () => {
     const router = createRouter({ history: createMemoryHistory(), routes: [{ path: "/", component: slotStub }] });
     await router.push("/");

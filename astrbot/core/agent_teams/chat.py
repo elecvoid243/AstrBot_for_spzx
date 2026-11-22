@@ -29,6 +29,9 @@ if TYPE_CHECKING:
     from astrbot.core.agent_teams.workflows import WorkflowService
 
 
+_BROWSER_EXPIRED = "Browser connection expired; open the run link again"
+
+
 class ChatCaller(BaseModel):
     """Identity taken from a real platform event and its configured routing."""
 
@@ -157,9 +160,7 @@ class WorkflowChat:
         """
         connection = self._browser_sessions.get(session_id)
         if connection is None or connection["expires_at"] <= time.time():
-            raise RoleAssetError(
-                "Browser connection expired; open the run link again", status=401
-            )
+            raise RoleAssetError(_BROWSER_EXPIRED, status=401)
         try:
             projection = await self.get_run(caller, connection["run_id"])
         except ChatSourceAccessError as exc:
@@ -178,7 +179,7 @@ class WorkflowChat:
 
     async def authenticate_browser(
         self, run_id: str, credential: str, *, allow_pending: bool = False
-    ) -> ChatCaller | None:
+    ) -> tuple[ChatCaller | None, float]:
         """Check the browser secret and recheck the current source grant.
 
         Args:
@@ -187,7 +188,7 @@ class WorkflowChat:
             allow_pending: Permit polling confirmation without revealing run content.
 
         Returns:
-            The confirmed source caller, or None for an unconfirmed challenge.
+            The caller and server-issued expiry. The caller is None until confirmed.
 
         Raises:
             RoleAssetError: Authentication, confirmation, run scope or grant fails.
@@ -205,28 +206,31 @@ class WorkflowChat:
             raise ChatSourceAccessError(
                 "invalid", "Browser connection required", status=401
             )
-        if connection["expires_at"] <= time.time():
-            raise ChatSourceAccessError(
-                "expired",
-                "Browser connection expired; open the run link again",
-                status=401,
-            )
+        expires_at = connection["expires_at"]
+        if expires_at <= time.time():
+            raise ChatSourceAccessError("expired", _BROWSER_EXPIRED, status=401)
         if connection["run_id"] != run_id:
             raise ChatSourceAccessError(
                 "identity_mismatch", "Run not found", status=404
             )
         if connection["caller"] is None:
             if allow_pending:
-                return None
+                return None, expires_at
             raise ChatSourceAccessError(
                 "invalid", "Confirm this browser in the original chat", status=403
             )
         caller = ChatCaller.model_validate(connection["caller"])
         await self.get_run(caller, run_id)
-        return caller
+        return caller, expires_at
 
     async def answer_browser_todo(
-        self, caller: ChatCaller, run_id: str, todo_id: str, payload: dict
+        self,
+        caller: ChatCaller,
+        run_id: str,
+        todo_id: str,
+        payload: dict,
+        *,
+        browser_expires_at: float | None = None,
     ) -> dict:
         """Answer the existing persistent request through the shared run service.
 
@@ -235,6 +239,7 @@ class WorkflowChat:
             run_id: Caller-owned invocation scope.
             todo_id: Existing request in that root run.
             payload: Shared validated human answer or explicit version decision.
+            browser_expires_at: Server-issued expiry for a confirmed browser.
 
         Returns:
             Restricted progress after saving the answer to the original request.
@@ -249,7 +254,12 @@ class WorkflowChat:
                 raise RoleAssetError("Run not found", status=404)
             owner = row.owner_username
         await self.service.answer_todo(
-            owner, run_id, todo_id, payload, caller=caller.model_dump()
+            owner,
+            run_id,
+            todo_id,
+            payload,
+            caller=caller.model_dump(),
+            browser_expires_at=browser_expires_at,
         )
         return await self.get_run(caller, run_id, include_todos=True)
 
@@ -563,13 +573,19 @@ class WorkflowChat:
             pending.extend(scope.get("allowed_workflows", {}).values())
 
     async def require_access(
-        self, chat: dict, username: str, *, _session: AsyncSession | None = None
+        self,
+        chat: dict,
+        username: str,
+        *,
+        browser_expires_at: float | None = None,
+        _session: AsyncSession | None = None,
     ) -> None:
         """Recheck the exact local grant at a source access boundary.
 
         Args:
             chat: Frozen verified caller and root asset grant identity.
             username: Asset owner whose configured definition is being used.
+            browser_expires_at: Server-issued expiry to check at decision time.
             _session: Existing write transaction for a decision that needs the grant.
 
         Raises:
@@ -587,6 +603,8 @@ class WorkflowChat:
                     caller.sender_id,
                 ),
             )
+        if browser_expires_at is not None and browser_expires_at <= time.time():
+            raise ChatSourceAccessError("expired", _BROWSER_EXPIRED, status=401)
         if (
             grant is None
             or grant.owner_username != username

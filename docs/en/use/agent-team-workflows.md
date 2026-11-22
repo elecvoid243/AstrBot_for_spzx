@@ -76,7 +76,7 @@ In the Bot run workbench, choose **Open in Chat**. Dashboard Chat shows one conv
 
 In Chat, the task list expands child workflows, team scopes and loop rounds. The execution panel shows the selected task's saved events, attempts and recorded input sources. Use **Load older process** to page back. On narrow screens, switch panels with **Tasks**, **Execution**, and **Inbox & artifacts**. The right panel also opens exact artifact versions and downloads authorized files. Use the workbench to retry tasks.
 
-In **Inbox & artifacts**, answer a specific human request or preview the exact version before approving or returning it with feedback. Bot and Chat show the same requests, including those from nested workflows. If another tab has already decided, the card refreshes to show the saved decision. If the workflow sends revised work for review, open its new request and preview that version before deciding.
+In **Inbox & artifacts**, answer a specific human request or preview the exact version before approving or returning it with feedback. Bot and Chat show the same requests, including those from nested workflows. If another tab has already decided, the card refreshes to show the saved decision. A conflict from the Bot inbox opens the corresponding run if it is not already open. If the workflow sends revised work for review, open its new request and preview that version before deciding.
 
 ![An approval request in Chat with the pinned version, file preview and feedback field](/images/agent-teams-chat-approval-en.png)
 

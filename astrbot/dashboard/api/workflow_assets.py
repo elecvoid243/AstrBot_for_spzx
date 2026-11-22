@@ -158,7 +158,7 @@ async def chat_browser_status(
         Confirmation state without private execution data.
     """
     try:
-        caller = await service.chat.authenticate_browser(
+        caller, _ = await service.chat.authenticate_browser(
             run_id, credential or "", allow_pending=True
         )
         return _chat_json({"confirmed": caller is not None})
@@ -183,7 +183,7 @@ async def get_chat_run(
         Safe status, final result and explicit human prompts from the same run.
     """
     try:
-        caller = await service.chat.authenticate_browser(run_id, credential or "")
+        caller, _ = await service.chat.authenticate_browser(run_id, credential or "")
         assert caller is not None
         return _chat_json(
             await service.chat.get_run(caller, run_id, include_todos=True)
@@ -213,11 +213,17 @@ async def answer_chat_todo(
         Restricted progress after the shared service accepts the answer.
     """
     try:
-        caller = await service.chat.authenticate_browser(run_id, credential or "")
+        caller, expires_at = await service.chat.authenticate_browser(
+            run_id, credential or ""
+        )
         assert caller is not None
         return _chat_json(
             await service.chat.answer_browser_todo(
-                caller, run_id, todo_id, payload.model_dump()
+                caller,
+                run_id,
+                todo_id,
+                payload.model_dump(),
+                browser_expires_at=expires_at,
             )
         )
     except RoleAssetError as exc:
@@ -243,7 +249,7 @@ async def preview_chat_approval(
         The requested review content without arbitrary artifact access.
     """
     try:
-        caller = await service.chat.authenticate_browser(run_id, credential or "")
+        caller, _ = await service.chat.authenticate_browser(run_id, credential or "")
         assert caller is not None
         return _chat_json(
             await service.chat.read_browser_artifact(caller, run_id, todo_id)
@@ -273,7 +279,7 @@ async def preview_chat_approval_file(
         Restricted preview bytes; this route grants no export or download action.
     """
     try:
-        caller = await service.chat.authenticate_browser(run_id, credential or "")
+        caller, _ = await service.chat.authenticate_browser(run_id, credential or "")
         assert caller is not None
         file = await service.chat.read_browser_artifact(
             caller, run_id, todo_id, file_id
@@ -326,7 +332,7 @@ async def get_chat_result_file(
         Scoped final file bytes without arbitrary artifact or owner access.
     """
     try:
-        caller = await service.chat.authenticate_browser(run_id, credential or "")
+        caller, _ = await service.chat.authenticate_browser(run_id, credential or "")
         assert caller is not None
         file = await service.chat.read_browser_result_file(caller, run_id, file_id)
         disposition = "attachment" if download else "inline"

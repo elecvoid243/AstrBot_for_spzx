@@ -881,17 +881,32 @@ async function answerInbox(
   todoId: string,
   payload: HumanAnswerRequest,
 ) {
-  if (inboxBusy.value) return;
+  const signal = observation.value.signal;
+  if (inboxBusy.value || signal.aborted) return;
   inboxBusy.value = true;
   try {
-    const updated = await workflowAssetsApi.answer(rootId, todoId, payload);
-    if (!disposed && !openingRun && selectedRun.value?.run_id === rootId) applyOperationSnapshot(updated);
+    let updated;
+    try {
+      updated = await workflowAssetsApi.answer(rootId, todoId, payload);
+    } catch (err) {
+      if (!isAxiosError(err) || err.response?.status !== 409) throw err;
+      if (signal.aborted || openingRun || runView.value !== "pending") return;
+      if (selectedRun.value?.run_id === rootId) {
+        updated = await workflowAssetsApi.run(rootId, signal);
+      } else {
+        await openRun(rootId);
+      }
+    }
+    if (disposed) return;
+    if (updated && !signal.aborted && !openingRun && selectedRun.value?.run_id === rootId) {
+      applyOperationSnapshot(updated);
+    }
     const inbox = await workflowAssetsApi.humanRequests();
     if (!disposed) humanRequests.value = inbox.requests;
   } catch (err) {
-    if (disposed) return;
-    error.value = extractApiError(err, tm("errors.operationFailed")).message;
-    if (isAxiosError(err) && err.response?.status === 409) void refresh(true);
+    if (!signal.aborted) {
+      error.value = extractApiError(err, tm("errors.operationFailed")).message;
+    }
   } finally {
     inboxBusy.value = false;
   }
@@ -1592,11 +1607,11 @@ async function start() {
 function applyOperationSnapshot(next: any) {
   const previous = selectedRun.value;
   const snapshot = { ...next };
-  if (props.conversationRunId) {
-    if (observation.value.signal.aborted || previous?.run_id !== snapshot.run_id || snapshot.cursor < previous.cursor) return;
-    runRead++;
-    loading.value = false;
-  }
+  if (previous && previous.run_id === snapshot.run_id && snapshot.cursor < previous.cursor) return;
+  if (observation.value.signal.aborted || (props.conversationRunId && previous?.run_id !== snapshot.run_id)) return;
+  // An earlier poll can no longer update state. Its events will be replayed.
+  runRead++;
+  loading.value = false;
   if (previous?.run_id === snapshot.run_id && Number.isInteger(previous.cursor) && snapshot.cursor >= previous.cursor) {
     const oldViews = runViews(previous);
     for (const target of runViews(snapshot)) {
@@ -1737,8 +1752,14 @@ async function answerTodo(todoId: string, payload: HumanAnswerRequest) {
       try {
         const latest = await workflowAssetsApi.run(rootId, signal);
         if (!signal.aborted && conflictRead === runRead) applyOperationSnapshot(latest);
-      } catch {
-        // Polling can still reconcile the saved decision if the read fails.
+      } catch (reloadError) {
+        if (
+          props.conversationRunId && !signal.aborted && conflictRead === runRead &&
+          isAxiosError(reloadError) && [401, 403, 404].includes(reloadError.response?.status ?? 0)
+        ) {
+          observation.value.abort();
+          emit("run-unavailable");
+        }
       }
     }
   } finally {

@@ -103,6 +103,7 @@ from astrbot.core.utils.prefix_diagnostics import record_session_request
 from ..context.budget_notice import (
     EARLY_NOTICE,
     EXHAUSTED_TEXT,
+    HANDOFF_NOTICE,
     PLANNING_NOTICE,
     SYSTEM_NOTICE_PREFIX,
     WRAP_UP_NOTICE,
@@ -1707,11 +1708,9 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
     ) -> list[Message]:
         """Append the window's next budget water level when one is due.
 
-        Levels are cumulative: a window announces 25%, then 50%, then 85%, and
-        only the highest level it reached is remembered, so a request that skips
-        straight to 85% never gets the lower texts afterwards. The exhausted
-        notice wins over both: when the window cannot be trimmed further the
-        model must conclude instead of planning.
+        A window remembers the highest notice it sent at 25%, 50%, 75% or 90%.
+        A direct jump to a higher level skips lower notices. The exhausted
+        notice takes precedence when trimming cannot free enough room.
 
         Args:
             messages: Model-visible history after compaction.
@@ -1748,8 +1747,10 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             state.exhausted_sent = True
         elif not just_reset and manager.last_budget_usage is not None:
             usage = manager.last_budget_usage
-            if usage >= 0.85:
-                level, text = 85, WRAP_UP_NOTICE
+            if usage >= 0.9:
+                level, text = 90, HANDOFF_NOTICE
+            elif usage >= 0.75:
+                level, text = 75, WRAP_UP_NOTICE
             elif usage >= 0.5:
                 level, text = 50, PLANNING_NOTICE
             elif usage >= 0.25:
@@ -1802,19 +1803,16 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             lines.append(f"Previous window id: {state.prev_id}")
         if state.seq > 0:
             lines.append(
-                "Earlier windows are archived: list them with "
-                "history_list_windows, then history_search or history_read."
+                "If continuing an unfinished task, read task-checkpoint.md first "
+                "with notes_read. Recover missing details with history_read for "
+                "known locations or history_search to find them, then resume "
+                "the recorded next action."
             )
         if state.notes:
             lines.append("Private notes (shared across windows, newest first):")
             lines.extend(
                 f"- {note['path']} ({note['lines']} lines)" for note in state.notes
             )
-        lines.append(
-            "Facts this task already established may live in notes or archived "
-            "windows: call notes_search and history_search before re-deriving "
-            "them, and keep durable findings in notes with notes_write."
-        )
         lines.append("</context_window>")
         return "\n".join(lines)
 

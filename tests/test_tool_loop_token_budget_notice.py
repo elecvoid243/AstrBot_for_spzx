@@ -2,6 +2,8 @@
 
 from types import SimpleNamespace
 
+import pytest
+
 from astrbot.core.agent.context.compaction_region import select_compaction_range
 from astrbot.core.agent.message import Message, WindowState
 from astrbot.core.agent.runners.tool_loop_agent_runner import ToolLoopAgentRunner
@@ -56,25 +58,42 @@ def test_early_notice_at_a_quarter_budget():
     assert runner.window_state.notice_level == 25
 
 
-def test_wrap_up_notice_follows_the_planning_one():
+def test_wrap_up_and_handoff_notices_fire_at_their_thresholds():
     runner = runner_factory(usage=0.5)
     first = runner._inject_budget_notices([Message(role="user", content="hi")])
+    follow_up = [
+        Message(role="assistant", content="a"),
+        Message(role="user", content="next"),
+    ]
 
-    runner.request_context_manager.last_budget_usage = 0.9
-    second = runner._inject_budget_notices(
-        first
-        + [Message(role="assistant", content="a"), Message(role="user", content="next")]
-    )
-
+    runner.request_context_manager.last_budget_usage = 0.749
+    assert runner._inject_budget_notices(first + follow_up) == first + follow_up
+    runner.request_context_manager.last_budget_usage = 0.75
+    second = runner._inject_budget_notices(first + follow_up)
     assert second[-1].internal is True
-    assert "85%" in second[-1].content
-    assert runner.window_state.notice_level == 85
+    assert "75%" in second[-1].content
+    assert runner.window_state.notice_level == 75
+
+    runner.request_context_manager.last_budget_usage = 0.899
+    assert runner._inject_budget_notices(second + follow_up) == second + follow_up
+    runner.request_context_manager.last_budget_usage = 0.9
+    third = runner._inject_budget_notices(second + follow_up)
+    assert third[-1].internal is True
+    assert "90%" in third[-1].content
+    assert "notes_write" in third[-1].content
+    assert "task-checkpoint.md" in third[-1].content
+    assert "Confirm the write succeeded before calling new_context" in third[-1].content
+    assert runner.window_state.notice_level == 90
+    assert runner._inject_budget_notices(third + follow_up) == third + follow_up
 
 
-def test_skipping_a_level_does_not_backfill_it():
-    runner = runner_factory(usage=0.9)
+@pytest.mark.parametrize("previous_level", [0, 85])
+def test_handoff_does_not_backfill_lower_or_legacy_levels(previous_level):
+    runner = runner_factory(
+        usage=0.9, window_state=WindowState(id="w1", notice_level=previous_level)
+    )
     first = runner._inject_budget_notices([Message(role="user", content="hi")])
-    assert "85%" in first[-1].content
+    assert "90%" in first[-1].content
 
     # A window that dropped back under 50% must not announce the lower level.
     runner.request_context_manager.last_budget_usage = 0.4
@@ -84,7 +103,7 @@ def test_skipping_a_level_does_not_backfill_it():
     )
 
     assert len(second) == len(first) + 2
-    assert runner.window_state.notice_level == 85
+    assert runner.window_state.notice_level == 90
 
 
 def test_exhausted_notice_wins_over_the_water_level():

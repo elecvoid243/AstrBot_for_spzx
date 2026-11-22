@@ -1,36 +1,47 @@
 """Model-facing notices for the token budget strategy.
 
-These strings are control messages sent to the model, not UI copy: the kernel
-has no runtime i18n, so they stay English like codex's developer messages.
-
-The budget is announced at three water levels before the window is replaced:
-25% is where planning still helps, 50% is where the task must be scoped, and
-85% is where the current step must land. The exhausted notice is the hard stop
-for a window that cannot be trimmed any further.
+These strings are English control messages sent to the model. The four budget
+levels move the model from planning to handoff. The exhausted notice applies
+when trimming cannot free enough room.
 """
 
 SYSTEM_NOTICE_PREFIX = "[SYSTEM NOTICE]"
 
 EARLY_NOTICE = (
     f"{SYSTEM_NOTICE_PREFIX} 25% of this window's context budget is used. The "
-    "window is replaced when it fills, so plan the remaining work and start "
-    "notes for anything the next window will need."
+    "window is replaced when it fills. Plan the remaining work and start "
+    "task-checkpoint.md if the task may span windows."
 )
 
 PLANNING_NOTICE = (
     f"{SYSTEM_NOTICE_PREFIX} 50% of this window's context budget is used. Keep "
-    "the task scoped: read what you need instead of whole files, and write "
-    "durable state to notes before the window fills."
+    "the task scoped. Read only what you need and update task-checkpoint.md "
+    "with verified progress and decisions needed in the next window."
 )
 
 WRAP_UP_NOTICE = (
-    f"{SYSTEM_NOTICE_PREFIX} 85% of this window's context budget is used; the "
-    "window is replaced at 100%. Finish the current step, save what the next "
-    "window needs to notes, and do not start work you cannot finish here."
+    f"{SYSTEM_NOTICE_PREFIX} 75% of this window's context budget is used. "
+    "Finish or safely pause the current step and update task-checkpoint.md "
+    "before any tool call likely to return a large result. If more work remains "
+    "and a fresh window will help, confirm the note was written and call new_context."
+)
+
+HANDOFF_NOTICE = (
+    f"{SYSTEM_NOTICE_PREFIX} 90% of this window's context budget is used. "
+    "You must hand off any unfinished task now. Stop starting new work. "
+    "Use notes_write to update task-checkpoint.md with a detailed handoff: "
+    "the user's goal and constraints, completed work and verification results, "
+    "decisions and reasons, unverified work, blockers, and the exact next "
+    "action and completion criteria. Include the current window ID and "
+    "references to relevant user requests, files, and tool results. "
+    "Confirm the write succeeded before calling new_context. Continue the "
+    "unfinished task in the fresh window if it frees space. If the retained "
+    "round still leaves no room, avoid repeated resets."
 )
 
 EXHAUSTED_TEXT = (
     f"{SYSTEM_NOTICE_PREFIX} The context is at its limit and cannot be trimmed "
-    "further. Give your current conclusion without starting new tool calls "
-    "other than notes_read or history_read."
+    "further. Give the current result without starting new tool calls other "
+    "than notes_read or history_read. If the task is unfinished, state what "
+    "is verified, what remains, and what prevents continuation."
 )

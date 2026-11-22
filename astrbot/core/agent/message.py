@@ -207,7 +207,7 @@ class WindowState(BaseModel):
     prev_id: str | None = None
     """Window that was replaced by this one; the archive chain follows it."""
     notice_level: int = 0
-    """Highest budget level already sent in this window (0, 25, 50 or 85)."""
+    """Highest budget level already sent in this window, or 0 if none was sent."""
     exhausted_sent: bool = False
     """The window ran out of room; the model was already told to conclude."""
     notes: list[dict[str, Any]] = Field(default_factory=list)

@@ -74,7 +74,7 @@ class ContextManager:
         """Fraction of the compaction trigger the request already used.
 
         The trigger is the point where the window is replaced, so this is the
-        only ratio the runner needs to time the 25%, 50% and 85% water levels.
+        ratio the runner uses for budget notices.
         ``None`` when the call had no trigger to measure against.
         """
         self._last_compaction_tokens: int | None = None

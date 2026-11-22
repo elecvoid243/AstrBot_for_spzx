@@ -230,6 +230,10 @@
       <details v-if="!readonly" class="graph-toolbox" :open="!narrow">
         <summary>{{ tm("graph.toolbox") }}</summary>
         <p class="text-caption my-3">{{ tm("reuse.shortcuts") }}</p>
+        <v-alert v-if="structuredPorts && componentStatus === 'error'" type="warning" variant="tonal" class="mb-3">
+          {{ tm("graph.pluginComponentLoadFailed") }}
+          <v-btn variant="text" size="small" @click="loadComponents">{{ tm("page.refresh") }}</v-btn>
+        </v-alert>
         <v-text-field v-model="nodeQuery" :label="tm('reuse.search')" density="compact" hide-details class="mb-3" />
         <template v-if="nodeQuery.trim()">
           <v-btn v-for="item in matchingNodes" :key="item.id" variant="text" size="small" draggable="true"
@@ -237,6 +241,17 @@
           <p v-if="!matchingNodes.length" class="text-caption">{{ tm("reuse.noNodes") }}</p>
         </template>
         <template v-else>
+        <v-btn
+          v-for="item in componentNodes"
+          :key="item.id"
+          data-testid="add-plugin-component"
+          variant="tonal"
+          size="small"
+          class="mb-3"
+          draggable="true"
+          @dragstart="dragNode($event, item.id)"
+          @click="addTask(item.id)"
+        >{{ item.label }}</v-btn>
         <v-btn
           v-for="item in builtinNodes"
           :key="item.id"
@@ -867,9 +882,17 @@
             </template>
           </template>
           <template v-else-if="selectedTask.transform">
-            <p class="text-caption">{{ tm(`graph.${selectedTask.transform}Hint`) }}</p>
+            <template v-if="selectedTask.component">
+              <p class="text-caption" data-testid="plugin-component-version">
+                {{ selectedTask.component.id }} · v{{ selectedTask.component.version }}
+              </p>
+              <p v-if="!selectedComponent && !readonly && componentStatus === 'loaded'" class="text-caption text-warning">
+                {{ tm("graph.pluginComponentUnavailable") }}
+              </p>
+            </template>
+            <p v-else class="text-caption">{{ tm(`graph.${selectedTask.transform}Hint`) }}</p>
             <v-select
-              v-if="selectedTask.transform === 'retrieve_knowledge_v1'"
+              v-if="selectedTask.transform === 'retrieve_knowledge_v1' || selectedComponent?.permissions.includes('knowledge_base:read')"
               v-model="selectedTask.knowledge_base_id"
               data-testid="native-knowledge-base"
               :items="catalog.knowledge_bases ?? []"
@@ -928,7 +951,7 @@
                   aliasTexts[`${selectedTask.id}:${alias}`] ?? alias
                 "
                 :label="tm('graph.inputAlias')"
-                :readonly="!!selectedTask.team || !!selectedTask.workflow || !!selectedTask.dispatch"
+                :readonly="!!selectedTask.team || !!selectedTask.workflow || !!selectedTask.dispatch || !!selectedTask.component"
                 density="compact"
                 @update:model-value="
                   aliasTexts[`${selectedTask.id}:${alias}`] = $event
@@ -1287,7 +1310,8 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import type { WorkflowComponent } from "@/api/generated/openapi-v1";
 import TeamsFlowCanvas from "./TeamsFlowCanvas.vue";
 import { parseWorkflowInputs } from "./StructuredWorkflowInputs.vue";
 import WorkflowLoopPanel from "./WorkflowLoopPanel.vue";
@@ -1340,6 +1364,19 @@ const emit = defineEmits<{
   (event: "roleSaved"): void;
 }>();
 const { tm } = useModuleI18n("features/agent-teams");
+const components = ref<WorkflowComponent[]>([]);
+const componentStatus = ref<"loading" | "loaded" | "error">("loading");
+async function loadComponents() {
+  if (props.readonly) return;
+  componentStatus.value = "loading";
+  try {
+    components.value = await workflowAssetsApi.listComponents();
+    componentStatus.value = "loaded";
+  } catch {
+    componentStatus.value = "error";
+  }
+}
+onMounted(loadComponents);
 const draft = ref<GraphDefinition>(
   JSON.parse(JSON.stringify(props.definition)),
 );
@@ -1426,8 +1463,20 @@ const builtinNodes = computed<{
     icon: "mdi-source-merge", hint: tm("guide.joinNode"),
   },
 ]);
+const componentNodes = computed(() => structuredPorts.value && componentStatus.value === "loaded" ? components.value.map((component) => ({
+  id: `component:${component.reference.id}@${component.reference.version}`,
+  label: `${component.label} · v${component.reference.version}`,
+  component,
+})) : []);
+const selectedComponent = computed(() => componentNodes.value.find(({ component }) => {
+  const reference = selectedTask.value?.component;
+  return reference && reference.id === component.reference.id &&
+    reference.version === component.reference.version &&
+    reference.contract_digest === component.reference.contract_digest;
+})?.component);
 const matchingNodes = computed(() => [
   ...builtinNodes.value,
+  ...componentNodes.value,
   ...props.roles.map((role) => ({ id: role.role_id, label: role.definition.name })),
   ...props.teams.map((team) => ({ id: "team:" + team.asset_id, label: team.definition.name })),
   ...props.workflows.map((workflow) => ({ id: "workflow:" + workflow.asset_id, label: workflow.definition.name })),
@@ -2672,7 +2721,8 @@ function addTask(roleId: string, position?: { x: number; y: number }) {
   const transform = structuredPorts.value
     ? transformKinds.find((kind) => roleId === `transform:${kind}`)
     : undefined;
-  if (!inline && !role && !humanKind && !team && !workflow && !controlKind && !transform) return;
+  const component = componentNodes.value.find((entry) => entry.id === roleId)?.component;
+  if (!inline && !role && !humanKind && !team && !workflow && !controlKind && !transform && !component) return;
   const seed =
     typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
       ? canvasId().replace(/-/g, "").slice(0, 8)
@@ -2687,7 +2737,7 @@ function addTask(roleId: string, position?: { x: number; y: number }) {
   const contracts = asset ? fixedCallContracts(asset.definition) : {};
   draft.value.tasks.push({
     id,
-    name: dispatch ? tm("graph.listDispatch") : transform ? tm(`graph.${transform}`) : controlKind
+    name: component?.label ?? (dispatch ? tm("graph.listDispatch") : transform ? tm(`graph.${transform}`) : controlKind
       ? tm(
           controlKind === "condition"
             ? "graph.conditionNode"
@@ -2701,8 +2751,15 @@ function addTask(roleId: string, position?: { x: number; y: number }) {
       ? tm(`human.${humanKind}Node`)
       : inline
       ? "Agent"
-      : role!.definition.name,
-    ...(transform
+      : role!.definition.name),
+    ...(component
+      ? {
+          transform: "plugin_component_v1" as const,
+          component: { ...component.reference },
+          input_contract: JSON.parse(JSON.stringify(component.input_contract)),
+          output_contract: JSON.parse(JSON.stringify(component.output_contract)),
+        }
+      : transform
       ? {
           transform,
           ...(transform === "map_fields" ? { input_contract: { type: "object" as const, properties: {} } } : {}),

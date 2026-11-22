@@ -41,6 +41,21 @@ The structured port contract is version 2. It also supports fixed child workflow
 ![Structured workflow with object and row-list data ports](/images/agent-teams-structured-ports-en.jpg)
 
 
+### Installed plugin components
+
+An AstrBot administrator installs and enables the plugin under **Plugins**. In a workflow with **Use structured ports** enabled, find the component and its version in the left toolbox. Add it to the canvas, connect its named inputs and outputs, and select the local knowledge base when the component requests one. Test the draft with structured JSON inputs and publish the validated version.
+
+![An installed component and its fixed ports on the workflow canvas](/images/agent-teams-plugin-component-en.jpg)
+
+A published workflow keeps the exact component version and contract. The editor or run owner needs access to the workflow and its selected local resources. The current Dashboard permits these asset operations through its administrator role and applies ownership separately to each asset and run. If a component is disabled, removed, or incompatible, restore the required version or edit the draft and publish a new one.
+
+Export a component workflow as an AstrBot native version 4 package. On the destination, install and enable the required plugin through **Plugins**, preview the package, and select its local resource bindings before importing. The package carries definitions and versioned references. Plugin code, plugin settings, and credentials stay with each installation.
+
+If a connector stops with an uncertain external effect, open the same run in the workbench and select the affected task. **Reconcile** uses the original call ID when the connector supports it. A saved receipt resumes the original attempt. For manual confirmation, enter the observed JSON object matching the displayed output contract. If the effect cannot be established, leave it pending. Chat links to the same run workbench.
+
+Plugin authors can override `Star.workflow_components()` to return `WorkflowComponent` declarations. Declare a stable local name, exact version, object schemas, the effect, and any knowledge-base read requirement. The async operation receives structured inputs and the server-authorized binding and invocation ID. Use `ToolRecovery` for authoritative queries or replay guarantees, and bump the component version when its behavior changes. The fixture in `tests/agent_teams/fixtures/workflow_ledger_plugin` illustrates the contract.
+
+
 ### Messages, artifacts, and managed files
 
 Declare named object ports with one of these formats. Connect ports with the same format.

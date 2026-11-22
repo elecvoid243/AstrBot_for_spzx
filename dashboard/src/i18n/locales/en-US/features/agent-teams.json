@@ -32,6 +32,7 @@
     "annotations": "Canvas groups and notes"
   },
   "runConversation": {
+    "reconcileInWorkbench": "Open the run workbench to verify an uncertain tool effect before continuing.",
     "type": "Run conversation",
     "asset": "Asset",
     "version": "Fixed version",
@@ -529,6 +530,9 @@
     }
   },
   "graph": {
+    "plugin_component_v1": "Plugin component",
+    "pluginComponentLoadFailed": "The installed component catalog could not be loaded.",
+    "pluginComponentUnavailable": "Install and enable this exact component version.",
     "finiteJsonNumbers": "Use finite JSON numbers.",
     "enableStructuredPorts": "Use structured ports",
     "read_document_v1": "Read document",
@@ -672,6 +676,8 @@
     "invalidSource": "Unavailable input source"
   },
   "resolution": {
+    "outputContract": "Fixed output contract",
+    "structuredResult": "Observed result (JSON object)",
     "savedWaiting": "Your tool decision is saved for this Attempt. While the run is paused, it waits for Continue run. Local waits and execution capacity still apply.",
     "replacedBy": "Original outcome remains unknown; explicitly replaced by invocation",
     "replaces": "Explicit new execution for original invocation",

@@ -1,6 +1,7 @@
 import { httpClient } from "./http";
 import type {
   GraphDefinition,
+  WorkflowComponent,
   WorkflowDraftGenerationRequest,
   WorkflowSaveRequest,
   WorkflowStartRequest,
@@ -16,6 +17,9 @@ import type {
 } from "./generated/openapi-v1";
 
 export const workflowAssetsApi = {
+  async listComponents(): Promise<WorkflowComponent[]> {
+    return (await httpClient.get("/api/v1/workflow_components")).data.data;
+  },
   async generateDraft(payload: WorkflowDraftGenerationRequest): Promise<GraphDefinition> {
     return (await httpClient.post("/api/v1/workflow_assets/generate_draft", payload)).data.data;
   },

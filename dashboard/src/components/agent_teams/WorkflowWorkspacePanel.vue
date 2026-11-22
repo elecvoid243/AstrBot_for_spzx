@@ -287,6 +287,10 @@
               <p v-if="historyTruncated[detailRun.run_id]" class="text-warning">{{ tm("progress.historyWindow") }}</p>
               <p v-else-if="historyOlderHidden[detailRun.run_id]" class="text-caption">{{ tm("progress.olderHistoryHidden") }}</p>
               <p v-if="historyErrors[detailRun.run_id]" role="alert">{{ historyErrors[detailRun.run_id] }}</p>
+              <p
+                v-if="conversationRunId && detailRun.tool_calls?.some((call: any) => ['started', 'unknown'].includes(call.status))"
+                class="text-caption mb-2"
+              >{{ tm("runConversation.reconcileInWorkbench") }}</p>
               <WorkflowRunProcess :key="detailRun.run_id" :run="detailRun" :readonly="!!conversationRunId" :signal="observation.signal" :busy="!!currentOperation" @resolve="resolveTool" />
             </div>
             <div class="workbench-column workbench-results">

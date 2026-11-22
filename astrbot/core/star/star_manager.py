@@ -998,6 +998,11 @@ class PluginManager:
         await sp.global_put(PLUGIN_TOOL_STATE_MIGRATION_KEY, True)
         return updated_tools
 
+    @property
+    def lifecycle_lock(self) -> asyncio.Lock:
+        """Serialize dependency admission with plugin activation, replacement and removal."""
+        return self._pm_lock
+
     async def reload_failed_plugin(self, dir_name):
         """
         重新加载未注册（加载失败）的插件
@@ -1474,6 +1479,30 @@ class PluginManager:
                 # 执行 initialize() 方法
                 if hasattr(metadata.star_cls, "initialize") and metadata.star_cls:
                     await metadata.star_cls.initialize()
+                    declarations = getattr(
+                        metadata.star_cls, "workflow_components", None
+                    )
+                    if callable(declarations):
+                        from astrbot.core.agent_teams.components import (
+                            WorkflowComponent,
+                        )
+
+                        components = declarations()
+
+                        if not isinstance(components, (tuple, list)):
+                            raise ValueError(
+                                "Workflow component declarations must be a sequence"
+                            )
+                        references = set()
+                        for component in components:
+                            if not isinstance(component, WorkflowComponent):
+                                raise ValueError("Invalid workflow component")
+                            component.descriptor(metadata.plugin_id)
+                            key = (component.name, component.version)
+                            if key in references:
+                                raise ValueError("Duplicate workflow component version")
+                            references.add(key)
+                        metadata.workflow_components = tuple(components)
 
                 # 触发插件加载事件
                 handlers = star_handlers_registry.get_handlers_by_event_type(
@@ -2026,6 +2055,7 @@ class PluginManager:
         """终止插件，调用插件的 terminate() 和 __del__() 方法"""
         logger.info(f"Terminating plugin {star_metadata.name} ...")
 
+        star_metadata.workflow_components = ()
         if not star_metadata.activated:
             # 说明之前已经被禁用了
             logger.debug(

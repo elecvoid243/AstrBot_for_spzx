@@ -130,6 +130,7 @@
           v-if="!readonly && call.available_actions?.length"
           :key="call.record_id"
           :actions="call.available_actions"
+          :output-contract="run.snapshot?.engine === 'plugin_task_v2' ? run.snapshot?.definition?.output_contract : undefined"
           :busy="busy ?? false"
           @submit="emit('resolve', call.record_id, $event)"
         />

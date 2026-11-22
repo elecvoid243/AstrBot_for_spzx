@@ -20,9 +20,11 @@ from astrbot.core.agent_teams.assets import (
     RoleInstallation,
     RoleOverrides,
 )
+from astrbot.core.agent_teams.components import PLUGIN_COMPONENT, ComponentReference
 from astrbot.core.agent_teams.result_tool import (
     PORT_FORMAT_CHECKER,
     PORT_FORMATS,
+    validate_inline_port_contract,
     validate_result,
 )
 from astrbot.core.agent_teams.usage import RunLimits
@@ -214,9 +216,13 @@ class GraphTask(BaseModel):
             "json_text",
             "read_document_v1",
             "retrieve_knowledge_v1",
+            "plugin_component_v1",
         ]
         | None
     ) = Field(default=None, exclude_if=lambda value: value is None)
+    component: ComponentReference | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     knowledge_base_id: str | None = Field(
         default=None,
         min_length=1,
@@ -265,11 +271,19 @@ class GraphTask(BaseModel):
         Raises:
             ValueError: The selected node kind has missing or conflicting fields.
         """
-        if (
-            self.knowledge_base_id is not None
-            and self.transform != "retrieve_knowledge_v1"
+        if (self.component is not None) != (self.transform == PLUGIN_COMPONENT):
+            raise ValueError("Plugin nodes require an exact component reference")
+        if self.component and (
+            self.input_contract is None or self.output_contract is None
         ):
-            raise ValueError("Only knowledge retrieval can select a knowledge base")
+            raise ValueError(
+                "Plugin nodes require registered input and output contracts"
+            )
+        if self.knowledge_base_id is not None and self.transform not in {
+            "retrieve_knowledge_v1",
+            PLUGIN_COMPONENT,
+        }:
+            raise ValueError("This node cannot select a knowledge base")
         if self.dispatch is not None and (
             self.transform
             or self.control
@@ -296,7 +310,10 @@ class GraphTask(BaseModel):
                 or self.installation
                 or self.task
                 or self.overrides.model_fields_set
-                or (self.input_contract is not None and self.transform != "map_fields")
+                or (
+                    self.input_contract is not None
+                    and self.transform not in {"map_fields", PLUGIN_COMPONENT}
+                )
                 or (self.output_contract is not None and self.transform == "json_text")
             ):
                 raise ValueError("Transform nodes cannot configure other execution")
@@ -862,9 +879,7 @@ def validate_graph(
             )
         for path, contract, is_input in contracts:
             try:
-                if not isinstance(contract, dict) or contract.get("type") != "object":
-                    raise ValueError("Declare an object contract")
-                Draft202012Validator.check_schema(contract)
+                validate_inline_port_contract(contract)
                 if not is_input and path.endswith(".output_contract"):
                     index = int(path.split(".")[2])
                     if definition.tasks[index].transform and "files" in contract.get(
@@ -873,30 +888,11 @@ def validate_graph(
                         raise ValueError(
                             "The top-level files field is reserved for managed attachments"
                         )
-                # Inline port contracts are declarative and cannot resolve any URI.
-                port_schemas = {
-                    id(schema) for schema in contract.get("properties", {}).values()
-                }
                 node = (
                     definition.tasks[int(path.split(".")[2])]
                     if path.startswith("definition.tasks.")
                     else None
                 )
-                pending = [contract]
-                while pending:
-                    schema = pending.pop()
-                    if isinstance(schema, dict):
-                        if schema.get("format") in PORT_FORMATS and (
-                            id(schema) not in port_schemas
-                            or schema.get("type") != "object"
-                            or "default" in schema
-                        ):
-                            raise ValueError(
-                                "Declare semantic ports as named objects without defaults"
-                            )
-                        if any(key in schema for key in ("$ref", "$dynamicRef", "$id")):
-                            raise ValueError("Use inline schemas for structured ports")
-                        pending.extend(DRAFT202012.subresources_of(schema))
                 if not is_input:
                     for name, schema in contract.get("properties", {}).items():
                         if (

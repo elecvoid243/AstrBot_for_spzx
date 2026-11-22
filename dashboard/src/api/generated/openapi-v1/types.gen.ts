@@ -734,6 +734,12 @@ export type CommandPatchRequest = {
     permission_group?: string;
 };
 
+export type ComponentReference = {
+    id: string;
+    version: string;
+    contract_digest: string;
+};
+
 /**
  * A scalar comparison evaluated by the graph scheduler.
  */
@@ -1011,9 +1017,10 @@ export type GraphTask = {
     output_contract?: ({
     [key: string]: unknown;
 } | null);
-    transform?: ('parse_json' | 'map_fields' | 'json_text' | 'read_document_v1' | 'retrieve_knowledge_v1' | null);
+    transform?: ('parse_json' | 'map_fields' | 'json_text' | 'read_document_v1' | 'retrieve_knowledge_v1' | 'plugin_component_v1' | null);
+    component?: (ComponentReference | null);
     /**
-     * Exact local knowledge base selected by a retrieval node.
+     * Exact local knowledge base selected by a retrieval or plugin component node.
      */
     knowledge_base_id?: (string | null);
     /**
@@ -1894,6 +1901,22 @@ export type WorkflowCall = {
     version: number;
 };
 
+export type WorkflowComponent = {
+    reference: ComponentReference;
+    label: string;
+    input_contract: WorkflowPortContract;
+    output_contract: {
+        [key: string]: unknown;
+    };
+    effect: 'read_only' | 'external';
+    permissions: Array<("knowledge_base:read")>;
+    recovery: ({
+    [key: string]: unknown;
+} | null);
+};
+
+export type effect = 'read_only' | 'external';
+
 /**
  * Idempotent whole-run decision, optionally conditional on its revision.
  */
@@ -1955,11 +1978,13 @@ export type WorkflowPackage = {
     version: number;
     definition: (GraphDefinition | AutonomousDefinition);
     format: "astrbot.workflow";
-    format_version: 3;
+    format_version: 3 | 4;
     roles: Array<PackageRole>;
     assets?: Array<PackageAsset>;
     requirements?: Array<PackageDependency>;
 };
+
+export type format_version = 3 | 4;
 
 /**
  * Inline JSON Schema object declaring named data ports and presence defaults. Top-level object ports may use astrbot-message (text), astrbot-artifact (artifact_id and version), or astrbot-file (artifact_id, version and file_id). These semantic formats do not accept defaults.
@@ -6469,6 +6494,13 @@ export type GenerateWorkflowDraftResponse = ({
 });
 
 export type GenerateWorkflowDraftError = (WorkflowValidationError | unknown);
+
+export type ListWorkflowComponentsApiV1WorkflowComponentsGetResponse = ({
+    status: string;
+    data: Array<WorkflowComponent>;
+});
+
+export type ListWorkflowComponentsApiV1WorkflowComponentsGetError = (unknown);
 
 export type ListAssetsApiV1WorkflowAssetsGetResponse = (unknown);
 

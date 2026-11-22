@@ -7,6 +7,7 @@ from collections.abc import Awaitable, Callable
 
 from jsonschema import Draft202012Validator, FormatChecker
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from referencing.jsonschema import DRAFT202012
 
 from astrbot.core.agent.run_context import ContextWrapper
 from astrbot.core.agent.tool import FunctionTool
@@ -44,6 +45,95 @@ for port_format, model in PORT_FORMATS.items():
     PORT_FORMAT_CHECKER.checks(port_format, raises=ValidationError)(
         model.model_validate
     )
+
+
+def validate_inline_port_contract(contract: dict) -> None:
+    """Apply the shared structured workflow port schema restrictions.
+
+    Args:
+        contract: Input or output object schema.
+
+    Raises:
+        ValueError: The schema permits external resolution or a synthetic reference.
+        SchemaError: The declaration is not a JSON Schema.
+    """
+    if not isinstance(contract, dict) or contract.get("type") != "object":
+        raise ValueError("Declare an object contract")
+    Draft202012Validator.check_schema(contract)
+    ports = {id(schema) for schema in contract.get("properties", {}).values()}
+    pending = [contract]
+    while pending:
+        schema = pending.pop()
+        if not isinstance(schema, dict):
+            continue
+        if schema.get("format") in PORT_FORMATS and (
+            id(schema) not in ports
+            or schema.get("type") != "object"
+            or "default" in schema
+        ):
+            raise ValueError("Declare semantic ports as named objects without defaults")
+        if any(key in schema for key in ("$ref", "$dynamicRef", "$id")):
+            raise ValueError("Use inline schemas for structured ports")
+        pending.extend(DRAFT202012.subresources_of(schema))
+
+
+def validate_component_result(
+    contract: dict, payload: dict, port_sources: dict
+) -> list[dict]:
+    """Validate plugin output using only exact references bound to this attempt.
+
+    Args:
+        contract: Frozen component output contract.
+        payload: Observed result from the adapter, query, or authorized operator.
+        port_sources: Persisted input-port provenance already authorized by the scheduler.
+
+    Returns:
+        Schema or provenance issues preventing downstream use.
+    """
+    fields = validate_result(contract, payload, port_formats=True)
+    if fields:
+        return fields
+    if payload.get("files"):
+        fields.append(
+            {
+                "path": "result.files",
+                "code": "REFERENCE",
+                "message": "Return bound files through typed file ports",
+            }
+        )
+
+    allowed = [
+        source["reference"] for source in port_sources.values() if "reference" in source
+    ]
+    checker = FormatChecker(formats=[])
+
+    @checker.checks("astrbot-file")
+    @checker.checks("astrbot-artifact")
+    def is_bound(value):
+        """Check the exact reference against the scheduler's authorized bindings.
+
+        Args:
+            value: Candidate artifact or file reference from the fixed output.
+
+        Returns:
+            Whether the persisted inputs grant this exact reference.
+        """
+        return isinstance(value, dict) and any(
+            all(value[key] == selected.get(key) for key in value)
+            for selected in allowed
+        )
+
+    for issue in Draft202012Validator(contract, format_checker=checker).iter_errors(
+        payload
+    ):
+        fields.append(
+            {
+                "path": ".".join(["result", *map(str, issue.absolute_path)]),
+                "code": "REFERENCE",
+                "message": "Select a reference bound to this attempt",
+            }
+        )
+    return fields
 
 
 def validate_result(

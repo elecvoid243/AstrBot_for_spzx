@@ -32,6 +32,7 @@
     "annotations": "画布分组与备注"
   },
   "runConversation": {
+    "reconcileInWorkbench": "请打开运行工作台，核实结果未明的工具效果后再继续。",
     "type": "运行会话",
     "asset": "资产",
     "version": "固定版本",
@@ -529,6 +530,9 @@
     }
   },
   "graph": {
+    "plugin_component_v1": "插件组件",
+    "pluginComponentLoadFailed": "无法加载已安装组件目录。",
+    "pluginComponentUnavailable": "请安装并启用对应的固定组件版本。",
     "finiteJsonNumbers": "请使用有限的 JSON 数字。",
     "enableStructuredPorts": "使用结构化端口",
     "read_document_v1": "读取文档",
@@ -672,6 +676,8 @@
     "invalidSource": "不可用的输入来源"
   },
   "resolution": {
+    "outputContract": "固定输出契约",
+    "structuredResult": "已核实的结果（JSON 对象）",
     "savedWaiting": "工具处理决定已保存到原 Attempt。运行暂停期间等待“继续运行”，继续后仍遵守局部等待和执行容量限制。",
     "replacedBy": "原结果仍未知；已明确改为新的调用",
     "replaces": "本次执行对应的原调用",

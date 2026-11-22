@@ -39,7 +39,13 @@ from sqlalchemy.orm import aliased
 from sqlmodel import col, select, text, update
 
 from astrbot.core import logger
-from astrbot.core.agent.tool import FunctionTool, has_tool_recovery
+from astrbot.core.agent.run_context import ContextWrapper
+from astrbot.core.agent.tool import (
+    FunctionTool,
+    ToolRecoveryResult,
+    current_tool_invocation,
+    has_tool_recovery,
+)
 from astrbot.core.agent_team_execution import (
     CheckpointRecoveryError,
     HumanInputRequired,
@@ -60,6 +66,11 @@ from astrbot.core.agent_teams.autonomous_tools import (
     TeamCommunicateTool,
     TeamManageTool,
     TeamOperationRequest,
+)
+from astrbot.core.agent_teams.components import (
+    PLUGIN_COMPONENT,
+    WorkflowComponent,
+    WorkflowComponentContext,
 )
 from astrbot.core.agent_teams.graph import (
     DISPATCH_INPUT,
@@ -85,6 +96,7 @@ from astrbot.core.agent_teams.result_tool import (
     ReadArtifactTool,
     StoreTaskFileTool,
     SubmitTaskResultTool,
+    validate_component_result,
     validate_result,
 )
 from astrbot.core.agent_teams.usage import (
@@ -143,7 +155,10 @@ def _uses_execution_slot(snapshot: dict) -> bool:
     Returns:
         True for an Agent or a versioned native task.
     """
-    return "member" in snapshot or snapshot.get("engine") == "native_task_v2"
+    return "member" in snapshot or snapshot.get("engine") in {
+        "native_task_v2",
+        "plugin_task_v2",
+    }
 
 
 def _capacity_key(snapshot: dict) -> tuple:
@@ -155,7 +170,7 @@ def _capacity_key(snapshot: dict) -> tuple:
     Returns:
         A namespace-qualified identity used for concurrency accounting.
     """
-    if snapshot.get("engine") == "native_task_v2":
+    if snapshot.get("engine") in {"native_task_v2", "plugin_task_v2"}:
         return ("component", snapshot["node_id"])
     definition = snapshot["definition"]
     if definition.get("role_id"):
@@ -290,7 +305,7 @@ class WorkflowPackage(PackageAsset):
 
     model_config = ConfigDict(extra="forbid", strict=True)
     format: Literal["astrbot.workflow"]
-    format_version: Literal[3]
+    format_version: Literal[3, 4]
     roles: list[PackageRole] = Field(max_length=100)
     assets: list[PackageAsset] = Field(default_factory=list, max_length=100)
     requirements: list[PackageDependency] = Field(default_factory=list, max_length=500)
@@ -751,6 +766,103 @@ class WorkflowService:
 
         self.chat = WorkflowChat(self)
 
+    def _installed_components(
+        self,
+    ) -> dict[tuple[str, str], tuple[dict, WorkflowComponent]]:
+        """Index exact components from the active plugin lifecycle.
+
+        Returns:
+            Unique registered component versions and their local handlers.
+        """
+        context = getattr(self.roles.core_lifecycle, "star_context", None)
+        result = {}
+        conflicts = set()
+        for plugin in context.get_all_stars() if context else ():
+            if not plugin.activated:
+                continue
+            for component in plugin.workflow_components:
+                entry = component.descriptor(plugin.plugin_id)
+                key = (entry["reference"]["id"], component.version)
+                if key in result:
+                    conflicts.add(key)
+                result[key] = (entry, component)
+        return {key: value for key, value in result.items() if key not in conflicts}
+
+    async def list_components(self, username: str) -> list[dict]:
+        """Return portable catalog entries visible under Dashboard admission.
+
+        Args:
+            username: Stable owner of an enabled Dashboard administrator account.
+
+        Returns:
+            Registered definitions with no live callbacks or local credentials.
+        """
+        await self._require_component_owner(username, "components")
+        return [entry for entry, _ in self._installed_components().values()]
+
+    async def _resolve_component(
+        self, username: str, node: dict, path: str
+    ) -> WorkflowComponent:
+        """Revalidate the exact node, owner and local resource before use.
+
+        Args:
+            username: Authenticated Dashboard resource owner.
+            node: Node with pinned component, schemas and local bindings.
+            path: Node path in the editable or fixed workflow.
+
+        Returns:
+            The currently installed implementation of the exact contract.
+
+        Raises:
+            RoleAssetError: The contract or its resource is inaccessible.
+        """
+        path_field = f"{path}.component"
+        await self._require_component_owner(username, path_field)
+        reference = node["component"]
+        match = self._installed_components().get(
+            (reference["id"], reference["version"])
+        )
+        if match is None:
+            message = "Install and enable the exact workflow component version"
+            raise RoleAssetError(
+                message, [{"path": path_field, "code": "MISSING", "message": message}]
+            )
+        entry, component = match
+        if reference != entry["reference"] or any(
+            node.get(key) != entry[key] for key in ("input_contract", "output_contract")
+        ):
+            message = "The installed workflow component contract differs"
+            raise RoleAssetError(
+                message,
+                [{"path": path_field, "code": "INCOMPATIBLE", "message": message}],
+            )
+        kb_id = node.get("knowledge_base_id")
+        if bool(kb_id) != component.knowledge_base:
+            message = "Choose exactly the resources declared by the component"
+            raise RoleAssetError(
+                message,
+                [
+                    {
+                        "path": f"{path}.knowledge_base_id",
+                        "code": "RESOURCE",
+                        "message": message,
+                    }
+                ],
+            )
+        if kb_id:
+            await self._require_native_knowledge_base(
+                username, kb_id, f"{path}.knowledge_base_id"
+            )
+        # Resource checks can yield to a concurrent plugin reload or removal.
+        live = self._installed_components().get((reference["id"], reference["version"]))
+        if live is None or live[1] is not component:
+            message = "The workflow component changed during admission"
+            raise RoleAssetError(
+                message,
+                [{"path": path_field, "code": "UNAVAILABLE", "message": message}],
+            )
+        return component
+
     async def save_asset(
         self,
         username: str,
@@ -931,7 +1043,11 @@ class WorkflowService:
         elif isinstance(definition, GraphDefinition):
             validate_graph(definition, result_requirement="reachable")
             for task_index, task in enumerate(definition.tasks):
-                if task.knowledge_base_id:
+                if task.component:
+                    await self._resolve_component(
+                        username, task.model_dump(), f"definition.tasks.{task_index}"
+                    )
+                elif task.knowledge_base_id:
                     await self._require_native_knowledge_base(
                         username,
                         task.knowledge_base_id,
@@ -986,6 +1102,30 @@ class WorkflowService:
                                 {**field, "path": f"{path}.workflow"}
                                 for field in exc.fields
                                 or [{"code": "REFERENCE", "message": str(exc)}]
+                            )
+                    if not fields:
+                        try:
+                            closure = await self._asset_closure(username, child)
+                            for pinned in closure.values():
+                                for index, node in enumerate(
+                                    pinned["definition"].get("tasks", [])
+                                ):
+                                    if node.get("component"):
+                                        await self._resolve_component(
+                                            username,
+                                            node,
+                                            f"{path}.{kind}.tasks.{index}",
+                                        )
+                        except RoleAssetError as exc:
+                            fields.extend(
+                                exc.fields
+                                or [
+                                    {
+                                        "path": f"{path}.{kind}",
+                                        "code": "REFERENCE",
+                                        "message": str(exc),
+                                    }
+                                ]
                             )
                     if fields:
                         raise RoleAssetError("Invalid child call", fields)
@@ -1608,7 +1748,7 @@ class WorkflowService:
             version: Exact version, or latest when omitted.
 
         Returns:
-            Version 3 package containing only fixed definitions and safe metadata.
+            Native package containing only fixed definitions and safe metadata.
 
         Raises:
             RoleAssetError: An included version is missing or inaccessible.
@@ -1618,6 +1758,7 @@ class WorkflowService:
             raise RoleAssetError("Asset has been deleted", status=409)
         included = await self._asset_closure(username, asset, asset_limit=100)
         references = set()
+        contains_components = False
         for current in included.values():
             definition = current["definition"]
             members = (
@@ -1625,6 +1766,7 @@ class WorkflowService:
                 if definition.get("kind") == "autonomous"
                 else definition["tasks"]
             )
+            contains_components |= any(member.get("component") for member in members)
             references.update(
                 (m["role_id"], m["role_version"]) for m in members if m.get("role_id")
             )
@@ -1639,7 +1781,7 @@ class WorkflowService:
             )
         raw = {
             "format": "astrbot.workflow",
-            "format_version": 3,
+            "format_version": 4 if contains_components else 3,
             **included[(asset_id, asset["version"])],
             "assets": [
                 included[key]
@@ -1722,6 +1864,10 @@ class WorkflowService:
                 else definition["tasks"]
             )
             for member_index, member in enumerate(members):
+                if member.get("component") and package.format_version != 4:
+                    raise RoleAssetError(
+                        "Plugin components require native workflow package version 4"
+                    )
                 if (
                     member.get("human")
                     or member.get("control")
@@ -1973,9 +2119,18 @@ class WorkflowService:
                     if local_asset.get("kind") == "autonomous"
                     else local_asset["tasks"]
                 )
-                for member in members:
+                for member_index, member in enumerate(members):
                     if member.get("knowledge_base_id"):
                         self._rewrite_package_config(member, choices)
+                    if member.get("component"):
+                        try:
+                            await self._resolve_component(
+                                username,
+                                member,
+                                f"assets.{asset_key[0]}.tasks.{member_index}",
+                            )
+                        except RoleAssetError as exc:
+                            issues.extend(exc.fields)
                     if member.get("role_id"):
                         role = copy.deepcopy(
                             contents["roles"][
@@ -2196,7 +2351,7 @@ class WorkflowService:
                 and key in manifests
                 and (
                     not isinstance(row.package, dict)
-                    or row.package.get("format_version") != 3
+                    or row.package.get("format_version") not in {3, 4}
                     or row.digest != WorkflowPackage.content_digest(manifests[key])
                 )
             ):
@@ -2209,10 +2364,9 @@ class WorkflowService:
                     }
                 )
         for row in rows:
-            if (
-                not isinstance(row.package, dict)
-                or row.package.get("format_version") != 3
-            ):
+            if not isinstance(row.package, dict) or row.package.get(
+                "format_version"
+            ) not in {3, 4}:
                 continue
             for entry in row.package.get("role_records", []):
                 source = entry["source"]
@@ -2229,10 +2383,9 @@ class WorkflowService:
                     )
         if not issues:
             for row in rows:
-                if (
-                    not isinstance(row.package, dict)
-                    or row.package.get("format_version") != 3
-                ):
+                if not isinstance(row.package, dict) or row.package.get(
+                    "format_version"
+                ) not in {3, 4}:
                     continue
                 for entry in row.package.get("role_records", []):
                     source = entry["source"]
@@ -2309,7 +2462,20 @@ class WorkflowService:
             normalized_roles[key] = role
         manifests = self._package_manifests(package, contents, choices)
         root = (package.asset_id, package.version)
-        async with self.db.get_db() as session:
+        nodes = [
+            (f"assets.{key[0]}.tasks.{index}", copy.deepcopy(node))
+            for key, definition in contents["assets"].items()
+            for index, node in enumerate(definition.get("tasks", []))
+            if node.get("component")
+        ]
+        plugin_manager = getattr(self.roles.core_lifecycle, "plugin_manager", None)
+        lifecycle_guard = (
+            plugin_manager.lifecycle_lock if nodes and plugin_manager else nullcontext()
+        )
+        async with lifecycle_guard, self.db.get_db() as session:
+            for path, node in nodes:
+                self._rewrite_package_config(node, choices)
+                await self._resolve_component(username, node, path)
             try:
                 await session.execute(text("BEGIN IMMEDIATE"))
                 rows = (
@@ -2326,10 +2492,9 @@ class WorkflowService:
                 records = {(r.package_id, r.version): r for r in rows}
                 asset_map, role_map, known_roles = {}, {}, {}
                 for row in rows:
-                    if (
-                        not isinstance(row.package, dict)
-                        or row.package.get("format_version") != 3
-                    ):
+                    if not isinstance(row.package, dict) or row.package.get(
+                        "format_version"
+                    ) not in {3, 4}:
                         continue
                     for entry in row.package.get("role_records", []):
                         key = (entry["source"]["role_id"], entry["source"]["version"])
@@ -2347,7 +2512,7 @@ class WorkflowService:
                     digest = WorkflowPackage.content_digest(manifests[key])
                     if row:
                         if (
-                            row.package.get("format_version") != 3
+                            row.package.get("format_version") not in {3, 4}
                             or row.digest != digest
                         ):
                             raise RoleAssetError(
@@ -2360,7 +2525,7 @@ class WorkflowService:
                             r
                             for r in rows
                             if r.package_id == key[0]
-                            and r.package.get("format_version") == 3
+                            and r.package.get("format_version") in {3, 4}
                         ]
                         allocated = [
                             value
@@ -2547,7 +2712,13 @@ class WorkflowService:
                             installed_version=version,
                             digest=WorkflowPackage.content_digest(manifests[key]),
                             package={
-                                "format_version": 3,
+                                "format_version": 4
+                                if any(
+                                    task.get("component")
+                                    for item in closure["assets"].values()
+                                    for task in item.get("tasks", [])
+                                )
+                                else 3,
                                 "manifest": manifests[key],
                                 "role_records": role_records,
                             },
@@ -4710,7 +4881,10 @@ class WorkflowService:
             if permitted:
                 if "chat" in row.snapshot:
                     await self.chat.require_access(row.snapshot["chat"], username)
-                if row.snapshot.get("engine") != "native_task_v2":
+                if row.snapshot.get("engine") not in {
+                    "native_task_v2",
+                    "plugin_task_v2",
+                }:
                     await self.roles.validate_frozen_role(
                         row.snapshot["role"], row.snapshot.get("profile")
                     )
@@ -4785,7 +4959,10 @@ class WorkflowService:
                     for identity in [item.run_id for item in family]:
                         child = await session.get(AgentWorkflowRun, identity)
                         assert child is not None
-                        if child.status == "running" and "member" in child.snapshot:
+                        if child.status == "running" and (
+                            "member" in child.snapshot
+                            or child.snapshot.get("engine") == "plugin_task_v2"
+                        ):
                             child.state = {**child.state, "paused_resume": True}
                             session.add(child)
                 if request.action == "cancel":
@@ -6113,6 +6290,14 @@ class WorkflowService:
                 ],
             ) from exc
         compiled = await self._compile_trial(username, asset_id, request)
+        if request.kind == "workflow":
+            for index, node in enumerate(
+                compiled["draft"]["body"]["definition"]["tasks"]
+            ):
+                if node["id"] in compiled["selected_nodes"] and node.get("component"):
+                    await self._resolve_component(
+                        username, node, f"definition.tasks.{index}"
+                    )
         return {
             key: compiled[key]
             for key in (
@@ -6385,9 +6570,13 @@ class WorkflowService:
             else {}
         )
         for index, node in enumerate(compiled["draft"]["body"]["definition"]["tasks"]):
-            if node["id"] in compiled["selected_nodes"] and node.get(
-                "knowledge_base_id"
-            ):
+            if node["id"] not in compiled["selected_nodes"]:
+                continue
+            if node.get("component"):
+                await self._resolve_component(
+                    username, node, f"definition.tasks.{index}"
+                )
+            elif node.get("knowledge_base_id"):
                 await self._require_native_knowledge_base(
                     username,
                     node["knowledge_base_id"],
@@ -6613,7 +6802,11 @@ class WorkflowService:
         members = {}
         role_counts: dict[tuple, int] = {}
         for index, task in enumerate(definition.tasks):
-            if task.knowledge_base_id and not trial:
+            if task.component:
+                await self._resolve_component(
+                    username, task.model_dump(), f"definition.tasks.{index}"
+                )
+            elif task.knowledge_base_id and not trial:
                 await self._require_native_knowledge_base(
                     username,
                     task.knowledge_base_id,
@@ -7176,6 +7369,12 @@ class WorkflowService:
                 "overrides": task.overrides.model_dump(exclude_unset=True),
                 "required_inputs": definition.required_inputs,
             }
+            if task.component:
+                child_definition.update(
+                    component=task.component.model_dump(),
+                    input_contract=task.input_contract,
+                    knowledge_base_id=task.knowledge_base_id,
+                )
             contract = task.result_contract(
                 explicit_control=definition.entry_task_ids is not None
             )
@@ -7197,6 +7396,8 @@ class WorkflowService:
                         if task.control or task.dispatch
                         else "native_task_v2"
                         if task.transform in NATIVE_NODE_OUTPUTS
+                        else "plugin_task_v2"
+                        if task.component
                         else "transform_task_v2"
                         if task.transform
                         else "single_task_v2",
@@ -9174,7 +9375,10 @@ class WorkflowService:
                                 progress = True
                                 continue
                             transform = task.get("transform")
-                            native = transform in NATIVE_NODE_OUTPUTS
+                            native = (
+                                transform in NATIVE_NODE_OUTPUTS
+                                or transform == PLUGIN_COMPONENT
+                            )
                             member_id = row.snapshot.get("member", {}).get("member_id")
                             role_id = (
                                 _capacity_key(row.snapshot)
@@ -10417,7 +10621,7 @@ class WorkflowService:
                         col(AgentWorkflowRun.status) == "running",
                         AgentWorkflowRun.snapshot["engine"]
                         .as_string()
-                        .in_(["single_task_v2", "native_task_v2"]),
+                        .in_(["single_task_v2", "native_task_v2", "plugin_task_v2"]),
                         AgentWorkflowRun.state["execution_id"].as_string().is_(None),
                         col(scope.status).in_(["running", "blocked"]),
                         AgentWorkflowControl.status == "active",
@@ -11433,14 +11637,25 @@ class WorkflowService:
             raise RoleAssetError(
                 "Recover the interrupted task inside the child scope", status=409
             )
-        runner = run["snapshot"]["effective"].get("runner")
-        if runner is None:
+        plugin_node = run["snapshot"]["engine"] == "plugin_task_v2"
+        if plugin_node:
+            await self._resolve_component(
+                username,
+                run["snapshot"]["definition"],
+                run["snapshot"]["component_path"],
+            )
+        runner = run["snapshot"].get("effective", {}).get("runner")
+        if runner is None and not plugin_node:
             raise RoleAssetError(
                 "Stored runner configuration is unsupported; start a new run",
                 status=409,
             )
-        issues = get_agent_runner_capability_issues(
-            runner, {"definition.role_id": "task_result"}
+        issues = (
+            get_agent_runner_capability_issues(
+                runner, {"definition.role_id": "task_result"}
+            )
+            if runner is not None
+            else []
         )
         if issues and run["status"] in {
             "interrupted",
@@ -11570,12 +11785,12 @@ class WorkflowService:
                     and not task.state.get("capacity_released")
                 ]
                 role_id = _capacity_key(row.snapshot)
-                role_limit = row.snapshot["effective"].get("max_parallel")
-                member_busy = any(
-                    task.snapshot["member"]["member_id"]
-                    == row.snapshot["member"]["member_id"]
+                role_limit = row.snapshot.get("effective", {}).get("max_parallel")
+                member_id = row.snapshot.get("member", {}).get("member_id")
+                member_busy = member_id is not None and any(
+                    task.status == "running"
+                    and task.snapshot.get("member", {}).get("member_id") == member_id
                     for task in family
-                    if task.status == "running" and "member" in task.snapshot
                 )
                 if (
                     member_busy
@@ -11968,6 +12183,12 @@ class WorkflowService:
         ):
             raise RoleAssetError("An observed tool result is required", status=422)
         run = await self.get_run(username, run_id)
+        if run["snapshot"]["engine"] == "plugin_task_v2":
+            await self._resolve_component(
+                username,
+                run["snapshot"]["definition"],
+                run["snapshot"]["component_path"],
+            )
         duplicate = False
         async with self.db.get_db() as session:
             row = await session.get(AgentWorkflowRun, run_id)
@@ -12091,8 +12312,30 @@ class WorkflowService:
                         )
                     )
                 elif request.action in {"confirm_result", "confirm_failure"}:
+                    structured = None
+                    if (
+                        row.snapshot["engine"] == "plugin_task_v2"
+                        and request.action == "confirm_result"
+                    ):
+                        try:
+                            structured = json.loads(request.result or "")
+                        except ValueError as exc:
+                            raise RoleAssetError(
+                                "Enter the original structured result as a JSON object"
+                            ) from exc
+                        if not isinstance(
+                            structured, dict
+                        ) or validate_component_result(
+                            row.snapshot["definition"]["output_contract"],
+                            structured,
+                            row.snapshot.get("port_sources", {}),
+                        ):
+                            raise RoleAssetError(
+                                "The confirmed result does not match the component output contract"
+                            )
                     raw = CallToolResult(
                         content=[TextContent(type="text", text=request.result or "")],
+                        structuredContent=structured,
                         isError=request.action == "confirm_failure",
                     ).model_dump(mode="json")
                     call = calls[index]
@@ -12653,6 +12896,43 @@ class WorkflowService:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
 
+    async def _require_component_owner(
+        self,
+        username: str,
+        path: str,
+        *,
+        resource: str = "installed workflow components",
+    ) -> None:
+        """Recheck current Dashboard privileges for a saved component binding.
+
+        Args:
+            username: Stable resource owner.
+            path: Field to report when access is denied.
+            resource: Display name of the privileged resource.
+
+        Raises:
+            RoleAssetError: An enabled Dashboard administrator is required.
+        """
+        async with self.db.get_db() as session:
+            account = await session.scalar(
+                select(DashboardAccount).where(
+                    or_(
+                        DashboardAccount.legacy_owner == username,
+                        and_(
+                            col(DashboardAccount.legacy_owner).is_(None),
+                            DashboardAccount.account_id == username,
+                        ),
+                    )
+                )
+            )
+        if account is None or not account.enabled or account.role != "admin":
+            message = f"The workflow owner cannot access {resource}"
+            raise RoleAssetError(
+                message,
+                [{"path": path, "code": "FORBIDDEN", "message": message}],
+                status=403,
+            )
+
     async def _require_native_knowledge_base(
         self, username: str, kb_id: str, path: str
     ) -> "KnowledgeBaseManager":
@@ -12669,25 +12949,7 @@ class WorkflowService:
         Raises:
             RoleAssetError: The owner or selected knowledge base is unavailable.
         """
-        async with self.db.get_db() as session:
-            account = await session.scalar(
-                select(DashboardAccount).where(
-                    or_(
-                        DashboardAccount.legacy_owner == username,
-                        and_(
-                            col(DashboardAccount.legacy_owner).is_(None),
-                            DashboardAccount.account_id == username,
-                        ),
-                    )
-                )
-            )
-        if account is None or not account.enabled or account.role != "admin":
-            message = "The workflow owner cannot access knowledge bases"
-            raise RoleAssetError(
-                message,
-                [{"path": path, "code": "FORBIDDEN", "message": message}],
-                status=403,
-            )
+        await self._require_component_owner(username, path, resource="knowledge bases")
         manager = getattr(self.roles.core_lifecycle, "kb_manager", None)
         kb = await manager.get_kb(kb_id) if manager else None
         if kb is None or kb.init_error:
@@ -12887,6 +13149,29 @@ class WorkflowService:
                     for field in fields
                 ],
             )
+        await self._finish_component_result(
+            username, run_id, execution_id, attempt, contract, result
+        )
+
+    async def _finish_component_result(
+        self,
+        username: str,
+        run_id: str,
+        execution_id: str,
+        attempt: str,
+        contract: dict,
+        result: dict,
+    ) -> None:
+        """Commit a validated node result under the native attempt and control fence.
+
+        Args:
+            username: Original workflow owner.
+            run_id: Persisted task run.
+            execution_id: Current durable executor.
+            attempt: Original attempt identity.
+            contract: Frozen result contract.
+            result: Validated structured output.
+        """
         await self._await_execution_permission(username, run_id, execution_id)
         async with self.db.get_db() as session:
             row = await session.get(AgentWorkflowRun, run_id)
@@ -12921,6 +13206,267 @@ class WorkflowService:
                 )
             )
             await session.commit()
+
+    async def _execute_plugin_component(
+        self,
+        username: str,
+        run_id: str,
+        execution_id: str,
+        snapshot: dict,
+        state: dict,
+        checkpoint: dict | None,
+    ) -> None:
+        """Execute one deterministic tool call using the native durable receipt.
+
+        Args:
+            username: Original workflow owner.
+            run_id: Persisted task run.
+            execution_id: Current durable executor.
+            snapshot: Frozen component, resource binding and node input values.
+            state: Original task attempt identity.
+            checkpoint: Native tool receipt envelope when continuing an attempt.
+
+        Raises:
+            CheckpointRecoveryError: The external outcome remains unconfirmed.
+            RoleAssetError: The component or result violates its frozen contract.
+        """
+        node = snapshot["definition"]
+        path = snapshot["component_path"]
+        attempt = state["attempt_id"]
+        await self._await_execution_permission(username, run_id, execution_id)
+        component = await self._resolve_component(username, node, path)
+        if checkpoint is None:
+            invocation = uuid.uuid5(
+                uuid.NAMESPACE_URL, f"{run_id}:{attempt}:component"
+            ).hex
+            checkpoint = {
+                "format_version": 2,
+                "invocation_id": invocation,
+                "tool_result_files": {},
+                "tool_calls": [
+                    {
+                        "record_id": invocation,
+                        "call_id": invocation,
+                        "name": node["component"]["id"],
+                        "args": snapshot["inputs"],
+                        "status": "intent",
+                        "raw_results": [],
+                        "protocol_results": [],
+                        "process_records": [],
+                        "context_position": None,
+                    }
+                ],
+            }
+        call = checkpoint["tool_calls"][0]
+        identity = call["record_id"]
+        recovery = call.setdefault("recovery", {})
+        context = ContextWrapper(
+            context=WorkflowComponentContext(identity, node.get("knowledge_base_id")),
+            tool_call_timeout=60,
+        )
+
+        async def admit(kind: str) -> str:
+            """Acquire one step under the root and recheck the live binding.
+
+            Args:
+                kind: Tool delivery or authoritative query.
+
+            Returns:
+                Usage receipt owned by this execution.
+            """
+            receipt_id = uuid.uuid4().hex
+            while True:
+                await self._await_execution_permission(username, run_id, execution_id)
+                try:
+                    receipt = await self.begin_usage(
+                        username,
+                        run_id,
+                        attempt,
+                        execution_id,
+                        {
+                            "receipt_id": receipt_id,
+                            "invocation_id": identity,
+                            "kind": kind,
+                            "name": component.name,
+                        },
+                    )
+                except RoleAssetError as exc:
+                    if any(issue["code"] == "PAUSED" for issue in exc.fields):
+                        continue
+                    raise
+                if not receipt.get("waiting"):
+                    return receipt_id
+                await asyncio.sleep(0.1)
+
+        if call["status"] in {"started", "unknown"}:
+            declaration = recovery.get("declaration")
+            if declaration != component.recovery_declaration or not has_tool_recovery(
+                declaration
+            ):
+                raise CheckpointRecoveryError(
+                    "Component outcome is unknown and requires confirmation."
+                )
+            assert declaration is not None
+            if component.recovery and component.recovery.query is not None:
+                usage = await admit("query")
+                try:
+                    component = await self._resolve_component(username, node, path)
+                    if component.recovery is None or component.recovery.query is None:
+                        raise CheckpointRecoveryError(
+                            "The original component query is unavailable."
+                        )
+                    queried = await asyncio.wait_for(
+                        component.recovery.query(
+                            context, identity, copy.deepcopy(call["args"])
+                        ),
+                        timeout=context.tool_call_timeout,
+                    )
+                    queried = ToolRecoveryResult.model_validate(queried)
+                except (RoleAssetError, CheckpointRecoveryError):
+                    raise
+                except Exception as exc:
+                    queried = ToolRecoveryResult(
+                        status="unknown",
+                        evidence=f"Status query failed: {type(exc).__name__}",
+                    )
+                finally:
+                    await self.report_usage(
+                        username, usage, execution_id, {"total_tokens": 0}
+                    )
+                recovery.setdefault("queries", []).append(
+                    queried.model_dump(mode="json", exclude={"results"})
+                )
+                if queried.status in {"succeeded", "failed"}:
+                    call["raw_results"] = [
+                        raw.model_dump(mode="json") for raw in queried.results
+                    ]
+                    call["status"] = "result_saved"
+                checkpoint["phase"] = (
+                    "tool_result"
+                    if call["status"] == "result_saved"
+                    else "tool_progress"
+                )
+                await self.save_checkpoint(
+                    username, run_id, attempt, execution_id, checkpoint
+                )
+                safe_delivery = queried.status == "not_executed"
+            else:
+                safe_delivery = bool(
+                    declaration.get("safe_retry")
+                    or declaration.get("idempotency_key_arg")
+                )
+            if call["status"] != "result_saved" and not safe_delivery:
+                raise CheckpointRecoveryError(
+                    "Component outcome is unknown and requires confirmation."
+                )
+            if safe_delivery:
+                recovery.setdefault("retries", []).append(
+                    {
+                        "identity": identity,
+                        "reason": "not_executed"
+                        if declaration.get("query")
+                        else "idempotency_key"
+                        if declaration.get("idempotency_key_arg")
+                        else "safe_retry",
+                        "protocol_before": [],
+                    }
+                )
+
+        if call["status"] not in {"result_saved", "applied"}:
+            usage = await admit("tool")
+            try:
+                recovery.update(
+                    declaration=component.recovery_declaration, identity=identity
+                )
+                call["status"] = "started"
+                checkpoint.update(
+                    phase="tools_started", started_tools=[call["call_id"]]
+                )
+                await self.save_checkpoint(
+                    username, run_id, attempt, execution_id, checkpoint
+                )
+                component = await self._resolve_component(username, node, path)
+                args = copy.deepcopy(call["args"])
+                if component.recovery and component.recovery.idempotency_key_arg:
+                    args[component.recovery.idempotency_key_arg] = identity
+                token = current_tool_invocation.set(identity)
+                try:
+                    result = await asyncio.wait_for(
+                        component.execute(context, args),
+                        timeout=context.tool_call_timeout,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Workflow component %s raised %s",
+                        component.name,
+                        type(exc).__name__,
+                    )
+                    call["status"] = "unknown"
+                    checkpoint["phase"] = "tool_progress"
+                    await self.save_checkpoint(
+                        username, run_id, attempt, execution_id, checkpoint
+                    )
+                    raise CheckpointRecoveryError(
+                        "Component outcome is unknown and requires confirmation."
+                    ) from exc
+                finally:
+                    current_tool_invocation.reset(token)
+                call["raw_results"] = [
+                    CallToolResult(
+                        content=[],
+                        structuredContent=result if isinstance(result, dict) else None,
+                    ).model_dump(mode="json")
+                ]
+                call["status"] = "result_saved"
+                checkpoint["phase"] = "tool_result"
+                await self.save_checkpoint(
+                    username, run_id, attempt, execution_id, checkpoint
+                )
+            finally:
+                await self.report_usage(
+                    username, usage, execution_id, {"total_tokens": 0}
+                )
+
+        raw = call["raw_results"][-1]
+        if raw["isError"]:
+            raise RoleAssetError(
+                "The original component invocation was confirmed to have failed"
+            )
+        result = raw.get("structuredContent")
+        contract = node["output_contract"]
+        fields = (
+            validate_component_result(
+                contract, result, snapshot.get("port_sources", {})
+            )
+            if isinstance(result, dict)
+            else [
+                {
+                    "path": "result",
+                    "code": "TYPE",
+                    "message": "Expected a structured object",
+                }
+            ]
+        )
+        if fields:
+            raise RoleAssetError(
+                "Component returned invalid data",
+                [
+                    {
+                        **field,
+                        "path": f"{path}.output_contract"
+                        + field["path"].removeprefix("result"),
+                    }
+                    for field in fields
+                ],
+            )
+        await self._await_execution_permission(username, run_id, execution_id)
+        await self._resolve_component(username, node, path)
+        call["status"] = "applied"
+        checkpoint["phase"] = "tools_applied"
+        await self.save_checkpoint(username, run_id, attempt, execution_id, checkpoint)
+        await self._finish_component_result(
+            username, run_id, execution_id, attempt, contract, result
+        )
 
     async def _execute(
         self, username: str, run_id: str, execution_id: str | None = None
@@ -12981,6 +13527,11 @@ class WorkflowService:
         assert current_task is not None
         self._executions[run_id] = current_task
         try:
+            if snapshot.get("engine") == "plugin_task_v2":
+                await self._execute_plugin_component(
+                    username, run_id, execution_id, snapshot, state, checkpoint
+                )
+                return
             if snapshot.get("engine") == "native_task_v2":
                 await self._execute_native_node(
                     username, run_id, execution_id, snapshot, state

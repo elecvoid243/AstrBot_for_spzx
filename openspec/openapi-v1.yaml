@@ -8728,6 +8728,27 @@ paths:
           $ref: '#/components/responses/WorkflowValidationFailure'
         '502':
           description: Model call failed
+  /api/v1/workflow_components:
+    get:
+      tags: [Agent Teams workflows]
+      summary: List installed workflow components
+      operationId: list_workflow_components_api_v1_workflow_components_get
+      responses:
+        '200':
+          description: Registered components available to the editor.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, data]
+                properties:
+                  status: {type: string}
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/WorkflowComponent'
+        '403':
+          description: Component catalog access denied.
   /api/v1/workflow_assets:
     get:
       tags:
@@ -13774,10 +13795,14 @@ components:
         transform:
           anyOf:
           - type: string
-            enum: [parse_json, map_fields, json_text, read_document_v1, retrieve_knowledge_v1]
+            enum: [parse_json, map_fields, json_text, read_document_v1, retrieve_knowledge_v1, plugin_component_v1]
+          - type: 'null'
+        component:
+          anyOf:
+          - $ref: '#/components/schemas/ComponentReference'
           - type: 'null'
         knowledge_base_id:
-          description: Exact local knowledge base selected by a retrieval node.
+          description: Exact local knowledge base selected by a retrieval or plugin component node.
           anyOf:
           - type: string
             minLength: 1
@@ -14005,6 +14030,37 @@ components:
       - source
       title: ChatAccessRequest
       description: A deliberate local grant; importing an asset never grants access.
+    ComponentReference:
+      type: object
+      additionalProperties: false
+      required: [id, version, contract_digest]
+      properties:
+        id: {type: string, minLength: 5, maxLength: 300}
+        version: {type: string, minLength: 1, maxLength: 64}
+        contract_digest: {type: string, pattern: '^[a-f0-9]{64}$'}
+    WorkflowComponent:
+      type: object
+      required: [reference, label, input_contract, output_contract, effect, permissions, recovery]
+      properties:
+        reference:
+          $ref: '#/components/schemas/ComponentReference'
+        label: {type: string}
+        input_contract:
+          $ref: '#/components/schemas/WorkflowPortContract'
+        output_contract:
+          type: object
+          additionalProperties: true
+        effect:
+          type: string
+          enum: [read_only, external]
+        permissions:
+          type: array
+          items: {type: string, const: 'knowledge_base:read'}
+        recovery:
+          anyOf:
+          - type: object
+            additionalProperties: true
+          - type: 'null'
     WorkflowPortContract:
       type: object
       description: >-
@@ -14628,7 +14684,7 @@ components:
           title: Format
           type: string
         format_version:
-          const: 3
+          enum: [3, 4]
           title: Format Version
           type: integer
         roles:

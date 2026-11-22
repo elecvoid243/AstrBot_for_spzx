@@ -17,6 +17,7 @@ from sqlmodel import select, text
 
 from astrbot.core import logger
 from astrbot.core.agent_teams.assets import RoleAssetError
+from astrbot.core.agent_teams.components import PLUGIN_COMPONENT
 from astrbot.core.agent_teams.graph import NATIVE_NODE_OUTPUTS
 from astrbot.core.db.po import (
     AgentAssetTombstone,
@@ -360,6 +361,7 @@ class WorkflowChat:
         asset = await self.service.get_asset(username, asset_id, request.version)
         if any(
             task.get("transform") in NATIVE_NODE_OUTPUTS
+            or task.get("transform") == PLUGIN_COMPONENT
             for task in asset["definition"].get("tasks", [])
         ):
             raise RoleAssetError(_NATIVE_NODES_DASHBOARD_ONLY, status=403)
@@ -563,6 +565,7 @@ class WorkflowChat:
             scope = pending.pop()
             if any(
                 task.get("transform") in NATIVE_NODE_OUTPUTS
+                or task.get("transform") == PLUGIN_COMPONENT
                 for task in scope["definition"].get("tasks", [])
             ):
                 raise RoleAssetError(_NATIVE_NODES_DASHBOARD_ONLY, status=403)

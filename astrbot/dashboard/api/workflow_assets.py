@@ -436,6 +436,28 @@ async def revoke_chat_access(
         )
 
 
+@router.get("/workflow_components")
+async def list_workflow_components(
+    username: str = Depends(require_dashboard_user),
+    service: WorkflowService = Depends(get_workflow_service),
+):
+    """Return the current installed workflow component catalog.
+
+    Args:
+        username: Authenticated Dashboard resource owner.
+        service: Shared workflow service.
+
+    Returns:
+        The portable registered declarations or an authorization error.
+    """
+    try:
+        return ok(await service.list_components(username))
+    except RoleAssetError as exc:
+        return JSONResponse(
+            error(str(exc), {"fields": exc.fields}), status_code=exc.status
+        )
+
+
 @router.get("/workflow_assets")
 async def list_assets(
     username: str = Depends(require_dashboard_user),

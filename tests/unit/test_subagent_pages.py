@@ -131,6 +131,40 @@ async def test_background_trace_survives_parent_queue_completion(progress, monke
 
 
 @pytest.mark.asyncio
+async def test_continuation_reopens_the_same_trace_without_posting_to_parent(
+    progress, monkeypatch
+):
+    registry, config = progress
+    put_back = AsyncMock()
+    monkeypatch.setattr(
+        "astrbot.core.subagent_event_sink.webchat_queue_mgr.put_back_queue", put_back
+    )
+    sink = SubAgentEventSink(
+        "request", "worker", "task", umo=UMO, instance_id=config.instance_id
+    )
+    await sink.start()
+    await sink.complete("first answer", 1)
+    assert await registry.get_run("parent", sink.subagent_run_id)
+    assert put_back.await_count == 2
+    stream = registry.stream("parent", sink.subagent_run_id)
+    original = (await anext(stream))["data"]
+    await sink.continue_turn(-1, "next question")
+    event = await anext(stream)
+    assert event["revision"] > original["revision"]
+    assert event["data"]["kind"] == "continued"
+    await sink.complete("next answer", 1)
+    reloaded = await registry.get_run("parent", sink.subagent_run_id)
+    assert reloaded["status"] == "completed"
+    assert reloaded["text"] == "next answer"
+    assert [(item["kind"], item["text"]) for item in reloaded["activity"]] == [
+        ("text", "first answer"),
+        ("user_message", "next question"),
+    ]
+    assert put_back.await_count == 2
+    await stream.aclose()
+
+
+@pytest.mark.asyncio
 async def test_late_delta_cannot_reopen_completion_waiting_on_parent_backpressure(
     progress, monkeypatch
 ):

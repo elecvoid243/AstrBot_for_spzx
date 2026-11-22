@@ -19,6 +19,7 @@
 // refresh, same as ZCode's queued messages.
 
 import { reactive } from "vue";
+import type { MessagePart } from "./useMessages";
 
 export interface PendingFollowUp {
   /** UUID, stable across edits. */
@@ -27,6 +28,7 @@ export interface PendingFollowUp {
   sessionId: string;
   /** Composed outgoing text (user text + comment/reference blocks). */
   text: string;
+  parts: MessagePart[];
   createdAt: string;
 }
 
@@ -40,11 +42,12 @@ export function usePendingFollowUps() {
     return (sessionId && pendingBySession[sessionId]) || [];
   }
 
-  function enqueue(sessionId: string, text: string): PendingFollowUp {
+  function enqueue(sessionId: string, text: string, parts: MessagePart[] = []): PendingFollowUp {
     const item: PendingFollowUp = {
       id: crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`,
       sessionId,
       text,
+      parts,
       createdAt: new Date().toISOString(),
     };
     pendingBySession[sessionId] = pendingBySession[sessionId] || [];
@@ -55,7 +58,7 @@ export function usePendingFollowUps() {
   function updateText(sessionId: string, id: string, text: string): void {
     const item = itemsFor(sessionId).find((entry) => entry.id === id);
     const trimmed = text.trim();
-    if (!item || !trimmed) return;
+    if (!item || (!trimmed && !item.parts.length)) return;
     item.text = trimmed;
   }
 

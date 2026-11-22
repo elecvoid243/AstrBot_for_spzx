@@ -1337,6 +1337,7 @@ export function useMessages(options: UseMessagesOptions) {
 
     const sessionMessages = messagesBySession[sessionId];
     sessionMessages.push(userRecord);
+    void resolveRecordMedia([userRecord]);
     // 2026-11-08 (elecvoid243): a dispatched follow-up lands while the
     // previous turn is still streaming. That bot record was created before
     // this question, but the rest of its output belongs after it — move it

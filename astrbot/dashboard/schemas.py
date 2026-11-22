@@ -250,11 +250,13 @@ class ChatOpenFileRequest(OpenModel):
 
 
 class ChatSubagentFollowUpRequest(OpenModel):
-    """Deliver a user follow-up message into a running subagent run."""
+    """Set retention or deliver a message to an owned subagent."""
 
     session_id: str
     subagent_run_id: str
-    text: str
+    text: str = ""
+    keep_alive: bool | None = None
+    continue_conversation: bool = False
 
 
 class ChatFileChangeSource(OpenModel):

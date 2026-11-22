@@ -136,7 +136,16 @@ export function applySubAgentEvent(parts: MessagePart[], data: unknown): void {
       part.tool_calls.push(call);
       part.activity.push({ kind: "tool_call", call });
     }
-  } else if (kind === "user_message") {
+  } else if (kind === "user_message" || kind === "continued") {
+    if (kind === "continued") {
+      for (const text of [part.text, part.error]) {
+        if (text) part.activity.push({ kind: "text", text });
+      }
+      part.status = "running";
+      part.text = "";
+      part.execution_time = null;
+      delete part.error;
+    }
     // A follow-up the user sent to this running subagent; keep it in the
     // chronological activity log.
     part.activity.push({

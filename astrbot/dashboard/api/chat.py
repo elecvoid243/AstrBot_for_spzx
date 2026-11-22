@@ -34,6 +34,7 @@ from astrbot.core.utils.astrbot_path import (
     get_astrbot_temp_path,
     get_astrbot_workspaces_path,
 )
+from astrbot.core.utils.webchat_access import dashboard_account_context
 from astrbot.dashboard.async_utils import run_maybe_async
 from astrbot.dashboard.responses import ApiError, error, ok
 from astrbot.dashboard.schemas import (
@@ -1001,19 +1002,13 @@ async def post_subagent_follow_up(
     auth: AuthContext = Depends(require_chat_scope),
     service: ChatService = Depends(get_service),
 ):
-    """Deliver a user follow-up message into a running foreground subagent.
-
-    The message is queued on the subagent's runner and injected at its next
-    tool-result boundary. This deliberately bypasses the webchat message
-    queue and the pipeline: the follow-up must not be captured by the main
-    agent's follow-up mechanism nor persisted as a top-level user message.
+    """Set retention, queue a new turn, or steer an active subagent.
 
     Returns:
-        ok({"accepted": True, "seq": int}) when queued, otherwise
-        ok({"accepted": False, "reason": "not_found" | "finished" | "empty_text"}).
+        An acceptance result and optional rejection reason.
     """
     text = payload.text.strip()
-    if not text:
+    if not text and payload.keep_alive is None:
         return ok({"accepted": False, "reason": "empty_text"})
     try:
         session = await service.require_owned_chat_session(
@@ -1025,6 +1020,65 @@ async def post_subagent_follow_up(
         "GroupMessage" if getattr(session, "is_group", False) else "FriendMessage"
     )
     umo = f"webchat:{message_type}:webchat!{auth.username}!{payload.session_id}"
+    if payload.keep_alive is not None or payload.continue_conversation:
+        principal = dashboard_account_context.get()
+        if (
+            auth.via != "jwt"
+            or principal is None
+            or principal.resource_owner != auth.username
+        ):
+            raise ApiError("Dashboard session required", status_code=403)
+        runtime = SubAgentManager.get_session(umo)
+        conversation = (
+            runtime.conversations.get(payload.subagent_run_id) if runtime else None
+        )
+        if runtime is None or conversation is None:
+            return ok({"accepted": False, "reason": "not_found"})
+        instance_id = conversation.instance_id
+        if payload.keep_alive is not None:
+            siblings = [
+                (run_id, entry)
+                for run_id, entry in runtime.conversations.items()
+                if entry.instance_id == instance_id
+            ]
+            if not payload.keep_alive and any(
+                entry.pending is not None and not entry.pending.done()
+                for _, entry in siblings
+            ):
+                return ok({"accepted": False, "reason": "busy"})
+            if payload.keep_alive:
+                runtime.retained_instances.add(instance_id)
+            else:
+                runtime.retained_instances.discard(instance_id)
+            for run_id, _ in siblings:
+                subagent_progress.publish(
+                    f"run:{payload.session_id}:{run_id}", {"type": "retention"}
+                )
+            return ok({"accepted": True, "retained": payload.keep_alive})
+        if instance_id not in runtime.retained_instances:
+            return ok({"accepted": False, "reason": "not_retained"})
+        if conversation.pending is not None and not conversation.pending.done():
+            return ok({"accepted": False, "reason": "busy"})
+
+        async def continue_after_current_turn() -> None:
+            try:
+                await conversation.ready.wait()
+                await conversation.resume(text, principal)
+            except Exception:
+                logger.exception("Subagent continuation failed")
+            finally:
+                conversation.pending = None
+                subagent_progress.publish(
+                    f"run:{payload.session_id}:{payload.subagent_run_id}",
+                    {"type": "retention"},
+                )
+
+        conversation.pending = asyncio.create_task(continue_after_current_turn())
+        subagent_progress.publish(
+            f"run:{payload.session_id}:{payload.subagent_run_id}", {"type": "retention"}
+        )
+        return ok({"accepted": True})
+
     handle = SubAgentManager.get_subagent_run_handle(umo, payload.subagent_run_id)
     if (
         handle is None
@@ -1431,7 +1485,7 @@ async def stream_chat_subagent_runs(
         ApiError: The invocation is not part of the owned session.
     """
     try:
-        await service.require_owned_chat_session(
+        owned_session = await service.require_owned_chat_session(
             auth.username, session_id, allow_thread=True
         )
     except ChatServiceError as exc:
@@ -1440,8 +1494,34 @@ async def stream_chat_subagent_runs(
     if run_id and not any(entry["subagent_run_id"] == run_id for entry in entries):
         raise ApiError("Resource is unavailable", status_code=404)
 
+    message_type = (
+        "GroupMessage" if getattr(owned_session, "is_group", False) else "FriendMessage"
+    )
+    umo = f"webchat:{message_type}:webchat!{auth.username}!{session_id}"
+
     async def events():
         async for payload in subagent_progress.stream(session_id, run_id):
+            if (
+                run_id
+                and auth.via == "jwt"
+                and payload["type"] in {"snapshot", "retention", "metadata"}
+            ):
+                runtime = SubAgentManager.get_session(umo)
+                conversation = runtime.conversations.get(run_id) if runtime else None
+                payload = {
+                    **payload,
+                    "can_retain": conversation is not None,
+                    "retained": bool(
+                        runtime
+                        and conversation
+                        and conversation.instance_id in runtime.retained_instances
+                    ),
+                    "continuation_pending": bool(
+                        conversation
+                        and conversation.pending
+                        and not conversation.pending.done()
+                    ),
+                }
             yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(

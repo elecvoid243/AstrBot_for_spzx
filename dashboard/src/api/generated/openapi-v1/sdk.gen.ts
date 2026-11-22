@@ -1883,7 +1883,7 @@ export const streamChatSubagentRuns = <ThrowOnError extends boolean = false>(opt
 };
 
 /**
- * Deliver a user follow-up message into a running foreground subagent
+ * Retain an owned subagent or send it a follow-up
  * Requires current account ownership of the persisted WebChat session. Run and subagent identifiers do not grant access to another account.
  */
 export const postSubagentFollowUp = <ThrowOnError extends boolean = false>(options: OptionsLegacyParser<PostSubagentFollowUpData, ThrowOnError>) => {

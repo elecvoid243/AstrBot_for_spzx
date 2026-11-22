@@ -191,7 +191,7 @@ Administrators also use only their own daily Chat projects and conversations. Si
 
 ![Personal project, branched conversation and independent side chat](/images/chat-multi-user-projects-en.png)
 
-While a reply is running, the send button becomes **Stop** when the composer is empty. A queued text follow-up can be sent into your own running conversation or sent after interrupting it. Reopening or refreshing your conversation reconnects to its active reply; another account cannot subscribe to that run, stop it, or answer its questions, even if it knows the identifiers. Interactive choice cards belong to their actual conversation.
+While a reply is running, the send button becomes **Stop** when the composer is empty. Queue a follow-up with text, images or files, then choose **Append** to send it into the active conversation or interrupt the run first. The model receives files as readable attachment references. If the active run ends before consuming a follow-up, it is processed in the next turn. Reopening or refreshing your conversation reconnects to its active reply; another account cannot subscribe to that run, stop it, or answer its questions, even if it knows the identifiers. Interactive choice cards belong to their actual conversation.
 
 ![An ordinary user's own interactive question](./images/multi-user-runtime-choice.png)
 
@@ -538,7 +538,11 @@ Under `Settings → Maintenance`, backup imports also show upload progress and o
 
 ### Subagent pages
 
-The existing top toolbar contains **Main conversation** and the **Subagents** menu, without repeating the conversation title in the message area. Each invocation has its own read-only page. Click the subagent card in the main reply, or select a call in the menu, to view its assigned task, streamed thoughts, tools and answer using the same message layout as the main conversation. Cards retain their original compact styling. Subagent pages have no message composer or follow-up input.
+The top toolbar contains **Main conversation** and the **Subagents** menu. Click a subagent card in the main reply or select a call in the menu to open a page with its task, streamed thoughts, tool calls and replies.
+
+In a local conversation, turn on **Keep subagent for follow-ups** at the bottom of an invocation page before the subagent is cleaned up. This retains the instance and shows a text composer for the selected invocation. A message sent during an active turn starts a new turn when the current one ends. Replies appear in order on the same page. Turning the switch off restores normal cleanup. Retention lasts for the current server process, and saved transcripts remain available after a restart.
+
+![The subagent page with retention enabled and the follow-up composer open](./images/subagent-follow-up.png)
 
 ![Main conversation with the subagent picker](./images/subagent-pages-main.png)
 
@@ -558,8 +562,8 @@ New calls update the menu without switching your page. Use **Main conversation**
 | --- | --- |
 | Main conversation / Subagents below a repeated message-area title | Main conversation / Subagents in the existing top toolbar |
 | Every repeated invocation shown at the top level | Group by instance → expand IDs, times and message previews → select a call |
-| Expand a subagent card inside a main reply | Click the card → that invocation's read-only page |
-| Follow-up input inside the expanded card | Removed; subagent pages are read-only |
+| Expand a subagent card inside a main reply | Click the card → that invocation's page |
+| Follow-up input inside the expanded card | Open the invocation → turn on **Keep subagent for follow-ups** → send a message |
 | Old subagent execution cards | Subagents → Cleaned up → the saved invocation |
 
 ### Side Chats and Branch Threads

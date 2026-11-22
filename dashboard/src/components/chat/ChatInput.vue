@@ -212,9 +212,9 @@
             </template>
             <template v-else>
               <span class="pending-follow-up-row__index">{{ index + 1 }}</span>
-              <span class="pending-follow-up-row__text" :title="item.text">{{
-                item.text
-              }}</span>
+              <span class="pending-follow-up-row__text">
+                {{ [item.text, ...item.parts.map((part) => part.filename)].filter(Boolean).join(' · ') }}
+              </span>
               <span class="pending-follow-up-row__actions">
                 <button
                   type="button"

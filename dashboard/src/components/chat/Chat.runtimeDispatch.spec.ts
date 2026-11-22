@@ -105,6 +105,17 @@ beforeEach(() => {
   vi.spyOn(console, "error").mockImplementation(() => {});
 });
 
+it("sends an attachment-only follow-up using the parts stored with its queue item", async () => {
+  const s = setup();
+  const attachment = { type: "file", attachment_id: "att-1", filename: "notes.txt" };
+  s.pendingFollowUps.enqueue("background", "", [attachment]);
+  await s.flushPendingFollowUps("background");
+  expect(s.pendingFollowUps.itemsFor("background")).toHaveLength(0);
+  expect(s.sendMessageStream).toHaveBeenCalledWith(
+    expect.objectContaining({ sessionId: "background", parts: [attachment] }),
+  );
+});
+
 describe("queued follow-ups and live mode use the target's prepared configuration", () => {
   it.each(["project", "custom"])(
     "repairs a changed %s workspace even when status is rejected and the old load tag exists",

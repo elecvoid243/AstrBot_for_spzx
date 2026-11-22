@@ -24,6 +24,7 @@ import {
   type ChatRequest,
   type ChatSessionBatchDeleteRequest,
   type ChatSessionPatchRequest,
+  type ChatSubagentFollowUpRequest,
   type ChatThreadCreateRequest,
   type ChatThreadMessageRequest,
   type ChatUiQuickMessagesRequest,
@@ -994,6 +995,11 @@ export const chatApi = {
       ...config,
       path: { session_id: sessionId, run_id: runId },
     }));
+  },
+  updateSubagentConversation(body: ChatSubagentFollowUpRequest) {
+    return typed<{ accepted: boolean; retained?: boolean; reason?: string }>(
+      openApiV1.postSubagentFollowUp({ body }),
+    );
   },
   liveWebSocketUrl(token: string, host = window.location.host) {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';

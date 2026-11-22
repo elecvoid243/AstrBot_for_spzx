@@ -8,6 +8,7 @@ import uuid
 from collections.abc import Sequence
 from collections.abc import Set as AbstractSet
 from contextlib import aclosing
+from copy import copy
 
 import mcp
 
@@ -25,19 +26,21 @@ from astrbot.core.astr_main_agent_resources import (
 )
 from astrbot.core.config.agent_runner import resolve_context_compression_config
 from astrbot.core.cron.events import CronMessageEvent
-from astrbot.core.message.components import Image
+from astrbot.core.message.components import Image, Plain
 from astrbot.core.message.message_event_result import (
     CommandResult,
     MessageChain,
     MessageEventResult,
 )
 from astrbot.core.platform.message_session import MessageSession
+from astrbot.core.platform.sources.webchat.webchat_event import WebChatMessageEvent
 from astrbot.core.provider.entites import ProviderRequest
 from astrbot.core.provider.provider import Provider
 from astrbot.core.provider.register import llm_tools
 from astrbot.core.subagent_event_sink import SubAgentEventSink
 from astrbot.core.subagent_manager import (
     RET_PENDING_TASK_CREATE_FAILED,
+    SubAgentConversation,
     SubAgentManager,
     SubAgentRunHandle,
     SubAgentStatus,
@@ -71,6 +74,7 @@ from astrbot.core.utils.config_number import coerce_int_config
 from astrbot.core.utils.history_saver import persist_agent_history
 from astrbot.core.utils.image_ref_utils import is_supported_image_ref
 from astrbot.core.utils.string_utils import normalize_and_dedupe_strings
+from astrbot.core.utils.webchat_access import DashboardPrincipal
 
 # Auto-inherit decision line: fork only when the estimated inherited
 # prefix stays at or below this fraction of the subagent provider's
@@ -1134,28 +1138,119 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
             )
 
         # 构建 tool_loop_agent 协程
-        async def _run_subagent():
+        tool_call_timeout = run_context.tool_call_timeout
+
+        async def _run_subagent(
+            next_prompt=prompt_text, *, next_event=None, next_history=None
+        ):
             return await ctx.tool_loop_agent(
-                event=event,
+                event=next_event or event,
                 chat_provider_id=prov_id,
-                prompt=prompt_text,
-                image_urls=image_urls,
-                system_prompt=system_prompt,
+                prompt=next_prompt,
+                image_urls=[] if next_event else image_urls,
+                system_prompt=""
+                if next_history and next_history[0].get("role") == "system"
+                else system_prompt,
                 tools=toolset,
-                contexts=contexts,
+                contexts=next_history if next_event else contexts,
                 max_steps=agent_max_step,
-                tool_call_timeout=run_context.tool_call_timeout,
+                tool_call_timeout=tool_call_timeout,
                 stream=stream,
                 runner_messages=runner_messages,
-                extra_user_content_parts=extra_content_parts,
+                extra_user_content_parts=[] if next_event else extra_content_parts,
                 trace_span=subagent_trace,
                 response_sink=sink,
-                on_runner_ready=_on_runner_ready,
-                agent_context=subagent_agent_context,
+                on_runner_ready=None if next_event else _on_runner_ready,
+                agent_context=(
+                    AstrAgentContext(
+                        context=ctx,
+                        event=next_event,
+                        trace_span=subagent_trace,
+                        extra={
+                            "is_subagent": True,
+                            "subagent_name": agent_name,
+                            "denied_tools": denied_subagent_tools,
+                        },
+                    )
+                    if next_event
+                    else subagent_agent_context
+                ),
                 **({"tool_schema_mode": fork_schema_mode} if fork_schema_mode else {}),
                 **({"llm_params": fork_llm_params} if fork_llm_params else {}),
                 **compress_kwargs,
             )
+
+        conversation = None
+        if sink and session and sink.instance_id:
+            sequence = 0
+
+            async def _resume_subagent(
+                text: str, principal: DashboardPrincipal
+            ) -> None:
+                """Run another user turn without reopening the parent handoff.
+
+                Args:
+                    text: The authenticated user's next message.
+                    principal: Current dashboard identity of the session owner.
+                """
+                nonlocal sequence
+                sequence -= 1
+                message = copy(event.message_obj)
+                message.message_id = uuid.uuid4().hex
+                message.message_str = text
+                message.message = [Plain(text)]
+                message.raw_message = None
+                follow_up = WebChatMessageEvent(
+                    text, message, event.platform_meta, event.session_id
+                )
+                follow_up.set_extra("_dashboard_account", principal)
+                follow_up.role = (
+                    "admin"
+                    if principal.role == "admin" and event.is_admin()
+                    else "member"
+                )
+                previous = list(runner_messages)
+                runner_messages.clear()
+                started = time.monotonic()
+                active_event_registry.register(follow_up)
+                opened = False
+                try:
+                    await sink.continue_turn(sequence, text)
+                    opened = True
+                    run = _run_subagent(
+                        text, next_event=follow_up, next_history=previous
+                    )
+                    result = (
+                        await asyncio.wait_for(run, execution_timeout)
+                        if execution_timeout > 0
+                        else await run
+                    )
+                    await sink.complete(
+                        result.completion_text or "", time.monotonic() - started
+                    )
+                except asyncio.CancelledError:
+                    if opened:
+                        await sink.fail("failed", "Subagent execution cancelled.")
+                    raise
+                except asyncio.TimeoutError:
+                    await sink.fail("timeout", "Subagent execution timed out.")
+                except Exception:
+                    if not opened:
+                        raise
+                    logger.exception("Failed to continue a WebChat subagent")
+                    await sink.fail("failed", "Subagent execution failed.")
+                finally:
+                    if not runner_messages:
+                        runner_messages.extend(previous)
+                    active_event_registry.unregister(follow_up)
+                    follow_up.cleanup_temporary_local_files()
+
+            live_config = session.subagents.get(agent_name)
+            if live_config and live_config.instance_id == sink.instance_id:
+                conversation = SubAgentConversation(
+                    sink.instance_id, asyncio.Event(), _resume_subagent
+                )
+                session.conversations[sink.subagent_run_id] = conversation
 
         # 添加执行超时控制
         try:
@@ -1252,6 +1347,8 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
             )
         finally:
             # Release the live-run registry entry on every terminal path.
+            if conversation is not None:
+                conversation.ready.set()
             if sink is not None:
                 handle = SubAgentManager.get_subagent_run_handle(
                     umo, sink.subagent_run_id

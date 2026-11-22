@@ -15,6 +15,10 @@ from astrbot.core.agent.tool import FunctionTool
 from astrbot.core.astr_agent_tool_exec import FunctionToolExecutor
 from astrbot.core.message.components import Image
 from astrbot.core.platform.astr_message_event import AstrMessageEvent
+from astrbot.core.platform.astrbot_message import AstrBotMessage, MessageMember
+from astrbot.core.platform.message_type import MessageType
+from astrbot.core.platform.platform_metadata import PlatformMetadata
+from astrbot.core.platform.sources.webchat.webchat_event import WebChatMessageEvent
 from astrbot.core.provider.entities import LLMResponse
 from astrbot.core.provider.func_tool_manager import (
     FunctionToolManager,
@@ -30,6 +34,7 @@ from astrbot.core.subagent_manager import (
 )
 from astrbot.core.tools.computer_tools.shell import ShellSessionTool
 from astrbot.core.utils.active_event_registry import ActiveEventRegistry
+from astrbot.core.utils.webchat_access import DashboardPrincipal
 
 
 class _DummyEvent:
@@ -1246,6 +1251,59 @@ async def test_handoff_registers_runner_while_running_and_unregisters_after(
     assert handle.sink is not None
     assert handle.agent_name == "subagent"
     assert _first_live_handle() is None, "runner must be unregistered after"
+
+
+@pytest.mark.asyncio
+async def test_retained_handoff_runs_next_user_turn_with_previous_model_context(
+    handoff_env,
+):
+    provider = _FinalAnswerProvider()
+    provider.text_chat = AsyncMock(wraps=provider.text_chat)
+    tool, run_context = _live_handoff_args(provider)
+    runtime = SubAgentManager._get_or_create_session(_HANDOFF_UMO)
+    config = SubAgentConfig(name="subagent")
+    runtime.subagents[config.name] = config
+    runtime.retained_instances.add(config.instance_id)
+    message = AstrBotMessage()
+    message.type = MessageType.FRIEND_MESSAGE
+    message.message_id = "parent-request"
+    message.sender = MessageMember("user", "User")
+    message.session_id = "webchat!user!session"
+    message.message = []
+    run_context.context.event = WebChatMessageEvent(
+        "",
+        message,
+        PlatformMetadata(name="webchat", description="", id="webchat"),
+        message.session_id,
+    )
+    async for _ in FunctionToolExecutor._execute_handoff(
+        tool, run_context, input="original task"
+    ):
+        pass
+    conversation = next(iter(runtime.conversations.values()))
+    assert conversation.ready.is_set()
+    await conversation.resume(
+        "continue here", DashboardPrincipal("user", "user", "user", "User")
+    )
+
+    payload = provider.text_chat.await_args.kwargs["contexts"]
+    serialized = [
+        item.model_dump() if hasattr(item, "model_dump") else item for item in payload
+    ]
+    assert sum(item["role"] == "system" for item in serialized) == 1
+    assert "original task" in str(serialized)
+    assert any(
+        item["role"] == "assistant" and "final answer" in str(item["content"])
+        for item in serialized
+    )
+    assert serialized[-1]["role"] == "user" and "continue here" in str(
+        serialized[-1]["content"]
+    )
+    assert [
+        event["kind"]
+        for event in handoff_env.progress_events
+        if event["kind"] in {"started", "continued", "completed"}
+    ] == ["started", "completed", "continued", "completed"]
 
 
 @pytest.mark.asyncio

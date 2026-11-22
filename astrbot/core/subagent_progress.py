@@ -123,17 +123,38 @@ class SubagentProgress:
         if session_id in self.deleted_sessions:
             return {}
         if run_id not in self.active:
-            row = WebChatSubagentRun(
-                run_id=run_id,
-                session_id=session_id,
-                umo=umo,
-                agent_instance_id=instance_id,
-                agent_name=data["agent_name"],
-                background=background,
-                started_ts=data.get("ts", 0),
-                data={},
-            )
-            self.active[run_id] = (row, BotMessageAccumulator())
+            accumulator = BotMessageAccumulator()
+            if kind == "continued":
+                async with self.database().get_db() as session:
+                    row = await session.get(WebChatSubagentRun, (run_id, session_id))
+                if (
+                    row is None
+                    or row.umo != umo
+                    or row.cleaned
+                    or session_id in self.deleted_sessions
+                ):
+                    raise ValueError("Subagent invocation is unavailable")
+                part = deepcopy(row.data)
+                accumulator.subagent_runs[run_id] = part
+                # JSON persistence breaks the live reference between the timeline
+                # and the lookup list. Restore it for subsequent tool results.
+                calls = {call.get("id"): call for call in part.get("tool_calls", [])}
+                for entry in part.get("activity", []):
+                    if entry.get("kind") == "tool_call":
+                        call = entry["call"]
+                        entry["call"] = calls.get(call.get("id"), call)
+            else:
+                row = WebChatSubagentRun(
+                    run_id=run_id,
+                    session_id=session_id,
+                    umo=umo,
+                    agent_instance_id=instance_id,
+                    agent_name=data["agent_name"],
+                    background=background,
+                    started_ts=data.get("ts", 0),
+                    data={},
+                )
+            self.active[run_id] = (row, accumulator)
         row, accumulator = self.active[run_id]
         accumulator.add_subagent_event(data)
         row.data = accumulator.subagent_runs[run_id]
@@ -145,7 +166,7 @@ class SubagentProgress:
         row.status = row.data.get("status", "running")
         row.data.update(self.metadata(row))
         terminal = kind in {"completed", "failed", "timeout"}
-        if kind == "started" or terminal:
+        if kind in {"started", "continued"} or terminal:
             await self.persist(row)
         elif run_id not in self.pending:
 
@@ -169,7 +190,7 @@ class SubagentProgress:
             f"run:{row.session_id}:{run_id}",
             {"type": "event", "data": deepcopy(data), "revision": row.revision},
         )
-        if kind == "started" or terminal:
+        if kind in {"started", "continued"} or terminal:
             self.publish(
                 f"session:{row.session_id}",
                 {"type": "changed", "data": self.metadata(row)},

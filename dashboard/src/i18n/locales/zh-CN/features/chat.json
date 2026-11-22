@@ -479,6 +479,8 @@
     "result": "结果"
   },
   "subagentFollowUp": {
+    "keepAlive": "保留子代理并允许续聊",
+    "updateFailed": "这次操作未完成。请确认子代理仍可用，或等当前消息处理完再试。",
     "placeholder": "向 {name} 追加指令…",
     "send": "发送追加消息",
     "notDelivered": "该任务已结束，消息未送达。"

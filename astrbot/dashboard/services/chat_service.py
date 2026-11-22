@@ -745,7 +745,13 @@ class BotMessageAccumulator:
                     call["finished_ts"] = data["ts"]
                 part["tool_calls"].append(call)
                 part["activity"].append({"kind": "tool_call", "call": call})
-        elif kind == "user_message":
+        elif kind in {"user_message", "continued"}:
+            if kind == "continued":
+                previous = [part.get("text"), part.pop("error", None)]
+                part["activity"].extend(
+                    {"kind": "text", "text": text} for text in previous if text
+                )
+                part.update(status="running", text="", execution_time=None)
             # A user follow-up sent to the running subagent; keep it in the
             # chronological activity log so a hard refresh restores it.
             part["activity"].append(
@@ -2088,8 +2094,10 @@ class ChatService:
                 )
             webchat_queue_mgr.remove_queues(thread_id)
             self.running_convs.pop(thread_id, None)
+            from astrbot.core.subagent_manager import SubAgentManager
             from astrbot.core.subagent_progress import subagent_progress
 
+            await SubAgentManager.cleanup_session(unified_msg_origin)
             await subagent_progress.delete_session(thread_id, db=self.db)
             await self.db.delete_webchat_thread(thread_id)
 
@@ -5079,8 +5087,10 @@ class ChatService:
 
         if session.platform_id == "webchat":
             webchat_queue_mgr.remove_queues(session_id)
+            from astrbot.core.subagent_manager import SubAgentManager
             from astrbot.core.subagent_progress import subagent_progress
 
+            await SubAgentManager.cleanup_session(unified_msg_origin)
             await subagent_progress.delete_session(session_id, db=self.db)
 
         await self.db.remove_preference(

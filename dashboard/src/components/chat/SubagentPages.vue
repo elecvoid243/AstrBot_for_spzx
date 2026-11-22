@@ -303,6 +303,42 @@
         @update:model-value="!$event && (reasoningTarget = null)"
       />
     </div>
+    <form
+      v-if="selectedRunId && !remoteScope && canRetain"
+      class="subagent-composer"
+      @submit.prevent="updateConversation()"
+    >
+      <label class="subagent-retention">
+        <input
+          type="checkbox"
+          role="switch"
+          :checked="retained"
+          :disabled="conversationUpdating || continuationPending"
+          @click.prevent="updateConversation(!retained)"
+        />
+        {{ tm('subagentFollowUp.keepAlive') }}
+      </label>
+      <div v-if="retained" class="subagent-composer-input">
+        <v-textarea
+          v-model="followUpDraft"
+          :placeholder="tm('subagentFollowUp.placeholder', { name: selectedPart?.agent_name || '' })"
+          :aria-label="tm('subagentFollowUp.placeholder', { name: selectedPart?.agent_name || '' })"
+          density="compact"
+          variant="outlined"
+          rows="1"
+          max-rows="5"
+          auto-grow
+          hide-details
+        />
+        <v-btn
+          type="submit"
+          variant="tonal"
+          color="primary"
+          :disabled="!followUpDraft.trim() || conversationUpdating || continuationPending"
+        >{{ tm('subagentFollowUp.send') }}</v-btn>
+      </div>
+      <div v-if="conversationError" role="alert">{{ conversationError }}</div>
+    </form>
     <SubagentConfigurationDialog
       v-if="configurationRun"
       :session-id="sessionId"
@@ -398,6 +434,12 @@ const cleanedOpen = ref(false);
 const expandedAgents = ref<Record<string, boolean>>({});
 const loading = ref(false);
 const error = ref("");
+const canRetain = ref(false);
+const retained = ref(false);
+const continuationPending = ref(false);
+const conversationUpdating = ref(false);
+const conversationError = ref("");
+const followUpDraft = ref("");
 const panel = ref<HTMLElement | null>(null);
 const content = ref<HTMLElement | null>(null);
 const scrollMarkers = ref<ChatScrollMarker[]>([]);
@@ -594,6 +636,12 @@ async function openRun(
   selectedRunId.value = run.subagent_run_id;
   detailSessionId.value = sourceSessionId;
   selectedPart.value = null;
+  canRetain.value = false;
+  retained.value = false;
+  continuationPending.value = false;
+  conversationUpdating.value = false;
+  conversationError.value = "";
+  followUpDraft.value = "";
   detailRevision = 0;
   reasoningTarget.value = null;
   // The previous run's ticks describe rows that are about to be replaced.
@@ -617,6 +665,31 @@ function showMain() {
   selectedPart.value = null;
   reasoningTarget.value = null;
   emit("viewChange", false);
+}
+
+async function updateConversation(keepAlive?: boolean) {
+  const view = detailAbort;
+  const text = followUpDraft.value.trim();
+  if (!view || !canRetain.value || conversationUpdating.value || continuationPending.value) return;
+  if (keepAlive === undefined && (!retained.value || !text)) return;
+  conversationUpdating.value = true;
+  conversationError.value = "";
+  try {
+    const response = await chatApi.updateSubagentConversation({
+      session_id: detailSessionId.value,
+      subagent_run_id: selectedRunId.value,
+      ...(keepAlive === undefined ? { text, continue_conversation: true } : { keep_alive: keepAlive }),
+    });
+    if (detailAbort !== view) return;
+    const result = response.data.data;
+    if (!result?.accepted) throw new Error("Subagent rejected the request");
+    if (keepAlive === undefined && followUpDraft.value.trim() === text) followUpDraft.value = "";
+    if (keepAlive !== undefined) retained.value = Boolean(result.retained);
+  } catch {
+    if (detailAbort === view) conversationError.value = tm("subagentFollowUp.updateFailed");
+  } finally {
+    if (detailAbort === view) conversationUpdating.value = false;
+  }
 }
 
 async function listen(
@@ -692,6 +765,11 @@ async function listen(
             }
           }
           return;
+        }
+        if (typeof payload.can_retain === "boolean") {
+          canRetain.value = payload.can_retain;
+          retained.value = Boolean(payload.retained);
+          continuationPending.value = Boolean(payload.continuation_pending);
         }
         if (payload.type === "snapshot") {
           selectedPart.value = payload.data;
@@ -1291,6 +1369,48 @@ defineExpose({ openRun, getRun: (runId: string) => entries.value[runId] });
   max-width: var(--chat-content-max-width, 960px);
   margin: 0 auto;
   padding-bottom: 24px;
+}
+.subagent-composer {
+  width: var(--chat-content-width, 80%);
+  max-width: var(--chat-content-max-width, 960px);
+  margin: 0 auto;
+  padding: 8px 0 12px;
+}
+.subagent-retention,
+.subagent-composer-input {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.subagent-retention input {
+  appearance: none;
+  width: 30px;
+  height: 17px;
+  border-radius: 20px;
+  background-color: rgba(var(--v-theme-on-surface), 0.32);
+  cursor: pointer;
+}
+.subagent-retention input::before {
+  content: "";
+  display: block;
+  width: 13px;
+  height: 13px;
+  margin: 2px;
+  border-radius: 50%;
+  background-color: white;
+}
+.subagent-retention input:checked {
+  background-color: rgb(var(--v-theme-primary));
+}
+.subagent-retention input:checked::before {
+  transform: translateX(13px);
+}
+.subagent-retention input:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.subagent-composer-input {
+  margin-top: 8px;
 }
 @media (max-width: 760px) {
   .session-main-trigger {

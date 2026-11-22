@@ -156,6 +156,38 @@ async def test_capture_keeps_image_references(image_run, monkeypatch, quoted):
 
 
 @pytest.mark.asyncio
+async def test_file_only_follow_up_delivers_attachment_to_the_running_model(
+    image_run, monkeypatch, tmp_path
+):
+    from astrbot.core.message.components import File
+
+    runner, _, event = image_run
+    path = tmp_path / "notes.txt"
+    path.write_text("test attachment", encoding="utf-8")
+    event.message_obj.message = [File(name=path.name, file=str(path))]
+    event.message_str = ""
+    monkeypatch.setitem(
+        follow_up._ACTIVE_AGENT_RUNNERS, event.unified_msg_origin, runner
+    )
+    capture = follow_up.try_capture_follow_up(event)
+    assert capture is not None
+    try:
+        async for _ in runner.step():
+            pass
+        assert await follow_up.prepare_follow_up_capture(capture) == (True, False)
+        assert any(
+            message.role == "tool"
+            and f"[File Attachment: name notes.txt, path {path}]"
+            in str(message.content)
+            for message in runner.run_context.messages
+        )
+    finally:
+        await follow_up.finalize_follow_up_capture(
+            capture, activated=False, consumed_marked=True
+        )
+
+
+@pytest.mark.asyncio
 async def test_later_arrivals_stay_pending_and_mixed_batch_preserves_order(
     image_run, monkeypatch
 ):

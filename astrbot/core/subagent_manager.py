@@ -11,6 +11,7 @@ import os.path
 import re
 import time
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -25,9 +26,12 @@ from astrbot.core.star.star import star_registry
 from astrbot.core.utils.astrbot_path import get_astrbot_workspaces_path
 
 if TYPE_CHECKING:
+    import asyncio
+
     from astrbot.core.astr_agent_run_util import AgentRunner
     from astrbot.core.subagent_dag import DAGExecutionContext
     from astrbot.core.subagent_event_sink import SubAgentEventSink
+    from astrbot.core.utils.webchat_access import DashboardPrincipal
 
 
 class SubAgentStatus(str, Enum):
@@ -94,12 +98,24 @@ class SubAgentRunHandle:
 
 
 @dataclass
+class SubAgentConversation:
+    """Live WebChat invocation state that can start another turn."""
+
+    instance_id: str
+    ready: asyncio.Event
+    resume: Callable[[str, DashboardPrincipal], Awaitable[None]]
+    pending: asyncio.Task[None] | None = None
+
+
+@dataclass
 class SubAgentSession:
     session_id: str
     subagents: dict = field(default_factory=dict)  # 存储SubAgentConfig对象
     handoff_tools: dict = field(default_factory=dict)
     # Live foreground runs: {subagent_run_id: SubAgentRunHandle}
     subagent_runners: dict = field(default_factory=dict)
+    conversations: dict[str, SubAgentConversation] = field(default_factory=dict)
+    retained_instances: set[str] = field(default_factory=set)
     subagent_status: dict = field(
         default_factory=dict
     )  # 工作状态: SubAgentStatus 枚举值
@@ -327,8 +343,11 @@ DAG Orchestration automatically delegate subagents. When you have 2+ independent
             return {"status": "dag_running", "cleaned": []}
 
         cleaned = []
-        for name in list(session.subagents.keys()):
-            if name not in session.protected_agents:
+        for name, config in list(session.subagents.items()):
+            if (
+                name not in session.protected_agents
+                and config.instance_id not in session.retained_instances
+            ):
                 result = cls.remove_subagent(session_id, name)
                 if result.startswith(RET_SUBAGENT_REMOVED):
                     cleaned.append(name)
@@ -925,7 +944,8 @@ DAG Orchestration automatically delegate subagents. When you have 2+ independent
         expired_session_ids = [
             sid
             for sid, session in cls._sessions.items()
-            if now - session.last_activity_at > cls._session_timeout_seconds
+            if not session.retained_instances
+            and now - session.last_activity_at > cls._session_timeout_seconds
         ]
         cleaned_agents_count = 0
         for sid in expired_session_ids:
@@ -1106,12 +1126,13 @@ DAG Orchestration automatically delegate subagents. When you have 2+ independent
         # Cancel active DAG first
         cls.cancel_dag(session_id)
 
-        session = cls._sessions.pop(session_id, None)
+        session = cls._sessions.get(session_id)
         if not session:
             return {"status": "not_found", "cleaned_agents": []}
         else:
             cleaned = list(session.subagents.keys())
             cls._archive_subagent_runs(session_id, list(session.subagents.values()))
+            cls._sessions.pop(session_id, None)
             for name in cleaned:
                 logger.info("[SubAgent:Cleanup] Cleaned: %s", name)
             return {"status": "cleaned", "cleaned_agents": cleaned}
@@ -1233,9 +1254,16 @@ DAG Orchestration automatically delegate subagents. When you have 2+ independent
         """
         from astrbot.core.subagent_progress import subagent_progress
 
-        subagent_progress.schedule_cleaned(
-            session_id, [config.instance_id for config in configs]
-        )
+        instance_ids = {config.instance_id for config in configs}
+        runtime = SubAgentManager.get_session(session_id)
+        if runtime is not None:
+            runtime.retained_instances.difference_update(instance_ids)
+            for run_id, conversation in list(runtime.conversations.items()):
+                if conversation.instance_id in instance_ids:
+                    runtime.conversations.pop(run_id)
+                    if conversation.pending is not None:
+                        conversation.pending.cancel()
+        subagent_progress.schedule_cleaned(session_id, list(instance_ids))
 
     @classmethod
     def get_handoff_tools_for_session(cls, session_id: str) -> list:

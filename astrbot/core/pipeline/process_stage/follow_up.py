@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from pathlib import Path
 
 from astrbot import logger
 from astrbot.core.agent.runners.tool_loop_agent_runner import FollowUpTicket
 from astrbot.core.astr_agent_run_util import AgentRunner
-from astrbot.core.message.components import Image, Reply
+from astrbot.core.message.components import File, Image, Record, Reply, Video
 from astrbot.core.platform.astr_message_event import AstrMessageEvent
 from astrbot.core.utils.active_event_registry import active_event_registry
 
@@ -220,8 +221,22 @@ def try_capture_follow_up(event: AstrMessageEvent) -> FollowUpCapture | None:
         for component in components
         if isinstance(component, Image) and (component.url or component.file)
     ]
+    text = _event_follow_up_text(event)
+    attachments = []
+    for component in components:
+        if isinstance(component, (Record, Video)):
+            # The normal turn can process media that remains after preprocessing.
+            return None
+        if isinstance(component, File):
+            path = component.file
+            if not path:
+                # Let the normal request builder resolve remote files.
+                return None
+            attachments.append(
+                f"[File Attachment: name {component.name or Path(path).name}, path {path}]"
+            )
     ticket = runner.follow_up(
-        message_text=_event_follow_up_text(event),
+        message_text="\n".join(filter(None, [text, *attachments])),
         **({"agent_message": True} if event.get_extra("_agent_message_source") else {}),
         **({"image_urls": image_urls} if image_urls else {}),
     )

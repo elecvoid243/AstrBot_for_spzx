@@ -59,8 +59,9 @@ class SubAgentEventSink:
         self._input_full = input_full
         self._closed = False
         self._umo = umo
-        self._instance_id = instance_id
+        self.instance_id = instance_id
         self._background = background
+        self._continuing = False
         self.configuration = configuration or {}
 
     async def _emit(self, kind: str, payload: dict) -> None:
@@ -86,11 +87,16 @@ class SubAgentEventSink:
             from astrbot.core.subagent_progress import subagent_progress
 
             await subagent_progress.record(
-                self._umo, self._instance_id, self._background, event["data"]
+                self._umo, self.instance_id, self._background, event["data"]
             )
             # The parent owns only a compact navigation card. Its queue may
             # already be closed while a background invocation continues.
-            if kind not in {"started", "completed", "failed", "timeout"}:
+            if self._continuing or kind not in {
+                "started",
+                "completed",
+                "failed",
+                "timeout",
+            }:
                 return
             event["data"] = {
                 **event["data"],
@@ -170,6 +176,17 @@ class SubAgentEventSink:
             text: The user's message text.
         """
         await self._emit("user_message", {"seq": seq, "text": text})
+
+    async def continue_turn(self, seq: int, text: str) -> None:
+        """Open a new turn on the same invocation's independent stream.
+
+        Args:
+            seq: A unique message sequence for this invocation.
+            text: The user message starting the turn.
+        """
+        self._closed = False
+        self._continuing = True
+        await self._emit("continued", {"seq": seq, "text": text})
 
     async def user_message_relayed(self, seq: int) -> None:
         """Emit a ``user_message_relayed`` event: the run ended before the

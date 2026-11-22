@@ -4469,18 +4469,20 @@ async function sendCurrentMessage(skillNames: string[] = []) {
     // active, hold text-only messages in the pending list above the
     // input instead of dispatching them. The card's "send" / "force
     // interrupt" buttons dispatch them later, as does stream end; see
-    // flushPendingFollowUps below. Messages with staged attachments
-    // keep the legacy immediate-send path so media keeps flowing
-    // through the backend's own capture pipeline.
-    if (
-      isSessionRunning(sessionId) &&
-      !stagedImagesUrl.value.length &&
-      !stagedAudioUrl.value &&
-      !stagedNonImageFiles.value.length
-    ) {
-      pendingFollowUps.enqueue(sessionId, text);
+    // flushPendingFollowUps below. Snapshot attachments and quotes now;
+    // later dispatch may happen with a different session or draft open.
+    const outgoingParts = buildOutgoingParts(text);
+    if (isSessionRunning(sessionId)) {
+      pendingFollowUps.enqueue(
+        sessionId,
+        text,
+        outgoingParts
+          .filter((part) => part.type !== "plain")
+          .map(({ embedded_url, ...part }) => part),
+      );
       draft.value = "";
       replyTarget.value = null;
+      clearStaged();
       // References were baked into the queued text — consume them like
       // a normal send would. Comments persist by design (standing
       // block), so they are left alone.
@@ -4489,7 +4491,6 @@ async function sendCurrentMessage(skillNames: string[] = []) {
     }
 
     const messageId = crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`;
-    const outgoingParts: MessagePart[] = buildOutgoingParts(text);
     const selection = getSelectedProviderSelection();
     const { userRecord, botRecord } = createLocalExchange({
       sessionId,
@@ -6721,7 +6722,7 @@ async function flushPendingFollowUps(sessionId: string) {
   try {
     for (const item of items) {
       try {
-        await sendQueuedFollowUp(sessionId, item.text);
+        await sendQueuedFollowUp(sessionId, item.text, item.parts);
       } catch (error) {
         console.error("Failed to send queued follow-up:", error);
         failed.push(item);
@@ -6763,7 +6764,7 @@ async function flushPendingFollowUpsNow(sessionId: string | null) {
     }
     for (const item of items) {
       try {
-        await sendQueuedFollowUp(sessionId, item.text);
+        await sendQueuedFollowUp(sessionId, item.text, item.parts);
       } catch (error) {
         console.error("Failed to send queued follow-up:", error);
         failed.push(item);
@@ -6775,8 +6776,15 @@ async function flushPendingFollowUpsNow(sessionId: string | null) {
   }
 }
 
-async function sendQueuedFollowUp(sessionId: string, text: string) {
-  if (chatAccountRevision !== accountSessionRevision.value || !text.trim())
+async function sendQueuedFollowUp(
+  sessionId: string,
+  text: string,
+  parts: MessagePart[] = [],
+) {
+  if (
+    chatAccountRevision !== accountSessionRevision.value ||
+    (!text.trim() && !parts.length)
+  )
     return;
   const currentTarget = sessionId === currSessionId.value;
   const configId = currentTarget
@@ -6787,9 +6795,13 @@ async function sendQueuedFollowUp(sessionId: string, text: string) {
     throw new Error("Chat session changed");
   }
   const messageId = crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`;
-  const outgoingParts = isOrdinaryUser.value
-    ? [{ type: "plain", text }]
-    : buildOutgoingParts(text);
+  const outgoingParts = [...parts];
+  if (text) {
+    outgoingParts.splice(outgoingParts[0]?.type === "reply" ? 1 : 0, 0, {
+      type: "plain",
+      text,
+    });
+  }
   const selection = currentTarget ? getSelectedProviderSelection() : null;
   const { userRecord, botRecord } = createLocalExchange({
     sessionId,
@@ -6834,7 +6846,7 @@ async function flushOldestPendingFollowUp(sessionId: string | null) {
   flushingFollowUps.add(sessionId);
   pendingFollowUps.remove(sessionId, oldest.id);
   try {
-    await sendQueuedFollowUp(sessionId, oldest.text);
+    await sendQueuedFollowUp(sessionId, oldest.text, oldest.parts);
   } catch (error) {
     console.error("Failed to send queued follow-up:", error);
     pendingFollowUps.restore(sessionId, [oldest]);

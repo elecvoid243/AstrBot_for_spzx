@@ -584,7 +584,15 @@ export type ChatSessionSelectionRequest = {
 export type ChatSubagentFollowUpRequest = {
     session_id: string;
     subagent_run_id: string;
-    text: string;
+    text?: string;
+    /**
+     * Set instance retention for the current server lifetime.
+     */
+    keep_alive?: boolean;
+    /**
+     * Start a new turn on a retained invocation after its current turn.
+     */
+    continue_conversation?: boolean;
 };
 
 export type ChatThreadCreateRequest = {

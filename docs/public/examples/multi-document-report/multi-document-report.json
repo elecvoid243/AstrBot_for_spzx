@@ -1,0 +1,643 @@
+{
+  "asset_id": "665f408fa7af4efcb31f8e4c572c6f45",
+  "version": 1,
+  "definition": {
+    "name": "Multi-document field report",
+    "default_provider_id": "report-model",
+    "required_inputs": [],
+    "port_contract_version": 2,
+    "input_contract": {
+      "type": "object",
+      "properties": {
+        "document_a": {
+          "type": "object",
+          "format": "astrbot-file"
+        },
+        "document_b": {
+          "type": "object",
+          "format": "astrbot-file"
+        }
+      },
+      "required": [
+        "document_a",
+        "document_b"
+      ]
+    },
+    "entry_task_ids": [
+      "read_a",
+      "read_b"
+    ],
+    "result_task_id": "call",
+    "max_parallel": 2,
+    "max_depth": 3,
+    "limits": null,
+    "tasks": [
+      {
+        "id": "read_a",
+        "name": "Read DOC-A",
+        "member": "",
+        "role_id": null,
+        "role_version": null,
+        "role": null,
+        "installation": null,
+        "task": "",
+        "human": null,
+        "control": null,
+        "team": null,
+        "workflow": null,
+        "inputs": {
+          "file": {
+            "input": "document_a",
+            "task_id": null,
+            "field": "text"
+          }
+        },
+        "overrides": {},
+        "output_contract": {
+          "type": "object",
+          "properties": {
+            "text": {
+              "type": "string"
+            },
+            "filename": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "text",
+            "filename"
+          ]
+        },
+        "transform": "read_document_v1",
+        "position": {
+          "x": 335.0,
+          "y": 35.0
+        }
+      },
+      {
+        "id": "extract_a",
+        "name": "Extract DOC-A",
+        "member": "extractor_a",
+        "role_id": null,
+        "role_version": null,
+        "role": {
+          "prompt": "Use only the inline input. Never call read_task_artifact. Follow the requested tool sequence. When submit_task_result returns Result accepted, reply Done.",
+          "provider_id": null,
+          "persona_id": null,
+          "tools": [],
+          "skills": [],
+          "knowledge_bases": null,
+          "max_steps": null,
+          "tool_call_timeout": null,
+          "context_length": null,
+          "max_instances": null,
+          "max_parallel": null,
+          "max_iterations": null,
+          "max_depth": null,
+          "human_wait": null,
+          "name": "Document extractor",
+          "description": "",
+          "model_capabilities": [],
+          "runner_capabilities": []
+        },
+        "installation": {
+          "profile_id": "default"
+        },
+        "task": "Read the following document. Call submit_task_result with a JSON object with source (the bare DOC identifier without the Markdown #), heading (the section heading without Markdown markup), and value (integer households). Use only this Markdown document. Do not look for an artifact ID.\n{document}\n\nExercise label: ATN180 EXTRACT A",
+        "human": null,
+        "control": null,
+        "team": null,
+        "workflow": null,
+        "inputs": {
+          "document": {
+            "input": null,
+            "task_id": "read_a",
+            "field": "text"
+          }
+        },
+        "overrides": {},
+        "output_contract": {
+          "type": "object",
+          "properties": {
+            "source": {
+              "type": "string"
+            },
+            "heading": {
+              "type": "string"
+            },
+            "value": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "source",
+            "heading",
+            "value"
+          ]
+        },
+        "position": {
+          "x": 615.0,
+          "y": 35.0
+        }
+      },
+      {
+        "id": "read_b",
+        "name": "Read DOC-B",
+        "member": "",
+        "role_id": null,
+        "role_version": null,
+        "role": null,
+        "installation": null,
+        "task": "",
+        "human": null,
+        "control": null,
+        "team": null,
+        "workflow": null,
+        "inputs": {
+          "file": {
+            "input": "document_b",
+            "task_id": null,
+            "field": "text"
+          }
+        },
+        "overrides": {},
+        "output_contract": {
+          "type": "object",
+          "properties": {
+            "text": {
+              "type": "string"
+            },
+            "filename": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "text",
+            "filename"
+          ]
+        },
+        "transform": "read_document_v1",
+        "position": {
+          "x": 335.0,
+          "y": 275.0
+        }
+      },
+      {
+        "id": "extract_b",
+        "name": "Extract DOC-B",
+        "member": "extractor_b",
+        "role_id": null,
+        "role_version": null,
+        "role": {
+          "prompt": "Use only the inline input. Never call read_task_artifact. Follow the requested tool sequence. When submit_task_result returns Result accepted, reply Done.",
+          "provider_id": null,
+          "persona_id": null,
+          "tools": [],
+          "skills": [],
+          "knowledge_bases": null,
+          "max_steps": null,
+          "tool_call_timeout": null,
+          "context_length": null,
+          "max_instances": null,
+          "max_parallel": null,
+          "max_iterations": null,
+          "max_depth": null,
+          "human_wait": null,
+          "name": "Document extractor",
+          "description": "",
+          "model_capabilities": [],
+          "runner_capabilities": []
+        },
+        "installation": {
+          "profile_id": "default"
+        },
+        "task": "Read the following document. Call submit_task_result with a JSON object with source (the bare DOC identifier without the Markdown #), heading (the section heading without Markdown markup), and value (integer households). Use only this Markdown document. Do not look for an artifact ID.\n{document}\n\nExercise label: ATN180 EXTRACT B",
+        "human": null,
+        "control": null,
+        "team": null,
+        "workflow": null,
+        "inputs": {
+          "document": {
+            "input": null,
+            "task_id": "read_b",
+            "field": "text"
+          }
+        },
+        "overrides": {},
+        "output_contract": {
+          "type": "object",
+          "properties": {
+            "source": {
+              "type": "string"
+            },
+            "heading": {
+              "type": "string"
+            },
+            "value": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "source",
+            "heading",
+            "value"
+          ]
+        },
+        "position": {
+          "x": 615.0,
+          "y": 275.0
+        }
+      },
+      {
+        "id": "join",
+        "name": "Collect results in source order",
+        "member": "",
+        "role_id": null,
+        "role_version": null,
+        "role": null,
+        "installation": null,
+        "task": "",
+        "human": null,
+        "control": {
+          "kind": "join"
+        },
+        "team": null,
+        "workflow": null,
+        "inputs": {},
+        "overrides": {},
+        "output_contract": null,
+        "position": {
+          "x": 900.0,
+          "y": 155.0
+        }
+      },
+      {
+        "id": "call",
+        "name": "Write the sourced report · v1",
+        "member": "",
+        "role_id": null,
+        "role_version": null,
+        "role": null,
+        "installation": null,
+        "task": "",
+        "human": null,
+        "control": null,
+        "team": null,
+        "workflow": {
+          "asset_id": "23108539f0ce4688a0a7fd7d2e99a724",
+          "version": 1
+        },
+        "inputs": {
+          "results": {
+            "input": null,
+            "task_id": "join",
+            "field": "results"
+          }
+        },
+        "overrides": {},
+        "output_contract": {
+          "type": "object",
+          "properties": {
+            "text": {
+              "type": "string"
+            },
+            "sources": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "files": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "file_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "file_id"
+                ]
+              }
+            }
+          },
+          "required": [
+            "text",
+            "sources",
+            "files"
+          ]
+        },
+        "input_contract": {
+          "type": "object",
+          "properties": {
+            "results": {
+              "type": "array"
+            },
+            "feedback": {
+              "type": "string",
+              "default": "None"
+            }
+          },
+          "required": [
+            "results"
+          ]
+        },
+        "position": {
+          "x": 1190.0,
+          "y": 155.0
+        }
+      },
+      {
+        "id": "review",
+        "name": "Review exact report",
+        "member": "",
+        "role_id": null,
+        "role_version": null,
+        "role": null,
+        "installation": null,
+        "task": "",
+        "human": {
+          "kind": "approval",
+          "question": "Does the report identify both sources?",
+          "choices": [],
+          "max_length": 10000,
+          "artifact_task_id": "call",
+          "artifact_version": 1,
+          "recommendation_task_id": null,
+          "recommendation_value_field": null,
+          "recommendation_reason_field": null,
+          "human_wait": {
+            "timeout_seconds": null,
+            "timeout_action": "wait"
+          }
+        },
+        "control": null,
+        "team": null,
+        "workflow": null,
+        "inputs": {},
+        "overrides": {},
+        "output_contract": {
+          "type": "object",
+          "properties": {
+            "approved": {
+              "type": "boolean"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "approved",
+            "text"
+          ]
+        },
+        "position": {
+          "x": 1480.0,
+          "y": 155.0
+        }
+      }
+    ],
+    "edges": [
+      {
+        "source": "read_a",
+        "target": "extract_a",
+        "condition": null
+      },
+      {
+        "source": "read_b",
+        "target": "extract_b",
+        "condition": null
+      },
+      {
+        "source": "extract_a",
+        "target": "join",
+        "condition": null
+      },
+      {
+        "source": "extract_b",
+        "target": "join",
+        "condition": null
+      },
+      {
+        "source": "join",
+        "target": "call",
+        "condition": null
+      },
+      {
+        "source": "call",
+        "target": "review",
+        "condition": null
+      }
+    ],
+    "loops": [
+      {
+        "id": "review_report",
+        "name": "Review and revise",
+        "body": [
+          "call",
+          "review"
+        ],
+        "exit_task_id": "review",
+        "exit_condition": {
+          "field": "approved",
+          "operator": "eq",
+          "value": true
+        },
+        "max_iterations": 2,
+        "feedback": [
+          {
+            "target": "call",
+            "input": "feedback",
+            "source": "review",
+            "field": "text"
+          }
+        ]
+      }
+    ]
+  },
+  "format": "astrbot.workflow",
+  "format_version": 3,
+  "roles": [],
+  "assets": [
+    {
+      "asset_id": "23108539f0ce4688a0a7fd7d2e99a724",
+      "version": 1,
+      "definition": {
+        "name": "Write the sourced report",
+        "default_provider_id": "report-model",
+        "required_inputs": [],
+        "port_contract_version": 2,
+        "input_contract": {
+          "type": "object",
+          "properties": {
+            "results": {
+              "type": "array"
+            },
+            "feedback": {
+              "type": "string",
+              "default": "None"
+            }
+          },
+          "required": [
+            "results"
+          ]
+        },
+        "entry_task_ids": [
+          "render"
+        ],
+        "result_task_id": "report",
+        "max_parallel": 4,
+        "max_depth": 3,
+        "limits": null,
+        "tasks": [
+          {
+            "id": "render",
+            "name": "Render facts as JSON text",
+            "member": "",
+            "role_id": null,
+            "role_version": null,
+            "role": null,
+            "installation": null,
+            "task": "",
+            "human": null,
+            "control": null,
+            "team": null,
+            "workflow": null,
+            "inputs": {
+              "value": {
+                "input": "results",
+                "task_id": null,
+                "field": "text"
+              }
+            },
+            "overrides": {},
+            "output_contract": null,
+            "transform": "json_text",
+            "position": {
+              "x": 365.0,
+              "y": 100.0
+            }
+          },
+          {
+            "id": "report",
+            "name": "Write report.md",
+            "member": "reporter",
+            "role_id": null,
+            "role_version": null,
+            "role": {
+              "prompt": "Use only the inline input. Never call read_task_artifact. Follow the requested tool sequence. When submit_task_result returns Result accepted, reply Done.",
+              "provider_id": null,
+              "persona_id": null,
+              "tools": [],
+              "skills": [],
+              "knowledge_bases": null,
+              "max_steps": null,
+              "tool_call_timeout": null,
+              "context_length": null,
+              "max_instances": null,
+              "max_parallel": null,
+              "max_iterations": null,
+              "max_depth": null,
+              "human_wait": null,
+              "name": "Reporter",
+              "description": "",
+              "model_capabilities": [],
+              "runner_capabilities": []
+            },
+            "installation": {
+              "profile_id": "default"
+            },
+            "task": "ATN180 REPORT\nExtracted facts: {facts}\nReviewer feedback: {feedback}\nCall store_task_file now. Set filename to report.md. Write each factual finding on its own line using the format DOC-ID: exact heading, NUMBER households. Copy both numbers from the extracted facts. When reviewer feedback is None, omit the Source index. Otherwise follow the feedback. Wait for the file tool response. Then call submit_task_result with result_json containing text (the short title Field report), sources (two source IDs in order), and files (an array with an object containing the returned file_id).",
+            "human": null,
+            "control": null,
+            "team": null,
+            "workflow": null,
+            "inputs": {
+              "facts": {
+                "input": null,
+                "task_id": "render",
+                "field": "text"
+              },
+              "feedback": {
+                "input": "feedback",
+                "task_id": null,
+                "field": "text"
+              }
+            },
+            "overrides": {},
+            "output_contract": {
+              "type": "object",
+              "properties": {
+                "text": {
+                  "type": "string"
+                },
+                "sources": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "files": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "file_id": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "file_id"
+                    ]
+                  }
+                }
+              },
+              "required": [
+                "text",
+                "sources",
+                "files"
+              ]
+            },
+            "position": {
+              "x": 680.0,
+              "y": 100.0
+            }
+          }
+        ],
+        "edges": [
+          {
+            "source": "render",
+            "target": "report",
+            "condition": null
+          }
+        ],
+        "loops": []
+      }
+    }
+  ],
+  "requirements": [
+    {
+      "kind": "models",
+      "source_id": "report-model",
+      "display_name": "report-model / report-model",
+      "description": "",
+      "fingerprint": "6b34256a2c2c86acf6536954b867059df0704e2de37a97562ad1b36bfdbcf59e",
+      "runner_type": null,
+      "capabilities": [],
+      "input_schema": null
+    },
+    {
+      "kind": "profiles",
+      "source_id": "default",
+      "display_name": "default",
+      "description": "",
+      "fingerprint": null,
+      "runner_type": "local",
+      "capabilities": [
+        "task_result"
+      ],
+      "input_schema": null
+    }
+  ]
+}

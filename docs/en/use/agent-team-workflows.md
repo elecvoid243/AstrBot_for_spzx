@@ -1,5 +1,7 @@
 # Agent Teams assets and run workbench
 
+To build a parallel workflow from fixed source documents, see the [multi-document report tutorial](./agent-team-report-tutorial.md).
+
 The canvas and workbench screenshots come from the real Dashboard, an isolated database and a controlled model service.
 
 Open **More Features → Agent Teams → Assets**:

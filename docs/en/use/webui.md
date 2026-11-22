@@ -834,7 +834,7 @@ Modify the `password` in the `dashboard` configuration in the data/cmd_config.js
 > [!TIP]
 > For more details, see [FAQ - Forgot Dashboard Password](/en/faq.md#forgot-dashboard-password).
 
-Workspace entry mapping: **Workflow Assets → Assets → Teams / Workflows**, **Role templates → Assets → Role templates**, **Independent Runs → Runs → All runs / In progress / Needs attention / History**. Configure versioned assets and start runs directly, without migration or legacy run checks. History displays asset runs only. See the [asset and run workspace](./agent-team-workflows.md#navigation-and-previous-entry-points) for current screenshots and controls.
+Workspace entry mapping: **Workflow Assets → Assets → Teams / Workflows**, **Role templates → Assets → Role templates**, **Independent Runs → Runs → All runs / In progress / Needs attention / History**. Configure versioned assets and start runs directly, without migration or legacy run checks. History displays asset runs only. See the [asset and run workspace](./agent-team-workflows.md#previous-entry-points) for current screenshots and controls.
 
 
 ## Skill Store

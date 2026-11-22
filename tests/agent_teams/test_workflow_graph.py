@@ -29,6 +29,7 @@ async def test_graph_saves_pinned_roles_and_rejects_unbounded_back_edges(workflo
     }
     definition = {
         "name": "Report",
+        "result_task_id": "write",
         "required_inputs": ["topic"],
         "tasks": [task, {**task, "id": "write", "name": "Write"}],
         "edges": [{"source": "research", "target": "write"}],

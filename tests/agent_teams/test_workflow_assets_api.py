@@ -4,17 +4,42 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
+import pytest_asyncio
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from astrbot.core.agent_teams.assets import RoleAssetService
 from astrbot.core.agent_teams.workflows import WorkflowService
+from astrbot.core.db.po import AgentWorkflowVersion
 from astrbot.core.db.sqlite import SQLiteDatabase
 from astrbot.dashboard.api.auth import require_dashboard_user
 from astrbot.dashboard.api.role_assets import router as roles_router
 from astrbot.dashboard.api.workflow_assets import router
 from tests.agent_teams.test_workflow_assets import completed_run
 from tests.agent_teams.test_workflow_assets import workflow_env as workflow_env
+
+
+@pytest_asyncio.fixture
+async def publication_client(workflow_env):
+    """Expose the real asset and draft endpoints for the workflow owner.
+
+    Args:
+        workflow_env: Services backed by the test's isolated database.
+
+    Yields:
+        An HTTP client authenticated as the fixture's asset owner.
+    """
+    app = FastAPI()
+    app.state.services = SimpleNamespace(
+        role_assets=workflow_env.roles, workflow_assets=workflow_env.service
+    )
+    app.include_router(roles_router, prefix="/api/v1")
+    app.include_router(router, prefix="/api/v1")
+    app.dependency_overrides[require_dashboard_user] = lambda: "alice"
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        yield client
 
 
 @pytest.mark.asyncio
@@ -47,6 +72,314 @@ async def test_deletion_http_checks_ownership_and_hides_both_directories(workflo
         assert (
             await client.post(asset_path + "/runs", json={"version": 1})
         ).status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_draft_with_deleted_result_can_be_reopened_repaired_and_started(
+    workflow_env,
+    publication_client,
+):
+    env = workflow_env
+    definition = {
+        **env.asset["definition"],
+        "result_task_id": "deleted",
+        "required_inputs": ["topic"],
+        "tasks": [
+            {
+                **env.asset["definition"]["tasks"][0],
+                "task": "Write about {topic}",
+                "inputs": {"topic": {"input": "topic", "field": "text"}},
+            }
+        ],
+    }
+    created = await publication_client.post(
+        "/api/v1/agent_drafts/workflow", json={"body": {"definition": definition}}
+    )
+    assert created.status_code == 200, created.text
+    asset_id = created.json()["data"]["asset_id"]
+    draft_path = f"/api/v1/agent_drafts/workflow/{asset_id}"
+    asset_path = f"/api/v1/workflow_assets/{asset_id}"
+    invalid = await publication_client.post(
+        f"{draft_path}/publish", json={"revision": 1}
+    )
+    assert invalid.status_code == 400, invalid.text
+    assert invalid.json()["data"]["fields"][0]["path"] == "definition.result_task_id"
+    assert (await publication_client.get(asset_path)).status_code == 404
+    reopened = (await publication_client.get(draft_path)).json()["data"]
+    assert reopened["revision"] == 1
+    assert reopened["body"]["definition"]["result_task_id"] == "deleted"
+
+    trial_path = f"{asset_path}/trials"
+    trial = {"kind": "workflow", "revision": 1}
+    full = await publication_client.post(
+        f"{trial_path}/preview", json={**trial, "mode": "full"}
+    )
+    assert full.status_code == 400, full.text
+    assert full.json()["data"]["fields"][0]["path"] == "definition.result_task_id"
+    trial.update(mode="partial", node_id="writer")
+    preview = await publication_client.post(f"{trial_path}/preview", json=trial)
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["data"]["selected_nodes"] == ["writer"]
+    assert preview.json()["data"]["required_inputs"] == ["topic"]
+    tested = await publication_client.post(
+        trial_path, json={**trial, "inputs": {"topic": "energy"}}
+    )
+    assert tested.status_code == 200, tested.text
+    result = await completed_run(env.service, tested.json()["data"]["run_id"])
+    assert result["status"] == "completed"
+    assert result["snapshot"]["asset_version"] is None
+
+    definition["result_task_id"] = "writer"
+    corrected = await publication_client.put(
+        draft_path,
+        json={"body": {"definition": definition}, "expected_revision": 1},
+    )
+    assert corrected.status_code == 200, corrected.text
+    published = await publication_client.post(
+        f"{draft_path}/publish", json={"revision": 2}
+    )
+    assert published.status_code == 200, published.text
+    assert published.json()["data"]["version"] == 1
+    started = await publication_client.post(
+        f"{asset_path}/runs", json={"version": 1, "inputs": {"topic": "energy"}}
+    )
+    assert started.status_code == 200, started.text
+    finished = await completed_run(env.service, started.json()["data"]["run_id"])
+    assert finished["status"] == "completed"
+    assert finished["result_ref"] == finished["tasks"][0]["result_ref"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("result_task_id", "graph_case", "expected_code"),
+    [
+        (None, None, "REFERENCE"),
+        ("join", None, "REFERENCE"),
+        ("writer", None, "UNREACHABLE"),
+        ("output", None, "UNREACHABLE"),
+        ("output", "approval", "UNREACHABLE"),
+        ("output", "exit", "UNREACHABLE"),
+        ("output", "missing-feedback", "UNREACHABLE"),
+        ("output", "available-feedback", None),
+    ],
+)
+async def test_asset_publication_requires_reachable_result(
+    workflow_env, publication_client, result_task_id, graph_case, expected_code
+):
+    env = workflow_env
+    writer = env.asset["definition"]["tasks"][0]
+    definition = {
+        **env.asset["definition"],
+        "result_task_id": result_task_id,
+        "tasks": [
+            writer,
+            {"id": "join", "name": "Join", "control": {"kind": "join"}},
+            {**writer, "id": "active", "name": "Active"},
+            {"id": "merge", "name": "Merge", "control": {"kind": "join"}},
+            {
+                **writer,
+                "id": "output",
+                "name": "Output",
+                "task": "Write from {draft}",
+                "inputs": {"draft": {"task_id": "writer", "field": "text"}},
+            },
+        ],
+        "edges": [
+            {"source": "join", "target": "writer"},
+            {"source": "writer", "target": "merge"},
+            {"source": "active", "target": "merge"},
+            {"source": "merge", "target": "output"},
+        ],
+    }
+    if graph_case == "approval":
+        definition["tasks"][-1].update(task=writer["task"], inputs={})
+        definition["tasks"].append(
+            {
+                "id": "approval",
+                "name": "Approval",
+                "human": {
+                    "kind": "approval",
+                    "question": "Approve this draft?",
+                    "artifact_task_id": "writer",
+                    "artifact_version": 1,
+                },
+            }
+        )
+        definition["edges"][-1] = {"source": "merge", "target": "approval"}
+        definition["edges"].append(
+            {
+                "source": "approval",
+                "target": "output",
+                "condition": {"field": "approved", "value": True},
+            }
+        )
+    elif graph_case:
+        exit_task = {**writer, "id": "exit", "name": "Exit"}
+        if graph_case == "exit":
+            output = definition["tasks"][-1]
+            exit_task.update(task=output["task"], inputs=output["inputs"])
+            output.update(task=writer["task"], inputs={})
+            definition["edges"][-1] = {"source": "merge", "target": "exit"}
+            definition["edges"].append({"source": "active", "target": "output"})
+            body = ["join", "writer", "active", "merge", "exit"]
+            feedback = []
+        else:
+            definition["edges"].extend(
+                [
+                    {"source": "output", "target": "exit"},
+                    {"source": "active", "target": "exit"},
+                ]
+            )
+            body = ["join", "writer", "active", "merge", "output", "exit"]
+            feedback = [
+                {
+                    "source": "active"
+                    if graph_case == "available-feedback"
+                    else "writer",
+                    "target": "output",
+                    "input": "draft",
+                }
+            ]
+        definition["tasks"].append(exit_task)
+        definition["loops"] = [
+            {
+                "id": "review",
+                "name": "Review",
+                "body": body,
+                "exit_task_id": "exit",
+                "exit_condition": {"field": "text", "value": "finished"},
+                "max_iterations": 2,
+                "feedback": feedback,
+            }
+        ]
+    asset_path = f"/api/v1/workflow_assets/{env.asset['asset_id']}"
+    published = await publication_client.put(
+        asset_path, json={"definition": definition, "expected_version": 1}
+    )
+    if expected_code is None:
+        assert published.status_code == 200, published.text
+        assert published.json()["data"]["version"] == 2
+        return
+    assert published.status_code == 400, published.text
+    fields = published.json()["data"]["fields"]
+    assert {(field["path"], field["code"]) for field in fields} == {
+        ("definition.result_task_id", expected_code)
+    }
+    original = (await publication_client.get(asset_path)).json()["data"]
+    assert original["versions"] == [1]
+    assert original["definition"]["edges"] == []
+
+
+@pytest.mark.asyncio
+async def test_incomplete_fixed_version_can_be_read_and_repaired(
+    workflow_env, publication_client
+):
+    env = workflow_env
+    asset_id = "incomplete-workflow"
+    old = {**env.asset["definition"], "result_task_id": None}
+    async with env.db.get_db() as session:
+        session.add(
+            AgentWorkflowVersion(
+                asset_id=asset_id, version=1, owner_username="alice", definition=old
+            )
+        )
+        await session.commit()
+
+    asset_path = f"/api/v1/workflow_assets/{asset_id}"
+    env.inventory["profiles"] = []
+    old_version = await publication_client.get(asset_path, params={"version": 1})
+    assert old_version.status_code == 200, old_version.text
+    assert old_version.json()["data"]["definition"] == old
+    blocked = await publication_client.get(
+        f"{asset_path}/readiness", params={"version": 1}
+    )
+    assert blocked.status_code == 200, blocked.text
+    diagnostic = blocked.json()["data"]
+    assert not diagnostic["ready"]
+    assert {(issue["path"], issue["code"]) for issue in diagnostic["issues"]} == {
+        ("definition.result_task_id", "REFERENCE")
+    }
+    started = await publication_client.post(f"{asset_path}/runs", json={"version": 1})
+    assert started.status_code == 400, started.text
+    assert started.json()["data"]["fields"] == diagnostic["issues"]
+
+    fixed = {**old, "result_task_id": "writer"}
+    draft = await publication_client.post(
+        "/api/v1/agent_drafts/workflow",
+        json={"asset_id": asset_id, "body": {"definition": fixed}},
+    )
+    assert draft.status_code == 200, draft.text
+    draft_path = f"/api/v1/agent_drafts/workflow/{asset_id}"
+    published = await publication_client.post(
+        f"{draft_path}/publish", json={"revision": 1}
+    )
+    assert published.status_code == 200, published.text
+    assert published.json()["data"]["versions"] == [2, 1]
+    assert (await publication_client.get(asset_path, params={"version": 1})).json()[
+        "data"
+    ]["definition"] == old
+    readiness = await publication_client.get(
+        f"{asset_path}/readiness", params={"version": 2}
+    )
+    assert readiness.status_code == 200, readiness.text
+    diagnostic = readiness.json()["data"]
+    assert not diagnostic["ready"]
+    assert ("definition.tasks.0.installation.profile_id", "MISSING") in {
+        (issue["path"], issue["code"]) for issue in diagnostic["issues"]
+    }
+    assert all(
+        issue["path"] != "definition.result_task_id" for issue in diagnostic["issues"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_legacy_unreachable_result_keeps_run_semantics_but_cannot_be_pinned(
+    workflow_env,
+    publication_client,
+):
+    env = workflow_env
+    asset_id = "unreachable-workflow"
+    legacy = {
+        **env.asset["definition"],
+        "tasks": [
+            *env.asset["definition"]["tasks"],
+            {"id": "join", "name": "Join", "control": {"kind": "join"}},
+        ],
+        "edges": [{"source": "join", "target": "writer"}],
+    }
+    async with env.db.get_db() as session:
+        session.add(
+            AgentWorkflowVersion(
+                asset_id=asset_id, version=1, owner_username="alice", definition=legacy
+            )
+        )
+        await session.commit()
+
+    run = await env.service.start_run("alice", asset_id, {"version": 1})
+    finished = await completed_run(env.service, run["run_id"])
+    assert finished["status"] == "blocked"
+    assert finished["result_ref"] is None
+
+    parent_path = f"/api/v1/workflow_assets/{env.asset['asset_id']}"
+    definition = {
+        "name": "Parent",
+        "result_task_id": "call",
+        "tasks": [
+            {
+                "id": "call",
+                "name": "Call",
+                "workflow": {"asset_id": asset_id, "version": 1},
+            }
+        ],
+    }
+    failed = await publication_client.put(
+        parent_path, json={"definition": definition, "expected_version": 1}
+    )
+    assert failed.status_code == 400, failed.text
+    assert {
+        (field["path"], field["code"]) for field in failed.json()["data"]["fields"]
+    } == {("definition.tasks.0.workflow", "UNREACHABLE")}
+    assert (await publication_client.get(parent_path)).json()["data"]["versions"] == [1]
 
 
 @pytest.mark.asyncio
@@ -111,6 +444,7 @@ def test_workflow_http_validation_and_ownership(tmp_path):
     with TestClient(app) as client:
         definition = {
             "name": "Report",
+            "result_task_id": "writer",
             "default_provider_id": "model-a",
             "required_inputs": ["topic"],
             "tasks": [
@@ -269,6 +603,7 @@ def test_canvas_graph_http_save_and_field_diagnostics(tmp_path):
         }
         definition = {
             "name": "Canvas",
+            "result_task_id": "next",
             "tasks": [task, {**task, "id": "next"}],
             "edges": [{"source": "first", "target": "next"}],
         }

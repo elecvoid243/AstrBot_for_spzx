@@ -77,6 +77,13 @@ async function open(path = "/agent-teams/workflows/new", realCanvas = false) {
             "v-textarea": true,
             "v-switch": true,
             "v-expansion-panels": true,
+            "v-select": {
+              props: ["items", "modelValue"],
+              emits: ["update:modelValue"],
+              template: `<select :value="modelValue" @change="$emit('update:modelValue', $event.target.value)">
+                <option v-for="item in items" :key="item.value" :value="item.value">{{ item.title }}</option>
+              </select>`,
+            },
           }
         : stubs,
     },
@@ -278,6 +285,63 @@ describe("workflow editor navigation", () => {
     await wrapper.get('[data-testid="trial"] button').trigger("click");
     await flushPromises();
     expect(router.currentRoute.value.query.workflow_run).toBe("trial-run");
+  });
+
+  it("reopens an unfinished result and locates it on the canvas after publication fails", async () => {
+    const stored = await draftApi.create(
+      "workflow",
+      {
+        definition: {
+          name: "Unfinished workflow",
+          result_task_id: "deleted",
+          tasks: [
+            {
+              id: "writer",
+              name: "Writer",
+              member: "writer",
+              role: { name: "Writer" },
+              installation: { profile_id: "default" },
+              task: "Write the report",
+              inputs: {},
+            },
+          ],
+          edges: [],
+        },
+      },
+      null,
+    );
+    api.save.mockRejectedValueOnce({
+      response: {
+        data: {
+          message: "Invalid workflow graph",
+          data: {
+            fields: [
+              {
+                path: "definition.result_task_id",
+                code: "REFERENCE",
+                message: "Select an existing task as the workflow result",
+              },
+            ],
+          },
+        },
+      },
+    });
+    const { wrapper, router } = await open(
+      `/agent-teams/workflows/${stored.asset_id}`,
+      true,
+    );
+    expect(wrapper.get('[data-testid="result-diagnostic"]').text()).toContain("deleted");
+    await wrapper.get('[data-testid="publish-workflow"]').trigger("click");
+    await flushPromises();
+    expect(router.currentRoute.value.name).toBe("AgentWorkflowEditor");
+    expect(wrapper.text()).toContain("Select an existing task as the workflow result");
+    await wrapper.get('[data-testid="result-task"]').setValue("writer");
+    await flushPromises();
+    expect(wrapper.find('[data-testid="result-diagnostic"]').exists()).toBe(false);
+    await wrapper.get('[data-testid="publish-workflow"]').trigger("click");
+    await flushPromises();
+    expect(api.save.mock.lastCall?.[1].definition.result_task_id).toBe("writer");
+    expect(router.currentRoute.value.path).toBe("/agent-teams");
   });
 
   it("does not turn an unknown asset URL into a new draft", async () => {

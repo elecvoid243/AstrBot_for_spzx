@@ -743,7 +743,7 @@ class WorkflowService:
                         ],
                     )
         elif isinstance(definition, GraphDefinition):
-            validate_graph(definition)
+            validate_graph(definition, result_requirement="reachable")
             for task_index, task in enumerate(definition.tasks):
                 if task.human is not None or task.control is not None:
                     continue
@@ -799,6 +799,17 @@ class WorkflowService:
                                 "message": "The pinned workflow has no valid public result",
                             }
                         )
+                    elif kind == "workflow" and not autonomous:
+                        try:
+                            validate_graph(
+                                GraphDefinition.model_validate(child_definition),
+                                result_requirement="reachable",
+                            )
+                        except RoleAssetError as exc:
+                            fields.extend(
+                                {**field, "path": f"{path}.workflow"}
+                                for field in exc.fields
+                            )
                     if set(task.inputs) != set(
                         child_definition.get("required_inputs", [])
                     ):
@@ -5475,6 +5486,13 @@ class WorkflowService:
                 "external": {},
                 "feedback": {},
             }
+        full_trial = request.mode == "full"
+        draft_result_id = None
+        if not full_trial:
+            # A bounded trial can run while the editor's output is unfinished.
+            value = original.pop("result_task_id", None)
+            if isinstance(value, str):
+                draft_result_id = value.strip()
         try:
             graph = GraphDefinition.model_validate(original)
         except ValidationError as exc:
@@ -5489,9 +5507,11 @@ class WorkflowService:
                     for item in exc.errors()
                 ],
             ) from exc
-        validate_graph(graph)
+        validate_graph(
+            graph, result_requirement="reachable" if full_trial else "optional"
+        )
         tasks = {task.id: task for task in graph.tasks}
-        if request.mode == "full":
+        if full_trial:
             if request.node_id is not None:
                 raise RoleAssetError("Full trials do not select a start node")
             selected = set(tasks)
@@ -5538,7 +5558,7 @@ class WorkflowService:
                 raise RoleAssetError("Partial trials must include complete loops")
             elif overlap:
                 loops.append(loop)
-        if request.mode != "full" and any(
+        if not full_trial and any(
             task.control
             and task.control.kind == "join"
             and not any(
@@ -5622,11 +5642,16 @@ class WorkflowService:
         selected_inputs = [
             name for name in graph.required_inputs if name in required_inputs
         ]
-        if graph.result_task_id not in selected:
-            selected_definition["result_task_id"] = (
-                chosen[0].id
-                if request.mode == "single" and not chosen[0].control
+        if not full_trial:
+            result = (
+                tasks[draft_result_id]
+                if draft_result_id is not None and draft_result_id in selected
                 else None
+            )
+            if result is None or result.control:
+                result = chosen[0] if request.mode == "single" else None
+            selected_definition["result_task_id"] = (
+                result.id if result is not None and result.control is None else None
             )
         compiled = GraphDefinition.model_validate(selected_definition)
         feedback_inputs = (
@@ -5752,16 +5777,6 @@ class WorkflowService:
         ]
         if issues:
             raise RoleAssetError("Invalid trial inputs", issues)
-        originals = (
-            {
-                item.id: item
-                for item in GraphDefinition.model_validate(
-                    compiled["draft"]["body"]["definition"]
-                ).tasks
-            }
-            if request.kind == "workflow"
-            else {}
-        )
         sources = {}
         for source_id, source in request.sources.items():
             requirement = compiled["requirements"][source_id]
@@ -5775,7 +5790,7 @@ class WorkflowService:
                 if reference
                 else source.content
             )
-            issues = validate_result(originals[source_id].output_contract, content)
+            issues = validate_result(requirement["contract"], content)
             if issues:
                 raise RoleAssetError(
                     "Invalid boundary source",
@@ -5994,24 +6009,10 @@ class WorkflowService:
             )
         validate_graph(
             definition,
+            result_requirement="optional" if team or trial else "required",
             external_sources=external_sources,
             feedback_inputs=feedback_inputs,
         )
-        if (
-            not team
-            and not trial
-            and definition.result_task_id not in {task.id for task in definition.tasks}
-        ):
-            raise RoleAssetError(
-                "Choose a workflow result task",
-                [
-                    {
-                        "path": "definition.result_task_id",
-                        "code": "REFERENCE",
-                        "message": "Select an existing task as the workflow result",
-                    }
-                ],
-            )
         members = {}
         role_counts: dict[tuple, int] = {}
         for index, task in enumerate(definition.tasks):

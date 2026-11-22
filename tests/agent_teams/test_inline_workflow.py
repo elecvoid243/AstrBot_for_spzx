@@ -385,14 +385,6 @@ async def test_explicit_fields_project_artifacts_and_select_result(tmp_path, nes
             "secret"
         ] == "hidden"
         assert "conversation_id" not in current["snapshot"]["members"]["same"]["member"]
-        invalid = copy.deepcopy(definition)
-        invalid["result_task_id"] = "deleted"
-        broken = await service.save_asset("alice", {"definition": invalid})
-        readiness = await service.check_readiness("alice", broken["asset_id"], 1)
-        assert (
-            not readiness["ready"]
-            and readiness["issues"][0]["path"] == "definition.result_task_id"
-        )
         wrong_type = copy.deepcopy(definition)
         wrong_type["tasks"][0]["output_contract"]["properties"]["public"] = {
             "type": "array",
@@ -404,6 +396,7 @@ async def test_explicit_fields_project_artifacts_and_select_result(tmp_path, nes
             issue["path"] == "definition.tasks.1.inputs.value"
             for issue in wrong.value.fields
         )
+        invalid = copy.deepcopy(definition)
         invalid["tasks"][1]["inputs"]["value"]["field"] = "deleted"
         with pytest.raises(RoleAssetError) as error:
             await service.save_asset("alice", {"definition": invalid})

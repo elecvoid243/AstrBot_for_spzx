@@ -377,6 +377,7 @@ def field_schema(contract: dict | None, path: str) -> dict:
 def validate_graph(
     definition: GraphDefinition,
     *,
+    result_requirement: Literal["optional", "required", "reachable"] = "optional",
     external_sources: dict[str, GraphTask] | None = None,
     feedback_inputs: dict[str, dict[str, TaskInput]] | None = None,
 ) -> None:
@@ -384,6 +385,8 @@ def validate_graph(
 
     Args:
         definition: Parsed graph whose contracts and roles are also validated.
+        result_requirement: Whether the graph may leave its result unresolved,
+            must name an existing result, or must also give it a possible path.
         external_sources: Trusted boundary contracts supplied by the trial compiler.
         feedback_inputs: Trusted single-node trial feedback bindings.
 
@@ -775,7 +778,16 @@ def validate_graph(
             fields.append(
                 {"path": path + ".task", "code": "INVALID", "message": str(exc)}
             )
-    if definition.result_task_id in tasks and tasks[definition.result_task_id].control:
+    result = tasks.get(definition.result_task_id) if definition.result_task_id else None
+    if result_requirement != "optional" and result is None:
+        fields.append(
+            {
+                "path": "definition.result_task_id",
+                "code": "REFERENCE",
+                "message": "Select an existing task as the workflow result",
+            }
+        )
+    elif result is not None and result.control:
         fields.append(
             {
                 "path": "definition.result_task_id",
@@ -783,5 +795,64 @@ def validate_graph(
                 "message": "Control nodes cannot be workflow results",
             }
         )
+    elif result_requirement == "reachable" and result is not None and not fields:
+        loop_exits = {
+            task_id: loop.exit_task_id
+            for loop in definition.loops
+            for task_id in loop.body
+        }
+        reachable: set[str] = set()
+        feedback_bindings: set[tuple[str, str]] = set()
+        # Walk in dependency order. Treat conditional edges as possible because
+        # their values are runtime data. Revisit nodes when a loop can pass or
+        # provide next-round feedback.
+        while True:
+            previous_count = len(reachable)
+            for task_id in ancestors:
+                incoming = predecessors[task_id]
+                task = tasks[task_id]
+                can_enter = (
+                    not incoming
+                    and (task.control is None or task.control.kind != "join")
+                ) or any(
+                    source in reachable
+                    and (
+                        source not in loop_exits
+                        or loop_exits[source] == loop_exits.get(task_id)
+                        or loop_exits[source] in reachable
+                    )
+                    for source in incoming
+                )
+                if not can_enter or (
+                    task.human
+                    and task.human.kind == "approval"
+                    and task.human.artifact_task_id not in reachable
+                ):
+                    continue
+                if all(
+                    binding.task_id is None
+                    or binding.task_id in reachable
+                    or (task_id, name) in feedback_bindings
+                    for name, binding in task.inputs.items()
+                ):
+                    reachable.add(task_id)
+            if not loop_exits or len(reachable) == previous_count:
+                break
+            feedback_bindings = {
+                (binding.target, binding.input)
+                for loop in definition.loops
+                if loop.max_iterations > 1
+                and loop.exit_task_id in reachable
+                and all(binding.source in reachable for binding in loop.feedback)
+                for binding in loop.feedback
+            }
+        if result.id not in reachable:
+            fields.append(
+                {
+                    "path": "definition.result_task_id",
+                    "code": "UNREACHABLE",
+                    "message": "No execution path can reach the workflow result task",
+                }
+            )
     if fields:
         raise RoleAssetError("Invalid workflow graph", fields)

@@ -112,7 +112,7 @@
       :definition="draft"
       :readonly="readonly"
       :collapsed="collapsedLoops"
-      :fields-for-task="fieldsForTask"
+      :fields-for-task="(id) => fieldsForTask(id, true)"
       :issues="issues"
       @update:loops="
         draft.loops = $event;
@@ -794,10 +794,16 @@
                 "
                 :label="tm('human.artifactTask')"
                 data-testid="human-artifact-task"
-                @update:model-value="checkpoint"
+                @update:model-value="
+                  if (approvalUsesCallResult) selectedTask.human.artifact_version = 1;
+                  checkpoint();
+                "
               />
               <v-text-field
                 v-model.number="selectedTask.human.artifact_version"
+                :readonly="approvalUsesCallResult && selectedTask.human.artifact_version === 1"
+                :hint="approvalUsesCallResult ? tm('human.fixedCallVersion') : undefined"
+                :persistent-hint="approvalUsesCallResult"
                 type="number"
                 min="1"
                 :label="tm('v2.artifactVersion')"
@@ -1281,7 +1287,7 @@ import WorkflowLoopPanel from "./WorkflowLoopPanel.vue";
 import RoleResourcesEditor from "./RoleResourcesEditor.vue";
 import HumanWaitPolicyEditor from "./HumanWaitPolicyEditor.vue";
 import type { FlowEdgePayload, FlowNode } from "./TeamsFlowCanvas.vue";
-import type { GraphDefinition, GraphTask, TaskInput, WorkflowPortContract } from "@/api/generated/openapi-v1";
+import type { AutonomousDefinition, GraphDefinition, GraphTask, TaskInput, WorkflowPortContract } from "@/api/generated/openapi-v1";
 import { useModuleI18n } from "@/i18n/composables";
 import { collabMemberColor } from "@/utils/memberColors";
 import { workflowAssetsApi } from "@/api/workflowAssets";
@@ -1392,6 +1398,11 @@ const historyIndex = ref(0);
 const selectedTask = computed(() =>
   draft.value.tasks.find((task) => task.id === selectedNode.value),
 );
+const approvalUsesCallResult = computed(() => {
+  if (!structuredPorts.value || selectedTask.value?.human?.kind !== "approval") return false;
+  const target = draft.value.tasks.find((task) => task.id === selectedTask.value?.human?.artifact_task_id);
+  return !!target?.input_contract && !!(target.workflow || target.team);
+});
 const resourceModes = ref<Record<string, string>>({});
 const savingRole = ref(false);
 const roleMessage = ref("");
@@ -1627,16 +1638,21 @@ const boundOutputFields = computed(() => {
 function fieldsForTask(
   id: string,
   includeType = false,
-): { title: string; value: string; type?: string }[] {
+): { title: string; value: string; type?: string; required?: boolean }[] {
   const task = draft.value.tasks.find((item) => item.id === id);
   if (!task) return [];
   const aggregate = task.dispatch || (explicitControl.value && task.control?.kind === "join");
-  const fields: { title: string; value: string; type: string }[] = aggregate
+  const fields: { title: string; value: string; type: string; required?: boolean }[] = aggregate
     ? [{ title: "results · array", value: "results", type: "array" }]
     : task.output_contract
     ? []
-    : [{ title: "text · string", value: "text", type: "string" }];
-  const visit = (schema: any, prefix = "") => {
+    : [
+        ...(task.human?.kind === "approval"
+          ? [{ title: "approved · boolean", value: "approved", type: "boolean" }]
+          : []),
+        { title: "text · string", value: "text", type: "string" },
+      ];
+  const visit = (schema: any, prefix = "", parentRequired = true) => {
     if (
       schema?.type !== "object" ||
       !schema.properties
@@ -1645,6 +1661,7 @@ function fieldsForTask(
     const names = structuredPorts.value ? Object.keys(schema.properties) : schema.required ?? [];
     for (const name of names) {
       const field = schema.properties[name];
+      const required = parentRequired && (schema.required ?? []).includes(name);
       const path = prefix ? `${prefix}.${name}` : name;
       const types: string[] = Array.isArray(field?.type) ? field.type : [field?.type];
       if (types.every((type) => jsonTypes.includes(type)) &&
@@ -1652,9 +1669,9 @@ function fieldsForTask(
         const format = structuredPorts.value && semanticPortTypes.includes(field?.format)
           ? field.format : "";
         const type = format || types.join("|");
-        fields.push({ title: `${path} · ${format ? tm(`graph.portFormats.${format}`) : type}`, value: path, type });
+        fields.push({ title: `${path} · ${format ? tm(`graph.portFormats.${format}`) : type}`, value: path, type, required });
       }
-      if (field?.type === "object") visit(field, path);
+      if (field?.type === "object") visit(field, path, required);
     }
   };
   if (task.output_contract) visit(task.output_contract);
@@ -1814,7 +1831,7 @@ const taskNodes = computed<FlowNode[]>(() =>
       },
       data: {
         label: task.name,
-        inputPorts: typedPorts.value && (!task.control || (structuredPorts.value && task.control.kind === "condition")) && !task.human && !task.team && !task.workflow
+        inputPorts: typedPorts.value && (!task.control || (structuredPorts.value && task.control.kind === "condition")) && !task.human && (!(task.team || task.workflow) || !!task.input_contract)
           ? Object.entries(
               task.control?.kind === "condition" ? { value: { type: scalarTypes } } :
               task.dispatch ? { items: { type: "array" } } :
@@ -2297,6 +2314,48 @@ function restore(delta: number) {
   emit("update:definition", JSON.parse(history.value[index]));
 }
 
+/** Derive the canvas ports from a fixed workflow or autonomous team version.
+ * Args:
+ *   definition: Definition of the exact selected asset version.
+ * Returns:
+ *   The input and public output contracts displayed by the call node.
+ */
+function fixedCallContracts(definition: GraphDefinition | AutonomousDefinition): Pick<GraphTask, "input_contract" | "output_contract"> {
+  const required = definition.required_inputs ?? [];
+  const team = "kind" in definition && definition.kind === "autonomous";
+  const graph = team ? undefined : definition as GraphDefinition;
+  const result = graph?.tasks.find((task) => task.id === graph.result_task_id);
+  const aggregate = result?.dispatch || (graph?.entry_task_ids && result?.control?.kind === "join");
+  return {
+    ...(structuredPorts.value ? {
+      input_contract: graph?.input_contract ?? {
+        type: "object",
+        properties: Object.fromEntries(required.map((name) => [name, { type: "string" }])),
+        required,
+      },
+    } : {}),
+    output_contract: team
+      ? (definition as AutonomousDefinition).output_contract
+      : aggregate ? {
+          type: "object",
+          properties: {
+            results: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  node_id: { type: "string" },
+                  result: { type: "object" },
+                },
+                required: ["node_id", "result"],
+              },
+            },
+          },
+          required: ["results"],
+        } : result?.output_contract ?? null,
+  };
+}
+
 /** Add a task from a pinned role at a dropped or default canvas position.
  * Args:
  *   roleId: Existing role asset identity.
@@ -2339,6 +2398,8 @@ function addTask(roleId: string, position?: { x: number; y: number }) {
   while (draft.value.tasks.some((task) => task.id === id))
     id = `task_${seed}_${suffix++}`;
   const index = draft.value.tasks.length;
+  const asset = team ?? workflow;
+  const contracts = asset ? fixedCallContracts(asset.definition) : {};
   draft.value.tasks.push({
     id,
     name: dispatch ? tm("graph.listDispatch") : transform ? tm(`graph.${transform}`) : controlKind
@@ -2376,15 +2437,12 @@ function addTask(roleId: string, position?: { x: number; y: number }) {
       : team
       ? {
           team: { asset_id: team.asset_id, version: team.version },
-          output_contract: team.definition.output_contract,
+          ...contracts,
         }
       : workflow
       ? {
           workflow: { asset_id: workflow.asset_id, version: workflow.version },
-          output_contract:
-            workflow.definition.tasks.find(
-              (item: any) => item.id === workflow.definition.result_task_id,
-            )?.output_contract ?? null,
+          ...contracts,
         }
       : humanKind
       ? {
@@ -2417,9 +2475,9 @@ function addTask(roleId: string, position?: { x: number; y: number }) {
               field: "text",
             },
           }
-        : team || workflow
+        : asset && !structuredPorts.value
         ? Object.fromEntries(
-            (team ?? workflow).definition.required_inputs.map((key: string) => [
+            (asset.definition.required_inputs ?? []).map((key: string) => [
               key,
               draft.value.required_inputs?.includes(key) ? { input: key } : {},
             ]),
@@ -2475,18 +2533,20 @@ async function changeTeam(assetId: string, version?: number) {
     pinnedTeams.value[`${assetId}:${pinnedVersion}`] = team;
     if (isTeam) task.team = { asset_id: assetId, version: pinnedVersion };
     else task.workflow = { asset_id: assetId, version: pinnedVersion };
+    const contracts = fixedCallContracts(team.definition);
+    const names = contracts.input_contract
+      ? Object.keys(contracts.input_contract.properties)
+      : (team.definition.required_inputs ?? []) as string[];
     task.inputs = Object.fromEntries(
-      team.definition.required_inputs.map((key: string) => [
-        key,
-        task.inputs?.[key] ??
-          (draft.value.required_inputs?.includes(key) ? { input: key } : {}),
-      ]),
+      names.flatMap((key) => {
+        const binding = task.inputs?.[key];
+        if (binding) return [[key, binding]];
+        if (structuredPorts.value) return [];
+        return [[key, draft.value.required_inputs?.includes(key) ? { input: key } : {}]];
+      }),
     );
-    task.output_contract = isTeam
-      ? team.definition.output_contract
-      : team.definition.tasks.find(
-          (item: any) => item.id === team.definition.result_task_id,
-        )?.output_contract ?? null;
+    Object.assign(task, contracts);
+    if (!contracts.input_contract) delete task.input_contract;
     delete contractTexts.value[task.id];
     teamReadError.value = false;
     localError.value = "";

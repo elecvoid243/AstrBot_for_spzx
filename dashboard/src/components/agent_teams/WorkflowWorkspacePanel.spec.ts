@@ -3914,6 +3914,40 @@ describe("workflow workspace", () => {
     wrapper.unmount();
   });
 
+  it("opens the exact prior-round artifact from the results panel after viewing v2", async () => {
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: "/", component: slotStub }],
+    });
+    await router.push("/?workflow_run=run-1");
+    const artifact = { artifact_id: "child-public-artifact", version: 1 };
+    const task = {
+      ...run, run_id: "round-task", node_id: "write", status: "completed",
+      result_ref: artifact, artifacts: [artifact, { ...artifact, version: 2 }],
+    };
+    api.run.mockResolvedValue({ ...run, status: "completed", tasks: [task] });
+    api.artifact.mockImplementation(async (id: string, version: number) => ({
+      artifact_id: id, version, content: { text: version === 1 ? "Prior round" : "Later revision" },
+    }));
+    const wrapper = mount(WorkflowWorkspacePanel, {
+      props: { mode: "runs" },
+      global: { plugins: [router], stubs: { ...stubs, WorkflowRunProgress: true } },
+    });
+    await flushPromises();
+    const progress = wrapper.getComponent({ name: "WorkflowRunProgress" });
+    progress.vm.$emit("select", task.run_id);
+    await wrapper.get('[data-testid="artifact-version"]').setValue("2");
+    await flushPromises();
+    expect(wrapper.get('[data-testid="result-text"]').text()).toBe("Later revision");
+    expect(wrapper.get(".workbench-columns").attributes("data-active-panel")).toBe("process");
+    progress.vm.$emit("open-artifact", task.run_id, artifact);
+    await flushPromises();
+    expect(api.artifact).toHaveBeenLastCalledWith(artifact.artifact_id, 1, expect.any(AbortSignal));
+    expect(wrapper.get('[data-testid="result-text"]').text()).toBe("Prior round");
+    expect(wrapper.get(".workbench-columns").attributes("data-active-panel")).toBe("results");
+    wrapper.unmount();
+  });
+
   it.each([
     ["success", false],
     ["failure", false],

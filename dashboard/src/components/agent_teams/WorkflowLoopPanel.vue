@@ -96,16 +96,18 @@
             density="compact"
             :model-value="loop.exit_task_id"
             :items="
-              artifactTaskItems.filter((task) => loop.body.includes(task.value))
+              artifactTaskItems.filter((task) => loop.body.includes(task.value) && exitFields(task.value).length)
             "
             :label="tm('loops.exitTask')"
+            data-testid="loop-exit-task"
             @update:model-value="changeExitTask(loop.id, $event)"
           />
         </div>
         <div class="loop-fields">
           <v-select
             density="compact"
-            :items="fieldsForTask(loop.exit_task_id)"
+            :items="exitFields(loop.exit_task_id)"
+            data-testid="loop-exit-field"
             :model-value="loop.exit_condition.field"
             :label="tm('graph.field')"
             @update:model-value="setExitField(loop.id, $event)"
@@ -114,7 +116,7 @@
             density="compact"
             :model-value="loop.exit_condition.operator ?? 'eq'"
             :items="
-              ['integer', 'number'].includes(exitType(loop))
+              exitTypes(loop).every((type) => ['integer', 'number'].includes(type))
                 ? ['eq', 'ne', 'gt', 'ge', 'lt', 'le'].map((value) => ({
                     title: tm(`graph.operators.${value}`),
                     value,
@@ -132,7 +134,18 @@
             "
           />
           <v-select
+            v-if="exitTypes(loop).length > 1"
+            density="compact"
+            :label="tm('trial.valueType')"
+            :items="exitTypes(loop)"
+            :model-value="exitType(loop)"
+            @update:model-value="change(loop.id, {
+              exit_condition: { ...loop.exit_condition, value: comparisonDefault($event) },
+            })"
+          />
+          <v-select
             v-if="exitType(loop) === 'boolean'"
+            data-testid="loop-exit-value"
             density="compact"
             :model-value="loop.exit_condition.value"
             :items="[
@@ -187,12 +200,10 @@
           <v-select
             density="compact"
             :model-value="feedback.input"
-            :items="
-              Object.keys(
-                definition.tasks.find((task) => task.id === feedback.target)
-                  ?.inputs ?? {},
-              )
-            "
+            :items="Object.keys(
+              definition.tasks.find((task) => task.id === feedback.target)?.input_contract?.properties ??
+              definition.tasks.find((task) => task.id === feedback.target)?.inputs ?? {},
+            )"
             :label="tm('graph.inputAlias')"
             @update:model-value="setFeedback(loop.id, index, { input: $event })"
           />
@@ -278,7 +289,7 @@ const props = withDefaults(
     definition: GraphDefinition;
     readonly?: boolean;
     collapsed: string[];
-    fieldsForTask: (id: string) => { title: string; value: string }[];
+    fieldsForTask: (id: string) => { title: string; value: string; type?: string; required?: boolean }[];
     issues: { path: string; message: string }[];
   }>(),
   { readonly: false },
@@ -294,7 +305,7 @@ const taskItems = computed(() =>
 
 const artifactTaskItems = computed(() =>
   props.definition.tasks
-    .filter((task) => !task.control)
+    .filter((task) => !task.control || (Array.isArray(props.definition.entry_task_ids) && task.control.kind === "join"))
     .map((task) => ({ title: task.name, value: task.id })),
 );
 
@@ -325,50 +336,56 @@ function change(id: string, values: Partial<GraphLoop>) {
     ),
   );
 }
+function exitFieldTypes(field?: { title: string; type?: string }) {
+  const type = field?.type ?? field?.title.split(" · ").pop();
+  return type?.split("|") ?? [];
+}
+
+function exitFields(taskId: string) {
+  return props.fieldsForTask(taskId).filter((field) =>
+    field.required !== false && exitFieldTypes(field).every((type) =>
+      ["string", "boolean", "integer", "number", "null"].includes(type),
+    ),
+  );
+}
+function comparisonDefault(type?: string) {
+  if (type === "boolean") return false;
+  if (type === "null") return null;
+  return type === "integer" || type === "number" ? 0 : "";
+}
+
 function changeExitTask(id: string, taskId: string) {
-  const loop = props.definition.loops?.find((item) => item.id === id);
-  if (!loop) return;
-  const field = props.fieldsForTask(taskId)[0];
-  const type = field?.title.split(" · ").pop();
-  const value =
-    type === "boolean"
-      ? false
-      : type === "null"
-      ? null
-      : ["integer", "number"].includes(type ?? "")
-      ? 0
-      : "";
+  const field = exitFields(taskId)[0];
   change(id, {
     exit_task_id: taskId,
-    exit_condition: { field: field?.value ?? "", operator: "eq", value },
+    exit_condition: {
+      field: field?.value ?? "",
+      operator: "eq",
+      value: comparisonDefault(exitFieldTypes(field)[0]),
+    },
   });
 }
+function exitTypes(loop: GraphLoop) {
+  const field = exitFields(loop.exit_task_id)
+    .find((candidate) => candidate.value === loop.exit_condition.field);
+  const types = field ? exitFieldTypes(field) : ["string"];
+  return types.includes("number") ? types.filter((type) => type !== "integer") : types;
+}
 function exitType(loop: GraphLoop) {
-  return (
-    props
-      .fieldsForTask(loop.exit_task_id)
-      .find((field) => field.value === loop.exit_condition.field)
-      ?.title.split(" · ")
-      .pop() ?? "string"
-  );
+  const types = exitTypes(loop);
+  const value = loop.exit_condition.value;
+  const type = value === null ? "null"
+    : Number.isInteger(value) && types.includes("integer") ? "integer"
+    : typeof value;
+  return types.includes(type) ? type : types[0];
 }
 function setExitField(id: string, field: string) {
   const loop = props.definition.loops?.find((item) => item.id === id);
   if (!loop) return;
-  const type = props
-    .fieldsForTask(loop.exit_task_id)
-    .find((item) => item.value === field)
-    ?.title.split(" · ")
-    .pop();
-  const value =
-    type === "boolean"
-      ? false
-      : type === "null"
-      ? null
-      : ["integer", "number"].includes(type ?? "")
-      ? 0
-      : "";
-  change(id, { exit_condition: { field, operator: "eq", value } });
+  const type = exitFieldTypes(
+    exitFields(loop.exit_task_id).find((item) => item.value === field),
+  )[0];
+  change(id, { exit_condition: { field, operator: "eq", value: comparisonDefault(type) } });
 }
 function setValue(id: string, text: string) {
   const loop = props.definition.loops?.find((item) => item.id === id);

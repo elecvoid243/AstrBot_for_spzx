@@ -8989,6 +8989,7 @@ paths:
                           properties:
                             name: {type: string}
                             pinned_only: {type: boolean}
+                            optional: {type: boolean}
                             contract: {type: [object, 'null'], additionalProperties: true}
                             fields:
                               type: object
@@ -13669,7 +13670,7 @@ components:
             enum: [parse_json, map_fields, json_text]
           - type: 'null'
         input_contract:
-          description: Explicit V2 input ports for an Agent or field mapping node.
+          description: Explicit V2 input ports for an Agent, field mapping, or fixed child call. A fixed child call uses the pinned input contract.
           $ref: '#/components/schemas/WorkflowPortContract'
         position:
           additionalProperties:

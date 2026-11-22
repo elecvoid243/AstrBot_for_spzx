@@ -36,7 +36,7 @@ Choose **Use structured ports** in the editor. Select the workflow input node an
 
 For the example above, use `{"raw":"{\"query\":{\"limit\":0},\"rows\":[{\"id\":1}]}"}` when `raw` is the workflow input name.
 
-The structured port contract is version 2. Text port and legacy fixed versions retain their bindings. Version 2 workflows launch as root runs. Fixed child calls and loop feedback continue to use the earlier contracts. Top-level `files` in a result is reserved for managed attachments. Ordinary inputs may declare a field with that name.
+The structured port contract is version 2. It also supports fixed child workflow calls and bounded loop feedback. Text port and legacy fixed versions retain their bindings. Top-level `files` in a result is reserved for managed attachments. Ordinary inputs may declare a field with that name.
 
 ![Structured workflow with object and row-list data ports](/images/agent-teams-structured-ports-en.jpg)
 
@@ -83,13 +83,19 @@ In a V2 graph, mark a task as a **Control entry task** or draw from the workflow
 
 Add **List dispatch**, choose its Agent model and connect an array to `items`. Use `{item}` in the task prompt to read the current item. Set the item and concurrency limits in the node properties. Each limit is at most 30. Item tasks reuse the available role instances and respect the workflow and role concurrency limits. Each item submits a text result. The result lists the original positions as `item-0`, `item-1`, and so on, even when items finish out of order or have identical values. An empty list yields an empty result array. If an item fails, open the dispatch scope in the run workbench to see the failed item and retry its original input.
 
-Add a saved workflow or autonomous team as a call node: select a fixed version and map each declared input to a workflow input or upstream field. Each call has its own scope and receives only explicitly mapped values; enter that scope in the run to inspect tasks and results. An autonomous coordinator can call only fixed workflow versions explicitly allowed in its configuration. Set nesting depth and concurrency limits; child calls share root limits.
+Add a saved workflow or autonomous team as a call node from **Reusable assets** and select a fixed version. On a structured canvas, drag matching named inputs and outputs to the call node. Optional inputs can be left open to use the child version’s defaults. A connected explicit null is preserved when the contract allows it. Autonomous teams expose the declared text inputs of their fixed version. Draw control links to activate the call and its successors.
+
+Each call creates a scope inside the same root run and receives the declared values linked on the canvas. It returns the selected public output fields. The public result has its own exact artifact reference when internal fields are omitted or the caller configures a separate approval. Its explicit managed file references retain their source. Inspect the child scope in the run to see its tasks and approvals. Child scopes share root limits and retain their own limits. Publishing another version leaves active runs on their frozen dependencies.
 
 ### Human nodes and bounded revision
 
 Add a **Human question** with a question and optional choices; leave choices empty for free text. You can explicitly select upstream required string fields for a recommendation and reason. Add **Version approval** and connect its artifact task and approval/rejection paths. Approval binds a specific artifact and version; rejection requires feedback and does not automatically rerun the author.
 
-For repeated review, add a **bounded loop**: select the body, exit result and comparison, and maximum iterations, then explicitly map the previous draft and review feedback into the next iteration. Each round retains separate tasks and artifacts. Reaching the limit without passing needs attention and is not success. Approval of one version does not approve a later revision, and revision does not automatically rerun consumers.
+For repeated review, open **Loops & subflows** and add a bounded loop with the call and its approval in the body. Select the approval’s `approved` field as the exit condition and compare it with `true`. Set a maximum such as two rounds. Map the approval’s `text` feedback to the call’s next-round revision input and give that input a first-round binding or default. Feedback transfers the selected value with its original type. A missing optional value uses the destination’s default when provided. In a single-node trial, the optional feedback source can also be omitted.
+
+![Structured call with a two-round approval loop](/images/agent-teams-fixed-rework-en.jpg)
+
+An approval targeting a fixed call uses the exact version returned by that call. On rejection, the loop keeps the old request and artifact and gives the next round a new approval. Work outside the loop reads the passed round. When the limit is reached, the run retains the history and reports that the loop needs attention. In the run workbench, open an artifact from a specific round to view the exact saved version. A pending child approval can be reopened from the original root run after a restart.
 
 Human questions, dynamic choices and approvals wait indefinitely by default. You can set a deadline to keep waiting or use the valid recommendation displayed when the request was created. If the recommendation is missing, invalid or unsupported by available evidence, the request still waits for a person; no new model decision is requested at the deadline.
 

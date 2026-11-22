@@ -559,6 +559,143 @@ def _has_scope_capacity(
     )
 
 
+def pinned_child_call_issues(
+    port_version: int | None, task: GraphTask, child: dict, path: str
+) -> list[dict]:
+    """Check a static call against its exact asset in publish, import and launch.
+
+    Args:
+        port_version: Caller's port contract version.
+        task: Static call and its declared bindings.
+        child: Definition of the pinned asset version.
+        path: Diagnostic prefix for the call node.
+
+    Returns:
+        Contract and reference diagnostics for the editor.
+    """
+    team = child.get("kind") == "autonomous"
+    kind = "team" if task.team else "workflow"
+    if team != bool(task.team):
+        return [
+            {
+                "path": f"{path}.{kind}",
+                "code": "INCOMPATIBLE",
+                "message": "Choose an asset of the matching kind",
+            }
+        ]
+    structured_child = child.get("port_contract_version") == 2
+    if structured_child and port_version != 2:
+        return [
+            {
+                "path": f"{path}.{kind}",
+                "code": "INCOMPATIBLE",
+                "message": "Structured-port workflows require a static V2 call node",
+            }
+        ]
+    if team:
+        output = child.get("output_contract")
+    else:
+        result = next(
+            (
+                node
+                for node in child.get("tasks", [])
+                if node["id"] == child.get("result_task_id")
+            ),
+            None,
+        )
+        explicit = child.get("entry_task_ids") is not None
+        if result is None or (
+            result.get("control")
+            and not (explicit and result["control"]["kind"] == "join")
+        ):
+            return [
+                {
+                    "path": f"{path}.{kind}",
+                    "code": "REFERENCE",
+                    "message": "The pinned workflow has no valid public result",
+                }
+            ]
+        output = GraphTask.model_validate(result).result_contract(
+            explicit_control=explicit
+        )
+
+    fields = []
+    required = child.get("required_inputs", [])
+    if structured_child or task.input_contract is not None:
+        contract = (
+            child.get("input_contract")
+            if structured_child
+            else {
+                "type": "object",
+                "properties": {name: {"type": "string"} for name in required},
+                "required": required,
+            }
+        )
+        if task.input_contract != contract:
+            fields.append(
+                {
+                    "path": f"{path}.input_contract",
+                    "code": "CONTRACT",
+                    "message": "Use the pinned asset's input contract",
+                }
+            )
+    if (
+        not structured_child
+        and set(task.inputs) != set(required)
+        and task.input_contract is None
+    ):
+        fields.append(
+            {
+                "path": f"{path}.inputs",
+                "code": "CONTRACT",
+                "message": "Declare exactly the pinned asset's required inputs",
+            }
+        )
+    if task.input_contract is not None and output is not None:
+        schemas = [output]
+        for schema in schemas:
+            schemas.extend(schema.get("allOf", []))
+        public = {name for schema in schemas for name in schema.get("properties", {})}
+        mandatory = {name for schema in schemas for name in schema.get("required", [])}
+        closed = any(
+            schema.get("additionalProperties") is False
+            and not schema.get("patternProperties")
+            for schema in schemas
+        )
+        if mandatory - public or (
+            not closed
+            and any(
+                schema.get("minProperties", 0) > len(mandatory)
+                or schema.keys()
+                & {
+                    "if",
+                    "oneOf",
+                    "anyOf",
+                    "dependentRequired",
+                    "dependentSchemas",
+                    "not",
+                }
+                for schema in schemas
+            )
+        ):
+            fields.append(
+                {
+                    "path": f"{path}.output_contract",
+                    "code": "CONTRACT",
+                    "message": "The public result contract must validate using only declared fields",
+                }
+            )
+    if task.output_contract != output:
+        fields.append(
+            {
+                "path": f"{path}.output_contract",
+                "code": "CONTRACT",
+                "message": "Use the pinned asset's public output contract",
+            }
+        )
+    return fields
+
+
 class WorkflowService:
     """Public asset/run boundary backed by the existing database and execution port."""
 
@@ -739,7 +876,7 @@ class WorkflowService:
                             {
                                 "path": path,
                                 "code": "INCOMPATIBLE",
-                                "message": "Structured-port workflows cannot be called as fixed child workflows",
+                                "message": "Structured-port workflows require a static V2 call node",
                             }
                         ],
                     )
@@ -795,49 +932,10 @@ class WorkflowService:
                             status=exc.status,
                         ) from exc
                     child_definition = child["definition"]
-                    if child_definition.get("port_contract_version") == 2:
-                        raise RoleAssetError(
-                            "Invalid child workflow",
-                            [
-                                {
-                                    "path": f"{path}.{kind}",
-                                    "code": "INCOMPATIBLE",
-                                    "message": "Structured-port workflows cannot be called as fixed child workflows",
-                                }
-                            ],
-                        )
-                    fields = []
-                    autonomous = child_definition.get("kind") == "autonomous"
-                    if autonomous != (kind == "team"):
-                        fields.append(
-                            {
-                                "path": f"{path}.{kind}",
-                                "code": "INCOMPATIBLE",
-                                "message": "Choose an asset of the matching kind",
-                            }
-                        )
-                    result_task = (
-                        None
-                        if autonomous
-                        else next(
-                            (
-                                node
-                                for node in child_definition.get("tasks", [])
-                                if node["id"] == child_definition.get("result_task_id")
-                                and not node.get("control")
-                            ),
-                            None,
-                        )
+                    fields = pinned_child_call_issues(
+                        definition.port_contract_version, task, child_definition, path
                     )
-                    if not autonomous and result_task is None:
-                        fields.append(
-                            {
-                                "path": f"{path}.{kind}",
-                                "code": "REFERENCE",
-                                "message": "The pinned workflow has no valid public result",
-                            }
-                        )
-                    elif kind == "workflow" and not autonomous:
+                    if not fields and task.workflow:
                         try:
                             pinned_results = [child]
                             if task.id == definition.result_task_id:
@@ -861,31 +959,6 @@ class WorkflowService:
                                 for field in exc.fields
                                 or [{"code": "REFERENCE", "message": str(exc)}]
                             )
-                    if set(task.inputs) != set(
-                        child_definition.get("required_inputs", [])
-                    ):
-                        fields.append(
-                            {
-                                "path": f"{path}.inputs",
-                                "code": "CONTRACT",
-                                "message": "Declare exactly the pinned asset's required inputs",
-                            }
-                        )
-                    contract = (
-                        child_definition.get("output_contract")
-                        if autonomous
-                        else result_task.get("output_contract")
-                        if result_task
-                        else None
-                    )
-                    if task.output_contract != contract:
-                        fields.append(
-                            {
-                                "path": f"{path}.output_contract",
-                                "code": "CONTRACT",
-                                "message": "Use the pinned asset's public output contract",
-                            }
-                        )
                     if fields:
                         raise RoleAssetError("Invalid child call", fields)
                     continue
@@ -1395,50 +1468,25 @@ class WorkflowService:
                 child_key = (ref["asset_id"], ref["version"])
                 if child_key not in assets:
                     raise RoleAssetError("Package is missing a pinned asset")
-                if assets[child_key].get("port_contract_version") == 2:
-                    raise RoleAssetError(
-                        "Structured-port workflows cannot be called as fixed child workflows"
-                    )
                 pending.append((child_key, (*ancestors, key)))
-            for member in members:
-                ref = member.get("team") or member.get("workflow")
-                if ref:
-                    child = assets[(ref["asset_id"], ref["version"])]
-                    autonomous = child.get("kind") == "autonomous"
-                    if autonomous != bool(member.get("team")):
-                        raise RoleAssetError(
-                            "Child call has an incompatible asset kind"
+            if definition.get("kind") != "autonomous":
+                for index, task in enumerate(graph.tasks):
+                    ref = task.team or task.workflow
+                    if ref:
+                        fields = pinned_child_call_issues(
+                            graph.port_contract_version,
+                            task,
+                            assets[(ref.asset_id, ref.version)],
+                            f"definition.tasks.{index}",
                         )
-                    result = (
-                        None
-                        if autonomous
-                        else next(
-                            (
-                                task
-                                for task in child["tasks"]
-                                if task["id"] == child.get("result_task_id")
-                                and not task.get("control")
-                            ),
-                            None,
-                        )
-                    )
-                    if not autonomous and result is None:
-                        raise RoleAssetError("Child workflow has no public result")
-                    contract = (
-                        child.get("output_contract")
-                        if autonomous
-                        else result.get("output_contract")
-                    )
-                    if (
-                        set(member.get("inputs", {}))
-                        != set(child.get("required_inputs", []))
-                        or member.get("output_contract") != contract
-                    ):
-                        raise RoleAssetError(
-                            "Child call does not match its pinned contract"
-                        )
+                        if fields:
+                            raise RoleAssetError("Invalid child call", fields)
             for ref in definition.get("allowed_workflows", []):
                 child = assets[(ref["asset_id"], ref["version"])]
+                if child.get("port_contract_version") == 2:
+                    raise RoleAssetError(
+                        "Structured-port workflows require a static V2 call node"
+                    )
                 if child.get("kind") == "autonomous" or not any(
                     task["id"] == child.get("result_task_id")
                     and not task.get("control")
@@ -5815,6 +5863,9 @@ class WorkflowService:
         required_inputs = set()
         for task in chosen:
             refs = dict(task.inputs)
+            node_contract = task_input_contract(
+                task.input_contract, task.transform, dispatch=bool(task.dispatch)
+            )
             if task.id == request.node_id:
                 refs.update(
                     {
@@ -5839,8 +5890,15 @@ class WorkflowService:
                             "name": source.name,
                             "fields": {},
                             "pinned_only": False,
+                            "optional": True,
                             "contract": contract,
                         },
+                    )
+                    requirement["optional"] &= (
+                        graph.port_contract_version == 2
+                        and task.id == request.node_id
+                        and input_name in feedback
+                        and not port_requires_value(node_contract, input_name)
                     )
                     source_schema = field_schema(
                         contract,
@@ -5876,6 +5934,7 @@ class WorkflowService:
                             },
                         )
                         requirement["pinned_only"] = True
+                        requirement["optional"] = False
                         for name in fields:
                             requirement["fields"][name] = field_schema(
                                 source.output_contract, name
@@ -6076,6 +6135,7 @@ class WorkflowService:
                 "message": "Provide this boundary source",
             }
             for name in expected_sources - set(request.sources)
+            if not compiled["requirements"][name].get("optional")
         ]
         issues += [
             {
@@ -6100,7 +6160,10 @@ class WorkflowService:
                         task.get("transform"),
                         dispatch=bool(task.get("dispatch")),
                     )
-                    for name, binding in task.get("inputs", {}).items():
+                    bindings = dict(task.get("inputs", {}))
+                    if request.node_id == task["id"]:
+                        bindings.update(compiled["feedback"])
+                    for name, binding in bindings.items():
                         path = f"definition.tasks.{index}.inputs.{name}"
                         boundary_paths.setdefault(
                             (binding.get("task_id"), binding.get("field", "text")), []
@@ -6454,10 +6517,6 @@ class WorkflowService:
             definition = GraphDefinition.model_validate(asset["definition"])
         else:
             raise RoleAssetError("Legacy workflow definitions are not supported")
-        if nesting_depth and definition.port_contract_version == 2:
-            raise RoleAssetError(
-                "Structured-port workflows cannot be called as fixed child workflows"
-            )
         if team and team.get("approval_question"):
             definition = GraphDefinition.model_validate(
                 {
@@ -6640,55 +6699,9 @@ class WorkflowService:
                     ],
                     status=exc.status,
                 ) from exc
-            child_definition = child["definition"]
-            autonomous = child_definition.get("kind") == "autonomous"
-            if autonomous != (task.team is not None):
-                raise RoleAssetError("Pinned child asset kind does not match the call")
-            result_task = (
-                None
-                if autonomous
-                else next(
-                    (
-                        node
-                        for node in child_definition.get("tasks", [])
-                        if node["id"] == child_definition.get("result_task_id")
-                        and not node.get("control")
-                    ),
-                    None,
-                )
+            fields = pinned_child_call_issues(
+                definition.port_contract_version, task, child["definition"], path
             )
-            contract = (
-                child_definition.get("output_contract")
-                if autonomous
-                else result_task.get("output_contract")
-                if result_task
-                else None
-            )
-            fields = []
-            if not autonomous and result_task is None:
-                fields.append(
-                    {
-                        "path": f"{path}.{kind}",
-                        "code": "REFERENCE",
-                        "message": "The pinned workflow has no valid public result",
-                    }
-                )
-            if set(task.inputs) != set(child_definition.get("required_inputs", [])):
-                fields.append(
-                    {
-                        "path": f"{path}.inputs",
-                        "code": "CONTRACT",
-                        "message": "Declare exactly the pinned asset's required inputs",
-                    }
-                )
-            if task.output_contract != contract:
-                fields.append(
-                    {
-                        "path": f"{path}.output_contract",
-                        "code": "CONTRACT",
-                        "message": "Use the pinned asset's public output contract",
-                    }
-                )
             if fields:
                 raise RoleAssetError(
                     "Child call contracts no longer match the pinned asset", fields
@@ -6721,6 +6734,10 @@ class WorkflowService:
             child = await self.get_asset(username, ref["asset_id"], ref["version"])
             if child["definition"].get("kind") == "autonomous":
                 raise RoleAssetError("Choose a pinned saved workflow")
+            if child["definition"].get("port_contract_version") == 2:
+                raise RoleAssetError(
+                    "Structured-port workflows require a static V2 call node"
+                )
             try:
                 frozen = await self._freeze_graph(
                     username,
@@ -6785,7 +6802,7 @@ class WorkflowService:
                                 }
                             ],
                         )
-        if definition.port_contract_version == 2:
+        if definition.port_contract_version == 2 and not nesting_depth:
             references = {
                 name: value
                 for name, value in request.inputs.items()
@@ -7305,23 +7322,36 @@ class WorkflowService:
             if passed or exhausted:
                 continue
             feedback_inputs: dict[str, dict] = {}
-            missing_feedback = [
-                feedback["source"]
-                for feedback in definition["feedback"]
-                if rows[feedback["source"]].status != "completed"
-            ]
-            if missing_feedback:
-                loop["status"] = iteration["status"] = "blocked"
-                loop["reason"] = (
-                    "Next-round feedback has no validated result: "
-                    + ", ".join(missing_feedback)
-                )
-                continue
+            missing_feedback = []
             for feedback in definition["feedback"]:
                 previous = rows[feedback["source"]]
-                value = previous.result
-                for name in feedback["field"].split("."):
-                    value = value[name]
+                reference = previous.state.get("child_result_ref") or {
+                    "artifact_id": previous.run_id,
+                    "version": 1,
+                }
+                value = (
+                    port_value(previous.result, feedback["field"], reference)
+                    if previous.status == "completed" and previous.result is not None
+                    else MISSING_PORT_VALUE
+                )
+                if value is MISSING_PORT_VALUE:
+                    target = next(
+                        task
+                        for task in root.snapshot["definition"]["tasks"]
+                        if task["id"] == feedback["target"]
+                    )
+                    contract = task_input_contract(
+                        target.get("input_contract"),
+                        target.get("transform"),
+                        dispatch=bool(target.get("dispatch")),
+                    )
+                    if port_requires_value(contract, feedback["input"]):
+                        missing_feedback.append(feedback)
+                    else:
+                        feedback_inputs.setdefault(feedback["target"], {})[
+                            feedback["input"]
+                        ] = {"missing": True}
+                    continue
                 feedback_inputs.setdefault(feedback["target"], {})[
                     feedback["input"]
                 ] = {
@@ -7329,10 +7359,19 @@ class WorkflowService:
                     "value": value
                     if isinstance(value, str)
                     else json.dumps(value, ensure_ascii=False),
-                    "reference": previous.state.get("child_result_ref")
-                    or {"artifact_id": previous.run_id, "version": 1},
+                    "reference": reference,
                     "field": feedback["field"],
                 }
+            if missing_feedback:
+                loop["status"] = iteration["status"] = "blocked"
+                loop["reason"] = (
+                    "Next-round feedback has no validated result: "
+                    + ", ".join(
+                        f"{binding['source']}.{binding['field']} → {binding['target']}.{binding['input']}"
+                        for binding in missing_feedback
+                    )
+                )
+                continue
             next_runs = {}
             for node_id in definition["body"]:
                 previous = rows[node_id]
@@ -8286,7 +8325,7 @@ class WorkflowService:
                 task_indexes = {
                     task["id"]: index
                     for index, task in enumerate(
-                        (trial_definition or definition)["tasks"]
+                        (trial_definition or {}).get("tasks", definition["tasks"])
                     )
                 }
                 rows = {
@@ -8351,6 +8390,21 @@ class WorkflowService:
                             ],
                         )
                         assert returned_task is not None
+                        contract = row.snapshot["definition"].get("output_contract")
+                        result = returned_task.result
+                        typed = row.snapshot.get("typed_child_call", False)
+                        if typed and result is not None:
+                            pending = [contract or {"properties": {"text": {}}}]
+                            names = set()
+                            while pending:
+                                schema = pending.pop()
+                                names.update(schema.get("properties", {}))
+                                pending.extend(schema.get("allOf", []))
+                            result = {
+                                key: value
+                                for key, value in result.items()
+                                if key in names
+                            }
                         fields = (
                             [
                                 {
@@ -8359,35 +8413,69 @@ class WorkflowService:
                                     "message": "The selected workflow return task has no validated result",
                                 }
                             ]
-                            if returned_task.result is None
-                            else validate_result(
-                                row.snapshot["definition"].get("output_contract"),
-                                returned_task.result,
-                            )
+                            if result is None
+                            else validate_result(contract, result, port_formats=typed)
                         )
+                        approval_required = typed and child.snapshot.get(
+                            "team_definition", {}
+                        ).get("approval_question")
+                        if approval_required:
+                            approval = await session.get(
+                                AgentWorkflowTodo, _current_task_runs(child)["approval"]
+                            )
+                            if (
+                                approval is None
+                                or approval.data["status"] != "approved"
+                                or approval.data.get("artifact_ref")
+                                != {"artifact_id": returned_task.run_id, "version": 1}
+                            ):
+                                fields.append(
+                                    {
+                                        "path": f"definition.tasks.{task_indexes[row.snapshot['node_id']]}.team",
+                                        "code": "APPROVAL_REQUIRED",
+                                        "message": "The child team's exact result version was not approved.",
+                                    }
+                                )
                         if fields:
                             row.status = "blocked"
                             row.state = {
                                 **row.state,
-                                "reason": "Child output does not satisfy the declared contract.",
+                                "reason": fields[-1]["message"],
                                 "issues": fields,
                                 "child_return_failed": True,
                             }
                         else:
-                            assert returned_task.result is not None
-                            row.result = copy.deepcopy(returned_task.result)
-                            row.status = "completed"
-                            row.state = {
-                                **row.state,
-                                "reason": None,
-                                "child_result_ref": returned_task.state.get(
-                                    "child_result_ref"
-                                )
-                                or {
-                                    "artifact_id": returned_task.run_id,
-                                    "version": 1,
-                                },
+                            assert result is not None
+                            reference = returned_task.state.get("child_result_ref") or {
+                                "artifact_id": returned_task.run_id,
+                                "version": 1,
                             }
+                            row.result = copy.deepcopy(result)
+                            row.status = "completed"
+                            row.state = {**row.state, "reason": None}
+                            separately_reviewed = typed and any(
+                                task.get("human", {}).get("kind") == "approval"
+                                and task["human"]["artifact_task_id"]
+                                == row.snapshot["node_id"]
+                                for task in definition["tasks"]
+                                if task.get("human")
+                            )
+                            if result != returned_task.result or separately_reviewed:
+                                # Give a caller's own review a distinct version, even
+                                # if every field in the child's result is public.
+                                session.add(
+                                    AgentWorkflowArtifact(
+                                        artifact_id=row.run_id,
+                                        version=1,
+                                        run_id=row.run_id,
+                                        submission_id=row.state["attempt_id"],
+                                        contract=contract,
+                                        content=result,
+                                    )
+                                )
+                                row.state["child_source_ref"] = reference
+                                reference = {"artifact_id": row.run_id, "version": 1}
+                            row.state["child_result_ref"] = reference
                         session.add(row)
                         session.add(
                             AgentWorkflowEvent(
@@ -8641,7 +8729,11 @@ class WorkflowService:
                                 data_issues = []
                                 for name, ref in task["inputs"].items():
                                     source_id = ref.get("task_id")
-                                    if source_id is None or source_id not in rows:
+                                    if (
+                                        name in row.snapshot.get("iteration_inputs", {})
+                                        or source_id is None
+                                        or source_id not in rows
+                                    ):
                                         continue
                                     source = rows[source_id]
                                     assert source is not None
@@ -8656,7 +8748,20 @@ class WorkflowService:
                                         continue
                                     required = port_requires_value(node_contract, name)
                                     field = ref["field"]
-                                    if source.status == "completed":
+                                    source_loop = source.snapshot.get("loop_id")
+                                    loop_status = (
+                                        root.state["loops"][source_loop]["status"]
+                                        if source_loop
+                                        and source_loop != row.snapshot.get("loop_id")
+                                        else None
+                                    )
+                                    if loop_status == "running":
+                                        if source_id not in data_wait:
+                                            data_wait.append(source_id)
+                                        continue
+                                    if loop_status not in (None, "passed", "skipped"):
+                                        reason = f"belongs to a loop that {loop_status}"
+                                    elif source.status == "completed":
                                         pinned = source.state.get(
                                             "child_result_ref"
                                         ) or {
@@ -9086,20 +9191,38 @@ class WorkflowService:
                                 else {}
                             )
                             iteration_inputs = row.snapshot.get("iteration_inputs", {})
-                            for key, ref in [] if retrying else task["inputs"].items():
-                                if node_contract and not (
-                                    ref.get("input") or ref.get("task_id")
-                                ):
-                                    continue
+                            bindings = {
+                                **task["inputs"],
+                                **{name: {} for name in iteration_inputs},
+                            }
+                            trial_feedback = root.snapshot.get("trial", {})
+                            if task["id"] == trial_feedback.get("node_id"):
+                                bindings.update(trial_feedback.get("feedback", {}))
+                            for key, ref in [] if retrying else bindings.items():
                                 if key in iteration_inputs:
                                     fixed = iteration_inputs[key]
-                                    inputs[key] = fixed["value"]
+                                    if fixed.get("missing"):
+                                        continue
+                                    inputs[key] = (
+                                        fixed["raw_value"]
+                                        if node_contract
+                                        else fixed["value"]
+                                    )
+                                    if node_contract:
+                                        port_sources[key] = {
+                                            "artifact": fixed["reference"],
+                                            "field": fixed["field"],
+                                        }
                                     if fixed["reference"] not in refs:
                                         refs.append(fixed["reference"])
                                     if row.snapshot.get("graph_task"):
                                         selected_fields.setdefault(
                                             fixed["reference"]["artifact_id"], []
                                         ).append(fixed["field"])
+                                    continue
+                                if node_contract and not (
+                                    ref.get("input") or ref.get("task_id")
+                                ):
                                     continue
                                 feedback = root.snapshot.get("trial", {}).get(
                                     "feedback", {}
@@ -9116,9 +9239,11 @@ class WorkflowService:
                                 ) in root.snapshot.get("trial", {}).get("sources", {}):
                                     trial_source = ref
                                 if trial_source is not None:
-                                    boundary = root.snapshot["trial"]["sources"][
+                                    boundary = root.snapshot["trial"]["sources"].get(
                                         trial_source["task_id"]
-                                    ]
+                                    )
+                                    if boundary is None:
+                                        continue
                                     trial_input_sources[key] = {
                                         "task_id": trial_source["task_id"],
                                         "field": trial_source["field"],
@@ -9263,7 +9388,7 @@ class WorkflowService:
                                                 content=row.result,
                                             )
                                         )
-                            elif node_contract:
+                            elif node_contract and not child_call:
                                 task_index = next(
                                     index
                                     for index, node in enumerate(definition["tasks"])
@@ -9365,31 +9490,47 @@ class WorkflowService:
                                     and not row.snapshot.get("graph_task")
                                     else root.snapshot["child_assets"][task["id"]]
                                 )
-                                frozen["inputs"] = (
-                                    inputs
-                                    if task.get("workflow")
-                                    and not row.snapshot.get("graph_task")
-                                    else {key: inputs[key] for key in task["inputs"]}
-                                )
-                                if trial_input_sources:
-                                    frozen["trial_inputs"] = copy.deepcopy(
-                                        trial_input_sources
-                                    )
-                                # A graph field reference grants only its value, not
-                                # full artifact access to a nested coordinator.
-                                frozen["input_artifacts"] = (
-                                    [] if row.snapshot.get("graph_task") else refs
-                                )
-                                row.snapshot = {
-                                    **row.snapshot,
-                                    "inputs": frozen["inputs"],
-                                    "input_artifacts": refs,
-                                    "trial_input_sources": trial_input_sources,
-                                }
                                 try:
+                                    index = task_indexes.get(task["id"])
+                                    path = (
+                                        f"definition.tasks.{index}.inputs"
+                                        if index is not None
+                                        else "inputs"
+                                    )
+                                    if node_contract:
+                                        inputs = normalize_port_inputs(
+                                            node_contract, inputs, path
+                                        )
+                                        for name, value in inputs.items():
+                                            if (
+                                                node_contract["properties"][name].get(
+                                                    "format"
+                                                )
+                                                not in REFERENCE_OUTPUTS.values()
+                                            ):
+                                                continue
+                                            await self._require_port_reference(
+                                                session,
+                                                username,
+                                                value,
+                                                f"{path}.{name}",
+                                            )
+                                            port_sources.setdefault(name, {})[
+                                                "reference"
+                                            ] = value
+                                        frozen["inputs"] = inputs
+                                    else:
+                                        frozen["inputs"] = (
+                                            inputs
+                                            if not row.snapshot.get("graph_task")
+                                            else {
+                                                key: inputs[key]
+                                                for key in task["inputs"]
+                                            }
+                                        )
                                     fields = [
                                         {
-                                            "path": f"inputs.{name}",
+                                            "path": f"{path}.{name}",
                                             "code": "REQUIRED",
                                             "message": "Provide non-empty text",
                                         }
@@ -9402,6 +9543,24 @@ class WorkflowService:
                                         raise RoleAssetError(
                                             "Invalid run inputs", fields
                                         )
+                                    if trial_input_sources:
+                                        frozen["trial_inputs"] = trial_input_sources
+                                    # Only declared values enter a static child scope.
+                                    frozen["input_artifacts"] = (
+                                        [] if row.snapshot.get("graph_task") else refs
+                                    )
+                                    row.snapshot = {
+                                        **row.snapshot,
+                                        "inputs": frozen["inputs"],
+                                        "input_artifacts": refs,
+                                        "trial_input_sources": trial_input_sources,
+                                        "port_sources": port_sources,
+                                        **(
+                                            {"typed_child_call": True}
+                                            if node_contract
+                                            else {}
+                                        ),
+                                    }
                                     depth = root.snapshot.get("depth", 0) + 1
                                     depth_limit = min(
                                         whole_root.snapshot["definition"].get(
@@ -10521,6 +10680,45 @@ class WorkflowService:
             raise RoleAssetError("Run has no completed result", status=409)
         return run["result"]
 
+    async def _artifact_source(
+        self, session: AsyncSession, username: str, ref: dict
+    ) -> tuple[AgentWorkflowRun, dict]:
+        """Resolve the original committed artifact behind public call results.
+
+        Args:
+            session: Transaction reading exact provenance.
+            username: Owner authorized for the artifact chain.
+            ref: Exact artifact reference exposed by the run.
+
+        Returns:
+            The originating task and its original exact reference.
+
+        Raises:
+            RoleAssetError: The stored source chain is invalid or unavailable.
+        """
+        visited = set()
+        while ref["artifact_id"] not in visited:
+            visited.add(ref["artifact_id"])
+            artifact = await session.get(
+                AgentWorkflowArtifact, (ref["artifact_id"], ref["version"])
+            )
+            row = (
+                await session.get(AgentWorkflowRun, artifact.run_id)
+                if artifact
+                else None
+            )
+            if row is None or row.owner_username != username:
+                break
+            source = (
+                row.state.get("child_source_ref")
+                if row.state.get("child_result_ref") == ref
+                else None
+            )
+            if source is None:
+                return row, ref
+            ref = source
+        raise RoleAssetError("Artifact source is unavailable", status=409)
+
     async def _require_port_reference(
         self, session: AsyncSession, username: str, value: dict, path: str
     ) -> None:
@@ -10546,6 +10744,7 @@ class WorkflowService:
             ) from exc
         if "file_id" in value:
             file_id = value["file_id"]
+            _, file_owner = await self._artifact_source(session, username, ref)
             owned_file = await session.scalar(
                 select(AgentWorkflowFile.file_id)
                 .join(
@@ -10553,8 +10752,8 @@ class WorkflowService:
                     AgentWorkflowArtifact.run_id == AgentWorkflowFile.run_id,
                 )
                 .where(
-                    AgentWorkflowArtifact.artifact_id == ref["artifact_id"],
-                    AgentWorkflowArtifact.version == ref["version"],
+                    AgentWorkflowArtifact.artifact_id == file_owner["artifact_id"],
+                    AgentWorkflowArtifact.version == file_owner["version"],
                     AgentWorkflowFile.file_id == file_id,
                 )
             )
@@ -11046,11 +11245,11 @@ class WorkflowService:
             raise RoleAssetError("Artifact file not found", status=404)
         if download:
             async with self.db.get_db() as session:
-                origin = await session.get(AgentWorkflowRun, artifact_id)
-                assert origin is not None
-                governed = False
-                source = origin
+                source, approval_ref = await self._artifact_source(
+                    session, username, {"artifact_id": artifact_id, "version": version}
+                )
                 visited = set()
+                approvals = []
                 while source.snapshot.get("parent_run_id"):
                     if source.run_id in visited:
                         raise RoleAssetError(
@@ -11071,7 +11270,9 @@ class WorkflowService:
                         == source.snapshot.get("node_id")
                         for task in scope.snapshot["definition"]["tasks"]
                     )
-                    if governed or not scope.snapshot.get("parent_run_id"):
+                    if governed and approval_ref not in approvals:
+                        approvals.append(approval_ref)
+                    if not scope.snapshot.get("parent_run_id"):
                         break
                     result_node = (
                         "coordinator"
@@ -11088,13 +11289,22 @@ class WorkflowService:
                             "Artifact caller is unavailable", status=409
                         )
                     returned = call.state.get("child_result_ref")
-                    if returned and returned["artifact_id"] != artifact_id:
-                        break
-                    # Child calls return the original artifact identity. Their
-                    # parent's approval still governs downloading that output.
+                    if (
+                        returned
+                        and returned["artifact_id"] != approval_ref["artifact_id"]
+                    ):
+                        original_ref = call.state.get("child_source_ref")
+                        if (
+                            not original_ref
+                            or original_ref["artifact_id"]
+                            != approval_ref["artifact_id"]
+                        ):
+                            break
+                        if original_ref == approval_ref:
+                            approval_ref = returned
                     source = call
-            if governed:
-                await self.export_artifact(username, artifact_id, version)
+            for ref in approvals:
+                await self.export_artifact(username, **ref)
         async with self.db.get_db() as session:
             file = await session.get(AgentWorkflowFile, file_id)
             if file is None:

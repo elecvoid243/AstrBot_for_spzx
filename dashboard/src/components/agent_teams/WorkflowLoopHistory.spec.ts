@@ -33,7 +33,13 @@ describe("loop history", () => {
     };
     const run = {
       snapshot: {
-        definition: { tasks: [{ id: "write" }], edges: [], loops: [] },
+        definition: {
+          tasks: [{ id: "write" }, { id: "outside" }],
+          entry_task_ids: ["write", "outside"],
+          result_task_id: "outside",
+          edges: [],
+          loops: [],
+        },
       },
       loops: [
         {
@@ -54,7 +60,11 @@ describe("loop history", () => {
       props: { run },
       global: {
         stubs: {
-          WorkflowGraphCanvas: true,
+          WorkflowGraphCanvas: {
+            name: "WorkflowGraphCanvas",
+            props: ["definition"],
+            template: "<div />",
+          },
           MarkdownMessagePart: {
             props: ["content"],
             template: "<div>{{ content }}</div>",
@@ -85,6 +95,11 @@ describe("loop history", () => {
     ).toBe(false);
     await wrapper.get('[data-testid="iteration-task-second"]').trigger("click");
     expect(wrapper.emitted("select")?.[0]).toEqual(["second"]);
+    await wrapper.get('[data-testid="iteration-artifact-second"]').trigger("click");
+    expect(wrapper.emitted("open-artifact")?.[0]).toEqual(["second", task.result_ref]);
+    const definition = wrapper.getComponent({ name: "WorkflowGraphCanvas" }).props("definition");
+    expect(definition.entry_task_ids).toEqual(["write"]);
+    expect(definition.result_task_id).toBeNull();
     await wrapper.setProps({
       run: {
         ...run,

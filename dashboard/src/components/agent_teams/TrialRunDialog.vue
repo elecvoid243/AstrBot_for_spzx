@@ -66,8 +66,8 @@
               :label="tm('trial.source')"
               :items="
                 requirement.pinned_only
-                  ? [artifactChoice]
-                  : [manualChoice, artifactChoice]
+                  ? [artifactChoice, ...(requirement.optional ? [omitChoice] : [])]
+                  : [manualChoice, artifactChoice, ...(requirement.optional ? [omitChoice] : [])]
               "
             />
             <template v-if="sourceModes[id] === 'artifact'">
@@ -91,7 +91,7 @@
                 :label="tm('trial.artifactVersion')"
               />
             </template>
-            <template v-else>
+            <template v-else-if="sourceModes[id] !== 'omit'">
               <v-switch
                 v-if="!preview.input_contract"
                 v-model="useRaw[id]"
@@ -208,6 +208,7 @@ const manualChoice = computed(() => ({
   title: tm("trial.manual"),
   value: "manual",
 }));
+const omitChoice = computed(() => ({ title: tm("trial.omitSource"), value: "omit" }));
 const artifactChoice = computed(() => ({
   title: tm("trial.artifact"),
   value: "artifact",
@@ -283,7 +284,7 @@ watch(
         string,
         any,
       ][]) {
-        sourceModes.value[id] = requirement.pinned_only ? "artifact" : "manual";
+        sourceModes.value[id] = requirement.optional ? "omit" : requirement.pinned_only ? "artifact" : "manual";
         manual.value[id] = {};
         useRaw.value[id] = !!value.input_contract;
         fieldTypes.value[id] = {};
@@ -344,6 +345,7 @@ async function start() {
     for (const [id, requirement] of Object.entries(
       preview.value.requirements,
     ) as [string, any][]) {
+      if (sourceModes.value[id] === "omit") continue;
       if (sourceModes.value[id] === "artifact") {
         const artifactId = artifactIds.value[id]?.trim();
         const version = Number(artifactVersions.value[id]);

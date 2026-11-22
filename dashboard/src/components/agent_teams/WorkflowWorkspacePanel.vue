@@ -272,6 +272,7 @@
                 :signal="observation.signal"
                 :selected-task="selectedTaskNode"
                 @select="selectRunTask"
+                @open-artifact="openIterationArtifact"
               />
             </div>
             <div ref="processPane" class="workbench-column workbench-process" @scroll="onProcessScroll">
@@ -488,7 +489,7 @@
             :items="artifactVersions"
             :label="tm('v2.artifactVersion')"
             data-testid="artifact-version"
-            @update:model-value="loadArtifact"
+            @update:model-value="historicalArtifact = null; loadArtifact()"
           />
           <p v-if="fileError" role="alert" class="text-error">{{ fileError }}</p>
           <pre
@@ -1312,6 +1313,10 @@ async function reloadLatestProcess() {
 }
 const teamEditing = ref(false);
 const selectedArtifact = ref<any>(null);
+const historicalArtifact = ref<{ taskId: string; ref: PortArtifactReference } | null>(null);
+const historicalResult = computed(() =>
+  historicalArtifact.value?.taskId === detailRun.value?.run_id ? historicalArtifact.value?.ref : undefined,
+);
 const artifactVersions = computed(() =>
   (detailRun.value?.artifacts ?? []).map(
     (item: { version: number }) => item.version,
@@ -1526,9 +1531,9 @@ async function refresh(background = false) {
           selectedRun.value = snapshot;
           selectedTaskNode.value = snapshot.tasks?.[0]?.run_id ?? null;
         }
-        const result = detailRun.value?.result_ref;
-        if (previousResult?.artifact_id !== result?.artifact_id ||
-            (previousResult?.version !== result?.version && artifactVersion.value === previousResult?.version)) {
+        const result = historicalResult.value ?? detailRun.value?.result_ref;
+        if (!historicalResult.value && (previousResult?.artifact_id !== result?.artifact_id ||
+            (previousResult?.version !== result?.version && artifactVersion.value === previousResult?.version))) {
           artifactVersion.value = result?.version ?? 1;
         }
         if (result && (selectedArtifact.value?.artifact_id !== result.artifact_id ||
@@ -1565,6 +1570,7 @@ function editTeam(asset: any) {
 }
 
 function selectRunTask(nodeId: string | null) {
+  historicalArtifact.value = null;
   runDisplay.value = 'workbench';
   activeRunPanel.value = 'process';
   if (nodeId)
@@ -1574,11 +1580,18 @@ function selectRunTask(nodeId: string | null) {
         ?.run_id ??
       nodeId;
 }
+function openIterationArtifact(taskId: string, ref: PortArtifactReference) {
+  selectRunTask(taskId);
+  historicalArtifact.value = { taskId, ref };
+  activeRunPanel.value = "results";
+  artifactVersion.value = ref.version;
+  void loadArtifact();
+}
 watch(
   () => detailRun.value?.run_id,
   async () => {
     clearFilePreview();
-    artifactVersion.value = detailRun.value?.result_ref?.version ?? 1;
+    artifactVersion.value = historicalResult.value?.version ?? detailRun.value?.result_ref?.version ?? 1;
     await loadArtifact();
   },
 );
@@ -1918,7 +1931,7 @@ async function applyRunControl(
 async function loadArtifact() {
   const signal = observation.value.signal;
   if (signal.aborted) return false;
-  const ref = detailRun.value?.result_ref;
+  const ref = historicalResult.value ?? detailRun.value?.result_ref;
   const version = Number(artifactVersion.value);
   if (ref && selectedArtifact.value?.artifact_id === ref.artifact_id && selectedArtifact.value?.version === version) return true;
   const key = JSON.stringify([ref?.artifact_id, version]);

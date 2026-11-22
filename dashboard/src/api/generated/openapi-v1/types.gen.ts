@@ -991,7 +991,7 @@ export type GraphTask = {
 } | null);
     transform?: ('parse_json' | 'map_fields' | 'json_text' | null);
     /**
-     * Explicit V2 input ports for an Agent or field mapping node.
+     * Explicit V2 input ports for an Agent, field mapping, or fixed child call. A fixed child call uses the pinned input contract.
      */
     input_contract?: WorkflowPortContract;
     position?: {
@@ -6528,6 +6528,7 @@ export type PreviewTrialApiV1WorkflowAssetsAssetIdTrialsPreviewPostResponse = ({
             [key: string]: {
                 name?: string;
                 pinned_only?: boolean;
+                optional?: boolean;
                 contract?: {
                     [key: string]: unknown;
                 } | null;

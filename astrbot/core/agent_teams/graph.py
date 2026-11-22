@@ -236,12 +236,8 @@ class GraphTask(BaseModel):
             ):
                 raise ValueError("Transform nodes cannot configure other execution")
             return self
-        if self.input_contract is not None and (
-            self.control or self.human or self.team or self.workflow
-        ):
-            raise ValueError(
-                "Only an Agent or field mapping can declare a node input contract"
-            )
+        if self.input_contract is not None and (self.control or self.human):
+            raise ValueError("Control and human nodes cannot declare an input contract")
         if self.control is not None:
             if (
                 self.human is not None
@@ -734,14 +730,6 @@ def validate_graph(
             }
         )
     if structured:
-        if definition.loops:
-            fields.append(
-                {
-                    "path": "definition.loops",
-                    "code": "UNSUPPORTED",
-                    "message": "Structured ports do not support loop feedback",
-                }
-            )
         contracts = [
             ("definition.input_contract", definition.input_contract, True),
             *[
@@ -846,7 +834,7 @@ def validate_graph(
                         port = field_schema(contract, name, structured=True)
                         if (
                             node is not None
-                            and not node.transform
+                            and not (node.transform or node.team or node.workflow)
                             and (
                                 not port.get("format")
                                 and set(port["type"]) != {"string"}
@@ -1011,6 +999,12 @@ def validate_graph(
             )
         pending -= ready
     entries = definition.entry_task_ids
+    loop_exits = {
+        task_id: loop.exit_task_id
+        for loop in definition.loops
+        if loop.exit_task_id in tasks
+        for task_id in loop.body
+    }
     execution_order = tuple(ancestors)
     if entries is not None:
         if not structured or (not entries and text_port_scope is None):
@@ -1039,27 +1033,45 @@ def validate_graph(
                         "message": "Select a unique V2 task with no incoming control edge, other than a join",
                     }
                 )
-        try:
-            execution_order = tuple(
-                TopologicalSorter(
-                    {
-                        task.id: predecessors[task.id]
-                        | {
-                            ref.task_id
-                            for ref in task.inputs.values()
-                            if ref.task_id in tasks
-                        }
-                        for task in definition.tasks
-                    }
-                ).static_order()
+        dependencies = {}
+        loop_gate_paths: dict[tuple[str, str], str] = {}
+        for index, task in enumerate(definition.tasks):
+            sources = dict.fromkeys(predecessors[task.id], "definition.edges")
+            sources.update(
+                {
+                    ref.task_id: f"definition.tasks.{index}.inputs.{name}"
+                    for name, ref in task.inputs.items()
+                    if ref.task_id in tasks
+                }
             )
-        except CycleError:
+            dependencies[task.id] = set(sources)
+            for source, path in sources.items():
+                exit_task = loop_exits.get(source)
+                if exit_task is not None and exit_task != loop_exits.get(task.id):
+                    dependencies[task.id].add(exit_task)
+                    loop_gate_paths[exit_task, task.id] = path
+        try:
+            execution_order = tuple(TopologicalSorter(dependencies).static_order())
+        except CycleError as exc:
             if not any(issue["code"] == "CYCLE" for issue in fields):
+                cycle = exc.args[1]
+                gated_path = next(
+                    (
+                        loop_gate_paths[pair]
+                        for pair in zip(cycle, cycle[1:])
+                        if pair in loop_gate_paths
+                    ),
+                    None,
+                )
                 fields.append(
                     {
-                        "path": "definition.tasks",
+                        "path": gated_path or "definition.tasks",
                         "code": "CYCLE",
-                        "message": "Control edges and data bindings cannot form a dependency cycle",
+                        "message": (
+                            "The loop must pass before an outside task can use its result, forming a dependency cycle."
+                            if gated_path
+                            else "Control edges and data bindings cannot form a dependency cycle"
+                        ),
                     }
                 )
     grouped: set[str] = set()
@@ -1085,38 +1097,91 @@ def validate_graph(
                         raise ValueError(
                             "A loop body cannot leave the group and reenter it"
                         )
+            if structured and loop.max_iterations > 1 and not loop.feedback:
+                fields.append(
+                    {
+                        "path": f"{path}.feedback",
+                        "code": "REQUIRED",
+                        "message": "Connect a next-round input for this loop",
+                    }
+                )
             targets = set()
-            for feedback in loop.feedback:
-                if feedback.source not in body or feedback.target not in body:
-                    raise ValueError(
-                        "Feedback must explicitly connect tasks within the loop body"
+            for feedback_index, feedback in enumerate(loop.feedback):
+                feedback_binding_path = f"{path}.feedback.{feedback_index}"
+                outside = [
+                    endpoint
+                    for endpoint in ("source", "target")
+                    if getattr(feedback, endpoint) not in body
+                ]
+                if outside:
+                    fields.extend(
+                        {
+                            "path": f"{feedback_binding_path}.{endpoint}",
+                            "code": "SCOPE",
+                            "message": "Feedback must explicitly connect tasks within the loop body",
+                        }
+                        for endpoint in outside
                     )
+                    continue
                 target = tasks[feedback.target]
-                if tasks[feedback.source].control:
-                    raise ValueError(
-                        "Feedback requires an upstream artifact, not a control node"
+                source = tasks[feedback.source]
+                if source.control and not (
+                    entries is not None and source.control.kind == "join"
+                ):
+                    raise ValueError("Feedback requires a validated artifact")
+                target_contract = task_input_contract(
+                    target.input_contract,
+                    target.transform,
+                    dispatch=bool(target.dispatch),
+                )
+                if target.human or (
+                    feedback.input not in target.inputs
+                    and feedback.input
+                    not in (target_contract or {}).get("properties", {})
+                ):
+                    fields.append(
+                        {
+                            "path": f"{feedback_binding_path}.input",
+                            "code": "REFERENCE",
+                            "message": "Feedback must override a declared input port",
+                        }
                     )
-                if target.human or feedback.input not in target.inputs:
-                    raise ValueError(
-                        "Feedback must override a declared agent task input"
-                    )
+                    continue
                 if (feedback.target, feedback.input) in targets:
                     raise ValueError(
                         "Each next-round input has exactly one feedback source"
                     )
                 targets.add((feedback.target, feedback.input))
                 feedback_schema = field_schema(
-                    tasks[feedback.source].output_contract, feedback.field
+                    source.result_contract(explicit_control=entries is not None),
+                    feedback.field,
+                    structured=structured and bool(target_contract),
                 )
-                if (
-                    definition.port_contract_version == 1
-                    and not (target.control or target.team or target.workflow)
+                feedback_path = f"definition.tasks.{definition.tasks.index(target)}.inputs.{feedback.input}"
+                if target_contract:
+                    target_schema = field_schema(
+                        target_contract, feedback.input, structured=True
+                    )
+                    if not set(feedback_schema["type"]) <= set(
+                        target_schema["type"]
+                    ) or feedback_schema.get("format") != target_schema.get("format"):
+                        fields.append(
+                            {
+                                "path": feedback_path,
+                                "code": "INCOMPATIBLE",
+                                "message": "Feedback must match the declared next-round port type",
+                            }
+                        )
+                elif (
+                    definition.port_contract_version in (1, 2)
+                    and not target.control
+                    and (structured or not (target.team or target.workflow))
                     and (text_port_scope is None or target.id in text_port_scope)
                     and set(feedback_schema["type"]) != {"string"}
                 ):
                     fields.append(
                         {
-                            "path": f"definition.tasks.{definition.tasks.index(target)}.inputs.{feedback.input}",
+                            "path": feedback_path,
                             "code": "INCOMPATIBLE",
                             "message": "Loop feedback for this port must provide text",
                         }
@@ -1201,6 +1266,21 @@ def validate_graph(
                         "message": "Approve an upstream dependency's exact artifact version",
                     }
                 )
+            if (
+                structured
+                and human.kind == "approval"
+                and human.artifact_version != 1
+                and (approved_task := data_sources.get(human.artifact_task_id))
+                and approved_task.input_contract is not None
+                and (approved_task.workflow or approved_task.team)
+            ):
+                fields.append(
+                    {
+                        "path": path + ".human.artifact_version",
+                        "code": "INCOMPATIBLE",
+                        "message": "A fixed call approval uses the exact version returned by the call",
+                    }
+                )
             continue
         config = (
             task.role_id,
@@ -1245,7 +1325,10 @@ def validate_graph(
         if node_contract and (text_port_scope is None or task.id in text_port_scope):
             for key in node_contract.get("required", []):
                 if port_requires_value(node_contract, key) and not (
-                    (binding := task.inputs.get(key))
+                    (
+                        binding := feedback_inputs.get(task.id, {}).get(key)
+                        or task.inputs.get(key)
+                    )
                     and (binding.input or binding.task_id)
                 ):
                     fields.append(
@@ -1259,9 +1342,9 @@ def validate_graph(
             text_port_scope is None or task.id in text_port_scope
         )
         check_text_binding = (check_text_ports and node_contract is None) or (
-            structured and bool(task.team or task.workflow)
+            structured and node_contract is None and bool(task.team or task.workflow)
         )
-        for key, ref in task.inputs.items():
+        for key, ref in {**task.inputs, **feedback_inputs.get(task.id, {})}.items():
             code = "REFERENCE"
             try:
                 feedback_ref = feedback_inputs.get(task.id, {}).get(key)
@@ -1324,7 +1407,7 @@ def validate_graph(
                     source_schema = field_schema(
                         producer.result_contract(explicit_control=entries is not None),
                         ref.field,
-                        structured=structured and bool(task.transform or typed_agent),
+                        structured=structured and bool(node_contract or typed_agent),
                     )
                 source_types = set(source_schema["type"])
                 if check_text_binding and (
@@ -1491,11 +1574,6 @@ def validate_graph(
                 }
             )
     if result_requirement == "reachable" and result is not None and not fields:
-        loop_exits = {
-            task_id: loop.exit_task_id
-            for loop in definition.loops
-            for task_id in loop.body
-        }
         reachable: set[str] = set()
         task_indexes = {task.id: index for index, task in enumerate(definition.tasks)}
         feedback_bindings: set[tuple[str, str]] = set()
@@ -1503,6 +1581,7 @@ def validate_graph(
         # their values are runtime data. Revisit nodes when a loop can pass or
         # provide next-round feedback.
         while True:
+            unavailable = []
             previous_count = len(reachable)
             for task_id in execution_order:
                 incoming = predecessors[task_id]
@@ -1533,14 +1612,22 @@ def validate_graph(
                     (name, binding)
                     for name, binding in task.inputs.items()
                     if binding.task_id is not None
-                    and binding.task_id not in reachable
+                    and (
+                        binding.task_id not in reachable
+                        or (
+                            entries is not None
+                            and binding.task_id in loop_exits
+                            and loop_exits[binding.task_id] != loop_exits.get(task_id)
+                            and loop_exits[binding.task_id] not in reachable
+                        )
+                    )
                     and (task_id, name) not in feedback_bindings
                     and (entries is None or port_requires_value(contract, name))
                 ]
                 if not missing:
                     reachable.add(task_id)
                 elif entries is not None:
-                    fields.extend(
+                    unavailable.extend(
                         {
                             "path": f"definition.tasks.{task_indexes[task_id]}.inputs.{name}",
                             "code": "UNREACHABLE_DATA",
@@ -1558,6 +1645,7 @@ def validate_graph(
                 and all(binding.source in reachable for binding in loop.feedback)
                 for binding in loop.feedback
             }
+        fields.extend(unavailable)
         if result.id not in reachable:
             fields.append(
                 {

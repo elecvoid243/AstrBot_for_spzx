@@ -14,13 +14,22 @@ from tests.agent_teams.test_workflow_assets import workflow_env as workflow_env
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("structured", "internal"),
+    [(False, False), (True, True), (True, False)],
+    ids=["legacy", "v2-projected", "v2-declared"],
+)
 async def test_returned_file_revision_preserves_authorization_inputs_and_approval(
     workflow_env,
+    structured,
+    internal,
 ):
     """Retain handed-off files without granting access to other stored files.
 
     Args:
         workflow_env: Public services with SQLite and an execution adapter.
+        structured: Use V2 call ports and two independent approval gates.
+        internal: Add an output outside of the public contract.
     """
     env = workflow_env
     contract = {
@@ -62,16 +71,34 @@ async def test_returned_file_revision_preserves_authorization_inputs_and_approva
                 ],
                 "max_parallel": 1,
                 "output_contract": contract,
+                **(
+                    {"approval_question": "Approve the child's exact file?"}
+                    if structured
+                    else {}
+                ),
             }
         },
     )
+    goal_port = {
+        "type": "object",
+        "properties": {"goal": {"type": "string"}},
+        "required": ["goal"],
+    }
     parent = await env.service.save_asset(
         "alice",
         {
             "definition": {
                 "name": "Review child files",
                 "result_task_id": "consumer",
-                "required_inputs": ["goal"],
+                **(
+                    {
+                        "port_contract_version": 2,
+                        "input_contract": goal_port,
+                        "entry_task_ids": ["call", "sibling"],
+                    }
+                    if structured
+                    else {"required_inputs": ["goal"]}
+                ),
                 "max_parallel": 1,
                 "tasks": [
                     {
@@ -80,6 +107,7 @@ async def test_returned_file_revision_preserves_authorization_inputs_and_approva
                         "team": {"asset_id": team["asset_id"], "version": 1},
                         "inputs": {"goal": {"input": "goal"}},
                         "output_contract": contract,
+                        **({"input_contract": goal_port} if structured else {}),
                     }
                     for name in ["call", "sibling"]
                 ]
@@ -201,6 +229,7 @@ async def test_returned_file_revision_preserves_authorization_inputs_and_approva
                     result_json=json.dumps(
                         {
                             "text": "Original caption",
+                            **({"internal": "coordinator context"} if internal else {}),
                             "files": [{"file_id": returned["file_id"]}],
                         }
                     ),
@@ -252,6 +281,33 @@ async def test_returned_file_revision_preserves_authorization_inputs_and_approva
     submitted = {
         await asyncio.wait_for(coordinator_results.get(), 10) for _ in range(2)
     }
+    if structured:
+        for approval_index in range(2):
+            for _ in range(200):
+                current = await env.service.get_run("alice", started["run_id"])
+                todo = next(
+                    (
+                        item
+                        for item in current["todos"]
+                        if item["scope_run_id"] != started["run_id"]
+                        and item["status"] == "pending"
+                    ),
+                    None,
+                )
+                if todo:
+                    break
+                await asyncio.sleep(0.01)
+            assert todo, current
+            await env.service.answer_todo(
+                "alice",
+                started["run_id"],
+                todo["todo_id"],
+                {
+                    "request_id": f"approve-child-file-{approval_index}",
+                    "action": "approve",
+                    "artifact_ref": todo["artifact_ref"],
+                },
+            )
     await asyncio.wait_for(consumer_ready.wait(), 10)
     current = await env.service.get_run("alice", started["run_id"])
     assert len(submitted) == 2
@@ -278,10 +334,86 @@ async def test_returned_file_revision_preserves_authorization_inputs_and_approva
     assert (
         await env.service.get_file("alice", artifact_id, 1, file_id, download=False)
     )["content"] == b"Complete original file COMPLETE_END"
-    assert current["todos"][0]["artifact_ref"] == {
+    parent_review = next(
+        todo for todo in current["todos"] if todo["scope_run_id"] == started["run_id"]
+    )
+    assert parent_review["artifact_ref"] == {
         "artifact_id": artifact_id,
         "version": 1,
     }
+
+    if structured:
+        private_ref = call["state"]["child_source_ref"]
+        private = await env.service.read_artifact("alice", **private_ref)
+        assert ("internal" in private["content"]) is internal
+        assert private_ref != call["result_ref"]
+        assert "internal" not in original["content"]
+        for ref in (call["result_ref"], private_ref):
+            with pytest.raises(RoleAssetError):
+                await env.service.get_file(
+                    "alice", **ref, file_id=file_id, download=True
+                )
+
+        file_port = {
+            "type": "object",
+            "properties": {"attachment": {"type": "object", "format": "astrbot-file"}},
+            "required": ["attachment"],
+        }
+        checked = await env.service.save_asset(
+            "alice",
+            {
+                "definition": {
+                    "name": "Read public file port",
+                    "port_contract_version": 2,
+                    "entry_task_ids": ["verify"],
+                    "input_contract": file_port,
+                    "result_task_id": "verify",
+                    "tasks": [
+                        {
+                            "id": "verify",
+                            "name": "Verify file source",
+                            "transform": "map_fields",
+                            "input_contract": file_port,
+                            "output_contract": file_port,
+                            "inputs": {"attachment": {"input": "attachment"}},
+                        }
+                    ],
+                }
+            },
+        )
+        target = {**call["result_ref"], "file_id": file_id}
+        verified = await env.service.start_run(
+            "alice",
+            checked["asset_id"],
+            {"version": 1, "inputs": {"attachment": target}},
+        )
+        assert (await completed_run(env.service, verified["run_id"]))["result"] == {
+            "attachment": target,
+        }
+        wrong = {**target, "file_id": files[coordinator["run_id"]][1]["file_id"]}
+        with pytest.raises(RoleAssetError, match="does not belong"):
+            await env.service.start_run(
+                "alice",
+                checked["asset_id"],
+                {"version": 1, "inputs": {"attachment": wrong}},
+            )
+        await env.service.answer_todo(
+            "alice",
+            started["run_id"],
+            parent_review["todo_id"],
+            {
+                "request_id": "approve-public-file",
+                "action": "approve",
+                "artifact_ref": call["result_ref"],
+            },
+        )
+        download = await env.service.get_file(
+            "alice", **call["result_ref"], file_id=file_id, download=True
+        )
+        assert download["content"] == b"Complete original file COMPLETE_END"
+        release.set()
+        await completed_run(env.service, started["run_id"])
+        return
 
     other = await env.service.start_run("alice", env.asset["asset_id"], {"version": 1})
     other_done = await completed_run(env.service, other["run_id"])

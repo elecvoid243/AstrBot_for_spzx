@@ -21,6 +21,7 @@
           v-if="kind === 'workflow'"
           v-model="mode"
           :label="tm('trial.scope')"
+          data-testid="trial-scope"
           :items="scopeOptions"
         />
         <v-select
@@ -30,6 +31,7 @@
           item-title="name"
           item-value="id"
           :label="tm('trial.startNode')"
+          data-testid="trial-start-node"
         />
         <v-alert v-if="error" type="error" variant="tonal" role="alert">{{
           error
@@ -40,6 +42,11 @@
             {{ tm("trial.selected") }}:
             {{ selectedNames.join(", ") || tm("trial.dynamicTeam") }}
           </p>
+          <StructuredWorkflowInputs
+            v-if="preview.input_contract"
+            v-model="structuredInputs"
+            :contract="preview.input_contract"
+          />
           <v-text-field
             v-for="name in preview.required_inputs"
             :key="name"
@@ -81,6 +88,7 @@
             </template>
             <template v-else>
               <v-switch
+                v-if="!preview.input_contract"
                 v-model="useRaw[id]"
                 :label="tm('trial.advancedMode')"
               />
@@ -151,6 +159,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { workflowAssetsApi } from "@/api/workflowAssets";
+import StructuredWorkflowInputs, { parseWorkflowInputs } from "./StructuredWorkflowInputs.vue";
 import { useModuleI18n } from "@/i18n/composables";
 import { extractApiError, type ApiErrorField } from "@/utils/extractApiError";
 import type { TrialRunRequest } from "@/api/generated/openapi-v1";
@@ -181,6 +190,7 @@ const loading = ref(false);
 const starting = ref(false);
 const error = ref("");
 const inputs = ref<Record<string, string>>({});
+const structuredInputs = ref("{}");
 const sourceModes = ref<Record<string, string>>({});
 const manual = ref<Record<string, Record<string, string>>>({});
 const fieldTypes = ref<Record<string, Record<string, string>>>({});
@@ -254,6 +264,7 @@ watch(
       );
       if (token !== generation) return;
       preview.value = value;
+      structuredInputs.value = "{}";
       inputs.value = Object.fromEntries(
         value.required_inputs.map((name: string) => [name, ""]),
       );
@@ -271,6 +282,7 @@ watch(
       ][]) {
         sourceModes.value[id] = requirement.pinned_only ? "artifact" : "manual";
         manual.value[id] = {};
+        useRaw.value[id] = !!value.input_contract;
         fieldTypes.value[id] = {};
         artifactVersions.value[id] = 1;
       }
@@ -347,7 +359,7 @@ async function start() {
         const fields = useRaw.value[id] ? [] : manualFields(requirement);
         const content: Record<string, any> = fields.length
           ? {}
-          : JSON.parse(rawContent.value[id] || "{}");
+          : parseWorkflowInputs(rawContent.value[id] || "{}");
         for (const field of fields) {
           const raw = manual.value[id][field.path];
           const type = fieldTypes.value[id][field.path] ?? field.types[0];
@@ -361,6 +373,8 @@ async function start() {
               : ["integer", "number"].includes(type)
               ? Number(raw)
               : raw;
+          if (typeof value === "number" && !Number.isFinite(value))
+            throw new Error(`${field.path}: ${tm("graph.finiteJsonNumbers")}`);
           const parts = field.path.split(".");
           let target = content;
           for (const part of parts.slice(0, -1)) target = target[part] ??= {};
@@ -374,7 +388,7 @@ async function start() {
       revision: props.revision,
       mode: mode.value,
       node_id: mode.value === "full" ? null : node.value,
-      inputs: inputs.value,
+      inputs: preview.value.input_contract ? parseWorkflowInputs(structuredInputs.value) : inputs.value,
       sources,
     });
     emit("update:modelValue", false);

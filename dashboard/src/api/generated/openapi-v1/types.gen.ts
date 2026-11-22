@@ -918,9 +918,10 @@ export type GraphDefinition = {
     default_provider_id?: (string | null);
     required_inputs?: Array<(string)>;
     /**
-     * Enables the named text port contract. Omit for legacy bindings.
+     * Version 1 uses text ports. Version 2 supports structured ports. Omit for legacy bindings.
      */
-    port_contract_version?: (1 | null);
+    port_contract_version?: (1 | 2 | null);
+    input_contract?: WorkflowPortContract;
     result_task_id?: (string | null);
     max_parallel?: number;
     max_depth?: number;
@@ -975,6 +976,8 @@ export type GraphTask = {
     output_contract?: ({
     [key: string]: unknown;
 } | null);
+    transform?: ('parse_json' | 'map_fields' | 'json_text' | null);
+    input_contract?: WorkflowPortContract;
     position?: {
         [key: string]: (number);
     };
@@ -1768,7 +1771,7 @@ export type TrialRunRequest = {
     mode: 'full' | 'single' | 'partial';
     node_id?: (string | null);
     inputs?: {
-        [key: string]: (string);
+        [key: string]: unknown;
     };
     sources?: {
         [key: string]: TrialSource;
@@ -1909,6 +1912,20 @@ export type WorkflowPackage = {
 };
 
 /**
+ * Inline JSON Schema object declaring named data ports and presence defaults.
+ */
+export type WorkflowPortContract = {
+    type: "object";
+    properties: {
+        [key: string]: {
+            [key: string]: unknown;
+        };
+    };
+    required?: Array<(string)>;
+    [key: string]: unknown | "object" | string;
+};
+
+/**
  * Start one new root from the completed run's exact launch inputs.
  */
 export type WorkflowRerunRequest = {
@@ -1938,7 +1955,7 @@ export type WorkflowSaveRequest = {
 export type WorkflowStartRequest = {
     version: number;
     inputs?: {
-        [key: string]: (string);
+        [key: string]: unknown;
     };
     source?: string;
     /**
@@ -6481,7 +6498,27 @@ export type PreviewTrialApiV1WorkflowAssetsAssetIdTrialsPreviewPostData = {
     };
 };
 
-export type PreviewTrialApiV1WorkflowAssetsAssetIdTrialsPreviewPostResponse = (unknown);
+export type PreviewTrialApiV1WorkflowAssetsAssetIdTrialsPreviewPostResponse = ({
+    status?: string;
+    message?: string;
+    data?: {
+        selected_nodes: Array<(string)>;
+        required_inputs: Array<(string)>;
+        input_contract?: WorkflowPortContract;
+        requirements: {
+            [key: string]: {
+                name?: string;
+                pinned_only?: boolean;
+                contract?: {
+                    [key: string]: unknown;
+                } | null;
+                fields?: {
+                    [key: string]: Array<(string)>;
+                };
+            };
+        };
+    };
+});
 
 export type PreviewTrialApiV1WorkflowAssetsAssetIdTrialsPreviewPostError = (WorkflowValidationError | HTTPValidationError);
 

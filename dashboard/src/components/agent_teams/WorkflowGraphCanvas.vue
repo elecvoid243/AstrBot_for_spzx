@@ -47,6 +47,13 @@
           @click="restore(1)"
           >{{ tm("graph.redo") }}</v-btn
         >
+        <v-btn
+          v-if="draft.port_contract_version === 1"
+          variant="text"
+          size="small"
+          data-testid="enable-structured-ports"
+          @click="enableStructuredPorts"
+        >{{ tm("graph.enableStructuredPorts") }}</v-btn>
         <v-btn variant="tonal" size="small" @click="layout">{{
           tm("graph.layout")
         }}</v-btn>
@@ -227,6 +234,17 @@
           data-testid="add-human-approval"
           @click="addTask('human:approval')"
           ><span class="graph-node-option"><strong>{{ tm("human.approvalNode") }}</strong><small>{{ tm("guide.approvalNode") }}</small></span></v-btn>
+        <template v-if="structuredPorts">
+          <v-btn
+            v-for="kind in transformKinds"
+            :key="kind"
+            :data-testid="`add-${kind}`"
+            variant="tonal"
+            size="small"
+            class="mb-3"
+            @click="addTask(`transform:${kind}`)"
+          >{{ tm(`graph.${kind}`) }}</v-btn>
+        </template>
         <v-btn
           variant="tonal"
           size="small"
@@ -334,6 +352,7 @@
           />
           <v-select
             v-if="
+              !selectedTask.transform &&
               !selectedTask.control &&
               !selectedTask.human &&
               !selectedTask.team &&
@@ -349,6 +368,7 @@
           />
           <v-select
             v-if="
+              !selectedTask.transform &&
               !selectedTask.control &&
               !selectedTask.human &&
               !selectedTask.team &&
@@ -373,6 +393,7 @@
           >
           <v-select
             v-if="
+              !selectedTask.transform &&
               !selectedTask.control &&
               !selectedTask.human &&
               !selectedTask.team &&
@@ -407,6 +428,7 @@
           </v-alert>
           <v-text-field
             v-if="
+              !selectedTask.transform &&
               !selectedTask.control &&
               !selectedTask.human &&
               !selectedTask.team &&
@@ -421,6 +443,7 @@
           />
           <v-textarea
             v-if="
+              !selectedTask.transform &&
               !selectedTask.control &&
               !selectedTask.human &&
               !selectedTask.team &&
@@ -820,6 +843,20 @@
               />
             </template>
           </template>
+          <template v-else-if="selectedTask.transform">
+            <p class="text-caption">{{ tm(`graph.${selectedTask.transform}Hint`) }}</p>
+            <v-textarea
+              v-for="contract in transformContracts"
+              :key="`${selectedTask.id}:${contract}`"
+              :data-testid="`transform-${contract}`"
+              :label="tm(`graph.${contract}`)"
+              :model-value="contractTexts[`${selectedTask.id}:${contract}`] ?? JSON.stringify(selectedTask[contract], null, 2)"
+              rows="5"
+              spellcheck="false"
+              @update:model-value="contractTexts[`${selectedTask.id}:${contract}`] = $event"
+              @update:focused="!$event && savePortContract(contract, selectedTask)"
+            />
+          </template>
           <template v-else-if="selectedTask.control?.kind !== 'join'">
             <h3 class="text-subtitle-2 mt-4 mb-2">{{ tm("graph.inputs") }}</h3>
             <div
@@ -1053,13 +1090,26 @@
           >
         </template>
         <template v-else-if="selectedNode === '__input'">
+          <v-textarea
+            v-if="structuredPorts"
+            :label="tm('graph.input_contract')"
+            :hint="tm('graph.portContractHint')"
+            persistent-hint
+            data-testid="workflow-input-contract"
+            :model-value="contractTexts['__input:input_contract'] ?? JSON.stringify(draft.input_contract, null, 2)"
+            rows="6"
+            spellcheck="false"
+            @update:model-value="contractTexts['__input:input_contract'] = $event"
+            @update:focused="!$event && savePortContract('input_contract')"
+          />
           <v-text-field
+            v-else
             :model-value="workflowInputText ?? (draft.required_inputs ?? []).join(', ')"
             :label="tm('v2.inputNames')"
             data-testid="workflow-input-names"
             :hint="tm('v2.inputHint')"
             persistent-hint
-            @update:model-value="textPorts ? (workflowInputText = $event) : setWorkflowInputs($event)"
+            @update:model-value="typedPorts ? (workflowInputText = $event) : setWorkflowInputs($event)"
             @update:focused="!$event && workflowInputText !== null && setWorkflowInputs(workflowInputText)"
             @keydown.enter="workflowInputText !== null && setWorkflowInputs(workflowInputText)"
           />
@@ -1180,11 +1230,12 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from "vue";
 import TeamsFlowCanvas from "./TeamsFlowCanvas.vue";
+import { parseWorkflowInputs } from "./StructuredWorkflowInputs.vue";
 import WorkflowLoopPanel from "./WorkflowLoopPanel.vue";
 import RoleResourcesEditor from "./RoleResourcesEditor.vue";
 import HumanWaitPolicyEditor from "./HumanWaitPolicyEditor.vue";
 import type { FlowEdgePayload, FlowNode } from "./TeamsFlowCanvas.vue";
-import type { GraphDefinition, GraphTask, TaskInput } from "@/api/generated/openapi-v1";
+import type { GraphDefinition, GraphTask, TaskInput, WorkflowPortContract } from "@/api/generated/openapi-v1";
 import { useModuleI18n } from "@/i18n/composables";
 import { collabMemberColor } from "@/utils/memberColors";
 import { workflowAssetsApi } from "@/api/workflowAssets";
@@ -1233,7 +1284,10 @@ const { tm } = useModuleI18n("features/agent-teams");
 const draft = ref<GraphDefinition>(
   JSON.parse(JSON.stringify(props.definition)),
 );
-const textPorts = computed(() => draft.value.port_contract_version === 1);
+const structuredPorts = computed(() => draft.value.port_contract_version === 2);
+const typedPorts = computed(() => !!draft.value.port_contract_version);
+const transformKinds = ["parse_json", "map_fields", "json_text"] as const;
+const jsonTypes = ["array", "boolean", "integer", "null", "number", "object", "string"];
 const workflowInputText = ref<string | null>(null);
 const invalidPortPath = ref("");
 const placeholderPattern = /\{\{|\}\}|\{([_\p{ID_Start}][\p{ID_Continue}]*):?\}/gu;
@@ -1472,8 +1526,17 @@ const editableContract = computed(() => {
       ["string", "integer", "number", "boolean", "null"].includes(value.type),
   );
 });
+const workflowPorts = computed(() => structuredPorts.value
+  ? (draft.value.input_contract?.properties ?? {})
+  : Object.fromEntries((draft.value.required_inputs ?? []).map((name) => [name, { type: "string" }]))
+);
+const transformContracts = computed<("input_contract" | "output_contract")[]>(() =>
+  selectedTask.value?.transform === "map_fields"
+    ? ["input_contract", "output_contract"]
+    : selectedTask.value?.transform === "parse_json" ? ["output_contract"] : []
+);
 const inputSources = computed(() => [
-  ...(draft.value.required_inputs ?? []).map((name) => ({
+  ...Object.keys(workflowPorts.value).map((name) => ({
     title: `${tm("graph.workflowInput")}: ${name}`,
     value: `input:${name}`,
   })),
@@ -1499,7 +1562,7 @@ const boundOutputFields = computed(() => {
     }
   }
   const result = draft.value.result_task_id;
-  if (result) {
+  if (result && !structuredPorts.value) {
     if (!fields.has(result)) fields.set(result, new Set());
     fields.get(result)!.add("text");
   }
@@ -1518,22 +1581,24 @@ function fieldsForTask(
   const visit = (schema: any, prefix = "") => {
     if (
       schema?.type !== "object" ||
-      !schema.properties ||
-      !Array.isArray(schema.required)
+      !schema.properties
     )
       return;
-    for (const name of schema.required) {
+    const names = structuredPorts.value ? Object.keys(schema.properties) : schema.required ?? [];
+    for (const name of names) {
       const field = schema.properties[name];
       const path = prefix ? `${prefix}.${name}` : name;
-      if (
-        ["string", "integer", "number", "boolean", "null"].includes(field?.type)
-      )
-        fields.push({ title: `${path} · ${field.type}`, value: path, type: field.type });
-      else if (field?.type === "object") visit(field, path);
+      const types: string[] = Array.isArray(field?.type) ? field.type : [field?.type];
+      if (types.every((type) => jsonTypes.includes(type)) &&
+        (structuredPorts.value || !["object", "array"].includes(field.type))) {
+        const type = types.join("|");
+        fields.push({ title: `${path} · ${type}`, value: path, type });
+      }
+      if (field?.type === "object") visit(field, path);
     }
   };
   if (task.output_contract) visit(task.output_contract);
-  if (textPorts.value) {
+  if (typedPorts.value) {
     // Keep saved references visible even when the contract needs server-side resolution.
     for (const path of boundOutputFields.value.get(id) ?? []) {
       if (!fields.some((field) => field.value === path))
@@ -1576,12 +1641,12 @@ function renameOutput(oldName: string, name: string) {
   schema.required = schema.required.map((item: string) =>
     item === oldName ? name : item,
   );
-  if (textPorts.value) {
+  if (typedPorts.value) {
     const taskId = selectedTask.value?.id;
     updateInputReferences((ref) =>
       ref.task_id === taskId && ref.field === oldName ? { ...ref, field: name } : ref,
     );
-    if (oldName === "text" && draft.value.result_task_id === taskId)
+    if (!structuredPorts.value && oldName === "text" && draft.value.result_task_id === taskId)
       draft.value.result_task_id = null;
   }
   checkpoint();
@@ -1597,10 +1662,10 @@ function removeOutput(name: string) {
   if (!schema) return;
   delete schema.properties[name];
   schema.required = schema.required.filter((item: string) => item !== name);
-  if (textPorts.value) {
+  if (typedPorts.value) {
     const taskId = selectedTask.value?.id;
     updateInputReferences((ref) => ref.task_id === taskId && ref.field === name ? null : ref);
-    if (name === "text" && draft.value.result_task_id === taskId)
+    if (!structuredPorts.value && name === "text" && draft.value.result_task_id === taskId)
       draft.value.result_task_id = null;
   }
   checkpoint();
@@ -1677,18 +1742,35 @@ const taskNodes = computed<FlowNode[]>(() =>
       },
       data: {
         label: task.name,
-        inputPorts: textPorts.value && !task.control && !task.human && !task.team && !task.workflow
-          ? agentInputNames(task).map((alias) => ({
-            id: `data-in:${alias}`,
-            label: `${alias} · string`,
-            invalid: invalidPortPath.value === `definition.tasks.${index}.inputs.${alias}` ||
-              props.issues.some((issue) => issue.path === `definition.tasks.${index}.inputs.${alias}`),
-          }))
+        inputPorts: typedPorts.value && !task.control && !task.human && !task.team && !task.workflow
+          ? Object.entries(
+              task.transform === "map_fields" ? task.input_contract?.properties ?? {} :
+              task.transform === "parse_json" ? { text: { type: "string" } } :
+              task.transform === "json_text" ? { value: { type: jsonTypes } } :
+              Object.fromEntries(agentInputNames(task).map((name) => [name, { type: "string" }]))
+            ).map(([alias, schema]) => {
+              const types = Array.isArray(schema.type) ? schema.type as string[] : [String(schema.type)];
+              const path = `definition.tasks.${index}.inputs.${alias}`;
+              return {
+                id: `data-in:${alias}`,
+                label: `${alias} · ${types.length === jsonTypes.length ? "JSON" : types.join("|")}`,
+                types,
+                invalid: invalidPortPath.value === path ||
+                  props.issues.some((issue) => issue.path === path || issue.path.startsWith(path + ".")),
+              };
+            })
           : undefined,
-        outputPorts: textPorts.value && !task.control
-          ? fieldsForTask(task.id).map((field) => ({ id: `data-out:${field.value}`, label: field.title }))
+        outputPorts: typedPorts.value && !task.control
+          ? [
+              ...fieldsForTask(task.id, true).map((field) => ({
+                id: `data-out:${field.value}`, label: field.title, types: field.type?.split("|"),
+              })),
+              ...(structuredPorts.value ? [{
+                id: "data-out-result", label: tm("graph.resultObject"), types: ["object"],
+              }] : []),
+            ]
           : undefined,
-        nodeKind: task.control ? "control" : task.human ? "human" : task.team || task.workflow ? "call" : "agent",
+        nodeKind: task.transform ? "transform" : task.control ? "control" : task.human ? "human" : task.team || task.workflow ? "call" : "agent",
         controlKind: task.control?.kind,
         approval: task.human?.kind === "approval",
         trueLabel: tm(
@@ -1699,7 +1781,7 @@ const taskNodes = computed<FlowNode[]>(() =>
             ? "human.returnForRevision"
             : "graph.falseExit",
         ),
-        memberName: task.control
+        memberName: task.transform ? tm(`graph.${task.transform}`) : task.control
           ? tm(
               task.control.kind === "condition"
                 ? "graph.conditionNode"
@@ -1731,7 +1813,7 @@ const taskNodes = computed<FlowNode[]>(() =>
               ?.definition.name ?? task.team.asset_id
           : task.human?.question ?? task.task,
         nodeNumber: index + 1,
-        configLabel: task.control
+        configLabel: task.transform ? "" : task.control
           ? ""
           : task.workflow
           ? `v${task.workflow.version}`
@@ -1812,13 +1894,14 @@ const nodes = computed<FlowNode[]>(() => [
           },
           data: {
             label: tm("graph.workflowInput"),
-            interfaceNode: textPorts.value,
-            outputPorts: textPorts.value
-              ? (draft.value.required_inputs ?? []).map((name) => ({
-                id: `data-out:${name}`, label: `${name} · string`,
-              }))
+            interfaceNode: typedPorts.value,
+            outputPorts: typedPorts.value
+              ? Object.entries(workflowPorts.value).map(([name, schema]) => {
+                  const types = Array.isArray(schema.type) ? schema.type as string[] : [String(schema.type)];
+                  return { id: `data-out:${name}`, label: `${name} · ${types.join("|")}`, types };
+                })
               : undefined,
-            memberName: textPorts.value ? "" : (draft.value.required_inputs ?? []).join(", "),
+            memberName: typedPorts.value ? "" : (draft.value.required_inputs ?? []).join(", "),
             outputLabel: tm("graph.inputs"),
           },
         },
@@ -1832,11 +1915,12 @@ const nodes = computed<FlowNode[]>(() => [
           },
           data: {
             label: tm("graph.outputs"),
-            interfaceNode: textPorts.value,
-            inputPorts: textPorts.value
+            interfaceNode: typedPorts.value,
+            inputPorts: typedPorts.value
               ? [{
-                id: "data-in:text",
-                label: "text · string",
+                id: structuredPorts.value ? "data-in-result" : "data-in:text",
+                label: structuredPorts.value ? tm("graph.resultObject") : "text · string",
+                types: structuredPorts.value ? ["object"] : ["string"],
                 invalid: invalidPortPath.value === "definition.result_task_id" ||
                   props.issues.some((issue) => issue.path === "definition.result_task_id"),
               }]
@@ -1877,7 +1961,7 @@ const nodes = computed<FlowNode[]>(() => [
   })),
 ]);
 const dataEdges = computed(() => {
-  if (!textPorts.value) return [];
+  if (!typedPorts.value) return [];
   const bindings: (FlowEdgePayload & { alias?: string })[] = [];
   for (const task of taskNodes.value) {
     const definition = draft.value.tasks.find((item) => item.id === task.id);
@@ -1897,11 +1981,13 @@ const dataEdges = computed(() => {
     }
   }
   const result = draft.value.result_task_id;
+  const sourceHandle = structuredPorts.value ? "data-out-result" : "data-out:text";
+  const targetHandle = structuredPorts.value ? "data-in-result" : "data-in:text";
   if (result && nodes.value.find((node) => node.id === result)?.data.outputPorts
-    ?.some((port) => port.id === "data-out:text")) {
+    ?.some((port) => port.id === sourceHandle)) {
     bindings.push({
-      id: "data:output:text", source: result, target: "__output",
-      sourceHandle: "data-out:text", targetHandle: "data-in:text",
+      id: structuredPorts.value ? "data:output:result" : "data:output:text",
+      source: result, target: "__output", sourceHandle, targetHandle,
     });
   }
   return bindings;
@@ -1912,7 +1998,7 @@ const selectedDataEdge = computed(() =>
 const edges = computed<FlowEdgePayload[]>(() => [
   ...(
     [
-      ...(!textPorts.value && showInterfaceNodes.value && draft.value.tasks.length === 1
+      ...(!typedPorts.value && showInterfaceNodes.value && draft.value.tasks.length === 1
         ? [
             { source: "__input", target: draft.value.tasks[0].id },
             ...(validResultTask.value
@@ -1920,7 +2006,7 @@ const edges = computed<FlowEdgePayload[]>(() => [
               : []),
           ]
         : []),
-      ...(!textPorts.value && showInterfaceNodes.value &&
+      ...(!typedPorts.value && showInterfaceNodes.value &&
       draft.value.tasks.length !== 1 &&
       validResultTask.value
         ? [{ source: draft.value.result_task_id!, target: "__output" }]
@@ -2134,7 +2220,10 @@ function addTask(roleId: string, position?: { x: number; y: number }) {
       : roleId === "control:join"
       ? "join"
       : null;
-  if (!inline && !role && !humanKind && !team && !workflow && !controlKind) return;
+  const transform = structuredPorts.value
+    ? transformKinds.find((kind) => roleId === `transform:${kind}`)
+    : undefined;
+  if (!inline && !role && !humanKind && !team && !workflow && !controlKind && !transform) return;
   const seed =
     typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
       ? crypto.randomUUID().replace(/-/g, "").slice(0, 8)
@@ -2147,7 +2236,7 @@ function addTask(roleId: string, position?: { x: number; y: number }) {
   const index = draft.value.tasks.length;
   draft.value.tasks.push({
     id,
-    name: controlKind
+    name: transform ? tm(`graph.${transform}`) : controlKind
       ? tm(
           controlKind === "condition"
             ? "graph.conditionNode"
@@ -2162,7 +2251,13 @@ function addTask(roleId: string, position?: { x: number; y: number }) {
       : inline
       ? "Agent"
       : role!.definition.name,
-    ...(controlKind
+    ...(transform
+      ? {
+          transform,
+          ...(transform === "map_fields" ? { input_contract: { type: "object" as const, properties: {} } } : {}),
+          ...(transform !== "json_text" ? { output_contract: { type: "object", properties: {} } } : {}),
+        }
+      : controlKind
       ? {
           control:
             controlKind === "condition"
@@ -2388,7 +2483,7 @@ function connect({
   targetHandle?: string | null;
 }) {
   if (props.readonly || from === to) return;
-  if (textPorts.value && (sourceHandle?.startsWith("data-") || targetHandle?.startsWith("data-"))) {
+  if (typedPorts.value && (sourceHandle?.startsWith("data-") || targetHandle?.startsWith("data-"))) {
     const source = nodes.value.find((node) => node.id === from)?.data.outputPorts
       ?.find((port) => port.id === sourceHandle);
     const target = nodes.value.find((node) => node.id === to)?.data.inputPorts
@@ -2398,9 +2493,10 @@ function connect({
     const taskIndex = draft.value.tasks.findIndex((task) => task.id === to);
     invalidPortPath.value = to === "__output" ? "definition.result_task_id" :
       alias ? `definition.tasks.${taskIndex}.inputs.${alias}` : "";
-    if (!source || !target || !field ||
-      (from !== "__input" && !fieldsForTask(from, true).some((item) => item.value === field && item.type === "string")) ||
-      (to === "__output" && (from === "__input" || field !== "text"))) {
+    const resultHandle = structuredPorts.value ? "data-out-result" : "data-out:text";
+    if (!source || !target || !field || !source.types?.every(
+      (type) => target.types?.includes(type) || (type === "integer" && target.types?.includes("number")),
+    ) || (to === "__output" ? (from === "__input" || source.id !== resultHandle) : source.id === "data-out-result")) {
       localError.value = [source?.label, target?.label, tm("graph.invalidPortConnection")]
         .filter(Boolean).join(" · ");
       return;
@@ -2461,11 +2557,45 @@ function updateInputReferences(update: (ref: TaskInput) => TaskInput | null) {
   }
 }
 
+function enableStructuredPorts() {
+  draft.value.input_contract = {
+    type: "object",
+    properties: workflowPorts.value,
+    required: draft.value.required_inputs ?? [],
+  };
+  draft.value.required_inputs = [];
+  draft.value.port_contract_version = 2;
+  checkpoint();
+  selectNode("__input");
+}
+
+function savePortContract(key: "input_contract" | "output_contract", task?: GraphTask) {
+  const editor = `${task?.id ?? "__input"}:${key}`;
+  const value = contractTexts.value[editor];
+  if (value === undefined) return;
+  try {
+    const contract = parseWorkflowInputs(value) as WorkflowPortContract;
+    if (contract?.type !== "object" || !contract.properties ||
+      typeof contract.properties !== "object" || Array.isArray(contract.properties) ||
+      Object.values(contract.properties).some((schema) => !schema || typeof schema !== "object" || Array.isArray(schema))
+    ) throw new Error();
+    if (task) task[key] = contract;
+    else draft.value.input_contract = contract;
+    delete contractTexts.value[editor];
+    delete contractErrors.value[editor];
+    checkpoint();
+  } catch {
+    contractErrors.value[editor] = tm("graph.invalidPortContract");
+  }
+  emit("validation", readingTeams.value || selectingTeam.value || teamReadError.value ||
+    Object.keys(contractErrors.value).length > 0);
+}
+
 function setWorkflowInputs(value: string) {
   workflowInputText.value = null;
   const previous = draft.value.required_inputs ?? [];
   const next = value.split(",").map((name) => name.trim()).filter(Boolean);
-  if (textPorts.value) {
+  if (typedPorts.value) {
     const removed = previous.filter((name) => !next.includes(name));
     const added = next.filter((name) => !previous.includes(name));
     const renamed = removed.length === 1 && added.length === 1 &&
@@ -2521,13 +2651,15 @@ function removeTask() {
     (edge) =>
       edge.source !== selectedNode.value && edge.target !== selectedNode.value,
   );
-  if (textPorts.value && removed) {
+  if (typedPorts.value && removed) {
     updateInputReferences((ref) => ref.task_id === removed ? null : ref);
     if (draft.value.result_task_id === removed) draft.value.result_task_id = null;
   }
   if (selectedNode.value) {
-    delete contractErrors.value[selectedNode.value];
-    delete contractTexts.value[selectedNode.value];
+    for (const key of [selectedNode.value, `${selectedNode.value}:input_contract`, `${selectedNode.value}:output_contract`]) {
+      delete contractErrors.value[key];
+      delete contractTexts.value[key];
+    }
     emit("validation", Object.keys(contractErrors.value).length > 0);
   }
   selectedNode.value = null;
@@ -2556,7 +2688,7 @@ function renameInput(alias: string, name: string) {
     inputRenderKeys.value[`${taskId}:${alias}`] ?? alias;
   inputs[name] = inputs[alias];
   delete inputs[alias];
-  if (textPorts.value && selectedTask.value) {
+  if (typedPorts.value && selectedTask.value) {
     selectedTask.value.task = selectedTask.value.task?.replace(
       placeholderPattern, (match, field) => field === alias ? `{${name}}` : match,
     );

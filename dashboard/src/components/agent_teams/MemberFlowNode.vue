@@ -6,7 +6,7 @@
       v-if="data.interactive !== false && !data.interfaceNode"
       type="target"
       :position="Position.Left"
-      class="at-node-handle"
+      class="at-node-handle at-control-handle"
       role="button"
       :aria-label="tm('editor.handleTarget')"
     />
@@ -20,7 +20,7 @@
       v-else-if="data.interactive !== false && !data.interfaceNode"
       type="source"
       :position="Position.Right"
-      class="at-node-handle"
+      class="at-node-handle at-control-handle"
       role="button"
       :aria-label="tm('editor.handleSource')"
     />
@@ -30,6 +30,7 @@
         <template v-if="data.nodeKind === 'control'"><circle cx="6" cy="5" r="2"/><circle cx="18" cy="6" r="2"/><circle cx="18" cy="18" r="2"/><path d="M6 7v3c0 5 4 8 10 8M6 10c0-3 4-4 10-4"/></template>
         <template v-else-if="data.nodeKind === 'human'"><circle cx="12" cy="8" r="3"/><path d="M5 20c0-4 3-6 7-6s7 2 7 6"/></template>
         <template v-else-if="data.nodeKind === 'call'"><rect x="4" y="5" width="16" height="14" rx="3"/><path d="M8 12h8m-3-3 3 3-3 3"/></template>
+        <template v-else-if="data.nodeKind === 'transform'"><path d="m8 6-5 6 5 6m8-12 5 6-5 6m-3-13-2 14"/></template>
         <template v-else><rect x="4" y="7" width="16" height="12" rx="4"/><path d="M12 4v3M8 12h.01M16 12h.01M9 16h6"/></template>
       </svg>
     </div>
@@ -114,6 +115,7 @@ export interface FlowPort {
   id: string;
   label: string;
   invalid?: boolean;
+  types?: string[];
 }
 
 export interface MemberFlowNodeData {
@@ -193,6 +195,7 @@ const cardClasses = computed(() => ({
 </script>
 
 <style scoped>
+.member-flow-node:has(.at-data-ports) > .at-control-handle { top: 22px; }
 .at-data-ports {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -426,6 +429,7 @@ const cardClasses = computed(() => ({
 .at-node-type-icon svg { width: 16px; height: 16px; }
 .at-node-type-icon.kind-control { color: #8066a6; background: #f1edf8; }
 .at-node-type-icon.kind-human { color: #a47332; background: #fbf2e4; }
+.at-node-type-icon.kind-transform { color: #087d74; background: #d7f2ef; }
 .at-node-type-icon.kind-call { color: #568374; background: #eaf5f0; }
 .at-node-member, .at-node-task, .at-node-footer, .at-node-number { color: var(--at-muted, #788b9b); }
 .at-node-member { font-weight: 400; }

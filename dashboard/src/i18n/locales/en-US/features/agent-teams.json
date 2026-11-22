@@ -494,6 +494,21 @@
     }
   },
   "graph": {
+    "finiteJsonNumbers": "Use finite JSON numbers.",
+    "enableStructuredPorts": "Use structured ports",
+    "parse_json": "Parse JSON object",
+    "parse_jsonHint": "Connect JSON text to the text port and declare the fields returned by the parser.",
+    "map_fields": "Map fields",
+    "map_fieldsHint": "Declare each destination field as an input port and connect its source. The output retains the field names and JSON values.",
+    "json_text": "Convert JSON to text",
+    "json_textHint": "Connect a JSON value and use the text output where a string is required.",
+    "input_contract": "Input contract (JSON Schema)",
+    "output_contract": "Output contract (JSON Schema)",
+    "portContractHint": "Declare an object with properties. Use required for mandatory fields and default for omitted inputs.",
+    "invalidPortContract": "Provide an object JSON Schema with a properties object.",
+    "resultObject": "result · object",
+    "inputValuesJson": "Input values (JSON)",
+    "inputValuesHint": "Enter a JSON object. Omit a field to use its default. Enter null only when the contract permits it.",
     "operators": {
       "eq": "Equal to",
       "ne": "Not equal to",

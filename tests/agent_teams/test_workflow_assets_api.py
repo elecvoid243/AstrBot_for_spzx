@@ -43,6 +43,281 @@ async def publication_client(workflow_env):
 
 
 @pytest.mark.asyncio
+async def test_structured_ports_across_trial_and_published_run(
+    workflow_env, publication_client
+):
+    query = {
+        "type": "object",
+        "properties": {"limit": {"type": "integer"}},
+        "required": ["limit"],
+    }
+    rows = {
+        "type": "array",
+        "items": {
+            "type": "object",
+            "properties": {"id": {"type": "integer"}},
+            "required": ["id"],
+        },
+    }
+    nullable = {"type": ["string", "null"], "default": "fallback"}
+    properties = {
+        "query": query,
+        "rows": rows,
+        "label": nullable,
+        "enabled": {"type": "boolean"},
+        "note": {"type": "string"},
+    }
+    result_contract = {
+        "type": "object",
+        "properties": properties,
+        "required": ["query", "rows", "enabled"],
+        "additionalProperties": False,
+    }
+    definition = {
+        "name": "Structured data",
+        "port_contract_version": 2,
+        "input_contract": {
+            "type": "object",
+            "properties": {
+                "raw": {"type": "string"},
+                "label": nullable,
+                "enabled": {"type": "boolean"},
+                "files": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["raw", "enabled"],
+        },
+        "result_task_id": "map",
+        "edges": [{"source": "parse", "target": "map"}],
+        "tasks": [
+            {
+                "id": "parse",
+                "name": "Parse",
+                "transform": "parse_json",
+                "inputs": {"text": {"input": "raw"}},
+                "output_contract": {
+                    "type": "object",
+                    "properties": {"query": query, "rows": rows},
+                    "required": ["query", "rows"],
+                },
+            },
+            {
+                "id": "map",
+                "name": "Map",
+                "transform": "map_fields",
+                "input_contract": result_contract,
+                "output_contract": result_contract,
+                "inputs": {
+                    "query": {"task_id": "parse", "field": "query"},
+                    "rows": {"task_id": "parse", "field": "rows"},
+                    "label": {"input": "label"},
+                    "enabled": {"input": "enabled"},
+                    "note": {},
+                },
+            },
+        ],
+    }
+    created = await publication_client.post(
+        "/api/v1/agent_drafts/workflow", json={"body": {"definition": definition}}
+    )
+    assert created.status_code == 200, created.text
+    asset_id = created.json()["data"]["asset_id"]
+    draft = f"/api/v1/agent_drafts/workflow/{asset_id}"
+    asset = f"/api/v1/workflow_assets/{asset_id}"
+    reopened = await publication_client.get(draft)
+    assert reopened.json()["data"]["body"]["definition"] == definition
+
+    full = {"kind": "workflow", "revision": 1, "mode": "full"}
+    partial = {**full, "mode": "partial", "node_id": "map"}
+    payload = {
+        "raw": '{"query":{"limit":0},"rows":[{"id":1},{"id":2}]}',
+        "enabled": False,
+        "files": ["notes.txt"],
+    }
+    structured = {"query": {"limit": 0}, "rows": [{"id": 1}, {"id": 2}]}
+    trial = await publication_client.post(
+        f"{asset}/trials", json={**full, "inputs": payload}
+    )
+    published = await publication_client.post(f"{draft}/publish", json={"revision": 1})
+    assert published.status_code == 200, published.text
+    assert published.json()["data"]["definition"]["port_contract_version"] == 2
+    invalid_launch = await publication_client.post(
+        f"{asset}/runs", json={"version": 1, "inputs": {**payload, "enabled": None}}
+    )
+    assert invalid_launch.status_code == 400, invalid_launch.text
+    assert invalid_launch.json()["data"]["fields"][0]["path"] == "inputs.enabled"
+    live = await publication_client.post(
+        f"{asset}/runs", json={"version": 1, "inputs": {**payload, "label": None}}
+    )
+    preview = await publication_client.post(f"{asset}/trials/preview", json=partial)
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["data"]["requirements"]["parse"]["fields"] == {
+        "query": ["object"],
+        "rows": ["array"],
+    }
+    bounded = await publication_client.post(
+        f"{asset}/trials",
+        json={
+            **partial,
+            "inputs": {"enabled": False},
+            "sources": {"parse": {"content": structured}},
+        },
+    )
+    invalid = await publication_client.post(
+        f"{asset}/trials",
+        json={
+            **partial,
+            "inputs": {"enabled": False},
+            "sources": {"parse": {"content": {**structured, "rows": [{"id": "oops"}]}}},
+        },
+    )
+    assert invalid.status_code == 400, invalid.text
+    assert [item["path"] for item in invalid.json()["data"]["fields"]] == [
+        "definition.tasks.1.inputs.rows.0.id"
+    ]
+    for response, label in ((trial, "fallback"), (live, None), (bounded, "fallback")):
+        assert response.status_code == 200, response.text
+        run = await completed_run(
+            workflow_env.service, response.json()["data"]["run_id"]
+        )
+        assert run["status"] == "completed", run
+        expected = {**structured, "label": label, "enabled": False}
+        assert run["tasks"][-1]["snapshot"]["inputs"] == expected
+        assert await workflow_env.service.get_result("alice", run["run_id"]) == expected
+
+    # A disconnected optional port is safe in full and bounded compilation. A
+    # cross-field root constraint keeps the complete trial input form.
+    definition["tasks"][1]["inputs"]["label"] = {}
+    definition["input_contract"]["minProperties"] = 3
+    saved = await publication_client.put(
+        draft, json={"body": {"definition": definition}, "expected_revision": 1}
+    )
+    assert saved.status_code == 200, saved.text
+    cross_field = await publication_client.post(
+        f"{asset}/trials/preview", json={**partial, "revision": 2}
+    )
+    assert cross_field.json()["data"]["input_contract"] == definition["input_contract"]
+    bounded = await publication_client.post(
+        f"{asset}/trials",
+        json={
+            **partial,
+            "revision": 2,
+            "inputs": payload,
+            "sources": {"parse": {"content": structured}},
+        },
+    )
+    assert bounded.status_code == 200, bounded.text
+    run = await completed_run(workflow_env.service, bounded.json()["data"]["run_id"])
+    assert run["result"] == {**structured, "label": "fallback", "enabled": False}
+
+    for raw, path in (
+        ('{"query":{"limit":1e400},"rows":[]}', "inputs.text"),
+        (r'{"query":{"limit":0,"bad":"\ud800"},"rows":[]}', "inputs.text"),
+        (
+            '{"query":{"limit":0},"rows":[],"files":[{"file_id":"unrelated"}]}',
+            "output_contract.files",
+        ),
+    ):
+        invalid_parse = await publication_client.post(
+            f"{asset}/trials",
+            json={**full, "revision": 2, "inputs": {**payload, "raw": raw}},
+        )
+        assert invalid_parse.status_code == 200, invalid_parse.text
+        run = await completed_run(
+            workflow_env.service, invalid_parse.json()["data"]["run_id"]
+        )
+        assert run["status"] == "blocked"
+        assert (
+            run["tasks"][0]["validation_errors"][0]["path"]
+            == f"definition.tasks.0.{path}"
+        )
+
+
+@pytest.mark.asyncio
+async def test_explicit_json_conversion_and_default_text_binding(
+    workflow_env, publication_client
+):
+    writer = workflow_env.asset["definition"]["tasks"][0]
+    definition = {
+        "name": "Explicit JSON conversion",
+        "port_contract_version": 2,
+        "input_contract": {
+            "type": "object",
+            "properties": {
+                "value": {"type": "object"},
+                "prefix": {"type": "string", "default": "Resolved"},
+            },
+            "required": ["value"],
+        },
+        "result_task_id": writer["id"],
+        "edges": [{"source": "serialize", "target": writer["id"]}],
+        "tasks": [
+            {
+                "id": "serialize",
+                "name": "JSON to text",
+                "transform": "json_text",
+                "inputs": {"value": {"input": "value"}},
+            },
+            {
+                **writer,
+                "task": "{prefix}: {subject}",
+                "inputs": {
+                    "prefix": {"input": "prefix"},
+                    "subject": {"task_id": "serialize", "field": "text"},
+                },
+            },
+        ],
+    }
+    for properties in (None, 1):
+        saved = await publication_client.post(
+            "/api/v1/workflow_assets",
+            json={
+                "definition": {
+                    **definition,
+                    "input_contract": {"type": "object", "properties": properties},
+                }
+            },
+        )
+        assert saved.status_code == 400, saved.text
+        assert saved.json()["data"]["fields"][0]["path"] == "definition.input_contract"
+
+    saved = await publication_client.post(
+        "/api/v1/workflow_assets", json={"definition": definition}
+    )
+    assert saved.status_code == 200, saved.text
+    child_id = saved.json()["data"]["asset_id"]
+    started = await publication_client.post(
+        f"/api/v1/workflow_assets/{child_id}/runs",
+        json={"version": 1, "inputs": {"value": {"x": False}}},
+    )
+    assert started.status_code == 200, started.text
+    run = await completed_run(workflow_env.service, started.json()["data"]["run_id"])
+    assert run["status"] == "completed", run
+    assert run["tasks"][0]["snapshot"]["inputs"] == {"value": {"x": False}}
+    assert workflow_env.observations[-1][1] == 'Resolved: {"x": false}'
+
+    parent = await publication_client.post(
+        "/api/v1/workflow_assets",
+        json={
+            "definition": {
+                "name": "Fixed call",
+                "result_task_id": "child",
+                "tasks": [
+                    {
+                        "id": "child",
+                        "name": "Child",
+                        "workflow": {"asset_id": child_id, "version": 1},
+                    }
+                ],
+            },
+        },
+    )
+    assert parent.status_code == 400, parent.text
+    assert [
+        (field["path"], field["code"]) for field in parent.json()["data"]["fields"]
+    ] == [("definition.tasks.0.workflow", "INCOMPATIBLE")]
+
+
+@pytest.mark.asyncio
 async def test_text_port_draft_and_published_run_share_validation(
     workflow_env, publication_client
 ):
@@ -983,16 +1258,7 @@ def test_human_http_uuid_answers_reconnect_and_owner_permissions(tmp_path):
         assert events["snapshot"] is None
         assert events["reset"] is False
         assert events["cursor"] >= after["cursor"]
-        assert (
-            len(
-                [
-                    e
-                    for e in events["events"]
-                    if e["kind"] == "human.consumed"
-                ]
-            )
-            == 1
-        )
+        assert len([e for e in events["events"] if e["kind"] == "human.consumed"]) == 1
 
 
 @pytest.mark.asyncio

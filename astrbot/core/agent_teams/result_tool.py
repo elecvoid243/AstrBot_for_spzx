@@ -12,22 +12,29 @@ from astrbot.core.agent.tool import FunctionTool
 from astrbot.core.agent_teams.assets import RoleAssetError
 
 
-def validate_result(contract: dict | None, payload: dict) -> list[dict]:
+def validate_result(
+    contract: dict | None, payload: dict, *, validate_files: bool = True
+) -> list[dict]:
     """Return contract field errors shared by submission and revision.
 
     Args:
         contract: The immutable output schema, or the default text contract.
-        payload: Complete task result to validate.
+        payload: Complete object to validate.
+        validate_files: Enforce stable attachment references for persisted results.
 
     Returns:
         Specific field errors; an empty list means the result is consumable.
     """
     fields = []
     try:
-        json.dumps(payload, allow_nan=False)
-    except (TypeError, ValueError):
+        json.dumps(payload, ensure_ascii=False, allow_nan=False).encode("utf-8")
+    except (TypeError, ValueError, RecursionError):
         return [
-            {"path": "result", "code": "INVALID", "message": "Submit finite JSON data"}
+            {
+                "path": "result",
+                "code": "INVALID",
+                "message": "Submit finite UTF-8 JSON data",
+            }
         ]
     if contract is not None:
         for issue in Draft202012Validator(contract).iter_errors(payload):
@@ -67,7 +74,7 @@ def validate_result(contract: dict | None, payload: dict) -> list[dict]:
             for name in payload
             if name != "text"
         )
-    if "files" in payload:
+    if validate_files and "files" in payload:
         files = payload["files"]
         if not isinstance(files, list):
             fields.append(

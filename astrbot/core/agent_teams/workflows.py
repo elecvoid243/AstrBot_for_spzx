@@ -20,6 +20,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    JsonValue,
     ValidationError,
     field_serializer,
     field_validator,
@@ -64,8 +65,10 @@ from astrbot.core.agent_teams.graph import (
     GraphTask,
     TaskInput,
     WorkflowCall,
+    execute_port_transform,
     field_schema,
     matches_condition,
+    normalize_port_inputs,
     validate_graph,
 )
 from astrbot.core.agent_teams.result_tool import (
@@ -336,7 +339,7 @@ class WorkflowStartRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid", strict=True)
     version: int = Field(ge=1)
-    inputs: dict[str, str] = Field(default_factory=dict)
+    inputs: dict[str, JsonValue] = Field(default_factory=dict)
     source: str = Field(default="dashboard", min_length=1, max_length=512)
     input_artifacts: list[ArtifactReference] = Field(
         default_factory=list, max_length=30
@@ -380,7 +383,7 @@ class TrialRunRequest(BaseModel):
     revision: int = Field(ge=1)
     mode: Literal["full", "single", "partial"]
     node_id: str | None = None
-    inputs: dict[str, str] = Field(default_factory=dict)
+    inputs: dict[str, JsonValue] = Field(default_factory=dict)
     sources: dict[str, TrialSource] = Field(default_factory=dict)
 
 
@@ -726,6 +729,17 @@ class WorkflowService:
                         status=exc.status,
                     ) from exc
                 child_definition = child["definition"]
+                if child_definition.get("port_contract_version") == 2:
+                    raise RoleAssetError(
+                        "Invalid allowed workflow",
+                        [
+                            {
+                                "path": path,
+                                "code": "INCOMPATIBLE",
+                                "message": "Structured-port workflows cannot be called as fixed child workflows",
+                            }
+                        ],
+                    )
                 if child_definition.get("kind") == "autonomous":
                     raise RoleAssetError(
                         "Choose a saved workflow",
@@ -755,7 +769,7 @@ class WorkflowService:
         elif isinstance(definition, GraphDefinition):
             validate_graph(definition, result_requirement="reachable")
             for task_index, task in enumerate(definition.tasks):
-                if task.human is not None or task.control is not None:
+                if task.human or task.control or task.transform:
                     continue
                 call = task.team or task.workflow
                 if call is not None:
@@ -778,6 +792,17 @@ class WorkflowService:
                             status=exc.status,
                         ) from exc
                     child_definition = child["definition"]
+                    if child_definition.get("port_contract_version") == 2:
+                        raise RoleAssetError(
+                            "Invalid child workflow",
+                            [
+                                {
+                                    "path": f"{path}.{kind}",
+                                    "code": "INCOMPATIBLE",
+                                    "message": "Structured-port workflows cannot be called as fixed child workflows",
+                                }
+                            ],
+                        )
                     fields = []
                     autonomous = child_definition.get("kind") == "autonomous"
                     if autonomous != (kind == "team"):
@@ -1362,6 +1387,10 @@ class WorkflowService:
                 child_key = (ref["asset_id"], ref["version"])
                 if child_key not in assets:
                     raise RoleAssetError("Package is missing a pinned asset")
+                if assets[child_key].get("port_contract_version") == 2:
+                    raise RoleAssetError(
+                        "Structured-port workflows cannot be called as fixed child workflows"
+                    )
                 pending.append((child_key, (*ancestors, key)))
             for member in members:
                 ref = member.get("team") or member.get("workflow")
@@ -1610,6 +1639,7 @@ class WorkflowService:
                 if (
                     member.get("human")
                     or member.get("control")
+                    or member.get("transform")
                     or member.get("team")
                     or member.get("workflow")
                 ):
@@ -2516,6 +2546,13 @@ class WorkflowService:
             )
         for ref in input_refs:
             await self.read_artifact(username, **ref)
+        if definition.get("port_contract_version") == 2:
+            request.inputs = normalize_port_inputs(
+                definition["input_contract"], request.inputs, "inputs"
+            )
+            return await self._start_graph(
+                username, asset, request, chat=chat, rerun_key=rerun_key
+            )
         required = definition["required_inputs"]
         fields = [
             {
@@ -2524,7 +2561,8 @@ class WorkflowService:
                 "message": "Provide non-empty text",
             }
             for name in required
-            if not request.inputs.get(name, "").strip()
+            if not isinstance(request.inputs.get(name), str)
+            or not request.inputs[name].strip()
         ] + [
             {
                 "path": f"inputs.{name}",
@@ -3328,7 +3366,11 @@ class WorkflowService:
                     for artifact in artifacts
                     if artifact.run_id == current.run_id
                 ]
-                errors = []
+                errors = (
+                    current.state.get("issues", [])
+                    if current.snapshot.get("transform")
+                    else []
+                )
                 result_events = (
                     [
                         event
@@ -5766,8 +5808,9 @@ class WorkflowService:
             for input_name, ref in refs.items():
                 if ref.input is not None:
                     required_inputs.add(ref.input)
-                elif ref.task_id not in selected or (
-                    task.id == request.node_id and input_name in feedback
+                elif ref.task_id is not None and (
+                    ref.task_id not in selected
+                    or (task.id == request.node_id and input_name in feedback)
                 ):
                     source = tasks[ref.task_id]
                     requirement = requirements.setdefault(
@@ -5780,7 +5823,10 @@ class WorkflowService:
                         },
                     )
                     requirement["fields"][ref.field] = field_schema(
-                        source.output_contract, ref.field
+                        source.output_contract,
+                        ref.field,
+                        structured=graph.port_contract_version == 2
+                        and bool(task.transform),
                     )["type"]
                     if source.id not in selected:
                         external[source.id] = source
@@ -5825,6 +5871,35 @@ class WorkflowService:
             for name in graph.required_inputs
             if (full_trial and graph.port_contract_version) or name in required_inputs
         ]
+        input_contract = None
+        if graph.port_contract_version == 2:
+            input_contract = graph.input_contract
+            # Root-level constraints can depend on fields outside the selected nodes.
+            # Keep their full input form when they cannot be projected safely.
+            if not full_trial and input_contract.keys() <= {
+                "type",
+                "properties",
+                "required",
+                "additionalProperties",
+                "title",
+                "description",
+                "$schema",
+                "$comment",
+            }:
+                input_contract = {
+                    **input_contract,
+                    "properties": {
+                        name: schema
+                        for name, schema in input_contract["properties"].items()
+                        if name in required_inputs
+                    },
+                    "required": [
+                        name
+                        for name in input_contract.get("required", [])
+                        if name in required_inputs
+                    ],
+                }
+            selected_definition["input_contract"] = input_contract
         if not full_trial:
             result = (
                 tasks[draft_result_id]
@@ -5858,6 +5933,9 @@ class WorkflowService:
             "definition": compiled.model_dump(),
             "selected_nodes": [task.id for task in chosen],
             "required_inputs": selected_inputs,
+            **(
+                {"input_contract": input_contract} if input_contract is not None else {}
+            ),
             "requirements": requirements,
             "external": external,
             "feedback": feedback,
@@ -5894,7 +5972,13 @@ class WorkflowService:
         compiled = await self._compile_trial(username, asset_id, request)
         return {
             key: compiled[key]
-            for key in ("selected_nodes", "required_inputs", "requirements")
+            for key in (
+                "selected_nodes",
+                "required_inputs",
+                "requirements",
+                "input_contract",
+            )
+            if key in compiled
         }
 
     async def start_trial(self, username: str, asset_id: str, payload: dict) -> dict:
@@ -5934,7 +6018,8 @@ class WorkflowService:
                 "message": "Provide non-empty text",
             }
             for name in required
-            if not request.inputs.get(name, "").strip()
+            if not isinstance(request.inputs.get(name), str)
+            or not request.inputs[name].strip()
         ]
         issues += [
             {
@@ -5944,6 +6029,12 @@ class WorkflowService:
             }
             for name in set(request.inputs) - required
         ]
+        input_contract = compiled.get("input_contract")
+        if input_contract is not None:
+            request.inputs = normalize_port_inputs(
+                input_contract, request.inputs, "inputs"
+            )
+            issues = []
         expected_sources = set(compiled["requirements"])
         issues += [
             {
@@ -5978,13 +6069,34 @@ class WorkflowService:
             )
             issues = validate_result(requirement["contract"], content)
             if issues:
-                raise RoleAssetError(
-                    "Invalid boundary source",
-                    [
-                        {**issue, "path": f"sources.{source_id}." + issue["path"]}
-                        for issue in issues
-                    ],
-                )
+                fields = []
+                for issue in issues:
+                    original_path = issue["path"].removeprefix("result.")
+                    consumers = [
+                        {
+                            **issue,
+                            "path": f"definition.tasks.{index}.inputs.{name}"
+                            + original_path.removeprefix(binding.get("field", "text")),
+                        }
+                        for index, task in enumerate(
+                            compiled["draft"]["body"]["definition"].get("tasks", [])
+                        )
+                        if input_contract is not None
+                        and task["id"] in compiled["selected_nodes"]
+                        for name, binding in task.get("inputs", {}).items()
+                        if binding.get("task_id") == source_id
+                        and (
+                            original_path == binding.get("field", "text")
+                            or original_path.startswith(
+                                binding.get("field", "text") + "."
+                            )
+                        )
+                    ]
+                    fields.extend(
+                        consumers
+                        or [{**issue, "path": f"sources.{source_id}." + issue["path"]}]
+                    )
+                raise RoleAssetError("Invalid boundary source", fields)
             sources[source_id] = {
                 "content": copy.deepcopy(content),
                 "artifact": reference,
@@ -6191,6 +6303,10 @@ class WorkflowService:
             definition = GraphDefinition.model_validate(asset["definition"])
         else:
             raise RoleAssetError("Legacy workflow definitions are not supported")
+        if nesting_depth and definition.port_contract_version == 2:
+            raise RoleAssetError(
+                "Structured-port workflows cannot be called as fixed child workflows"
+            )
         if team and team.get("approval_question"):
             definition = GraphDefinition.model_validate(
                 {
@@ -6232,6 +6348,7 @@ class WorkflowService:
                 or task.team is not None
                 or task.workflow is not None
                 or task.control is not None
+                or task.transform is not None
             ):
                 continue
             if task.member not in members:
@@ -6336,6 +6453,7 @@ class WorkflowService:
                     or task.team is not None
                     or task.workflow is not None
                     or task.control is not None
+                    or task.transform is not None
                 ):
                     continue
                 limit = members[task.member]["effective"].get("max_iterations")
@@ -6657,7 +6775,11 @@ class WorkflowService:
         for task in definition.tasks:
             task_member = None
             if not snapshot.get("team_definition") and not (
-                task.human or task.team or task.workflow or task.control
+                task.human
+                or task.team
+                or task.workflow
+                or task.control
+                or task.transform
             ):
                 task_member = copy.deepcopy(members[task.member])
                 session_id = uuid.uuid4().hex
@@ -6710,6 +6832,8 @@ class WorkflowService:
                         if task.human
                         else "control_task_v2"
                         if task.control
+                        else "transform_task_v2"
+                        if task.transform
                         else "single_task_v2",
                         "parent_run_id": run_id,
                         "usage_protocol": 1,
@@ -6748,6 +6872,8 @@ class WorkflowService:
                             if task.workflow is not None
                             else {"control": task.control.model_dump()}
                             if task.control is not None
+                            else {"transform": task.transform}
+                            if task.transform
                             else task_member or members[task.member]
                         ),
                         "inputs": snapshot["inputs"],
@@ -7493,7 +7619,8 @@ class WorkflowService:
                             "message": "Provide non-empty text",
                         }
                         for name in required
-                        if not request.inputs.get(name, "").strip()
+                        if not isinstance(request.inputs.get(name), str)
+                        or not request.inputs[name].strip()
                     ] + [
                         {
                             "path": f"inputs.{name}",
@@ -8418,14 +8545,17 @@ class WorkflowService:
                                 )
                                 progress = True
                                 continue
+                            transform = task.get("transform")
                             member_id = row.snapshot.get("member", {}).get("member_id")
                             role_id = (
-                                _capacity_key(row.snapshot) if not child_call else None
+                                _capacity_key(row.snapshot)
+                                if not (child_call or transform)
+                                else None
                             )
                             role_limit = row.snapshot.get("effective", {}).get(
                                 "max_parallel"
                             )
-                            if not child_call and (
+                            if not (child_call or transform) and (
                                 not _has_scope_capacity(whole_root, root, active)
                                 or member_id in occupied
                                 or (
@@ -8502,6 +8632,10 @@ class WorkflowService:
                             )
                             iteration_inputs = row.snapshot.get("iteration_inputs", {})
                             for key, ref in [] if retrying else task["inputs"].items():
+                                if transform and not (
+                                    ref.get("input") or ref.get("task_id")
+                                ):
+                                    continue
                                 if key in iteration_inputs:
                                     fixed = iteration_inputs[key]
                                     inputs[key] = fixed["value"]
@@ -8537,16 +8671,24 @@ class WorkflowService:
                                     }
                                     value = boundary["content"]
                                     for name in trial_source["field"].split("."):
+                                        if transform and (
+                                            not isinstance(value, dict)
+                                            or name not in value
+                                        ):
+                                            break
                                         value = value[name]
-                                    inputs[key] = (
-                                        value
-                                        if isinstance(value, str)
-                                        else json.dumps(value, ensure_ascii=False)
-                                    )
+                                    else:
+                                        inputs[key] = (
+                                            value
+                                            if transform or isinstance(value, str)
+                                            else json.dumps(value, ensure_ascii=False)
+                                        )
                                     continue
                                 if ref.get("input") is not None:
                                     # Earlier task aliases must not change the source.
-                                    inputs[key] = root.snapshot["inputs"][ref["input"]]
+                                    supplied = root.snapshot["inputs"]
+                                    if not transform or ref["input"] in supplied:
+                                        inputs[key] = supplied[ref["input"]]
                                     inherited = root.snapshot.get(
                                         "trial_inputs", {}
                                     ).get(ref["input"])
@@ -8561,12 +8703,18 @@ class WorkflowService:
                                     value = source.result
                                     assert value is not None
                                     for name in ref["field"].split("."):
+                                        if transform and (
+                                            not isinstance(value, dict)
+                                            or name not in value
+                                        ):
+                                            break
                                         value = value[name]
-                                    inputs[key] = (
-                                        value
-                                        if isinstance(value, str)
-                                        else json.dumps(value, ensure_ascii=False)
-                                    )
+                                    else:
+                                        inputs[key] = (
+                                            value
+                                            if transform or isinstance(value, str)
+                                            else json.dumps(value, ensure_ascii=False)
+                                        )
                                     pinned = source.state.get("child_result_ref") or {
                                         "artifact_id": source.run_id,
                                         "version": 1,
@@ -8582,6 +8730,55 @@ class WorkflowService:
                                 row.state = {
                                     **row.state,
                                     "reason": "A declared result input belongs to a skipped path.",
+                                }
+                            elif transform:
+                                task_index = next(
+                                    index
+                                    for index, node in enumerate(definition["tasks"])
+                                    if node["id"] == task["id"]
+                                )
+                                # Bounded trials keep diagnostics in the original canvas.
+                                trial = root.snapshot.get("trial")
+                                if trial:
+                                    task_index = next(
+                                        index
+                                        for index, node in enumerate(
+                                            trial["draft"]["definition"]["tasks"]
+                                        )
+                                        if node["id"] == task["id"]
+                                    )
+                                path = f"definition.tasks.{task_index}"
+                                contract = task.get("output_contract")
+                                try:
+                                    inputs, result = execute_port_transform(
+                                        task, inputs, path
+                                    )
+                                except RoleAssetError as exc:
+                                    row.status = "failed"
+                                    row.state = {
+                                        **row.state,
+                                        "reason": str(exc),
+                                        "issues": exc.fields,
+                                    }
+                                else:
+                                    row.status = "completed"
+                                    row.result = result
+                                    session.add(
+                                        AgentWorkflowArtifact(
+                                            artifact_id=row.run_id,
+                                            version=1,
+                                            run_id=row.run_id,
+                                            submission_id=row.state["attempt_id"],
+                                            contract=contract,
+                                            content=result,
+                                        )
+                                    )
+                                row.snapshot = {
+                                    **row.snapshot,
+                                    "inputs": inputs,
+                                    "input_artifacts": refs,
+                                    "selected_fields": selected_fields,
+                                    "trial_input_sources": trial_input_sources,
                                 }
                             elif child_call:
                                 frozen = copy.deepcopy(

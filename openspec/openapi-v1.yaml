@@ -8961,7 +8961,40 @@ paths:
             schema:
               $ref: '#/components/schemas/TrialRunRequest'
       responses:
-        '200': {description: Successful Response}
+        '200':
+          description: Selected nodes and boundary inputs for the saved draft.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: {type: string}
+                  message: {type: string}
+                  data:
+                    type: object
+                    required: [selected_nodes, required_inputs, requirements]
+                    properties:
+                      selected_nodes:
+                        type: array
+                        items: {type: string}
+                      required_inputs:
+                        type: array
+                        items: {type: string}
+                      input_contract:
+                        $ref: '#/components/schemas/WorkflowPortContract'
+                      requirements:
+                        type: object
+                        additionalProperties:
+                          type: object
+                          properties:
+                            name: {type: string}
+                            pinned_only: {type: boolean}
+                            contract: {type: [object, 'null'], additionalProperties: true}
+                            fields:
+                              type: object
+                              additionalProperties:
+                                type: array
+                                items: {type: string}
         '400':
           $ref: '#/components/responses/WorkflowValidationFailure'
         '422':
@@ -13407,9 +13440,11 @@ components:
         port_contract_version:
           anyOf:
           - type: integer
-            const: 1
+            enum: [1, 2]
           - type: 'null'
-          description: Enables the named text port contract. Omit for legacy bindings.
+          description: Version 1 uses text ports. Version 2 supports structured ports. Omit for legacy bindings.
+        input_contract:
+          $ref: '#/components/schemas/WorkflowPortContract'
         result_task_id:
           anyOf:
           - type: string
@@ -13601,6 +13636,13 @@ components:
           - type: 'null'
           default: null
           title: Output Contract
+        transform:
+          anyOf:
+          - type: string
+            enum: [parse_json, map_fields, json_text]
+          - type: 'null'
+        input_contract:
+          $ref: '#/components/schemas/WorkflowPortContract'
         position:
           additionalProperties:
             type: number
@@ -13819,6 +13861,21 @@ components:
       - source
       title: ChatAccessRequest
       description: A deliberate local grant; importing an asset never grants access.
+    WorkflowPortContract:
+      type: object
+      description: Inline JSON Schema object declaring named data ports and presence defaults.
+      additionalProperties: true
+      required: [type, properties]
+      properties:
+        type: {type: string, const: object}
+        properties:
+          type: object
+          additionalProperties:
+            type: object
+            additionalProperties: true
+        required:
+          type: array
+          items: {type: string}
     TrialSource:
       type: object
       additionalProperties: false
@@ -13846,7 +13903,7 @@ components:
           - type: 'null'
         inputs:
           type: object
-          additionalProperties: {type: string}
+          additionalProperties: true
         sources:
           type: object
           additionalProperties:
@@ -13858,8 +13915,7 @@ components:
           minimum: 1.0
           title: Version
         inputs:
-          additionalProperties:
-            type: string
+          additionalProperties: true
           type: object
           title: Inputs
         source:

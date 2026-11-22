@@ -494,6 +494,21 @@
     }
   },
   "graph": {
+    "finiteJsonNumbers": "请使用有限的 JSON 数字。",
+    "enableStructuredPorts": "使用结构化端口",
+    "parse_json": "解析 JSON 对象",
+    "parse_jsonHint": "将 JSON 文本连到 text 端口，并声明解析后返回的字段。",
+    "map_fields": "映射字段",
+    "map_fieldsHint": "将目标字段声明为输入端口，再连接来源。输出保留字段名和 JSON 值。",
+    "json_text": "将 JSON 转为文本",
+    "json_textHint": "连接 JSON 值，在需要字符串的地方使用 text 输出。",
+    "input_contract": "输入契约（JSON Schema）",
+    "output_contract": "输出契约（JSON Schema）",
+    "portContractHint": "使用 properties 声明对象字段，required 声明必填字段，default 指定缺省值。",
+    "invalidPortContract": "请提供含 properties 对象的 JSON Schema。",
+    "resultObject": "result · object",
+    "inputValuesJson": "输入值（JSON）",
+    "inputValuesHint": "输入 JSON 对象。省略字段以使用缺省值。只在契约允许时填入 null。",
     "operators": {
       "eq": "等于",
       "ne": "不等于",

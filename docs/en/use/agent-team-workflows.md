@@ -26,6 +26,21 @@ Navigation mapping: **New Workflow / Edit Asset → canvas dialog** is now a **d
 
 On the new canvas, each declared workflow input has a named `string` output port. A task placeholder such as `{input}` creates a required Agent input port named `input`. Drag the workflow input onto that port, then drag the Agent's `text · string` output to the matching port on **Outputs**. Dashed lines labeled **Data** carry bound values. Solid control lines determine which paths run. Select a data line to disconnect it in the inspector, or use Undo and Redo. To rename a workflow input, edit its name and leave the field before adding or removing other inputs. An unconnected required port can be saved in a draft. A full trial or version save highlights the port that needs attention. Older fixed versions use their original field bindings.
 
+### Structured ports
+
+Choose **Use structured ports** in the editor. Select the workflow input node and declare an inline JSON Schema object with `properties`. Put mandatory field names in `required`. Set `default` to fill in an omitted input. To accept an explicit `null`, include `"null"` in its type. For example, a table can be an `array` whose `items` schema describes an object for each row.
+
+1. Add **Parse JSON object** and connect a declared string input to `text`. Declare the parser's output fields, such as an object named `query` and a row list named `rows`.
+2. Add **Map fields** and declare the destination names and types in its input and output contracts. Draw the solid control line from the parser to the mapper. Connect each named data port with a dashed line. The mapper passes the selected objects and lists through unchanged. Use **Convert JSON to text** before an Agent placeholder that needs a string.
+3. Connect the mapper's **result · object** to **Outputs**. Reopen the saved draft to check the links. In **Test draft** or **Start Run**, enter the workflow inputs as a JSON object. To test from the mapper, supply the parser's output in **Advanced object data (JSON)**. A trial with root-level constraints such as `minProperties` shows the full workflow input contract.
+
+For the example above, use `{"raw":"{\"query\":{\"limit\":0},\"rows\":[{\"id\":1}]}"}` when `raw` is the workflow input name.
+
+The structured port contract is version 2. Text port and legacy fixed versions retain their bindings. Version 2 workflows launch as root runs. Fixed child calls and loop feedback continue to use the earlier contracts. Top-level `files` in a result is reserved for managed attachments. Ordinary inputs may declare a field with that name.
+
+![Structured workflow with object and row-list data ports](/images/agent-teams-structured-ports-en.jpg)
+
+
 ## Drafts, fixed versions and tests
 
 Edits to assets and canvas layouts are saved automatically as drafts, including new drafts without a saved version. Check the save status: retry a failure, or retain local content or explicitly load the server draft when there is a conflict. If a fixed version changes, compare the original base and latest version, then keep the whole draft against the selected base or load the latest version and edit again. Fields are not merged.
@@ -42,7 +57,7 @@ Approval targets and recommendations require real artifacts. An isolated ALL joi
 
 ## Connect inputs, outputs and control paths
 
-Declare inputs in the input node. A typed Agent can bind a workflow input or a required string field from a task upstream on a control path. Use `{alias}` in the task to insert the bound value. Control lines determine execution order and path activation. Agents receive the fields explicitly bound to their inputs. Older definitions can also bind required scalar fields through the inspector. The default output is text. To return structured data in a typed workflow, include a required string field named `text` on the result task. The text port checks that field, and the run returns the result task's complete validated artifact. Select the result task in the output node. After deleting nodes or changing fields, fix invalid references using the save or launch diagnostics.
+Declare inputs in the input node. A typed Agent can bind a workflow input or a required string field from a task upstream on a control path. Use `{alias}` in the task to insert the bound value. Control lines determine execution order and path activation. Agents receive the fields explicitly bound to their inputs. Older definitions can also bind required scalar fields through the inspector. The default output is text. With the version 1 text contract, include a required string field named `text` on the result task. The text port checks that field, and the run returns the result task's complete validated artifact. Select the result task in the output node. After deleting nodes or changing fields, fix invalid references using the save or launch diagnostics.
 
 The canvas supports zoom, fit, minimap, undo/redo and automatic layout; expand the toolbox and properties on narrow screens. Add a **Condition**, select an input or required upstream scalar, a comparison and a value of the same type, then connect its true and false ports. **All join** waits for every entered path to succeed and ignores skipped paths; if no path enters, the join is skipped. A local failure blocks dependent successors while independent paths can continue.
 

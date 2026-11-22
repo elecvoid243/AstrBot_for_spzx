@@ -618,6 +618,11 @@
           <p class="mb-4">
             {{ runAsset.definition.name }} · v{{ runAsset.version }}
           </p>
+          <StructuredWorkflowInputs
+            v-if="runAsset.definition.input_contract"
+            v-model="structuredInputs"
+            :contract="runAsset.definition.input_contract"
+          />
           <v-text-field
             v-for="name in runAsset.definition.required_inputs"
             :key="name"
@@ -761,6 +766,7 @@ import { accountSessionRevision } from "@/utils/accountSession";
 import { roleAssetsApi } from "@/api/roleAssets";
 import { draftApi } from "@/composables/useAssetDraft";
 import { workflowAssetsApi } from "@/api/workflowAssets";
+import StructuredWorkflowInputs, { parseWorkflowInputs } from "./StructuredWorkflowInputs.vue";
 import { useModuleI18n } from "@/i18n/composables";
 import { extractApiError } from "@/utils/extractApiError";
 import WorkflowGraphCanvas from "./WorkflowGraphCanvas.vue";
@@ -1340,6 +1346,7 @@ const starting = ref(false);
 const editingAsset = ref<any>(null);
 const runAsset = ref<any>(null);
 const inputs = ref<Record<string, string>>({});
+const structuredInputs = ref("{}");
 let timer: ReturnType<typeof setInterval> | undefined;
 let disposed = false;
 watch(accountSessionRevision, () => {
@@ -1575,8 +1582,9 @@ async function checkReadiness() {
 
 function prepareRun(asset: any) {
   runAsset.value = asset;
+  structuredInputs.value = "{}";
   inputs.value = Object.fromEntries(
-    asset.definition.required_inputs.map((name: string) => [name, ""]),
+    (asset.definition.required_inputs ?? []).map((name: string) => [name, ""]),
   );
   formError.value = "";
   starting.value = true;
@@ -1592,7 +1600,8 @@ async function start() {
     if (!(await checkReadiness())) return;
     const run = await workflowAssetsApi.start(runAsset.value.asset_id, {
       version: runAsset.value.version,
-      inputs: inputs.value,
+      inputs: runAsset.value.definition.input_contract
+        ? parseWorkflowInputs(structuredInputs.value) : inputs.value,
       source: "dashboard",
       ...(inputArtifacts.value.length
         ? {

@@ -1,11 +1,15 @@
 """Declarative DAG definitions and field rules; no user code is evaluated."""
 
+import copy
+import json
 from operator import ge, gt, le, lt
 from string import Formatter
 from typing import Literal, cast
 
+from jsonschema import Draft202012Validator, SchemaError
 from pydantic import BaseModel, ConfigDict, Field, field_serializer, model_validator
 from referencing import Registry, Resource
+from referencing.exceptions import Unresolvable
 from referencing.jsonschema import DRAFT202012
 
 from astrbot.core.agent_teams.assets import (
@@ -15,6 +19,7 @@ from astrbot.core.agent_teams.assets import (
     RoleInstallation,
     RoleOverrides,
 )
+from astrbot.core.agent_teams.result_tool import validate_result
 from astrbot.core.agent_teams.usage import RunLimits
 
 HUMAN_APPROVAL_CONTRACT = {
@@ -24,6 +29,21 @@ HUMAN_APPROVAL_CONTRACT = {
         "text": {"type": "string"},
     },
     "required": ["approved", "text"],
+}
+
+
+JSON_TYPES = {"string", "boolean", "integer", "number", "null", "object", "array"}
+TRANSFORM_INPUTS = {
+    "parse_json": {
+        "type": "object",
+        "properties": {"text": {"type": "string"}},
+        "required": ["text"],
+    },
+    "json_text": {
+        "type": "object",
+        "properties": {"value": {"type": sorted(JSON_TYPES)}},
+        "required": ["value"],
+    },
 }
 
 
@@ -99,6 +119,12 @@ class GraphTask(BaseModel):
     inputs: dict[str, TaskInput] = Field(default_factory=dict, max_length=30)
     overrides: RoleOverrides = Field(default_factory=RoleOverrides)
     output_contract: dict | None = None
+    transform: Literal["parse_json", "map_fields", "json_text"] | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+    input_contract: dict | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     position: dict[Literal["x", "y"], float] = Field(default_factory=dict)
 
     @field_serializer("overrides")
@@ -123,6 +149,26 @@ class GraphTask(BaseModel):
         Raises:
             ValueError: The selected node kind has missing or conflicting fields.
         """
+        if self.transform is not None:
+            if (
+                self.control
+                or self.human
+                or self.team
+                or self.workflow
+                or self.member
+                or self.role_id
+                or self.role_version
+                or self.role
+                or self.installation
+                or self.task
+                or self.overrides.model_fields_set
+                or (self.input_contract is not None and self.transform != "map_fields")
+                or (self.output_contract is not None and self.transform == "json_text")
+            ):
+                raise ValueError("Transform nodes cannot configure other execution")
+            return self
+        if self.input_contract is not None:
+            raise ValueError("Only a field mapping can declare a node input contract")
         if self.control is not None:
             if (
                 self.human is not None
@@ -259,7 +305,10 @@ class GraphDefinition(BaseModel):
     default_provider_id: str | None = Field(default=None, min_length=1, max_length=128)
     required_inputs: list[str] = Field(default_factory=list, max_length=30)
     port_contract_version: int | None = Field(
-        default=None, ge=1, le=1, exclude_if=lambda value: value is None
+        default=None, ge=1, le=2, exclude_if=lambda value: value is None
+    )
+    input_contract: dict | None = Field(
+        default=None, exclude_if=lambda value: value is None
     )
     result_task_id: str | None = Field(default=None, min_length=1, max_length=128)
     max_parallel: int = Field(default=4, ge=1, le=100)
@@ -289,12 +338,13 @@ def matches_condition(value: str | bool | int | float | None, rule: dict) -> boo
     )
 
 
-def field_schema(contract: dict | None, path: str) -> dict:
+def field_schema(contract: dict | None, path: str, *, structured: bool = False) -> dict:
     """Resolve a guaranteed scalar field through local references and allOf.
 
     Args:
         contract: Frozen output object contract, or the default text contract.
         path: Dot-separated property path, never an expression or array lookup.
+        structured: Permit optional and structured fields on a versioned data port.
 
     Returns:
         Declared scalar schema of a required output field.
@@ -319,6 +369,7 @@ def field_schema(contract: dict | None, path: str) -> dict:
         .resolver()
     )
     current: dict = root
+    guaranteed = True
     for name in path.split("."):
         candidates = [current]
         visited: set[int] = set()
@@ -342,7 +393,8 @@ def field_schema(contract: dict | None, path: str) -> dict:
                 candidates.append(resolver.lookup(item["$ref"]).contents)
         if object_types != {"object"}:
             raise ValueError(f"Field {path} must traverse guaranteed object properties")
-        if name not in required or not properties:
+        guaranteed &= name in required
+        if (not structured and not guaranteed) or not properties:
             raise ValueError(
                 f"Field {path} must be declared and required in the output contract"
             )
@@ -366,15 +418,127 @@ def field_schema(contract: dict | None, path: str) -> dict:
         candidates.extend(item.get("allOf", []))
         if "$ref" in item:
             candidates.append(resolver.lookup(item["$ref"]).contents)
-    if not declared or not declared <= {
-        "string",
-        "boolean",
-        "integer",
-        "number",
-        "null",
-    }:
-        raise ValueError(f"Field {path} must declare a scalar type")
-    return {"type": sorted(declared)}
+    if not declared or not declared <= (
+        JSON_TYPES if structured else JSON_TYPES - {"object", "array"}
+    ):
+        expected = "compatible" if structured else "scalar"
+        raise ValueError(f"Field {path} must declare a {expected} type")
+    return {
+        "type": sorted(declared),
+        **({"required": guaranteed} if structured else {}),
+    }
+
+
+def normalize_port_inputs(contract: dict, values: dict, path: str) -> dict:
+    """Apply declared defaults and validate supplied values at a port boundary.
+
+    Args:
+        contract: Frozen object schema for the input ports.
+        values: Supplied JSON values, including explicit nulls.
+        path: Diagnostic prefix of the consumer.
+
+    Returns:
+        Values with defaults added only for missing properties.
+
+    Raises:
+        RoleAssetError: At least one value does not match the contract.
+    """
+    normalized = dict(values)
+    properties = contract["properties"]
+    for name, schema in properties.items():
+        if name not in normalized and "default" in schema:
+            normalized[name] = copy.deepcopy(schema["default"])
+    issues = validate_result(
+        {**contract, "additionalProperties": False}, normalized, validate_files=False
+    )
+    issues = [
+        {**issue, "path": path + issue["path"].removeprefix("result")}
+        for issue in issues
+    ]
+    if issues:
+        raise RoleAssetError("Invalid port values", issues)
+    return normalized
+
+
+def execute_port_transform(task: dict, inputs: dict, path: str) -> tuple[dict, dict]:
+    """Resolve one deterministic node to a validated native result.
+
+    Args:
+        task: Frozen node with a validated transform and port contracts.
+        inputs: Selected native values before applying port defaults.
+        path: Diagnostic path of the node in the original graph.
+
+    Returns:
+        The resolved inputs and the validated object result.
+
+    Raises:
+        RoleAssetError: An input cannot be parsed or a value violates a contract.
+    """
+    transform = task["transform"]
+    contract = task.get("output_contract")
+    inputs = normalize_port_inputs(
+        task.get("input_contract") or TRANSFORM_INPUTS[transform],
+        inputs,
+        f"{path}.inputs",
+    )
+    if transform == "parse_json":
+        try:
+            result = json.loads(inputs["text"])
+        except (ValueError, RecursionError) as exc:
+            raise RoleAssetError(
+                "Could not parse JSON",
+                [
+                    {
+                        "path": f"{path}.inputs.text",
+                        "code": "INVALID",
+                        "message": "Provide valid JSON text",
+                    }
+                ],
+            ) from exc
+        if not isinstance(result, dict):
+            raise RoleAssetError(
+                "Could not parse JSON object",
+                [
+                    {
+                        "path": f"{path}.inputs.text",
+                        "code": "INVALID",
+                        "message": "Provide a JSON object",
+                    }
+                ],
+            )
+    elif transform == "json_text":
+        result = {"text": json.dumps(inputs["value"], ensure_ascii=False)}
+    else:
+        result = inputs
+    if "files" in result:
+        raise RoleAssetError(
+            "Invalid transform result",
+            [
+                {
+                    "path": f"{path}.output_contract.files",
+                    "code": "UNSUPPORTED",
+                    "message": "The top-level files field is reserved for managed attachments",
+                }
+            ],
+        )
+    issues = validate_result(contract, result)
+    if issues:
+        prefix = (
+            f"{path}.inputs.text"
+            if transform == "parse_json"
+            else f"{path}.output_contract"
+        )
+        raise RoleAssetError(
+            "Transform result does not match its contract",
+            [
+                {
+                    **issue,
+                    "path": prefix + issue["path"].removeprefix("result"),
+                }
+                for issue in issues
+            ],
+        )
+    return inputs, result
 
 
 def validate_graph(
@@ -408,7 +572,102 @@ def validate_graph(
     ):
         raise RoleAssetError("Invalid external source identities")
     data_sources = {**external_sources, **tasks}
+    structured = definition.port_contract_version == 2
     names = definition.required_inputs
+    if not structured and (
+        definition.input_contract is not None
+        or any(t.transform for t in definition.tasks)
+    ):
+        fields.append(
+            {
+                "path": "definition.port_contract_version",
+                "code": "REQUIRED",
+                "message": "Structured ports require port contract version 2",
+            }
+        )
+    if structured:
+        if definition.loops:
+            fields.append(
+                {
+                    "path": "definition.loops",
+                    "code": "UNSUPPORTED",
+                    "message": "Structured ports do not support loop feedback",
+                }
+            )
+        contracts = [
+            ("definition.input_contract", definition.input_contract, True),
+            *[
+                pair
+                for i, task in enumerate(definition.tasks)
+                for pair in (
+                    (f"definition.tasks.{i}.input_contract", task.input_contract, True),
+                    (
+                        f"definition.tasks.{i}.output_contract",
+                        task.output_contract,
+                        False,
+                    ),
+                )
+                if pair[1] is not None
+                or (
+                    task.transform in {"map_fields", "parse_json"}
+                    and (not pair[2] or task.transform == "map_fields")
+                )
+            ],
+        ]
+        if definition.required_inputs:
+            fields.append(
+                {
+                    "path": "definition.required_inputs",
+                    "code": "INVALID",
+                    "message": "Declare inputs in the structured input contract",
+                }
+            )
+        for path, contract, is_input in contracts:
+            try:
+                if not isinstance(contract, dict) or contract.get("type") != "object":
+                    raise ValueError("Declare an object contract")
+                Draft202012Validator.check_schema(contract)
+                if not is_input and path.endswith(".output_contract"):
+                    index = int(path.split(".")[2])
+                    if definition.tasks[index].transform and "files" in contract.get(
+                        "properties", {}
+                    ):
+                        raise ValueError(
+                            "The top-level files field is reserved for managed attachments"
+                        )
+                # Inline port contracts are declarative and cannot resolve any URI.
+                pending = [contract]
+                while pending:
+                    schema = pending.pop()
+                    if isinstance(schema, dict):
+                        if any(key in schema for key in ("$ref", "$dynamicRef", "$id")):
+                            raise ValueError("Use inline schemas for structured ports")
+                        pending.extend(DRAFT202012.subresources_of(schema))
+                if is_input:
+                    properties = contract.get("properties")
+                    if (
+                        not isinstance(properties, dict)
+                        or len(properties) > 30
+                        or any(
+                            not name.isidentifier() or not isinstance(schema, dict)
+                            for name, schema in properties.items()
+                        )
+                        or not set(contract.get("required", [])) <= properties.keys()
+                    ):
+                        raise ValueError("Declare up to 30 named input properties")
+                    for name, schema in properties.items():
+                        field_schema(contract, name, structured=True)
+                        if "default" in schema and not Draft202012Validator(
+                            schema
+                        ).is_valid(schema["default"]):
+                            raise ValueError(
+                                f"Default for {name} must match its schema"
+                            )
+            except (ValueError, SchemaError, Unresolvable) as exc:
+                fields.append({"path": path, "code": "CONTRACT", "message": str(exc)})
+        if fields:
+            raise RoleAssetError("Invalid structured port contracts", fields)
+        names = list(definition.input_contract["properties"])
     if len(set(names)) != len(names) or any(not name.isidentifier() for name in names):
         fields.append(
             {
@@ -706,8 +965,7 @@ def validate_graph(
             },
         )
         if (
-            not task.team
-            and not task.control
+            not (task.team or task.control or task.transform)
             and task.member in members
             and members[task.member] != config
         ):
@@ -718,13 +976,30 @@ def validate_graph(
                     "message": "A member must use the same frozen role and configuration across tasks",
                 }
             )
-        if not task.team and not task.control:
+        if not (task.team or task.control or task.transform):
             members[task.member] = config
-        typed_agent = definition.port_contract_version == 1 and not (
-            task.control or task.team or task.workflow
+        typed_agent = definition.port_contract_version in (1, 2) and not (
+            task.control or task.team or task.workflow or task.transform
         )
+        node_contract = task.input_contract or TRANSFORM_INPUTS.get(task.transform)
+        if node_contract and (text_port_scope is None or task.id in text_port_scope):
+            for key in node_contract.get("required", []):
+                if "default" not in node_contract["properties"][key] and not (
+                    (binding := task.inputs.get(key))
+                    and (binding.input or binding.task_id)
+                ):
+                    fields.append(
+                        {
+                            "path": path + f".inputs.{key}",
+                            "code": "REQUIRED",
+                            "message": "Connect this required input port",
+                        }
+                    )
         check_text_ports = typed_agent and (
             text_port_scope is None or task.id in text_port_scope
+        )
+        check_text_binding = check_text_ports or (
+            structured and bool(task.team or task.workflow)
         )
         for key, ref in task.inputs.items():
             code = "REFERENCE"
@@ -734,6 +1009,11 @@ def validate_graph(
                     ref = feedback_ref
                 if not key.isidentifier():
                     raise ValueError("Input names must be identifiers")
+                if node_contract and key not in node_contract["properties"]:
+                    code = "UNKNOWN"
+                    raise ValueError("Input port is not declared")
+                if node_contract and ref.input is None and ref.task_id is None:
+                    continue
                 if typed_agent and ref.input is None and ref.task_id is None:
                     if check_text_ports:
                         code = "REQUIRED"
@@ -745,7 +1025,22 @@ def validate_graph(
                             "Reference exactly one declared workflow input"
                         )
                     if check_text_ports and ref.field != "text":
-                        raise ValueError("Workflow inputs expose only the text field")
+                        raise ValueError(
+                            "Workflow bindings directly select a declared port"
+                        )
+                    source_schema = (
+                        field_schema(
+                            definition.input_contract, ref.input, structured=True
+                        )
+                        if structured
+                        else {"type": ["string"], "required": True}
+                    )
+                    if (
+                        structured
+                        and "default"
+                        in definition.input_contract["properties"][ref.input]
+                    ):
+                        source_schema["required"] = True
                 elif (
                     ref.task_id not in ancestors.get(task.id, set())
                     and ref.task_id not in external_sources
@@ -757,12 +1052,23 @@ def validate_graph(
                 else:
                     if data_sources[ref.task_id].control:
                         raise ValueError("Control nodes cannot be referenced as data")
-                    schema = field_schema(
-                        data_sources[ref.task_id].output_contract, ref.field
+                    source_schema = field_schema(
+                        data_sources[ref.task_id].output_contract,
+                        ref.field,
+                        structured=structured and bool(task.transform or typed_agent),
                     )
-                    if check_text_ports and set(schema["type"]) != {"string"}:
-                        code = "INCOMPATIBLE"
-                        raise ValueError("Connect an output guaranteed to provide text")
+                source_types = set(source_schema["type"])
+                if check_text_binding and (
+                    source_types != {"string"}
+                    or not source_schema.get("required", True)
+                ):
+                    code = "INCOMPATIBLE"
+                    raise ValueError("Connect an output guaranteed to provide text")
+                if node_contract and not source_types <= set(
+                    field_schema(node_contract, key, structured=True)["type"]
+                ):
+                    code = "INCOMPATIBLE"
+                    raise ValueError("Connect a source matching the declared port type")
             except ValueError as exc:
                 fields.append(
                     {
@@ -775,7 +1081,11 @@ def validate_graph(
             ref = feedback_inputs.get(task.id, {}).get("value", task.inputs["value"])
             try:
                 kinds = (
-                    {"string"}
+                    (
+                        set(field_schema(definition.input_contract, ref.input)["type"])
+                        if structured
+                        else {"string"}
+                    )
                     if ref.input is not None
                     else set(
                         field_schema(

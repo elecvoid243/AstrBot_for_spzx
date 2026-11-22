@@ -17,7 +17,8 @@
       <Handle id="matched-false" type="source" :position="Position.Right" class="at-node-handle control-handle-false" :aria-label="data.falseLabel" />
     </template>
     <Handle
-      v-else-if="data.interactive !== false && !data.interfaceNode"
+      v-else-if="data.interactive !== false && (!data.interfaceNode || data.controlEntry)"
+      :id="data.controlEntry ? 'control-entry' : undefined"
       type="source"
       :position="Position.Right"
       class="at-node-handle at-control-handle"
@@ -143,6 +144,7 @@ export interface MemberFlowNodeData {
   missingMember?: boolean;
   inDegree?: number;
   interfaceNode?: boolean;
+  controlEntry?: boolean;
   inputPorts?: FlowPort[];
   outputPorts?: FlowPort[];
   /**

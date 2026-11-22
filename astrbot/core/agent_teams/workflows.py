@@ -29,7 +29,7 @@ from pydantic import (
 from referencing import Registry, Resource
 from referencing.exceptions import Unresolvable
 from referencing.jsonschema import DRAFT202012, Schema
-from sqlalchemy import case, func, literal, or_, true
+from sqlalchemy import and_, case, func, literal, or_, true
 from sqlalchemy import select as sa_select
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.exc import IntegrityError
@@ -61,9 +61,10 @@ from astrbot.core.agent_teams.autonomous_tools import (
     TeamOperationRequest,
 )
 from astrbot.core.agent_teams.graph import (
+    DISPATCH_INPUT,
+    JOIN_OUTPUT,
     MISSING_PORT_VALUE,
     REFERENCE_OUTPUTS,
-    TRANSFORM_INPUTS,
     GraphDefinition,
     GraphTask,
     TaskInput,
@@ -72,7 +73,9 @@ from astrbot.core.agent_teams.graph import (
     field_schema,
     matches_condition,
     normalize_port_inputs,
+    port_requires_value,
     port_value,
+    task_input_contract,
     validate_graph,
 )
 from astrbot.core.agent_teams.result_tool import (
@@ -139,7 +142,10 @@ def _capacity_key(snapshot: dict) -> tuple:
     return (
         ("preset", snapshot["asset_id"], snapshot["preset_id"])
         if snapshot.get("preset_id")
-        else ("member", snapshot["member"]["member_id"])
+        else (
+            "member",
+            snapshot.get("dispatch_member_id") or snapshot["member"]["member_id"],
+        )
     )
 
 
@@ -1066,9 +1072,14 @@ class WorkflowService:
                         }
                     ],
                 ) from exc
-        names = (
-            required_inputs if required_inputs is not None else list(definition.inputs)
-        )
+        if isinstance(definition, GraphTask) and definition.dispatch:
+            names = ["item"]
+        else:
+            names = (
+                required_inputs
+                if required_inputs is not None
+                else list(definition.inputs)
+            )
         if len(set(names)) != len(names) or any(
             not name.isidentifier() for name in names
         ):
@@ -5819,20 +5830,22 @@ class WorkflowService:
                     or (task.id == request.node_id and input_name in feedback)
                 ):
                     source = tasks[ref.task_id]
+                    contract = source.result_contract(
+                        explicit_control=graph.entry_task_ids is not None
+                    )
                     requirement = requirements.setdefault(
                         source.id,
                         {
                             "name": source.name,
                             "fields": {},
                             "pinned_only": False,
-                            "contract": source.output_contract,
+                            "contract": contract,
                         },
                     )
                     source_schema = field_schema(
-                        source.output_contract,
+                        contract,
                         ref.field,
-                        structured=graph.port_contract_version == 2
-                        and source.control is None,
+                        structured=graph.port_contract_version == 2,
                     )
                     if source_schema.get("format") in REFERENCE_OUTPUTS.values():
                         requirement["pinned_only"] = True
@@ -5875,6 +5888,8 @@ class WorkflowService:
             if edge.source in selected and edge.target in selected
         ]
         selected_definition["loops"] = [loop.model_dump() for loop in loops]
+        if not full_trial and graph.entry_task_ids is not None:
+            selected_definition["entry_task_ids"] = [request.node_id]
         selected_inputs = [
             name
             for name in graph.required_inputs
@@ -5915,10 +5930,19 @@ class WorkflowService:
                 if draft_result_id is not None and draft_result_id in selected
                 else None
             )
-            if result is None or result.control:
+            if result is None:
                 result = chosen[0] if request.mode == "single" else None
             selected_definition["result_task_id"] = (
-                result.id if result is not None and result.control is None else None
+                result.id
+                if result is not None
+                and (
+                    result.control is None
+                    or (
+                        graph.entry_task_ids is not None
+                        and result.control.kind == "join"
+                    )
+                )
+                else None
             )
         compiled = GraphDefinition.model_validate(selected_definition)
         feedback_inputs = (
@@ -6071,15 +6095,17 @@ class WorkflowService:
                 compiled["draft"]["body"]["definition"]["tasks"]
             ):
                 if task["id"] in compiled["selected_nodes"]:
-                    node_contract = task.get("input_contract") or TRANSFORM_INPUTS.get(
-                        task.get("transform")
+                    node_contract = task_input_contract(
+                        task.get("input_contract"),
+                        task.get("transform"),
+                        dispatch=bool(task.get("dispatch")),
                     )
                     for name, binding in task.get("inputs", {}).items():
                         path = f"definition.tasks.{index}.inputs.{name}"
                         boundary_paths.setdefault(
                             (binding.get("task_id"), binding.get("field", "text")), []
                         ).append(path)
-                        if node_contract and name in node_contract.get("required", []):
+                        if node_contract and port_requires_value(node_contract, name):
                             required_paths.add(path)
         for source_id, source in request.sources.items():
             requirement = compiled["requirements"][source_id]
@@ -6795,6 +6821,119 @@ class WorkflowService:
             "child_assets": child_assets,
         }
 
+    async def _create_dispatch_scope(
+        self,
+        session: AsyncSession,
+        root: AgentWorkflowRun,
+        row: AgentWorkflowRun,
+        task: dict,
+        items: list,
+    ) -> str:
+        """Persist bounded item tasks and their ordered join in the owning root run.
+
+        Args:
+            session: Transaction holding the root admission lock.
+            root: Scope whose frozen definition owns the dispatch node.
+            row: Waiting dispatch node and its frozen Agent configuration.
+            task: Dispatch node from the frozen graph.
+            items: Validated list, in declared aggregation order.
+
+        Returns:
+            The new execution scope containing one task per item.
+        """
+        item_ids = [f"item-{index}" for index in range(len(items))]
+        member = root.snapshot["members"][task["member"]]
+        member_slots = [
+            f"worker-{index}"
+            for index in range(
+                min(
+                    len(items),
+                    member["effective"].get("max_instances") or len(items),
+                    task["dispatch"]["max_parallel"],
+                )
+            )
+        ]
+        item_names = [f" #{index + 1}" for index in range(len(items))]
+        input_names = [f"item_{index}" for index in range(len(items))]
+        item_inputs = {
+            name: value
+            if isinstance(value, str)
+            else json.dumps(value, ensure_ascii=False)
+            for name, value in zip(input_names, items, strict=True)
+        }
+        frozen = {
+            "engine": "graph_v2",
+            "usage_protocol": 1,
+            "asset_id": root.snapshot["asset_id"],
+            "asset_version": root.snapshot["asset_version"],
+            "definition": {
+                "name": task["name"],
+                "port_contract_version": 2,
+                "input_contract": {
+                    "type": "object",
+                    "properties": {name: {"type": "string"} for name in input_names},
+                    "required": input_names,
+                },
+                "entry_task_ids": item_ids,
+                "max_parallel": task["dispatch"]["max_parallel"],
+                "result_task_id": "collect",
+                "tasks": [
+                    {
+                        key: task[key]
+                        for key in (
+                            "task",
+                            "role_id",
+                            "role_version",
+                            "role",
+                            "installation",
+                            "overrides",
+                        )
+                    }
+                    | {
+                        "id": item_id,
+                        "name": task["name"][: 128 - len(item_names[index])]
+                        + item_names[index],
+                        "member": member_slots[index % len(member_slots)],
+                        "inputs": {"item": {"input": input_names[index]}},
+                    }
+                    for index, item_id in enumerate(item_ids)
+                ]
+                + [
+                    {
+                        "id": "collect",
+                        "name": "Collect results",
+                        "control": {"kind": "join"},
+                    }
+                ],
+                "edges": [
+                    {"source": item_id, "target": "collect"} for item_id in item_ids
+                ],
+            },
+            "inputs": item_inputs,
+            "input_artifacts": [],
+            "source": root.snapshot["source"],
+            "initiator": root.snapshot["initiator"],
+            "members": {
+                slot: {
+                    **copy.deepcopy(member),
+                    "dispatch_member_id": row.snapshot["member"]["member_id"],
+                }
+                for slot in member_slots
+            },
+            "dispatch_scope": True,
+        }
+        definition = GraphDefinition.model_validate(frozen["definition"])
+        validate_graph(definition, result_requirement="reachable")
+        frozen["definition"] = definition.model_dump()
+        return await self._create_scope(
+            session,
+            row.owner_username,
+            frozen,
+            root_run_id=_root_run_id(root),
+            parent_task=row,
+            depth=root.snapshot["depth"],
+        )
+
     async def _create_scope(
         self,
         session: AsyncSession,
@@ -6954,8 +7093,11 @@ class WorkflowService:
                 "overrides": task.overrides.model_dump(exclude_unset=True),
                 "required_inputs": definition.required_inputs,
             }
-            if task.output_contract is not None:
-                child_definition["output_contract"] = task.output_contract
+            contract = task.result_contract(
+                explicit_control=definition.entry_task_ids is not None
+            )
+            if contract is not None:
+                child_definition["output_contract"] = contract
             session.add(
                 AgentWorkflowRun(
                     run_id=task_runs[task.id],
@@ -6969,7 +7111,7 @@ class WorkflowService:
                         else "human_task_v2"
                         if task.human
                         else "control_task_v2"
-                        if task.control
+                        if task.control or task.dispatch
                         else "transform_task_v2"
                         if task.transform
                         else "single_task_v2",
@@ -8137,6 +8279,16 @@ class WorkflowService:
                     await session.rollback()
                     continue
                 definition = _run_definition(root)
+                entries = definition.get("entry_task_ids")
+                trial_definition = (
+                    root.snapshot.get("trial", {}).get("draft", {}).get("definition")
+                )
+                task_indexes = {
+                    task["id"]: index
+                    for index, task in enumerate(
+                        (trial_definition or definition)["tasks"]
+                    )
+                }
                 rows = {
                     node_id: await session.get(AgentWorkflowRun, identity)
                     for node_id, identity in _current_task_runs(root).items()
@@ -8181,7 +8333,10 @@ class WorkflowService:
                             if (
                                 sibling is not None
                                 and sibling.status == "dependency_failed"
-                                and sibling.snapshot["node_id"] in descendants
+                                and (
+                                    entries is not None
+                                    or sibling.snapshot["node_id"] in descendants
+                                )
                             ):
                                 sibling.status = "pending"
                                 sibling.state = {**sibling.state, "reason": None}
@@ -8247,11 +8402,22 @@ class WorkflowService:
                         )
                     elif child.status in {"blocked", "cancelled"}:
                         row.status = "blocked"
-                        row.state = {
-                            **row.state,
-                            "reason": "Child scope requires attention: "
-                            + (child.state.get("reason") or child.status),
-                        }
+                        reason = "Child scope requires attention: " + (
+                            child.state.get("reason") or child.status
+                        )
+                        if child.snapshot.get("dispatch_scope"):
+                            failed_items = []
+                            for item_id, identity in _current_task_runs(child).items():
+                                if item_id == "collect":
+                                    continue
+                                item = await session.get(AgentWorkflowRun, identity)
+                                if item is not None and item.status != "completed":
+                                    failed_items.append(item_id)
+                            if failed_items:
+                                reason = "List items require attention: " + ", ".join(
+                                    failed_items
+                                )
+                        row.state = {**row.state, "reason": reason}
                         session.add(row)
                     else:
                         child_scopes.append(child.run_id)
@@ -8399,6 +8565,17 @@ class WorkflowService:
                                     matched.append(source)
                             elif source.status != "skipped":
                                 failed_on.append(edge["source"])
+                        if entries is not None and not waiting_on:
+                            row.state = {
+                                **row.state,
+                                "entered_from": (
+                                    ["__input"]
+                                    if task["id"] in entries
+                                    else [
+                                        source.snapshot["node_id"] for source in matched
+                                    ]
+                                ),
+                            }
                         if failed_on:
                             row.status = "dependency_failed"
                             row.state = {
@@ -8437,20 +8614,127 @@ class WorkflowService:
                         elif not matched and (
                             incoming
                             or (task.get("control") or {}).get("kind") == "join"
+                            or (entries is not None and task["id"] not in entries)
                         ):
                             row.status = "skipped"
                             row.state = {
                                 **row.state,
-                                "reason": "No incoming path matched its field conditions.",
+                                "reason": (
+                                    "No incoming control path was activated."
+                                    if entries is not None
+                                    else "No incoming path matched its field conditions."
+                                ),
                                 "waiting_on": [],
                                 "wait_kind": "skipped",
                             }
                         else:
                             previous_wait_kind = row.state.get("wait_kind")
+                            node_contract = task_input_contract(
+                                task.get("input_contract"),
+                                task.get("transform"),
+                                dispatch=bool(task.get("dispatch")),
+                            )
+                            if entries is not None and not row.state.get(
+                                "retry_pending"
+                            ):
+                                data_wait = []
+                                data_issues = []
+                                for name, ref in task["inputs"].items():
+                                    source_id = ref.get("task_id")
+                                    if source_id is None or source_id not in rows:
+                                        continue
+                                    source = rows[source_id]
+                                    assert source is not None
+                                    if source.status in {
+                                        "pending",
+                                        "running",
+                                        "waiting_human",
+                                        "waiting_child",
+                                    }:
+                                        if source_id not in data_wait:
+                                            data_wait.append(source_id)
+                                        continue
+                                    required = port_requires_value(node_contract, name)
+                                    field = ref["field"]
+                                    if source.status == "completed":
+                                        pinned = source.state.get(
+                                            "child_result_ref"
+                                        ) or {
+                                            "artifact_id": source.run_id,
+                                            "version": 1,
+                                        }
+                                        if (
+                                            not required
+                                            or port_value(source.result, field, pinned)
+                                            is not MISSING_PORT_VALUE
+                                        ):
+                                            continue
+                                        reason = "did not provide a value"
+                                    elif source.status == "skipped" and not required:
+                                        continue
+                                    else:
+                                        reason = (
+                                            f"was {source.status.replace('_', ' ')}"
+                                        )
+                                    data_issues.append(
+                                        {
+                                            "path": f"definition.tasks.{task_indexes[task['id']]}.inputs.{name}",
+                                            "code": "DATA_UNAVAILABLE",
+                                            "message": (
+                                                f"Input port {name} could not read {source_id}.{field} "
+                                                f"because the source {reason}."
+                                            ),
+                                        }
+                                    )
+                                if data_issues or data_wait:
+                                    if data_issues:
+                                        row.status = "dependency_failed"
+                                        row.state = {
+                                            **row.state,
+                                            "reason": " ".join(
+                                                issue["message"]
+                                                for issue in data_issues
+                                            ),
+                                            "issues": data_issues,
+                                            "waiting_on": [],
+                                            "wait_kind": "dependency_failed",
+                                        }
+                                        progress = True
+                                    else:
+                                        row.state = {
+                                            **row.state,
+                                            "reason": "Waiting for data from: "
+                                            + ", ".join(data_wait),
+                                            "waiting_on": data_wait,
+                                            "wait_kind": "data",
+                                        }
+                                    session.add(row)
+                                    if data_issues or previous_wait_kind != "data":
+                                        session.add(
+                                            AgentWorkflowEvent(
+                                                run_id=row.run_id,
+                                                kind="task.dependency_failed"
+                                                if data_issues
+                                                else "task.waiting",
+                                                data={
+                                                    "node_id": task["id"],
+                                                    "attempt_id": row.state[
+                                                        "attempt_id"
+                                                    ],
+                                                    "wait_kind": row.state["wait_kind"],
+                                                    "waiting_on": row.state[
+                                                        "waiting_on"
+                                                    ],
+                                                    "reason": row.state["reason"],
+                                                },
+                                            )
+                                        )
+                                    continue
                             row.state = {
                                 key: value
                                 for key, value in row.state.items()
-                                if key not in {"waiting_on", "wait_kind", "reason"}
+                                if key
+                                not in {"waiting_on", "wait_kind", "reason", "issues"}
                             }
                             if task.get("control"):
                                 control = task["control"]
@@ -8519,6 +8803,27 @@ class WorkflowService:
                                     row.result = {
                                         "matched": matches_condition(value, control)
                                     }
+                                elif entries is not None:
+                                    row.result = {
+                                        "results": [
+                                            {
+                                                "node_id": source.snapshot["node_id"],
+                                                "result": source.result,
+                                            }
+                                            for source in matched
+                                            if source.result is not None
+                                        ]
+                                    }
+                                    session.add(
+                                        AgentWorkflowArtifact(
+                                            artifact_id=row.run_id,
+                                            version=1,
+                                            run_id=row.run_id,
+                                            submission_id=row.state["attempt_id"],
+                                            contract=JOIN_OUTPUT,
+                                            content=row.result,
+                                        )
+                                    )
                                 row.status = "completed"
                                 session.add(row)
                                 session.add(
@@ -8692,13 +8997,15 @@ class WorkflowService:
                             member_id = row.snapshot.get("member", {}).get("member_id")
                             role_id = (
                                 _capacity_key(row.snapshot)
-                                if not (child_call or transform)
+                                if not (child_call or transform or task.get("dispatch"))
                                 else None
                             )
                             role_limit = row.snapshot.get("effective", {}).get(
                                 "max_parallel"
                             )
-                            if not (child_call or transform) and (
+                            if not (
+                                child_call or transform or task.get("dispatch")
+                            ) and (
                                 not _has_scope_capacity(whole_root, root, active)
                                 or member_id in occupied
                                 or (
@@ -8768,9 +9075,6 @@ class WorkflowService:
                             if row.snapshot.get("graph_task") and not retrying:
                                 refs = []
                             missing = False
-                            node_contract = task.get(
-                                "input_contract"
-                            ) or TRANSFORM_INPUTS.get(transform)
                             port_sources = (
                                 dict(row.snapshot.get("port_sources", {}))
                                 if retrying
@@ -8855,6 +9159,12 @@ class WorkflowService:
                                     source = rows[ref["task_id"]]
                                     assert source is not None
                                     if source.status != "completed":
+                                        if (
+                                            entries is not None
+                                            and source.status == "skipped"
+                                        ):
+                                            # Required readings were checked after control admission.
+                                            continue
                                         missing = True
                                         break
                                     pinned = source.state.get("child_result_ref") or {
@@ -8892,6 +9202,67 @@ class WorkflowService:
                                     **row.state,
                                     "reason": "A declared result input belongs to a skipped path.",
                                 }
+                            elif dispatch := task.get("dispatch"):
+                                path = f"definition.tasks.{task_indexes[task['id']]}.inputs"
+                                try:
+                                    items = normalize_port_inputs(
+                                        DISPATCH_INPUT, inputs, path
+                                    )["items"]
+                                    if len(items) > dispatch["max_items"]:
+                                        raise RoleAssetError(
+                                            f"List dispatch permits at most {dispatch['max_items']} items.",
+                                            [
+                                                {
+                                                    "path": f"{path}.items",
+                                                    "code": "LIMIT",
+                                                    "message": f"Received {len(items)} items.",
+                                                }
+                                            ],
+                                        )
+                                    child_id = (
+                                        await self._create_dispatch_scope(
+                                            session, root, row, task, items
+                                        )
+                                        if items
+                                        else None
+                                    )
+                                except RoleAssetError as exc:
+                                    row.status = "failed"
+                                    row.state = {
+                                        **row.state,
+                                        "reason": str(exc),
+                                        "issues": exc.fields,
+                                    }
+                                else:
+                                    row.snapshot = {
+                                        **row.snapshot,
+                                        "inputs": inputs,
+                                        "input_artifacts": refs,
+                                        "selected_fields": selected_fields,
+                                        "trial_input_sources": trial_input_sources,
+                                        "port_sources": port_sources,
+                                    }
+                                    if child_id:
+                                        row.status = "waiting_child"
+                                        row.state = {
+                                            **row.state,
+                                            "child_scope_run_id": child_id,
+                                            "reason": "Waiting for list items to complete.",
+                                        }
+                                        child_scopes.append(child_id)
+                                    else:
+                                        row.status = "completed"
+                                        row.result = {"results": []}
+                                        session.add(
+                                            AgentWorkflowArtifact(
+                                                artifact_id=row.run_id,
+                                                version=1,
+                                                run_id=row.run_id,
+                                                submission_id=row.state["attempt_id"],
+                                                contract=JOIN_OUTPUT,
+                                                content=row.result,
+                                            )
+                                        )
                             elif node_contract:
                                 task_index = next(
                                     index
@@ -9772,11 +10143,15 @@ class WorkflowService:
         return len(rows)
 
     async def sweep_pending_dispatches(self) -> None:
-        """Dispatch persisted claims that no executor has acquired.
+        """Wake persisted list scopes and claims with no active executor.
 
-        The executor rechecks root control and ownership under the write lock.
+        The scheduler and executor recheck root control under the admission lock.
+
+        Returns:
+            None after waking eligible scopes and task claims.
         """
         scope = aliased(AgentWorkflowRun)
+        parent = aliased(AgentWorkflowRun)
         async with self.db.get_db() as session:
             candidates = (
                 await session.execute(
@@ -9805,8 +10180,45 @@ class WorkflowService:
                     )
                 )
             ).all()
+            # Expansion commits before the first item claim. A lost wake must
+            # still reach the child scope, even if no executor has started.
+            pending_lists = (
+                await session.execute(
+                    select(AgentWorkflowRun.owner_username, AgentWorkflowRun.run_id)
+                    .join(
+                        parent,
+                        col(parent.run_id)
+                        == AgentWorkflowRun.snapshot["parent_run_id"].as_string(),
+                    )
+                    .join(
+                        AgentWorkflowControl,
+                        col(AgentWorkflowControl.run_id)
+                        == AgentWorkflowRun.snapshot["root_run_id"].as_string(),
+                    )
+                    .where(
+                        AgentWorkflowRun.snapshot["dispatch_scope"]
+                        .as_boolean()
+                        .is_(True),
+                        AgentWorkflowControl.status == "active",
+                        or_(
+                            and_(
+                                col(AgentWorkflowRun.status) == "running",
+                                col(parent.status).in_(["waiting_child", "blocked"]),
+                            ),
+                            and_(
+                                col(AgentWorkflowRun.status).in_(
+                                    ["completed", "blocked"]
+                                ),
+                                col(parent.status) == "waiting_child",
+                            ),
+                        ),
+                    )
+                )
+            ).all()
         for username, scope_id, task_id in candidates:
             self._dispatch_graph_task(username, scope_id, task_id)
+        for username, scope_id in pending_lists:
+            await self.advance_run(username, scope_id)
 
     async def run_maintenance(self) -> None:
         """Check persisted dispatches and human deadlines even without viewers.
@@ -10102,7 +10514,10 @@ class WorkflowService:
             RoleAssetError: Run is inaccessible or has not submitted a result.
         """
         run = await self.get_run(username, run_id)
-        if run["snapshot"].get("engine") == "control_task_v2" or run["result"] is None:
+        if run["result"] is None or (
+            run["snapshot"].get("engine") == "control_task_v2"
+            and run["snapshot"]["definition"].get("output_contract") is None
+        ):
             raise RoleAssetError("Run has no completed result", status=409)
         return run["result"]
 

@@ -10,6 +10,78 @@ vi.mock("@/i18n/composables", () => ({
 }));
 
 describe("canvas asset editing", () => {
+  it("keeps V2 control entry, boolean data, and result links independent", async () => {
+    const wrapper = mount(WorkflowGraphCanvas, {
+      props: {
+        definition: {
+          name: "Control diamond",
+          port_contract_version: 2,
+          input_contract: { type: "object", properties: { choose: { type: "boolean" } } },
+          tasks: [
+            { id: "choose", name: "Choose", control: { kind: "condition", value: "" }, inputs: { value: {} } },
+            { id: "collect", name: "Collect", control: { kind: "join" } },
+            { id: "format", name: "Format", transform: "json_text", inputs: { value: {} } },
+          ],
+          edges: [{ source: "choose", target: "collect", condition: { field: "matched", value: false } }],
+        },
+      },
+      global: {
+        stubs: {
+          TeamsFlowCanvas: {
+            name: "TeamsFlowCanvas",
+            props: ["edges"],
+            emits: ["connect", "select-node"],
+            template: "<div />",
+          },
+          WorkflowLoopPanel: true,
+          "v-select": { props: ["items"], template: "<div />" },
+          "v-alert": true, "v-btn": true, "v-checkbox": true, "v-chip": true,
+          "v-expansion-panels": true, "v-icon": true, "v-spacer": true,
+          "v-switch": true, "v-textarea": true, "v-text-field": true,
+        },
+      },
+    });
+    try {
+      const canvas = wrapper.getComponent({ name: "TeamsFlowCanvas" });
+      canvas.vm.$emit("connect", {
+        from: "__input", to: "choose", sourceHandle: "control-entry",
+      });
+      canvas.vm.$emit("connect", {
+        from: "__input", to: "choose", sourceHandle: "data-out:choose", targetHandle: "data-in:value",
+      });
+      await flushPromises();
+      expect(wrapper.find('[data-testid="control-value-boolean"]').exists()).toBe(true);
+      canvas.vm.$emit("connect", {
+        from: "collect", to: "format", sourceHandle: "data-out:results", targetHandle: "data-in:value",
+      });
+      canvas.vm.$emit("connect", {
+        from: "collect", to: "__output", sourceHandle: "data-out-result", targetHandle: "data-in-result",
+      });
+      canvas.vm.$emit("select-node", "__output");
+      await flushPromises();
+      const resultPicker = wrapper.getComponent('[data-testid="result-task"]') as VueWrapper;
+      expect(resultPicker.props()).toMatchObject({
+        items: expect.arrayContaining([{ title: "Collect", value: "collect" }]),
+      });
+      expect(wrapper.emitted("update:definition")!.at(-1)![0]).toMatchObject({
+        entry_task_ids: ["choose"],
+        result_task_id: "collect",
+        tasks: [
+          { inputs: { value: { input: "choose" } }, control: { value: false } },
+          { id: "collect" },
+          { inputs: { value: { task_id: "collect", field: "results" } } },
+        ],
+        edges: [{ source: "choose", target: "collect" }],
+      });
+      expect(canvas.props("edges")).toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: "__input:choose", sourceHandle: "control-entry" }),
+        expect.objectContaining({ id: "data:input:choose:value", targetHandle: "data-in:value" }),
+      ]));
+    } finally {
+      wrapper.unmount();
+    }
+  });
+
   it("connects named data handles and restores their bindings on undo and reopen", async () => {
     const stubs = {
       TeamsFlowCanvas: {

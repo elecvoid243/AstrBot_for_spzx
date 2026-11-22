@@ -77,6 +77,12 @@ Declare inputs in the input node. A typed Agent can bind a workflow input or a r
 
 The canvas supports zoom, fit, minimap, undo/redo and automatic layout; expand the toolbox and properties on narrow screens. Add a **Condition**, select an input or required upstream scalar, a comparison and a value of the same type, then connect its true and false ports. **All join** waits for every entered path to succeed and ignores skipped paths; if no path enters, the join is skipped. A local failure blocks dependent successors while independent paths can continue.
 
+In a V2 graph, mark a task as a **Control entry task** or draw from the workflow input's control handle to that task. Once you declare entries, a task needs a control path from an entry to run. Connect each step's named data ports separately. The run graph shows which control paths were taken, and the task status explains skipped paths or unavailable inputs. An ALL join in this mode exposes an array named `results`. It includes the results of successful entered paths in the order their control edges were added. You can connect this array downstream or select the join as the workflow result.
+
+![V2 condition with a separate control entry and boolean data link](/images/agent-teams-v2-control-en.jpg)
+
+Add **List dispatch**, choose its Agent model and connect an array to `items`. Use `{item}` in the task prompt to read the current item. Set the item and concurrency limits in the node properties. Each limit is at most 30. Item tasks reuse the available role instances and respect the workflow and role concurrency limits. Each item submits a text result. The result lists the original positions as `item-0`, `item-1`, and so on, even when items finish out of order or have identical values. An empty list yields an empty result array. If an item fails, open the dispatch scope in the run workbench to see the failed item and retry its original input.
+
 Add a saved workflow or autonomous team as a call node: select a fixed version and map each declared input to a workflow input or upstream field. Each call has its own scope and receives only explicitly mapped values; enter that scope in the run to inspect tasks and results. An autonomous coordinator can call only fixed workflow versions explicitly allowed in its configuration. Set nesting depth and concurrency limits; child calls share root limits.
 
 ### Human nodes and bounded revision

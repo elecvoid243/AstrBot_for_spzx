@@ -219,6 +219,15 @@
           @click="addTask('agent:inline')"
         ><span class="graph-node-option"><strong>{{ tm("graph.addAgent") }}</strong><small>{{ tm("guide.agentNode") }}</small></span></v-btn>
         <v-btn
+          v-if="structuredPorts"
+          variant="tonal"
+          size="small"
+          class="mb-3"
+          prepend-icon="mdi-format-list-numbered"
+          data-testid="add-list-dispatch"
+          @click="addTask('agent:dispatch')"
+        >{{ tm("graph.listDispatch") }}</v-btn>
+        <v-btn
           variant="tonal"
           size="small"
           class="mb-3"
@@ -349,6 +358,17 @@
             :label="tm('graph.taskName')"
             density="compact"
             @update:model-value="checkpoint"
+          />
+          <v-checkbox
+            v-if="structuredPorts && selectedTask.control?.kind !== 'join'"
+            :model-value="draft.entry_task_ids?.includes(selectedTask.id) ?? false"
+            :disabled="!draft.entry_task_ids?.includes(selectedTask.id) && draft.edges?.some((edge) => edge.target === selectedTask!.id)"
+            :label="tm('graph.controlEntry')"
+            :hint="tm('graph.controlEntryHint')"
+            persistent-hint
+            density="compact"
+            data-testid="control-entry"
+            @update:model-value="setControlEntry(selectedTask.id, $event)"
           />
           <v-select
             v-if="
@@ -858,8 +878,22 @@
             />
           </template>
           <template v-else-if="selectedTask.control?.kind !== 'join'">
+            <template v-if="selectedTask.dispatch">
+              <p class="text-caption">{{ tm("graph.listDispatchHint") }}</p>
+              <v-text-field
+                v-for="limit in dispatchLimits"
+                :key="limit"
+                v-model.number="selectedTask.dispatch[limit]"
+                :label="tm(`graph.dispatchLimits.${limit}`)"
+                type="number"
+                min="1"
+                :max="maxDispatchItems"
+                density="compact"
+                @update:model-value="checkpoint"
+              />
+            </template>
             <v-textarea
-              v-if="structuredPorts && !selectedTask.control && !selectedTask.team && !selectedTask.workflow"
+              v-else-if="structuredPorts && !selectedTask.control && !selectedTask.team && !selectedTask.workflow"
               data-testid="agent-input-contract"
               :label="tm('graph.input_contract')"
               :hint="tm('graph.referencePortsHint')"
@@ -881,7 +915,7 @@
                   aliasTexts[`${selectedTask.id}:${alias}`] ?? alias
                 "
                 :label="tm('graph.inputAlias')"
-                :readonly="!!selectedTask.team || !!selectedTask.workflow"
+                :readonly="!!selectedTask.team || !!selectedTask.workflow || !!selectedTask.dispatch"
                 density="compact"
                 @update:model-value="
                   aliasTexts[`${selectedTask.id}:${alias}`] = $event
@@ -896,7 +930,7 @@
                 "
               />
               <p
-                v-if="ref.task_id && !ancestors.has(ref.task_id)"
+                v-if="ref.task_id && !explicitControl && !ancestors.has(ref.task_id)"
                 class="text-error text-caption"
               >
                 {{ tm("graph.invalidSource") }}: {{ ref.task_id }}
@@ -941,7 +975,8 @@
                 v-if="
                   !selectedTask.control &&
                   !selectedTask.team &&
-                  !selectedTask.workflow
+                  !selectedTask.workflow &&
+                  !selectedTask.dispatch
                 "
                 variant="text"
                 size="small"
@@ -957,7 +992,8 @@
               v-if="
                 !selectedTask.control &&
                 !selectedTask.team &&
-                !selectedTask.workflow
+                !selectedTask.workflow &&
+                !selectedTask.dispatch
               "
               variant="tonal"
               size="small"
@@ -1004,7 +1040,7 @@
                 @update:model-value="setControlValue"
               />
             </template>
-            <template v-else>
+            <template v-else-if="!selectedTask.dispatch">
               <p class="text-caption my-2">{{ tm("graph.referenceHint") }}</p>
               <h3 class="text-subtitle-2 mt-4 mb-2">
                 {{ tm("graph.outputs") }}
@@ -1130,8 +1166,7 @@
           <v-select
             v-model="draft.result_task_id"
             :items="
-              draft.tasks
-                .filter((task) => !task.control)
+              resultTasks
                 .map((task) => ({ title: task.name, value: task.id }))
             "
             :label="tm('graph.resultTask')"
@@ -1297,8 +1332,12 @@ const draft = ref<GraphDefinition>(
 );
 const structuredPorts = computed(() => draft.value.port_contract_version === 2);
 const typedPorts = computed(() => !!draft.value.port_contract_version);
+const explicitControl = computed(() => Array.isArray(draft.value.entry_task_ids));
+const dispatchLimits = ["max_items", "max_parallel"] as const;
+const maxDispatchItems = 30;
 const transformKinds = ["parse_json", "map_fields", "json_text"] as const;
-const jsonTypes = ["array", "boolean", "integer", "null", "number", "object", "string"];
+const scalarTypes = ["boolean", "integer", "null", "number", "string"];
+const jsonTypes = ["array", ...scalarTypes, "object"].sort();
 const semanticPortTypes = ["astrbot-message", "astrbot-artifact", "astrbot-file"];
 const workflowInputText = ref<string | null>(null);
 const invalidPortPath = ref("");
@@ -1553,7 +1592,11 @@ const inputSources = computed(() => [
     value: `input:${name}`,
   })),
   ...draft.value.tasks
-    .filter((task) => ancestors.value.has(task.id) && !task.control)
+    .filter((task) =>
+      task.id !== selectedNode.value &&
+      (!task.control || (explicitControl.value && task.control.kind === "join")) &&
+      (explicitControl.value || ancestors.value.has(task.id)),
+    )
     .map((task) => ({ title: task.name, value: task.id })),
 ]);
 function agentInputNames(task: GraphTask) {
@@ -1587,7 +1630,10 @@ function fieldsForTask(
 ): { title: string; value: string; type?: string }[] {
   const task = draft.value.tasks.find((item) => item.id === id);
   if (!task) return [];
-  const fields: { title: string; value: string; type: string }[] = task.output_contract
+  const aggregate = task.dispatch || (explicitControl.value && task.control?.kind === "join");
+  const fields: { title: string; value: string; type: string }[] = aggregate
+    ? [{ title: "results · array", value: "results", type: "array" }]
+    : task.output_contract
     ? []
     : [{ title: "text · string", value: "text", type: "string" }];
   const visit = (schema: any, prefix = "") => {
@@ -1612,7 +1658,7 @@ function fieldsForTask(
     }
   };
   if (task.output_contract) visit(task.output_contract);
-  if (structuredPorts.value && !task.control) {
+  if (structuredPorts.value && (!task.control || aggregate)) {
     fields.push({ title: tm("graph.artifactReferencePort"), value: "$artifact", type: "astrbot-artifact" });
     const properties = task.output_contract?.properties;
     if (properties && typeof properties === "object" && "files" in properties) {
@@ -1704,11 +1750,15 @@ const edgeSourceApproval = computed(
 );
 const controlValueType = computed(() => {
   const ref = selectedTask.value?.inputs?.value;
-  if (!ref || ref.input != null) return "string";
-  const field = fieldsForTask(ref.task_id ?? "").find(
-    (item) => item.value === ref.field,
-  );
-  return field?.title.split(" · ").pop() ?? "string";
+  if (!ref) return "string";
+  const type = ref.input != null
+    ? workflowPorts.value[ref.input]?.type
+    : fieldsForTask(ref.task_id ?? "", true).find((item) => item.value === ref.field)?.type;
+  const types: string[] = Array.isArray(type) ? type : typeof type === "string" ? type.split("|") : [];
+  if (types.length > 1 && types.every((value) => value === "integer" || value === "number")) {
+    return "number";
+  }
+  return types[0] ?? "string";
 });
 const operatorItems = computed(() =>
   operators.map((value) => ({ title: tm(`graph.operators.${value}`), value })),
@@ -1755,6 +1805,7 @@ const taskNodes = computed<FlowNode[]>(() =>
     const running = props.tasks.find((item) => item.node_id === task.id);
     const role = props.roles.find((item) => item.role_id === task.role_id);
     const state = running?.status;
+    const runtimeIssues = Array.isArray(running?.state.issues) ? running.state.issues : [];
     return {
       id: task.id,
       position: {
@@ -1763,8 +1814,10 @@ const taskNodes = computed<FlowNode[]>(() =>
       },
       data: {
         label: task.name,
-        inputPorts: typedPorts.value && !task.control && !task.human && !task.team && !task.workflow
+        inputPorts: typedPorts.value && (!task.control || (structuredPorts.value && task.control.kind === "condition")) && !task.human && !task.team && !task.workflow
           ? Object.entries(
+              task.control?.kind === "condition" ? { value: { type: scalarTypes } } :
+              task.dispatch ? { items: { type: "array" } } :
               task.input_contract ? task.input_contract.properties :
               task.transform === "map_fields" ? {} :
               task.transform === "parse_json" ? { text: { type: "string" } } :
@@ -1775,6 +1828,7 @@ const taskNodes = computed<FlowNode[]>(() =>
                 ? String(schema.format) : "";
               const types = format ? [format] : Array.isArray(schema.type) ? schema.type as string[] : [String(schema.type)];
               const type = format ? tm(`graph.portFormats.${format}`)
+                : task.control?.kind === "condition" ? tm("graph.conditionScalar")
                 : types.length === jsonTypes.length ? "JSON" : types.join("|");
               const path = `definition.tasks.${index}.inputs.${alias}`;
               return {
@@ -1782,11 +1836,13 @@ const taskNodes = computed<FlowNode[]>(() =>
                 label: `${alias} · ${type}`,
                 types,
                 invalid: invalidPortPath.value === path ||
-                  props.issues.some((issue) => issue.path === path || issue.path.startsWith(path + ".")),
+                  [...props.issues, ...runtimeIssues].some(
+                    (issue) => typeof issue.path === "string" && (issue.path === path || issue.path.startsWith(path + ".")),
+                  ),
               };
             })
           : undefined,
-        outputPorts: typedPorts.value && !task.control
+        outputPorts: typedPorts.value && (!task.control || (explicitControl.value && task.control.kind === "join"))
           ? [
               ...fieldsForTask(task.id, true).map((field) => ({
                 id: `data-out:${field.value}`, label: field.title, types: field.type?.split("|"),
@@ -1807,7 +1863,7 @@ const taskNodes = computed<FlowNode[]>(() =>
             ? "human.returnForRevision"
             : "graph.falseExit",
         ),
-        memberName: task.transform ? tm(`graph.${task.transform}`) : task.control
+        memberName: task.dispatch ? tm("graph.listDispatch") : task.transform ? tm(`graph.${task.transform}`) : task.control
           ? tm(
               task.control.kind === "condition"
                 ? "graph.conditionNode"
@@ -1879,6 +1935,8 @@ const taskNodes = computed<FlowNode[]>(() =>
             ? tm(
                 running?.state.wait_kind === "predecessors"
                   ? "graph.waitingPredecessors"
+                  : running?.state.wait_kind === "data"
+                  ? "graph.waitingData"
                   : running?.state.wait_kind === "capacity"
                   ? "graph.waitingCapacity"
                   : "graph.notStarted",
@@ -1894,10 +1952,13 @@ const taskNodes = computed<FlowNode[]>(() =>
     };
   }),
 );
-const validResultTask = computed(() =>
-  draft.value.tasks.some(
-    (task) => task.id === draft.value.result_task_id && !task.control,
+const resultTasks = computed(() =>
+  draft.value.tasks.filter((task) =>
+    !task.control || (explicitControl.value && task.control.kind === "join"),
   ),
+);
+const validResultTask = computed(() =>
+  resultTasks.value.some((task) => task.id === draft.value.result_task_id),
 );
 const showInterfaceNodes = computed(
   () => !props.readonly || validResultTask.value,
@@ -1921,6 +1982,7 @@ const nodes = computed<FlowNode[]>(() => [
           data: {
             label: tm("graph.workflowInput"),
             interfaceNode: typedPorts.value,
+            controlEntry: structuredPorts.value,
             outputPorts: typedPorts.value
               ? Object.entries(workflowPorts.value).map(([name, schema]) => {
                   const format = "format" in schema && semanticPortTypes.includes(String(schema.format))
@@ -1954,7 +2016,7 @@ const nodes = computed<FlowNode[]>(() => [
                   props.issues.some((issue) => issue.path === "definition.result_task_id"),
               }]
               : undefined,
-            memberName: draft.value.tasks.find(
+            memberName: structuredPorts.value || resultTasks.value.find(
               (task) => task.id === draft.value.result_task_id,
             )?.output_contract
               ? tm("graph.structured")
@@ -2040,22 +2102,39 @@ const edges = computed<FlowEdgePayload[]>(() => [
       validResultTask.value
         ? [{ source: draft.value.result_task_id!, target: "__output" }]
         : []),
+      ...(draft.value.entry_task_ids ?? []).map((target) => ({ source: "__input", target })),
       ...(draft.value.edges ?? []),
     ] as NonNullable<GraphDefinition["edges"]>
   )
-    .map((edge) => {
+    .map<FlowEdgePayload>((edge) => {
       const sourceGroup = collapsedGroups.value.find((loop) =>
         loop.body.includes(edge.source),
       );
       const targetGroup = collapsedGroups.value.find((loop) =>
         loop.body.includes(edge.target),
       );
+      const sourceRun = props.tasks.find((task) => task.snapshot.node_id === edge.source);
+      const targetRun = props.tasks.find((task) => task.snapshot.node_id === edge.target);
+      const entered = targetRun?.state.entered_from;
+      const traversed = Array.isArray(entered) && entered.includes(edge.source);
+      const skipped = targetRun?.status === "skipped" || sourceRun?.status === "skipped" ||
+        (sourceRun?.status === "completed" && edge.condition && !traversed && Array.isArray(entered));
+      let style: FlowEdgePayload["style"];
+      if (props.readonly && explicitControl.value && skipped) {
+        style = { opacity: 0.45, strokeDasharray: "4 5" };
+      } else if (props.readonly && explicitControl.value && traversed) {
+        style = { stroke: "#087d74", strokeWidth: 2.5 };
+      } else if (props.dispatchTasks.includes(edge.target) && edge.source === "coordinator") {
+        style = { strokeDasharray: "5 5" };
+      }
       return {
         id: `${edge.source}:${edge.target}`,
         source: sourceGroup ? `loop:${sourceGroup.id}` : edge.source,
         target: targetGroup ? `loop:${targetGroup.id}` : edge.target,
         sourceHandle:
-          (draft.value.tasks.find((task) => task.id === edge.source)?.control
+          edge.source === "__input" && explicitControl.value
+            ? "control-entry"
+            : (draft.value.tasks.find((task) => task.id === edge.source)?.control
             ?.kind === "condition" ||
             draft.value.tasks.find((task) => task.id === edge.source)?.human
               ?.kind === "approval") &&
@@ -2086,11 +2165,7 @@ const edges = computed<FlowEdgePayload[]>(() => [
               edge.source === "coordinator"
             ? tm("autonomous.dispatched")
             : undefined,
-        style:
-          props.dispatchTasks.includes(edge.target) &&
-          edge.source === "coordinator"
-            ? { strokeDasharray: "5 5" }
-            : undefined,
+        style,
       };
     })
     .filter((edge) => edge.source !== edge.target),
@@ -2229,7 +2304,8 @@ function restore(delta: number) {
  */
 function addTask(roleId: string, position?: { x: number; y: number }) {
   if (props.readonly) return;
-  const inline = roleId === "agent:inline";
+  const dispatch = roleId === "agent:dispatch" && structuredPorts.value;
+  const inline = roleId === "agent:inline" || dispatch;
   const role = props.roles.find((item) => item.role_id === roleId);
   const team = roleId.startsWith("team:")
     ? props.teams.find((item) => item.asset_id === roleId.slice(5))
@@ -2265,7 +2341,7 @@ function addTask(roleId: string, position?: { x: number; y: number }) {
   const index = draft.value.tasks.length;
   draft.value.tasks.push({
     id,
-    name: transform ? tm(`graph.${transform}`) : controlKind
+    name: dispatch ? tm("graph.listDispatch") : transform ? tm(`graph.${transform}`) : controlKind
       ? tm(
           controlKind === "condition"
             ? "graph.conditionNode"
@@ -2321,10 +2397,19 @@ function addTask(roleId: string, position?: { x: number; y: number }) {
           },
         }
       : inline
-      ? { member: id, role: { name: "Agent" }, installation: { profile_id: "default" } }
+      ? {
+          member: id,
+          role: {
+            name: "Agent",
+            ...(dispatch ? { max_instances: maxDispatchItems, max_parallel: maxDispatchItems } : {}),
+          },
+          installation: { profile_id: "default" },
+        }
       : { member: id, role_id: roleId, role_version: role!.version }),
-    task: "",
+    ...(dispatch ? { dispatch: { max_items: 20, max_parallel: 2 } } : {}),
+    task: dispatch ? "Process {item}" : "",
     inputs:
+      dispatch ? { items: {} } :
       controlKind === "condition"
         ? {
             value: {
@@ -2461,7 +2546,10 @@ function changeSource(source: string) {
     delete task.role_id;
     delete task.role_version;
     task.overrides = {};
-    task.role = { name: task.name };
+    task.role = {
+      name: task.name,
+      ...(task.dispatch ? { max_instances: maxDispatchItems, max_parallel: maxDispatchItems } : {}),
+    };
     task.installation = { profile_id: "default" };
   }
   for (const field of ["tools", "skills", "knowledge_bases"])
@@ -2535,7 +2623,7 @@ function connect({
     } else {
       const task = draft.value.tasks.find((item) => item.id === to);
       if (!task) return;
-      if (from !== "__input" && !controlAncestors(to).has(from)) {
+      if (from !== "__input" && !explicitControl.value && !controlAncestors(to).has(from)) {
         localError.value = tm("graph.dataSourceUpstream");
         return;
       }
@@ -2544,11 +2632,24 @@ function connect({
         ...task.inputs,
         [alias]: from === "__input" ? { input: field } : { task_id: from, field },
       };
+      if (task.control?.kind === "condition") {
+        selectedNode.value = task.id;
+        resetControlValue();
+        return;
+      }
     }
     checkpoint();
     return;
   }
+  if (from === "__input" && sourceHandle === "control-entry") {
+    setControlEntry(to, true);
+    return;
+  }
   if (from.startsWith("__") || to.startsWith("__")) return;
+  if (draft.value.entry_task_ids?.includes(to)) {
+    localError.value = tm("graph.entryHasDependency");
+    return;
+  }
   if (from.startsWith("loop:") || to.startsWith("loop:")) return;
   if (
     !draft.value.edges?.some(
@@ -2584,6 +2685,21 @@ function updateInputReferences(update: (ref: TaskInput) => TaskInput | null) {
       task.inputs![alias] = update(binding) ?? {};
     }
   }
+}
+
+function setControlEntry(taskId: string, enabled: boolean | null) {
+  if (enabled && (
+    !draft.value.tasks.some((task) => task.id === taskId && task.control?.kind !== "join") ||
+    draft.value.edges?.some((edge) => edge.target === taskId)
+  )) {
+    localError.value = tm("graph.entryHasDependency");
+    return;
+  }
+  const entries = draft.value.entry_task_ids ?? [];
+  draft.value.entry_task_ids = enabled
+    ? [...entries.filter((id) => id !== taskId), taskId]
+    : entries.filter((id) => id !== taskId);
+  checkpoint();
 }
 
 function enableStructuredPorts() {
@@ -2660,6 +2776,10 @@ function removeEdge(key: string) {
     if (task?.inputs) task.inputs[dataEdge.alias] = {};
   } else if (dataEdge) {
     draft.value.result_task_id = null;
+  } else if (key.startsWith("__input:") && explicitControl.value) {
+    selectedEdgeKey.value = null;
+    setControlEntry(key.slice("__input:".length), false);
+    return;
   } else {
     draft.value.edges = draft.value.edges?.filter(
       (edge) => `${edge.source}:${edge.target}` !== key,
@@ -2670,6 +2790,9 @@ function removeEdge(key: string) {
 }
 function removeTask() {
   const removed = selectedNode.value;
+  if (explicitControl.value) {
+    draft.value.entry_task_ids = draft.value.entry_task_ids?.filter((id) => id !== removed);
+  }
   draft.value.loops = (draft.value.loops ?? [])
     .filter(
       (loop) =>

@@ -845,6 +845,14 @@ export type DeveloperModeState = {
 };
 
 /**
+ * Bound the number of items and running Agents in a list dispatch.
+ */
+export type DispatchLimits = {
+    max_items?: number;
+    max_parallel?: number;
+};
+
+/**
  * Initial editable snapshot and optional existing asset identity.
  */
 export type DraftCreateRequest = {
@@ -922,6 +930,10 @@ export type GraphDefinition = {
      */
     port_contract_version?: (1 | 2 | null);
     input_contract?: WorkflowPortContract;
+    /**
+     * Explicit V2 control entry tasks. Omit to retain implicit entries.
+     */
+    entry_task_ids?: (Array<(string)> | null);
     result_task_id?: (string | null);
     max_parallel?: number;
     max_depth?: number;
@@ -965,6 +977,7 @@ export type GraphTask = {
     role?: (RoleDefinition | null);
     installation?: (RoleInstallation | null);
     task?: string;
+    dispatch?: (DispatchLimits | null);
     control?: (ConditionTask | JoinTask | null);
     human?: (HumanTask | null);
     team?: (TeamCall | null);

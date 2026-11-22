@@ -2,6 +2,7 @@
 
 import copy
 import json
+from graphlib import CycleError, TopologicalSorter
 from operator import ge, gt, le, lt
 from string import Formatter
 from typing import Literal, cast
@@ -40,6 +41,28 @@ REFERENCE_OUTPUTS = {"$artifact": "astrbot-artifact", "$file": "astrbot-file"}
 MISSING_PORT_VALUE = object()
 
 JSON_TYPES = {"string", "boolean", "integer", "number", "null", "object", "array"}
+JOIN_OUTPUT = {
+    "type": "object",
+    "properties": {
+        "results": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "node_id": {"type": "string"},
+                    "result": {"type": "object"},
+                },
+                "required": ["node_id", "result"],
+            },
+        }
+    },
+    "required": ["results"],
+}
+DISPATCH_INPUT = {
+    "type": "object",
+    "properties": {"items": {"type": "array"}},
+    "required": ["items"],
+}
 TRANSFORM_INPUTS = {
     "parse_json": {
         "type": "object",
@@ -107,6 +130,14 @@ class JoinTask(BaseModel):
     kind: Literal["join"]
 
 
+class DispatchLimits(BaseModel):
+    """Bound the number of items and running Agents in a list dispatch."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    max_items: int = Field(default=20, ge=1, le=30)
+    max_parallel: int = Field(default=2, ge=1, le=30)
+
+
 class GraphTask(BaseModel):
     """A task bound to a named member with inline or pinned configuration."""
 
@@ -126,6 +157,9 @@ class GraphTask(BaseModel):
     inputs: dict[str, TaskInput] = Field(default_factory=dict, max_length=30)
     overrides: RoleOverrides = Field(default_factory=RoleOverrides)
     output_contract: dict | None = None
+    dispatch: DispatchLimits | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     transform: Literal["parse_json", "map_fields", "json_text"] | None = Field(
         default=None, exclude_if=lambda value: value is None
     )
@@ -133,6 +167,21 @@ class GraphTask(BaseModel):
         default=None, exclude_if=lambda value: value is None
     )
     position: dict[Literal["x", "y"], float] = Field(default_factory=dict)
+
+    def result_contract(self, *, explicit_control: bool = False) -> dict | None:
+        """Resolve the same public result contract for graph validation and execution.
+
+        Args:
+            explicit_control: Whether the graph declares its control entry tasks.
+
+        Returns:
+            Declared output, including the native aggregate for a dispatch or V2 join.
+        """
+        if self.dispatch or (
+            explicit_control and self.control and self.control.kind == "join"
+        ):
+            return JOIN_OUTPUT
+        return self.output_contract
 
     @field_serializer("overrides")
     def serialize_overrides(self, overrides: RoleOverrides) -> dict:
@@ -156,6 +205,19 @@ class GraphTask(BaseModel):
         Raises:
             ValueError: The selected node kind has missing or conflicting fields.
         """
+        if self.dispatch is not None and (
+            self.transform
+            or self.control
+            or self.human
+            or self.team
+            or self.workflow
+            or self.input_contract is not None
+            or self.output_contract is not None
+            or set(self.inputs) != {"items"}
+        ):
+            raise ValueError(
+                "List dispatch requires an Agent task with the items port and default text output"
+            )
         if self.transform is not None:
             if (
                 self.control
@@ -321,6 +383,9 @@ class GraphDefinition(BaseModel):
     input_contract: dict | None = Field(
         default=None, exclude_if=lambda value: value is None
     )
+    entry_task_ids: list[str] | None = Field(
+        default=None, max_length=100, exclude_if=lambda value: value is None
+    )
     result_task_id: str | None = Field(default=None, min_length=1, max_length=128)
     max_parallel: int = Field(default=4, ge=1, le=100)
     max_depth: int = Field(default=3, ge=1, le=20)
@@ -475,6 +540,38 @@ def port_value(content: dict, field: str, reference: dict | None = None):
             return MISSING_PORT_VALUE
         value = value[name]
     return value
+
+
+def task_input_contract(
+    explicit: dict | None, transform: str | None, *, dispatch: bool = False
+) -> dict | None:
+    """Resolve the input contract used during validation and task admission.
+
+    Args:
+        explicit: Input contract declared on the task.
+        transform: Built-in transform name, if any.
+        dispatch: Whether this task consumes a list for dispatch.
+
+    Returns:
+        The declared or built-in contract when available.
+    """
+    return explicit or (DISPATCH_INPUT if dispatch else TRANSFORM_INPUTS.get(transform))
+
+
+def port_requires_value(contract: dict | None, name: str) -> bool:
+    """Check whether an unavailable binding prevents task admission.
+
+    Args:
+        contract: Effective task input contract, when defined.
+        name: Input name on the consuming task.
+
+    Returns:
+        True for a required port without a default or an implicit required binding.
+    """
+    return contract is None or (
+        name in contract.get("required", [])
+        and "default" not in contract["properties"][name]
+    )
 
 
 def normalize_port_inputs(contract: dict, values: dict, path: str) -> dict:
@@ -913,6 +1010,58 @@ def validate_graph(
                 *(ancestors[p] for p in predecessors[name])
             )
         pending -= ready
+    entries = definition.entry_task_ids
+    execution_order = tuple(ancestors)
+    if entries is not None:
+        if not structured or (not entries and text_port_scope is None):
+            fields.append(
+                {
+                    "path": "definition.entry_task_ids",
+                    "code": "REQUIRED" if structured else "ENTRY",
+                    "message": (
+                        "Select at least one control entry task"
+                        if structured
+                        else "Control entry tasks require port contract version 2"
+                    ),
+                }
+            )
+        for index, entry in enumerate(entries):
+            if (
+                entry not in tasks
+                or entry in entries[:index]
+                or predecessors.get(entry)
+                or (tasks[entry].control and tasks[entry].control.kind == "join")
+            ):
+                fields.append(
+                    {
+                        "path": f"definition.entry_task_ids.{index}",
+                        "code": "ENTRY",
+                        "message": "Select a unique V2 task with no incoming control edge, other than a join",
+                    }
+                )
+        try:
+            execution_order = tuple(
+                TopologicalSorter(
+                    {
+                        task.id: predecessors[task.id]
+                        | {
+                            ref.task_id
+                            for ref in task.inputs.values()
+                            if ref.task_id in tasks
+                        }
+                        for task in definition.tasks
+                    }
+                ).static_order()
+            )
+        except CycleError:
+            if not any(issue["code"] == "CYCLE" for issue in fields):
+                fields.append(
+                    {
+                        "path": "definition.tasks",
+                        "code": "CYCLE",
+                        "message": "Control edges and data bindings cannot form a dependency cycle",
+                    }
+                )
     grouped: set[str] = set()
     loop_ids: set[str] = set()
     for index, loop in enumerate(definition.loops):
@@ -1082,10 +1231,20 @@ def validate_graph(
         typed_agent = definition.port_contract_version in (1, 2) and not (
             task.control or task.team or task.workflow or task.transform
         )
-        node_contract = task.input_contract or TRANSFORM_INPUTS.get(task.transform)
+        node_contract = task_input_contract(
+            task.input_contract, task.transform, dispatch=bool(task.dispatch)
+        )
+        if task.dispatch and entries is None:
+            fields.append(
+                {
+                    "path": path + ".dispatch",
+                    "code": "ENTRY",
+                    "message": "List dispatch requires explicit V2 control entry tasks",
+                }
+            )
         if node_contract and (text_port_scope is None or task.id in text_port_scope):
             for key in node_contract.get("required", []):
-                if "default" not in node_contract["properties"][key] and not (
+                if port_requires_value(node_contract, key) and not (
                     (binding := task.inputs.get(key))
                     and (binding.input or binding.task_id)
                 ):
@@ -1146,15 +1305,24 @@ def validate_graph(
                     ref.task_id not in ancestors.get(task.id, set())
                     and ref.task_id not in external_sources
                     and not (feedback_ref is not None and ref.task_id in tasks)
+                    and not (entries is not None and ref.task_id in tasks)
                 ):
                     raise ValueError(
                         "Result input must refer to an upstream dependency"
                     )
                 else:
-                    if data_sources[ref.task_id].control:
-                        raise ValueError("Control nodes cannot be referenced as data")
+                    producer = data_sources[ref.task_id]
+                    collecting = (
+                        entries is not None
+                        and producer.control
+                        and producer.control.kind == "join"
+                    )
+                    if producer.control and not collecting:
+                        raise ValueError(
+                            "This control node cannot be referenced as data"
+                        )
                     source_schema = field_schema(
-                        data_sources[ref.task_id].output_contract,
+                        producer.result_contract(explicit_control=entries is not None),
                         ref.field,
                         structured=structured and bool(task.transform or typed_agent),
                     )
@@ -1236,6 +1404,13 @@ def validate_graph(
                     )
                 ):
                     raise ValueError("Use only declared {input_name} placeholders")
+                if task.dispatch:
+                    if field != "item":
+                        raise ValueError(
+                            "List dispatch prompts can only use the {item} placeholder"
+                        )
+                    missing_ports.add(field)
+                    continue
                 if check_text_ports and node_contract is not None:
                     schema = node_contract["properties"].get(field, {})
                     if schema.get("type") != "string" or (
@@ -1265,6 +1440,10 @@ def validate_graph(
                             "message": "Connect a text source to this input port",
                         }
                     )
+            if task.dispatch and "item" not in missing_ports:
+                raise ValueError(
+                    "Include the {item} placeholder in the list dispatch prompt"
+                )
         except ValueError as exc:
             fields.append(
                 {"path": path + ".task", "code": "INVALID", "message": str(exc)}
@@ -1283,7 +1462,11 @@ def validate_graph(
                 "message": "Select an existing task as the workflow result",
             }
         )
-    elif result is not None and result.control:
+    elif (
+        result is not None
+        and result.control
+        and not (entries is not None and result.control.kind == "join")
+    ):
         fields.append(
             {
                 "path": "definition.result_task_id",
@@ -1314,17 +1497,19 @@ def validate_graph(
             for task_id in loop.body
         }
         reachable: set[str] = set()
+        task_indexes = {task.id: index for index, task in enumerate(definition.tasks)}
         feedback_bindings: set[tuple[str, str]] = set()
         # Walk in dependency order. Treat conditional edges as possible because
         # their values are runtime data. Revisit nodes when a loop can pass or
         # provide next-round feedback.
         while True:
             previous_count = len(reachable)
-            for task_id in ancestors:
+            for task_id in execution_order:
                 incoming = predecessors[task_id]
                 task = tasks[task_id]
                 can_enter = (
                     not incoming
+                    and (entries is None or task_id in entries)
                     and (task.control is None or task.control.kind != "join")
                 ) or any(
                     source in reachable
@@ -1341,13 +1526,28 @@ def validate_graph(
                     and task.human.artifact_task_id not in reachable
                 ):
                     continue
-                if all(
-                    binding.task_id is None
-                    or binding.task_id in reachable
-                    or (task_id, name) in feedback_bindings
+                contract = task_input_contract(
+                    task.input_contract, task.transform, dispatch=bool(task.dispatch)
+                )
+                missing = [
+                    (name, binding)
                     for name, binding in task.inputs.items()
-                ):
+                    if binding.task_id is not None
+                    and binding.task_id not in reachable
+                    and (task_id, name) not in feedback_bindings
+                    and (entries is None or port_requires_value(contract, name))
+                ]
+                if not missing:
                     reachable.add(task_id)
+                elif entries is not None:
+                    fields.extend(
+                        {
+                            "path": f"definition.tasks.{task_indexes[task_id]}.inputs.{name}",
+                            "code": "UNREACHABLE_DATA",
+                            "message": f"No execution path can produce {binding.task_id}.{binding.field}.",
+                        }
+                        for name, binding in missing
+                    )
             if not loop_exits or len(reachable) == previous_count:
                 break
             feedback_bindings = {

@@ -13445,6 +13445,14 @@ components:
           description: Version 1 uses text ports. Version 2 supports structured ports. Omit for legacy bindings.
         input_contract:
           $ref: '#/components/schemas/WorkflowPortContract'
+        entry_task_ids:
+          anyOf:
+          - type: array
+            items:
+              type: string
+            maxItems: 100
+          - type: 'null'
+          description: Explicit V2 control entry tasks. Omit to retain implicit entries.
         result_task_id:
           anyOf:
           - type: string
@@ -13549,6 +13557,21 @@ components:
       required: [kind]
       title: JoinTask
       type: object
+    DispatchLimits:
+      additionalProperties: false
+      type: object
+      description: Bound the number of items and running Agents in a list dispatch.
+      properties:
+        max_items:
+          type: integer
+          minimum: 1
+          maximum: 30
+          default: 20
+        max_parallel:
+          type: integer
+          minimum: 1
+          maximum: 30
+          default: 2
     GraphTask:
       additionalProperties: false
       description: A task bound to a named member with inline or pinned configuration.
@@ -13599,6 +13622,10 @@ components:
           maxLength: 100000
           title: Task
           type: string
+        dispatch:
+          anyOf:
+          - $ref: '#/components/schemas/DispatchLimits'
+          - type: 'null'
         control:
           anyOf:
           - $ref: '#/components/schemas/ConditionTask'

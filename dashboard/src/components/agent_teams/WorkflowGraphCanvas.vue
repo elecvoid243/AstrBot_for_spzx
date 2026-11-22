@@ -858,6 +858,17 @@
             />
           </template>
           <template v-else-if="selectedTask.control?.kind !== 'join'">
+            <v-textarea
+              v-if="structuredPorts && !selectedTask.control && !selectedTask.team && !selectedTask.workflow"
+              data-testid="agent-input-contract"
+              :label="tm('graph.input_contract')"
+              :hint="tm('graph.referencePortsHint')"
+              :model-value="contractTexts[`${selectedTask.id}:input_contract`] ?? (selectedTask.input_contract ? JSON.stringify(selectedTask.input_contract, null, 2) : '')"
+              rows="3"
+              spellcheck="false"
+              @update:model-value="contractTexts[`${selectedTask.id}:input_contract`] = $event"
+              @update:focused="!$event && savePortContract('input_contract', selectedTask)"
+            />
             <h3 class="text-subtitle-2 mt-4 mb-2">{{ tm("graph.inputs") }}</h3>
             <div
               v-for="(ref, alias) in selectedTask.inputs"
@@ -891,7 +902,7 @@
                 {{ tm("graph.invalidSource") }}: {{ ref.task_id }}
               </p>
               <p
-                v-if="ref.input && !draft.required_inputs?.includes(ref.input)"
+                v-if="ref.input && !(ref.input in workflowPorts)"
                 class="text-error text-caption"
               >
                 {{ tm("graph.invalidSource") }}: {{ ref.input }}
@@ -1288,6 +1299,7 @@ const structuredPorts = computed(() => draft.value.port_contract_version === 2);
 const typedPorts = computed(() => !!draft.value.port_contract_version);
 const transformKinds = ["parse_json", "map_fields", "json_text"] as const;
 const jsonTypes = ["array", "boolean", "integer", "null", "number", "object", "string"];
+const semanticPortTypes = ["astrbot-message", "astrbot-artifact", "astrbot-file"];
 const workflowInputText = ref<string | null>(null);
 const invalidPortPath = ref("");
 const placeholderPattern = /\{\{|\}\}|\{([_\p{ID_Start}][\p{ID_Continue}]*):?\}/gu;
@@ -1591,13 +1603,22 @@ function fieldsForTask(
       const types: string[] = Array.isArray(field?.type) ? field.type : [field?.type];
       if (types.every((type) => jsonTypes.includes(type)) &&
         (structuredPorts.value || !["object", "array"].includes(field.type))) {
-        const type = types.join("|");
-        fields.push({ title: `${path} · ${type}`, value: path, type });
+        const format = structuredPorts.value && semanticPortTypes.includes(field?.format)
+          ? field.format : "";
+        const type = format || types.join("|");
+        fields.push({ title: `${path} · ${format ? tm(`graph.portFormats.${format}`) : type}`, value: path, type });
       }
       if (field?.type === "object") visit(field, path);
     }
   };
   if (task.output_contract) visit(task.output_contract);
+  if (structuredPorts.value && !task.control) {
+    fields.push({ title: tm("graph.artifactReferencePort"), value: "$artifact", type: "astrbot-artifact" });
+    const properties = task.output_contract?.properties;
+    if (properties && typeof properties === "object" && "files" in properties) {
+      fields.push({ title: tm("graph.managedFilePort"), value: "$file", type: "astrbot-file" });
+    }
+  }
   if (typedPorts.value) {
     // Keep saved references visible even when the contract needs server-side resolution.
     for (const path of boundOutputFields.value.get(id) ?? []) {
@@ -1744,16 +1765,21 @@ const taskNodes = computed<FlowNode[]>(() =>
         label: task.name,
         inputPorts: typedPorts.value && !task.control && !task.human && !task.team && !task.workflow
           ? Object.entries(
-              task.transform === "map_fields" ? task.input_contract?.properties ?? {} :
+              task.input_contract ? task.input_contract.properties :
+              task.transform === "map_fields" ? {} :
               task.transform === "parse_json" ? { text: { type: "string" } } :
               task.transform === "json_text" ? { value: { type: jsonTypes } } :
               Object.fromEntries(agentInputNames(task).map((name) => [name, { type: "string" }]))
             ).map(([alias, schema]) => {
-              const types = Array.isArray(schema.type) ? schema.type as string[] : [String(schema.type)];
+              const format = "format" in schema && semanticPortTypes.includes(String(schema.format))
+                ? String(schema.format) : "";
+              const types = format ? [format] : Array.isArray(schema.type) ? schema.type as string[] : [String(schema.type)];
+              const type = format ? tm(`graph.portFormats.${format}`)
+                : types.length === jsonTypes.length ? "JSON" : types.join("|");
               const path = `definition.tasks.${index}.inputs.${alias}`;
               return {
                 id: `data-in:${alias}`,
-                label: `${alias} · ${types.length === jsonTypes.length ? "JSON" : types.join("|")}`,
+                label: `${alias} · ${type}`,
                 types,
                 invalid: invalidPortPath.value === path ||
                   props.issues.some((issue) => issue.path === path || issue.path.startsWith(path + ".")),
@@ -1897,8 +1923,11 @@ const nodes = computed<FlowNode[]>(() => [
             interfaceNode: typedPorts.value,
             outputPorts: typedPorts.value
               ? Object.entries(workflowPorts.value).map(([name, schema]) => {
-                  const types = Array.isArray(schema.type) ? schema.type as string[] : [String(schema.type)];
-                  return { id: `data-out:${name}`, label: `${name} · ${types.join("|")}`, types };
+                  const format = "format" in schema && semanticPortTypes.includes(String(schema.format))
+                    ? String(schema.format) : "";
+                  const types = format ? [format] : Array.isArray(schema.type) ? schema.type as string[] : [String(schema.type)];
+                  const type = format ? tm(`graph.portFormats.${format}`) : types.join("|");
+                  return { id: `data-out:${name}`, label: `${name} · ${type}`, types };
                 })
               : undefined,
             memberName: typedPorts.value ? "" : (draft.value.required_inputs ?? []).join(", "),
@@ -2574,6 +2603,15 @@ function savePortContract(key: "input_contract" | "output_contract", task?: Grap
   const value = contractTexts.value[editor];
   if (value === undefined) return;
   try {
+    if (!value.trim() && task && !task.transform && key === "input_contract") {
+      delete task.input_contract;
+      delete contractTexts.value[editor];
+      delete contractErrors.value[editor];
+      checkpoint();
+      emit("validation", readingTeams.value || selectingTeam.value || teamReadError.value ||
+        Object.keys(contractErrors.value).length > 0);
+      return;
+    }
     const contract = parseWorkflowInputs(value) as WorkflowPortContract;
     if (contract?.type !== "object" || !contract.properties ||
       typeof contract.properties !== "object" || Array.isArray(contract.properties) ||

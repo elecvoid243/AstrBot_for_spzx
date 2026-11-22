@@ -254,7 +254,9 @@
             <v-btn variant="text" :aria-pressed="runDisplay === 'workbench'" @click="runDisplay = 'workbench'">{{ tm('workbench.workspace') }}</v-btn>
             <v-btn variant="text" :aria-pressed="runDisplay === 'graph'" @click="runDisplay = 'graph'">{{ tm('progress.graph') }}</v-btn>
           </div>
-          <p class="workflow-text at-run-goal" data-testid="run-goal">{{ selectedRun.snapshot.task ?? Object.values(selectedRun.snapshot.inputs ?? {}).join(' · ') }}</p>
+          <p class="workflow-text at-run-goal" data-testid="run-goal">{{ selectedRun.snapshot.task ?? (selectedRun.snapshot.definition?.port_contract_version === 2
+            ? Object.keys(selectedRun.snapshot.inputs ?? {}).join(' · ')
+            : Object.values(selectedRun.snapshot.inputs ?? {}).join(' · ')) }}</p>
           <p class="at-run-snapshot">
             <v-icon size="small" class="mr-1">mdi-lock-outline</v-icon>{{ tm("workbench.snapshotHint") }}
           </p>
@@ -529,6 +531,23 @@
             <summary>{{ tm("v2.pinnedInputs") }}</summary>
             <p v-for="ref in detailRun.snapshot.input_artifacts" :key="`${ref.artifact_id}:${ref.version}`" class="text-caption mt-2">{{ ref.artifact_id }} · v{{ ref.version }}</p>
           </details>
+          <div v-if="boundSources.length" class="mt-4" data-testid="bound-port-sources">
+            <h4 class="text-subtitle-2">{{ tm("v2.boundPortSources") }}</h4>
+            <div v-for="source in boundSources" :key="source.key" class="d-flex flex-wrap align-center ga-2 my-2">
+              <span class="text-caption">
+                {{ source.label }} · {{ source.ref.artifact_id }} · v{{ source.ref.version }}
+                <template v-if="source.ref.file_id"> · {{ source.ref.file_id }}</template>
+              </span>
+              <template v-if="source.ref.file_id">
+                <v-btn variant="text" size="small" @click="readFile(source.ref.file_id, false, source)">
+                  {{ tm("v2.previewFile") }}
+                </v-btn>
+                <v-btn variant="tonal" size="small" @click="readFile(source.ref.file_id, true, source)">
+                  {{ tm("v2.downloadFile") }}
+                </v-btn>
+              </template>
+            </div>
+          </div>
           <v-expansion-panels class="mt-4" variant="accordion">
             <v-expansion-panel :title="tm('v2.contract')">
               <v-expansion-panel-text>
@@ -622,6 +641,8 @@
             v-if="runAsset.definition.input_contract"
             v-model="structuredInputs"
             :contract="runAsset.definition.input_contract"
+            :history="availableInputs"
+            :key="runAsset.asset_id"
           />
           <v-text-field
             v-for="name in runAsset.definition.required_inputs"
@@ -634,8 +655,6 @@
             v-if="runAsset.definition.kind === 'autonomous'"
             v-model="inputArtifacts"
             :items="availableInputs"
-            item-title="label"
-            item-value="value"
             multiple
             chips
             :label="tm('v2.pinnedInputs')"
@@ -1306,6 +1325,23 @@ const resultText = computed(() => {
     ? content.text
     : JSON.stringify(content, null, 2);
 });
+type PortArtifactReference = { artifact_id: string; version: number; file_id?: string };
+type BoundPortSource = { artifact?: PortArtifactReference; reference?: PortArtifactReference };
+type DisplayedPortSource = { key: string; label: string; ref: PortArtifactReference };
+const boundSources = computed<DisplayedPortSource[]>(() => {
+  const run = detailRun.value;
+  if (!run) return [];
+  return [run, ...(run.tasks ?? [])].flatMap((task: any) =>
+    Object.entries<BoundPortSource>(task.snapshot?.port_sources ?? {}).flatMap(([port, source]) => {
+      const ref = source.reference ?? source.artifact;
+      return ref ? [{
+        key: `${task.run_id}:${port}`,
+        label: `${task.snapshot?.definition?.name ?? task.node_id} · ${port}`,
+        ref,
+      }] : [];
+    }),
+  );
+});
 const artifactVersion = ref<number>(1);
 const inputArtifacts = ref<string[]>([]);
 const revising = ref(false);
@@ -1314,6 +1350,7 @@ const revisionFiles = ref<File[]>([]);
 const revisionRequestId = ref("");
 const fileError = ref("");
 let previewRead = 0;
+let boundPreview = false;
 const previewing = ref(false);
 const previewText = ref("");
 const previewUrl = ref("");
@@ -1321,6 +1358,7 @@ const previewBlob = ref<Blob | null>(null);
 const previewFilename = ref("");
 function clearFilePreview() {
   previewRead++;
+  boundPreview = false;
   previewing.value = false;
   if (previewUrl.value) URL.revokeObjectURL(previewUrl.value);
   previewUrl.value = "";
@@ -1330,7 +1368,7 @@ function clearFilePreview() {
 const availableInputs = computed(() =>
   runs.value.flatMap((run) =>
     (run.artifacts ?? []).map((artifact: any) => ({
-      label: `${run.snapshot.definition.name} · v${artifact.version} · ${artifact.summary}`,
+      title: `${run.snapshot.definition.name} · ${artifact.artifact_id} v${artifact.version}`,
       value: JSON.stringify({
         artifact_id: artifact.artifact_id,
         version: artifact.version,
@@ -1888,7 +1926,7 @@ async function loadArtifact() {
 
   const read = ++artifactRead;
   fileError.value = "";
-  clearFilePreview();
+  if (!boundPreview) clearFilePreview();
   selectedArtifact.value = null;
   if (!ref) {
     pendingArtifact = undefined;
@@ -1957,12 +1995,21 @@ async function saveRevision() {
   }
 }
 
-async function readFile(fileId: string, download: boolean) {
+async function readFile(
+  fileId: string, download: boolean, source?: DisplayedPortSource,
+) {
   const signal = observation.value.signal;
-  const artifact = selectedArtifact.value;
+  const artifact = source?.ref ?? selectedArtifact.value;
   const read = artifactRead;
+  const observedRun = detailRun.value?.run_id;
   if (signal.aborted || !artifact || openingRunId) return;
   const preview = download ? null : ++previewRead;
+  if (!download) boundPreview = !!source;
+  const isCurrent = () => !signal.aborted && (preview === null || preview === previewRead) &&
+    (source ? detailRun.value?.run_id === observedRun && boundSources.value.some(
+      (item) => item.key === source.key && item.ref.artifact_id === artifact.artifact_id &&
+        item.ref.version === artifact.version && item.ref.file_id === fileId,
+    ) : read === artifactRead);
   fileError.value = "";
   try {
     const response = await workflowAssetsApi.file(
@@ -1972,34 +2019,44 @@ async function readFile(fileId: string, download: boolean) {
       download,
       signal,
     );
-    if (signal.aborted || read !== artifactRead || (preview !== null && preview !== previewRead)) return;
+    if (!isCurrent()) return;
+    const disposition = response.headers?.["content-disposition"] ?? "";
+    const encodedFilename = disposition.split("filename*=UTF-8''")[1];
+    const filename = encodedFilename ? decodeURIComponent(encodedFilename) :
+      (artifact.files ?? artifact.content?.files ?? []).find((file: any) => file.file_id === fileId)?.filename ?? fileId;
     if (download) {
       const url = URL.createObjectURL(response.data);
       const link = document.createElement("a");
-      const disposition = response.headers["content-disposition"] ?? "";
-      link.download = decodeURIComponent(
-        disposition.split("filename*=UTF-8''")[1] ?? fileId,
-      );
+      link.download = filename;
       link.href = url;
       link.click();
       URL.revokeObjectURL(url);
     } else {
       const text = response.data.type.startsWith("text/") ? await response.data.text() : "";
-      if (signal.aborted || read !== artifactRead || preview !== previewRead) return;
+      if (!isCurrent()) return;
       clearFilePreview();
+      boundPreview = !!source;
       previewText.value = text;
       previewBlob.value = response.data.type.startsWith("image/") || response.data.type === "application/pdf"
         ? response.data : null;
-      const files = artifact.files ?? artifact.content?.files ?? [];
-      previewFilename.value = files.find((file: any) => file.file_id === fileId)?.filename ?? fileId;
+      previewFilename.value = filename;
       previewUrl.value = previewText.value || previewBlob.value
         ? ""
         : URL.createObjectURL(response.data);
       previewing.value = true;
     }
   } catch (err) {
-    if (!signal.aborted && read === artifactRead && (preview === null || preview === previewRead))
-      fileError.value = extractApiError(err, tm("errors.operationFailed")).message;
+    const data = (err as { response?: { data?: unknown } })?.response?.data;
+    let error = err;
+    if (data instanceof Blob && data.type.includes("json")) {
+      try {
+        error = { response: { data: JSON.parse(await data.text()) } };
+      } catch {
+        // Keep the original error if the response could not be decoded.
+      }
+    }
+    if (isCurrent())
+      fileError.value = extractApiError(error, tm("errors.operationFailed")).message;
   }
 }
 

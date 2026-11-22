@@ -46,6 +46,8 @@
             v-if="preview.input_contract"
             v-model="structuredInputs"
             :contract="preview.input_contract"
+            :history="artifacts"
+            :key="`${revision}:${mode}:${node}`"
           />
           <v-text-field
             v-for="name in preview.required_inputs"
@@ -70,10 +72,13 @@
             />
             <template v-if="sourceModes[id] === 'artifact'">
               <v-select
-                v-model="selectedArtifacts[id]"
+                :model-value="artifactIds[id] ? JSON.stringify({
+                  artifact_id: artifactIds[id], version: Number(artifactVersions[id]),
+                }) : null"
                 :label="tm('trial.history')"
                 :items="artifacts"
                 clearable
+                @update:model-value="selectHistoricalArtifact(id, $event)"
               />
               <v-text-field
                 v-model="artifactIds[id]"
@@ -198,7 +203,6 @@ const rawContent = ref<Record<string, string>>({});
 const useRaw = ref<Record<string, boolean>>({});
 const artifactIds = ref<Record<string, string>>({});
 const artifactVersions = ref<Record<string, number>>({});
-const selectedArtifacts = ref<Record<string, string | null>>({});
 const artifacts = ref<{ title: string; value: string }[]>([]);
 const manualChoice = computed(() => ({
   title: tm("trial.manual"),
@@ -275,7 +279,6 @@ watch(
       useRaw.value = {};
       artifactIds.value = {};
       artifactVersions.value = {};
-      selectedArtifacts.value = {};
       for (const [id, requirement] of Object.entries(value.requirements) as [
         string,
         any,
@@ -301,18 +304,11 @@ watch(
   },
   { immediate: true },
 );
-watch(
-  selectedArtifacts,
-  (values) => {
-    for (const [id, value] of Object.entries(values))
-      if (value) {
-        const item = JSON.parse(value);
-        artifactIds.value[id] = item.artifact_id;
-        artifactVersions.value[id] = item.version;
-      }
-  },
-  { deep: true },
-);
+function selectHistoricalArtifact(id: string | number, key: string | null) {
+  const item = key ? JSON.parse(key) : null;
+  artifactIds.value[id] = item?.artifact_id ?? "";
+  artifactVersions.value[id] = item?.version ?? 1;
+}
 function manualFields(requirement: any): { path: string; types: string[] }[] {
   const fields: Record<string, string[]> = {};
   const visit = (schema: any, prefix = "") => {
@@ -348,14 +344,13 @@ async function start() {
     for (const [id, requirement] of Object.entries(
       preview.value.requirements,
     ) as [string, any][]) {
-      if (sourceModes.value[id] === "artifact")
-        sources[id] = {
-          artifact: {
-            artifact_id: artifactIds.value[id],
-            version: Number(artifactVersions.value[id]),
-          },
-        };
-      else {
+      if (sourceModes.value[id] === "artifact") {
+        const artifactId = artifactIds.value[id]?.trim();
+        const version = Number(artifactVersions.value[id]);
+        if (!artifactId || !Number.isSafeInteger(version) || version < 1)
+          throw new Error(`${requirement.name}: ${tm("trial.required")}`);
+        sources[id] = { artifact: { artifact_id: artifactId, version } };
+      } else {
         const fields = useRaw.value[id] ? [] : manualFields(requirement);
         const content: Record<string, any> = fields.length
           ? {}

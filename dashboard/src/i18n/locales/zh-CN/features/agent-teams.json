@@ -64,6 +64,7 @@
   "tabs": {
     "editor": "工作流编排",
     "monitor": "运行监控",
+    "noManagedFiles": "所选版本没有受管文件。",
     "history": "历史",
     "members": "成员"
   },
@@ -395,6 +396,7 @@
     "contract": "输出契约（JSON Schema）",
     "contractHint": "留空使用非空文本契约。结构化结果使用 object Schema；files 包含稳定的 file_id 引用。",
     "artifactVersion": "产物版本",
+    "boundPortSources": "端口绑定来源",
     "pinnedInputs": "固定输入产物",
     "previewFile": "预览文件",
     "downloadFile": "下载文件",
@@ -506,6 +508,14 @@
     "output_contract": "输出契约（JSON Schema）",
     "portContractHint": "使用 properties 声明对象字段，required 声明必填字段，default 指定缺省值。",
     "invalidPortContract": "请提供含 properties 对象的 JSON Schema。",
+    "referencePortsHint": "使用具名对象格式 astrbot-message、astrbot-artifact 或 astrbot-file。",
+    "artifactReferencePort": "$artifact · 精确产物",
+    "managedFilePort": "$file · 受管文件",
+    "portFormats": {
+      "astrbot-message": "消息",
+      "astrbot-artifact": "精确产物",
+      "astrbot-file": "受管文件"
+    },
     "resultObject": "result · object",
     "inputValuesJson": "输入值（JSON）",
     "inputValuesHint": "输入 JSON 对象。省略字段以使用缺省值。只在契约允许时填入 null。",

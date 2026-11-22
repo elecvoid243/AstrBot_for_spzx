@@ -19,7 +19,11 @@ from astrbot.core.agent_teams.assets import (
     RoleInstallation,
     RoleOverrides,
 )
-from astrbot.core.agent_teams.result_tool import validate_result
+from astrbot.core.agent_teams.result_tool import (
+    PORT_FORMAT_CHECKER,
+    PORT_FORMATS,
+    validate_result,
+)
 from astrbot.core.agent_teams.usage import RunLimits
 
 HUMAN_APPROVAL_CONTRACT = {
@@ -31,6 +35,9 @@ HUMAN_APPROVAL_CONTRACT = {
     "required": ["approved", "text"],
 }
 
+
+REFERENCE_OUTPUTS = {"$artifact": "astrbot-artifact", "$file": "astrbot-file"}
+MISSING_PORT_VALUE = object()
 
 JSON_TYPES = {"string", "boolean", "integer", "number", "null", "object", "array"}
 TRANSFORM_INPUTS = {
@@ -167,8 +174,12 @@ class GraphTask(BaseModel):
             ):
                 raise ValueError("Transform nodes cannot configure other execution")
             return self
-        if self.input_contract is not None:
-            raise ValueError("Only a field mapping can declare a node input contract")
+        if self.input_contract is not None and (
+            self.control or self.human or self.team or self.workflow
+        ):
+            raise ValueError(
+                "Only an Agent or field mapping can declare a node input contract"
+            )
         if self.control is not None:
             if (
                 self.human is not None
@@ -339,7 +350,7 @@ def matches_condition(value: str | bool | int | float | None, rule: dict) -> boo
 
 
 def field_schema(contract: dict | None, path: str, *, structured: bool = False) -> dict:
-    """Resolve a guaranteed scalar field through local references and allOf.
+    """Resolve a bound field through local references and allOf.
 
     Args:
         contract: Frozen output object contract, or the default text contract.
@@ -347,11 +358,15 @@ def field_schema(contract: dict | None, path: str, *, structured: bool = False) 
         structured: Permit optional and structured fields on a versioned data port.
 
     Returns:
-        Declared scalar schema of a required output field.
+        The possible JSON types and, for structured ports, requiredness and format.
 
     Raises:
-        ValueError: The field can be absent or is not a declared scalar.
+        ValueError: The field does not have a compatible declared port schema.
     """
+    if structured and path in REFERENCE_OUTPUTS:
+        if path == "$file" and "files" not in (contract or {}).get("properties", {}):
+            raise ValueError("Declare managed attachments in the output contract")
+        return {"type": ["object"], "required": True, "format": REFERENCE_OUTPUTS[path]}
     root = (
         contract
         if contract is not None
@@ -403,11 +418,14 @@ def field_schema(contract: dict | None, path: str, *, structured: bool = False) 
     visited = set()
     candidates = [current]
     declared: set[str] | None = None
+    formats = set()
     while candidates:
         item = candidates.pop()
         if not isinstance(item, dict) or id(item) in visited:
             continue
         visited.add(id(item))
+        if structured and item.get("format") in PORT_FORMATS:
+            formats.add(item["format"])
         kinds = item.get("type")
         if kinds is not None:
             kinds = set(kinds if isinstance(kinds, list) else [kinds])
@@ -423,10 +441,40 @@ def field_schema(contract: dict | None, path: str, *, structured: bool = False) 
     ):
         expected = "compatible" if structured else "scalar"
         raise ValueError(f"Field {path} must declare a {expected} type")
+    if formats and (len(formats) != 1 or declared != {"object"}):
+        raise ValueError(f"Field {path} must declare one semantic object format")
     return {
         "type": sorted(declared),
+        **({"format": next(iter(formats))} if formats else {}),
         **({"required": guaranteed} if structured else {}),
     }
+
+
+def port_value(content: dict, field: str, reference: dict | None = None):
+    """Resolve a selected field or a reference to the committed result.
+
+    Args:
+        content: Validated result or a frozen projection.
+        field: Bound property path or intrinsic reference output.
+        reference: Exact committed result when resolving an intrinsic output.
+
+    Returns:
+        The native value, or a sentinel when the port has no value.
+    """
+    if reference is not None:
+        if field == "$artifact":
+            return reference
+        if field == "$file":
+            files = content.get("files", [])
+            if len(files) == 1:
+                return {**reference, "file_id": files[0]["file_id"]}
+            return MISSING_PORT_VALUE
+    value = content
+    for name in field.split("."):
+        if not isinstance(value, dict) or name not in value:
+            return MISSING_PORT_VALUE
+        value = value[name]
+    return value
 
 
 def normalize_port_inputs(contract: dict, values: dict, path: str) -> dict:
@@ -449,7 +497,10 @@ def normalize_port_inputs(contract: dict, values: dict, path: str) -> dict:
         if name not in normalized and "default" in schema:
             normalized[name] = copy.deepcopy(schema["default"])
     issues = validate_result(
-        {**contract, "additionalProperties": False}, normalized, validate_files=False
+        {**contract, "additionalProperties": False},
+        normalized,
+        validate_files=False,
+        port_formats=True,
     )
     issues = [
         {**issue, "path": path + issue["path"].removeprefix("result")}
@@ -521,7 +572,7 @@ def execute_port_transform(task: dict, inputs: dict, path: str) -> tuple[dict, d
                 }
             ],
         )
-    issues = validate_result(contract, result)
+    issues = validate_result(contract, result, port_formats=True)
     if issues:
         prefix = (
             f"{path}.inputs.text"
@@ -576,7 +627,7 @@ def validate_graph(
     names = definition.required_inputs
     if not structured and (
         definition.input_contract is not None
-        or any(t.transform for t in definition.tasks)
+        or any(t.transform or t.input_contract is not None for t in definition.tasks)
     ):
         fields.append(
             {
@@ -636,13 +687,52 @@ def validate_graph(
                             "The top-level files field is reserved for managed attachments"
                         )
                 # Inline port contracts are declarative and cannot resolve any URI.
+                port_schemas = {
+                    id(schema) for schema in contract.get("properties", {}).values()
+                }
+                node = (
+                    definition.tasks[int(path.split(".")[2])]
+                    if path.startswith("definition.tasks.")
+                    else None
+                )
                 pending = [contract]
                 while pending:
                     schema = pending.pop()
                     if isinstance(schema, dict):
+                        if schema.get("format") in PORT_FORMATS and (
+                            id(schema) not in port_schemas
+                            or schema.get("type") != "object"
+                            or "default" in schema
+                        ):
+                            raise ValueError(
+                                "Declare semantic ports as named objects without defaults"
+                            )
                         if any(key in schema for key in ("$ref", "$dynamicRef", "$id")):
                             raise ValueError("Use inline schemas for structured ports")
                         pending.extend(DRAFT202012.subresources_of(schema))
+                if not is_input:
+                    for name, schema in contract.get("properties", {}).items():
+                        if (
+                            not isinstance(schema, dict)
+                            or schema.get("format") not in REFERENCE_OUTPUTS.values()
+                        ):
+                            continue
+                        if node.transform == "parse_json":
+                            raise ValueError(
+                                "A JSON parser cannot create a managed reference"
+                            )
+                        if node.transform == "map_fields":
+                            inputs = (node.input_contract or {}).get("properties")
+                            incoming = (
+                                inputs.get(name) if isinstance(inputs, dict) else None
+                            )
+                            if (
+                                not isinstance(incoming, dict)
+                                or incoming.get("format") != schema["format"]
+                            ):
+                                raise ValueError(
+                                    "Field mapping must preserve a named reference input"
+                                )
                 if is_input:
                     properties = contract.get("properties")
                     if (
@@ -656,9 +746,20 @@ def validate_graph(
                     ):
                         raise ValueError("Declare up to 30 named input properties")
                     for name, schema in properties.items():
-                        field_schema(contract, name, structured=True)
+                        port = field_schema(contract, name, structured=True)
+                        if (
+                            node is not None
+                            and not node.transform
+                            and (
+                                not port.get("format")
+                                and set(port["type"]) != {"string"}
+                            )
+                        ):
+                            raise ValueError(
+                                "Agent inputs must be text, messages or exact references"
+                            )
                         if "default" in schema and not Draft202012Validator(
-                            schema
+                            schema, format_checker=PORT_FORMAT_CHECKER
                         ).is_valid(schema["default"]):
                             raise ValueError(
                                 f"Default for {name} must match its schema"
@@ -998,7 +1099,7 @@ def validate_graph(
         check_text_ports = typed_agent and (
             text_port_scope is None or task.id in text_port_scope
         )
-        check_text_binding = check_text_ports or (
+        check_text_binding = (check_text_ports and node_contract is None) or (
             structured and bool(task.team or task.workflow)
         )
         for key, ref in task.inputs.items():
@@ -1064,11 +1165,15 @@ def validate_graph(
                 ):
                     code = "INCOMPATIBLE"
                     raise ValueError("Connect an output guaranteed to provide text")
-                if node_contract and not source_types <= set(
-                    field_schema(node_contract, key, structured=True)["type"]
-                ):
-                    code = "INCOMPATIBLE"
-                    raise ValueError("Connect a source matching the declared port type")
+                if node_contract:
+                    target_schema = field_schema(node_contract, key, structured=True)
+                    if not source_types <= set(
+                        target_schema["type"]
+                    ) or source_schema.get("format") != target_schema.get("format"):
+                        code = "INCOMPATIBLE"
+                        raise ValueError(
+                            "Connect a source matching the declared port type"
+                        )
             except ValueError as exc:
                 fields.append(
                     {
@@ -1131,9 +1236,25 @@ def validate_graph(
                     )
                 ):
                     raise ValueError("Use only declared {input_name} placeholders")
+                if check_text_ports and node_contract is not None:
+                    schema = node_contract["properties"].get(field, {})
+                    if schema.get("type") != "string" or (
+                        field not in node_contract.get("required", [])
+                        and "default" not in schema
+                    ):
+                        missing_ports.add(field)
+                        fields.append(
+                            {
+                                "path": path + f".inputs.{field}",
+                                "code": "INCOMPATIBLE",
+                                "message": "Prompt placeholders require a guaranteed text port",
+                            }
+                        )
                 if (
                     check_text_ports
                     and field not in task.inputs
+                    and "default"
+                    not in (node_contract or {}).get("properties", {}).get(field, {})
                     and field not in missing_ports
                 ):
                     missing_ports.add(field)

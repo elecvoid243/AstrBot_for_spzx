@@ -64,6 +64,7 @@
   "tabs": {
     "editor": "Workflow Editor",
     "monitor": "Run Monitor",
+    "noManagedFiles": "The selected version has no managed files.",
     "history": "History",
     "members": "Members"
   },
@@ -395,6 +396,7 @@
     "contract": "Output contract (JSON Schema)",
     "contractHint": "Leave empty for non-empty text. Use an object schema for structured results; files contains stable file_id references.",
     "artifactVersion": "Artifact version",
+    "boundPortSources": "Bound port sources",
     "pinnedInputs": "Pinned input artifacts",
     "previewFile": "Preview file",
     "downloadFile": "Download file",
@@ -506,6 +508,14 @@
     "output_contract": "Output contract (JSON Schema)",
     "portContractHint": "Declare an object with properties. Use required for mandatory fields and default for omitted inputs.",
     "invalidPortContract": "Provide an object JSON Schema with a properties object.",
+    "referencePortsHint": "Use named object formats: astrbot-message, astrbot-artifact or astrbot-file.",
+    "artifactReferencePort": "$artifact · exact artifact",
+    "managedFilePort": "$file · managed file",
+    "portFormats": {
+      "astrbot-message": "message",
+      "astrbot-artifact": "exact artifact",
+      "astrbot-file": "managed file"
+    },
     "resultObject": "result · object",
     "inputValuesJson": "Input values (JSON)",
     "inputValuesHint": "Enter a JSON object. Omit a field to use its default. Enter null only when the contract permits it.",

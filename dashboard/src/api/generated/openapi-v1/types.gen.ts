@@ -977,6 +977,9 @@ export type GraphTask = {
     [key: string]: unknown;
 } | null);
     transform?: ('parse_json' | 'map_fields' | 'json_text' | null);
+    /**
+     * Explicit V2 input ports for an Agent or field mapping node.
+     */
     input_contract?: WorkflowPortContract;
     position?: {
         [key: string]: (number);
@@ -1713,6 +1716,9 @@ export type T2iTemplateRequest = {
 export type TaskInput = {
     input?: (string | null);
     task_id?: (string | null);
+    /**
+     * An upstream field path, or the V2 intrinsic $artifact or $file output.
+     */
     field?: string;
 };
 
@@ -1912,7 +1918,7 @@ export type WorkflowPackage = {
 };
 
 /**
- * Inline JSON Schema object declaring named data ports and presence defaults.
+ * Inline JSON Schema object declaring named data ports and presence defaults. Top-level object ports may use astrbot-message (text), astrbot-artifact (artifact_id and version), or astrbot-file (artifact_id, version and file_id). These semantic formats do not accept defaults.
  */
 export type WorkflowPortContract = {
     type: "object";

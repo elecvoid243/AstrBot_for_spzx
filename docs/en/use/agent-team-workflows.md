@@ -41,6 +41,22 @@ The structured port contract is version 2. Text port and legacy fixed versions r
 ![Structured workflow with object and row-list data ports](/images/agent-teams-structured-ports-en.jpg)
 
 
+### Messages, artifacts, and managed files
+
+Declare named object ports with one of these formats. Connect ports with the same format.
+
+| Format | Value |
+| --- | --- |
+| `astrbot-message` | `{"text": "Selected message"}` |
+| `astrbot-artifact` | `{"artifact_id": "...", "version": 2}` |
+| `astrbot-file` | `{"artifact_id": "...", "version": 2, "file_id": "..."}` |
+
+In a structured workflow, connect **$artifact** to pass the producing node's exact result version. If that node declares managed attachments in its output contract, **$file** passes the single file in that result version. For versions with several files, declare a workflow input with format `astrbot-file`, select the version and file in the launch form, then connect that named input. Use an Agent input contract or a **Map fields** node as the destination. Agent prompt placeholders accept text ports. Bound messages and references are available to the Agent as separate run inputs.
+
+In **Test draft**, an upstream node outside the selected scope can use an **Exact historical artifact**. Choose the required version before starting. The run freezes that version and the bound fields. In the workbench, open **Bound port sources** to see the version and to preview or download linked files. For an approval-governed attachment, downloading requires approval of that exact version. Later revisions preserve the frozen references in existing runs.
+
+![A bound managed file and its exact source version in the run workbench](/images/agent-teams-reference-ports-en.jpg)
+
 ## Drafts, fixed versions and tests
 
 Edits to assets and canvas layouts are saved automatically as drafts, including new drafts without a saved version. Check the save status: retry a failure, or retain local content or explicitly load the server draft when there is a conflict. If a fixed version changes, compare the original base and latest version, then keep the whole draft against the selected base or load the latest version and edit again. Fields are not merged.

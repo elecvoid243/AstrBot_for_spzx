@@ -5,15 +5,53 @@ import binascii
 import json
 from collections.abc import Awaitable, Callable
 
-from jsonschema import Draft202012Validator
+from jsonschema import Draft202012Validator, FormatChecker
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from astrbot.core.agent.run_context import ContextWrapper
 from astrbot.core.agent.tool import FunctionTool
 from astrbot.core.agent_teams.assets import RoleAssetError
 
 
+class ArtifactReference(BaseModel):
+    """An exact immutable artifact version."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    artifact_id: str = Field(min_length=1, max_length=128)
+    version: int = Field(ge=1)
+
+
+class FileReference(ArtifactReference):
+    """A managed file belonging to an exact artifact version."""
+
+    file_id: str = Field(min_length=1, max_length=128)
+
+
+class WorkflowMessage(BaseModel):
+    """Explicit message content carried by a workflow port."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    text: str = Field(min_length=1, max_length=100_000)
+
+
+PORT_FORMATS = {
+    "astrbot-message": WorkflowMessage,
+    "astrbot-artifact": ArtifactReference,
+    "astrbot-file": FileReference,
+}
+PORT_FORMAT_CHECKER = FormatChecker(formats=[])
+for port_format, model in PORT_FORMATS.items():
+    PORT_FORMAT_CHECKER.checks(port_format, raises=ValidationError)(
+        model.model_validate
+    )
+
+
 def validate_result(
-    contract: dict | None, payload: dict, *, validate_files: bool = True
+    contract: dict | None,
+    payload: dict,
+    *,
+    validate_files: bool = True,
+    port_formats: bool = False,
 ) -> list[dict]:
     """Return contract field errors shared by submission and revision.
 
@@ -21,6 +59,7 @@ def validate_result(
         contract: The immutable output schema, or the default text contract.
         payload: Complete object to validate.
         validate_files: Enforce stable attachment references for persisted results.
+        port_formats: Validate the semantic formats declared by structured ports.
 
     Returns:
         Specific field errors; an empty list means the result is consumable.
@@ -37,7 +76,9 @@ def validate_result(
             }
         ]
     if contract is not None:
-        for issue in Draft202012Validator(contract).iter_errors(payload):
+        for issue in Draft202012Validator(
+            contract, format_checker=PORT_FORMAT_CHECKER if port_formats else None
+        ).iter_errors(payload):
             path = ["result", *map(str, issue.absolute_path)]
             if issue.validator == "required":
                 for name in issue.validator_value:
@@ -53,7 +94,11 @@ def validate_result(
                 {
                     "path": ".".join(path),
                     "code": str(issue.validator),
-                    "message": issue.message,
+                    "message": (
+                        "Provide a valid " + issue.validator_value
+                        if issue.validator == "format"
+                        else issue.message
+                    ),
                 }
             )
     else:

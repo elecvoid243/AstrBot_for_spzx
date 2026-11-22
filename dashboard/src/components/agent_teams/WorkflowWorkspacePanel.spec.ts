@@ -660,6 +660,54 @@ describe("workflow workspace", () => {
     wrapper.unmount();
   });
 
+  it("keeps a selected task's bound download through its result refresh", async () => {
+    vi.useFakeTimers();
+    const router = createRouter({
+      history: createMemoryHistory(), routes: [{ path: "/", component: slotStub }],
+    });
+    await router.push("/");
+    const reference = { artifact_id: "source", version: 2, file_id: "file" };
+    const task = { ...run, run_id: "leaf", node_id: "consumer", snapshot: {
+      ...run.snapshot, port_sources: { attachment: { reference } },
+    } };
+    api.run.mockResolvedValue({ ...run, cursor: 10, tasks: [task] });
+    api.events.mockResolvedValue({
+      cursor: 11, reset: true, snapshot: {
+        ...run, cursor: 11, tasks: [{
+          ...task, status: "completed", result_ref: { artifact_id: "new-result", version: 1 },
+        }],
+      },
+    });
+    api.artifact.mockResolvedValue({ artifact_id: "new-result", version: 1, content: { text: "Done" } });
+    let finishFile!: (value: unknown) => void;
+    api.file.mockImplementation(() => new Promise((resolve) => { finishFile = resolve; }));
+    const download = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    vi.stubGlobal("URL", Object.assign(class extends URL {}, {
+      createObjectURL: vi.fn(() => "blob:test"), revokeObjectURL: vi.fn(),
+    }));
+    const wrapper = mount(WorkflowWorkspacePanel, {
+      props: { mode: "runs", conversationRunId: "run-1" },
+      global: { plugins: [router], stubs },
+    });
+    try {
+      await flushPromises();
+      const bound = wrapper.get('[data-testid="bound-port-sources"]');
+      expect(bound.text()).toContain("source · v2");
+      await bound.findAll("button").find((button) => button.text() === "v2.downloadFile")!.trigger("click");
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(api.artifact).toHaveBeenCalledWith("new-result", 1, expect.any(AbortSignal));
+      finishFile({ data: new Blob(["selected file"]), headers: {} });
+      await flushPromises();
+      expect(api.file).toHaveBeenCalledWith("source", 2, "file", true, expect.any(AbortSignal));
+      expect(download).toHaveBeenCalledTimes(1);
+    } finally {
+      wrapper.unmount();
+      download.mockRestore();
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
+    }
+  });
+
   it("keeps the latest file preview when an earlier file's text finishes late", async () => {
     const router = createRouter({
       history: createMemoryHistory(),

@@ -13642,6 +13642,7 @@ components:
             enum: [parse_json, map_fields, json_text]
           - type: 'null'
         input_contract:
+          description: Explicit V2 input ports for an Agent or field mapping node.
           $ref: '#/components/schemas/WorkflowPortContract'
         position:
           additionalProperties:
@@ -13675,6 +13676,7 @@ components:
           default: null
           title: Task Id
         field:
+          description: An upstream field path, or the V2 intrinsic $artifact or $file output.
           default: text
           title: Field
           type: string
@@ -13863,7 +13865,11 @@ components:
       description: A deliberate local grant; importing an asset never grants access.
     WorkflowPortContract:
       type: object
-      description: Inline JSON Schema object declaring named data ports and presence defaults.
+      description: >-
+        Inline JSON Schema object declaring named data ports and presence defaults.
+        Top-level object ports may use astrbot-message (text), astrbot-artifact
+        (artifact_id and version), or astrbot-file (artifact_id, version and file_id).
+        These semantic formats do not accept defaults.
       additionalProperties: true
       required: [type, properties]
       properties:

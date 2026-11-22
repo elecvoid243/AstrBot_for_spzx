@@ -98,6 +98,55 @@ describe("canvas asset editing", () => {
     }
   });
 
+  it("connects managed references and messages only to ports of the same format", async () => {
+    const message = { type: "object", format: "astrbot-message" };
+    const artifact = { type: "object", format: "astrbot-artifact" };
+    const file = { type: "object", format: "astrbot-file" };
+    const wrapper = mount(WorkflowGraphCanvas, {
+      props: { definition: {
+        name: "Evidence",
+        port_contract_version: 2,
+        input_contract: { type: "object", properties: { ordinary: { type: "object" } } },
+        tasks: [
+          { id: "author", name: "Author", output_contract: {
+            type: "object", properties: { message, files: { type: "array" } },
+          } },
+          { id: "sink", name: "Sink", transform: "map_fields", input_contract: {
+            type: "object", properties: { message, artifact, file },
+          } },
+        ],
+        edges: [{ source: "author", target: "sink" }],
+      } },
+      global: { stubs: {
+        TeamsFlowCanvas: { name: "TeamsFlowCanvas", emits: ["connect"], template: "<div />" },
+        WorkflowLoopPanel: true,
+        "v-btn": true, "v-icon": true, "v-chip": true, "v-select": true,
+        "v-text-field": true, "v-textarea": true, "v-spacer": true, "v-alert": true,
+        "v-switch": true, "v-expansion-panels": true,
+      } },
+    });
+    try {
+      const canvas = wrapper.getComponent({ name: "TeamsFlowCanvas" });
+      canvas.vm.$emit("connect", {
+        from: "__input", to: "sink", sourceHandle: "data-out:ordinary", targetHandle: "data-in:file",
+      });
+      expect(wrapper.emitted("update:definition")).toBeUndefined();
+      for (const [source, target] of [["message", "message"], ["$artifact", "artifact"], ["$file", "file"]])
+        canvas.vm.$emit("connect", {
+          from: "author", to: "sink", sourceHandle: `data-out:${source}`, targetHandle: `data-in:${target}`,
+        });
+      expect(wrapper.emitted("update:definition")?.at(-1)?.[0]).toMatchObject({
+        tasks: [{ id: "author" }, { inputs: {
+          message: { task_id: "author", field: "message" },
+          artifact: { task_id: "author", field: "$artifact" },
+          file: { task_id: "author", field: "$file" },
+        } }],
+      });
+    } finally {
+      wrapper.unmount();
+    }
+  });
+
   it("adds a directly configured Agent without any role templates", async () => {
     const wrapper = mount(WorkflowGraphCanvas, {
       props: { definition: { name: "Direct", tasks: [], edges: [], required_inputs: [] }, roles: [] },

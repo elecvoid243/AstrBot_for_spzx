@@ -61,6 +61,9 @@ from astrbot.core.agent_teams.autonomous_tools import (
     TeamOperationRequest,
 )
 from astrbot.core.agent_teams.graph import (
+    MISSING_PORT_VALUE,
+    REFERENCE_OUTPUTS,
+    TRANSFORM_INPUTS,
     GraphDefinition,
     GraphTask,
     TaskInput,
@@ -69,9 +72,11 @@ from astrbot.core.agent_teams.graph import (
     field_schema,
     matches_condition,
     normalize_port_inputs,
+    port_value,
     validate_graph,
 )
 from astrbot.core.agent_teams.result_tool import (
+    ArtifactReference,
     ReadArtifactTool,
     StoreTaskFileTool,
     SubmitTaskResultTool,
@@ -315,14 +320,6 @@ class WorkflowImportRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     package: WorkflowPackage
     selections: list[ResourceSelection] = Field(default_factory=list, max_length=500)
-
-
-class ArtifactReference(BaseModel):
-    """An exact immutable artifact version; latest is never inferred."""
-
-    model_config = ConfigDict(extra="forbid", strict=True)
-    artifact_id: str = Field(min_length=1, max_length=128)
-    version: int = Field(ge=1)
 
 
 class ArtifactRevisionRequest(BaseModel):
@@ -2550,6 +2547,15 @@ class WorkflowService:
             request.inputs = normalize_port_inputs(
                 definition["input_contract"], request.inputs, "inputs"
             )
+            if chat is not None and any(
+                definition["input_contract"]["properties"][name].get("format")
+                in REFERENCE_OUTPUTS.values()
+                for name in request.inputs
+            ):
+                raise RoleAssetError(
+                    "Historical reference inputs require Dashboard authorization",
+                    status=403,
+                )
             return await self._start_graph(
                 username, asset, request, chat=chat, rerun_key=rerun_key
             )
@@ -5822,12 +5828,15 @@ class WorkflowService:
                             "contract": source.output_contract,
                         },
                     )
-                    requirement["fields"][ref.field] = field_schema(
+                    source_schema = field_schema(
                         source.output_contract,
                         ref.field,
                         structured=graph.port_contract_version == 2
-                        and bool(task.transform),
-                    )["type"]
+                        and source.control is None,
+                    )
+                    if source_schema.get("format") in REFERENCE_OUTPUTS.values():
+                        requirement["pinned_only"] = True
+                    requirement["fields"][ref.field] = source_schema["type"]
                     if source.id not in selected:
                         external[source.id] = source
             if task.human:
@@ -6055,51 +6064,167 @@ class WorkflowService:
         if issues:
             raise RoleAssetError("Invalid trial inputs", issues)
         sources = {}
+        boundary_paths: dict[tuple[str, str], list[str]] = {}
+        required_paths: set[str] = set()
+        if input_contract is not None:
+            for index, task in enumerate(
+                compiled["draft"]["body"]["definition"]["tasks"]
+            ):
+                if task["id"] in compiled["selected_nodes"]:
+                    node_contract = task.get("input_contract") or TRANSFORM_INPUTS.get(
+                        task.get("transform")
+                    )
+                    for name, binding in task.get("inputs", {}).items():
+                        path = f"definition.tasks.{index}.inputs.{name}"
+                        boundary_paths.setdefault(
+                            (binding.get("task_id"), binding.get("field", "text")), []
+                        ).append(path)
+                        if node_contract and name in node_contract.get("required", []):
+                            required_paths.add(path)
         for source_id, source in request.sources.items():
             requirement = compiled["requirements"][source_id]
             if requirement["pinned_only"] and source.artifact is None:
+                message = "Select an exact artifact version for this boundary source"
                 raise RoleAssetError(
-                    "Approval and recommendation sources require an exact artifact"
+                    message,
+                    [
+                        {
+                            "path": f"sources.{source_id}.artifact",
+                            "code": "REQUIRED",
+                            "message": message,
+                        }
+                    ],
                 )
             reference = source.artifact.model_dump() if source.artifact else None
-            content = (
-                (await self.read_artifact(username, **reference))["content"]
-                if reference
-                else source.content
+            try:
+                artifact = (
+                    await self.read_artifact(username, **reference)
+                    if reference
+                    else None
+                )
+            except RoleAssetError as exc:
+                paths = [
+                    path
+                    for (task_id, _), bindings in boundary_paths.items()
+                    if source_id == task_id
+                    for path in bindings
+                ] or [f"sources.{source_id}.artifact"]
+                raise RoleAssetError(
+                    str(exc),
+                    [
+                        {"path": path, "code": "REFERENCE", "message": str(exc)}
+                        for path in paths
+                    ],
+                    status=exc.status,
+                ) from exc
+            content = artifact["content"] if artifact else source.content
+            issues = validate_result(
+                requirement["contract"],
+                content,
+                port_formats=input_contract is not None,
             )
-            issues = validate_result(requirement["contract"], content)
             if issues:
                 fields = []
                 for issue in issues:
                     original_path = issue["path"].removeprefix("result.")
                     consumers = [
-                        {
-                            **issue,
-                            "path": f"definition.tasks.{index}.inputs.{name}"
-                            + original_path.removeprefix(binding.get("field", "text")),
-                        }
-                        for index, task in enumerate(
-                            compiled["draft"]["body"]["definition"].get("tasks", [])
-                        )
-                        if input_contract is not None
-                        and task["id"] in compiled["selected_nodes"]
-                        for name, binding in task.get("inputs", {}).items()
-                        if binding.get("task_id") == source_id
+                        {**issue, "path": path + original_path.removeprefix(field)}
+                        for (task_id, field), bindings in boundary_paths.items()
+                        if task_id == source_id
                         and (
-                            original_path == binding.get("field", "text")
-                            or original_path.startswith(
-                                binding.get("field", "text") + "."
-                            )
+                            original_path == field
+                            or original_path.startswith(field + ".")
                         )
+                        for path in bindings
                     ]
                     fields.extend(
                         consumers
                         or [{**issue, "path": f"sources.{source_id}." + issue["path"]}]
                     )
                 raise RoleAssetError("Invalid boundary source", fields)
+            if input_contract is not None:
+                projection = {}
+                reference_fields = {
+                    field: schema["format"]
+                    for field in requirement["fields"]
+                    if (
+                        schema := field_schema(
+                            requirement["contract"], field, structured=True
+                        )
+                    ).get("format")
+                    in REFERENCE_OUTPUTS.values()
+                }
+                async with self.db.get_db() as session:
+                    historical_properties = {}
+                    if reference and reference_fields.keys() - REFERENCE_OUTPUTS.keys():
+                        stored = await session.get(
+                            AgentWorkflowArtifact,
+                            (reference["artifact_id"], reference["version"]),
+                        )
+                        origin = (
+                            await session.get(AgentWorkflowRun, stored.run_id)
+                            if stored
+                            else None
+                        )
+                        if origin and origin.snapshot.get("port_contract_version") == 2:
+                            historical_properties = (stored.contract or {}).get(
+                                "properties", {}
+                            )
+                    for field in requirement["fields"]:
+                        value = port_value(content, field, reference)
+                        paths = boundary_paths.get(
+                            (source_id, field), [f"sources.{source_id}.artifact"]
+                        )
+                        if value is MISSING_PORT_VALUE:
+                            if field == "$file" and any(
+                                path in required_paths for path in paths
+                            ):
+                                message = "The selected version must contain one managed attachment"
+                                raise RoleAssetError(
+                                    message,
+                                    [
+                                        {
+                                            "path": path,
+                                            "code": "REFERENCE",
+                                            "message": message,
+                                        }
+                                        for path in paths
+                                        if path in required_paths
+                                    ],
+                                )
+                            continue
+                        if field in reference_fields:
+                            if field not in REFERENCE_OUTPUTS:
+                                schema = historical_properties.get(field)
+                                if (
+                                    not isinstance(schema, dict)
+                                    or schema.get("format") != reference_fields[field]
+                                ):
+                                    message = "The selected version did not publish this field as a managed reference"
+                                    raise RoleAssetError(
+                                        message,
+                                        [
+                                            {
+                                                "path": path,
+                                                "code": "INCOMPATIBLE",
+                                                "message": message,
+                                            }
+                                            for path in paths
+                                        ],
+                                    )
+                            await self._require_port_reference(
+                                session, username, value, paths[0]
+                            )
+                        target = projection
+                        parts = field.split(".")
+                        for part in parts[:-1]:
+                            target = target.setdefault(part, {})
+                        target[parts[-1]] = value
+                content = projection
             sources[source_id] = {
                 "content": copy.deepcopy(content),
                 "artifact": reference,
+                **({"projected": True} if input_contract is not None else {}),
             }
         asset = {
             "asset_id": asset_id,
@@ -6634,6 +6759,19 @@ class WorkflowService:
                                 }
                             ],
                         )
+        if definition.port_contract_version == 2:
+            references = {
+                name: value
+                for name, value in request.inputs.items()
+                if definition.input_contract["properties"][name].get("format")
+                in REFERENCE_OUTPUTS.values()
+            }
+            if references:
+                async with self.db.get_db() as session:
+                    for name, value in references.items():
+                        await self._require_port_reference(
+                            session, username, value, f"inputs.{name}"
+                        )
         return {
             "engine": "graph_v2",
             "usage_protocol": 1,
@@ -6841,6 +6979,11 @@ class WorkflowService:
                         "depth": depth,
                         "scope_limits": snapshot["scope_limits"],
                         "node_id": task.id,
+                        **(
+                            {"port_contract_version": 2}
+                            if definition.port_contract_version == 2
+                            else {}
+                        ),
                         **(
                             {"graph_task": True}
                             if not snapshot.get("team_definition")
@@ -8625,6 +8768,14 @@ class WorkflowService:
                             if row.snapshot.get("graph_task") and not retrying:
                                 refs = []
                             missing = False
+                            node_contract = task.get(
+                                "input_contract"
+                            ) or TRANSFORM_INPUTS.get(transform)
+                            port_sources = (
+                                dict(row.snapshot.get("port_sources", {}))
+                                if retrying
+                                else {}
+                            )
                             trial_input_sources = (
                                 dict(row.snapshot.get("trial_input_sources", {}))
                                 if retrying
@@ -8632,7 +8783,7 @@ class WorkflowService:
                             )
                             iteration_inputs = row.snapshot.get("iteration_inputs", {})
                             for key, ref in [] if retrying else task["inputs"].items():
-                                if transform and not (
+                                if node_contract and not (
                                     ref.get("input") or ref.get("task_id")
                                 ):
                                     continue
@@ -8669,25 +8820,31 @@ class WorkflowService:
                                         "field": trial_source["field"],
                                         "artifact": boundary["artifact"],
                                     }
-                                    value = boundary["content"]
-                                    for name in trial_source["field"].split("."):
-                                        if transform and (
-                                            not isinstance(value, dict)
-                                            or name not in value
-                                        ):
-                                            break
-                                        value = value[name]
-                                    else:
+                                    value = port_value(
+                                        boundary["content"], trial_source["field"]
+                                    )
+                                    if value is not MISSING_PORT_VALUE:
                                         inputs[key] = (
                                             value
-                                            if transform or isinstance(value, str)
+                                            if node_contract or isinstance(value, str)
                                             else json.dumps(value, ensure_ascii=False)
                                         )
+                                        if (
+                                            node_contract
+                                            and boundary.get("projected")
+                                            and boundary["artifact"]
+                                        ):
+                                            port_sources[key] = {
+                                                "artifact": boundary["artifact"],
+                                                "field": trial_source["field"],
+                                            }
+                                            if boundary["artifact"] not in refs:
+                                                refs.append(boundary["artifact"])
                                     continue
                                 if ref.get("input") is not None:
                                     # Earlier task aliases must not change the source.
                                     supplied = root.snapshot["inputs"]
-                                    if not transform or ref["input"] in supplied:
+                                    if not node_contract or ref["input"] in supplied:
                                         inputs[key] = supplied[ref["input"]]
                                     inherited = root.snapshot.get(
                                         "trial_inputs", {}
@@ -8700,25 +8857,29 @@ class WorkflowService:
                                     if source.status != "completed":
                                         missing = True
                                         break
-                                    value = source.result
-                                    assert value is not None
-                                    for name in ref["field"].split("."):
-                                        if transform and (
-                                            not isinstance(value, dict)
-                                            or name not in value
-                                        ):
-                                            break
-                                        value = value[name]
-                                    else:
-                                        inputs[key] = (
-                                            value
-                                            if transform or isinstance(value, str)
-                                            else json.dumps(value, ensure_ascii=False)
-                                        )
                                     pinned = source.state.get("child_result_ref") or {
                                         "artifact_id": source.run_id,
                                         "version": 1,
                                     }
+                                    if node_contract:
+                                        value = port_value(
+                                            source.result, ref["field"], pinned
+                                        )
+                                        if value is not MISSING_PORT_VALUE:
+                                            inputs[key] = value
+                                            port_sources[key] = {
+                                                "artifact": pinned,
+                                                "field": ref["field"],
+                                            }
+                                    else:
+                                        value = source.result
+                                        for name in ref["field"].split("."):
+                                            value = value[name]
+                                        inputs[key] = (
+                                            value
+                                            if isinstance(value, str)
+                                            else json.dumps(value, ensure_ascii=False)
+                                        )
                                     if pinned not in refs:
                                         refs.append(pinned)
                                     if row.snapshot.get("graph_task"):
@@ -8731,7 +8892,7 @@ class WorkflowService:
                                     **row.state,
                                     "reason": "A declared result input belongs to a skipped path.",
                                 }
-                            elif transform:
+                            elif node_contract:
                                 task_index = next(
                                     index
                                     for index, node in enumerate(definition["tasks"])
@@ -8750,9 +8911,37 @@ class WorkflowService:
                                 path = f"definition.tasks.{task_index}"
                                 contract = task.get("output_contract")
                                 try:
-                                    inputs, result = execute_port_transform(
-                                        task, inputs, path
-                                    )
+                                    if transform:
+                                        inputs, result = execute_port_transform(
+                                            task, inputs, path
+                                        )
+                                    else:
+                                        inputs = normalize_port_inputs(
+                                            node_contract, inputs, f"{path}.inputs"
+                                        )
+                                    for name, value in inputs.items():
+                                        if (
+                                            node_contract["properties"][name].get(
+                                                "format"
+                                            )
+                                            not in REFERENCE_OUTPUTS.values()
+                                        ):
+                                            continue
+                                        await self._require_port_reference(
+                                            session,
+                                            username,
+                                            value,
+                                            f"{path}.inputs.{name}",
+                                        )
+                                        port_sources.setdefault(name, {})[
+                                            "reference"
+                                        ] = value
+                                        ref = {
+                                            key: value[key]
+                                            for key in ("artifact_id", "version")
+                                        }
+                                        if ref not in refs:
+                                            refs.append(ref)
                                 except RoleAssetError as exc:
                                     row.status = "failed"
                                     row.state = {
@@ -8761,24 +8950,40 @@ class WorkflowService:
                                         "issues": exc.fields,
                                     }
                                 else:
-                                    row.status = "completed"
-                                    row.result = result
-                                    session.add(
-                                        AgentWorkflowArtifact(
-                                            artifact_id=row.run_id,
-                                            version=1,
-                                            run_id=row.run_id,
-                                            submission_id=row.state["attempt_id"],
-                                            contract=contract,
-                                            content=result,
+                                    if transform:
+                                        row.status = "completed"
+                                        row.result = result
+                                        session.add(
+                                            AgentWorkflowArtifact(
+                                                artifact_id=row.run_id,
+                                                version=1,
+                                                run_id=row.run_id,
+                                                submission_id=row.state["attempt_id"],
+                                                contract=contract,
+                                                content=result,
+                                            )
                                         )
-                                    )
+                                    else:
+                                        row.status = "running"
+                                        occupied.add(member_id)
+                                        role_active[role_id] = (
+                                            role_active.get(role_id, 0) + 1
+                                        )
+                                        active.append(row)
                                 row.snapshot = {
                                     **row.snapshot,
+                                    **(
+                                        {"task": task["task"].format_map(inputs)}
+                                        if not transform
+                                        and not retrying
+                                        and row.status == "running"
+                                        else {}
+                                    ),
                                     "inputs": inputs,
                                     "input_artifacts": refs,
                                     "selected_fields": selected_fields,
                                     "trial_input_sources": trial_input_sources,
+                                    "port_sources": port_sources,
                                 }
                             elif child_call:
                                 frozen = copy.deepcopy(
@@ -9746,7 +9951,36 @@ class WorkflowService:
                             "Required member results are not complete", status=409
                         )
             contract = row.snapshot["definition"].get("output_contract")
-            fields = validate_result(contract, payload)
+            fields = validate_result(
+                contract,
+                payload,
+                port_formats=row.snapshot.get("port_contract_version") == 2,
+            )
+            if not fields and row.snapshot.get("port_contract_version") == 2:
+                for name, value in payload.items():
+                    schema = (contract or {}).get("properties", {}).get(name)
+                    if (
+                        not isinstance(schema, dict)
+                        or schema.get("format") not in REFERENCE_OUTPUTS.values()
+                    ):
+                        continue
+                    path = f"result.{name}"
+                    if not any(
+                        all(value[key] == selected.get(key) for key in value)
+                        for source in row.snapshot.get("port_sources", {}).values()
+                        if (selected := source.get("reference"))
+                    ):
+                        fields.append(
+                            {
+                                "path": path,
+                                "code": "REFERENCE",
+                                "message": "Select a reference bound to this attempt",
+                            }
+                        )
+                    else:
+                        await self._require_port_reference(
+                            session, username, value, path
+                        )
             if not fields:
                 for index, ref in enumerate(payload.get("files", [])):
                     file = await session.get(AgentWorkflowFile, ref["file_id"])
@@ -9872,6 +10106,51 @@ class WorkflowService:
             raise RoleAssetError("Run has no completed result", status=409)
         return run["result"]
 
+    async def _require_port_reference(
+        self, session: AsyncSession, username: str, value: dict, path: str
+    ) -> None:
+        """Check the exact owned artifact and the file's membership in that version.
+
+        Args:
+            session: Transaction resolving a launch or a consumer attempt.
+            username: Authenticated owner of the workflow run.
+            value: Already type-checked artifact or file reference.
+            path: Diagnostic path of the selected input.
+
+        Raises:
+            RoleAssetError: The exact version or managed file is unavailable.
+        """
+        ref = {key: value[key] for key in ("artifact_id", "version")}
+        try:
+            artifact = await self.read_artifact(username, **ref, _session=session)
+        except RoleAssetError as exc:
+            raise RoleAssetError(
+                str(exc),
+                [{"path": path, "code": "REFERENCE", "message": str(exc)}],
+                status=exc.status,
+            ) from exc
+        if "file_id" in value:
+            file_id = value["file_id"]
+            owned_file = await session.scalar(
+                select(AgentWorkflowFile.file_id)
+                .join(
+                    AgentWorkflowArtifact,
+                    AgentWorkflowArtifact.run_id == AgentWorkflowFile.run_id,
+                )
+                .where(
+                    AgentWorkflowArtifact.artifact_id == ref["artifact_id"],
+                    AgentWorkflowArtifact.version == ref["version"],
+                    AgentWorkflowFile.file_id == file_id,
+                )
+            )
+            if not owned_file or {"file_id": file_id} not in artifact["content"].get(
+                "files", []
+            ):
+                message = "The file does not belong to the selected artifact version"
+                raise RoleAssetError(
+                    message, [{"path": path, "code": "REFERENCE", "message": message}]
+                )
+
     async def read_artifact(
         self,
         username: str,
@@ -9934,70 +10213,91 @@ class WorkflowService:
                 selected = consumer.snapshot.get("selected_fields", {}).get(
                     artifact_id, []
                 )
+                port_sources = consumer.snapshot.get("port_sources")
+                if graph_task and port_sources is not None:
+                    selected = [
+                        source["field"]
+                        for source in port_sources.values()
+                        if source.get("artifact") == ref
+                        and source["field"] not in REFERENCE_OUTPUTS
+                    ]
+                    allowed = bool(selected) or any(
+                        all(
+                            source.get("reference", {}).get(key) == value
+                            for key, value in ref.items()
+                        )
+                        for source in port_sources.values()
+                    )
+                else:
+                    allowed = version == 1 and bool(selected)
                 if graph_task and (
-                    version != 1
-                    or not selected
+                    not allowed
                     or ref not in consumer.snapshot.get("input_artifacts", [])
                 ):
                     raise RoleAssetError(
                         "Artifact version is not a selected graph input", status=403
                     )
-                team_output = (
-                    consumer.snapshot.get("coordinator")
-                    and origin.snapshot.get("parent_run_id")
-                    == consumer.snapshot.get("parent_run_id")
-                    and origin.state.get("scope_id") == consumer.state.get("scope_id")
-                )
-                if consumer.snapshot.get("coordinator") and not team_output:
-                    scope = await session.get(
-                        AgentWorkflowRun, consumer.snapshot.get("parent_run_id")
+                if not graph_task:
+                    team_output = (
+                        consumer.snapshot.get("coordinator")
+                        and origin.snapshot.get("parent_run_id")
+                        == consumer.snapshot.get("parent_run_id")
+                        and origin.state.get("scope_id")
+                        == consumer.state.get("scope_id")
                     )
-                    if scope is not None:
-                        for task_run_id in _current_task_runs(scope).values():
-                            task_run = await session.get(AgentWorkflowRun, task_run_id)
-                            if (
-                                task_run
-                                and task_run.status == "completed"
-                                and task_run.state.get("child_result_ref") == ref
-                            ):
-                                team_output = True
-                                break
-                own_output = (
-                    origin.snapshot.get("parent_run_id")
-                    == consumer.snapshot.get("parent_run_id")
-                    and origin.state.get("scope_id") == consumer.state.get("scope_id")
-                    and origin.snapshot.get("member", {}).get("member_id")
-                    == consumer.snapshot.get("member", {}).get("member_id")
-                )
-                deliveries = (
-                    (
-                        await session.execute(
-                            select(AgentWorkflowMessage).where(
-                                AgentWorkflowMessage.root_run_id
-                                == _root_run_id(consumer),
-                                AgentWorkflowMessage.scope_id
-                                == consumer.state["scope_id"],
-                                AgentWorkflowMessage.recipient_member_id
-                                == consumer.snapshot["member"]["member_id"],
+                    if consumer.snapshot.get("coordinator") and not team_output:
+                        scope = await session.get(
+                            AgentWorkflowRun, consumer.snapshot.get("parent_run_id")
+                        )
+                        if scope is not None:
+                            for task_run_id in _current_task_runs(scope).values():
+                                task_run = await session.get(
+                                    AgentWorkflowRun, task_run_id
+                                )
+                                if (
+                                    task_run
+                                    and task_run.status == "completed"
+                                    and task_run.state.get("child_result_ref") == ref
+                                ):
+                                    team_output = True
+                                    break
+                    own_output = (
+                        origin.snapshot.get("parent_run_id")
+                        == consumer.snapshot.get("parent_run_id")
+                        and origin.state.get("scope_id")
+                        == consumer.state.get("scope_id")
+                        and origin.snapshot.get("member", {}).get("member_id")
+                        == consumer.snapshot.get("member", {}).get("member_id")
+                    )
+                    deliveries = (
+                        (
+                            await session.execute(
+                                select(AgentWorkflowMessage).where(
+                                    AgentWorkflowMessage.root_run_id
+                                    == _root_run_id(consumer),
+                                    AgentWorkflowMessage.scope_id
+                                    == consumer.state["scope_id"],
+                                    AgentWorkflowMessage.recipient_member_id
+                                    == consumer.snapshot["member"]["member_id"],
+                                )
                             )
                         )
+                        .scalars()
+                        .all()
                     )
-                    .scalars()
-                    .all()
-                )
-                shared_output = any(
-                    ref in message.payload["artifact_refs"] for message in deliveries
-                )
-                if (
-                    not graph_task
-                    and ref not in consumer.snapshot.get("input_artifacts", [])
-                    and not team_output
-                    and not own_output
-                    and not shared_output
-                ):
-                    raise RoleAssetError(
-                        "Artifact version is not a pinned task input", status=403
+                    shared_output = any(
+                        ref in message.payload["artifact_refs"]
+                        for message in deliveries
                     )
+                    if (
+                        ref not in consumer.snapshot.get("input_artifacts", [])
+                        and not team_output
+                        and not own_output
+                        and not shared_output
+                    ):
+                        raise RoleAssetError(
+                            "Artifact version is not a pinned task input", status=403
+                        )
                 exists = (
                     (
                         await session.execute(
@@ -10153,7 +10453,34 @@ class WorkflowService:
                 raise RoleAssetError(
                     "Artifact was revised elsewhere; reload first", status=409
                 )
-            fields = validate_result(latest.contract, request.content)
+            fields = validate_result(
+                latest.contract,
+                request.content,
+                port_formats=origin.snapshot.get("port_contract_version") == 2,
+            )
+            if not fields and origin.snapshot.get("port_contract_version") == 2:
+                for name, schema in (
+                    (latest.contract or {}).get("properties", {}).items()
+                ):
+                    if (
+                        not isinstance(schema, dict)
+                        or schema.get("format") not in REFERENCE_OUTPUTS.values()
+                    ):
+                        continue
+                    path = f"content.{name}"
+                    value = request.content.get(name)
+                    if value != latest.content.get(name):
+                        fields.append(
+                            {
+                                "path": path,
+                                "code": "REFERENCE",
+                                "message": "A revision must keep the original bound reference",
+                            }
+                        )
+                    elif value is not None:
+                        await self._require_port_reference(
+                            session, username, value, path
+                        )
             if not fields:
                 # A child handoff authorizes only the files in this parent version,
                 # without changing their storage owner or granting scope-wide access.
@@ -10300,6 +10627,8 @@ class WorkflowService:
             RoleAssetError: Inaccessible or uncommitted file reference.
         """
         artifact = await self.read_artifact(username, artifact_id, version)
+        if not any(item["file_id"] == file_id for item in artifact["files"]):
+            raise RoleAssetError("Artifact file not found", status=404)
         if download:
             async with self.db.get_db() as session:
                 origin = await session.get(AgentWorkflowRun, artifact_id)
@@ -10351,8 +10680,6 @@ class WorkflowService:
                     source = call
             if governed:
                 await self.export_artifact(username, artifact_id, version)
-        if {"file_id": file_id} not in artifact["content"].get("files", []):
-            raise RoleAssetError("Artifact file not found", status=404)
         async with self.db.get_db() as session:
             file = await session.get(AgentWorkflowFile, file_id)
             if file is None:
@@ -11801,6 +12128,22 @@ class WorkflowService:
                     Returns:
                         Full artifact or encoded file content.
                     """
+                    if (
+                        file_id is not None
+                        and snapshot.get("graph_task")
+                        and not any(
+                            source.get("reference")
+                            == {
+                                "artifact_id": artifact_id,
+                                "version": version,
+                                "file_id": file_id,
+                            }
+                            for source in snapshot.get("port_sources", {}).values()
+                        )
+                    ):
+                        raise RoleAssetError(
+                            "Graph inputs do not grant file access", status=403
+                        )
                     artifact = await self.read_artifact(
                         username,
                         artifact_id,
@@ -11811,12 +12154,12 @@ class WorkflowService:
                     )
                     if file_id is None:
                         return artifact
-                    if snapshot.get("graph_task"):
-                        raise RoleAssetError(
-                            "Graph inputs do not grant file access", status=403
-                        )
                     file = await self.get_file(
-                        username, artifact_id, version, file_id, download=False
+                        username,
+                        artifact_id,
+                        version,
+                        file_id,
+                        download=bool(snapshot.get("graph_task")),
                     )
                     try:
                         content = file["content"].decode("utf-8")
@@ -11835,8 +12178,15 @@ class WorkflowService:
 
                 read_tool = ReadArtifactTool(read)
                 if snapshot.get("graph_task"):
-                    read_tool.description = "Read only the explicitly selected scalar fields of a pinned input artifact."
-                    read_tool.parameters["properties"].pop("file_id", None)
+                    read_tool.description = (
+                        "Read only selected fields of an exact input artifact. "
+                        "Supply file_id only for an explicitly bound managed file."
+                    )
+                    if not any(
+                        "file_id" in source.get("reference", {})
+                        for source in snapshot.get("port_sources", {}).values()
+                    ):
+                        read_tool.parameters["properties"].pop("file_id", None)
                 tools.append(read_tool)
             AgentTeamToolRegistry.register(member["umo"], tools)
 
@@ -12027,6 +12377,7 @@ class WorkflowService:
                                 for name, source in snapshot[
                                     "trial_input_sources"
                                 ].items()
+                                if name in snapshot["inputs"]
                             },
                             ensure_ascii=False,
                         )
@@ -12037,7 +12388,7 @@ class WorkflowService:
                         # Frozen inputs are data, never a second task template.
                         "\nDeclared run inputs (JSON):\n"
                         + json.dumps(snapshot["inputs"], ensure_ascii=False)
-                        if snapshot.get("coordinator")
+                        if snapshot.get("coordinator") or "port_sources" in snapshot
                         else ""
                     ),
                     execution={

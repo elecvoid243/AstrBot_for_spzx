@@ -665,6 +665,7 @@
   },
   "human": {
     "title": "Human requests",
+    "requestId": "Request ID",
     "questionNode": "Human question",
     "approvalNode": "Version approval",
     "question": "Question / approval reason",

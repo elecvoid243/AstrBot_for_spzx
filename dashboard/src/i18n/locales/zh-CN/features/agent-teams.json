@@ -665,6 +665,7 @@
   },
   "human": {
     "title": "人工待办",
+    "requestId": "待办 ID",
     "questionNode": "人工问题",
     "approvalNode": "版本批准",
     "question": "问题／批准原因",

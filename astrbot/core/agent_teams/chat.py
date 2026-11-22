@@ -7,10 +7,12 @@ import json
 import secrets
 import time
 from collections.abc import Awaitable, Callable
+from contextlib import nullcontext
 from typing import TYPE_CHECKING, Literal
 from urllib.parse import quote
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select, text
 
 from astrbot.core import logger
@@ -560,18 +562,23 @@ class WorkflowChat:
             pending.extend(scope.get("child_assets", {}).values())
             pending.extend(scope.get("allowed_workflows", {}).values())
 
-    async def require_access(self, chat: dict, username: str) -> None:
-        """Recheck the exact local grant at launch, execution and result release.
+    async def require_access(
+        self, chat: dict, username: str, *, _session: AsyncSession | None = None
+    ) -> None:
+        """Recheck the exact local grant at a source access boundary.
 
         Args:
             chat: Frozen verified caller and root asset grant identity.
             username: Asset owner whose configured definition is being used.
+            _session: Existing write transaction for a decision that needs the grant.
 
         Raises:
             RoleAssetError: Access was revoked or source routing has changed.
         """
         caller = ChatCaller.model_validate(chat["caller"])
-        async with self.service.db.get_db() as session:
+        async with (
+            self.service.db.get_db() if _session is None else nullcontext(_session)
+        ) as session:
             grant = await session.get(
                 AgentWorkflowChatAccess,
                 (

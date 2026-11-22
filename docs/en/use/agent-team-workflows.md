@@ -74,7 +74,11 @@ Closing or refreshing the page does not cancel execution. Reopen the run to read
 
 In the Bot run workbench, choose **Open in Chat**. Dashboard Chat shows one conversation per root run, even when the same asset runs several times. Open a conversation from the Chat sidebar or its direct link (`#/chat/runs/<root-run-id>`) to see the asset, fixed version, root ID and current state. For draft tests, Chat shows the draft revision. Choose **Open run workbench** to return to that exact run.
 
-In Chat, the task list expands child workflows, team scopes and loop rounds. The execution panel shows the selected task's saved events, attempts and recorded input sources. Use **Load older process** to page back. The right panel shows the run's requests and lets you open an exact artifact version and download its authorized files. On narrow screens, switch panels with **Tasks**, **Execution**, and **Inbox & artifacts**. Use the workbench to respond to requests or retry tasks.
+In Chat, the task list expands child workflows, team scopes and loop rounds. The execution panel shows the selected task's saved events, attempts and recorded input sources. Use **Load older process** to page back. On narrow screens, switch panels with **Tasks**, **Execution**, and **Inbox & artifacts**. The right panel also opens exact artifact versions and downloads authorized files. Use the workbench to retry tasks.
+
+In **Inbox & artifacts**, answer a specific human request or preview the exact version before approving or returning it with feedback. Bot and Chat show the same requests, including those from nested workflows. If another tab has already decided, the card refreshes to show the saved decision. If the workflow sends revised work for review, open its new request and preview that version before deciding.
+
+![An approval request in Chat with the pinned version, file preview and feedback field](/images/agent-teams-chat-approval-en.png)
 
 If the connection drops, the open conversation will resume from the last applied event. You can also close or refresh Chat and reopen the same run from the sidebar.
 

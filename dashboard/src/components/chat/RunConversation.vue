@@ -38,7 +38,7 @@
         ref="workbench"
         class="agent-teams-page mt-4"
         mode="runs"
-        :readonly-run-id="runId"
+        :conversation-run-id="runId"
         @run-status="status = $event; observed = true"
         @run-unavailable="unavailable = true"
       />

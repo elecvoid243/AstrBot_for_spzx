@@ -8963,6 +8963,13 @@ class WorkflowService:
             if root is None or root.owner_username != username:
                 raise RoleAssetError("Run not found", status=404)
             control = await self._lock_control(session, root)
+            if caller is not None:
+                chat = root.snapshot.get("chat") or {}
+                if chat.get("caller") != caller:
+                    raise RoleAssetError("Run not found", status=404)
+                # Check the grant after acquiring the SQLite write lock, so a
+                # committed revocation cannot be overtaken by a late decision.
+                await self.chat.require_access(chat, username, _session=session)
             todo = await session.get(AgentWorkflowTodo, todo_id)
             if todo is None or todo.root_run_id != run_id:
                 raise RoleAssetError("Human request not found", status=404)

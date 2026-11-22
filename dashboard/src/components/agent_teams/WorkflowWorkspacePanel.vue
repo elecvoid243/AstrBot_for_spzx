@@ -1,6 +1,6 @@
 <template>
   <section class="workflow-workspace">
-    <div v-if="!readonlyRunId && (mode === 'assets' || !selectedRun)" class="at-asset-toolbar">
+    <div v-if="!conversationRunId && (mode === 'assets' || !selectedRun)" class="at-asset-toolbar">
       <h2 class="text-h5">
         {{
           tm(
@@ -58,8 +58,8 @@
       role="alert"
       >{{ error }}</v-alert
     >
-    <v-progress-circular v-if="readonlyRunId && !selectedRun && loading" indeterminate size="24" />
-    <p v-if="!readonlyRunId && (mode === 'assets' || !selectedRun)" class="at-asset-intro">
+    <v-progress-circular v-if="conversationRunId && !selectedRun && loading" indeterminate size="24" />
+    <p v-if="!conversationRunId && (mode === 'assets' || !selectedRun)" class="at-asset-intro">
       {{
         tm(
           mode === "runs"
@@ -119,7 +119,7 @@
 
     <DeleteAssetDialog :name="deleteTarget?.definition.name || (deleteTarget ? tm('draft.untitled') : null)" :busy="deleting" :error="deleteError" @cancel="deleteTarget = null; deleteError = ''" @confirm="deleteAsset" />
     <template v-if="mode !== 'assets'">
-      <template v-if="!readonlyRunId">
+      <template v-if="!conversationRunId">
       <nav
         class="at-run-filters"
         :aria-label="tm('workbench.runs')"
@@ -243,14 +243,14 @@
       >
         <v-card-text class="workbench-body">
           <div class="at-run-header">
-            <h2 v-if="!readonlyRunId" class="text-h5 font-weight-bold flex-grow-1">{{ selectedRun.snapshot.definition.name }}</h2>
+            <h2 v-if="!conversationRunId" class="text-h5 font-weight-bold flex-grow-1">{{ selectedRun.snapshot.definition.name }}</h2>
             <v-btn
-              v-if="!readonlyRunId && selectedRun.snapshot.root_run_id === selectedRun.run_id"
+              v-if="!conversationRunId && selectedRun.snapshot.root_run_id === selectedRun.run_id"
               variant="text"
               :to="{ name: 'ChatRunConversation', params: { runId: selectedRun.run_id } }"
             >{{ tm('runConversation.openChat') }}</v-btn>
-            <v-chip v-if="!readonlyRunId && selectedRun.snapshot.trial" size="small" color="primary" variant="outlined">{{ tm('trial.test') }} · r{{ selectedRun.snapshot.trial.draft_revision }}</v-chip>
-            <v-chip v-if="!readonlyRunId" variant="tonal" :color="observedStatus === 'completed' ? 'success' : 'primary'">{{ tm(`v2.states.${observedStatus}`) }}</v-chip>
+            <v-chip v-if="!conversationRunId && selectedRun.snapshot.trial" size="small" color="primary" variant="outlined">{{ tm('trial.test') }} · r{{ selectedRun.snapshot.trial.draft_revision }}</v-chip>
+            <v-chip v-if="!conversationRunId" variant="tonal" :color="observedStatus === 'completed' ? 'success' : 'primary'">{{ tm(`v2.states.${observedStatus}`) }}</v-chip>
             <v-btn variant="text" :aria-pressed="runDisplay === 'workbench'" @click="runDisplay = 'workbench'">{{ tm('workbench.workspace') }}</v-btn>
             <v-btn variant="text" :aria-pressed="runDisplay === 'graph'" @click="runDisplay = 'graph'">{{ tm('progress.graph') }}</v-btn>
           </div>
@@ -284,7 +284,7 @@
               <p v-if="historyTruncated[detailRun.run_id]" class="text-warning">{{ tm("progress.historyWindow") }}</p>
               <p v-else-if="historyOlderHidden[detailRun.run_id]" class="text-caption">{{ tm("progress.olderHistoryHidden") }}</p>
               <p v-if="historyErrors[detailRun.run_id]" role="alert">{{ historyErrors[detailRun.run_id] }}</p>
-              <WorkflowRunProcess :key="detailRun.run_id" :run="detailRun" :readonly="!!readonlyRunId" :signal="observation.signal" :busy="!!currentOperation" @resolve="resolveTool" />
+              <WorkflowRunProcess :key="detailRun.run_id" :run="detailRun" :readonly="!!conversationRunId" :signal="observation.signal" :busy="!!currentOperation" @resolve="resolveTool" />
             </div>
             <div class="workbench-column workbench-results">
           <section
@@ -293,14 +293,9 @@
             class="at-human-section"
           >
             <h3 class="text-h6">{{ tm("human.title") }}</h3>
-            <template v-if="readonlyRunId">
-              <p v-for="todo in selectedRun.todos" :key="todo.todo_id">
-                {{ todo.question }} · {{ tm(`human.status.${todo.status}`) }}
-              </p>
-            </template>
-            <p v-if="!readonlyRunId" class="text-body-2">{{ tm("human.localWait") }}</p>
+            <p class="text-body-2">{{ tm("human.localWait") }}</p>
             <WorkflowHumanTodo
-              v-for="todo in readonlyRunId ? [] : selectedRun.todos"
+              v-for="todo in selectedRun.todos"
               :key="todo.todo_id"
               :todo="todo"
               :paused="selectedRun.control?.status === 'paused'"
@@ -310,7 +305,7 @@
             />
           </section>
           <WorkflowRunControls
-            v-if="!readonlyRunId"
+            v-if="!conversationRunId"
             :key="selectedRun.run_id"
             :run="selectedRun"
             :task="detailRun"
@@ -429,7 +424,7 @@
               {{ tm("recovery.limits") }}
             </p>
             <v-btn
-              v-if="!readonlyRunId && detailRun.recovery.available"
+              v-if="!conversationRunId && detailRun.recovery.available"
               variant="tonal"
               class="mt-3"
               :loading="
@@ -470,7 +465,7 @@
           <details v-if="detailRun.run_id !== selectedRun.run_id" class="my-3">
             <summary>{{ tm("usage.title") }}</summary>
             <RunUsagePanel v-if="detailRun.usage" :key="detailRun.run_id" :run="detailRun" :signal="observation.signal" />
-            <p v-else-if="readonlyRunId">{{ tm("usage.unknown") }}</p>
+            <p v-else-if="conversationRunId">{{ tm("usage.unknown") }}</p>
           </details>
           <p class="text-body-2 text-medium-emphasis mb-3">
             {{ detailRun.snapshot.definition.name }} · {{ tm("v2.result") }}
@@ -521,7 +516,7 @@
             }}</v-btn>
           </div>
           <v-btn
-            v-if="!readonlyRunId && selectedArtifact"
+            v-if="!conversationRunId && selectedArtifact"
             variant="tonal"
             class="mt-2"
             @click="prepareRevision"
@@ -669,7 +664,7 @@
     <v-dialog
       class="workbench-dialog"
       scrollable
-      v-if="!readonlyRunId"
+      v-if="!conversationRunId"
       v-model="revising"
       max-width="720"
       :persistent="saving"
@@ -737,7 +732,7 @@
       </v-card>
     </v-dialog>
     <WorkflowPackageDialog
-      v-if="!readonlyRunId"
+      v-if="!conversationRunId"
       v-model="packageDialog"
       :exported-package="exportedPackage"
       @installed="
@@ -789,8 +784,8 @@ import type {
 } from "@/api/generated/openapi-v1";
 
 const props = defineProps<
-  | { mode: "assets"; assetKind?: "teams" | "workflows"; readonlyRunId?: never }
-  | { mode: "runs"; readonlyRunId?: string; assetKind?: never }
+  | { mode: "assets"; assetKind?: "teams" | "workflows"; conversationRunId?: never }
+  | { mode: "runs"; conversationRunId?: string; assetKind?: never }
 >();
 const emit = defineEmits<{
   (event: "started", runId: string): void;
@@ -891,9 +886,12 @@ async function answerInbox(
   try {
     const updated = await workflowAssetsApi.answer(rootId, todoId, payload);
     if (!disposed && !openingRun && selectedRun.value?.run_id === rootId) applyOperationSnapshot(updated);
-    humanRequests.value = (await workflowAssetsApi.humanRequests()).requests;
+    const inbox = await workflowAssetsApi.humanRequests();
+    if (!disposed) humanRequests.value = inbox.requests;
   } catch (err) {
+    if (disposed) return;
     error.value = extractApiError(err, tm("errors.operationFailed")).message;
+    if (isAxiosError(err) && err.response?.status === 409) void refresh(true);
   } finally {
     inboxBusy.value = false;
   }
@@ -952,7 +950,7 @@ const observedStatus = computed(() => {
   return run.status;
 });
 watch(observedStatus, (status) => {
-  if (props.readonlyRunId && status) emit("run-status", status);
+  if (props.conversationRunId && status) emit("run-status", status);
 });
 const runDisplay = ref<'workbench' | 'graph'>('workbench');
 const activeRunPanel = ref<'tasks' | 'process' | 'results'>('process');
@@ -991,7 +989,7 @@ watch(() => selectedRun.value?.cursor, async () => {
 const allRunTasks = computed<any[]>(() => [
   ...new Map(
     [
-      ...(props.readonlyRunId && selectedRun.value ? [selectedRun.value] : []),
+      ...(props.conversationRunId && selectedRun.value ? [selectedRun.value] : []),
       ...(selectedRun.value?.tasks ?? []),
       ...(selectedRun.value?.scopes ?? []).flatMap((scope: any) => scope.tasks),
       ...[selectedRun.value, ...(selectedRun.value?.scopes ?? [])].flatMap((scope: any) =>
@@ -1370,7 +1368,7 @@ async function refresh(background = false) {
       runs.value = runData.runs;
       if (resources) catalog.value = resources;
     } else {
-      if (!props.readonlyRunId) {
+      if (!props.conversationRunId) {
         const [runData, inboxData] = await Promise.all([
           workflowAssetsApi.runs(),
           workflowAssetsApi.humanRequests(),
@@ -1379,7 +1377,7 @@ async function refresh(background = false) {
         runs.value = runData.runs;
         humanRequests.value = inboxData.requests;
       }
-      const id = props.readonlyRunId ?? route.query.workflow_run ?? selectedRun.value?.run_id;
+      const id = props.conversationRunId ?? route.query.workflow_run ?? selectedRun.value?.run_id;
       if (typeof id === "string" && id) {
         const previousResult = detailRun.value?.result_ref;
         if (
@@ -1469,7 +1467,7 @@ async function refresh(background = false) {
     if (!disposed && read === runRead) error.value = "";
   } catch (err) {
     if (!signal.aborted && read === runRead && !(background && runView.value === "history")) {
-      if (props.readonlyRunId && isAxiosError(err) && [401, 403, 404].includes(err.response?.status ?? 0)) {
+      if (props.conversationRunId && isAxiosError(err) && [401, 403, 404].includes(err.response?.status ?? 0)) {
         observation.value.abort();
         emit("run-unavailable");
       } else {
@@ -1594,7 +1592,7 @@ async function start() {
 function applyOperationSnapshot(next: any) {
   const previous = selectedRun.value;
   const snapshot = { ...next };
-  if (props.readonlyRunId) {
+  if (props.conversationRunId) {
     if (observation.value.signal.aborted || previous?.run_id !== snapshot.run_id || snapshot.cursor < previous.cursor) return;
     runRead++;
     loading.value = false;
@@ -1731,9 +1729,18 @@ async function answerTodo(todoId: string, payload: HumanAnswerRequest) {
     const updated = await workflowAssetsApi.answer(rootId, todoId, payload);
     if (!disposed && read === runRead) applyOperationSnapshot(updated);
   } catch (err) {
-    // Returning to the same run keeps its pending response and failure visible.
-    if (!disposed && !openingRun && selectedRun.value?.run_id === rootId)
-      error.value = extractApiError(err, tm("errors.operationFailed")).message;
+    if (disposed || openingRun || selectedRun.value?.run_id !== rootId) return;
+    error.value = extractApiError(err, tm("errors.operationFailed")).message;
+    if (isAxiosError(err) && err.response?.status === 409) {
+      const signal = observation.value.signal;
+      const conflictRead = runRead;
+      try {
+        const latest = await workflowAssetsApi.run(rootId, signal);
+        if (!signal.aborted && conflictRead === runRead) applyOperationSnapshot(latest);
+      } catch {
+        // Polling can still reconcile the saved decision if the read fails.
+      }
+    }
   } finally {
     if (read === runRead) loading.value = false;
     runOperations.value.delete(rootId);

@@ -149,7 +149,13 @@ describe("workflow workspace", () => {
       status: "running",
       progress: { running: 0 },
       snapshot: { ...run.snapshot, selected_fields: { "pinned-source": ["text", "refs.0"] } },
-      todos: [{ todo_id: "question", question: "Which region?", status: "pending" }],
+      todos: [{
+        todo_id: "question",
+        kind: "question",
+        question: "Which region?",
+        status: "pending",
+        constraints: { choices: [], max_length: 100 },
+      }],
       events: [{ cursor: 140, run_id: "run-1", kind: "process.future-tail" }],
     });
     api.events.mockRejectedValueOnce(new Error("Connection lost"))
@@ -177,7 +183,7 @@ describe("workflow workspace", () => {
     });
 
     const wrapper = mount(WorkflowWorkspacePanel, {
-      props: { mode: "runs", readonlyRunId: "run-1" },
+      props: { mode: "runs", conversationRunId: "run-1" },
       global: { plugins: [router], stubs },
     });
     await flushPromises();
@@ -190,7 +196,7 @@ describe("workflow workspace", () => {
     expect(wrapper.text()).toContain("Which region?");
     expect(wrapper.text()).toContain("pinned-source · text, refs.0");
     expect(wrapper.text()).not.toContain("process.future-tail");
-    expect(wrapper.find('[data-testid="human-submit"]').exists()).toBe(false);
+    expect(wrapper.get('[data-testid="human-submit"]').attributes("disabled")).toBeDefined();
     expect(wrapper.emitted("run-status")).toEqual([["running"], ["waiting_human"]]);
     await vi.advanceTimersByTimeAsync(2000);
     expect(api.events.mock.calls.map(([id, after]) => [id, after])).toEqual([
@@ -212,6 +218,109 @@ describe("workflow workspace", () => {
     wrapper.unmount();
   });
 
+  it.each(["Bot", "Chat"])(
+    "shows the saved nested approval after a conflicting %s decision",
+    async (surface) => {
+      vi.useFakeTimers();
+      const router = createRouter({
+        history: createMemoryHistory(),
+        routes: [{ path: "/", component: slotStub }],
+      });
+      await router.push("/?workflow_run=run-1");
+      const todo = {
+        todo_id: "child-review",
+        root_run_id: "run-1",
+        task_run_id: "child-task",
+        kind: "approval",
+        question: "Review the child report?",
+        status: "pending",
+        artifact_ref: { artifact_id: "report", version: 2 },
+      };
+      api.run.mockResolvedValueOnce({ ...run, cursor: 10, todos: [todo] })
+        .mockResolvedValue({
+          ...run,
+          cursor: 12,
+          todos: [{ ...todo, status: "rejected", response: { feedback: "Add the source" } }],
+        });
+      api.artifact.mockResolvedValue({ content: { text: "Pinned report" }, files: [] });
+      api.answer.mockRejectedValue(Object.assign(new Error("Human request already answered"), {
+        isAxiosError: true,
+        response: { status: 409 },
+      }));
+      api.events.mockResolvedValue({ cursor: 10, events: [], snapshot: null });
+
+      const wrapper = mount(WorkflowWorkspacePanel, {
+        props: { mode: "runs", conversationRunId: surface === "Chat" ? "run-1" : undefined },
+        global: { plugins: [router], stubs },
+      });
+      try {
+        await flushPromises();
+        const card = wrapper.get('[data-testid="human-todo"]');
+        expect(card.text()).toContain("Review the child report?");
+        expect(card.get('[data-testid="human-submit"]').attributes("disabled")).toBeDefined();
+        await card.get('[data-testid="human-preview"]').trigger("click");
+        await flushPromises();
+        expect(card.text()).toContain("Pinned report");
+        expect(api.artifact).toHaveBeenCalledWith("report", 2);
+        await card.get('[data-testid="human-submit"]').trigger("click");
+        await flushPromises();
+        expect(api.answer).toHaveBeenCalledWith("run-1", "child-review", expect.objectContaining({
+          action: "approve",
+          artifact_ref: { artifact_id: "report", version: 2 },
+        }));
+        expect(api.run).toHaveBeenCalledTimes(2);
+        expect(card.text()).toContain("Add the source");
+        expect(card.find('[data-testid="human-submit"]').exists()).toBe(false);
+        await vi.advanceTimersByTimeAsync(2000);
+        expect(api.events).toHaveBeenLastCalledWith("run-1", 10, expect.any(AbortSignal));
+      } finally {
+        wrapper.unmount();
+      }
+    },
+  );
+
+  it("discards a late conflict snapshot after changing Dashboard accounts", async () => {
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: "/", component: slotStub }],
+    });
+    await router.push("/");
+    const todo = {
+      todo_id: "question",
+      kind: "question",
+      question: "Which region?",
+      status: "pending",
+      constraints: { choices: [], max_length: 100 },
+    };
+    let finish!: (value: unknown) => void;
+    api.run.mockResolvedValueOnce({ ...run, cursor: 10, todos: [todo] })
+      .mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    api.answer.mockRejectedValue({ isAxiosError: true, response: { status: 409 } });
+    const wrapper = mount(WorkflowWorkspacePanel, {
+      props: { mode: "runs", conversationRunId: "run-1" },
+      global: { plugins: [router], stubs },
+    });
+    try {
+      await flushPromises();
+      await wrapper.get('[data-testid="human-answer"]').setValue("Europe");
+      await wrapper.get('[data-testid="human-submit"]').trigger("click");
+      await flushPromises();
+      const signal = api.run.mock.calls[1][1] as AbortSignal;
+      accountSessionRevision.value += 1;
+      expect(signal.aborted).toBe(true);
+      finish({
+        ...run,
+        cursor: 12,
+        todos: [{ ...todo, status: "completed", response: { answer: "Previous account's answer" } }],
+      });
+      await flushPromises();
+      expect(wrapper.find('[data-testid="human-todo"]').exists()).toBe(false);
+      expect(wrapper.text()).not.toContain("Previous account's answer");
+    } finally {
+      wrapper.unmount();
+    }
+  });
+
   it("shows the paused and resumed state in a read-only timeline while preserving a terminal status", async () => {
     vi.useFakeTimers();
     const router = createRouter({
@@ -225,7 +334,7 @@ describe("workflow workspace", () => {
     api.events.mockResolvedValueOnce({ cursor: 15, events: [{ cursor: 15, kind: "run.continued" }] })
       .mockResolvedValueOnce({ cursor: 20, events: [{ cursor: 20, kind: "run.completed" }] });
     const wrapper = mount(WorkflowWorkspacePanel, {
-      props: { mode: "runs", readonlyRunId: "run-1" },
+      props: { mode: "runs", conversationRunId: "run-1" },
       global: { plugins: [router], stubs },
     });
     await flushPromises();
@@ -267,7 +376,7 @@ describe("workflow workspace", () => {
     const download = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
     const firstStatus = vi.fn();
     const first = mount(WorkflowWorkspacePanel, {
-      props: { mode: "runs", readonlyRunId: "run-1", onRunStatus: firstStatus },
+      props: { mode: "runs", conversationRunId: "run-1", onRunStatus: firstStatus },
       global: { plugins: [router], stubs },
     });
     await flushPromises();
@@ -281,7 +390,7 @@ describe("workflow workspace", () => {
 
     first.unmount();
     const next = mount(WorkflowWorkspacePanel, {
-      props: { mode: "runs", readonlyRunId: "next-run" },
+      props: { mode: "runs", conversationRunId: "next-run" },
       global: { plugins: [router], stubs },
     });
     await flushPromises();
@@ -356,7 +465,7 @@ describe("workflow workspace", () => {
     api.file.mockResolvedValueOnce({ data: { type: "text/plain", text: () => firstText } })
       .mockResolvedValueOnce({ data: { type: "text/plain", text: async () => "Latest preview" } });
     const wrapper = mount(WorkflowWorkspacePanel, {
-      props: { mode: "runs", readonlyRunId: "run-1" },
+      props: { mode: "runs", conversationRunId: "run-1" },
       global: { plugins: [router], stubs },
     });
     await flushPromises();
@@ -383,7 +492,7 @@ describe("workflow workspace", () => {
     const artifact = new Promise((resolve) => { finishArtifact = resolve; });
     api.artifact.mockReturnValue(artifact);
     const wrapper = mount(WorkflowWorkspacePanel, {
-      props: { mode: "runs", readonlyRunId: "run-1" },
+      props: { mode: "runs", conversationRunId: "run-1" },
       global: { plugins: [router], stubs },
     });
     await flushPromises();

@@ -263,7 +263,7 @@ async def test_initiator_connects_through_returned_entry_and_answers_original_to
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("change", ["revoke", "profile", "expiry"])
+@pytest.mark.parametrize("change", ["revoke", "revoke_in_flight", "profile", "expiry"])
 async def test_confirmed_browser_loses_read_and_answer_access_after_source_changes(
     chat_env, browser_http, tmp_path, monkeypatch, change
 ):
@@ -273,8 +273,8 @@ async def test_confirmed_browser_loses_read_and_answer_access_after_source_chang
         chat_env: Real shared application service and SQLite.
         browser_http: Actual routes with no authenticated-owner override.
         tmp_path: Isolated configuration files.
-        monkeypatch: Moves only the external clock for the expiry scenario.
-        change: Grant revocation or a real source-profile routing update.
+        monkeypatch: Controls the expiry clock or the in-flight answer barrier.
+        change: Changes to the grant, routing, or browser connection.
     """
     from astrbot.core.astrbot_config_mgr import AstrBotConfigManager
     from astrbot.core.config import AstrBotConfig
@@ -318,7 +318,33 @@ async def test_confirmed_browser_loses_read_and_answer_access_after_source_chang
     }
     await send_chat_command(service, connection["command"])
     todo = (await client.get(path, headers=headers)).json()["data"]["todos"][0]
-    if change == "revoke":
+    todo_path = path + "/todos/" + todo["todo_id"]
+    answer = {"request_id": "denied", "action": "answer", "answer": "Unauthorized"}
+    if change == "revoke_in_flight":
+        entered = asyncio.Event()
+        released = asyncio.Event()
+        original_answer = service.answer_todo
+
+        async def answer_after_revocation(*args, **kwargs):
+            entered.set()
+            await released.wait()
+            return await original_answer(*args, **kwargs)
+
+        monkeypatch.setattr(service, "answer_todo", answer_after_revocation)
+        in_flight = asyncio.create_task(
+            client.post(todo_path + "/answer", headers=headers, json=answer)
+        )
+        try:
+            await asyncio.wait_for(entered.wait(), timeout=5)
+            await service.chat.revoke_access(
+                "operator", asset["asset_id"], caller.platform_id, caller.sender_id
+            )
+        finally:
+            released.set()
+            response = await asyncio.wait_for(in_flight, timeout=5)
+        assert response.status_code == 403
+        assert response.headers["X-AstrBot-Chat-Access-Error"] == "revoked"
+    elif change == "revoke":
         await service.chat.revoke_access(
             "operator", asset["asset_id"], caller.platform_id, caller.sender_id
         )
@@ -343,10 +369,10 @@ async def test_confirmed_browser_loses_read_and_answer_access_after_source_chang
         )
     denied_status, reason = {
         "revoke": (403, "revoked"),
+        "revoke_in_flight": (403, "revoked"),
         "profile": (403, "identity_mismatch"),
         "expiry": (401, "expired"),
     }[change]
-    todo_path = path + "/todos/" + todo["todo_id"]
     for url in [
         path + "/connection",
         path,
@@ -358,17 +384,15 @@ async def test_confirmed_browser_loses_read_and_answer_access_after_source_chang
         assert response.status_code == denied_status
         assert response.headers["Cache-Control"] == "no-store"
         assert response.headers["X-AstrBot-Chat-Access-Error"] == reason
-    response = await client.post(
-        todo_path + "/answer",
-        headers=headers,
-        json={"request_id": "denied", "action": "answer", "answer": "Unauthorized"},
-    )
+    response = await client.post(todo_path + "/answer", headers=headers, json=answer)
     assert response.status_code == denied_status
     assert response.headers["Cache-Control"] == "no-store"
     assert response.headers["X-AstrBot-Chat-Access-Error"] == reason
     original = await service.get_run("operator", run["run_id"])
     assert original["todos"][0]["todo_id"] == todo["todo_id"]
     assert original["todos"][0]["status"] == "pending"
+    assert original["todos"][0]["response"] is None
+    assert not any(event["kind"] == "human.answered" for event in original["events"])
     if change == "profile":
         await preferences.close()
 

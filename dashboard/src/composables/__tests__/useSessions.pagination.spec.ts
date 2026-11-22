@@ -51,8 +51,8 @@ function rows(count: number, offset = 0): Session[] {
   }));
 }
 
-function sessionsOk(items: Session[]) {
-  return { data: { status: "ok", data: items } } as never;
+function sessionsOk(items: Session[], nextCursor: string | null = null, expired = false) {
+  return { data: { status: "ok", data: { items, next_cursor: nextCursor, expired } } } as never;
 }
 
 function archivedOk(items: unknown[] = []) {
@@ -69,13 +69,13 @@ function archivedOk(items: unknown[] = []) {
 
 describe("useSessions sidebar pagination", () => {
   it("loads the first 50 rows and marks the list as having more", async () => {
-    vi.mocked(chatApi.listSessions).mockResolvedValue(sessionsOk(rows(50)));
+    vi.mocked(chatApi.listSessions).mockResolvedValue(sessionsOk(rows(50), "snapshot:50"));
     const state = scope.run(() => useSessions())!;
 
     await state.getSessions();
 
     expect(chatApi.listSessions).toHaveBeenCalledWith({
-      page: 1,
+      cursor: "start",
       page_size: 50,
     });
     expect(state.sessions.value).toHaveLength(50);
@@ -84,7 +84,7 @@ describe("useSessions sidebar pagination", () => {
 
   it("appends the next page and stops on a short page", async () => {
     vi.mocked(chatApi.listSessions)
-      .mockResolvedValueOnce(sessionsOk(rows(50)))
+      .mockResolvedValueOnce(sessionsOk(rows(50), "snapshot:50"))
       .mockResolvedValueOnce(sessionsOk(rows(20, 50)));
     const state = scope.run(() => useSessions())!;
 
@@ -92,29 +92,59 @@ describe("useSessions sidebar pagination", () => {
     await state.loadMoreSessions();
 
     expect(chatApi.listSessions).toHaveBeenLastCalledWith({
-      page: 2,
+      cursor: "snapshot:50",
       page_size: 50,
     });
     expect(state.sessions.value).toHaveLength(70);
     expect(state.sessionsHasMore.value).toBe(false);
   });
 
-  it("refreshes every loaded row in one request", async () => {
+  it("refreshes the loaded rows in batches within the API limit", async () => {
     vi.mocked(chatApi.listSessions)
-      .mockResolvedValueOnce(sessionsOk(rows(50)))
-      .mockResolvedValueOnce(sessionsOk(rows(20, 50)))
-      .mockResolvedValueOnce(sessionsOk(rows(70)));
+      .mockResolvedValueOnce(sessionsOk(rows(200), "fresh:200"))
+      .mockResolvedValueOnce(sessionsOk(rows(50, 200), "fresh:250"))
+      .mockResolvedValueOnce(sessionsOk(rows(12, 250)));
     const state = scope.run(() => useSessions())!;
+    state.sessions.value = rows(250);
 
+    await state.getSessions();
+    expect(chatApi.listSessions).toHaveBeenNthCalledWith(1, { cursor: "start", page_size: 200 });
+    expect(chatApi.listSessions).toHaveBeenNthCalledWith(2, { cursor: "fresh:200", page_size: 50 });
+    expect(state.sessions.value).toHaveLength(250);
+    await state.loadMoreSessions();
+    expect(chatApi.listSessions).toHaveBeenLastCalledWith({ cursor: "fresh:250", page_size: 50 });
+    expect(state.sessions.value).toHaveLength(262);
+  });
+
+  it("refreshes after an in-flight append without losing the new rows", async () => {
+    let finishAppend!: (response: ReturnType<typeof sessionsOk>) => void;
+    vi.mocked(chatApi.listSessions)
+      .mockResolvedValueOnce(sessionsOk(rows(50), "snapshot:50"))
+      .mockReturnValueOnce(new Promise((resolve) => { finishAppend = resolve; }))
+      .mockResolvedValueOnce(sessionsOk(rows(100)));
+    const state = scope.run(() => useSessions())!;
+    await state.getSessions();
+    const append = state.loadMoreSessions();
+    await Promise.resolve();
+    const refresh = state.getSessions();
+    expect(chatApi.listSessions).toHaveBeenCalledTimes(2);
+    finishAppend(sessionsOk(rows(50, 50)));
+    await Promise.all([append, refresh]);
+    expect(chatApi.listSessions).toHaveBeenLastCalledWith({ cursor: "start", page_size: 100 });
+    expect(state.sessions.value).toHaveLength(100);
+  });
+
+  it("restarts an expired snapshot and preserves the loaded depth", async () => {
+    vi.mocked(chatApi.listSessions)
+      .mockResolvedValueOnce(sessionsOk(rows(50), "expired:50"))
+      .mockResolvedValueOnce(sessionsOk([], null, true))
+      .mockResolvedValueOnce(sessionsOk(rows(80, 10)));
+    const state = scope.run(() => useSessions())!;
     await state.getSessions();
     await state.loadMoreSessions();
-    await state.getSessions();
-
-    expect(chatApi.listSessions).toHaveBeenLastCalledWith({
-      page: 1,
-      page_size: 70,
-    });
-    expect(state.sessions.value).toHaveLength(70);
+    expect(chatApi.listSessions).toHaveBeenLastCalledWith({ cursor: "start", page_size: 100 });
+    expect(state.sessions.value).toHaveLength(80);
+    expect(state.sessions.value[0].session_id).toBe("s10");
   });
 });
 

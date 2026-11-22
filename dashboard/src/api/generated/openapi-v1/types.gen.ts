@@ -416,7 +416,8 @@ export type ChatHistoryContent = {
 
 export type ChatHistoryPage = {
     history?: Array<ChatHistoryRecord>;
-    [key: string]: unknown | ChatHistoryRecord;
+    session?: ChatSessionMetadata;
+    [key: string]: unknown | ChatHistoryRecord | ChatSessionMetadata;
 };
 
 export type ChatHistoryRecord = {
@@ -567,6 +568,17 @@ export type ChatSessionImportConfirmRequest = {
 
 export type ChatSessionImportRequest = {
     file?: (Blob | File);
+};
+
+export type ChatSessionMetadata = {
+    session_id: string;
+    platform_id: string;
+    creator: string;
+    display_name: (string) | null;
+    is_group: number;
+    created_at: (string) | null;
+    updated_at: (string) | null;
+    starred: boolean;
 };
 
 export type ChatSessionPatchRequest = {
@@ -3097,6 +3109,10 @@ export type OpenUnifiedChatWebSocketData = {
 
 export type ListChatSessionsData = {
     query?: {
+        /**
+         * Dashboard-only pagination cursor, or start for a new list.
+         */
+        cursor?: string;
         page?: number;
         page_size?: number;
         username?: string;

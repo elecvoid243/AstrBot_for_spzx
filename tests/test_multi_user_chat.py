@@ -81,6 +81,49 @@ async def ordinary_chat(account_dashboard, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_sidebar_cursor_and_session_detail_for_ordinary_account(ordinary_chat):
+    """Read a session outside the first page through the authenticated API."""
+    client, _, _, db, _, users = ordinary_chat
+    owner = users[0]["resource_owner"]
+    headers = {"Authorization": f"Bearer {users[0]['token']}"}
+    older = await db.create_platform_session(owner, display_name="Older chat")
+    newest = await db.create_platform_session(owner, display_name="Newest chat")
+    path = "/api/v1/chat/sessions"
+
+    response = await client.get(
+        path, params={"cursor": "start", "page_size": 1}, headers=headers
+    )
+    assert response.status_code == 200, response.text
+    first = response.json()["data"]
+    assert [item["session_id"] for item in first["items"]] == [newest.session_id]
+    detail = (
+        await client.get(
+            f"{path}/{older.session_id}", params={"limit": 1}, headers=headers
+        )
+    ).json()["data"]
+    assert detail["session"]["session_id"] == older.session_id
+    assert detail["session"]["display_name"] == "Older chat"
+    assert detail["session"]["creator"] == owner
+    await db.update_platform_session(older.session_id, display_name="Renamed chat")
+    second = (
+        await client.get(
+            path,
+            params={"cursor": first["next_cursor"], "page_size": 1},
+            headers=headers,
+        )
+    ).json()["data"]
+    assert [item["display_name"] for item in second["items"]] == ["Renamed chat"]
+    assert second["next_cursor"] is None
+
+    numbered = (await client.get(path, params={"page_size": 1}, headers=headers)).json()
+    assert [item["session_id"] for item in numbered["data"]] == [older.session_id]
+    oversized = (
+        await client.get(path, params={"page_size": 201}, headers=headers)
+    ).json()
+    assert oversized["status"] == "error"
+
+
+@pytest.mark.asyncio
 async def test_accounts_are_admin_only_unique_and_never_assign_roles(ordinary_chat):
     client, server, core, db, admin, users = ordinary_chat
     admin_headers = {"Authorization": f"Bearer {admin['token']}"}

@@ -669,19 +669,18 @@ async def validate_account_request(request: Request, account) -> None:
                 raise ApiError("Resource is unavailable", status_code=403)
         return
     if account.role != "admin":
-        if any(
-            k
-            not in {
-                "session_id",
-                "conversation_id",
-                "limit",
-                "before_id",
-                "platform_id",
-                "page",
-                "page_size",
-            }
-            for k in request.query_params
-        ):
+        query_fields = {
+            "session_id",
+            "conversation_id",
+            "limit",
+            "before_id",
+            "platform_id",
+            "page",
+            "page_size",
+        }
+        if operation == "chat_sessions":
+            query_fields.add("cursor")
+        if set(request.query_params) - query_fields:
             raise ApiError("Unsupported chat query", status_code=400)
         if request.query_params.get("platform_id", "webchat") != "webchat":
             raise ApiError("Unsupported chat platform", status_code=403)

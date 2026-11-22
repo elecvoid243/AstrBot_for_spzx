@@ -14,8 +14,8 @@ from deprecated import deprecated
 from sqlalchemy import CursorResult, Row, case, literal, not_
 from sqlalchemy.dialects.sqlite import dialect as sqlite_dialect
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import defer
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession
+from sqlalchemy.orm import aliased, defer
 from sqlmodel import col, delete, desc, func, or_, select, text, update
 
 from astrbot.core.db import BaseDatabase
@@ -317,11 +317,17 @@ class SQLiteDatabase(BaseDatabase):
                 "ON platform_message_history (user_id)"
             )
         )
+        await conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_session_branch_relations_source_session_id "
+                "ON session_branch_relations (source_session_id)"
+            )
+        )
 
     async def _backfill_session_branch_relations_once(self) -> None:
-        """Copy legacy ``branch_info`` edges into the relation table once.
+        """Rebuild legacy branch edges and correct the original backfill.
 
-        ``PRAGMA user_version`` records completion (0 = not done). The scan is
+        ``PRAGMA user_version = 2`` records the corrected migration. The scan is
         the only one of its kind: every later list read goes through the
         relation table. Archived sessions are included on purpose — the read
         path filters them, so restoring one brings its badge back.
@@ -334,30 +340,57 @@ class SQLiteDatabase(BaseDatabase):
                 version = int(
                     (await conn.execute(text("PRAGMA user_version"))).scalar_one()
                 )
-                if version >= 1:
+                if version >= 2:
                     return
-                await conn.execute(
-                    text(
-                        """
-                        INSERT OR IGNORE INTO session_branch_relations
-                            (child_session_id, source_session_id, source_message_id)
-                        SELECT pmh.user_id,
-                               json_extract(pmh.content, '$.source_session_id'),
-                               json_extract(pmh.content, '$.source_message_id')
-                        FROM platform_message_history pmh
-                        JOIN platform_sessions ps
-                          ON ps.session_id = pmh.user_id
-                        WHERE cast(pmh.content AS TEXT) LIKE '%"branch_info"%'
-                          AND json_valid(pmh.content)
-                          AND json_extract(pmh.content, '$.source_session_id') IS NOT NULL
-                        """
-                    )
-                )
-                await conn.execute(text("PRAGMA user_version = 1"))
+                # Start the transaction before the first write so a failed rebuild
+                # also rolls back the old relation rows.
+                await conn.execute(text("BEGIN IMMEDIATE"))
+                version = (await conn.execute(text("PRAGMA user_version"))).scalar_one()
+                if version < 2:
+                    await self.rebuild_session_branch_relations(conn)
+                    await conn.execute(text("PRAGMA user_version = 2"))
         except Exception:
             logger.exception(
                 "Failed to backfill session_branch_relations; will retry on next start"
             )
+
+    async def rebuild_session_branch_relations(
+        self, connection: AsyncConnection | AsyncSession
+    ) -> None:
+        """Rebuild the relation table using each child's own latest divider.
+
+        Args:
+            connection: Transaction containing the existing or restored history.
+        """
+        await connection.execute(delete(SessionBranchRelation))
+        await connection.execute(
+            text(
+                """
+                WITH latest_divider AS (
+                    SELECT user_id, max(id) AS id
+                    FROM platform_message_history
+                    WHERE platform_id = 'webchat'
+                      AND CAST(content AS TEXT) LIKE '%"branch_info"%'
+                      AND CASE WHEN json_valid(content)
+                          THEN json_extract(content, '$.type') = 'branch_info'
+                          ELSE 0 END
+                    GROUP BY user_id
+                )
+                INSERT INTO session_branch_relations
+                    (child_session_id, source_session_id, source_message_id)
+                SELECT child.session_id, source.session_id,
+                       json_extract(pmh.content, '$.source_message_id')
+                FROM latest_divider divider
+                JOIN platform_message_history pmh ON pmh.id = divider.id
+                JOIN platform_sessions child ON child.session_id = divider.user_id
+                JOIN platform_sessions source
+                  ON source.session_id = json_extract(pmh.content, '$.source_session_id')
+                 AND source.creator = child.creator
+                WHERE child.platform_id = 'webchat' AND source.platform_id = 'webchat'
+                  AND source.session_id != child.session_id
+                """
+            )
+        )
 
     async def _ensure_conversation_indexes(self, conn) -> None:
         """Create indexes used by the dashboard conversation list.
@@ -1484,16 +1517,26 @@ class SQLiteDatabase(BaseDatabase):
             result = await session.execute(query)
             return result.scalar_one_or_none()
 
-    async def get_session_branch_relations(self) -> list[SessionBranchRelation]:
+    async def get_session_branch_relations(
+        self,
+        session_ids: set[str] | None = None,
+        creator: str | None = None,
+    ) -> list[SessionBranchRelation]:
         """Return branch edges whose child session is not archived.
 
         Reads the metadata table, never message content, so the cost stays
         flat as histories grow. Archived children are filtered here so the
         sidebar never renders relations for hidden sessions.
 
+        Args:
+            session_ids: Restrict results to edges touching these sessions.
+            creator: Restrict both endpoints to this WebChat owner.
+
         Returns:
             Branch relation rows ordered by child session ID.
         """
+        if session_ids is not None and not session_ids:
+            return []
         async with self.get_db() as session:
             session: AsyncSession
             query = (
@@ -1506,6 +1549,25 @@ class SQLiteDatabase(BaseDatabase):
                 .where(col(PlatformSession.archived) == 0)
                 .order_by(col(SessionBranchRelation.child_session_id))
             )
+            if session_ids is not None:
+                query = query.where(
+                    or_(
+                        col(SessionBranchRelation.child_session_id).in_(session_ids),
+                        col(SessionBranchRelation.source_session_id).in_(session_ids),
+                    )
+                )
+            if creator is not None:
+                source = aliased(PlatformSession)
+                query = query.join(
+                    source,
+                    col(source.session_id)
+                    == col(SessionBranchRelation.source_session_id),
+                ).where(
+                    col(PlatformSession.creator) == creator,
+                    col(PlatformSession.platform_id) == "webchat",
+                    col(source.creator) == creator,
+                    col(source.platform_id) == "webchat",
+                )
             result = await session.execute(query)
             return list(result.scalars().all())
 
@@ -2912,6 +2974,7 @@ class SQLiteDatabase(BaseDatabase):
         archived: bool | None = None,
         search: str | None = None,
         count_total: bool = True,
+        session_ids: list[str] | None = None,
     ) -> tuple[list[dict], int]:
         """Get paginated Platform sessions for a creator with total count.
 
@@ -2929,6 +2992,7 @@ class SQLiteDatabase(BaseDatabase):
             count_total: When False the matching-row count is skipped and
                 0 is returned. The ChatUI sidebar only needs the page, so it
                 avoids a second scan on every scroll.
+            session_ids: Optional IDs to restrict the page to.
 
         Returns:
             tuple[list[dict], int]: (sessions_with_project_info, total_count);
@@ -2945,6 +3009,10 @@ class SQLiteDatabase(BaseDatabase):
                 archived=archived,
                 search=search,
             )
+            if session_ids is not None:
+                base_query = base_query.where(
+                    col(PlatformSession.session_id).in_(session_ids)
+                )
 
             if count_total:
                 total_result = await session.execute(
@@ -2955,7 +3023,9 @@ class SQLiteDatabase(BaseDatabase):
                 total = 0
 
             result_query = (
-                base_query.order_by(desc(PlatformSession.updated_at))
+                base_query.order_by(
+                    desc(PlatformSession.updated_at), col(PlatformSession.session_id)
+                )
                 .offset(offset)
                 .limit(page_size)
             )
@@ -2963,6 +3033,29 @@ class SQLiteDatabase(BaseDatabase):
 
             sessions_with_projects = self._rows_to_session_dicts(result.all())
             return sessions_with_projects, total
+
+    async def get_sidebar_session_ids(
+        self, creator: str, platform_id: str | None
+    ) -> list[str]:
+        """Capture sidebar ordering without loading session details.
+
+        Args:
+            creator: Owner of the visible sessions.
+            platform_id: Optional platform filter.
+
+        Returns:
+            Active, non-project session IDs in most recently updated order.
+        """
+        query = (
+            self._build_platform_sessions_query(
+                creator, platform_id, exclude_project_sessions=True, archived=False
+            )
+            .with_only_columns(col(PlatformSession.session_id))
+            .order_by(desc(PlatformSession.updated_at), col(PlatformSession.session_id))
+        )
+        async with self.get_db() as session:
+            result = await session.execute(query)
+            return list(dict.fromkeys(result.scalars()))
 
     async def update_platform_session(
         self,

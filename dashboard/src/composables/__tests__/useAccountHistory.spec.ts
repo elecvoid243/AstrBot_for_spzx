@@ -24,6 +24,7 @@ import { chatApi } from "@/api/v1";
 import { fetchWithAuth } from "@/api/http";
 import { messageApi } from "@/api/messages";
 import { resetAccountSession } from "@/utils/accountSession";
+import { resolveSessionUmo } from "@/utils/resolveSessionUmo";
 import { useSessionUnreadStore } from "@/stores/sessionUnread";
 import { useMessages, type ChatRecord } from "../useMessages";
 import { useSessions, type Session } from "../useSessions";
@@ -88,13 +89,37 @@ describe("account-scoped history operations", () => {
       state.getSessions(),
       state.getArchivedSessions(),
     ]);
+    await Promise.resolve();
     resetAccountSession();
-    finishList({ data: { status: "ok", data: [session] } });
+    finishList({ data: { status: "ok", data: { items: [session], next_cursor: null } } });
     finishArchive({ data: { status: "ok", data: { items: [session] } } });
     await pending;
     expect(state.sessions.value).toEqual([]);
     expect(state.archivedSessions.value).toEqual([]);
     expect(state.selectedSessions.value).toEqual([]);
+  });
+
+  it("resolves a bookmarked session using metadata from its history response", async () => {
+    const state = scope.run(() =>
+      useMessages({ currentSessionId: ref(""), accountRole: "user" }),
+    )!;
+    vi.mocked(chatApi.getSession).mockResolvedValue({
+      data: { status: "ok", data: { history: [], session: {
+        ...session, creator: "alice", platform_id: "webchat", is_group: 1,
+        created_at: null, updated_at: null, starred: false,
+      } } },
+    } as never);
+    vi.mocked(chatApi.getMarkers).mockResolvedValue({ data: { status: "ok", data: { markers: [] } } } as never);
+    await state.loadSessionMessages("owned", false);
+
+    expect(state.sessionDetails.owned.display_name).toBe("original");
+    const umo = resolveSessionUmo("owned", {
+      sessions: [], projectSessions: [], projectSessionsById: {},
+      sessionDetails: state.sessionDetails,
+    });
+    expect(umo).toMatch(/^webchat:GroupMessage:webchat!.*!owned$/);
+    resetAccountSession();
+    expect(state.sessionDetails).toEqual({});
   });
 
   it("keeps the last archive page when the server returns an error envelope", async () => {

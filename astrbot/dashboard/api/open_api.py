@@ -202,6 +202,15 @@ async def chat_sessions(
         except ValueError:
             return error("Invalid page or page_size")
         try:
+            if cursor := request.query_params.get("cursor"):
+                return ok(
+                    await chat_service.get_sidebar_session_page(
+                        auth.username,
+                        request.query_params.get("platform_id"),
+                        page_size,
+                        cursor,
+                    )
+                )
             return ok(
                 await chat_service.get_sessions(
                     auth.username,

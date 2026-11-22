@@ -1434,6 +1434,8 @@ export const openUnifiedChatWebSocket = <ThrowOnError extends boolean = false>(o
 
 /**
  * List webchat sessions
+ * Dashboard sessions may send cursor=start to pin the order for scrolling. Cursor requests return items and next_cursor in data, or expired=true when the client should restart with cursor=start. Numbered pages retain their existing response format.
+ *
  */
 export const listChatSessions = <ThrowOnError extends boolean = false>(options?: OptionsLegacyParser<ListChatSessionsData, ThrowOnError>) => {
     return (options?.client ?? client).get<ListChatSessionsResponse, ListChatSessionsError, ThrowOnError>({

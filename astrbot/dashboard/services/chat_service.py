@@ -107,6 +107,9 @@ HISTORY_WINDOW_SIZE = 50
 LEGACY_HISTORY_PAGE_SIZE = 1000
 MAX_HISTORY_WINDOW_SIZE = 1000
 MAX_HISTORY_PAGE_SIZE = 200
+MAX_SESSION_PAGE_SIZE = 200
+SESSION_LIST_SNAPSHOT_TTL_SECONDS = 1800
+MAX_SESSION_LIST_SNAPSHOTS = 32
 # Message marker index (user-message dots on the ChatUI scroll strip):
 # capped scan pages so a pathological session cannot run away.
 MESSAGE_MARKER_PAGE_SIZE = 500
@@ -1346,6 +1349,9 @@ class ChatService:
         self.platform_history_mgr = core_lifecycle.platform_message_history_manager
         self.umop_config_router = core_lifecycle.umop_config_router
         self.running_convs: dict[str, bool] = {}
+        self.session_list_snapshots: dict[
+            str, tuple[float, str, str | None, list[str]]
+        ] = {}
         self.chat_runs: dict[str, ChatRunState] = {}
         self.chat_runs_by_session: dict[str, set[str]] = {}
         self.unified_stream_hub = UnifiedStreamHub()
@@ -1361,10 +1367,6 @@ class ChatService:
         self.chunked_uploads = ChunkedUploadService(
             Path(get_astrbot_data_path()) / "webchat" / ".chunks"
         )
-        # 2026-08-13: branch-relation cache moved to the db layer
-        # (`BaseDatabase.get_branch_relations`) so every dashboard service
-        # sharing the db instance sees the same relations — the project
-        # session list (ChatUIProjectService) needs them too.
 
     async def session_config(
         self, owner: str, session_id: str, config_id: str | None = None
@@ -1701,10 +1703,7 @@ class ChatService:
     async def get_branch_relations(
         self, username: str | None = None
     ) -> dict[str, dict]:
-        """Return cached branch relations (see ``BaseDatabase``).
-
-        The cache is updated incrementally by `branch_session`; stale entries
-        (e.g. deleted sessions) are filtered out by callers at read time.
+        """Read branch metadata and scope account requests to their owner.
 
         Args:
             username: Optional trusted owner for account-backed relation filtering.
@@ -5296,6 +5295,8 @@ class ChatService:
         platform_id: str | None,
         page: int = 1,
         page_size: int = 100,
+        *,
+        session_ids: list[str] | None = None,
     ) -> list[dict]:
         """List the caller's unarchived, non-project sessions.
 
@@ -5304,22 +5305,36 @@ class ChatService:
             platform_id: Optional platform filter.
             page: 1-based page number; the ChatUI sidebar pages through it
                 as the user scrolls.
-            page_size: Sessions per page. Defaults to the historical cap so
-                API-key and third-party callers keep their old result size.
+            page_size: Sessions per page, from 1 through the public limit.
+            session_ids: Optional snapshot page in its original order.
 
         Returns:
-            Session dicts ordered by ``updated_at`` descending.
+            Session dicts in snapshot order, or newest first for numbered pages.
+
+        Raises:
+            ChatServiceError: The numbered page is outside the supported range.
         """
+        if (
+            not 1 <= page_size <= MAX_SESSION_PAGE_SIZE
+            or not 1 <= page <= (2**63 - 1) // page_size
+        ):
+            raise ChatServiceError("Invalid page or page_size")
+        if session_ids == []:
+            return []
         sessions, _ = await self.db.get_platform_sessions_by_creator_paginated(
             creator=username,
             platform_id=platform_id,
-            page=max(page, 1),
-            page_size=max(page_size, 1),
+            page=page,
+            page_size=page_size,
             exclude_project_sessions=True,
             archived=False,
             # The sidebar only needs the page; skip the unused count scan.
             count_total=False,
+            **({"session_ids": session_ids} if session_ids is not None else {}),
         )
+        if session_ids is not None:
+            position = {sid: index for index, sid in enumerate(session_ids)}
+            sessions.sort(key=lambda item: position[item["session"].session_id])
 
         sessions_data = []
         for item in sessions:
@@ -5339,21 +5354,36 @@ class ChatService:
                 }
             )
 
-        # Derive branch relations from the cached `branch_info` divider
-        # records (see `get_branch_relations`). Entries pointing to or from
-        # sessions outside the current list (e.g. deleted) are filtered out.
-        session_ids = {item["session_id"] for item in sessions_data}
+        # Read edges touching this page, including children on other pages.
+        page_ids = {item["session_id"] for item in sessions_data}
+        if not page_ids:
+            return sessions_data
         name_by_id = {
             item["session_id"]: item["display_name"] for item in sessions_data
         }
-        relations = await self.get_branch_relations(username)
+        relations = await self.db.get_branch_relations(
+            session_ids=page_ids, creator=username
+        )
         children: dict[str, list[str]] = {}
         for child_id, relation in relations.items():
-            if child_id not in session_ids:
-                continue
             source_id = relation["source_session_id"]
-            if source_id in session_ids:
+            if source_id in page_ids:
                 children.setdefault(source_id, []).append(child_id)
+        other_child_ids = [
+            child for ids in children.values() for child in ids if child not in page_ids
+        ]
+        # Bound the SQLite parameter count for parents with many children.
+        for offset in range(0, len(other_child_ids), MAX_SESSION_PAGE_SIZE):
+            other_children = await self.db.get_platform_sessions_by_ids(
+                other_child_ids[offset : offset + MAX_SESSION_PAGE_SIZE]
+            )
+            name_by_id.update(
+                (child.session_id, child.display_name)
+                for child in other_children
+                if child.creator == username
+                and child.platform_id == "webchat"
+                and not child.archived
+            )
 
         for item in sessions_data:
             sid = item["session_id"]
@@ -5369,8 +5399,66 @@ class ChatService:
             item["branches"] = [
                 {"session_id": child_id, "display_name": name_by_id.get(child_id)}
                 for child_id in children.get(sid, [])
+                if child_id in name_by_id
             ]
         return sessions_data
+
+    async def get_sidebar_session_page(
+        self, username: str, platform_id: str | None, page_size: int, cursor: str
+    ) -> dict:
+        """Page over a stable ordering while reading current session metadata.
+
+        Args:
+            username: Authenticated session owner.
+            platform_id: Optional platform filter.
+            page_size: Maximum number of sessions in the response.
+            cursor: ``start`` or an opaque cursor from this owner's previous page.
+
+        Returns:
+            Current rows, the next cursor, or an expired flag to restart.
+        """
+        if not 1 <= page_size <= MAX_SESSION_PAGE_SIZE:
+            raise ChatServiceError("Invalid page_size")
+        snapshots = self.session_list_snapshots
+        if cursor == "start":
+            ids = await self.db.get_sidebar_session_ids(username, platform_id)
+            token = uuid.uuid4().hex
+            offset = 0
+        else:
+            token, _, raw_offset = cursor.partition(":")
+            snapshot = snapshots.get(token)
+            if (
+                snapshot is None
+                or snapshot[0] <= time.monotonic()
+                or snapshot[1:3] != (username, platform_id)
+                or not raw_offset.isascii()
+                or not raw_offset.isdecimal()
+                or len(raw_offset) > 18
+            ):
+                return {"items": [], "next_cursor": None, "expired": True}
+            ids = snapshot[3]
+            offset = int(raw_offset)
+            if not 0 < offset < len(ids):
+                return {"items": [], "next_cursor": None, "expired": True}
+
+        end = offset + page_size
+        if end < len(ids):
+            snapshots.pop(token, None)
+            snapshots[token] = (
+                time.monotonic() + SESSION_LIST_SNAPSHOT_TTL_SECONDS,
+                username,
+                platform_id,
+                ids,
+            )
+            if len(snapshots) > MAX_SESSION_LIST_SNAPSHOTS:
+                del snapshots[next(iter(snapshots))]
+        items = await self.get_sessions(
+            username, platform_id, page_size=page_size, session_ids=ids[offset:end]
+        )
+        return {
+            "items": items,
+            "next_cursor": f"{token}:{end}" if end < len(ids) else None,
+        }
 
     async def get_archived_sessions(
         self,
@@ -5599,6 +5687,16 @@ class ChatService:
         )
 
         response_data = {
+            "session": {
+                "session_id": session_id,
+                "platform_id": platform_id,
+                "creator": username,
+                "display_name": session.display_name,
+                "is_group": int(bool(getattr(session, "is_group", 0))),
+                "created_at": to_utc_isoformat(getattr(session, "created_at", None)),
+                "updated_at": to_utc_isoformat(getattr(session, "updated_at", None)),
+                "starred": bool(getattr(session, "starred", 0)),
+            },
             "history": history_payload,
             "threads": [serialize_thread(thread) for thread in threads],
             "total_messages": total_messages,

@@ -6,7 +6,12 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
 from deprecated import deprecated
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import (
+    AsyncConnection,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 
 from astrbot.core.db.po import (
     AgentTeam,
@@ -311,8 +316,20 @@ class BaseDatabase(abc.ABC):
         ...
 
     @abc.abstractmethod
-    async def get_session_branch_relations(self) -> list[SessionBranchRelation]:
-        """Return branch edges whose child session is not archived."""
+    async def get_session_branch_relations(
+        self,
+        session_ids: set[str] | None = None,
+        creator: str | None = None,
+    ) -> list[SessionBranchRelation]:
+        """Read the branch relations of active child sessions.
+
+        Args:
+            session_ids: Restrict results to edges touching these sessions.
+            creator: Restrict both endpoints to this WebChat owner.
+
+        Returns:
+            Matching branch relation rows.
+        """
         ...
 
     @abc.abstractmethod
@@ -322,15 +339,34 @@ class BaseDatabase(abc.ABC):
         source_session_id: str,
         source_message_id: int | None,
     ) -> None:
-        """Insert or replace the branch edge owned by a child session."""
+        """Insert or replace the branch edge owned by a child session.
+
+        Args:
+            child_session_id: Session created by branching.
+            source_session_id: Session from which the branch was created.
+            source_message_id: Message at the branch point, if known.
+        """
         ...
 
-    async def get_branch_relations(self) -> dict[str, dict]:
-        """Return session branch relations (child -> source).
+    @abc.abstractmethod
+    async def rebuild_session_branch_relations(
+        self, connection: AsyncConnection | AsyncSession
+    ) -> None:
+        """Rebuild derived branch relations from saved history.
 
-        Reads the ``session_branch_relations`` metadata table, so the cost is
-        a handful of rows regardless of how large message histories grow.
-        Archived child sessions are filtered by the database layer.
+        Args:
+            connection: Existing transaction that owns the rebuild.
+        """
+        ...
+
+    async def get_branch_relations(
+        self, session_ids: set[str] | None = None, creator: str | None = None
+    ) -> dict[str, dict]:
+        """Return session branch relations from the metadata table.
+
+        Args:
+            session_ids: Restrict results to edges touching these sessions.
+            creator: Restrict both endpoints to this WebChat owner.
 
         Returns:
             Mapping of child session id to ``{"source_session_id": ...,
@@ -341,7 +377,7 @@ class BaseDatabase(abc.ABC):
                 "source_session_id": record.source_session_id,
                 "source_message_id": record.source_message_id,
             }
-            for record in await self.get_session_branch_relations()
+            for record in await self.get_session_branch_relations(session_ids, creator)
         }
 
     @abc.abstractmethod
@@ -939,6 +975,7 @@ class BaseDatabase(abc.ABC):
         archived: bool | None = None,
         search: str | None = None,
         count_total: bool = True,
+        session_ids: list[str] | None = None,
     ) -> tuple[list[dict], int]:
         """Get paginated platform sessions and total count for a creator.
 
@@ -955,10 +992,26 @@ class BaseDatabase(abc.ABC):
                 session display name, applied at the database layer.
             count_total: When False the count query is skipped and 0 is
                 returned; callers that only need the page avoid the extra scan.
+            session_ids: Optional IDs to restrict the page to.
 
         Returns:
             tuple[list[dict], int]: (sessions_with_project_info, total_count);
             total_count is 0 when ``count_total`` is False.
+        """
+        ...
+
+    @abc.abstractmethod
+    async def get_sidebar_session_ids(
+        self, creator: str, platform_id: str | None
+    ) -> list[str]:
+        """Capture sidebar ordering without loading session details.
+
+        Args:
+            creator: Owner of the visible sessions.
+            platform_id: Optional platform filter.
+
+        Returns:
+            Active, non-project session IDs in most recently updated order.
         """
         ...
 

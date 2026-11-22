@@ -2247,6 +2247,7 @@ const {
   sending,
   loadedSessions,
   sessionProjects,
+  sessionDetails,
   sessionArchivedFlags,
   historyPagingBySession,
   historyOffsetBySession,
@@ -2501,6 +2502,7 @@ const currentSession = computed(
     Object.values(projectSessionsById.value)
       .flat()
       .find((session) => session.session_id === currSessionId.value) ||
+    sessionDetails[currSessionId.value] ||
     null,
 );
 const sessionProject = computed(() =>
@@ -3038,8 +3040,8 @@ watch(
 // endpoint (`spcode/project-status`) so the bot's `/project *`
 // responses are free to be pure prose without hidden side channels.
 watch(
-  currSessionId,
-  async (next) => {
+  [currSessionId, () => resolveCurrentUmo(currSessionId.value)],
+  async ([next, resolvedUmo], [previous]) => {
     if (!next) {
       spcodeStatus.reset();
       // File access mode is strictly per-umo; clearing the session
@@ -3052,7 +3054,7 @@ watch(
     // otherwise keep showing the previous session's diff. Other sidebars
     // retain their current behavior (the spec's E13 "close together"
     // wording is inaccurate — only the git-diff sidebar closes here).
-    gitDiffSidebarOpen.value = false;
+    if (next !== previous) gitDiffSidebarOpen.value = false;
     // Bug fix (2026-06-23, elecvoid243): pass the resolved umo so the
     // backend queries THIS session's loaded project. The bare
     // refresh() hit the "most-recently-loaded project across all
@@ -3068,13 +3070,13 @@ watch(
     // across all umos" fallback, and the chip would display the
     // previous session's project while the new conversation has no
     // umo yet. Reset to the empty state in that window.
-    const resolvedUmo = resolveCurrentUmo(next);
     if (resolvedUmo) {
       // 2026-09-16 (elecvoid243): pin the shared status to THIS session
       // before refreshing, so a late response for another session can
       // no longer overwrite the chip / sidebar state.
       spcodeStatus.setActiveUmo(resolvedUmo);
       await spcodeStatus.refresh(resolvedUmo);
+      if (currSessionId.value !== next || resolveCurrentUmo(next) !== resolvedUmo) return;
     } else {
       spcodeStatus.reset();
     }
@@ -3224,6 +3226,7 @@ function resolveCurrentUmo(sessionId: string): string | null {
     sessions: sessions.value,
     projectSessions: projectSessions.value,
     projectSessionsById: projectSessionsById.value,
+    sessionDetails,
   });
 }
 

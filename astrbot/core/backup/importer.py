@@ -791,6 +791,14 @@ class AstrBotImporter:
                     imported[table_name] = count
                     logger.debug(f"导入表 {table_name}: {count} 条记录")
 
+                if (
+                    "platform_message_history" in data
+                    and "session_branch_relations" not in data
+                ):
+                    # Older archives contain the dividers but not the derived table.
+                    await session.flush()
+                    await self.main_db.rebuild_session_branch_relations(session)
+
         return imported
 
     def _preprocess_main_table_rows(

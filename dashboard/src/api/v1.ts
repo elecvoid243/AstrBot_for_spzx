@@ -217,6 +217,7 @@ export interface ChatSessionListParams {
   page?: number;
   page_size?: number;
   username?: string;
+  cursor?: string;
 }
 
 /** Serialized kernel standing-goal state (mirrors core GoalState). */

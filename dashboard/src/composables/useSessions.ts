@@ -5,9 +5,7 @@ import {
 import { ref, computed, watch } from "vue";
 import { useRouter } from "vue-router";
 import { chatApi } from "@/api/v1";
-import {
-  getStoredSelectedChatConfigId,
-} from "@/utils/chatConfigBinding";
+import { getStoredSelectedChatConfigId } from "@/utils/chatConfigBinding";
 
 export interface Session {
   session_id: string;
@@ -50,15 +48,16 @@ export interface ArchivedSessionsPayload {
 
 /** Sidebar page size: initial load and each scroll-to-edge increment. */
 const SESSION_PAGE_SIZE = 50;
+const MAX_SESSION_PAGE_SIZE = 200;
 
 export function useSessions(chatboxMode: boolean = false) {
   const router = useRouter();
   const accountRevision = accountSessionRevision.value;
   const sessions = ref<Session[]>([]);
-  const sessionPage = ref(1);
-  const sessionPageSize = ref(SESSION_PAGE_SIZE);
-  const sessionsHasMore = ref(false);
+  const sessionCursor = ref<string | null>(null);
+  const sessionsHasMore = computed(() => sessionCursor.value !== null);
   const sessionsLoadingMore = ref(false);
+  let sessionListQueue = Promise.resolve();
   // Set once the archive dialog has fetched its first page; archive
   // refreshes stay dormant until then so opening ChatUI never queries it.
   const archivedLoaded = ref(false);
@@ -82,47 +81,60 @@ export function useSessions(chatboxMode: boolean = false) {
     return sessions.value.find((s) => s.session_id === currSessionId.value);
   });
 
-  /** Load the sidebar session list.
-   *
-   * ``append`` fetches the next page at the current page size and appends
-   * it (scroll-to-edge). A plain call refreshes page 1 while re-fetching
-   * every row already on screen in one request, so a rename/delete does
-   * not collapse a scrolled list back to the first page.
-   */
-  async function getSessions(options: { append?: boolean } = {}) {
-    try {
-      const append = options.append === true;
-      const page = append ? sessionPage.value + 1 : 1;
-      const pageSize = append
-        ? sessionPageSize.value
-        : Math.max(SESSION_PAGE_SIZE, sessions.value.length);
-      const response = await chatApi.listSessions({
-        page,
-        page_size: pageSize,
+  /** Serialize list updates so a refresh preserves rows that just finished loading. */
+  function getSessions({ append = false }: { append?: boolean } = {}) {
+    sessionListQueue = sessionListQueue
+      .then(async () => {
+        assertCurrentAccount(accountRevision);
+        let replace = !append;
+        let cursor = append ? sessionCursor.value : "start";
+        let target = append
+          ? SESSION_PAGE_SIZE
+          : Math.max(SESSION_PAGE_SIZE, sessions.value.length);
+        const items: Session[] = [];
+
+        while (cursor && items.length < target) {
+          const response = await chatApi.listSessions({
+            cursor,
+            page_size: Math.min(MAX_SESSION_PAGE_SIZE, target - items.length),
+          });
+          assertCurrentAccount(accountRevision);
+          if (response.data?.status !== "ok") {
+            throw new Error(response.data?.message || "Sessions are unavailable");
+          }
+          const page = response.data.data;
+          if (!Array.isArray(page?.items) || page.next_cursor === cursor) {
+            throw new Error("Invalid session list page");
+          }
+          if (page.expired) {
+            if (replace) throw new Error("Session list expired during refresh");
+            replace = true;
+            cursor = "start";
+            target = sessions.value.length + SESSION_PAGE_SIZE;
+            items.length = 0;
+            continue;
+          }
+          items.push(...page.items);
+          cursor = page.next_cursor ?? null;
+        }
+        if (replace) {
+          sessions.value = items;
+        } else {
+          const known = new Set(sessions.value.map((s) => s.session_id));
+          sessions.value = [
+            ...sessions.value,
+            ...items.filter((s) => !known.has(s.session_id)),
+          ];
+        }
+        sessionCursor.value = cursor;
+      })
+      .catch((err) => {
+        if (err.response?.status === 401) {
+          void router.push("/auth/login?redirect=/chatbox");
+        }
+        console.error(err);
       });
-      assertCurrentAccount(accountRevision);
-      if (response.data?.status !== "ok")
-        throw new Error(response.data?.message || "Sessions are unavailable");
-      const items: Session[] = response.data.data || [];
-      if (append) {
-        const known = new Set(sessions.value.map((s) => s.session_id));
-        sessions.value = [
-          ...sessions.value,
-          ...items.filter((s) => !known.has(s.session_id)),
-        ];
-      } else {
-        sessions.value = items;
-      }
-      sessionPage.value = page;
-      sessionPageSize.value = pageSize;
-      // A short page means the tail was reached; a full one may have more.
-      sessionsHasMore.value = items.length >= pageSize;
-    } catch (err: any) {
-      if (err.response?.status === 401) {
-        router.push("/auth/login?redirect=/chatbox");
-      }
-      console.error(err);
-    }
+    return sessionListQueue;
   }
 
   /** Fetch the next sidebar page; no-op while one is in flight or at the end. */
@@ -410,9 +422,7 @@ export function useSessions(chatboxMode: boolean = false) {
     accountSessionRevision,
     () => {
       sessions.value = [];
-      sessionPage.value = 1;
-      sessionPageSize.value = SESSION_PAGE_SIZE;
-      sessionsHasMore.value = false;
+      sessionCursor.value = null;
       archivedLoaded.value = false;
       archivedSessions.value = [];
       selectedSessions.value = [];

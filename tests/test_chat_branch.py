@@ -88,7 +88,7 @@ def _make_service(
     db.add_session_to_project = AsyncMock(
         return_value=SimpleNamespace(session_id=NEW_SESSION_ID, project_id="proj-1")
     )
-    # 2026-08-13: branch-relation cache lives on the db layer now.
+    # The database provides sidebar branch metadata.
     db.get_branch_relations = AsyncMock(return_value={})
     db.upsert_session_branch_relation = AsyncMock()
 
@@ -341,7 +341,7 @@ async def test_db_branch_relations_read_from_metadata_table(tmp_path):
         }
     }
 
-    # 删除任一端会话时关系行一并清理，不留孤儿。
+    # Deleting either endpoint removes the branch relation.
     await db.delete_platform_session(SRC_SESSION_ID)
     assert await db.get_branch_relations() == {}
 
@@ -394,14 +394,14 @@ async def test_db_branch_backfill_filters_archived_at_read(tmp_path):
         sender_name="bot",
     )
 
-    # 模拟升级前就存在的库：回填标记归零后重新初始化，触发一次性回填。
+    # Reset the version to exercise the legacy backfill.
     async with db.engine.begin() as conn:
         await conn.execute(text("PRAGMA user_version = 0"))
     await db.initialize()
 
     assert NEW_SESSION_ID not in await db.get_branch_relations()
 
-    # 恢复归档会话：读取时过滤，无需重扫消息正文。
+    # Restoring the child makes the existing edge visible again.
     await db.update_platform_session(NEW_SESSION_ID, archived=0)
     relations = await db.get_branch_relations()
     assert relations[NEW_SESSION_ID] == {
@@ -465,7 +465,7 @@ async def test_db_upgrade_from_pre_relation_schema_keeps_data(tmp_path):
         sender_name="bot",
     )
 
-    # 还原成改动前的结构：没有关系表、没有两个新索引、没有回填标记。
+    # Restore the schema from before the relation table and its migration.
     async with db.engine.begin() as conn:
         await conn.execute(text("DROP TABLE session_branch_relations"))
         await conn.execute(
@@ -478,21 +478,29 @@ async def test_db_upgrade_from_pre_relation_schema_keeps_data(tmp_path):
         )
         await conn.execute(text("PRAGMA user_version = 0"))
         sessions_before = (
-            await conn.execute(text("SELECT count(*) FROM platform_sessions"))
-        ).scalar_one()
+            await conn.execute(
+                text("SELECT * FROM platform_sessions ORDER BY session_id")
+            )
+        ).all()
         messages_before = (
-            await conn.execute(text("SELECT count(*) FROM platform_message_history"))
-        ).scalar_one()
+            await conn.execute(
+                text("SELECT * FROM platform_message_history ORDER BY id")
+            )
+        ).all()
 
     await db.initialize()
 
     async with db.get_db() as session:
         sessions_after = (
-            await session.execute(text("SELECT count(*) FROM platform_sessions"))
-        ).scalar_one()
+            await session.execute(
+                text("SELECT * FROM platform_sessions ORDER BY session_id")
+            )
+        ).all()
         messages_after = (
-            await session.execute(text("SELECT count(*) FROM platform_message_history"))
-        ).scalar_one()
+            await session.execute(
+                text("SELECT * FROM platform_message_history ORDER BY id")
+            )
+        ).all()
 
     assert (sessions_after, messages_after) == (sessions_before, messages_before)
     assert len(await db.get_branch_relations()) == 1

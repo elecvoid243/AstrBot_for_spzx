@@ -17,6 +17,7 @@ import {
   processSystemPayload,
 } from "./systemStream";
 import type { SessionGoalState } from "@/api/v1";
+import type { Session } from "./useSessions";
 import type { ShellSessionListItem } from "@/components/chat/message_list_comps/shell_session_tools/format";
 import {
   isInteractiveChoicePayload,
@@ -529,6 +530,7 @@ export function useMessages(options: UseMessagesOptions) {
   // 2026-08-13: archived flag per loaded session, from the getSession
   // payload. The ChatUI renders archived sessions in read-only mode.
   const sessionArchivedFlags = reactive<Record<string, boolean>>({});
+  const sessionDetails = reactive<Record<string, Session>>({});
   // 2026-09-07: history windowing state. `historyOffsetBySession` is the
   // absolute index (within the session's full history) of the first loaded
   // record, keeping `data-message-index` aligned with the search endpoint.
@@ -609,6 +611,7 @@ export function useMessages(options: UseMessagesOptions) {
         messagesBySession,
         loadedSessions,
         sessionProjects,
+        sessionDetails,
         historyPagingBySession,
         historyOffsetBySession,
         sessionMarkersBySession,
@@ -926,6 +929,15 @@ export function useMessages(options: UseMessagesOptions) {
       if (response.data?.status === "error")
         throw new Error(response.data?.message || "Resource is unavailable");
       const payload = response.data?.data || {};
+      if (payload.session?.session_id === sessionId) {
+        sessionDetails[sessionId] = {
+          ...payload.session,
+          created_at: payload.session.created_at ?? "",
+          updated_at: payload.session.updated_at ?? "",
+          branches: [],
+          branch_source: null,
+        };
+      }
       const history = payload.history || [];
       const records: ChatRecord[] = history.map(normalizeHistoryRecord);
       attachThreads(records, payload.threads || []);
@@ -3451,6 +3463,7 @@ export function useMessages(options: UseMessagesOptions) {
     messagesBySession,
     loadedSessions,
     sessionProjects,
+    sessionDetails,
     sessionArchivedFlags,
     historyPagingBySession,
     historyOffsetBySession,

@@ -2927,11 +2927,21 @@ paths:
     get:
       tags: [Chat]
       summary: List webchat sessions
+      description: >
+        Dashboard sessions may send cursor=start to pin the order for scrolling.
+        Cursor requests return items and next_cursor in data, or expired=true
+        when the client should restart with cursor=start. Numbered pages retain
+        their existing response format.
       operationId: listChatSessions
       x-astrbot-scope: chat
       parameters:
         - $ref: "#/components/parameters/Page"
         - $ref: "#/components/parameters/PageSize"
+        - name: cursor
+          in: query
+          description: Dashboard-only pagination cursor, or start for a new list.
+          schema:
+            type: string
         - name: username
           in: query
           schema:
@@ -14230,6 +14240,18 @@ components:
       properties:
         id: { type: integer }
         content: { $ref: "#/components/schemas/ChatHistoryContent" }
+    ChatSessionMetadata:
+      type: object
+      required: [session_id, platform_id, creator, display_name, is_group, created_at, updated_at, starred]
+      properties:
+        session_id: { type: string }
+        platform_id: { type: string }
+        creator: { type: string }
+        display_name: { type: [string, "null"] }
+        is_group: { type: integer }
+        created_at: { type: [string, "null"] }
+        updated_at: { type: [string, "null"] }
+        starred: { type: boolean }
     ChatHistoryPage:
       type: object
       additionalProperties: true
@@ -14237,6 +14259,7 @@ components:
         history:
           type: array
           items: { $ref: "#/components/schemas/ChatHistoryRecord" }
+        session: { $ref: "#/components/schemas/ChatSessionMetadata" }
     ChatHistoryResponse:
       type: object
       required: [status]

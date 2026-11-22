@@ -331,8 +331,20 @@ class ChatHistoryRecord(OpenModel):
     content: ChatHistoryContent
 
 
+class ChatSessionMetadata(BaseModel):
+    session_id: str
+    platform_id: str
+    creator: str
+    display_name: str | None
+    is_group: int
+    created_at: str | None
+    updated_at: str | None
+    starred: bool
+
+
 class ChatHistoryPage(OpenModel):
     history: list[ChatHistoryRecord] = Field(default_factory=list)
+    session: ChatSessionMetadata | None = None
 
 
 class ChatHistoryResponse(BaseModel):

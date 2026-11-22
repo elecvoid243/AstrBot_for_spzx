@@ -1043,7 +1043,7 @@ class SessionBranchRelation(SQLModel, table=True):
 
     child_session_id: str = Field(primary_key=True, max_length=100)
     """Session ID of the branch (the child)."""
-    source_session_id: str = Field(nullable=False, max_length=100)
+    source_session_id: str = Field(nullable=False, max_length=100, index=True)
     """Session ID the branch inherited context from."""
     source_message_id: int | None = Field(default=None)
     """Platform message history ID the branch was cut at."""

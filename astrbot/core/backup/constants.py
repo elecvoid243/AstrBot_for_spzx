@@ -19,6 +19,7 @@ from astrbot.core.db.po import (
     PlatformSession,
     PlatformStat,
     Preference,
+    SessionBranchRelation,
     SessionProjectRelation,
     WebChatThread,
 )
@@ -56,6 +57,7 @@ MAIN_DB_MODELS: dict[str, type[SQLModel]] = {
     "webchat_threads": WebChatThread,
     "chatui_projects": ChatUIProject,
     "session_project_relations": SessionProjectRelation,
+    "session_branch_relations": SessionBranchRelation,
     "attachments": Attachment,
     "command_configs": CommandConfig,
     "command_conflicts": CommandConflict,

@@ -33,6 +33,8 @@ export interface SessionUmoSources {
   projectSessions: UmoSessionLike[];
   /** Cache of every loaded project folder's sessions, keyed by project id. */
   projectSessionsById: Record<string, UmoSessionLike[]>;
+  /** Metadata loaded independently of the sidebar, keyed by session ID. */
+  sessionDetails?: Record<string, UmoSessionLike>;
 }
 
 /**
@@ -50,7 +52,8 @@ export function resolveSessionUmo(
     sources.projectSessions.find((s) => s.session_id === sessionId) ??
     Object.values(sources.projectSessionsById)
       .flat()
-      .find((s) => s.session_id === sessionId);
+      .find((s) => s.session_id === sessionId) ??
+    sources.sessionDetails?.[sessionId];
   if (!session) return null;
 
   const platformId = session.platform_id || "webchat";

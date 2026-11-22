@@ -112,7 +112,7 @@ async def test_get_sessions_forwards_pagination():
     kwargs = service.db.get_platform_sessions_by_creator_paginated.await_args.kwargs
     assert kwargs["page"] == 2
     assert kwargs["page_size"] == 50
-    # 侧栏不需要总数：COUNT 扫描必须被跳过。
+    # The sidebar needs the page, so it skips the total count query.
     assert kwargs["count_total"] is False
 
 

@@ -5,6 +5,7 @@ import SubAgentPage from './SubAgentPage.vue'
 const { getConfig, updateConfig, listMcp } = vi.hoisted(() => ({ getConfig: vi.fn(), updateConfig: vi.fn(), listMcp: vi.fn() }))
 
 vi.mock('@/api/v1', () => ({
+  configProfileApi: { list: vi.fn().mockResolvedValue({ data: { status: 'ok', data: { info_list: [{ id: 'default', name: 'default' }] } } }) },
   subagentApi: { getConfig, updateConfig, availableTools: vi.fn().mockResolvedValue({ data: { status: 'ok', data: [] } }) },
   mcpApi: { list: listMcp }
 }))

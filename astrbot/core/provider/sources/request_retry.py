@@ -68,12 +68,14 @@ def _log_retry(
     provider_label: str,
     retry_state: RetryCallState,
     max_attempts: int,
+    log_error_details: bool,
 ) -> None:
     error = retry_state.outcome.exception() if retry_state.outcome else None
+    detail = str(error) if log_error_details else type(error).__name__
     logger.warning(
         f"[{provider_label}] Request failed with retryable error; "
         f"retrying ({retry_state.attempt_number + 1}/{max_attempts}): "
-        f"{error}"
+        f"{detail}"
     )
 
 
@@ -82,6 +84,7 @@ def _build_retrying(
     *,
     retry_rate_limits: bool,
     max_attempts: int | None = None,
+    log_error_details: bool = True,
 ) -> AsyncRetrying:
     max_attempts = coerce_int_config(
         max_attempts if max_attempts is not None else REQUEST_RETRY_ATTEMPTS,
@@ -108,6 +111,7 @@ def _build_retrying(
             provider_label,
             retry_state,
             max_attempts,
+            log_error_details,
         ),
         reraise=True,
     )
@@ -119,11 +123,13 @@ async def retry_provider_request(
     *,
     retry_rate_limits: bool = True,
     max_attempts: int | None = None,
+    log_error_details: bool = True,
 ) -> T:
     retrying = _build_retrying(
         provider_label,
         retry_rate_limits=retry_rate_limits,
         max_attempts=max_attempts,
+        log_error_details=log_error_details,
     )
 
     async for attempt in retrying:

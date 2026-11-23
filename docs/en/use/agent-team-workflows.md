@@ -45,6 +45,14 @@ The structured port contract is version 2. It also supports fixed child workflow
 ![Structured workflow with required and optional ports, JSON defaults, and object and row-list links](/images/agent-teams-structured-ports-en.jpg)
 
 
+### Decision nodes
+
+Add and test a System One or OpenAI Decisions instance under **Providers → Decision** in the Dashboard. Enable **structured ports** in the workflow editor and add a **Decision** node. Choose a local provider and question type, then bind text or JSON to the `state` input. Boolean questions return `matched` and `probability`, choices return `choice` and `probability`, and rubrics return `score`. Connect the desired output to a condition. Map decision provider dependencies when importing the asset on another instance.
+
+Timeouts, refusals, and invalid replies block the node and can be retried from the run details. A valid `false` follows the corresponding branch. Run details show the provider and model used. Use human requests for artifact approval. Plugins can call `ctx.decision.ask()`, `ctx.decision.choose()`, or `ctx.decision.yes_no()`, with the default decision provider for plugins set in the default profile.
+
+![Decision node with its bound provider and typed ports](/images/agent-teams-decision-en.jpg)
+
 ### Installed plugin components
 
 An AstrBot administrator installs and enables the plugin under **Plugins**. In a workflow with **Use structured ports** enabled, find the component and its version in the left toolbox. Add it to the canvas, connect its named inputs and outputs, and select the local knowledge base when the component requests one. Test the draft with structured JSON inputs and publish the validated version.

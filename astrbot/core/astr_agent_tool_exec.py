@@ -45,6 +45,7 @@ from astrbot.core.subagent_manager import (
     SubAgentRunHandle,
     SubAgentStatus,
 )
+from astrbot.core.subagent_policy import SubAgentPolicy, current_subagent_policy
 from astrbot.core.tools.computer_tools import (
     CuaKeyboardTypeTool,
     CuaMouseClickTool,
@@ -260,6 +261,71 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
 
     @classmethod
     async def execute(cls, tool, run_context, **tool_args):
+        """Execute a tool using scoped subagent settings and current permissions.
+
+        Args:
+            tool: Tool selected by the runner.
+            run_context: Calling agent and conversation.
+            **tool_args: Validated arguments supplied by the model.
+
+        Yields:
+            Results produced by the authorized tool.
+        """
+        ctx = run_context.context
+        event = ctx.event
+        context = ctx.context
+        extra = getattr(ctx, "extra", None)
+        subagent = isinstance(extra, dict) and extra.get("is_subagent")
+        config_manager = getattr(context, "astrbot_config_mgr", None)
+        if config_manager is not None:
+            profile = config_manager.get_conf(event.unified_msg_origin, live=True)
+        else:
+            profile = (
+                context.get_config(umo=event.unified_msg_origin)
+                if hasattr(context, "get_config")
+                else None
+            )
+        live = (
+            SubAgentPolicy.from_profile(profile) if isinstance(profile, dict) else None
+        )
+        if subagent and live is not None:
+            wrapped = getattr(tool, "_wrapped", tool)
+            if (
+                tool.name in live.tools_blacklist
+                or (
+                    isinstance(wrapped, MCPTool)
+                    and cls._matches_mcp_policy(
+                        wrapped, live.mcp_blacklist, context.get_llm_tool_manager()
+                    )
+                )
+                or not file_tool_allowed(
+                    tool.name,
+                    resolve_file_tool_mode(profile.get("provider_settings", {})),
+                )
+            ):
+                yield mcp.types.CallToolResult(
+                    content=[
+                        mcp.types.TextContent(
+                            type="text",
+                            text="Tool is unavailable under the current subagent policy.",
+                        )
+                    ],
+                    isError=True,
+                )
+                return
+        token = current_subagent_policy.set(live) if not subagent else None
+        try:
+            async with aclosing(
+                cls._execute_with_policy(tool, run_context, **tool_args)
+            ) as results:
+                async for result in results:
+                    yield result
+        finally:
+            if token is not None:
+                current_subagent_policy.reset(token)
+
+    @classmethod
+    async def _execute_with_policy(cls, tool, run_context, **tool_args):
         """执行函数调用。
 
         Args:
@@ -282,6 +348,66 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
         except Exception:
             pass
 
+        policy = current_subagent_policy.get()
+        orchestrator = getattr(
+            run_context.context.context, "subagent_orchestrator", None
+        )
+        current_handoff = None
+        if policy and (
+            isinstance(tool, HandoffTool)
+            or tool.name in {"transfer_to_subagent", "create_subagent"}
+        ):
+            candidate = (
+                cls._resolve_handoff_by_name(run_context, tool_args.get("name"))
+                if tool.name == "transfer_to_subagent"
+                else tool
+                if isinstance(tool, HandoffTool)
+                else None
+            )
+            if candidate and candidate.subagent_config_id:
+                manager = run_context.context.context.provider_manager
+                allowed = (
+                    orchestrator.available_handoffs(policy, manager.inst_map)
+                    if orchestrator
+                    else []
+                )
+                current_handoff = next(
+                    (
+                        h
+                        for h in allowed
+                        if h.subagent_config_id == candidate.subagent_config_id
+                        and h.agent.name == candidate.agent.name
+                    ),
+                    None,
+                )
+                admitted = current_handoff is not None
+                if isinstance(tool, HandoffTool) and current_handoff:
+                    tool = current_handoff
+            else:
+                admitted = policy.dynamic_enabled
+                provider_id = (
+                    candidate.provider_id if candidate else tool_args.get("provider_id")
+                ) or policy.default_provider_id
+                if admitted and provider_id:
+                    provider = await run_context.context.context.provider_manager.get_provider_by_id(
+                        provider_id
+                    )
+                    admitted = isinstance(provider, Provider) and (
+                        "*" in policy.provider_pool
+                        or provider_id in policy.provider_pool
+                    )
+            if not policy.enabled or not admitted:
+                yield mcp.types.CallToolResult(
+                    content=[
+                        mcp.types.TextContent(
+                            type="text",
+                            text="Subagent is unavailable under the current configuration profile.",
+                        )
+                    ],
+                    isError=True,
+                )
+                return
+
         # 防止subagent的名字叫"subagent"造成工具歧义（在create中已经不会发生，此处用于兜底）
         if (
             isinstance(tool, FunctionTool)
@@ -301,7 +427,9 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
                 )
                 return
 
-            handoff_tool = cls._resolve_handoff_by_name(run_context, subagent_name)
+            handoff_tool = current_handoff or cls._resolve_handoff_by_name(
+                run_context, subagent_name
+            )
             if handoff_tool is None:
                 available = cls._list_available_subagents(run_context)
                 yield mcp.types.CallToolResult(
@@ -624,24 +752,28 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
                 and registered_tool.active
                 and cls._matches_mcp_policy(
                     getattr(registered_tool, "_wrapped", registered_tool),
-                    SubAgentManager._mcp_inherent,
+                    SubAgentManager.policy_value("mcp_inherent"),
                     tool_mgr,
                     inherent=True,
                 )
-                and registered_tool.name not in SubAgentManager._tools_blacklist
+                and registered_tool.name
+                not in SubAgentManager.policy_value("tools_blacklist")
             ):
                 toolset.add_tool(registered_tool)
 
         toolset.tools = [
             item
             for item in toolset.tools
-            if (not mcp_policy or item.name not in SubAgentManager._tools_blacklist)
+            if (
+                not mcp_policy
+                or item.name not in SubAgentManager.policy_value("tools_blacklist")
+            )
             and not (
                 mcp_policy
                 and isinstance(getattr(item, "_wrapped", item), MCPTool)
                 and cls._matches_mcp_policy(
                     getattr(item, "_wrapped", item),
-                    SubAgentManager._mcp_blacklist,
+                    SubAgentManager.policy_value("mcp_blacklist"),
                     tool_mgr,
                 )
             )
@@ -767,8 +899,14 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
         # chain would resolve to a different entry (the webchat per-request
         # model picker is not persisted into the session preference); finally
         # fall back to the current/default provider resolution.
+        policy = current_subagent_policy.get()
         prov_id = (
             getattr(tool, "provider_id", None)
+            or (
+                policy.default_provider_id
+                if policy and not tool.subagent_config_id
+                else None
+            )
             or main_provider_id
             or await ctx.get_current_chat_provider_id(umo)
         )
@@ -798,7 +936,11 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
             if hasattr(ctx, "get_llm_tool_manager")
             else llm_tools
         )
-        if use_fork_context and mcp_policy and SubAgentManager._mcp_inherent:
+        if (
+            use_fork_context
+            and mcp_policy
+            and SubAgentManager.policy_value("mcp_inherent")
+        ):
             toolset, fork_schema_mode = cls._build_fork_toolset(
                 run_context, tool, mcp_policy=mcp_policy
             )
@@ -814,14 +956,16 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
                 and t.active
                 and cls._matches_mcp_policy(
                     getattr(t, "_wrapped", t),
-                    SubAgentManager._mcp_inherent,
+                    SubAgentManager.policy_value("mcp_inherent"),
                     tool_mgr,
                     inherent=True,
                 )
                 and not cls._matches_mcp_policy(
-                    getattr(t, "_wrapped", t), SubAgentManager._mcp_blacklist, tool_mgr
+                    getattr(t, "_wrapped", t),
+                    SubAgentManager.policy_value("mcp_blacklist"),
+                    tool_mgr,
                 )
-                and t.name not in SubAgentManager._tools_blacklist
+                and t.name not in SubAgentManager.policy_value("tools_blacklist")
             }
             if not required_names <= inherited_names:
                 use_fork_context = False
@@ -908,7 +1052,7 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
                         and isinstance(getattr(t, "_wrapped", t), MCPTool)
                         and cls._matches_mcp_policy(
                             getattr(t, "_wrapped", t),
-                            SubAgentManager._mcp_blacklist,
+                            SubAgentManager.policy_value("mcp_blacklist"),
                             tool_mgr,
                         )
                     }
@@ -1058,7 +1202,7 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
                     and isinstance(getattr(t, "_wrapped", t), MCPTool)
                     and cls._matches_mcp_policy(
                         getattr(t, "_wrapped", t),
-                        SubAgentManager._mcp_blacklist,
+                        SubAgentManager.policy_value("mcp_blacklist"),
                         tool_mgr,
                     )
                 )
@@ -1141,11 +1285,15 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
         tool_call_timeout = run_context.tool_call_timeout
 
         async def _run_subagent(
-            next_prompt=prompt_text, *, next_event=None, next_history=None
+            next_prompt=prompt_text,
+            *,
+            next_event=None,
+            next_history=None,
+            next_provider_id=None,
         ):
             return await ctx.tool_loop_agent(
                 event=next_event or event,
-                chat_provider_id=prov_id,
+                chat_provider_id=next_provider_id or prov_id,
                 prompt=next_prompt,
                 image_urls=[] if next_event else image_urls,
                 system_prompt=""
@@ -1217,12 +1365,69 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
                 try:
                     await sink.continue_turn(sequence, text)
                     opened = True
+                    config_manager = getattr(ctx, "astrbot_config_mgr", None)
+                    profile = (
+                        config_manager.get_conf(umo, live=True)
+                        if config_manager is not None
+                        else ctx.get_config(umo=umo)
+                    )
+                    latest = SubAgentPolicy.from_profile(profile)
+                    next_provider_id = prov_id
+                    timeout = execution_timeout
+                    if latest is not None:
+                        if tool.subagent_config_id:
+                            orchestrator = ctx.subagent_orchestrator
+                            candidates = (
+                                orchestrator.available_handoffs(
+                                    latest, ctx.provider_manager.inst_map
+                                )
+                                if orchestrator
+                                else []
+                            )
+                            selected = next(
+                                (
+                                    candidate
+                                    for candidate in candidates
+                                    if candidate.subagent_config_id
+                                    == tool.subagent_config_id
+                                ),
+                                None,
+                            )
+                            admitted = selected is not None
+                            override = selected.provider_id if selected else None
+                        else:
+                            admitted = latest.dynamic_enabled
+                            override = tool.provider_id or latest.default_provider_id
+                        next_provider_id = (
+                            override or await ctx.get_current_chat_provider_id(umo)
+                        )
+                        provider = await ctx.provider_manager.get_provider_by_id(
+                            next_provider_id
+                        )
+                        if (
+                            not latest.enabled
+                            or not admitted
+                            or not isinstance(provider, Provider)
+                            or (
+                                "*" not in latest.provider_pool
+                                and next_provider_id not in latest.provider_pool
+                            )
+                        ):
+                            await sink.fail(
+                                "failed",
+                                "Subagent is unavailable under the current configuration profile.",
+                            )
+                            return
+                        timeout = latest.execution_timeout
                     run = _run_subagent(
-                        text, next_event=follow_up, next_history=previous
+                        text,
+                        next_event=follow_up,
+                        next_history=previous,
+                        next_provider_id=next_provider_id,
                     )
                     result = (
-                        await asyncio.wait_for(run, execution_timeout)
-                        if execution_timeout > 0
+                        await asyncio.wait_for(run, timeout)
+                        if timeout > 0
                         else await run
                     )
                     await sink.complete(

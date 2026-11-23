@@ -495,6 +495,7 @@ class SubAgentConfigRequest(OpenModel):
     main_enable: bool | None = None
     enable: bool | None = None
     remove_main_duplicate_tools: bool | None = None
+    agent_ids: list[str] | None = None
     agents: list[dict[str, Any]] | None = None
 
 
@@ -847,6 +848,7 @@ class ProviderConfigRequest(OpenModel):
                 "tts": "text_to_speech",
                 "embedding": "embedding",
                 "rerank": "rerank",
+                "decision": "decision",
             }
             config["provider_type"] = capability_map.get(
                 self.capability, self.capability

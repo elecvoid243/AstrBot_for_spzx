@@ -891,6 +891,50 @@
               </p>
             </template>
             <p v-else class="text-caption">{{ tm(`graph.${selectedTask.transform}Hint`) }}</p>
+            <template v-if="selectedTask.decision">
+              <v-select
+                v-model="selectedTask.decision_provider_id"
+                :items="catalog.decision_providers ?? []"
+                item-title="name"
+                item-value="id"
+                :label="tm('graph.decisionProvider')"
+                @update:model-value="checkpoint"
+              />
+              <v-select
+                v-model="selectedTask.decision.kind"
+                :items="decisionKinds.map(kind => ({ value: kind, title: tm('graph.decisionKinds.' + kind) }))"
+                :label="tm('graph.decisionKind')"
+                @update:model-value="resetDecisionCriteria(selectedTask)"
+              />
+              <v-textarea
+                v-model="selectedTask.decision.instructions"
+                :label="tm('graph.decisionInstructions')"
+                rows="2"
+                @update:model-value="checkpoint"
+              />
+              <v-text-field
+                v-if="selectedTask.decision.kind === 'boolean'"
+                v-model.number="selectedTask.decision.threshold"
+                :label="tm('graph.decisionThreshold')"
+                type="number"
+                min="0"
+                max="1"
+                step="0.01"
+                @update:model-value="checkpoint"
+              />
+              <v-textarea
+                :key="selectedTask.id + selectedTask.decision.kind"
+                :model-value="decisionCriteriaText[selectedTask.id] ?? (selectedTask.decision.criteria == null ? '' : JSON.stringify(selectedTask.decision.criteria, null, 2))"
+                :label="tm('graph.decisionCriteria')"
+                :hint="tm('graph.decisionCriteriaHints.' + selectedTask.decision.kind)"
+                persistent-hint
+                rows="3"
+                spellcheck="false"
+                :error="decisionCriteriaError === selectedTask.id"
+                @update:model-value="decisionCriteriaText[selectedTask.id] = $event"
+                @update:focused="!$event && saveDecisionCriteria(selectedTask)"
+              />
+            </template>
             <v-select
               v-if="selectedTask.transform === 'retrieve_knowledge_v1' || selectedComponent?.permissions.includes('knowledge_base:read')"
               v-model="selectedTask.knowledge_base_id"
@@ -1385,7 +1429,19 @@ const typedPorts = computed(() => !!draft.value.port_contract_version);
 const explicitControl = computed(() => Array.isArray(draft.value.entry_task_ids));
 const dispatchLimits = ["max_items", "max_parallel"] as const;
 const maxDispatchItems = 30;
+const decisionKinds = ["boolean", "choice", "score"] as const;
+const decisionCriteriaText = ref<Record<string, string>>({});
+const decisionCriteriaError = ref("");
+const decisionPorts = {
+  boolean: { matched: { type: "boolean" }, probability: { type: "number" } },
+  choice: { choice: { type: "string" }, probability: { type: "number" } },
+  score: { score: { type: "number" } },
+};
 const nativePorts = {
+  decision_v1: {
+    inputs: { state: { type: ["string", "array", "object"] } },
+    outputs: {},
+  },
   read_document_v1: {
     inputs: { file: { type: "object", format: "astrbot-file" } },
     outputs: { text: { type: "string" }, filename: { type: "string" } },
@@ -1396,7 +1452,7 @@ const nativePorts = {
   },
 };
 const transformKinds = [
-  "parse_json", "map_fields", "json_text", "read_document_v1", "retrieve_knowledge_v1",
+  "parse_json", "map_fields", "json_text", "read_document_v1", "retrieve_knowledge_v1", "decision_v1",
 ] as const;
 const scalarTypes = ["boolean", "integer", "null", "number", "string"];
 const jsonTypes = ["array", ...scalarTypes, "object"].sort();
@@ -1795,6 +1851,27 @@ function inlinePortTypes(schema: unknown): string[] {
   return resolved.includes("number") ? resolved.filter((kind) => kind !== "integer") : resolved;
 }
 
+function resetDecisionCriteria(task: GraphTask) {
+  if (!task.decision) return;
+  task.decision.criteria = null;
+  delete task.output_contract;
+  delete decisionCriteriaText.value[task.id];
+  decisionCriteriaError.value = "";
+  checkpoint();
+}
+
+function saveDecisionCriteria(task: GraphTask) {
+  const draftText = decisionCriteriaText.value[task.id];
+  if (!task.decision || draftText === undefined) return;
+  try {
+    task.decision.criteria = JSON.parse(draftText.trim() || "null");
+    decisionCriteriaError.value = "";
+    checkpoint();
+  } catch {
+    decisionCriteriaError.value = task.id;
+  }
+}
+
 function fieldsForTask(
   id: string,
   includeType = false,
@@ -1803,8 +1880,9 @@ function fieldsForTask(
   if (!task) return [];
   const aggregate = task.dispatch || (explicitControl.value && task.control?.kind === "join");
   const native = nativePorts[task.transform as keyof typeof nativePorts];
-  const outputContract = task.output_contract ?? (native
-    ? { type: "object", properties: native.outputs, required: Object.keys(native.outputs) }
+  const outputs = task.decision ? decisionPorts[task.decision.kind ?? "boolean"] : native?.outputs;
+  const outputContract = task.output_contract ?? (outputs
+    ? { type: "object", properties: outputs, required: Object.keys(outputs) }
     : undefined);
   const fields: { title: string; value: string; type: string; required?: boolean; schema?: PortSchema }[] = aggregate
     ? [{ title: "results · array", value: "results", type: "array", required: true }]
@@ -2789,6 +2867,9 @@ function addTask(roleId: string, position?: { x: number; y: number }) {
       : transform
       ? {
           transform,
+          ...(transform === "decision_v1" ? {
+            decision: { kind: "boolean" as const, instructions: "", threshold: 0.5 },
+          } : {}),
           ...(transform === "map_fields" ? { input_contract: { type: "object" as const, properties: {} } } : {}),
           ...(transform === "parse_json" || transform === "map_fields"
             ? { output_contract: { type: "object", properties: {} } } : {}),

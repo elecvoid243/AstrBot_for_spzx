@@ -136,6 +136,7 @@ DEFAULT_CONFIG = {
     "provider_sources": [],  # provider sources
     "provider": [],  # models from provider_sources
     "provider_settings": {
+        "decision_provider_id": "",
         "enable": True,
         "default_image_caption_provider_id": "",
         "image_caption_prompt": "Please describe the image using Chinese.",
@@ -238,6 +239,7 @@ DEFAULT_CONFIG = {
     # - main_enable = True: enabled; main LLM keeps its own tools and includes the
     #   fixed transfer_to_subagent tool. remove_main_duplicate_tools can remove tools
     #   that are duplicated on subagents from the main LLM toolset.
+    "subagent_policy": None,
     "subagent_orchestrator": {
         "main_enable": False,
         "remove_main_duplicate_tools": False,
@@ -2273,6 +2275,36 @@ CONFIG_METADATA_2 = {
                         "tei_rerank_raw_scores": False,
                         "tei_rerank_return_text": False,
                     },
+                    "System One": {
+                        "id": "system_one_decision",
+                        "type": "system_one_decision",
+                        "provider": "custom",
+                        "provider_type": "decision",
+                        "enable": True,
+                        "key": [""],
+                        "api_base": "https://system-one.dev/v1/systemone",
+                        "model": "jev-latest",
+                        "timeout": 2,
+                        "total_timeout": 5,
+                        "max_concurrency": 4,
+                        "proxy": "",
+                        "custom_headers": {},
+                    },
+                    "OpenAI Decisions": {
+                        "id": "openai_decision",
+                        "type": "openai_decision",
+                        "provider": "openai",
+                        "provider_type": "decision",
+                        "enable": True,
+                        "key": [""],
+                        "api_base": "https://api.openai.com/v1",
+                        "model": "gpt-6-luna",
+                        "timeout": 5,
+                        "total_timeout": 10,
+                        "max_concurrency": 4,
+                        "proxy": "",
+                        "custom_headers": {},
+                    },
                     "Xinference STT": {
                         "id": "xinference_stt",
                         "type": "xinference_stt",
@@ -2990,6 +3022,15 @@ CONFIG_METADATA_2 = {
                         "description": "超时时间",
                         "type": "int",
                         "hint": "超时时间，单位为秒。",
+                    },
+                    "total_timeout": {
+                        "description": "Total decision timeout",
+                        "type": "float",
+                        "hint": "Seconds, including time waiting for a concurrency slot.",
+                    },
+                    "max_concurrency": {
+                        "description": "Decision concurrency limit",
+                        "type": "int",
                     },
                     "openai-tts-voice": {
                         "description": "voice",
@@ -3732,6 +3773,11 @@ CONFIG_METADATA_3 = {
                         "type": "string",
                         "_special": "select_provider",
                         "hint": "留空代表不使用，可用于非多模态模型",
+                    },
+                    "provider_settings.decision_provider_id": {
+                        "description": "Default decision provider for plugins",
+                        "type": "string",
+                        "_special": "select_provider_decision",
                     },
                     "provider_stt_settings.enable": {
                         "description": "语音识别",

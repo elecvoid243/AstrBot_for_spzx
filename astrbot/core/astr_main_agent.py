@@ -65,6 +65,7 @@ from astrbot.core.star.star import star_registry
 from astrbot.core.star.star_handler import star_map
 from astrbot.core.subagent_manager import SubAgentManager
 from astrbot.core.subagent_orchestrator import SubAgentOrchestrator
+from astrbot.core.subagent_policy import SubAgentPolicy
 from astrbot.core.tools.computer_tools import (
     AnnotateExecutionTool,
     BrowserBatchExecTool,
@@ -854,13 +855,28 @@ async def _ensure_persona_and_skills(
         req.func_tool.merge(persona_toolset)
 
     # sub agents integration
-    orch_cfg = plugin_context.get_config().get("subagent_orchestrator", {})
+    profile = plugin_context.get_config(umo=event.unified_msg_origin)
+    orch_cfg = profile.get("subagent_orchestrator", {})
+    policy = SubAgentPolicy.from_profile(profile)
     so = plugin_context.subagent_orchestrator
-    if orch_cfg.get("main_enable", False) and so:
-        remove_dup = bool(orch_cfg.get("remove_main_duplicate_tools", False))
+    if so and (policy.enabled if policy else orch_cfg.get("main_enable", False)):
+        handoffs = (
+            so.available_handoffs(policy, plugin_context.provider_manager.inst_map)
+            if policy
+            else so.handoffs
+        )
+        remove_dup = (
+            policy.remove_main_duplicate_tools
+            if policy
+            else bool(orch_cfg.get("remove_main_duplicate_tools", False))
+        )
 
         assigned_tools: set[str] = set()
-        agents = orch_cfg.get("agents", [])
+        agents = (
+            [{"tools": tool.agent.tools} for tool in handoffs]
+            if policy
+            else orch_cfg.get("agents", [])
+        )
         if isinstance(agents, list):
             for a in agents:
                 if not isinstance(a, dict):
@@ -885,7 +901,7 @@ async def _ensure_persona_and_skills(
                         ]
                     )
                     continue
-                if not isinstance(tools, list):
+                if not isinstance(tools, (list, set, tuple)):
                     continue
                 for t in tools:
                     name = str(t).strip()
@@ -896,31 +912,33 @@ async def _ensure_persona_and_skills(
             req.func_tool = ToolSet()
 
         # add static subagent handoff tools
-        for tool in so.handoffs:
+        for tool in handoffs:
             req.func_tool.add_tool(tool)
 
         # add subagent manager tools
-        await _apply_subagent_manager_tools(plugin_context.get_config(), req, event, so)
+        await _apply_subagent_manager_tools(profile, req, event, so, handoffs)
 
         # check duplicates (static subagents)
         if remove_dup:
-            handoff_names = {tool.name for tool in so.handoffs}
+            handoff_names = {tool.name for tool in handoffs}
             for tool_name in assigned_tools:
                 if tool_name in handoff_names:
                     continue
                 req.func_tool.remove_tool(tool_name)
 
         router_prompt = (
-            plugin_context.get_config()
-            .get("subagent_orchestrator", {})
-            .get("router_system_prompt", "")
+            policy.router_system_prompt
+            if policy
+            else orch_cfg.get("router_system_prompt", "")
         ).strip()
 
         if router_prompt:
             dynamic_cfg = orch_cfg.get(
                 "dynamic_agents", {}
             )  # 未启用dynamic时才注入router_prompt，否则由subagent_manager注入
-            if not dynamic_cfg.get("enabled", False):
+            if not (
+                policy.dynamic_enabled if policy else dynamic_cfg.get("enabled", False)
+            ):
                 req.system_prompt += f"\n{router_prompt}\n"
 
     # add agent team tools registered for this conversation (no-op when no
@@ -1458,6 +1476,7 @@ async def _apply_subagent_manager_tools(
     req: ProviderRequest,
     event: AstrMessageEvent,
     so: SubAgentOrchestrator,
+    handoffs: list[HandoffTool] | None = None,
 ) -> None:
     """Apply SubAgent tools and system prompt
 
@@ -1467,8 +1486,9 @@ async def _apply_subagent_manager_tools(
     3. Register a unified transfer_to_subagent tool for dynamic subagents
     """
     orch_cfg = cfg.get("subagent_orchestrator", {})
+    policy = SubAgentPolicy.from_profile(cfg)
 
-    if not orch_cfg.get("main_enable", False):
+    if not (policy.enabled if policy else orch_cfg.get("main_enable", False)):
         return
 
     if req.func_tool is None:
@@ -1484,28 +1504,14 @@ async def _apply_subagent_manager_tools(
             WAIT_FOR_SUBAGENT_TOOL,
         )
 
-        # Configure SubAgentManager with settings from subagent_orchestrator
         dynamic_cfg = orch_cfg.get("dynamic_agents", {})
-        enable_dynamic = dynamic_cfg.get("enabled", False)
-        SubAgentManager.configure(
-            max_subagent_count=dynamic_cfg.get("max_subagent_count", 3),
-            auto_cleanup_per_turn=dynamic_cfg.get("auto_cleanup_per_turn", True),
-            tools_blacklist=dynamic_cfg.get("tools_blacklist", None),
-            tools_inherent=dynamic_cfg.get("tools_inherent", None),
-            mcp_blacklist=dynamic_cfg.get("mcp_blacklist"),
-            mcp_inherent=dynamic_cfg.get("mcp_inherent"),
-            execution_timeout=orch_cfg.get("execution_timeout", 1200),
-            rule_prompt=dynamic_cfg.get("rule_prompt", ""),
-            time_prompt_enabled=orch_cfg.get("time_prompt_enabled", True),
-            timezone=cfg.get("timezone", None),
-            dag_enabled=orch_cfg.get("dag_enabled", False),
-            default_provider_id=dynamic_cfg.get("default_provider_id", ""),
-            context_inherit_mode=orch_cfg.get("context_inherit_mode", "normal"),
+        enable_dynamic = (
+            policy.dynamic_enabled if policy else dynamic_cfg.get("enabled", False)
         )
 
         session_id = event.unified_msg_origin
         # Register static subagents from config into SubAgentManager for unified management
-        so.register_static_subagents_to_manager(session_id)
+        so.register_static_subagents_to_manager(session_id, handoffs)
 
         # Register dynamic subagent management tools (only when dynamic creation is enabled)
         # Always register `wait_for_subagent` for better background task running

@@ -31,6 +31,7 @@ from astrbot.core.subagent_manager import (
     SubAgentConfig,
     SubAgentManager,
 )
+from astrbot.core.subagent_policy import current_subagent_policy
 
 
 @dataclass
@@ -244,11 +245,36 @@ class ListSubagentsTool(FunctionTool):
         if not session or not session.subagents:
             return "No subagents available."
 
-        count = len(session.subagents)
+        agents = session.subagents
+        policy = current_subagent_policy.get()
+        if policy is not None:
+            star_context = context.context.context
+            orchestrator = star_context.subagent_orchestrator
+            available = (
+                {
+                    tool.agent.name
+                    for tool in orchestrator.available_handoffs(
+                        policy, star_context.provider_manager.inst_map
+                    )
+                }
+                if orchestrator
+                else set()
+            )
+            agents = {
+                name: cfg
+                for name, cfg in agents.items()
+                if name in available
+                or (
+                    policy.enabled
+                    and policy.dynamic_enabled
+                    and name not in session.protected_agents
+                )
+            }
+        count = len(agents)
         lines = [f"Available Subagents ({count}):"]
         lines.append("---")
 
-        for name, config in session.subagents.items():
+        for name, config in agents.items():
             lines.append(f"Name: {name}")
 
             if include_status:

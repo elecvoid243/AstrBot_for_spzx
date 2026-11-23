@@ -79,8 +79,16 @@ TRANSFORM_INPUTS = {
 }
 
 
+DECISION_OUTPUTS = {
+    "boolean": {"matched": {"type": "boolean"}, "probability": {"type": "number"}},
+    "choice": {"choice": {"type": "string"}, "probability": {"type": "number"}},
+    "score": {"score": {"type": "number"}},
+}
+
+
 # Versioned native nodes share the same port contracts at every entry point.
 NATIVE_NODE_OUTPUTS = {
+    "decision_v1": {},
     "read_document_v1": {
         "type": "object",
         "properties": {"text": {"type": "string"}, "filename": {"type": "string"}},
@@ -110,6 +118,11 @@ NATIVE_NODE_OUTPUTS = {
 }
 TRANSFORM_INPUTS.update(
     {
+        "decision_v1": {
+            "type": "object",
+            "properties": {"state": {"type": ["string", "array", "object"]}},
+            "required": ["state"],
+        },
         "read_document_v1": {
             "type": "object",
             "properties": {"file": {"type": "object", "format": "astrbot-file"}},
@@ -187,6 +200,52 @@ class DispatchLimits(BaseModel):
     max_parallel: int = Field(default=2, ge=1, le=30)
 
 
+class DecisionTask(BaseModel):
+    """A typed decision over a bound text or JSON input."""
+
+    model_config = ConfigDict(extra="forbid", strict=True, str_strip_whitespace=True)
+    kind: Literal["boolean", "choice", "score"] = "boolean"
+    instructions: str = Field(min_length=1, max_length=10000)
+    criteria: dict[str, str] | list[str] | None = None
+    threshold: float = Field(default=0.5, ge=0, le=1)
+
+    @model_validator(mode="after")
+    def validate_criteria(self):
+        """Validate rubric and option definitions before saving a workflow.
+
+        Returns:
+            The task with a valid decision definition.
+
+        Raises:
+            ValueError: The criteria do not match the selected question type.
+        """
+        criteria = self.criteria
+        if self.kind == "choice":
+            if (
+                not isinstance(criteria, dict)
+                or not 2 <= len(criteria) <= 100
+                or any(
+                    not key.strip() or not value.strip()
+                    for key, value in criteria.items()
+                )
+            ):
+                raise ValueError("Choose two to 100 options with IDs and descriptions")
+        elif self.kind == "score":
+            if (
+                not isinstance(criteria, list)
+                or not 2 <= len(criteria) <= 10
+                or not all(criteria)
+            ):
+                raise ValueError("Scoring requires two to ten ordered descriptions")
+        elif criteria is not None and (
+            not isinstance(criteria, dict)
+            or not set(criteria).issubset({"true", "false"})
+            or not all(criteria.values())
+        ):
+            raise ValueError("Boolean criteria must describe true or false")
+        return self
+
+
 class GraphTask(BaseModel):
     """A task bound to a named member with inline or pinned configuration."""
 
@@ -214,6 +273,7 @@ class GraphTask(BaseModel):
             "parse_json",
             "map_fields",
             "json_text",
+            "decision_v1",
             "read_document_v1",
             "retrieve_knowledge_v1",
             "plugin_component_v1",
@@ -222,6 +282,15 @@ class GraphTask(BaseModel):
     ) = Field(default=None, exclude_if=lambda value: value is None)
     component: ComponentReference | None = Field(
         default=None, exclude_if=lambda value: value is None
+    )
+    decision: DecisionTask | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+    decision_provider_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=128,
+        exclude_if=lambda value: value is None,
     )
     knowledge_base_id: str | None = Field(
         default=None,
@@ -271,6 +340,15 @@ class GraphTask(BaseModel):
         Raises:
             ValueError: The selected node kind has missing or conflicting fields.
         """
+        is_decision = self.transform == "decision_v1"
+        if is_decision and (self.decision is None or self.decision_provider_id is None):
+            raise ValueError(
+                "Decision nodes require a question and a decision provider"
+            )
+        if not is_decision and (
+            self.decision is not None or self.decision_provider_id is not None
+        ):
+            raise ValueError("Only decision nodes can declare a decision provider")
         if (self.component is not None) != (self.transform == PLUGIN_COMPONENT):
             raise ValueError("Plugin nodes require an exact component reference")
         if self.component and (
@@ -318,7 +396,15 @@ class GraphTask(BaseModel):
             ):
                 raise ValueError("Transform nodes cannot configure other execution")
             if self.transform in NATIVE_NODE_OUTPUTS:
-                contract = NATIVE_NODE_OUTPUTS[self.transform]
+                if self.decision:
+                    properties = DECISION_OUTPUTS[self.decision.kind]
+                    contract = {
+                        "type": "object",
+                        "properties": properties,
+                        "required": list(properties),
+                    }
+                else:
+                    contract = NATIVE_NODE_OUTPUTS[self.transform]
                 if (
                     self.output_contract is not None
                     and self.output_contract != contract

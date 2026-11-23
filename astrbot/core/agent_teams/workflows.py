@@ -145,6 +145,16 @@ from astrbot.core.db.po import (
 )
 from astrbot.core.knowledge_base.parsers.util import select_parser
 from astrbot.core.platform.sources.webchat.webchat_queue_mgr import webchat_queue_mgr
+from astrbot.core.provider.entities import (
+    DecisionBooleanAnswer,
+    DecisionBooleanQuestion,
+    DecisionChoiceAnswer,
+    DecisionChoiceQuestion,
+    DecisionError,
+    DecisionScoreAnswer,
+    DecisionScoreQuestion,
+)
+from astrbot.core.provider.provider import DecisionProvider
 from astrbot.core.workspace import API_KEY_USERNAME_PREFIX
 from astrbot.dashboard.services.agent_team_ports import TeamPorts, build_ports_for_test
 
@@ -276,7 +286,13 @@ class PackageDependency(BaseModel):
 
     model_config = ConfigDict(extra="forbid", strict=True)
     kind: Literal[
-        "profiles", "models", "personas", "tools", "skills", "knowledge_bases"
+        "profiles",
+        "models",
+        "personas",
+        "tools",
+        "skills",
+        "knowledge_bases",
+        "decision_providers",
     ]
     source_id: str = Field(min_length=1, max_length=128)
     display_name: str = ""
@@ -356,7 +372,13 @@ class ResourceSelection(BaseModel):
 
     model_config = ConfigDict(extra="forbid", strict=True)
     kind: Literal[
-        "profiles", "models", "personas", "tools", "skills", "knowledge_bases"
+        "profiles",
+        "models",
+        "personas",
+        "tools",
+        "skills",
+        "knowledge_bases",
+        "decision_providers",
     ]
     source_id: str = Field(min_length=1, max_length=128)
     target_id: str = Field(min_length=1, max_length=128)
@@ -1082,6 +1104,12 @@ class WorkflowService:
                     await self._resolve_component(
                         username, task.model_dump(), f"definition.tasks.{task_index}"
                     )
+                elif task.decision_provider_id:
+                    await self._require_decision_provider(
+                        username,
+                        task.decision_provider_id,
+                        f"definition.tasks.{task_index}.decision_provider_id",
+                    )
                 elif task.knowledge_base_id:
                     await self._require_native_knowledge_base(
                         username,
@@ -1643,6 +1671,10 @@ class WorkflowService:
             for member in members:
                 if member.get("knowledge_base_id"):
                     resources.add(("knowledge_bases", member["knowledge_base_id"]))
+                if member.get("decision_provider_id"):
+                    resources.add(
+                        ("decision_providers", member["decision_provider_id"])
+                    )
                 if member.get("role_id"):
                     role_key = (member["role_id"], member["role_version"])
                     if role_key not in roles:
@@ -2005,6 +2037,7 @@ class WorkflowService:
             ("persona_id", "personas"),
             ("profile_id", "profiles"),
             ("knowledge_base_id", "knowledge_bases"),
+            ("decision_provider_id", "decision_providers"),
         ):
             if config.get(field) is not None:
                 config[field] = selections[(kind, config[field])]
@@ -2155,7 +2188,9 @@ class WorkflowService:
                     else local_asset["tasks"]
                 )
                 for member_index, member in enumerate(members):
-                    if member.get("knowledge_base_id"):
+                    if member.get("knowledge_base_id") or member.get(
+                        "decision_provider_id"
+                    ):
                         self._rewrite_package_config(member, choices)
                     if member.get("component"):
                         try:
@@ -2708,7 +2743,9 @@ class WorkflowService:
                             member["role_id"], member["role_version"] = role_map[
                                 (member["role_id"], member["role_version"])
                             ]
-                        if member.get("knowledge_base_id"):
+                        if member.get("knowledge_base_id") or member.get(
+                            "decision_provider_id"
+                        ):
                             self._rewrite_package_config(member, choices)
                         for field in ("role", "installation", "overrides"):
                             if member.get(field) is not None:
@@ -7193,6 +7230,12 @@ class WorkflowService:
                 await self._resolve_component(
                     username, task.model_dump(), f"definition.tasks.{index}"
                 )
+            elif task.decision_provider_id:
+                await self._require_decision_provider(
+                    username,
+                    task.decision_provider_id,
+                    f"definition.tasks.{index}.decision_provider_id",
+                )
             elif task.knowledge_base_id and not trial:
                 await self._require_native_knowledge_base(
                     username,
@@ -7758,6 +7801,8 @@ class WorkflowService:
                 "overrides": task.overrides.model_dump(exclude_unset=True),
                 "required_inputs": definition.required_inputs,
             }
+            if task.decision:
+                child_definition["decision"] = task.decision.model_dump()
             if task.component:
                 child_definition.update(
                     component=task.component.model_dump(),
@@ -7834,6 +7879,11 @@ class WorkflowService:
                             if task.control is not None
                             else {
                                 "transform": task.transform,
+                                **(
+                                    {"decision_provider_id": task.decision_provider_id}
+                                    if task.decision_provider_id
+                                    else {}
+                                ),
                                 **(
                                     {"knowledge_base_id": task.knowledge_base_id}
                                     if task.knowledge_base_id
@@ -11161,6 +11211,10 @@ class WorkflowService:
         try:
             await self._execute(username, task_run_id, execution_id)
         finally:
+            # The attempt has released ownership. A retry notified during the
+            # wake below must be able to dispatch the next durable claim.
+            if self._dispatching.get(task_run_id) is asyncio.current_task():
+                del self._dispatching[task_run_id]
             if not self._closing:
                 await self.advance_run(username, run_id)
 
@@ -13363,6 +13417,34 @@ class WorkflowService:
                 status=403,
             )
 
+    async def _require_decision_provider(
+        self, username: str, provider_id: str, path: str
+    ) -> DecisionProvider:
+        """Resolve an exact decision resource under the owner's current permissions.
+
+        Args:
+            username: Owner of the bound workflow.
+            provider_id: Provider instance bound to this node.
+            path: Field used for diagnostics.
+
+        Returns:
+            An available decision provider.
+
+        Raises:
+            RoleAssetError: The owner is unauthorized or the provider is unavailable.
+        """
+        await self._require_component_owner(
+            username, path, resource="decision providers"
+        )
+        manager = getattr(self.roles.core_lifecycle, "provider_manager", None)
+        provider = await manager.get_provider_by_id(provider_id) if manager else None
+        if not isinstance(provider, DecisionProvider):
+            message = "The selected decision provider is unavailable"
+            raise RoleAssetError(
+                message, [{"path": path, "code": "UNAVAILABLE", "message": message}]
+            )
+        return provider
+
     async def _require_native_knowledge_base(
         self, username: str, kb_id: str, path: str
     ) -> "KnowledgeBaseManager":
@@ -13463,13 +13545,36 @@ class WorkflowService:
         attempt = state["attempt_id"]
 
         reads_file = transform == "read_document_v1"
+        makes_decision = transform == "decision_v1"
         diagnostic_path = (
-            f"{path}.inputs.file" if reads_file else f"{path}.knowledge_base_id"
+            f"{path}.decision_provider_id"
+            if makes_decision
+            else f"{path}.inputs.file"
+            if reads_file
+            else f"{path}.knowledge_base_id"
         )
+        decision_details = None
+        decision_usage = {}
+        usage_request = {}
+        if makes_decision:
+            # Reserve conservatively because decision endpoints do not expose a tokenizer.
+            request_text = json.dumps(
+                [inputs["state"], snapshot["definition"]["decision"]],
+                ensure_ascii=False,
+            )
+            usage_request = {
+                "input_tokens": len(request_text.encode("utf-8")) + 64,
+                "max_output_tokens": 1,
+            }
         invocation = uuid.uuid4().hex
         while True:
             await self._await_execution_permission(username, run_id, execution_id)
-            if not reads_file:
+            if makes_decision:
+                provider_id = snapshot["decision_provider_id"]
+                decision_provider = await self._require_decision_provider(
+                    username, provider_id, diagnostic_path
+                )
+            elif not reads_file:
                 kb_id = snapshot["knowledge_base_id"]
                 manager = await self._require_native_knowledge_base(
                     username, kb_id, diagnostic_path
@@ -13483,8 +13588,13 @@ class WorkflowService:
                     {
                         "receipt_id": invocation,
                         "invocation_id": invocation,
-                        "kind": "tool" if reads_file else "query",
+                        "kind": "model"
+                        if makes_decision
+                        else "tool"
+                        if reads_file
+                        else "query",
                         "name": transform,
+                        **usage_request,
                     },
                 )
             except RoleAssetError as exc:
@@ -13496,7 +13606,43 @@ class WorkflowService:
             await asyncio.sleep(0.1)
 
         try:
-            if reads_file:
+            if makes_decision:
+                decision_provider = await self._require_decision_provider(
+                    username, provider_id, diagnostic_path
+                )
+                spec = snapshot["definition"]["decision"]
+                criteria = spec["criteria"]
+                instructions = spec["instructions"]
+                if spec["kind"] == "boolean":
+                    question = DecisionBooleanQuestion(instructions, criteria)
+                elif spec["kind"] == "choice":
+                    question = DecisionChoiceQuestion(instructions, criteria)
+                else:
+                    question = DecisionScoreQuestion(instructions, criteria)
+                answers = await decision_provider.ask(
+                    {"answer": question}, inputs["state"]
+                )
+                decision_usage = getattr(answers, "usage", {})
+                answer = answers["answer"]
+                if isinstance(answer, DecisionBooleanAnswer):
+                    result = {
+                        "matched": answer.probability >= spec["threshold"],
+                        "probability": answer.probability,
+                    }
+                elif isinstance(answer, DecisionChoiceAnswer):
+                    result = {
+                        "choice": answer.choice,
+                        "probability": answer.probability,
+                    }
+                elif isinstance(answer, DecisionScoreAnswer):
+                    result = {"score": answer.score}
+                else:
+                    raise DecisionError("Unexpected answer type")
+                decision_details = {
+                    "provider_id": provider_id,
+                    "model": decision_provider.get_model(),
+                }
+            elif reads_file:
                 result = await self._read_native_document(username, inputs["file"])
             else:
                 warnings: list[str] = []
@@ -13534,9 +13680,17 @@ class WorkflowService:
                 [{"path": diagnostic_path, "code": "REFERENCE", "message": str(exc)}],
                 status=exc.status,
             ) from exc
+        except DecisionError as exc:
+            message = str(exc) or "Decision provider failed"
+            raise RoleAssetError(
+                message,
+                [{"path": diagnostic_path, "code": "DECISION", "message": message}],
+            ) from exc
         except asyncio.TimeoutError as exc:
             message = (
-                "Document parsing timed out"
+                "Decision request timed out"
+                if makes_decision
+                else "Document parsing timed out"
                 if reads_file
                 else "Knowledge retrieval timed out"
             )
@@ -13549,7 +13703,9 @@ class WorkflowService:
                 "Native workflow node %s failed: %s", transform, type(exc).__name__
             )
             message = (
-                "Could not parse this document. Choose a supported file up to 10 MiB with at most 100,000 extracted characters."
+                "Decision request failed"
+                if makes_decision
+                else "Could not parse this document. Choose a supported file up to 10 MiB with at most 100,000 extracted characters."
                 if reads_file
                 else "Knowledge retrieval failed"
             )
@@ -13562,7 +13718,7 @@ class WorkflowService:
                 username,
                 invocation,
                 execution_id,
-                {"total_tokens": 0} if reads_file else {},
+                {"total_tokens": 0} if reads_file else decision_usage,
             )
 
         contract = snapshot["definition"]["output_contract"]
@@ -13580,7 +13736,13 @@ class WorkflowService:
                 ],
             )
         await self._finish_component_result(
-            username, run_id, execution_id, attempt, contract, result
+            username,
+            run_id,
+            execution_id,
+            attempt,
+            contract,
+            result,
+            decision_details=decision_details,
         )
 
     async def _finish_component_result(
@@ -13591,6 +13753,8 @@ class WorkflowService:
         attempt: str,
         contract: dict,
         result: dict,
+        *,
+        decision_details: dict | None = None,
     ) -> None:
         """Commit a validated node result under the native attempt and control fence.
 
@@ -13601,6 +13765,7 @@ class WorkflowService:
             attempt: Original attempt identity.
             contract: Frozen result contract.
             result: Validated structured output.
+            decision_details: Resolved provider and model for a decision node.
         """
         await self._await_execution_permission(username, run_id, execution_id)
         async with self.db.get_db() as session:
@@ -13614,6 +13779,8 @@ class WorkflowService:
             row.status = "completed"
             row.result = result
             row.state = {**row.state, "reason": None}
+            if decision_details is not None:
+                row.state["decision"] = decision_details
             session.add(row)
             session.add(
                 AgentWorkflowArtifact(

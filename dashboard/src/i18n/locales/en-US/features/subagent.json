@@ -1,4 +1,16 @@
 {
+  "profile": {
+    "label": "Configuration profile",
+    "default": "Default profile",
+    "availableAgents": "Static subagents for this profile",
+    "status": {
+      "missing": "Missing",
+      "disabled": "Disabled",
+      "provider_unavailable": "Model unavailable",
+      "runtime_unavailable": "Runtime unavailable",
+      "persona_unavailable": "Persona unavailable"
+    }
+  },
   "header": {
     "eyebrow": "Subagent Orchestration"
   },
@@ -40,7 +52,7 @@
   "section": {
     "title": "Static Subagent Configuration",
     "subtitle": "Configure delegatable static subagents, personas, and descriptions for the main agent",
-    "globalSettings": "Global Settings",
+    "globalSettings": "Profile settings",
     "agentSetup": "Agent Setup",
     "enhancedSettings": "Dynamic Subagent Settings",
     "enhancedSettingsHint": "Configure runtime parameters, resource limits, and tool strategies for dynamic subagents"

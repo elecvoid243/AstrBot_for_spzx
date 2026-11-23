@@ -11,6 +11,7 @@
         "tabs": {
             "all": "Все",
             "chatCompletion": "Диалоги",
+            "decision": "Решения",
             "speechToText": "STT (Речь -> Текст)",
             "textToSpeech": "TTS (Текст -> Речь)",
             "embedding": "Эмбеддинги",

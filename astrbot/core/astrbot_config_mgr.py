@@ -149,11 +149,14 @@ class AstrBotConfigManager:
         }
         await self._persist_abconf_mapping(abconf_data)
 
-    def get_conf(self, umo: str | MessageSession | None) -> AstrBotConfig:
+    def get_conf(
+        self, umo: str | MessageSession | None, *, live: bool = False
+    ) -> AstrBotConfig:
         """Resolve the active invocation profile or the conversation configuration.
 
         Args:
             umo: Conversation origin, or None for the active/default profile.
+            live: Read the selected profile without overlaying a frozen snapshot.
 
         Returns:
             The configuration effective for this invocation or conversation.
@@ -169,7 +172,7 @@ class AstrBotConfigManager:
         execution = current_team_execution.get()
         if execution and execution.config_id and (not umo or umo == execution.umo):
             config = self.confs[execution.config_id]
-            if execution.profile_snapshot is not None:
+            if execution.profile_snapshot is not None and not live:
                 import copy
 
                 original = config

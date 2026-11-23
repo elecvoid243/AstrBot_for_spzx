@@ -243,7 +243,8 @@ class InternalAgentSubStage(Stage):
             },
             fallback_provider_ids=model_config.get("fallback_provider_ids", []),
             request_max_retries=model_config.get("request_max_retries", 5),
-            subagent_orchestrator=conf.get("subagent_orchestrator", {}),
+            subagent_orchestrator=conf.get("subagent_policy")
+            or conf.get("subagent_orchestrator", {}),
             timezone=self.ctx.plugin_manager.context.get_config().get("timezone"),
             max_quoted_fallback_images=settings.get("max_quoted_fallback_images", 20),
         )
@@ -644,7 +645,9 @@ class InternalAgentSubStage(Stage):
                             )
 
                             session_id = event.unified_msg_origin
-                            if SubAgentManager.is_auto_cleanup_per_turn():
+                            if build_cfg.subagent_orchestrator.get(
+                                "dynamic_agents", {}
+                            ).get("auto_cleanup_per_turn", True):
                                 SubAgentManager.cleanup_session_turn_end(session_id)
                         except Exception as e:
                             logger.warning(

@@ -11,6 +11,7 @@
     "tabs": {
       "all": "All",
       "chatCompletion": "Chat Completion",
+      "decision": "Decision",
       "speechToText": "Speech to Text",
       "textToSpeech": "Text to Speech",
       "embedding": "Embedding",

@@ -23,6 +23,7 @@ from astrbot.core.agent.agent import Agent
 from astrbot.core.agent.handoff import HandoffTool
 from astrbot.core.astr_main_agent_resources import LLM_SAFETY_MODE_SYSTEM_PROMPT
 from astrbot.core.star.star import star_registry
+from astrbot.core.subagent_policy import current_subagent_policy
 from astrbot.core.utils.astrbot_path import get_astrbot_workspaces_path
 
 if TYPE_CHECKING:
@@ -280,12 +281,27 @@ DAG Orchestration automatically delegate subagents. When you have 2+ independent
             cls._tools_blacklist = set(tools_blacklist)
 
     @classmethod
+    def policy_value(cls, name: str):
+        """Read a task-local policy field or the legacy default.
+
+        Args:
+            name: Policy field to read.
+
+        Returns:
+            The value for the current execution.
+        """
+        policy = current_subagent_policy.get()
+        if policy is not None:
+            return getattr(policy, name)
+        return getattr(cls, f"_{name}")
+
+    @classmethod
     def get_execution_timeout(cls) -> float:
-        return cls._execution_timeout
+        return cls.policy_value("execution_timeout")
 
     @classmethod
     def is_auto_cleanup_per_turn(cls) -> bool:
-        return cls._auto_cleanup_per_turn
+        return cls.policy_value("auto_cleanup_per_turn")
 
     @classmethod
     def is_shared_context_enabled(cls) -> bool:
@@ -305,7 +321,7 @@ DAG Orchestration automatically delegate subagents. When you have 2+ independent
             and tool schema), or "auto" (decide per delegation based on the
             estimated context usage vs the compression threshold).
         """
-        return cls._context_inherit_mode
+        return cls.policy_value("context_inherit_mode")
 
     @classmethod
     def get_main_agent_only_tools(cls) -> set[str]:
@@ -318,7 +334,7 @@ DAG Orchestration automatically delegate subagents. When you have 2+ independent
         Returns:
             Set of main-agent-only tool names.
         """
-        return set(cls._tools_blacklist) | {"transfer_to_subagent"}
+        return set(cls.policy_value("tools_blacklist")) | {"transfer_to_subagent"}
 
     @classmethod
     def register_blacklisted_tool(cls, tool_name: str) -> None:
@@ -695,11 +711,12 @@ DAG Orchestration automatically delegate subagents. When you have 2+ independent
         if system_msgs:
             lines.append("\n## @System - System Announcements")
             for msg in system_msgs:
-                if cls._timezone:
+                if cls.policy_value("timezone"):
                     import zoneinfo
 
                     ts = datetime.fromtimestamp(
-                        msg["timestamp"], tz=zoneinfo.ZoneInfo(cls._timezone)
+                        msg["timestamp"],
+                        tz=zoneinfo.ZoneInfo(cls.policy_value("timezone")),
                     ).strftime("%H:%M:%S")
                 else:
                     ts = time.strftime("%H:%M:%S", time.localtime(msg["timestamp"]))
@@ -789,15 +806,15 @@ DAG Orchestration automatically delegate subagents. When you have 2+ independent
 
     @classmethod
     def _build_time_prompt(cls) -> str:
-        if not cls._time_prompt_enabled:
+        if not cls.policy_value("time_prompt_enabled"):
             return ""
         try:
-            if cls._timezone:
+            if cls.policy_value("timezone"):
                 import zoneinfo
 
-                current_time = datetime.now(zoneinfo.ZoneInfo(cls._timezone)).strftime(
-                    "%Y-%m-%d %H:%M (%Z)"
-                )
+                current_time = datetime.now(
+                    zoneinfo.ZoneInfo(cls.policy_value("timezone"))
+                ).strftime("%Y-%m-%d %H:%M (%Z)")
             else:
                 current_time = (
                     datetime.now().astimezone().strftime("%Y-%m-%d %H:%M (%Z)")
@@ -829,8 +846,8 @@ DAG Orchestration automatically delegate subagents. When you have 2+ independent
     @classmethod
     def _build_rule_prompt(cls) -> str:
         base = (
-            cls._rule_prompt
-            if cls._rule_prompt
+            cls.policy_value("rule_prompt")
+            if cls.policy_value("rule_prompt")
             else (
                 "# Behavior Rules\n"
                 "## Safety\n"
@@ -979,19 +996,28 @@ DAG Orchestration automatically delegate subagents. When you have 2+ independent
 
         trace = TraceSpan(name=f"SubAgent:{config.name}", umo=session_id)
         session = cls._get_or_create_session(session_id)
+        if config.name in session.protected_agents:
+            return ("Error: The subagent name is reserved by a static subagent.", None)
         if config.name not in session.subagents:
             # Check max count limit
-            active_count = len(session.subagents.keys())
-            if active_count >= cls._max_subagent_count:
+            policy = current_subagent_policy.get()
+            active_count = sum(
+                not handoff.subagent_config_id
+                or policy is None
+                or handoff.subagent_config_id in policy.agent_ids
+                for handoff in session.handoff_tools.values()
+            )
+            limit = cls.policy_value("max_subagent_count")
+            if active_count >= limit:
                 trace.record(
                     "subagent_created",
                     agent_name=config.name,
                     success=False,
                     reason="max_count_reached",
-                    max_count=cls._max_subagent_count,
+                    max_count=cls.policy_value("max_subagent_count"),
                 )
                 return (
-                    f"Error: Maximum number of subagents ({cls._max_subagent_count}) reached. More subagents is not allowed.",
+                    f"Error: The configured subagent limit ({limit}) has been reached.",
                     None,
                 )
 
@@ -1005,12 +1031,12 @@ DAG Orchestration automatically delegate subagents. When you have 2+ independent
         if session.shared_context_enabled:
             config.tools.add("send_shared_context")
         # remove tools in backlist
-        for tool_bl in cls._tools_blacklist:
+        for tool_bl in cls.policy_value("tools_blacklist"):
             config.tools.discard(tool_bl)
 
         # add tools in inherent list
-        for tool_ih in cls._tools_inherent:
-            if tool_ih not in cls._tools_blacklist:
+        for tool_ih in cls.policy_value("tools_inherent"):
+            if tool_ih not in cls.policy_value("tools_blacklist"):
                 config.tools.add(tool_ih)
 
         session.subagents[config.name] = config
@@ -1025,7 +1051,7 @@ DAG Orchestration automatically delegate subagents. When you have 2+ independent
         )
         if config.provider_id:
             handoff_tool.provider_id = config.provider_id
-        elif cls._default_provider_id:
+        elif current_subagent_policy.get() is None and cls._default_provider_id:
             handoff_tool.provider_id = cls._default_provider_id
         session.handoff_tools[config.name] = handoff_tool
         # 初始化subagent的历史上下文（仅当历史功能启用时）
@@ -1066,7 +1092,7 @@ DAG Orchestration automatically delegate subagents. When you have 2+ independent
         config = SubAgentConfig(
             name=agent.name,
             system_prompt=agent.instructions or "",
-            tools=agent.tools,
+            tools=set(agent.tools) if agent.tools is not None else None,
             skills=skills,
             provider_id=getattr(handoff_tool, "provider_id", None),
             description=handoff_tool.description or f"Delegate to {agent.name} agent",
@@ -1074,9 +1100,11 @@ DAG Orchestration automatically delegate subagents. When you have 2+ independent
         )
 
         session = cls._get_or_create_session(session_id)
-        if (
-            config.name not in session.subagents
-        ):  # if the static agent already exists, pass
+        static_id = handoff_tool.subagent_config_id
+        existing = session.handoff_tools.get(config.name)
+        if static_id and existing and existing.subagent_config_id == static_id:
+            session.handoff_tools[config.name] = handoff_tool
+        if config.name not in session.subagents:
             from astrbot.core.utils.trace import TraceSpan
 
             trace = TraceSpan(name=f"SubAgent:{config.name}", umo=session_id)
@@ -1090,11 +1118,7 @@ DAG Orchestration automatically delegate subagents. When you have 2+ independent
             )
             session.subagent_traces[config.name] = trace
 
-            if config.tools is None:
-                config.tools = None
-            if config.tools is not None and not config.tools:
-                config.tools = set()
-            if session.shared_context_enabled:
+            if session.shared_context_enabled and config.tools is not None:
                 config.tools.add("send_shared_context")
             session.subagents[config.name] = config
             agent = Agent(
@@ -1109,6 +1133,7 @@ DAG Orchestration automatically delegate subagents. When you have 2+ independent
             )
             if config.provider_id:
                 handoff_tool.provider_id = config.provider_id
+            handoff_tool.subagent_config_id = static_id
             session.handoff_tools[config.name] = handoff_tool
 
             if cls._history_enabled and config.name not in session.subagent_histories:

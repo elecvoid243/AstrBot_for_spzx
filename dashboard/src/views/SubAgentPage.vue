@@ -17,6 +17,17 @@
         </div>
       </div>
 
+      <v-select
+        :model-value="selectedProfile"
+        :items="profiles"
+        item-title="name"
+        item-value="id"
+        :label="tm('profile.label')"
+        :disabled="loading || saving"
+        variant="outlined"
+        @update:model-value="selectProfile"
+      />
+
       <div v-if="hasUnsavedChanges" class="unsaved-banner">
         <v-icon size="18" color="warning">mdi-alert-circle-outline</v-icon>
         <span>{{ tm('messages.unsavedChangesNotice') }}</span>
@@ -106,15 +117,25 @@
           </div>
         </div>
 
-        <!-- 静态子代理配置 -->
-        <div class="section-divider">
+        <v-select
+          v-model="cfg.agent_ids"
+          :items="catalogueChoices"
+          multiple
+          chips
+          closable-chips
+          :label="tm('profile.availableAgents')"
+          variant="outlined"
+        />
+
+        <!-- Static subagent catalogue -->
+        <div v-if="selectedProfile === 'default'" class="section-divider">
           <v-divider class="my-6" thickness="3" color="primary" />
           <div class="section-divider-label">
             <v-icon size="20" color="primary" class="mr-2">mdi-robot-outline</v-icon>
             <span class="text-primary font-weight-bold">{{ tm('section.title') }}</span>
           </div>
         </div>
-        <div class="dashboard-section-head">
+        <div v-if="selectedProfile === 'default'" class="dashboard-section-head">
           <div>
             <div class="dashboard-section-subtitle">{{ tm('section.subtitle') }}</div>
           </div>
@@ -191,7 +212,7 @@
           </div>
         </div>
 
-        <div v-if="cfg.agents.length === 0" class="dashboard-card dashboard-card--padded empty-card">
+        <div v-if="selectedProfile === 'default' && cfg.agents.length === 0" class="dashboard-card dashboard-card--padded empty-card">
           <div class="empty-wrap">
             <v-icon icon="mdi-robot-off" size="60" class="mb-4" />
             <div class="empty-title">{{ tm('empty.title') }}</div>
@@ -640,7 +661,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { onBeforeRouteLeave } from 'vue-router'
 import { useTheme } from 'vuetify'
-import { mcpApi, subagentApi } from '@/api/v1'
+import { configProfileApi, mcpApi, subagentApi } from '@/api/v1'
 import PersonaQuickPreview from '@/components/shared/PersonaQuickPreview.vue'
 import PersonaSelector from '@/components/shared/PersonaSelector.vue'
 import ProviderSelector from '@/components/shared/ProviderSelector.vue'
@@ -649,6 +670,7 @@ import { askForConfirmation, useConfirmDialog } from '@/utils/confirmDialog'
 
 type SubAgentItem = {
   __key: string
+  id?: string
   name: string
   persona_id: string
   public_description: string
@@ -660,6 +682,7 @@ type SubAgentConfig = {
   main_enable: boolean
   remove_main_duplicate_tools: boolean
   router_system_prompt: string
+  agent_ids: string[]
   agents: SubAgentItem[]
 }
 
@@ -698,6 +721,23 @@ const theme = useTheme()
 const confirmDialog = useConfirmDialog()
 
 const loading = ref(false)
+const selectedProfile = ref('default')
+const profiles = ref([{ id: 'default', name: tm('profile.default') }])
+const catalogue = ref<{ id: string; name: string; status: string }[]>([])
+const catalogueChoices = computed(() => {
+  const selected = new Set(cfg.value.agent_ids)
+  const items = catalogue.value.map(item => ({
+    value: item.id,
+    title: item.status === 'available' ? item.name : item.name + ' · ' + tm('profile.status.' + item.status),
+    props: { disabled: !selected.has(item.id) && item.status !== 'available' }
+  }))
+  for (const id of selected) {
+    if (!items.some(item => item.value === id)) {
+      items.push({ value: id, title: id + ' · ' + tm('profile.status.missing'), props: { disabled: false } })
+    }
+  }
+  return items
+})
 const saving = ref(false)
 const isDark = computed(() => theme.global.current.value.dark)
 
@@ -771,6 +811,7 @@ const cfg = ref<SubAgentConfig>({
   main_enable: false,
   remove_main_duplicate_tools: false,
   router_system_prompt: '',
+  agent_ids: [],
   agents: []
 })
 
@@ -823,6 +864,7 @@ function normalizeConfig(raw: any): SubAgentConfig {
 
   const agents: SubAgentItem[] = agentsRaw.map((a: any, i: number) => ({
     __key: `${Date.now()}_${i}_${Math.random().toString(16).slice(2)}`,
+    id: a?.id,
     name: (a?.name ?? '').toString(),
     persona_id: (a?.persona_id ?? '').toString(),
     public_description: (a?.public_description ?? '').toString(),
@@ -830,7 +872,8 @@ function normalizeConfig(raw: any): SubAgentConfig {
     provider_id: (a?.provider_id ?? undefined) as string | undefined
   }))
 
-  return { main_enable, remove_main_duplicate_tools, router_system_prompt, agents }
+  const agent_ids = Array.isArray(orchData?.agent_ids) ? orchData.agent_ids : []
+  return { main_enable, remove_main_duplicate_tools, router_system_prompt, agents, agent_ids }
 }
 
 function normalizeDynamicAgents(raw: any): DynamicAgentsConfig {
@@ -866,7 +909,9 @@ function serializeFullConfig(config: SubAgentConfig, dynamic: DynamicAgentsConfi
     main_enable: config.main_enable,
     remove_main_duplicate_tools: config.remove_main_duplicate_tools,
     router_system_prompt: config.router_system_prompt,
+    agent_ids: config.agent_ids,
     agents: config.agents.map((agent) => ({
+      id: agent.id,
       name: agent.name,
       persona_id: agent.persona_id,
       public_description: agent.public_description,
@@ -943,9 +988,10 @@ async function loadAvailableTools() {
 async function loadConfig() {
   loading.value = true
   try {
-    const res = await subagentApi.getConfig()
+    const res = await subagentApi.getConfig(selectedProfile.value)
     if (res.data.status === 'ok') {
       const data = res.data.data
+      catalogue.value = Array.isArray(data.available_agents) ? data.available_agents : []
       // 兼容新旧格式：data 可能直接包含字段，或通过 subagent_orchestrator 嵌套
       cfg.value = normalizeConfig(data.subagent_orchestrator || data)
       dynamicCfg.value = normalizeDynamicAgents(data.subagent_orchestrator || data)
@@ -1027,13 +1073,15 @@ async function save() {
       main_enable: cfg.value.main_enable,
       remove_main_duplicate_tools: cfg.value.remove_main_duplicate_tools,
       router_system_prompt: cfg.value.router_system_prompt,
-      agents: cfg.value.agents.map((agent) => ({
+      agent_ids: cfg.value.agent_ids,
+      agents: selectedProfile.value === 'default' ? cfg.value.agents.map((agent) => ({
+        id: agent.id,
         name: agent.name,
         persona_id: agent.persona_id,
         public_description: agent.public_description,
         enabled: agent.enabled,
         provider_id: agent.provider_id
-      })),
+      })) : undefined,
       dynamic_agents: {
         enabled: dynamicCfg.value.enabled,
         max_subagent_count: dynamicCfg.value.max_subagent_count,
@@ -1050,10 +1098,11 @@ async function save() {
       context_inherit_mode: rootCfg.value.context_inherit_mode
     }
 
-    const res = await subagentApi.updateConfig(payload)
+    const res = await subagentApi.updateConfig(payload, selectedProfile.value)
     if (res.data.status === 'ok') {
       initialSnapshot.value = serializeFullConfig(cfg.value, dynamicCfg.value, rootCfg.value)
       toast(res.data.message || tm('messages.saveSuccess'), 'success')
+      await loadConfig()
     } else {
       toast(res.data.message || tm('messages.saveFailed'), 'error')
     }
@@ -1146,7 +1195,21 @@ function isToolInTargetList(toolName: string): boolean {
   }
 }
 
+async function selectProfile(id: string) {
+  if (id === selectedProfile.value || !await confirmLeaveIfNeeded()) return
+  selectedProfile.value = id
+  await loadConfig()
+}
+
 onMounted(() => {
+  configProfileApi.list().then(({ data }) => {
+    if (data.status === 'ok') {
+      profiles.value = data.data.info_list.map(item => ({
+        id: String(item.id),
+        name: item.id === 'default' ? tm('profile.default') : String(item.name),
+      }))
+    }
+  }).catch(() => toast(tm('messages.loadConfigFailed'), 'error'))
   window.addEventListener('beforeunload', handleBeforeUnload)
   loadConfig()
   loadAvailableTools()

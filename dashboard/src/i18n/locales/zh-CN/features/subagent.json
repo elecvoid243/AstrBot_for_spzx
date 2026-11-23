@@ -1,4 +1,16 @@
 {
+  "profile": {
+    "label": "配置文件",
+    "default": "默认配置",
+    "availableAgents": "此配置可用的静态子代理",
+    "status": {
+      "missing": "已缺失",
+      "disabled": "已停用",
+      "provider_unavailable": "模型不可用",
+      "runtime_unavailable": "运行时不可用",
+      "persona_unavailable": "人设不可用"
+    }
+  },
   "header": {
     "eyebrow": "Subagent Orchestration"
   },
@@ -40,7 +52,7 @@
   "section": {
     "title": "静态子代理配置",
     "subtitle": "为主代理配置可委派的静态子代理、人格与描述信息。这些子代理会在Astrbot启动时就创建",
-    "globalSettings": "全局配置",
+    "globalSettings": "配置文件设置",
     "agentSetup": "Agent 设置",
     "enhancedSettings": "动态子代理设置",
     "enhancedSettingsHint": "配置动态子代理的运行参数、资源限制和工具策略"

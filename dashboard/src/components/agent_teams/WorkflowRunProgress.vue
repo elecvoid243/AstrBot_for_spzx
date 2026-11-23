@@ -115,6 +115,9 @@
                 {{ task.snapshot.member?.name }} · {{ tm("v2.attempt") }}
                 {{ task.state.attempt_id }}
               </p>
+              <p v-if="task.state.decision" class="text-caption text-medium-emphasis mt-1">
+                {{ task.state.decision.provider_id }} · {{ task.state.decision.model }}
+              </p>
               <p
                 v-if="task.state.waiting_on?.length"
                 class="run-text text-body-2 mt-2"

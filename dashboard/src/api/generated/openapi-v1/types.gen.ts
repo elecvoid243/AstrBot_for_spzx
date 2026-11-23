@@ -855,6 +855,17 @@ export type CronJobRequest = {
     [key: string]: unknown | string | boolean;
 };
 
+export type DecisionTask = {
+    kind?: 'boolean' | 'choice' | 'score';
+    instructions: string;
+    criteria?: ({
+    [key: string]: (string);
+} | Array<(string)> | null);
+    threshold?: number;
+};
+
+export type kind = 'boolean' | 'choice' | 'score';
+
 export type DeveloperModeRequest = {
     enabled: boolean;
 };
@@ -1017,8 +1028,10 @@ export type GraphTask = {
     output_contract?: ({
     [key: string]: unknown;
 } | null);
-    transform?: ('parse_json' | 'map_fields' | 'json_text' | 'read_document_v1' | 'retrieve_knowledge_v1' | 'plugin_component_v1' | null);
+    transform?: ('parse_json' | 'map_fields' | 'json_text' | 'read_document_v1' | 'retrieve_knowledge_v1' | 'plugin_component_v1' | 'decision_v1' | null);
     component?: (ComponentReference | null);
+    decision?: (DecisionTask | null);
+    decision_provider_id?: (string | null);
     /**
      * Exact local knowledge base selected by a retrieval or plugin component node.
      */
@@ -1067,7 +1080,7 @@ export type HumanTask = {
     recommendation_reason_field?: (string | null);
 };
 
-export type kind = 'question' | 'approval';
+export type kind2 = 'question' | 'approval';
 
 /**
  * Automatic recommendation use requires an explicit deadline.
@@ -1292,7 +1305,7 @@ export type PackageAsset = {
  * A source resource identity and its non-secret compatibility contract.
  */
 export type PackageDependency = {
-    kind: 'profiles' | 'models' | 'personas' | 'tools' | 'skills' | 'knowledge_bases';
+    kind: 'profiles' | 'models' | 'personas' | 'tools' | 'skills' | 'knowledge_bases' | 'decision_providers';
     source_id: string;
     display_name?: string;
     description?: string;
@@ -1304,7 +1317,7 @@ export type PackageDependency = {
 } | null);
 };
 
-export type kind2 = 'profiles' | 'models' | 'personas' | 'tools' | 'skills' | 'knowledge_bases';
+export type kind3 = 'profiles' | 'models' | 'personas' | 'tools' | 'skills' | 'knowledge_bases' | 'decision_providers';
 
 /**
  * An exact role version and its source profile identity.
@@ -1495,7 +1508,7 @@ export type PluginVersionSupportRequest = {
     astrbot_version?: string;
 };
 
-export type ProviderCapability = 'chat' | 'agent' | 'stt' | 'tts' | 'embedding' | 'rerank';
+export type ProviderCapability = 'chat' | 'agent' | 'stt' | 'tts' | 'embedding' | 'rerank' | 'decision';
 
 export type ProviderConfigRequest = {
     id?: string;
@@ -1567,7 +1580,7 @@ export type ReorderRequest = {
  * One explicit source-to-local resource choice.
  */
 export type ResourceSelection = {
-    kind: 'profiles' | 'models' | 'personas' | 'tools' | 'skills' | 'knowledge_bases';
+    kind: 'profiles' | 'models' | 'personas' | 'tools' | 'skills' | 'knowledge_bases' | 'decision_providers';
     source_id: string;
     target_id: string;
 };
@@ -1830,7 +1843,7 @@ export type TrialRunRequest = {
     };
 };
 
-export type kind3 = 'workflow' | 'autonomous';
+export type kind4 = 'workflow' | 'autonomous';
 
 export type mode4 = 'full' | 'single' | 'partial';
 
@@ -6304,12 +6317,21 @@ export type DeleteT2iTemplateResponse = (SuccessEnvelope);
 
 export type DeleteT2iTemplateError = unknown;
 
+export type GetSubagentConfigData = {
+    query?: {
+        config_id?: string;
+    };
+};
+
 export type GetSubagentConfigResponse = (SuccessEnvelope);
 
 export type GetSubagentConfigError = unknown;
 
 export type UpdateSubagentConfigData = {
     body: DynamicConfig;
+    query?: {
+        config_id?: string;
+    };
 };
 
 export type UpdateSubagentConfigResponse = (SuccessEnvelope);

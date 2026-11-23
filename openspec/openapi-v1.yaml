@@ -8096,6 +8096,12 @@ paths:
       summary: Get subagent orchestrator configuration
       operationId: getSubagentConfig
       x-astrbot-scope: config
+      parameters:
+        - name: config_id
+          in: query
+          schema:
+            type: string
+            default: default
       responses:
         "200":
           $ref: "#/components/responses/Ok"
@@ -8104,6 +8110,12 @@ paths:
       summary: Update subagent orchestrator configuration
       operationId: updateSubagentConfig
       x-astrbot-scope: config
+      parameters:
+        - name: config_id
+          in: query
+          schema:
+            type: string
+            default: default
       requestBody:
         required: true
         content:
@@ -11508,6 +11520,7 @@ components:
         - tts
         - embedding
         - rerank
+        - decision
 
     LoginRequest:
       type: object
@@ -13800,6 +13813,31 @@ components:
           minimum: 1
           maximum: 30
           default: 2
+    DecisionTask:
+      type: object
+      additionalProperties: false
+      required: [instructions]
+      properties:
+        kind:
+          type: string
+          enum: [boolean, choice, score]
+          default: boolean
+        instructions:
+          type: string
+          minLength: 1
+          maxLength: 10000
+        criteria:
+          anyOf:
+          - type: object
+            additionalProperties: {type: string}
+          - type: array
+            items: {type: string}
+          - type: 'null'
+        threshold:
+          type: number
+          minimum: 0
+          maximum: 1
+          default: 0.5
     GraphTask:
       additionalProperties: false
       description: A task bound to a named member with inline or pinned configuration.
@@ -13894,11 +13932,21 @@ components:
         transform:
           anyOf:
           - type: string
-            enum: [parse_json, map_fields, json_text, read_document_v1, retrieve_knowledge_v1, plugin_component_v1]
+            enum: [parse_json, map_fields, json_text, read_document_v1, retrieve_knowledge_v1, plugin_component_v1, decision_v1]
           - type: 'null'
         component:
           anyOf:
           - $ref: '#/components/schemas/ComponentReference'
+          - type: 'null'
+        decision:
+          anyOf:
+          - $ref: '#/components/schemas/DecisionTask'
+          - type: 'null'
+        decision_provider_id:
+          anyOf:
+          - type: string
+            minLength: 1
+            maxLength: 128
           - type: 'null'
         knowledge_base_id:
           description: Exact local knowledge base selected by a retrieval or plugin component node.
@@ -14693,6 +14741,7 @@ components:
           - tools
           - skills
           - knowledge_bases
+          - decision_providers
           title: Kind
           type: string
         source_id:
@@ -14773,6 +14822,7 @@ components:
           - tools
           - skills
           - knowledge_bases
+          - decision_providers
           title: Kind
           type: string
         source_id:

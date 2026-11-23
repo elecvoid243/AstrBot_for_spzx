@@ -1615,6 +1615,7 @@ class ProviderConfigService:
         "tts": "text_to_speech",
         "embedding": "embedding",
         "rerank": "rerank",
+        "decision": "decision",
     }
 
     def __init__(self, core_lifecycle: AstrBotCoreLifecycle) -> None:

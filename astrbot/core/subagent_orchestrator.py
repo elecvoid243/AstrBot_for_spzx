@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import copy
+import uuid
 from typing import TYPE_CHECKING, Any
 
 from astrbot import logger
 from astrbot.core.agent.agent import Agent
 from astrbot.core.agent.handoff import HandoffTool
 from astrbot.core.provider.func_tool_manager import FunctionToolManager
+from astrbot.core.provider.provider import Provider
+from astrbot.core.subagent_policy import SubAgentPolicy
 
 if TYPE_CHECKING:
     from astrbot.core.persona_mgr import PersonaManager
@@ -28,13 +31,82 @@ class SubAgentOrchestrator:
         self.handoffs: list[HandoffTool] = []
         self.handoff_skills: list[Any] = []
 
+    @staticmethod
+    def migrate_profiles(profiles: dict, legacy: dict) -> None:
+        """Persist the previous effective policy once per existing profile.
+
+        Args:
+            profiles: Loaded configuration files, including the default.
+            legacy: Settings previously shared by all conversations.
+        """
+        initial = profiles["default"]
+        raw_agents = legacy.get("agents")
+        agents = (
+            [agent for agent in raw_agents if isinstance(agent, dict)]
+            if isinstance(raw_agents, list)
+            else []
+        )
+        changed_catalog = False
+        ids: set[str] = set()
+        for agent in agents:
+            agent_id = agent.get("id")
+            if not isinstance(agent_id, str) or not agent_id or agent_id in ids:
+                agent["id"] = uuid.uuid4().hex
+                changed_catalog = True
+            ids.add(agent["id"])
+        if changed_catalog:
+            profiles["default"].save_config()
+        if initial.get("subagent_policy_migrated"):
+            return
+
+        policy = {key: value for key, value in legacy.items() if key != "agents"}
+        policy["agent_ids"] = [
+            agent["id"] for agent in agents if agent.get("enabled", True)
+        ]
+        for profile in profiles.values():
+            if profile.get("subagent_policy") is None:
+                profile["subagent_policy"] = copy.deepcopy(policy)
+                profile.save_config()
+        initial["subagent_policy_migrated"] = True
+        initial.save_config()
+
+    def available_handoffs(
+        self, policy: SubAgentPolicy, providers: dict
+    ) -> list[HandoffTool]:
+        """Filter registered handoffs by profile selection and available models.
+
+        Args:
+            policy: Policy effective for the current session.
+            providers: Active provider instances by ID.
+
+        Returns:
+            Selected and callable static handoffs.
+        """
+        if not policy.enabled:
+            return []
+        return [
+            tool
+            for tool in self.handoffs
+            if tool.subagent_config_id in policy.agent_ids
+            and (
+                not tool.provider_id
+                or (
+                    isinstance(providers.get(tool.provider_id), Provider)
+                    and (
+                        "*" in policy.provider_pool
+                        or tool.provider_id in policy.provider_pool
+                    )
+                )
+            )
+        ]
+
     async def reload_from_config(self, cfg: dict[str, Any]) -> None:
         from astrbot.core.astr_agent_context import AstrAgentContext
 
         agents = cfg.get("agents", [])
         if not isinstance(agents, list):
             logger.warning("subagent_orchestrator.agents must be a list")
-            return
+            agents = []
 
         handoffs: list[HandoffTool] = []
         handoff_skills: list[Any] = []
@@ -42,6 +114,9 @@ class SubAgentOrchestrator:
             if not isinstance(item, dict):
                 continue
             if not item.get("enabled", True):
+                continue
+            if item.get("runtime") not in (None, "", "astrbot"):
+                logger.warning("Skipping an unsupported static subagent runtime")
                 continue
 
             name = str(item.get("name", "")).strip()
@@ -54,9 +129,11 @@ class SubAgentOrchestrator:
             persona_data = self._persona_mgr.get_persona_v3_by_id(persona_id)
             if persona_id and persona_data is None:
                 logger.warning(
-                    "SubAgent persona %s not found, fallback to inline prompt.",
+                    "Skipping subagent %s because persona %s is unavailable.",
+                    name,
                     persona_id,
                 )
+                continue
 
             instructions = str(item.get("system_prompt", "")).strip()
             public_description = str(item.get("public_description", "")).strip()
@@ -106,6 +183,7 @@ class SubAgentOrchestrator:
 
             # Optional per-subagent chat provider override.
             handoff.provider_id = provider_id
+            handoff.subagent_config_id = item.get("id")
 
             handoffs.append(handoff)
             handoff_skills.append(skills)
@@ -116,7 +194,9 @@ class SubAgentOrchestrator:
         self.handoffs = handoffs
         self.handoff_skills = handoff_skills
 
-    def register_static_subagents_to_manager(self, session_id: str) -> None:
+    def register_static_subagents_to_manager(
+        self, session_id: str, handoffs: list[HandoffTool] | None = None
+    ) -> None:
         """Register all static subagents (from config) into SubAgentManager.
 
         This makes static subagents enjoy the same unified management as
@@ -132,6 +212,8 @@ class SubAgentOrchestrator:
             return
 
         for handoff, skills in zip(self.handoffs, self.handoff_skills):
+            if handoffs is not None and handoff not in handoffs:
+                continue
             try:
                 workdir = None
                 # Try to get skills from the handoff tool or agent

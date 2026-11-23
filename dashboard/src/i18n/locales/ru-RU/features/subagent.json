@@ -1,4 +1,16 @@
 {
+  "profile": {
+    "label": "Профиль конфигурации",
+    "default": "Профиль по умолчанию",
+    "availableAgents": "Статические субагенты профиля",
+    "status": {
+      "missing": "Отсутствует",
+      "disabled": "Отключён",
+      "provider_unavailable": "Модель недоступна",
+      "runtime_unavailable": "Среда выполнения недоступна",
+      "persona_unavailable": "Персона недоступна"
+    }
+  },
     "header": {
         "eyebrow": "Orchestration"
     },
@@ -40,7 +52,7 @@
     "section": {
         "title": "Статические субагенты",
         "subtitle": "Настройте делегируемых статических агентов, персонажей и описания для основного LLM",
-        "globalSettings": "Общие настройки",
+        "globalSettings": "Параметры профиля",
         "agentSetup": "Настройка агента",
         "enhancedSettings": "Настройки динамических субагентов",
         "enhancedSettingsHint": "Настройка параметров выполнения, ограничений ресурсов и стратегии инструментов"

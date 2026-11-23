@@ -11,6 +11,7 @@
     "tabs": {
       "all": "すべて",
       "chatCompletion": "チャット",
+      "decision": "判定",
       "speechToText": "音声認識",
       "textToSpeech": "音声合成",
       "embedding": "埋め込み",

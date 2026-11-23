@@ -1,4 +1,16 @@
 {
+  "profile": {
+    "label": "設定プロファイル",
+    "default": "既定のプロファイル",
+    "availableAgents": "このプロファイルの静的サブエージェント",
+    "status": {
+      "missing": "未登録",
+      "disabled": "無効",
+      "provider_unavailable": "モデルを利用できません",
+      "runtime_unavailable": "ランタイムを利用できません",
+      "persona_unavailable": "ペルソナを利用できません"
+    }
+  },
   "header": {
     "eyebrow": "サブエージェント"
   },
@@ -37,7 +49,7 @@
   "section": {
     "title": "サブエージェント設定",
     "subtitle": "メインエージェントが委任できるサブエージェント、ペルソナ、説明を設定します",
-    "globalSettings": "グローバル設定",
+    "globalSettings": "プロファイル設定",
     "agentSetup": "エージェント設定"
   },
   "cards": {

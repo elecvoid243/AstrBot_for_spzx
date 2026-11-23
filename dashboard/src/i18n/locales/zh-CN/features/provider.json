@@ -11,6 +11,7 @@
     "tabs": {
       "all": "全部",
       "chatCompletion": "对话",
+      "decision": "判断",
       "speechToText": "语音转文字",
       "textToSpeech": "文字转语音",
       "embedding": "嵌入",

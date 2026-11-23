@@ -42,22 +42,26 @@ async def test_reload_from_config_default_persona_is_resolved():
 
 
 @pytest.mark.asyncio
-async def test_reload_from_config_missing_persona_falls_back_to_inline_and_warns():
+async def test_reload_from_config_skips_only_agent_with_missing_persona():
     tool_mgr = MagicMock()
     persona_mgr = MagicMock()
     persona_mgr.get_persona_v3_by_id.return_value = None
     orchestrator = SubAgentOrchestrator(tool_mgr=tool_mgr, persona_mgr=persona_mgr)
 
+    config = _build_cfg({"persona_id": "not_exists"})
+    config["agents"].extend(_build_cfg({"name": "reviewer"})["agents"])
     with patch("astrbot.core.subagent_orchestrator.logger") as mock_logger:
-        await orchestrator.reload_from_config(_build_cfg({"persona_id": "not_exists"}))
+        await orchestrator.reload_from_config(config)
 
     assert len(orchestrator.handoffs) == 1
     handoff = orchestrator.handoffs[0]
+    assert handoff.agent.name == "reviewer"
     assert handoff.agent.instructions == "inline prompt"
     assert handoff.agent.tools == ["tool_a", "tool_b"]
     assert handoff.agent.begin_dialogs is None
     mock_logger.warning.assert_called_once_with(
-        "SubAgent persona %s not found, fallback to inline prompt.",
+        "Skipping subagent %s because persona %s is unavailable.",
+        "planner",
         "not_exists",
     )
 

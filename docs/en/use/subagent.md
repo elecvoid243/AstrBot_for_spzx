@@ -30,7 +30,11 @@ In the AstrBot WebUI, expand **More Features** in the left navigation bar and cl
 
 ### 1. Enable SubAgent Mode
 
-Toggle "Enable SubAgent Orchestration" at the top of the page.
+Select a configuration profile at the top of the page and enable SubAgent Orchestration for it. Maintain the shared static catalogue under **Default profile** and use **Static subagents for this profile** to select available entries for each profile. Unavailable selections show a reason and can be removed. Dynamic creation, limits, timeouts, the default model, and tool policies are saved with the selected profile.
+
+An upgrade copies the previous global policy into existing profiles once. Later changes to the default profile affect only conversations that use it. Switching a conversation's profile lets running subagents keep their starting model and timeout. Subsequent tool calls use current permissions.
+
+![Subagent policy in the default profile](/images/subagent-profile-en.jpg)
 
 The former **Orchestration mode → DAG orchestration** option has been removed. Existing DAG settings no longer enable DAG; subagents use the default delegation mode.
 

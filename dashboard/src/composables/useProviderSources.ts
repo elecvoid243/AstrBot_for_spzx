@@ -45,6 +45,7 @@ export function resolveDefaultTab(value?: string) {
     return 'rerank'
   }
 
+  if (normalized.includes('decision')) return 'decision'
   return 'chat_completion'
 }
 
@@ -87,6 +88,7 @@ export function useProviderSources(options: UseProviderSourcesOptions) {
     { value: 'chat_completion', label: tm('providers.tabs.chatCompletion'), icon: 'mdi-message-text' },
     { value: 'speech_to_text', label: tm('providers.tabs.speechToText'), icon: 'mdi-microphone-message' },
     { value: 'text_to_speech', label: tm('providers.tabs.textToSpeech'), icon: 'mdi-volume-high' },
+    { value: 'decision', label: tm('providers.tabs.decision'), icon: 'mdi-check-circle-outline' },
     { value: 'embedding', label: tm('providers.tabs.embedding'), icon: 'mdi-code-json' },
     { value: 'rerank', label: tm('providers.tabs.rerank'), icon: 'mdi-compare-vertical' }
   ])

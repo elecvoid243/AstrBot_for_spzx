@@ -108,9 +108,11 @@ class AstrBotCoreLifecycle:
                     self.provider_manager.llm_tools,
                     self.persona_mgr,
                 )
-            await self.subagent_orchestrator.reload_from_config(
-                self.astrbot_config.get("subagent_orchestrator", {}),
+            legacy = self.astrbot_config.get("subagent_orchestrator", {})
+            self.subagent_orchestrator.migrate_profiles(
+                self.astrbot_config_mgr.confs, legacy
             )
+            await self.subagent_orchestrator.reload_from_config(legacy)
         except Exception as e:
             logger.error(f"Subagent orchestrator init failed: {e}", exc_info=True)
 

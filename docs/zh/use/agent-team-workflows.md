@@ -45,6 +45,14 @@
 ![标明必填、可选和 JSON 默认值，并已连接对象与行列表端口的结构化工作流](/images/agent-teams-structured-ports-zh.jpg)
 
 
+### 判断节点
+
+在 Dashboard 的**提供商 → 判断**中添加并测试 System One 或 OpenAI Decisions 实例。在工作流编辑器启用**使用结构化端口**，从节点库添加**判断**，选择本地 Provider 和题型，并将文本或 JSON 材料连到 `state`。布尔题给出 `matched` 与 `probability`，选择题给出 `choice` 与 `probability`，评分题给出 `score`。把这些端口接到条件节点控制分支。导入资产时，在目标实例映射判断 Provider。
+
+超时、拒答和无效响应会阻塞节点，可在运行详情重试。有效的 `false` 会照常进入相应分支。运行详情显示实际使用的 Provider 和模型，产物发布审批仍由人工待办处理。插件可用 `ctx.decision.ask()`、`ctx.decision.choose()` 或 `ctx.decision.yes_no()`，并可在默认配置中设置插件默认判断 Provider。
+
+![判断节点、绑定的 Provider 与类型化端口](/images/agent-teams-decision-zh.jpg)
+
 ### 已安装插件组件
 
 AstrBot 管理员先在**插件**中安装并启用插件。在工作流编辑器启用**使用结构化端口**，从左侧节点库选择已登记的组件版本。连上具名输入、输出。组件要求知识库时，在属性面板选择本地知识库。使用结构化 JSON 输入试跑草稿，校验通过后发布固定版本。

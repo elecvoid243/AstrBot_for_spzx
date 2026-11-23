@@ -25,6 +25,7 @@ from astrbot.core.db.po import (
     AgentRoleVersion,
     AgentWorkflowVersion,
 )
+from astrbot.core.provider.provider import DecisionProvider
 from astrbot.core.tools.file_tool_mode import (
     DEFAULT_FILE_TOOL_MODE,
     file_tool_allowed,
@@ -169,6 +170,7 @@ class RoleAssetService:
             for key in (
                 "profiles",
                 "models",
+                "decision_providers",
                 "personas",
                 "tools",
                 "skills",
@@ -231,6 +233,12 @@ class RoleAssetService:
                     ),
                 }
             )
+        for provider in core.provider_manager.inst_map.values():
+            if isinstance(provider, DecisionProvider):
+                meta = provider.meta()
+                catalog["decision_providers"].append(
+                    {"id": meta.id, "name": f"{meta.id} / {meta.model or ''}"}
+                )
         for provider in core.provider_manager.get_insts():
             meta = provider.meta()
             config = provider.provider_config

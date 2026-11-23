@@ -1,9 +1,11 @@
+from __future__ import annotations
+
 import asyncio
 import copy
 import os
 import traceback
 from collections.abc import Callable
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from deprecated import deprecated
 
@@ -12,9 +14,9 @@ from astrbot.core.astrbot_config_mgr import AstrBotConfigManager
 from astrbot.core.db import BaseDatabase
 from astrbot.core.utils.error_redaction import safe_error
 
-from ..persona_mgr import PersonaManager
 from .entities import ProviderType
 from .provider import (
+    DecisionProvider,
     EmbeddingProvider,
     Provider,
     Providers,
@@ -23,6 +25,9 @@ from .provider import (
     TTSProvider,
 )
 from .register import llm_tools, provider_cls_map
+
+if TYPE_CHECKING:
+    from ..persona_mgr import PersonaManager
 
 
 @runtime_checkable
@@ -242,6 +247,14 @@ class ProviderManager:
         Raises:
             ValueError: If provider_type is unsupported.
         """
+        if provider_type == ProviderType.DECISION:
+            default_config = self.acm.confs["default"]
+            decision_id = default_config["provider_settings"].get(
+                "decision_provider_id"
+            )
+            decision = self.inst_map.get(decision_id)
+            return decision if isinstance(decision, DecisionProvider) else None
+
         provider = self.inst_map.get(provider_id) if provider_id else None
         if not provider:
             # default setting
@@ -421,6 +434,14 @@ class ProviderManager:
             ImportError: 如果提供商类型未知或无法导入对应模块，则抛出异常。
         """
         match type:
+            case "openai_decision":
+                from .sources.openai_decision_source import (
+                    OpenAIDecisionProvider as OpenAIDecisionProvider,
+                )
+            case "system_one_decision":
+                from .sources.system_one_decision_source import (
+                    SystemOneDecisionProvider as SystemOneDecisionProvider,
+                )
             case "openai_chat_completion":
                 from .sources.openai_source import (
                     ProviderOpenAIOfficial as ProviderOpenAIOfficial,
@@ -793,6 +814,18 @@ class ProviderManager:
                     if isinstance(inst, HasInitialize):
                         await inst.initialize()
                     self.embedding_provider_insts.append(inst)
+                case ProviderType.DECISION:
+                    if not issubclass(cls_type, DecisionProvider):
+                        raise TypeError(f"Invalid decision provider class: {cls_type}")
+                    key = provider_config.get("key", "")
+                    if isinstance(key, str):
+                        provider_config["key"] = [key]
+                    provider_config = self._resolve_env_key_list(provider_config)
+                    keys = provider_config.get("key")
+                    if not isinstance(keys, list) or len(keys) > 1:
+                        raise ValueError("Decision providers accept one API key")
+                    provider_config["key"] = keys[0] if keys else ""
+                    inst = cls_type(provider_config, self.provider_settings)
                 case ProviderType.RERANK:
                     if not issubclass(cls_type, RerankProvider):
                         raise TypeError(

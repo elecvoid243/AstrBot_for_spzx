@@ -1,5 +1,6 @@
 {
   "assistantFileComments": {
+    "title": "助手评论",
     "count": "助手评论（{count} 条）",
     "author": "助手",
     "openLine": "第 {line} 行的助手评论",

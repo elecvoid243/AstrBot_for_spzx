@@ -87,8 +87,7 @@ const props = defineProps<{
   /**
    * 2026-07-02 sidebar-search: 1-based line number to center in the
    * code view after a search-result click. null = no scroll.
-   * Forwarded to <FileBrowserCodeView>, where the scrollIntoView()
-   * watcher lives.
+   * Forwarded to <FileBrowserCodeView> for line navigation.
    */
   scrollToLine?: number | null;
   scrollToEndLine?: number | null;

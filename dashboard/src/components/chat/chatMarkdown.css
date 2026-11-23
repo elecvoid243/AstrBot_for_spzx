@@ -1,9 +1,21 @@
-.chat-markdown.markstream-vue {
+:root {
   /* 2026-11-07 (elecvoid243): agent output dropped one type step across the
      whole block — body, headings (markdownRenderConfig.ts) and tables — so
      denser multi-part replies fit the same viewport without losing hierarchy. */
-  --ms-text-body: 0.9375rem;
-  --ms-leading-body: 1.7;
+  --chat-body-font-size: 0.9375rem;
+  --chat-body-line-height: 1.7;
+}
+
+@media (min-width: 761px) {
+  :root {
+    --chat-body-font-size: 0.875rem;
+    --chat-body-line-height: 1.75;
+  }
+}
+
+.chat-markdown.markstream-vue {
+  --ms-text-body: var(--chat-body-font-size);
+  --ms-leading-body: var(--chat-body-line-height);
 }
 
 /* The chat controller measures message heights to follow output and preserve
@@ -14,13 +26,6 @@
 .chat-markdown.markstream-vue.markdown-renderer {
   content-visibility: visible;
   contain-intrinsic-size: none;
-}
-
-@media (min-width: 761px) {
-  .chat-markdown.markstream-vue {
-    --ms-text-body: 0.875rem;
-    --ms-leading-body: 1.75;
-  }
 }
 
 .chat-markdown .markstream-vue {

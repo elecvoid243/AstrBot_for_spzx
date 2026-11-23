@@ -1,5 +1,6 @@
 {
   "assistantFileComments": {
+    "title": "Assistant comments",
     "count": "Assistant comments ({count})",
     "author": "Assistant",
     "openLine": "Assistant comments on line {line}",

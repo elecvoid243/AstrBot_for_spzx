@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { mount } from "@vue/test-utils";
 import FileBrowserCodeView from "./FileBrowserCodeView.vue";
 
@@ -21,8 +21,20 @@ describe("source line references", () => {
     expect(
       wrapper.findAll(".line-referenced").map((line) => line.text()),
     ).toEqual(["second", "third"]);
+    const viewport = wrapper.get<HTMLElement>(".code-view").element;
+    viewport.scrollLeft = 120;
+    viewport.scrollTop = 75;
+    vi.spyOn(viewport, "clientHeight", "get").mockReturnValue(200);
+    vi.spyOn(viewport, "getBoundingClientRect").mockReturnValue({ top: 40 } as DOMRect);
+    vi.spyOn(wrapper.get(".line").element, "getBoundingClientRect").mockReturnValue({
+      top: 256,
+      height: 18,
+    } as DOMRect);
     await wrapper.setProps({ scrollToLine: 1, scrollToEndLine: 1 });
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await vi.waitFor(() => {
+      expect(viewport.scrollLeft).toBe(0);
+      expect(viewport.scrollTop).toBe(200);
+    });
     expect(wrapper.get(".line-referenced").text()).toBe("first");
     await wrapper.setProps({ scrollToLine: 4, scrollToEndLine: 6 });
     await new Promise((resolve) => setTimeout(resolve, 0));

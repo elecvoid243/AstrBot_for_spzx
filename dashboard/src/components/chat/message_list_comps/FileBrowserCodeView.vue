@@ -87,6 +87,7 @@ const lineCount = computed<number>(() => {
   return m ? m.length : 0;
 });
 
+const codeViewRef = ref<HTMLDivElement | null>(null);
 const codeContentRef = ref<HTMLElement | null>(null);
 const hoveredLine = ref<number | null>(null);
 const assistantCommentsByLine = computed(() => {
@@ -492,25 +493,7 @@ watch(
   () => closeMenu(),
 );
 
-// 2026-07-02 sidebar-search: center the requested line in the
-// code-view scroll container when a search result is clicked.
-//
-// We watch three props so the scroll also re-fires after a slow
-// file load (the user clicks a result while the file is still
-// fetching, then `highlightedHtml` updates once Shiki has rendered
-// the .line elements):
-//   - props.scrollToLine   (1-based line number, null/0 = no-op)
-//   - props.filePath        (new file)
-//   - props.highlightedHtml (Shiki output for the new file)
-//
-// `scrollIntoView({ block: 'center' })` is used instead of a manual
-// `scrollTop` calculation because the .code-view's grid layout
-// (gutter + line numbers + <pre>) makes offsetTop arithmetic
-// fragile across viewport sizes; the browser's native
-// scrollIntoView walks the .line span and centers it in the
-// nearest scrollable ancestor, which is exactly the .code-view.
-// `behavior: 'smooth'` is gated on the document's reduced-motion
-// preference to respect accessibility settings.
+// Reapply line navigation when the code view mounts or Shiki renders a loaded file.
 watch(
   [highlightedStart, () => props.filePath, () => props.highlightedHtml,
     highlightedEnd, () => codeContentRef.value],
@@ -520,8 +503,10 @@ watch(
     // DOM. The Shiki render is sync but v-for reconciliation runs
     // on the next microtask, so one nextTick is sufficient.
     await nextTick();
-    if (!codeContentRef.value) return;
-    const lineEls = codeContentRef.value.querySelectorAll<HTMLElement>(".line");
+    const viewport = codeViewRef.value;
+    const content = codeContentRef.value;
+    if (!viewport || !content) return;
+    const lineEls = content.querySelectorAll<HTMLElement>(".line");
     lineEls.forEach((element) => element.classList.remove("line-referenced"));
     if (!line || line < 1 || line !== highlightedStart.value ||
       path !== props.filePath || html !== props.highlightedHtml) return;
@@ -532,8 +517,13 @@ watch(
     const reduceMotion =
       typeof window !== "undefined" &&
       window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
-    lineEls[idx].scrollIntoView({
-      block: "center",
+    // scrollIntoView can shift the gutters and the start of long lines offscreen.
+    const targetRect = lineEls[idx].getBoundingClientRect();
+    const viewportTop = viewport.getBoundingClientRect().top + viewport.clientTop;
+    const centerOffset = (targetRect.height - viewport.clientHeight) / 2;
+    viewport.scrollTo({
+      left: 0,
+      top: viewport.scrollTop + targetRect.top - viewportTop + centerOffset,
       behavior: reduceMotion ? "auto" : "smooth",
     });
   },
@@ -542,6 +532,7 @@ watch(
 
 <template>
   <div
+    ref="codeViewRef"
     class="code-view"
     :class="{ dark: isDark, 'has-assistant-comments': assistantCommentsByLine.size }"
     @mousemove="onMouseMove"

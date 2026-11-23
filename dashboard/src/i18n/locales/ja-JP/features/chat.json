@@ -1,5 +1,6 @@
 {
   "assistantFileComments": {
+    "title": "アシスタントのコメント",
     "count": "アシスタントのコメント（{count} 件）",
     "author": "アシスタント",
     "openLine": "{line} 行目のアシスタントのコメント",

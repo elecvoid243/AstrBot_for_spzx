@@ -2,6 +2,7 @@ import { flushPromises, mount } from '@vue/test-utils';
 import { defineComponent } from 'vue';
 import { createMemoryHistory, createRouter, type RouteRecordRaw } from 'vue-router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createVuetify } from 'vuetify';
 
 const mocks = vi.hoisted(() => ({
   getPlugin: vi.fn(),
@@ -23,10 +24,13 @@ import MainRoutes from '@/router/MainRoutes';
 import { usePluginI18n } from '@/utils/pluginI18n';
 
 let wrapper: ReturnType<typeof mount> | undefined;
+let vuetify: ReturnType<typeof createVuetify>;
+const viewStubs = { 'v-progress-circular': true, 'v-alert': true };
 
 describe('Plugin Views compatibility', () => {
   beforeEach(() => {
     vi.resetAllMocks();
+    vuetify = createVuetify();
     mocks.getPlugin.mockResolvedValue({ data: { status: 'ok', data: {
       name: 'astrbot_plugin_tc_memory', activated: true,
     } } });
@@ -42,7 +46,7 @@ describe('Plugin Views compatibility', () => {
   });
 
   it('loads the signed entry with the existing nested-panel sandbox permissions', async () => {
-    wrapper = mount(PluginViewPage, { global: { stubs: { 'v-progress-circular': true, 'v-alert': true } } });
+    wrapper = mount(PluginViewPage, { global: { plugins: [vuetify], stubs: viewStubs } });
     await flushPromises();
     const iframe = wrapper.get('iframe');
     expect(iframe.attributes('sandbox')!.split(' ')).toEqual([
@@ -58,7 +62,7 @@ describe('Plugin Views compatibility', () => {
 
   it('forwards the legacy bridge status request to the plugin extension API', async () => {
     mocks.apiGet.mockResolvedValue({ data: { status: 'ok', data: { user_key: 'test-key' } } });
-    wrapper = mount(PluginViewPage, { global: { stubs: { 'v-progress-circular': true, 'v-alert': true } } });
+    wrapper = mount(PluginViewPage, { global: { plugins: [vuetify], stubs: viewStubs } });
     await flushPromises();
     const post = vi.fn();
     const frameWindow = { postMessage: post } as unknown as Window;
@@ -73,6 +77,30 @@ describe('Plugin Views compatibility', () => {
     expect(post).toHaveBeenCalledWith({
       channel: 'astrbot-plugin-page', kind: 'response', requestId: 'memory-status', ok: true, data: { user_key: 'test-key' },
     }, window.location.origin);
+  });
+
+  it('sends current colors to the plugin and updates them on a theme change', async () => {
+    wrapper = mount(PluginViewPage, { global: { plugins: [vuetify], stubs: viewStubs } });
+    await flushPromises();
+    const postMessage = vi.fn();
+    const iframe = wrapper.get('iframe');
+    Object.defineProperty(iframe.element, 'contentWindow', { value: { postMessage } });
+
+    await iframe.trigger('load');
+    const lightColors = postMessage.mock.lastCall?.[0].context.themeColors;
+    expect(lightColors).toEqual({
+      primary: vuetify.theme.themes.value.light.colors.primary,
+      secondary: vuetify.theme.themes.value.light.colors.secondary,
+    });
+
+    vuetify.theme.global.name.value = 'dark';
+    await flushPromises();
+    const darkColors = postMessage.mock.lastCall?.[0].context.themeColors;
+    expect(darkColors).toEqual({
+      primary: vuetify.theme.themes.value.dark.colors.primary,
+      secondary: vuetify.theme.themes.value.dark.colors.secondary,
+    });
+    expect(darkColors).not.toEqual(lightColors);
   });
 
   it('redirects old page links while retaining plugin parameters and query strings', async () => {

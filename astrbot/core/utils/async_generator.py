@@ -1,9 +1,30 @@
 import asyncio
-from collections.abc import AsyncGenerator
-from contextlib import suppress
+from collections.abc import AsyncGenerator, AsyncIterator
+from contextlib import asynccontextmanager, suppress
+from inspect import isawaitable
 from typing import TypeVar, cast
 
 T = TypeVar("T")
+
+
+@asynccontextmanager
+async def closing_async_stream(stream: T) -> AsyncIterator[T]:
+    """Close an SDK stream or async generator on exit, including early exit.
+
+    Args:
+        stream: The stream owned by the caller inside the context.
+
+    Yields:
+        The original stream.
+    """
+    try:
+        yield stream
+    finally:
+        close = getattr(stream, "aclose", None) or getattr(stream, "close", None)
+        if close:
+            result = close()
+            if isawaitable(result):
+                await result
 
 
 async def iterate_in_task(

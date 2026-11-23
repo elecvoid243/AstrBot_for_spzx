@@ -17,6 +17,7 @@ from astrbot.core.agent_team_execution import (
 from astrbot.core.exceptions import EmptyModelOutputError
 from astrbot.core.message.message_event_result import MessageChain
 from astrbot.core.provider.entities import LLMResponse, TokenUsage, ToolCallsResult
+from astrbot.core.utils.async_generator import closing_async_stream
 
 from ..headers import build_conversation_headers
 from ..register import register_provider_adapter
@@ -520,59 +521,60 @@ class ProviderOpenAIResponses(ProviderOpenAIOfficial):
         )
 
         response_id: str | None = None
-        async for event in stream:
-            event_type = self._field(event, "type", "")
-            event_response = self._field(event, "response")
-            if event_response is not None:
-                response_id = self._field(event_response, "id", response_id)
+        async with closing_async_stream(stream):
+            async for event in stream:
+                event_type = self._field(event, "type", "")
+                event_response = self._field(event, "response")
+                if event_response is not None:
+                    response_id = self._field(event_response, "id", response_id)
 
-            if event_type == "error":
-                code = self._field(event, "code", "stream_error")
-                message = self._field(event, "message", "Responses stream failed")
-                raise RuntimeError(
-                    f"Responses API stream failed: {code}: {message}. "
-                    f"response_id={response_id}"
-                )
-
-            if event_type in {
-                "response.output_text.delta",
-                "response.refusal.delta",
-            }:
-                delta = self._field(event, "delta", "")
-                if delta:
-                    yield LLMResponse(
-                        "assistant",
-                        result_chain=MessageChain(chain=[Comp.Plain(str(delta))]),
-                        is_chunk=True,
-                        id=response_id,
+                if event_type == "error":
+                    code = self._field(event, "code", "stream_error")
+                    message = self._field(event, "message", "Responses stream failed")
+                    raise RuntimeError(
+                        f"Responses API stream failed: {code}: {message}. "
+                        f"response_id={response_id}"
                     )
-                continue
 
-            if event_type in {
-                "response.reasoning_text.delta",
-                "response.reasoning_summary_text.delta",
-            }:
-                delta = self._field(event, "delta", "")
-                if delta:
-                    yield LLMResponse(
-                        "assistant",
-                        reasoning_content=str(delta),
-                        is_chunk=True,
-                        id=response_id,
-                    )
-                continue
+                if event_type in {
+                    "response.output_text.delta",
+                    "response.refusal.delta",
+                }:
+                    delta = self._field(event, "delta", "")
+                    if delta:
+                        yield LLMResponse(
+                            "assistant",
+                            result_chain=MessageChain(chain=[Comp.Plain(str(delta))]),
+                            is_chunk=True,
+                            id=response_id,
+                        )
+                    continue
 
-            if event_type in {
-                "response.completed",
-                "response.incomplete",
-                "response.failed",
-            }:
-                if event_response is None:
-                    raise EmptyModelOutputError(
-                        f"Responses stream terminal event has no response: {event_type}"
-                    )
-                yield await self._parse_response(event_response, tools)
-                return
+                if event_type in {
+                    "response.reasoning_text.delta",
+                    "response.reasoning_summary_text.delta",
+                }:
+                    delta = self._field(event, "delta", "")
+                    if delta:
+                        yield LLMResponse(
+                            "assistant",
+                            reasoning_content=str(delta),
+                            is_chunk=True,
+                            id=response_id,
+                        )
+                    continue
+
+                if event_type in {
+                    "response.completed",
+                    "response.incomplete",
+                    "response.failed",
+                }:
+                    if event_response is None:
+                        raise EmptyModelOutputError(
+                            f"Responses stream terminal event has no response: {event_type}"
+                        )
+                    yield await self._parse_response(event_response, tools)
+                    return
 
         raise EmptyModelOutputError(
             f"Responses stream ended without a terminal event. response_id={response_id}"

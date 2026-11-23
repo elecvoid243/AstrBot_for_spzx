@@ -403,6 +403,34 @@
                         :inert="remoteHistory"
                       />
 
+                      <div
+                        v-else-if="part.type === 'reasoning_loop'"
+                        class="reasoning-loop-notice d-flex align-center ga-2 text-body-2 my-1"
+                        :class="
+                          part.status === 'failed' ? 'text-error' : 'text-warning'
+                        "
+                        :role="part.status === 'failed' ? 'alert' : 'status'"
+                      >
+                        <v-icon size="16" aria-hidden="true">
+                          {{
+                            part.status === "failed"
+                              ? "mdi-alert-circle-outline"
+                              : "mdi-refresh"
+                          }}
+                        </v-icon>
+                        <span>{{
+                          tm(
+                            part.status === "failed"
+                              ? "reasoningLoop.failed"
+                              : "reasoningLoop.retry",
+                            {
+                              retry: Number(part.retry),
+                              maxRetries: Number(part.max_retries),
+                            },
+                          )
+                        }}</span>
+                      </div>
+
                       <SubAgentRunBlock
                         v-else-if="
                           remoteHistory &&

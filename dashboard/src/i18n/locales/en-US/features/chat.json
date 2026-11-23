@@ -711,6 +711,10 @@
     "duration": "Duration",
     "ttft": "Time to First Token"
   },
+  "reasoningLoop": {
+    "retry": "Reasoning loop detected. Retrying {retry}/{maxRetries}…",
+    "failed": "Generation stopped because the model kept repeating its reasoning after {maxRetries} retries."
+  },
   "contextCompression": {
     "readout": "Context compacted",
     "lastCompression": "Last compaction: {from} → {to} tokens · {strategy}",

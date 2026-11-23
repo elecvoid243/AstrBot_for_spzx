@@ -4,7 +4,8 @@ import json
 import logging
 import random
 from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
+from contextvars import ContextVar
 from typing import Literal, cast
 
 import httpx
@@ -24,6 +25,7 @@ from astrbot.core.exceptions import EmptyModelOutputError
 from astrbot.core.message.message_event_result import MessageChain
 from astrbot.core.provider.entities import LLMResponse, TokenUsage
 from astrbot.core.provider.func_tool_manager import ToolSet
+from astrbot.core.utils.async_generator import closing_async_stream
 from astrbot.core.utils.media_utils import (
     describe_media_ref,
     resolve_media_ref_to_base64_data,
@@ -45,6 +47,20 @@ class SuppressNonTextPartsWarning(logging.Filter):
 
 
 logging.getLogger("google_genai.types").addFilter(SuppressNonTextPartsWarning())
+
+_stream_cleanup: ContextVar[AsyncExitStack | None] = ContextVar(
+    "gemini_stream_cleanup", default=None
+)
+
+
+async def _own_stream_response(response: httpx.Response) -> None:
+    """Register transport cleanup for the Gemini stream opening this response.
+
+    Args:
+        response: Response reported by the HTTPX client before body iteration.
+    """
+    if cleanup := _stream_cleanup.get():
+        cleanup.push_async_callback(response.aclose)
 
 
 def _snapshot_json(value: object) -> object:
@@ -128,6 +144,7 @@ class ProviderGoogleGenAI(Provider):
         async_client_kwargs: dict = {
             "base_url": self.api_base,
             "timeout": self.timeout,
+            "event_hooks": {"response": [_own_stream_response]},
         }
         if proxy:
             async_client_kwargs["proxy"] = proxy
@@ -858,168 +875,190 @@ class ProviderGoogleGenAI(Provider):
         model = payloads.get("model", self.get_model())
         conversation = await self._prepare_conversation(payloads)
 
-        result = None
-        while True:
-            try:
-                config = await self._prepare_query_config(
-                    payloads,
-                    tools,
-                    payloads.get("tool_choice", "auto"),
-                    system_instruction,
-                    llm_params=llm_params,
-                )
+        async with AsyncExitStack() as cleanup:
+            result = None
+            while True:
                 try:
-                    # See _query: skip the eager dump when developer mode is off.
-                    if request_snapshot.developer_mode_enabled():
-                        request_snapshots.capture(
-                            self,
-                            {
-                                "model": model,
-                                # The snapshot mirrors the wire payload while the
-                                # SDK keeps the original objects.
-                                "contents": _snapshot_json(conversation),
-                                "config": _snapshot_json(config),
-                                "stream": True,
-                            },
-                            adapter=self.SNAPSHOT_ADAPTER,
-                            tool_set=tools,
-                        )
-                except Exception:
-                    logger.debug(
-                        "Failed to capture the LLM request snapshot",
-                        exc_info=True,
+                    config = await self._prepare_query_config(
+                        payloads,
+                        tools,
+                        payloads.get("tool_choice", "auto"),
+                        system_instruction,
+                        llm_params=llm_params,
                     )
-                async with self._conversation_header(conversation_id):
-                    result = await retry_provider_request(
-                        "Gemini",
-                        lambda: self.client.models.generate_content_stream(
-                            model=model,
-                            contents=cast(types.ContentListUnion, conversation),
-                            config=config,
-                        ),
-                        max_attempts=request_max_retries,
-                    )
-                break
-            except APIError as e:
-                if e.message is None:
-                    e.message = ""
-                if "Developer instruction is not enabled" in e.message:
-                    logger.warning(
-                        f"{model} does not support system prompts; removing it automatically. This may affect persona settings.",
-                    )
-                    system_instruction = None
-                elif "Function calling is not enabled" in e.message:
-                    logger.warning(
-                        f"{model} does not support function calling; removing tools automatically."
-                    )
-                    tools = None
-                else:
-                    raise
-                continue
-
-        # Accumulate the complete response text for the final response
-        accumulated_text = ""
-        accumulated_reasoning = ""
-        final_response = None
-
-        async with self._conversation_header(conversation_id):
-            async for chunk in result:
-                llm_response = LLMResponse("assistant", is_chunk=True)
-
-                if not chunk.candidates:
-                    logger.warning(f"Gemini stream chunk has empty candidates: {chunk}")
-                    continue
-                if not chunk.candidates[0].content:
-                    logger.warning(f"Gemini stream chunk has empty content: {chunk}")
-                    continue
-
-                if chunk.candidates[0].content.parts and any(
-                    part.function_call for part in chunk.candidates[0].content.parts
-                ):
-                    llm_response = LLMResponse("assistant", is_chunk=False)
-                    llm_response.raw_completion = chunk
-                    llm_response.result_chain = self._process_content_parts(
-                        chunk.candidates[0],
-                        llm_response,
-                        validate_output=False,
-                    )
-                    # This response replaces the whole turn in conversation
-                    # history, so keep the narration and reasoning that were
-                    # already streamed before the tool call. Dropping them made
-                    # the user-visible text missing from history.
-                    if accumulated_text or accumulated_reasoning:
-                        parts = list(llm_response.result_chain.chain or [])
-                        if accumulated_text:
-                            parts.insert(0, Comp.Plain(accumulated_text))
-                            llm_response.result_chain = MessageChain(chain=parts)
-                        if accumulated_reasoning:
-                            # _process_content_parts already stored the reasoning
-                            # that came with the tool-call chunk itself, so append
-                            # to it instead of overwriting that part.
-                            llm_response.reasoning_content = accumulated_reasoning + (
-                                llm_response.reasoning_content or ""
+                    try:
+                        # See _query: skip the eager dump when developer mode is off.
+                        if request_snapshot.developer_mode_enabled():
+                            request_snapshots.capture(
+                                self,
+                                {
+                                    "model": model,
+                                    # The snapshot mirrors the wire payload while the
+                                    # SDK keeps the original objects.
+                                    "contents": _snapshot_json(conversation),
+                                    "config": _snapshot_json(config),
+                                    "stream": True,
+                                },
+                                adapter=self.SNAPSHOT_ADAPTER,
+                                tool_set=tools,
                             )
-                    llm_response.id = chunk.response_id
-                    if chunk.usage_metadata:
-                        llm_response.usage = self._extract_usage(chunk.usage_metadata)
-                    yield llm_response
-                    return
-
-                _f = False
-
-                # 提取 reasoning content
-                reasoning = self._extract_reasoning_content(chunk.candidates[0])
-                if reasoning:
-                    _f = True
-                    accumulated_reasoning += reasoning
-                    llm_response.reasoning_content = reasoning
-                if chunk.text:
-                    _f = True
-                    accumulated_text += chunk.text
-                    llm_response.result_chain = MessageChain(
-                        chain=[Comp.Plain(chunk.text)]
-                    )
-                if _f:
-                    yield llm_response
-
-                if chunk.candidates[0].finish_reason:
-                    # Process the final chunk for potential tool calls or other content
-                    if chunk.candidates[0].content.parts:
-                        final_response = LLMResponse("assistant", is_chunk=False)
-                        final_response.raw_completion = chunk
-                        final_response.result_chain = self._process_content_parts(
-                            chunk.candidates[0],
-                            final_response,
-                            validate_output=False,
+                    except Exception:
+                        logger.debug(
+                            "Failed to capture the LLM request snapshot",
+                            exc_info=True,
                         )
-                        final_response.id = chunk.response_id
-                        if chunk.usage_metadata:
-                            final_response.usage = self._extract_usage(
-                                chunk.usage_metadata
+                    async with self._conversation_header(conversation_id):
+                        # The SDK's nested iterators do not propagate aclose()
+                        # to the HTTP response when a consumer interrupts a stream.
+                        token = _stream_cleanup.set(cleanup)
+                        try:
+                            result = await retry_provider_request(
+                                "Gemini",
+                                lambda: self.client.models.generate_content_stream(
+                                    model=model,
+                                    contents=cast(types.ContentListUnion, conversation),
+                                    config=config,
+                                ),
+                                max_attempts=request_max_retries,
                             )
+                        finally:
+                            _stream_cleanup.reset(token)
                     break
+                except APIError as e:
+                    if e.message is None:
+                        e.message = ""
+                    if "Developer instruction is not enabled" in e.message:
+                        logger.warning(
+                            f"{model} does not support system prompts; removing it automatically. This may affect persona settings.",
+                        )
+                        system_instruction = None
+                    elif "Function calling is not enabled" in e.message:
+                        logger.warning(
+                            f"{model} does not support function calling; removing tools automatically."
+                        )
+                        tools = None
+                    else:
+                        raise
+                    continue
 
-        # Yield final complete response with accumulated text
-        if not final_response:
-            final_response = LLMResponse("assistant", is_chunk=False)
+            # Accumulate the complete response text for the final response
+            accumulated_text = ""
+            accumulated_reasoning = ""
+            final_response = None
 
-        # Set the complete accumulated reasoning in the final response
-        if accumulated_reasoning:
-            final_response.reasoning_content = accumulated_reasoning
+            async with self._conversation_header(conversation_id):
+                async with closing_async_stream(result):
+                    async for chunk in result:
+                        llm_response = LLMResponse("assistant", is_chunk=True)
 
-        # Set the complete accumulated text in the final response
-        if accumulated_text:
-            final_response.result_chain = MessageChain(
-                chain=[Comp.Plain(accumulated_text)],
+                        if not chunk.candidates:
+                            logger.warning(
+                                f"Gemini stream chunk has empty candidates: {chunk}"
+                            )
+                            continue
+                        if not chunk.candidates[0].content:
+                            logger.warning(
+                                f"Gemini stream chunk has empty content: {chunk}"
+                            )
+                            continue
+
+                        if chunk.candidates[0].content.parts and any(
+                            part.function_call
+                            for part in chunk.candidates[0].content.parts
+                        ):
+                            llm_response = LLMResponse("assistant", is_chunk=False)
+                            llm_response.raw_completion = chunk
+                            llm_response.result_chain = self._process_content_parts(
+                                chunk.candidates[0],
+                                llm_response,
+                                validate_output=False,
+                            )
+                            # This response replaces the whole turn in conversation
+                            # history, so keep the narration and reasoning that were
+                            # already streamed before the tool call. Dropping them made
+                            # the user-visible text missing from history.
+                            if accumulated_text or accumulated_reasoning:
+                                parts = list(llm_response.result_chain.chain or [])
+                                if accumulated_text:
+                                    parts.insert(0, Comp.Plain(accumulated_text))
+                                    llm_response.result_chain = MessageChain(
+                                        chain=parts
+                                    )
+                                if accumulated_reasoning:
+                                    # _process_content_parts already stored the reasoning
+                                    # that came with the tool-call chunk itself, so append
+                                    # to it instead of overwriting that part.
+                                    llm_response.reasoning_content = (
+                                        accumulated_reasoning
+                                        + (llm_response.reasoning_content or "")
+                                    )
+                            llm_response.id = chunk.response_id
+                            if chunk.usage_metadata:
+                                llm_response.usage = self._extract_usage(
+                                    chunk.usage_metadata
+                                )
+                            yield llm_response
+                            return
+
+                        _f = False
+
+                        # 提取 reasoning content
+                        reasoning = self._extract_reasoning_content(chunk.candidates[0])
+                        if reasoning:
+                            _f = True
+                            accumulated_reasoning += reasoning
+                            llm_response.reasoning_content = reasoning
+                        if chunk.text:
+                            _f = True
+                            accumulated_text += chunk.text
+                            llm_response.result_chain = MessageChain(
+                                chain=[Comp.Plain(chunk.text)]
+                            )
+                        if _f:
+                            yield llm_response
+
+                        if chunk.candidates[0].finish_reason:
+                            # Process the final chunk for potential tool calls or other content
+                            if chunk.candidates[0].content.parts:
+                                final_response = LLMResponse(
+                                    "assistant", is_chunk=False
+                                )
+                                final_response.raw_completion = chunk
+                                final_response.result_chain = (
+                                    self._process_content_parts(
+                                        chunk.candidates[0],
+                                        final_response,
+                                        validate_output=False,
+                                    )
+                                )
+                                final_response.id = chunk.response_id
+                                if chunk.usage_metadata:
+                                    final_response.usage = self._extract_usage(
+                                        chunk.usage_metadata
+                                    )
+                            break
+
+            # Yield final complete response with accumulated text
+            if not final_response:
+                final_response = LLMResponse("assistant", is_chunk=False)
+
+            # Set the complete accumulated reasoning in the final response
+            if accumulated_reasoning:
+                final_response.reasoning_content = accumulated_reasoning
+
+            # Set the complete accumulated text in the final response
+            if accumulated_text:
+                final_response.result_chain = MessageChain(
+                    chain=[Comp.Plain(accumulated_text)],
+                )
+
+            self._ensure_usable_response(
+                final_response,
+                response_id=getattr(final_response, "id", None),
+                finish_reason=None,
             )
 
-        self._ensure_usable_response(
-            final_response,
-            response_id=getattr(final_response, "id", None),
-            finish_reason=None,
-        )
-
-        yield final_response
+            yield final_response
 
     async def text_chat(
         self,
@@ -1155,14 +1194,17 @@ class ProviderGoogleGenAI(Provider):
                 query_kwargs = {}
                 if conversation_id:
                     query_kwargs["conversation_id"] = conversation_id
-                async for response in self._query_stream(
-                    payloads,
-                    func_tool,
-                    request_max_retries=request_max_retries,
-                    llm_params=llm_params,
-                    **query_kwargs,
-                ):
-                    yield response
+                async with closing_async_stream(
+                    self._query_stream(
+                        payloads,
+                        func_tool,
+                        request_max_retries=request_max_retries,
+                        llm_params=llm_params,
+                        **query_kwargs,
+                    )
+                ) as stream:
+                    async for response in stream:
+                        yield response
                 break
             except APIError as e:
                 if await self._handle_api_error(e, keys):

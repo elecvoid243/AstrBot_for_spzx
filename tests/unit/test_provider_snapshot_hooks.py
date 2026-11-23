@@ -16,6 +16,7 @@ import contextlib
 from types import SimpleNamespace
 
 import anthropic
+import httpx
 import pytest
 from anthropic.types import Message, TextBlock, Usage
 from google.genai import types as genai_types
@@ -288,6 +289,93 @@ async def _run_openai_chat_stream(
             item
             async for item in provider._query_stream(_openai_payloads(), _tool_set())
         ]
+    finally:
+        await provider.terminate()
+
+
+@pytest.mark.asyncio
+async def test_closing_openai_provider_generator_closes_async_sdk_stream(monkeypatch):
+    provider = _make_openai_provider()
+    closed = False
+
+    async def chunks():
+        nonlocal closed
+        try:
+            yield ChatCompletionChunk.model_validate(
+                {
+                    "id": "chatcmpl-stream",
+                    "object": "chat.completion.chunk",
+                    "created": 0,
+                    "model": "gpt-4o-mini",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {"content": "partial"},
+                            "finish_reason": None,
+                        }
+                    ],
+                }
+            )
+            raise AssertionError("An interrupted stream must not read another chunk")
+        finally:
+            closed = True
+
+    async def fake_create(**kwargs):
+        return chunks()
+
+    monkeypatch.setattr(provider.client.chat.completions, "create", fake_create)
+    try:
+        async with contextlib.aclosing(
+            provider.text_chat_stream(prompt="test")
+        ) as stream:
+            assert (await anext(stream)).is_chunk
+        assert closed
+    finally:
+        await provider.terminate()
+
+
+@pytest.mark.asyncio
+async def test_closing_gemini_provider_generator_closes_http_response(monkeypatch):
+    class ReasoningBody(httpx.AsyncByteStream):
+        closed = False
+
+        async def __aiter__(self):
+            yield (
+                b'data: {"candidates":[{"content":{"role":"model","parts":'
+                b'[{"text":"example thought","thought":true}]}}],"responseId":"trial"}\n\n'
+            )
+            raise AssertionError("An interrupted stream must not read another chunk")
+
+        async def aclose(self):
+            self.closed = True
+
+    provider = ProviderGoogleGenAI(
+        {
+            "id": "test-gemini",
+            "key": ["test-key"],
+            "model": "gemini-2.5-pro",
+            "api_base": "https://gemini.invalid",
+        },
+        {},
+    )
+    body = ReasoningBody()
+
+    async def handle(request):
+        return httpx.Response(
+            200, headers={"content-type": "text/event-stream"}, stream=body
+        )
+
+    client = provider._http_client
+    assert client is not None
+    await client._transport.aclose()
+    monkeypatch.setattr(client, "_mounts", {})
+    monkeypatch.setattr(client, "_transport", httpx.MockTransport(handle))
+    try:
+        async with contextlib.aclosing(
+            provider.text_chat_stream(prompt="test", request_max_retries=1)
+        ) as stream:
+            assert (await anext(stream)).reasoning_content == "example thought"
+        assert body.closed
     finally:
         await provider.terminate()
 

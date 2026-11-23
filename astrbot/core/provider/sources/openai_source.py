@@ -34,6 +34,7 @@ from astrbot.core.agent_team_execution import (
 from astrbot.core.exceptions import EmptyModelOutputError
 from astrbot.core.message.message_event_result import MessageChain
 from astrbot.core.provider.entities import LLMResponse, TokenUsage, ToolCallsResult
+from astrbot.core.utils.async_generator import closing_async_stream
 from astrbot.core.utils.media_utils import (
     describe_media_ref,
     resolve_media_ref_to_base64_data,
@@ -818,55 +819,58 @@ class ProviderOpenAIOfficial(Provider):
 
         state = ChatCompletionStreamState()
 
-        async for chunk in stream:
-            choice = chunk.choices[0] if chunk.choices else None
-            delta = choice.delta if choice else None
+        async with closing_async_stream(stream):
+            async for chunk in stream:
+                choice = chunk.choices[0] if chunk.choices else None
+                delta = choice.delta if choice else None
 
-            if delta and (dtcs := delta.tool_calls):
-                for idx, tc in enumerate(dtcs):
-                    # siliconflow workaround
-                    if tc.function and tc.function.arguments:
-                        tc.type = "function"
-                    # Fix for #6661: Add missing 'index' field to tool_call deltas
-                    # Gemini and some OpenAI-compatible proxies omit this field
-                    if not hasattr(tc, "index") or tc.index is None:
-                        tc.index = idx
-            # 跳过 delta=None 的 chunk，避免 SDK 内部 _convert_initial_chunk_into_snapshot
-            # 第 747 行 choice.delta.to_dict() 抛出 NoneType 错误。
-            # refs: AstrBot#6689 / openai-python#5069 / #5047
-            # 例外：流末尾的 usage chunk（choices=[]，delta=None 但有 usage 数据）
-            # 需要传给 state，否则最终 completion 会丢失 usage 信息
-            if delta is not None or chunk.usage:
-                try:
-                    state.handle_chunk(chunk)
-                except Exception as e:
-                    logger.error("Saving chunk state error: " + str(e))
-            # logger.debug(f"chunk delta: {delta}")
-            # handle the content delta
-            reasoning = self._extract_reasoning_content(chunk)
-            _y = False
-            llm_response.id = chunk.id
-            llm_response.reasoning_content = None
-            llm_response.completion_text = ""
-            if reasoning is not None:
-                llm_response.reasoning_content = reasoning
-                _y = True
-            if delta and delta.content:
-                # Don't strip streaming chunks to preserve spaces between words
-                completion_text = self._normalize_content(delta.content, strip=False)
-                llm_response.result_chain = MessageChain(
-                    chain=[Comp.Plain(completion_text)],
-                )
-                _y = True
-            if chunk.usage:
-                llm_response.usage = self._extract_usage(chunk.usage)
-            elif choice and (choice_usage := getattr(choice, "usage", None)):
-                # Workaround for some providers that only return usage in choices[].usage, e.g. MoonshotAI
-                # See https://github.com/AstrBotDevs/AstrBot/issues/6614
-                llm_response.usage = self._extract_usage(choice_usage)
-                state.current_completion_snapshot.usage = choice_usage
-            if _y:
-                yield llm_response
+                if delta and (dtcs := delta.tool_calls):
+                    for idx, tc in enumerate(dtcs):
+                        # siliconflow workaround
+                        if tc.function and tc.function.arguments:
+                            tc.type = "function"
+                        # Fix for #6661: Add missing 'index' field to tool_call deltas
+                        # Gemini and some OpenAI-compatible proxies omit this field
+                        if not hasattr(tc, "index") or tc.index is None:
+                            tc.index = idx
+                # 跳过 delta=None 的 chunk，避免 SDK 内部 _convert_initial_chunk_into_snapshot
+                # 第 747 行 choice.delta.to_dict() 抛出 NoneType 错误。
+                # refs: AstrBot#6689 / openai-python#5069 / #5047
+                # 例外：流末尾的 usage chunk（choices=[]，delta=None 但有 usage 数据）
+                # 需要传给 state，否则最终 completion 会丢失 usage 信息
+                if delta is not None or chunk.usage:
+                    try:
+                        state.handle_chunk(chunk)
+                    except Exception as e:
+                        logger.error("Saving chunk state error: " + str(e))
+                # logger.debug(f"chunk delta: {delta}")
+                # handle the content delta
+                reasoning = self._extract_reasoning_content(chunk)
+                _y = False
+                llm_response.id = chunk.id
+                llm_response.reasoning_content = None
+                llm_response.completion_text = ""
+                if reasoning is not None:
+                    llm_response.reasoning_content = reasoning
+                    _y = True
+                if delta and delta.content:
+                    # Don't strip streaming chunks to preserve spaces between words
+                    completion_text = self._normalize_content(
+                        delta.content, strip=False
+                    )
+                    llm_response.result_chain = MessageChain(
+                        chain=[Comp.Plain(completion_text)],
+                    )
+                    _y = True
+                if chunk.usage:
+                    llm_response.usage = self._extract_usage(chunk.usage)
+                elif choice and (choice_usage := getattr(choice, "usage", None)):
+                    # Workaround for some providers that only return usage in choices[].usage, e.g. MoonshotAI
+                    # See https://github.com/AstrBotDevs/AstrBot/issues/6614
+                    llm_response.usage = self._extract_usage(choice_usage)
+                    state.current_completion_snapshot.usage = choice_usage
+                if _y:
+                    yield llm_response
 
         try:
             final_completion = state.get_final_completion()
@@ -1535,21 +1539,24 @@ class ProviderOpenAIOfficial(Provider):
                 if conversation_id:
                     query_kwargs["conversation_id"] = conversation_id
                 usage_matches_request = None
-                async for response in self._query_stream(
-                    payloads,
-                    func_tool,
-                    request_max_retries=request_max_retries,
-                    **query_kwargs,
-                ):
-                    if usage_matches_request is None:
-                        usage_matches_request = (
-                            payloads[self._request_input_key] == original_input
-                            and payloads.get("tools", []) == original_tools
-                        )
-                    response.usage_matches_request = (
-                        response.usage_matches_request and usage_matches_request
+                async with closing_async_stream(
+                    self._query_stream(
+                        payloads,
+                        func_tool,
+                        request_max_retries=request_max_retries,
+                        **query_kwargs,
                     )
-                    yield response
+                ) as stream:
+                    async for response in stream:
+                        if usage_matches_request is None:
+                            usage_matches_request = (
+                                payloads[self._request_input_key] == original_input
+                                and payloads.get("tools", []) == original_tools
+                            )
+                        response.usage_matches_request = (
+                            response.usage_matches_request and usage_matches_request
+                        )
+                        yield response
                 break
             except Exception as e:
                 last_exception = e

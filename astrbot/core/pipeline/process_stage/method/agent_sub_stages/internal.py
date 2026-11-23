@@ -708,7 +708,9 @@ class InternalAgentSubStage(Stage):
 
         cfg = repetition_cfg or RepetitionSanitizeConfig()
         if cfg.enabled:
-            sanitized_messages = sanitize_message_think_parts(messages_to_save, cfg)
+            sanitized_messages = await asyncio.to_thread(
+                sanitize_message_think_parts, messages_to_save, cfg
+            )
             if sanitized_messages is not messages_to_save:
                 logger.info(
                     "context sanitizer: folded repeated reasoning before saving conversation %s",

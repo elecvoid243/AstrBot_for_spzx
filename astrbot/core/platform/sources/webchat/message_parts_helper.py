@@ -409,9 +409,12 @@ async def message_chain_to_storage_message_parts(
             continue
 
         if isinstance(comp, Json):
-            parts.append(
-                {"type": "plain", "text": json.dumps(comp.data, ensure_ascii=False)}
-            )
+            if message_chain.type == "reasoning_loop" and isinstance(comp.data, dict):
+                parts.append({**comp.data, "type": "reasoning_loop"})
+            else:
+                parts.append(
+                    {"type": "plain", "text": json.dumps(comp.data, ensure_ascii=False)}
+                )
             continue
 
         if isinstance(comp, Image):

@@ -165,4 +165,43 @@ describe("useMessages context_compression dispatch", () => {
     // an empty record until the first delta.
     expect(records[0]?.content?.isLoading).toBe(true);
   });
+
+  it("keeps reasoning retry and failure events as separate message parts", async () => {
+    const retry = { status: "retry", retry: 1, max_retries: 3 };
+    const failed = { status: "failed", retry: 3, max_retries: 3 };
+    fetchMock
+      .mockResolvedValueOnce(
+        sseResponse([
+          {
+            type: "run_started",
+            synthetic: true,
+            message_id: "run-1",
+            data: { run_id: "run-1" },
+          },
+        ]),
+      )
+      .mockResolvedValueOnce(
+        sseResponse(
+          [retry, failed].map((notice) => ({
+            type: "plain",
+            chain_type: "reasoning_loop",
+            data: JSON.stringify(notice),
+            message_id: "run-1",
+          })),
+        ),
+      )
+      .mockResolvedValue({
+        ok: false,
+        headers: { get: () => null },
+      } as unknown as Response);
+
+    const composable = useMessages({ currentSessionId: ref("s1") });
+
+    await vi.waitFor(() =>
+      expect(composable.messagesBySession["s1"]?.[0]?.content.message).toEqual([
+        { type: "reasoning_loop", ...retry },
+        { type: "reasoning_loop", ...failed },
+      ]),
+    );
+  });
 });

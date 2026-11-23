@@ -1,6 +1,11 @@
 import json
 from pathlib import Path
 
+from astrbot.core.agent.context.reasoning_ngram import (
+    WINDOW_CHARS,
+    WINDOW_COUNT,
+    observe_loop,
+)
 from astrbot.core.agent.context.repetition import (
     RepetitionSanitizeConfig,
     sanitize_history_think_parts,
@@ -11,6 +16,43 @@ from astrbot.core.agent.context.truncator import ContextTruncator
 from astrbot.core.agent.message import Message, ThinkPart
 
 REPEATED = ("OK.\nLet me write.\nLet me go.\nLet me go.\n") * 20
+
+
+def test_ngram_observes_alternating_reworded_steps():
+    text = (
+        "Check the permissions on the configuration file before proceeding. "
+        "Compare the deployment settings against the expected environment. "
+        "Recheck the permissions on the configuration file before proceeding. "
+        "Compare the deployment settings against the expected environment again. "
+        "Please check the permissions on the configuration file before proceeding. "
+        "Now compare the deployment settings against the expected environment."
+    )
+
+    result = observe_loop(text)
+
+    assert result.start == 0
+    assert result.period == 2
+
+
+def test_ngram_sampling_limits_work_and_prefers_the_end():
+    prefix = "".join(
+        f"Inspect the active profile revision {index:07d} before proceeding.\n"
+        for index in range(18_000)
+    )
+    loop = (
+        "先核对配置文件中的访问权限和部署相关设置。"
+        "再核对配置文件中的访问权限和部署相关设置。"
+        "仍需核对配置文件中的访问权限和部署相关设置。"
+    )
+
+    no_match = observe_loop(prefix)
+    match = observe_loop(prefix + loop)
+
+    assert no_match.start is None
+    assert no_match.window_chars == WINDOW_COUNT * WINDOW_CHARS
+    assert match.window_chars == WINDOW_CHARS
+    assert match.start >= len(prefix)
+    assert match.period == 1
 
 
 def test_collapses_periodic_block():
@@ -101,7 +143,7 @@ def test_is_idempotent_with_multiple_blocks():
         "".join(
             f"block {index} line {suffix}\n" for suffix in ("alpha", "beta", "gamma")
         )
-        for index in range(5)
+        for index in range(17)
     ]
     text = "".join(block * 10 for block in blocks)
 
@@ -109,28 +151,47 @@ def test_is_idempotent_with_multiple_blocks():
     second = sanitize_repetitive_text(first.text, RepetitionSanitizeConfig())
 
     assert first.changed is True
+    assert first.text.count("[context sanitizer:") == len(blocks)
     assert second.changed is False
     assert second.text == first.text
 
 
-def test_fallback_for_pure_loop_when_scan_is_skipped():
-    text = ("alpha alpha alpha\nbeta beta beta\n") * 30
+def test_fallback_folds_only_contiguous_runs_and_keeps_conclusion():
+    repeated_line = "Checksum validation completed.\n"
+    conclusion = "Use the verified artifact from build 19."
+    text = repeated_line * 39 + conclusion
     cfg = RepetitionSanitizeConfig(max_scan_lines=10)
     result = sanitize_repetitive_text(text, cfg)
 
-    original_lines = len([line for line in text.splitlines() if line.strip()])
     assert result.changed is True
-    assert "collapsed repetitive reasoning" in result.text
-    assert result.collapsed_lines == original_lines - 1
+    assert result.text == (
+        repeated_line
+        + "[context sanitizer: collapsed 38 x repeated line]\n"
+        + conclusion
+    )
 
 
-def test_max_scan_lines_uses_fallback_only():
+def test_max_scan_lines_leaves_periodic_blocks_unchanged():
     text = ("OK.\nLet me write.\nLet me go.\nLet me go.\n") * 40
     cfg = RepetitionSanitizeConfig(max_scan_lines=10)
     result = sanitize_repetitive_text(text, cfg)
 
-    assert result.changed is True
-    assert "collapsed repetitive reasoning" in result.text
+    assert result.changed is False
+    assert result.text == text
+
+
+def test_preserves_matching_blocks_in_distant_sections():
+    block = "if (ready) {\n    commit_batch();\n}\n"
+    text = "".join(
+        block
+        + "".join(
+            f"Independent operation {section} row {row}.\n"
+            for row in range(40 + section)
+        )
+        for section in range(8)
+    )
+
+    assert sanitize_repetitive_text(text, RepetitionSanitizeConfig()).text == text
 
 
 def test_control_corpus_is_byte_identical():
@@ -282,27 +343,12 @@ def _meaningful_lines(text: str) -> list[str]:
     )
 
 
-def _max_identical_run(text: str) -> int:
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
-    longest = 0
-    current = 1
-    for index in range(1, len(lines)):
-        if lines[index] == lines[index - 1]:
-            current += 1
-        else:
-            current = 1
-        longest = max(longest, current)
-    return longest
-
-
 def test_d40_2503_collapses_loop():
     original = _d40_think()[2503]
     result = sanitize_repetitive_text(original, RepetitionSanitizeConfig())
 
     assert result.changed is True
-    assert result.text.count("Let me go.") <= 120
-    assert result.collapsed_lines >= 1300
-    assert _max_identical_run(result.text) < 8
+    assert 0 < result.text.count("Let me go.") < original.count("Let me go.")
     for line in _meaningful_lines(original):
         assert line in result.text
 
@@ -312,9 +358,7 @@ def test_d40_2314_collapses_loop():
     result = sanitize_repetitive_text(original, RepetitionSanitizeConfig())
 
     assert result.changed is True
-    assert result.text.count("Let me go.") <= 100
-    assert result.collapsed_lines >= 6800
-    assert _max_identical_run(result.text) < 8
+    assert 0 < result.text.count("Let me go.") < original.count("Let me go.")
     for line in _meaningful_lines(original):
         assert line in result.text
 

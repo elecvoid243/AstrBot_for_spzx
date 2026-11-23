@@ -711,6 +711,10 @@
     "duration": "耗时",
     "ttft": "首字时间"
   },
+  "reasoningLoop": {
+    "retry": "检测到思考内容循环，正在进行第 {retry}/{maxRetries} 次重试…",
+    "failed": "模型在重试 {maxRetries} 次后仍然重复思考，已停止生成。"
+  },
   "contextCompression": {
     "readout": "上下文已压缩",
     "lastCompression": "上次压缩：{from} → {to} tokens · {strategy}",

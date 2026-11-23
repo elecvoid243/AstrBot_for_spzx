@@ -206,6 +206,7 @@ const UNIFIED_NO_MERGE_CHAINS = new Set([
   "tool_call",
   "interactive_choice",
   "context_compression",
+  "reasoning_loop",
 ]);
 
 export interface MessagePart {
@@ -3295,6 +3296,18 @@ export function useMessages(options: UseMessagesOptions) {
         appendReasoningPart(botRecord, payloadText(data));
         return;
       }
+      if (chainType === "reasoning_loop") {
+        const notice = parseJsonSafe(data);
+        if (notice?.status === "retry" || notice?.status === "failed") {
+          messageContent(botRecord).message.push({
+            type: "reasoning_loop",
+            status: notice.status,
+            retry: notice.retry,
+            max_retries: notice.max_retries,
+          });
+        }
+        return;
+      }
       if (chainType === "tool_call") {
         const parsed = parseJsonSafe(data);
         // Author: elecvoid243
@@ -3718,7 +3731,9 @@ export function isFinalReplyBlock(block: MessageDisplayBlock): boolean {
   return (
     block.kind === "content" &&
     block.parts.some(
-      (part) => part.type === "plain" && String(part.text || "").trim(),
+      (part) =>
+        (part.type === "plain" && String(part.text || "").trim()) ||
+        (part.type === "reasoning_loop" && part.status === "failed"),
     ) &&
     !block.parts.some((part) => part.type === "tool_call")
   );

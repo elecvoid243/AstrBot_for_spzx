@@ -421,6 +421,10 @@
     "duration": "所要時間",
     "ttft": "最初のトークンまでの時間"
   },
+  "reasoningLoop": {
+    "retry": "推論の繰り返しを検出しました。再試行中（{retry}/{maxRetries}）…",
+    "failed": "{maxRetries} 回の再試行後も推論が繰り返されたため、生成を停止しました。"
+  },
   "contextCompression": {
     "readout": "コンテキストを圧縮しました",
     "lastCompression": "前回の圧縮：{from} → {to} トークン · {strategy}",

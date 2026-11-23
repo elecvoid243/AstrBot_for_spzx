@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections import Counter
 from dataclasses import dataclass
-from math import gcd
+from itertools import groupby
+from time import perf_counter
 from typing import Any
 
+from astrbot.core.agent.context.reasoning_ngram import observe_loop
 from astrbot.core.agent.message import Message, ThinkPart
 
 logger = logging.getLogger("astrbot")
@@ -20,7 +23,12 @@ DEFAULT_MIN_CHARS = 512
 DEFAULT_MAX_SCAN_LINES = 20_000
 DEFAULT_FALLBACK_DUP_RATIO = 0.8
 DEFAULT_FALLBACK_MAX_UNIQUE_LINES = 8
-MAX_SANITIZE_PASSES = 16
+MAX_SCAN_CHARS = 1_000_000
+MAX_SCAN_PERIOD = 32
+_FOLD_MARKER = re.compile(
+    r"\[context sanitizer: collapsed (?:\d+ x (?:\d+-line repeated block|repeated line)"
+    r"|repetitive reasoning \(\d+ lines, \d+ chars\))\]",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,7 +60,7 @@ class RepetitionSanitizeConfig:
         def _int(name: str, default: int, minimum: int) -> int:
             try:
                 value = int(raw.get(name, default))
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 return default
             return max(minimum, value)
 
@@ -108,64 +116,54 @@ def _duplicate_ratio(lines: list[str]) -> float:
     return duplicated / len(meaningful)
 
 
-def _common_stride(starts: list[int]) -> int:
-    """Return the greatest common stride between consecutive occurrences.
+def _find_repeated_blocks(
+    keys: list[str], cfg: RepetitionSanitizeConfig
+) -> list[tuple[int, int, list[int]]]:
+    """Find nearby occurrences of exact line blocks in the original text.
 
     Args:
-        starts: Non-overlapping occurrence start indices.
-
-    Returns:
-        The common stride in lines; 0 when fewer than two starts exist.
-    """
-    stride = 0
-    for index in range(len(starts) - 1):
-        stride = gcd(stride, starts[index + 1] - starts[index])
-    return stride
-
-
-def _find_dominant_block(
-    text: str, cfg: RepetitionSanitizeConfig
-) -> tuple[int, list[int]] | None:
-    """Find the block whose removal deletes the most lines.
-
-    Args:
-        text: Current reasoning text.
+        keys: Original lines without their line endings.
         cfg: Sanitizer thresholds.
 
     Returns:
-        ``(period, non_overlapping_start_indices)`` or None.
+        Candidates as tuples of removable line count, period, and starts.
     """
-    keys = [line.strip() for line in text.splitlines()]
-    best: tuple[int, int, list[int]] | None = None
-    for period in range(cfg.min_period, cfg.max_period + 1):
+    counts = Counter(keys)
+    eligible = [i for i, key in enumerate(keys) if counts[key] >= cfg.min_repeats]
+    groups: list[tuple[int, int, list[int]]] = []
+    max_period = min(cfg.max_period, MAX_SCAN_PERIOD)
+    for period in range(cfg.min_period, max_period + 1):
+        # Start a new group after a gap too wide to support a local loop.
+        max_gap = min(max_period, 2 * period)
         positions: dict[tuple[str, ...], list[int]] = {}
-        for index in range(0, len(keys) - period + 1):
+        for index in eligible:
+            if index + period > len(keys):
+                break
             block = tuple(keys[index : index + period])
-            if not any(len(line) >= 8 for line in block):
+            positions.setdefault(block, []).append(index)
+        for block, starts in positions.items():
+            if len(starts) < cfg.min_repeats:
+                continue
+            if not any(len(line.strip()) >= 8 for line in block):
                 continue
             if _minimal_period(block) < cfg.min_period:
                 continue
-            positions.setdefault(block, []).append(index)
-        for starts in positions.values():
-            if len(starts) < cfg.min_repeats:
-                continue
             selected: list[int] = []
-            last = -1
             for start in starts:
-                if start < last:
-                    continue
+                if selected:
+                    distance = start - selected[-1]
+                    if distance < period:
+                        continue
+                    if distance > max_gap:
+                        if len(selected) >= cfg.min_repeats:
+                            groups.append(
+                                ((len(selected) - 1) * period, period, selected)
+                            )
+                        selected = []
                 selected.append(start)
-                last = start + period
-            if len(selected) < cfg.min_repeats:
-                continue
-            if _common_stride(selected) > cfg.max_period:
-                continue
-            removed = (len(selected) - 1) * period
-            if best is None or removed > best[0]:
-                best = (removed, period, selected)
-    if best is None:
-        return None
-    return best[1], best[2]
+            if len(selected) >= cfg.min_repeats:
+                groups.append(((len(selected) - 1) * period, period, selected))
+    return groups
 
 
 def _minimal_period(block: tuple[str, ...]) -> int:
@@ -184,156 +182,119 @@ def _minimal_period(block: tuple[str, ...]) -> int:
 
 
 def _remove_block_occurrences(
-    text: str, period: int, starts: list[int]
+    text: str, groups: list[tuple[int, int, list[int]]]
 ) -> tuple[str, int]:
-    """Keep the first occurrence and remove the rest.
+    """Fold non-overlapping groups in a single reconstruction of the text.
 
     Args:
-        text: Current reasoning text.
-        period: Block length in lines.
-        starts: Non-overlapping occurrence start indices.
+        text: Original reasoning text.
+        groups: Candidate blocks in the original text.
 
     Returns:
         ``(new_text, removed_occurrences)``.
     """
     lines = text.splitlines(keepends=True)
-    skip: set[int] = set()
-    for start in starts[1:]:
-        skip.update(range(start, start + period))
-    out: list[str] = []
-    index = 0
-    marker_done = False
-    first_end = starts[0] + period
-    while index < len(lines):
-        if index in skip:
-            index += 1
+    # Reserve the retained occurrence as well so later groups cannot remove it.
+    state = bytearray(len(lines))
+    markers: dict[int, str] = {}
+    removed = 0
+    groups.sort(key=lambda group: group[0], reverse=True)
+    for _, period, starts in groups:
+        if any(any(state[start : start + period]) for start in starts):
             continue
-        out.append(lines[index])
-        index += 1
-        if not marker_done and index == first_end:
-            out.append(
-                f"[context sanitizer: collapsed {len(starts) - 1} x "
-                f"{period}-line repeated block]\n"
-            )
-            marker_done = True
-    return "".join(out), len(starts) - 1
-
-
-def _long_run_lines(text: str, min_repeats: int) -> set[str]:
-    """Return line texts that already form long runs in the original text.
-
-    Args:
-        text: Original reasoning text.
-        min_repeats: Minimum run length.
-
-    Returns:
-        Stripped line texts whose original consecutive run is long enough.
-    """
-    lines = text.splitlines()
-    preserved: set[str] = set()
-    index = 0
-    while index < len(lines):
-        key = lines[index].strip()
-        end = index + 1
-        while end < len(lines) and lines[end].strip() == key:
-            end += 1
-        if key and end - index >= min_repeats:
-            preserved.add(key)
-        index = end
-    return preserved
-
-
-def _collapse_identical_runs(
-    text: str, cfg: RepetitionSanitizeConfig, preserved_lines: set[str]
-) -> tuple[str, int]:
-    """Collapse consecutive identical runs created by block removal.
-
-    Args:
-        text: Current reasoning text.
-        cfg: Sanitizer thresholds.
-        preserved_lines: Line texts that already had long runs in the original.
-
-    Returns:
-        ``(new_text, collapsed_runs)``.
-    """
-    lines = text.splitlines(keepends=True)
-    out: list[str] = []
-    collapsed = 0
-    index = 0
-    while index < len(lines):
-        key = lines[index].strip()
-        end = index + 1
-        while end < len(lines) and lines[end].strip() == key:
-            end += 1
-        run = end - index
-        if key and run >= cfg.min_repeats and key not in preserved_lines:
-            out.append(lines[index])
-            out.append(f"[context sanitizer: collapsed {run - 1} x repeated line]\n")
-            collapsed += 1
-        else:
-            out.extend(lines[index:end])
-        index = end
-    return "".join(out), collapsed
+        first = starts[0]
+        state[first : first + period] = b"\x01" * period
+        for start in starts[1:]:
+            state[start : start + period] = b"\x02" * period
+        count = len(starts) - 1
+        description = (
+            "repeated line" if period == 1 else f"{period}-line repeated block"
+        )
+        markers[first + period - 1] = (
+            f"[context sanitizer: collapsed {count} x {description}]\n"
+        )
+        removed += count
+    return (
+        "".join(
+            line + markers.get(i, "") for i, line in enumerate(lines) if state[i] != 2
+        ),
+        removed,
+    )
 
 
 def sanitize_repetitive_text(
-    text: str, cfg: RepetitionSanitizeConfig
+    text: str, cfg: RepetitionSanitizeConfig, *, observe_ngram: bool = False
 ) -> SanitizeResult:
     """Collapse consecutive repeated line blocks in a reasoning string.
 
     Args:
         text: Original reasoning content.
         cfg: Sanitizer thresholds.
+        observe_ngram: Record a possible loop before folding fresh reasoning.
 
     Returns:
         The folded text and counters; the original text when nothing matched.
     """
     original_chars = len(text)
-    if not cfg.enabled or original_chars < cfg.min_chars:
+    if not cfg.enabled:
+        return SanitizeResult(text=text, original_chars=original_chars)
+    if observe_ngram:
+        try:
+            started = perf_counter()
+            observation = observe_loop(text)
+            if observation.start is not None:
+                logger.info(
+                    "context sanitizer: suspected n-gram reasoning loop "
+                    "(period=%d, offset=%d, window_chars=%d, input_chars=%d, scan_ms=%.2f)",
+                    observation.period,
+                    observation.start,
+                    observation.window_chars,
+                    original_chars,
+                    (perf_counter() - started) * 1000,
+                )
+        except Exception:
+            logger.warning("reasoning n-gram observation failed", exc_info=True)
+    if not cfg.min_chars <= original_chars <= MAX_SCAN_CHARS:
         return SanitizeResult(text=text, original_chars=original_chars)
     try:
         all_lines = text.splitlines()
+        # Previously folded history must not form new loops around removed lines.
+        if "[context sanitizer: collapsed " in text and any(
+            _FOLD_MARKER.fullmatch(line) for line in all_lines
+        ):
+            return SanitizeResult(text=text, original_chars=original_chars)
         non_empty = [line.strip() for line in all_lines if line.strip()]
         if len(non_empty) < cfg.min_lines:
             return SanitizeResult(text=text, original_chars=original_chars)
 
-        preserved_lines = _long_run_lines(text, cfg.min_repeats)
-        collapsed_blocks = 0
-        if len(all_lines) <= cfg.max_scan_lines:
-            for _ in range(MAX_SANITIZE_PASSES):
-                found = _find_dominant_block(text, cfg)
-                if found is None:
-                    break
-                period, starts = found
-                text, removed = _remove_block_occurrences(text, period, starts)
-                collapsed_blocks += removed
-                if removed == 0:
-                    break
+        groups = []
+        if len(all_lines) <= min(cfg.max_scan_lines, DEFAULT_MAX_SCAN_LINES):
+            groups = _find_repeated_blocks(all_lines, cfg)
 
-        text, run_blocks = _collapse_identical_runs(text, cfg, preserved_lines)
-        collapsed_blocks += run_blocks
-
-        remaining = [line.strip() for line in text.splitlines() if line.strip()]
-        remaining_unique = {line for line in remaining if len(line) >= 4}
+        # A high duplication ratio only permits folding exact contiguous runs.
         if (
-            len(remaining) >= cfg.min_lines
-            and len(remaining_unique) <= DEFAULT_FALLBACK_MAX_UNIQUE_LINES
-            and _duplicate_ratio(remaining) > cfg.fallback_dup_ratio
+            len({line for line in non_empty if len(line) >= 4})
+            <= DEFAULT_FALLBACK_MAX_UNIQUE_LINES
+            and _duplicate_ratio(non_empty) > cfg.fallback_dup_ratio
         ):
-            return SanitizeResult(
-                text=(
-                    "[context sanitizer: collapsed repetitive reasoning "
-                    f"({len(non_empty)} lines, {original_chars} chars)]"
-                ),
-                collapsed_blocks=max(1, collapsed_blocks),
-                collapsed_lines=max(0, len(non_empty) - 1),
-                original_chars=original_chars,
-                changed=True,
-            )
+            start = 0
+            for key, run in groupby(all_lines):
+                count = sum(1 for _ in run)
+                if len(key.strip()) >= 4 and count >= cfg.min_repeats:
+                    groups.append((count - 1, 1, list(range(start, start + count))))
+                start += count
+
+        if not groups:
+            return SanitizeResult(text=text, original_chars=original_chars)
+        folded, collapsed_blocks = _remove_block_occurrences(text, groups)
         return SanitizeResult(
-            text=text,
+            text=folded,
             collapsed_blocks=collapsed_blocks,
-            collapsed_lines=max(0, len(non_empty) - len(remaining)),
+            collapsed_lines=max(
+                0,
+                len(non_empty)
+                - sum(bool(line.strip()) for line in folded.splitlines()),
+            ),
             original_chars=original_chars,
             changed=collapsed_blocks > 0,
         )

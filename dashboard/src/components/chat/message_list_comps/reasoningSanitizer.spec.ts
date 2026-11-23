@@ -46,6 +46,26 @@ describe("parseThinkSegments", () => {
     ]);
   });
 
+  it.each(["\n", "\r\n", "\r"])(
+    "keeps unrelated reasoning before a block that ends in a blank line (%j)",
+    (lineBreak) => {
+      const text = [
+        "decision",
+        "first step",
+        "second step",
+        "",
+        "[context sanitizer: collapsed 19 x 3-line repeated block]",
+        "after",
+      ].join(lineBreak);
+
+      expect(parseThinkSegments(text)).toEqual([
+        { kind: "text", text: "decision" },
+        { kind: "period", repeats: 19, period: 3 },
+        { kind: "text", text: "after" },
+      ]);
+    },
+  );
+
   it("hides the kept line before a run marker", () => {
     const text =
       "intro\nkeep\n[context sanitizer: collapsed 8 x repeated line]\nafter";

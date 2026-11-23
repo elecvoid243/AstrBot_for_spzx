@@ -3518,7 +3518,92 @@ async def test_pairing_unsafe_live_result_fails_before_next_request():
 REPEATED_REASONING = ("OK.\nLet me write.\nLet me go.\nLet me go.\n") * 20
 
 
-def test_build_think_part_sanitizes_repetition():
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("loop_attempts", "stop_on_retry"), [(1, False), (4, False), (4, True)]
+)
+async def test_streaming_reasoning_loop_retries_the_same_request(
+    runner,
+    provider_request,
+    mock_tool_executor,
+    mock_hooks,
+    loop_attempts,
+    stop_on_retry,
+):
+    requests, closed = [], []
+
+    class LoopProvider(MockProvider):
+        async def text_chat_stream(self, **kwargs):
+            attempt = len(requests)
+            assert closed == list(range(attempt))
+            requests.append(kwargs)
+            try:
+                if attempt < loop_attempts:
+                    period = "Check the same configuration and restart the reasoning. "
+                    offset = 0
+                    while True:
+                        delta = (period * 2)[offset : offset + 15]
+                        offset = (offset + len(delta)) % len(period)
+                        yield LLMResponse(
+                            role="assistant", is_chunk=True, reasoning_content=delta
+                        )
+                else:
+                    yield LLMResponse(role="assistant", completion_text="Finished.")
+            finally:
+                closed.append(attempt)
+
+    await runner.reset(
+        provider=LoopProvider(),
+        request=provider_request,
+        run_context=ContextWrapper(context=None),
+        tool_executor=mock_tool_executor,
+        agent_hooks=mock_hooks,
+        streaming=True,
+    )
+
+    notices = []
+    async with asyncio.timeout(5):
+        async for event in runner.step():
+            if event.type in ("reasoning_loop_retry", "reasoning_loop_failed"):
+                notices.append(event.data["chain"].chain[0].data)
+                if stop_on_retry:
+                    runner.request_stop()
+
+    if stop_on_retry:
+        assert len(requests) == 1
+        assert closed == [0]
+        assert notices == [{"status": "retry", "retry": 1, "max_retries": 3}]
+        assert runner.was_aborted()
+        return
+
+    retries = min(loop_attempts, 3)
+    assert len(requests) == 1 + retries
+    assert all(request == requests[0] for request in requests)
+    assert all(not request["abort_signal"].is_set() for request in requests)
+    assert notices[:retries] == [
+        {"status": "retry", "retry": index, "max_retries": 3}
+        for index in range(1, retries + 1)
+    ]
+    assert all(
+        not isinstance(part, ThinkPart)
+        for item in runner.run_context.messages
+        if isinstance(item.content, list)
+        for part in item.content
+    )
+    final = runner.get_final_llm_resp()
+    assert final is not None
+    if loop_attempts == 4:
+        assert closed == [0, 1, 2, 3]
+        assert notices[3:] == [{"status": "failed", "retry": 3, "max_retries": 3}]
+        assert final.role == "err"
+    else:
+        assert closed == [0, 1]
+        assert notices[1:] == []
+        assert final.completion_text == "Finished."
+
+
+@pytest.mark.asyncio
+async def test_build_think_part_sanitizes_repetition():
     runner = object.__new__(ToolLoopAgentRunner)
     runner.provider = SimpleNamespace(provider_config={})
     response = LLMResponse(
@@ -3526,14 +3611,15 @@ def test_build_think_part_sanitizes_repetition():
         reasoning_content=REPEATED_REASONING,
     )
 
-    part = runner._build_think_part(response)
+    part = await runner._build_think_part(response)
 
     assert isinstance(part, ThinkPart)
     assert part.think.count("Let me go.") == 2
     assert "[context sanitizer:" in part.think
 
 
-def test_build_think_part_keeps_encrypted_reasoning():
+@pytest.mark.asyncio
+async def test_build_think_part_keeps_encrypted_reasoning():
     runner = object.__new__(ToolLoopAgentRunner)
     runner.provider = SimpleNamespace(provider_config={})
     response = LLMResponse(
@@ -3542,13 +3628,14 @@ def test_build_think_part_keeps_encrypted_reasoning():
         reasoning_signature="signed-state",
     )
 
-    part = runner._build_think_part(response)
+    part = await runner._build_think_part(response)
 
     assert part.think == REPEATED_REASONING
     assert part.encrypted == "signed-state"
 
 
-def test_build_think_part_respects_provider_switch():
+@pytest.mark.asyncio
+async def test_build_think_part_respects_provider_switch():
     runner = object.__new__(ToolLoopAgentRunner)
     runner.provider = SimpleNamespace(
         provider_config={"context_sanitizer": {"enabled": False}}
@@ -3558,9 +3645,92 @@ def test_build_think_part_respects_provider_switch():
         reasoning_content=REPEATED_REASONING,
     )
 
-    part = runner._build_think_part(response)
+    part = await runner._build_think_part(response)
 
     assert part.think == REPEATED_REASONING
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("enabled", "signature", "expect_log"),
+    [(True, None, True), (False, None, False), (True, "signed-state", False)],
+)
+async def test_build_think_part_observes_approximate_loops(
+    monkeypatch, enabled, signature, expect_log
+):
+    log_info = MagicMock()
+    monkeypatch.setattr("astrbot.core.agent.context.repetition.logger.info", log_info)
+    runner = object.__new__(ToolLoopAgentRunner)
+    runner.provider = SimpleNamespace(
+        provider_config={"context_sanitizer": {"enabled": enabled}}
+    )
+    reasoning = (
+        "Before proceeding, verify the configuration file with the current validation settings. "
+        "Please verify the configuration file with the current validation settings before proceeding. "
+        "Now verify the configuration file with the current validation settings before proceeding."
+    )
+
+    part = await runner._build_think_part(
+        LLMResponse(
+            role="assistant", reasoning_content=reasoning, reasoning_signature=signature
+        )
+    )
+
+    assert part.think == reasoning
+    assert part.encrypted == signature
+    if expect_log:
+        log_info.assert_called_once()
+        message, *values = log_info.call_args.args
+        assert "suspected n-gram reasoning loop" in message
+        assert values[:4] == [1, 0, len(reasoning), len(reasoning)]
+        assert "verify" not in message
+    else:
+        log_info.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enabled", [True, False])
+async def test_first_request_sanitizes_loaded_reasoning(
+    runner, mock_tool_executor, mock_hooks, monkeypatch, enabled
+):
+    observer = MagicMock()
+    monkeypatch.setattr("astrbot.core.agent.context.repetition.observe_loop", observer)
+    provider = PairingProvider()
+    provider.provider_config["context_sanitizer"] = {"enabled": enabled}
+    await runner.reset(
+        provider=provider,
+        request=ProviderRequest(
+            prompt="Continue",
+            contexts=[
+                {"role": "user", "content": "Previous request"},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "think", "think": REPEATED_REASONING},
+                        {"type": "text", "text": "Previous reply"},
+                    ],
+                },
+            ],
+        ),
+        run_context=ContextWrapper(context=None),
+        tool_executor=mock_tool_executor,
+        agent_hooks=mock_hooks,
+        streaming=False,
+    )
+
+    async for _ in runner.step():
+        pass
+
+    message = next(
+        msg for msg in provider.received_contexts[0] if msg.role == "assistant"
+    )
+    think, reply = message.content
+    if enabled:
+        assert think.think.count("Let me go.") == 2
+    else:
+        assert think.think == REPEATED_REASONING
+    assert reply.text == "Previous reply"
+    observer.assert_not_called()
 
 
 class RepeatedReasoningProvider(MockProvider):

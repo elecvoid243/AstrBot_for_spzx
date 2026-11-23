@@ -6,7 +6,7 @@ import time
 import traceback
 import typing as T
 import uuid
-from contextlib import suppress
+from contextlib import aclosing, suppress
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -32,8 +32,13 @@ from astrbot.core.agent.call_checkpoint import (
     dump_call_response,
     load_call_response,
 )
+from astrbot.core.agent.context.reasoning_ngram import (
+    MIN_NGRAM_INPUT_CHARS,
+    StreamingReasoningLoop,
+)
 from astrbot.core.agent.context.repetition import (
     RepetitionSanitizeConfig,
+    sanitize_message_think_parts,
     sanitize_repetitive_text,
 )
 from astrbot.core.agent.message import (
@@ -135,6 +140,10 @@ else:
     from typing_extensions import override
 
 
+class _StreamingReasoningLoopDetected(Exception):
+    """The provider repeated the same reasoning while still streaming."""
+
+
 class _AgentManualPause(Exception):
     """Abort stale work without terminating the current Agent turn."""
 
@@ -187,6 +196,11 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
     TOOL_RESULT_MAX_ESTIMATED_TOKENS = 27_500
     TOOL_RESULT_PREVIEW_MAX_ESTIMATED_TOKENS = 7000
     EMPTY_OUTPUT_RETRY_ATTEMPTS = 3
+    REASONING_LOOP_RETRIES = 3
+    REASONING_LOOP_FAILURE = (
+        "Generation stopped because the model kept repeating its reasoning "
+        "after {retries} retries."
+    )
     EMPTY_OUTPUT_RETRY_WAIT_MIN_S = 1
     EMPTY_OUTPUT_RETRY_WAIT_MAX_S = 4
     USER_INTERRUPTION_REQUEST = "Stop output."
@@ -283,7 +297,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             self.provider.provider_config.get("context_sanitizer")
         )
 
-    def _build_think_part(self, llm_resp: LLMResponse) -> ThinkPart:
+    async def _build_think_part(self, llm_resp: LLMResponse) -> ThinkPart:
         """Build the assistant ThinkPart after folding repeated reasoning.
 
         Args:
@@ -298,7 +312,14 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                 encrypted=llm_resp.reasoning_signature,
             )
         cfg = self.get_repetition_sanitize_config()
-        result = sanitize_repetitive_text(llm_resp.reasoning_content or "", cfg)
+        reasoning = llm_resp.reasoning_content or ""
+        if not cfg.enabled or len(reasoning) < min(
+            cfg.min_chars, MIN_NGRAM_INPUT_CHARS
+        ):
+            return ThinkPart(think=reasoning)
+        result = await asyncio.to_thread(
+            sanitize_repetitive_text, reasoning, cfg, observe_ngram=True
+        )
         if result.changed:
             log = logger.info if result.collapsed_lines >= 200 else logger.debug
             log(
@@ -312,18 +333,17 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
 
     async def _complete_with_assistant_response(self, llm_resp: LLMResponse) -> None:
         """Finalize the current step as a plain assistant response with no tool calls."""
-        self.final_llm_resp = llm_resp
-        self._transition_state(AgentState.DONE)
-        self.stats.end_time = time.time()
-
         parts = []
         if llm_resp.reasoning_content is not None or llm_resp.reasoning_signature:
-            parts.append(self._build_think_part(llm_resp))
+            parts.append(await self._build_think_part(llm_resp))
         if llm_resp.completion_text:
             parts.append(TextPart(text=llm_resp.completion_text))
         if len(parts) == 0:
             logger.warning("LLM returned empty assistant message with no tool calls.")
         self.run_context.messages.append(Message(role="assistant", content=parts))
+        self.final_llm_resp = llm_resp
+        self._transition_state(AgentState.DONE)
+        self.stats.end_time = time.time()
 
         try:
             await self.agent_hooks.on_agent_done(self.run_context, llm_resp)
@@ -751,6 +771,11 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
 
         # append existing messages in the run context
         messages = bind_checkpoint_messages(request.contexts or [])
+        repetition_cfg = self.get_repetition_sanitize_config()
+        if messages and repetition_cfg.enabled:
+            messages = await asyncio.to_thread(
+                sanitize_message_think_parts, messages, repetition_cfg
+            )
         if (
             request.prompt is not None
             or request.image_urls
@@ -2200,7 +2225,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
 
     async def _iter_llm_responses(
         self, *, include_model: bool = True
-    ) -> T.AsyncGenerator[LLMResponse, None]:
+    ) -> T.AsyncGenerator[LLMResponse | AgentResponse, None]:
         """Yield chunks and a final response for a validated request view.
 
         Args:
@@ -2372,167 +2397,321 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             )
             self._context_usage_snapshot = None
             process_sink = execution.record_process if execution else None
-            delivery_id = receipt["receipt_id"] if receipt else None
             stream_available = (
                 type(self.provider).text_chat_stream is not Provider.text_chat_stream
             )
             use_stream = stream_available if process_sink else self.streaming
-            if process_sink and delivery_id:
-                await process_sink(
-                    f"{delivery_id}:start",
-                    "model_delivery",
-                    {
-                        "invocation_id": invocation_id,
-                        "receipt_id": delivery_id,
-                        "status": "started",
-                        "streaming": use_stream,
-                    },
+            for retries in range(self.REASONING_LOOP_RETRIES + 1):
+                if self._is_stop_requested():
+                    return
+                if retries:
+                    invocation_id = uuid.uuid4().hex
+                    receipt = None
+                    reported = False
+                    await self._save_call_checkpoint(
+                        "request",
+                        contexts=contexts,
+                        invocation_id=invocation_id,
+                        llm_params=payload["llm_params"],
+                        update_request=True,
+                    )
+                    receipt = await self._begin_metered_call(
+                        "model",
+                        invocation_id,
+                        name=self.provider.provider_config.get("id"),
+                        contexts=contexts,
+                        tools=func_tool,
+                    )
+                    if receipt:
+                        limit = receipt["max_output_tokens"]
+                        if limit:
+                            output_token_budget = min(
+                                output_token_budget or limit, limit
+                            )
+                            params = payload["llm_params"].copy()
+                            token_key = (
+                                "max_completion_tokens"
+                                if "max_completion_tokens" in params
+                                else "max_tokens"
+                            )
+                            params[token_key] = output_token_budget
+                            payload["llm_params"] = params
+                            await self._save_call_checkpoint(
+                                "request",
+                                contexts=contexts,
+                                invocation_id=invocation_id,
+                                llm_params=params,
+                                update_request=True,
+                            )
+                    self._snapshot_output_budget = output_token_budget
+                delivery_id = receipt["receipt_id"] if receipt else None
+                if process_sink and delivery_id:
+                    await process_sink(
+                        f"{delivery_id}:start",
+                        "model_delivery",
+                        {
+                            "invocation_id": invocation_id,
+                            "receipt_id": delivery_id,
+                            "status": "started",
+                            "streaming": use_stream,
+                        },
+                    )
+                await self._record_model_context(
+                    invocation_id,
+                    receipt,
+                    contexts,
+                    func_tool,
+                    payload.get("model") or self.provider.get_model(),
+                    "main",
                 )
-            await self._record_model_context(
-                invocation_id,
-                receipt,
-                contexts,
-                func_tool,
-                payload.get("model") or self.provider.get_model(),
-                "main",
-            )
-            self._snapshot_invocation_id = invocation_id
-            self._snapshot_stream_chunks = 0
-            if use_stream:
-                stream = self.provider.text_chat_stream(**payload)
-                pending_text = ""
-                pending_reasoning = ""
-                sequence = 0
-                first = True
-                flush_lock = asyncio.Lock()
-
-                async def flush() -> None:
-                    nonlocal pending_text, pending_reasoning, sequence
-                    async with flush_lock:
-                        while pending_text or pending_reasoning:
-                            text_part, pending_text = (
-                                pending_text[:2048],
-                                pending_text[2048:],
-                            )
-                            reasoning_part, pending_reasoning = (
-                                pending_reasoning[:2048],
-                                pending_reasoning[2048:],
-                            )
+                self._snapshot_invocation_id = invocation_id
+                self._snapshot_stream_chunks = 0
+                if not use_stream:
+                    with (
+                        self._snapshot_scope(invocation_id),
+                        model_delivery(receipt, output_limit=output_token_budget),
+                    ):
+                        resp = await self._await_or_stop(
+                            self.provider.text_chat(**payload)
+                        )
+                    if resp is not None:
+                        if process_sink and delivery_id:
                             await process_sink(
-                                f"{delivery_id}:delta:{sequence}",
-                                "model_delta",
+                                f"{delivery_id}:end",
+                                "model_delivery",
                                 {
                                     "invocation_id": invocation_id,
                                     "receipt_id": delivery_id,
-                                    "sequence": sequence,
-                                    "text": text_part,
-                                    "reasoning_content": reasoning_part,
+                                    "status": "error"
+                                    if resp.role == "err"
+                                    else "completed",
+                                    "text": resp.completion_text,
+                                    "reasoning_content": resp.reasoning_content,
                                 },
                             )
-                            sequence += 1
-
-                timer_stop = asyncio.Event()
-
-                async def flush_periodically() -> None:
-                    while not timer_stop.is_set():
-                        try:
-                            await asyncio.wait_for(timer_stop.wait(), timeout=0.2)
-                        except asyncio.TimeoutError:
-                            await flush()
-
-                timer = (
-                    asyncio.create_task(flush_periodically())
-                    if process_sink and delivery_id
-                    else None
-                )
-                try:
-                    while True:
-                        try:
-                            # The provider hook runs while the stream is
-                            # iterated, so the scope wraps the actual `anext`
-                            # instead of only the generator creation above.
-                            with (
-                                self._snapshot_scope(invocation_id),
-                                model_delivery(
-                                    receipt, output_limit=output_token_budget
-                                ),
-                            ):
-                                if timer:
-                                    pending_read = asyncio.create_task(
-                                        self._await_or_stop(anext(stream))  # type: ignore
-                                    )
-                                    try:
-                                        done, _ = await asyncio.wait(
-                                            {pending_read, timer},
-                                            return_when=asyncio.FIRST_COMPLETED,
-                                        )
-                                        if timer in done:
-                                            await timer
-                                            raise ProcessPersistenceError(
-                                                "Process timer stopped unexpectedly"
-                                            )
-                                        resp = pending_read.result()
-                                    finally:
-                                        if not pending_read.done():
-                                            pending_read.cancel()
-                                            await asyncio.gather(
-                                                pending_read, return_exceptions=True
-                                            )
-                                else:
-                                    resp = await self._await_or_stop(anext(stream))  # type: ignore
-                        except StopAsyncIteration:
-                            return
-                        if timer and timer.done():
-                            await timer
-                        if resp is None:
-                            return
-                        if resp.is_chunk:
-                            self._snapshot_stream_chunks += 1
-                        if resp.is_chunk and timer:
-                            pending_text += resp.completion_text or ""
-                            pending_reasoning += resp.reasoning_content or ""
-                            if (pending_text or pending_reasoning) and (
-                                first
-                                or len(pending_text) + len(pending_reasoning) >= 2048
-                            ):
-                                await flush()
-                                first = False
-                        if not resp.is_chunk:
-                            if timer:
-                                await flush()
-                                await process_sink(
-                                    f"{delivery_id}:end",
-                                    "model_delivery",
-                                    {
-                                        "invocation_id": invocation_id,
-                                        "receipt_id": delivery_id,
-                                        "status": "error"
-                                        if resp.role == "err"
-                                        else "completed",
-                                        "text": resp.completion_text,
-                                        "reasoning_content": resp.reasoning_content,
-                                    },
-                                )
-                            await self._report_metered_call(receipt, resp)
-                            reported = True
-                            self._response_receipt_id = delivery_id
+                        await self._report_metered_call(receipt, resp)
+                        reported = True
+                        self._response_receipt_id = delivery_id
                         yield resp
-                finally:
-                    try:
-                        if timer:
-                            timer_stop.set()
-                            await timer
-                            await flush()
-                    finally:
-                        await self._close_executor(stream)
-            else:
-                with (
-                    self._snapshot_scope(invocation_id),
-                    model_delivery(receipt, output_limit=output_token_budget),
-                ):
-                    resp = await self._await_or_stop(self.provider.text_chat(**payload))
-                if resp is not None:
+                    return
+                try:
+                    final_response = None
+                    async with aclosing(
+                        self._iter_provider_stream(
+                            payload,
+                            invocation_id=invocation_id,
+                            receipt=receipt,
+                            output_token_budget=output_token_budget,
+                            process_sink=process_sink,
+                        )
+                    ) as responses:
+                        async for resp in responses:
+                            if not resp.is_chunk:
+                                final_response = resp
+                                break
+                            yield resp
+                    if final_response is not None:
+                        await self._report_metered_call(receipt, final_response)
+                        reported = True
+                        self._response_receipt_id = delivery_id
+                        yield final_response
+                    return
+                except _StreamingReasoningLoopDetected as exc:
+                    request_snapshots.mark_error(invocation_id, exc)
                     if process_sink and delivery_id:
+                        await process_sink(
+                            f"{delivery_id}:end",
+                            "model_delivery",
+                            {
+                                "invocation_id": invocation_id,
+                                "receipt_id": delivery_id,
+                                "status": "error",
+                                "text": "Repeated reasoning interrupted this attempt.",
+                            },
+                        )
+                    reported = True
+                    await self._report_metered_call(receipt)
+                    if self._is_stop_requested():
+                        return
+                    failed = retries == self.REASONING_LOOP_RETRIES
+                    logger.info(
+                        "Interrupted a repeating reasoning stream (attempt %d of %d)",
+                        retries + 1,
+                        self.REASONING_LOOP_RETRIES + 1,
+                    )
+                    yield AgentResponse(
+                        type="reasoning_loop_failed"
+                        if failed
+                        else "reasoning_loop_retry",
+                        data=AgentResponseData(
+                            chain=MessageChain(
+                                type="reasoning_loop",
+                                chain=[
+                                    Json(
+                                        data={
+                                            "status": "failed" if failed else "retry",
+                                            "retry": retries if failed else retries + 1,
+                                            "max_retries": self.REASONING_LOOP_RETRIES,
+                                        }
+                                    )
+                                ],
+                            ),
+                        ),
+                    )
+                    if failed:
+                        return
+        finally:
+            # Failed or cancelled preparation must not retain an uncommitted
+            # member delivery that remains available in the persistent queue.
+            if not request_committed and self._member_message_receipts:
+                self.run_context.messages = original_messages
+                self._assembled_extra_user_content_parts = original_extra_parts
+                self._member_message_receipts = []
+            if not reported:
+                await self._report_metered_call(receipt)
+
+    async def _iter_provider_stream(
+        self,
+        payload: dict,
+        *,
+        invocation_id: str,
+        receipt: dict | None,
+        output_token_budget: int | None,
+        process_sink,
+    ) -> T.AsyncGenerator[LLMResponse, None]:
+        """Consume one provider stream and close it before the next attempt.
+
+        Args:
+            payload: Prepared provider request shared by the attempts.
+            invocation_id: Identity of this provider delivery.
+            receipt: Usage receipt for this attempt.
+            output_token_budget: Effective output limit.
+            process_sink: Optional durable progress sink.
+
+        Yields:
+            Streamed chunks and the final response.
+
+        Raises:
+            _StreamingReasoningLoopDetected: A reasoning-only stream repeats indefinitely.
+            ProcessPersistenceError: Progress could not be recorded.
+        """
+        delivery_id = receipt["receipt_id"] if receipt else None
+        stream = self.provider.text_chat_stream(**payload)
+        detector = (
+            StreamingReasoningLoop()
+            if self.get_repetition_sanitize_config().enabled
+            else None
+        )
+        pending_text = ""
+        pending_reasoning = ""
+        sequence = 0
+        first = True
+        flush_lock = asyncio.Lock()
+
+        async def flush() -> None:
+            nonlocal pending_text, pending_reasoning, sequence
+            async with flush_lock:
+                while pending_text or pending_reasoning:
+                    text_part, pending_text = (
+                        pending_text[:2048],
+                        pending_text[2048:],
+                    )
+                    reasoning_part, pending_reasoning = (
+                        pending_reasoning[:2048],
+                        pending_reasoning[2048:],
+                    )
+                    await process_sink(
+                        f"{delivery_id}:delta:{sequence}",
+                        "model_delta",
+                        {
+                            "invocation_id": invocation_id,
+                            "receipt_id": delivery_id,
+                            "sequence": sequence,
+                            "text": text_part,
+                            "reasoning_content": reasoning_part,
+                        },
+                    )
+                    sequence += 1
+
+        timer_stop = asyncio.Event()
+
+        async def flush_periodically() -> None:
+            while not timer_stop.is_set():
+                try:
+                    await asyncio.wait_for(timer_stop.wait(), timeout=0.2)
+                except asyncio.TimeoutError:
+                    await flush()
+
+        timer = (
+            asyncio.create_task(flush_periodically())
+            if process_sink and delivery_id
+            else None
+        )
+        try:
+            while True:
+                try:
+                    # The provider hook runs while the stream is
+                    # iterated, so the scope wraps the actual `anext`
+                    # instead of only the generator creation above.
+                    with (
+                        self._snapshot_scope(invocation_id),
+                        model_delivery(receipt, output_limit=output_token_budget),
+                    ):
+                        if timer:
+                            pending_read = asyncio.create_task(
+                                self._await_or_stop(anext(stream))  # type: ignore
+                            )
+                            try:
+                                done, _ = await asyncio.wait(
+                                    {pending_read, timer},
+                                    return_when=asyncio.FIRST_COMPLETED,
+                                )
+                                if timer in done:
+                                    await timer
+                                    raise ProcessPersistenceError(
+                                        "Process timer stopped unexpectedly"
+                                    )
+                                resp = pending_read.result()
+                            finally:
+                                if not pending_read.done():
+                                    pending_read.cancel()
+                                    await asyncio.gather(
+                                        pending_read, return_exceptions=True
+                                    )
+                        else:
+                            resp = await self._await_or_stop(anext(stream))  # type: ignore
+                except StopAsyncIteration:
+                    return
+                if timer and timer.done():
+                    await timer
+                if resp is None:
+                    return
+                if resp.is_chunk:
+                    self._snapshot_stream_chunks += 1
+                    if resp.completion_text or (
+                        resp.result_chain and resp.result_chain.chain
+                    ):
+                        # An attempt that has started answering is no longer safe to replay.
+                        detector = None
+                    if (
+                        detector
+                        and resp.reasoning_content
+                        and detector.feed(resp.reasoning_content)
+                    ):
+                        raise _StreamingReasoningLoopDetected(
+                            "Repeated reasoning interrupted this attempt."
+                        )
+                if resp.is_chunk and timer:
+                    pending_text += resp.completion_text or ""
+                    pending_reasoning += resp.reasoning_content or ""
+                    if (pending_text or pending_reasoning) and (
+                        first or len(pending_text) + len(pending_reasoning) >= 2048
+                    ):
+                        await flush()
+                        first = False
+                if not resp.is_chunk:
+                    if timer:
+                        await flush()
                         await process_sink(
                             f"{delivery_id}:end",
                             "model_delivery",
@@ -2546,23 +2725,19 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                                 "reasoning_content": resp.reasoning_content,
                             },
                         )
-                    await self._report_metered_call(receipt, resp)
-                    reported = True
-                    self._response_receipt_id = delivery_id
-                    yield resp
+                yield resp
         finally:
-            # Failed or cancelled preparation must not retain an uncommitted
-            # member delivery that remains available in the persistent queue.
-            if not request_committed and self._member_message_receipts:
-                self.run_context.messages = original_messages
-                self._assembled_extra_user_content_parts = original_extra_parts
-                self._member_message_receipts = []
-            if not reported:
-                await self._report_metered_call(receipt)
+            try:
+                if timer:
+                    timer_stop.set()
+                    await timer
+                    await flush()
+            finally:
+                await self._close_executor(stream)
 
     async def _iter_llm_responses_with_fallback(
         self,
-    ) -> T.AsyncGenerator[LLMResponse, None]:
+    ) -> T.AsyncGenerator[LLMResponse | AgentResponse, None]:
         """Wrap _iter_llm_responses with provider fallback handling."""
         if self._restored_call and self._resume_requery is not None:
             self._restored_call = False
@@ -2634,6 +2809,11 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                             async for resp in self._iter_llm_responses(
                                 include_model=idx == 0
                             ):
+                                if isinstance(resp, AgentResponse):
+                                    yield resp
+                                    if resp.type == "reasoning_loop_failed":
+                                        return
+                                    continue
                                 if resp.is_chunk:
                                     has_stream_output = True
                                     yield resp
@@ -3288,6 +3468,21 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         async for llm_response in self._iter_llm_responses_with_fallback():
             if self._is_stop_requested():
                 break
+            if isinstance(llm_response, AgentResponse):
+                if llm_response.type == "reasoning_loop_failed":
+                    self.final_llm_resp = LLMResponse(
+                        role="err",
+                        completion_text=self.REASONING_LOOP_FAILURE.format(
+                            retries=self.REASONING_LOOP_RETRIES
+                        ),
+                    )
+                    self.stats.end_time = time.time()
+                    self._transition_state(AgentState.ERROR)
+                    self._resolve_unconsumed_follow_ups()
+                    yield llm_response
+                    return
+                yield llm_response
+                continue
             if self._output_compression_report is not None:
                 yield AgentResponse(
                     type="context_compression",
@@ -3616,7 +3811,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             # 将结果添加到上下文中
             parts = []
             if llm_resp.reasoning_content is not None or llm_resp.reasoning_signature:
-                parts.append(self._build_think_part(llm_resp))
+                parts.append(await self._build_think_part(llm_resp))
             if llm_resp.completion_text:
                 parts.append(TextPart(text=llm_resp.completion_text))
             if len(parts) == 0:

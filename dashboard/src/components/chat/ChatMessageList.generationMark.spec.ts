@@ -133,6 +133,25 @@ describe("ChatMessageList generation mark", () => {
     expect(railMark(wrapper).classes()).toContain("is-off");
   });
 
+  it("shows reasoning retries live and keeps the final failure visible", async () => {
+    const parts = [
+      { type: "plain", text: "Earlier progress" },
+      { type: "think", think: "Repeating reasoning" },
+      { type: "reasoning_loop", status: "retry", retry: 1, max_retries: 3 },
+    ];
+    const wrapper = mountList([botRecord("b1", { message: parts })], true);
+    expect(wrapper.find('.reasoning-loop-notice[role="status"]').exists()).toBe(true);
+
+    await wrapper.setProps({
+      isStreaming: false,
+      messages: [botRecord("b1", {
+        message: [...parts, { type: "reasoning_loop", status: "failed", retry: 3, max_retries: 3 }],
+      })],
+    });
+    expect(wrapper.find('.reasoning-loop-notice[role="alert"]').exists()).toBe(true);
+    wrapper.unmount();
+  });
+
   it("keeps the last assistant streaming with several optimistic user rows after it", () => {
     const wrapper = mountList(
       [

@@ -21,6 +21,7 @@ from astrbot.core.agent_team_execution import (
 from astrbot.core.exceptions import EmptyModelOutputError
 from astrbot.core.provider.entities import LLMResponse, TokenUsage
 from astrbot.core.provider.func_tool_manager import ToolSet
+from astrbot.core.utils.async_generator import closing_async_stream
 from astrbot.core.utils.media_utils import (
     describe_media_ref,
     resolve_media_ref_to_base64_data,
@@ -1059,14 +1060,17 @@ class ProviderAnthropic(Provider):
         query_kwargs = {}
         if conversation_id:
             query_kwargs["conversation_id"] = conversation_id
-        async for llm_response in self._query_stream(
-            payloads,
-            func_tool,
-            request_max_retries=request_max_retries,
-            llm_params=kwargs.pop("llm_params", None),
-            **query_kwargs,
-        ):
-            yield llm_response
+        async with closing_async_stream(
+            self._query_stream(
+                payloads,
+                func_tool,
+                request_max_retries=request_max_retries,
+                llm_params=kwargs.pop("llm_params", None),
+                **query_kwargs,
+            )
+        ) as stream:
+            async for llm_response in stream:
+                yield llm_response
 
     def _detect_image_mime_type(self, data: bytes) -> str:
         """根据图片二进制数据的 magic bytes 检测 MIME 类型"""

@@ -560,6 +560,12 @@ class BotMessageAccumulator:
             self._append_think_part(result_text)
             return
 
+        if chain_type == "reasoning_loop":
+            notice = self._parse_json_object(result_text)
+            if notice and notice.get("status") in ("retry", "failed"):
+                self.add_part({**notice, "type": "reasoning_loop"})
+            return
+
         # Author: elecvoid243
         # Date: 2026-10-08
         # The context compression notice is live-only: the frontend renders it
@@ -5850,8 +5856,9 @@ class ChatService:
         # `_sanitize_ask_user_choice_tool_call_parts` for the rationale).
         # Timestamps are normalized to UTC ISO via `to_utc_isoformat` so the
         # payload matches what `serialize_history_entry` would have produced.
-        history_payload = _sanitize_history_bot_records(
-            [history.model_dump() for history in history_ls]
+        history_payload = await asyncio.to_thread(
+            _sanitize_history_bot_records,
+            [history.model_dump() for history in history_ls],
         )
         history_payload = [
             {
@@ -5935,8 +5942,9 @@ class ChatService:
             page_size=page_size,
             before_id=before_id,
         )
-        history_payload = _sanitize_history_bot_records(
-            [history.model_dump() for history in history_ls]
+        history_payload = await asyncio.to_thread(
+            _sanitize_history_bot_records,
+            [history.model_dump() for history in history_ls],
         )
         history_payload = [
             {
@@ -6819,8 +6827,9 @@ class ChatService:
         # See `get_session` — same read-path defence for stale
         # ask_user_choice `tool_call` parts. Timestamps are normalized
         # to UTC ISO to match the rest of the read paths.
-        history_payload = _sanitize_history_bot_records(
-            [history.model_dump() for history in history_ls]
+        history_payload = await asyncio.to_thread(
+            _sanitize_history_bot_records,
+            [history.model_dump() for history in history_ls],
         )
         history_payload = [
             {

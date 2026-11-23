@@ -324,6 +324,37 @@ async def test_pending_tool_survives_followups_in_stream_snapshot_and_history(
             run.task.cancel()
         await asyncio.gather(run.task, return_exceptions=True)
 
+
+@pytest.mark.asyncio
+async def test_reasoning_retry_and_failure_survive_history_reload():
+    retry = {"status": "retry", "retry": 1, "max_retries": 3}
+    failed = {"status": "failed", "retry": 3, "max_retries": 3}
+    manager = await _drive_turn(
+        [
+            _think("First attempt"),
+            {
+                **_text(json.dumps(retry)),
+                "chain_type": "reasoning_loop",
+                "streaming": False,
+            },
+            _think("Another attempt"),
+            {
+                **_text(json.dumps(failed)),
+                "chain_type": "reasoning_loop",
+                "streaming": False,
+            },
+            {"type": "end", "message_id": RUN_ID},
+        ]
+    )
+    [row] = manager.rows.values()
+    assert row["message"] == [
+        {"type": "think", "think": "First attempt"},
+        {"type": "reasoning_loop", **retry},
+        {"type": "think", "think": "Another attempt"},
+        {"type": "reasoning_loop", **failed},
+    ]
+
+
 @pytest.mark.asyncio
 async def test_unfinished_tool_is_persisted_as_interrupted_at_turn_end():
     manager = await _drive_turn(

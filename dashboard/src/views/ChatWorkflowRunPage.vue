@@ -10,12 +10,12 @@
         <p class="text-caption mb-3">{{ runId }}</p>
         <p class="mb-4">{{ tm("chatRun.scope") }}</p>
         <v-alert
-          v-if="error"
+          v-if="error || refreshError"
           type="error"
           variant="tonal"
           class="mb-4"
           role="alert"
-          >{{ error }}</v-alert
+          >{{ error || refreshError }}</v-alert
         >
         <v-alert
           v-if="connection && !run"
@@ -41,7 +41,7 @@
             >{{ tm("chatRun.connect") }}</v-btn
           >
           <v-btn
-            v-else-if="!['completed', 'cancelled'].includes(run?.status ?? '')"
+            v-else-if="!terminal"
             variant="text"
             data-testid="chat-refresh"
             :disabled="busy"
@@ -59,14 +59,19 @@
             :todo="todo"
             :paused="run.control_status === 'paused'"
             :cancelled="run.control_status === 'cancelled'"
-            :busy="busy"
+            :busy="busy || checkingAnswer"
             restricted
             :preview-loader="
-              (todoId) => chatRunApi.preview(runId, credential, todoId)
+              (todoId) =>
+                withConnection((id, token) =>
+                  chatRunApi.preview(id, token, todoId),
+                )
             "
             :file-loader="
               (todoId, fileId) =>
-                chatRunApi.file(runId, credential, todoId, fileId)
+                withConnection((id, token) =>
+                  chatRunApi.file(id, token, todoId, fileId),
+                )
             "
             @submit="submit"
           />
@@ -128,6 +133,10 @@ import LanguageSwitcher from "@/components/shared/LanguageSwitcher.vue";
 import { useModuleI18n } from "@/i18n/composables";
 import { extractApiError } from "@/utils/extractApiError";
 
+type ChatRequestError = {
+  response?: { status?: number; headers?: Record<string, string> };
+};
+
 const route = useRoute();
 const { tm } = useModuleI18n("features/agent-teams");
 const runId = computed(() =>
@@ -141,6 +150,8 @@ const credential = computed(() =>
 );
 const run = ref<ChatRunView | null>(null);
 const error = ref("");
+const refreshError = ref("");
+const checkingAnswer = ref(false);
 const connecting = ref(false);
 const busy = ref(false);
 const fileBusy = ref(false);
@@ -148,19 +159,63 @@ const fileText = ref("");
 const binaryPreview = ref(false);
 const fileUrls: string[] = [];
 let epoch = 0;
+let answerRevision = 0;
+let refreshing = false;
 let timer: ReturnType<typeof setTimeout> | undefined;
-let disposed = false;
+let expiryTimer: ReturnType<typeof setTimeout> | undefined;
+const terminal = computed(() =>
+  ["completed", "cancelled"].includes(run.value?.status ?? ""),
+);
+const accessReasons = new Set([
+  "expired",
+  "invalid",
+  "revoked",
+  "identity_mismatch",
+]);
 
-async function connect() {
-  const current = ++epoch;
+function clearConnection() {
+  epoch++;
   clearTimeout(timer);
+  clearTimeout(expiryTimer);
   connection.value = null;
   run.value = null;
+  connecting.value = false;
+  refreshing = false;
   busy.value = false;
+  checkingAnswer.value = false;
   fileBusy.value = false;
   fileText.value = "";
   binaryPreview.value = false;
   error.value = "";
+  refreshError.value = "";
+  for (const url of fileUrls.splice(0)) URL.revokeObjectURL(url);
+}
+
+async function withConnection<T>(
+  request: (id: string, token: string) => Promise<T>,
+): Promise<T> {
+  const current = epoch;
+  if (!connection.value) throw new Error(tm("chatRun.access.invalid"));
+  try {
+    const result = await request(runId.value, credential.value);
+    if (current !== epoch) throw new Error(tm("chatRun.access.invalid"));
+    return result;
+  } catch (err) {
+    const response = (err as ChatRequestError)?.response;
+    const reason =
+      response?.headers?.["x-astrbot-chat-access-error"] ??
+      (response?.status === 401 ? "invalid" : "");
+    if (current === epoch && accessReasons.has(reason)) {
+      clearConnection();
+      error.value = tm(`chatRun.access.${reason}`);
+    }
+    throw err;
+  }
+}
+
+async function connect() {
+  clearConnection();
+  const current = epoch;
   if (!runId.value) {
     error.value = tm("chatRun.missing");
     return;
@@ -168,75 +223,94 @@ async function connect() {
   connecting.value = true;
   try {
     const created = await chatRunApi.connection(runId.value);
-    if (current !== epoch || disposed) return;
+    if (current !== epoch) return;
     connection.value = created;
+    expiryTimer = setTimeout(() => {
+      clearConnection();
+      error.value = tm("chatRun.access.expired");
+    }, created.expires_in * 1000);
     await refresh(current);
   } catch (err) {
-    if (current === epoch && !disposed)
+    if (current === epoch)
       error.value = extractApiError(err, tm("chatRun.failed")).message;
   } finally {
-    if (current === epoch && !disposed) connecting.value = false;
+    if (current === epoch) connecting.value = false;
   }
 }
 
 async function refresh(current: number) {
-  clearTimeout(timer);
   if (
     current !== epoch ||
-    disposed ||
     !connection.value ||
     busy.value ||
-    ["completed", "cancelled"].includes(run.value?.status ?? "")
+    refreshing ||
+    terminal.value
   )
     return;
+  clearTimeout(timer);
+  refreshing = true;
+  const revision = answerRevision;
   try {
-    const state = await chatRunApi.status(runId.value, credential.value);
-    if (current !== epoch || disposed) return;
+    const state = await withConnection(chatRunApi.status);
+    if (current !== epoch || revision !== answerRevision) return;
     if (state.confirmed) {
-      const updated = await chatRunApi.run(runId.value, credential.value);
-      if (current !== epoch || disposed) return;
+      const updated = await withConnection(chatRunApi.run);
+      if (current !== epoch || revision !== answerRevision) return;
       run.value = updated;
+      if (checkingAnswer.value) {
+        checkingAnswer.value = false;
+        error.value = "";
+      }
     }
-    error.value = "";
+    refreshError.value = "";
   } catch (err) {
-    if (current !== epoch || disposed) return;
-    error.value = extractApiError(err, tm("chatRun.failed")).message;
-    run.value = null;
-    connection.value = null;
+    if (current !== epoch) return;
+    const status = (err as ChatRequestError)?.response?.status;
+    if (!status || status === 408 || status === 429 || status >= 500) {
+      if (revision === answerRevision) refreshError.value = tm("chatRun.retry");
+    } else {
+      clearConnection();
+      error.value = extractApiError(err, tm("chatRun.failed")).message;
+    }
   } finally {
-    if (
-      current === epoch &&
-      !disposed &&
-      connection.value &&
-      !["completed", "cancelled"].includes(run.value?.status ?? "")
-    ) {
-      timer = setTimeout(() => {
-        void refresh(current);
-      }, 1500);
+    if (current === epoch) {
+      refreshing = false;
+      if (connection.value && !terminal.value) {
+        timer = setTimeout(() => {
+          void refresh(current);
+        }, 1500);
+      }
     }
   }
 }
 
 async function submit(todoId: string, payload: HumanAnswerRequest) {
-  if (!connection.value || busy.value) return;
-  // Invalidate a poll already in flight so it cannot restore an old pending view.
-  const current = ++epoch;
+  if (!connection.value || busy.value || checkingAnswer.value) return;
+  const current = epoch;
+  // An earlier poll may complete after the answer has changed the todo.
+  answerRevision++;
   clearTimeout(timer);
   busy.value = true;
   error.value = "";
   try {
-    const updated = await chatRunApi.answer(
-      runId.value,
-      credential.value,
-      todoId,
-      payload,
+    const updated = await withConnection((id, token) =>
+      chatRunApi.answer(id, token, todoId, payload),
     );
-    if (current === epoch && !disposed) run.value = updated;
+    if (current === epoch) {
+      run.value = updated;
+      refreshError.value = "";
+    }
   } catch (err) {
-    if (current === epoch && !disposed)
+    if (current !== epoch) return;
+    const status = (err as ChatRequestError)?.response?.status;
+    if (!status || status === 408 || status >= 500) {
+      checkingAnswer.value = true;
+      error.value = tm("chatRun.checkingAnswer");
+    } else {
       error.value = extractApiError(err, tm("chatRun.failed")).message;
+    }
   } finally {
-    if (current === epoch && !disposed) {
+    if (current === epoch) {
       busy.value = false;
       void refresh(current);
     }
@@ -251,13 +325,10 @@ async function readResultFile(file: ChatResultFile, download: boolean) {
   fileText.value = "";
   binaryPreview.value = false;
   try {
-    const response = await chatRunApi.resultFile(
-      runId.value,
-      credential.value,
-      file.file_id,
-      download,
+    const response = await withConnection((id, token) =>
+      chatRunApi.resultFile(id, token, file.file_id, download),
     );
-    if (current !== epoch || disposed) return;
+    if (current !== epoch) return;
     if (download) {
       const url = URL.createObjectURL(response.data);
       fileUrls.push(url);
@@ -267,15 +338,15 @@ async function readResultFile(file: ChatResultFile, download: boolean) {
       link.click();
     } else if (response.data.type.startsWith("text/")) {
       const text = await response.data.text();
-      if (current === epoch && !disposed) fileText.value = text;
+      if (current === epoch) fileText.value = text;
     } else {
       binaryPreview.value = true;
     }
   } catch (err) {
-    if (current === epoch && !disposed)
+    if (current === epoch)
       error.value = extractApiError(err, tm("chatRun.failed")).message;
   } finally {
-    if (current === epoch && !disposed) fileBusy.value = false;
+    if (current === epoch) fileBusy.value = false;
   }
 }
 
@@ -286,12 +357,7 @@ watch(
   },
   { immediate: true },
 );
-onUnmounted(() => {
-  disposed = true;
-  epoch++;
-  clearTimeout(timer);
-  fileUrls.forEach((url) => URL.revokeObjectURL(url));
-});
+onUnmounted(clearConnection);
 </script>
 
 <style scoped>

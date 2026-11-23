@@ -62,7 +62,7 @@
             variant="text"
             color="error"
             class="archived-batch-btn"
-            :disabled="checkedIds.size === 0"
+            :disabled="!canBatchDelete"
             :loading="batchLoading"
             @click="batchDelete"
           >
@@ -85,18 +85,18 @@
         <div v-else-if="items.length" class="archived-dialog-list">
           <div
             v-for="session in items"
-            :key="session.session_id"
+            :key="sessionRowKey(session)"
             class="archived-card"
-            :class="{ expanded: expandedId === session.session_id }"
+            :class="{ expanded: expandedId === sessionRowKey(session) }"
           >
             <div class="archived-card-head">
               <v-checkbox-btn
                 v-if="selectionMode"
-                :model-value="checkedIds.has(session.session_id)"
+                :model-value="checkedIds.has(sessionRowKey(session))"
                 density="compact"
                 class="archived-card-checkbox"
                 @click.stop
-                @update:model-value="toggleChecked(session.session_id)"
+                @update:model-value="toggleChecked(sessionRowKey(session))"
               />
               <button
                 type="button"
@@ -106,7 +106,7 @@
                 <ChevronRight
                   :size="16"
                   class="archived-card-chevron"
-                  :class="{ open: expandedId === session.session_id }"
+                  :class="{ open: expandedId === sessionRowKey(session) }"
                 />
                 <span class="archived-card-title">
                   {{
@@ -114,6 +114,11 @@
                     tm("conversation.newConversation")
                   }}
                 </span>
+                <span
+                  v-if="session.run_conversation"
+                  class="archived-project-tag"
+                  :title="session.run_conversation.run_id"
+                >{{ session.run_conversation.run_id.slice(0, 8) }}</span>
                 <span v-if="session.project_title" class="archived-project-tag">
                   {{ session.project_title }}
                 </span>
@@ -144,6 +149,7 @@
                   size="small"
                   variant="text"
                   class="archived-dialog-btn"
+                  v-if="session.session_type !== 'workflow_run'"
                   :title="tm('actions.deleteChat')"
                   @click="deleteSession(session)"
                 >
@@ -153,20 +159,20 @@
             </div>
             <Transition name="archived-preview">
               <div
-                v-if="expandedId === session.session_id"
+                v-if="expandedId === sessionRowKey(session)"
                 class="archived-preview"
               >
                 <div
-                  v-if="previewLoading[session.session_id]"
+                  v-if="previewLoading[sessionRowKey(session)]"
                   class="archived-preview-status"
                 >
                   <v-progress-circular indeterminate size="16" width="2" />
                 </div>
                 <p
-                  v-else-if="previews[session.session_id]"
+                  v-else-if="previews[sessionRowKey(session)]"
                   class="archived-preview-text"
                 >
-                  {{ previews[session.session_id] }}
+                  {{ previews[sessionRowKey(session)] }}
                 </p>
                 <p v-else class="archived-preview-empty">
                   {{ tm("conversation.archivedNoPreview") }}
@@ -244,10 +250,12 @@ import { useI18n, useModuleI18n } from "@/i18n/composables";
 import { useToast } from "@/utils/toast";
 import { askForConfirmation, useConfirmDialog } from "@/utils/confirmDialog";
 import { chatApi } from "@/api/v1";
+import { selectedSessionIds, sessionRowKey } from "@/utils/runConversation";
 import { useSessions, type ArchivedSession } from "@/composables/useSessions";
 
 const props = defineProps<{
   modelValue: boolean;
+  includeRunConversations?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -264,7 +272,9 @@ const { t } = useI18n();
 const { tm } = useModuleI18n("features/chat");
 const toast = useToast();
 const confirmDialog = useConfirmDialog();
-const { getArchivedSessions, setSessionArchived } = useSessions();
+const { getArchivedSessions, setSessionArchived } = useSessions(
+  false, computed(() => Boolean(props.includeRunConversations)),
+);
 
 const accountRevision = accountSessionRevision.value;
 const items = ref<ArchivedSession[]>([]);
@@ -310,7 +320,7 @@ watch(
 const allChecked = computed(
   () =>
     items.value.length > 0 &&
-    items.value.every((session) => checkedIds.value.has(session.session_id)),
+    items.value.every((session) => checkedIds.value.has(sessionRowKey(session))),
 );
 const someChecked = computed(
   () => checkedIds.value.size > 0 && !allChecked.value,
@@ -374,11 +384,11 @@ function toggleChecked(sessionId: string) {
 function toggleSelectAll() {
   checkedIds.value = allChecked.value
     ? new Set()
-    : new Set(items.value.map((session) => session.session_id));
+    : new Set(items.value.map(sessionRowKey));
 }
 
 async function restoreSession(session: ArchivedSession) {
-  const ok = await setSessionArchived(session.session_id, false);
+  const ok = await setSessionArchived(session.run_conversation?.run_id ?? session.session_id, false, session.session_type);
   if (!ok) {
     toast.error(tm("conversation.unarchiveFailed"));
     return;
@@ -389,6 +399,7 @@ async function restoreSession(session: ArchivedSession) {
 }
 
 async function deleteSession(session: ArchivedSession) {
+  if (session.session_type === "workflow_run") return;
   const title =
     session.display_name?.trim() || tm("conversation.newConversation");
   const message = tm("conversation.confirmDelete", { name: title });
@@ -410,16 +421,17 @@ async function deleteSession(session: ArchivedSession) {
 }
 
 async function batchRestore() {
-  const ids = [...checkedIds.value];
-  if (!ids.length) return;
+  const selected = selectedSessionIds(checkedIds.value);
+  const count = checkedIds.value.size;
+  if (!count) return;
   const message = tm("conversation.batchUnarchiveConfirm", {
-    count: ids.length,
+    count,
   });
   if (!(await askForConfirmation(message, confirmDialog))) return;
 
   batchLoading.value = true;
   try {
-    const response = await chatApi.batchUnarchiveSessions({ session_ids: ids });
+    const response = await chatApi.batchUnarchiveSessions(selected);
     if (response.data?.status !== "ok") {
       throw new Error(response.data?.message || "Failed to batch restore");
     }
@@ -427,7 +439,7 @@ async function batchRestore() {
     const failedCount = data.failed_count || 0;
     if (failedCount > 0) {
       toast.error(
-        tm("batch.partialFailure", { failed: failedCount, total: ids.length }),
+        tm("batch.partialFailure", { failed: failedCount, total: count }),
       );
     } else {
       toast.success(
@@ -448,8 +460,13 @@ async function batchRestore() {
   }
 }
 
+const canBatchDelete = computed(() =>
+  checkedIds.value.size > 0 && !selectedSessionIds(checkedIds.value).run_ids.length,
+);
+
 async function batchDelete() {
-  const ids = [...checkedIds.value];
+  if (!canBatchDelete.value) return;
+  const ids = selectedSessionIds(checkedIds.value).session_ids;
   if (!ids.length) return;
   const message = tm("batch.confirmDelete", { count: ids.length });
   if (!(await askForConfirmation(message, confirmDialog))) return;
@@ -481,30 +498,35 @@ async function batchDelete() {
 }
 
 async function toggleExpanded(session: ArchivedSession) {
-  if (expandedId.value === session.session_id) {
+  const key = sessionRowKey(session);
+  if (expandedId.value === key) {
     expandedId.value = null;
     return;
   }
-  expandedId.value = session.session_id;
-  if (previews[session.session_id] || previewLoading[session.session_id])
+  expandedId.value = key;
+  if (session.run_conversation) {
+    previews[key] = session.run_conversation.run_id;
     return;
-  previewLoading[session.session_id] = true;
+  }
+  if (previews[key] || previewLoading[key])
+    return;
+  previewLoading[key] = true;
   try {
     const response = await chatApi.getSession(session.session_id);
     assertCurrentAccount(accountRevision);
     if (response.data?.status === "error")
       throw new Error(response.data?.message || "History is unavailable");
     const history = response.data?.data?.history || [];
-    previews[session.session_id] = truncatePreview(
+    previews[key] = truncatePreview(
       extractFirstUserText(history),
       200,
     );
   } catch (err) {
     console.error("Failed to load archived session preview:", err);
     if (accountRevision === accountSessionRevision.value)
-      previews[session.session_id] = "";
+      previews[key] = "";
   } finally {
-    previewLoading[session.session_id] = false;
+    previewLoading[key] = false;
   }
 }
 

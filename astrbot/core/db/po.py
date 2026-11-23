@@ -1,3 +1,4 @@
+import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -373,6 +374,16 @@ class AgentWorkflowChatAccess(SQLModel, table=True):
     source: str
 
 
+class AgentWorkflowApiAccess(SQLModel, table=True):
+    """Explicit permission for an API key to start one fixed asset version."""
+
+    __tablename__: str = "agent_workflow_api_access"  # pyright: ignore[reportIncompatibleVariableOverride]
+    asset_id: str = Field(primary_key=True)
+    key_id: str = Field(primary_key=True)
+    owner_username: str
+    version: int
+
+
 class AgentWorkflowChatDelivery(SQLModel, table=True):
     """Durable delivery cursor; platform messages can be retried after restart."""
 
@@ -416,6 +427,50 @@ class AgentWorkflowSchedule(SQLModel, table=True):
     __tablename__: str = "agent_workflow_schedules"  # pyright: ignore[reportIncompatibleVariableOverride]
     run_id: str = Field(primary_key=True)
     revision: int = 0
+
+
+RUN_CONVERSATION_PREFIX = "workflow-run-"
+
+
+def is_run_conversation_id(session_id: str) -> bool:
+    """Recognize reserved IDs for projected root runs.
+
+    Args:
+        session_id: Chat session identity supplied by a caller.
+
+    Returns:
+        Whether the ID contains the namespace and a full root UUID.
+    """
+    return (
+        re.fullmatch(rf"{RUN_CONVERSATION_PREFIX}[0-9a-f]{{32}}", session_id)
+        is not None
+    )
+
+
+class AgentWorkflowRunArchive(SQLModel, table=True):
+    """Store sidebar visibility for an archived root run conversation."""
+
+    __tablename__: str = "agent_workflow_run_archives"
+    run_id: str = Field(primary_key=True, foreign_key="agent_workflow_runs.run_id")
+
+
+class AgentWorkflowLaunchReceipt(SQLModel, table=True):
+    """Bind an authenticated source request to its atomically committed root."""
+
+    __tablename__: str = "agent_workflow_launch_receipts"  # pyright: ignore[reportIncompatibleVariableOverride]
+    principal: str = Field(primary_key=True)
+    request_id: str = Field(primary_key=True)
+    fingerprint: str
+    run_id: str
+
+
+class AgentWorkflowRerun(SQLModel, table=True):
+    """Map one request against a completed root to its committed new run."""
+
+    __tablename__: str = "agent_workflow_reruns"  # pyright: ignore[reportIncompatibleVariableOverride]
+    source_run_id: str = Field(primary_key=True)
+    request_id: str = Field(primary_key=True)
+    run_id: str
 
 
 class AgentWorkflowControl(SQLModel, table=True):

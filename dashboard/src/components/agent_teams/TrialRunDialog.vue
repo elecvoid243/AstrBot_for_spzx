@@ -21,6 +21,7 @@
           v-if="kind === 'workflow'"
           v-model="mode"
           :label="tm('trial.scope')"
+          data-testid="trial-scope"
           :items="scopeOptions"
         />
         <v-select
@@ -30,6 +31,7 @@
           item-title="name"
           item-value="id"
           :label="tm('trial.startNode')"
+          data-testid="trial-start-node"
         />
         <v-alert v-if="error" type="error" variant="tonal" role="alert">{{
           error
@@ -40,6 +42,13 @@
             {{ tm("trial.selected") }}:
             {{ selectedNames.join(", ") || tm("trial.dynamicTeam") }}
           </p>
+          <StructuredWorkflowInputs
+            v-if="preview.input_contract"
+            v-model="structuredInputs"
+            :contract="preview.input_contract"
+            :history="artifacts"
+            :key="`${revision}:${mode}:${node}`"
+          />
           <v-text-field
             v-for="name in preview.required_inputs"
             :key="name"
@@ -57,16 +66,19 @@
               :label="tm('trial.source')"
               :items="
                 requirement.pinned_only
-                  ? [artifactChoice]
-                  : [manualChoice, artifactChoice]
+                  ? [artifactChoice, ...(requirement.optional ? [omitChoice] : [])]
+                  : [manualChoice, artifactChoice, ...(requirement.optional ? [omitChoice] : [])]
               "
             />
             <template v-if="sourceModes[id] === 'artifact'">
               <v-select
-                v-model="selectedArtifacts[id]"
+                :model-value="artifactIds[id] ? JSON.stringify({
+                  artifact_id: artifactIds[id], version: Number(artifactVersions[id]),
+                }) : null"
                 :label="tm('trial.history')"
                 :items="artifacts"
                 clearable
+                @update:model-value="selectHistoricalArtifact(id, $event)"
               />
               <v-text-field
                 v-model="artifactIds[id]"
@@ -79,8 +91,9 @@
                 :label="tm('trial.artifactVersion')"
               />
             </template>
-            <template v-else>
+            <template v-else-if="sourceModes[id] !== 'omit'">
               <v-switch
+                v-if="!preview.input_contract"
                 v-model="useRaw[id]"
                 :label="tm('trial.advancedMode')"
               />
@@ -151,8 +164,9 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { workflowAssetsApi } from "@/api/workflowAssets";
+import StructuredWorkflowInputs, { parseWorkflowInputs } from "./StructuredWorkflowInputs.vue";
 import { useModuleI18n } from "@/i18n/composables";
-import { extractApiError } from "@/utils/extractApiError";
+import { extractApiError, type ApiErrorField } from "@/utils/extractApiError";
 import type { TrialRunRequest } from "@/api/generated/openapi-v1";
 
 const props = defineProps<{
@@ -166,6 +180,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   "update:modelValue": [boolean];
   started: [string];
+  validationIssues: [ApiErrorField[]];
 }>();
 const { tm } = useModuleI18n("features/agent-teams");
 const mode = ref<"full" | "single" | "partial">("full");
@@ -180,6 +195,7 @@ const loading = ref(false);
 const starting = ref(false);
 const error = ref("");
 const inputs = ref<Record<string, string>>({});
+const structuredInputs = ref("{}");
 const sourceModes = ref<Record<string, string>>({});
 const manual = ref<Record<string, Record<string, string>>>({});
 const fieldTypes = ref<Record<string, Record<string, string>>>({});
@@ -187,12 +203,12 @@ const rawContent = ref<Record<string, string>>({});
 const useRaw = ref<Record<string, boolean>>({});
 const artifactIds = ref<Record<string, string>>({});
 const artifactVersions = ref<Record<string, number>>({});
-const selectedArtifacts = ref<Record<string, string | null>>({});
 const artifacts = ref<{ title: string; value: string }[]>([]);
 const manualChoice = computed(() => ({
   title: tm("trial.manual"),
   value: "manual",
 }));
+const omitChoice = computed(() => ({ title: tm("trial.omitSource"), value: "omit" }));
 const artifactChoice = computed(() => ({
   title: tm("trial.artifact"),
   value: "artifact",
@@ -253,6 +269,7 @@ watch(
       );
       if (token !== generation) return;
       preview.value = value;
+      structuredInputs.value = "{}";
       inputs.value = Object.fromEntries(
         value.required_inputs.map((name: string) => [name, ""]),
       );
@@ -263,19 +280,20 @@ watch(
       useRaw.value = {};
       artifactIds.value = {};
       artifactVersions.value = {};
-      selectedArtifacts.value = {};
       for (const [id, requirement] of Object.entries(value.requirements) as [
         string,
         any,
       ][]) {
-        sourceModes.value[id] = requirement.pinned_only ? "artifact" : "manual";
+        sourceModes.value[id] = requirement.optional ? "omit" : requirement.pinned_only ? "artifact" : "manual";
         manual.value[id] = {};
+        useRaw.value[id] = !!value.input_contract;
         fieldTypes.value[id] = {};
         artifactVersions.value[id] = 1;
       }
     } catch (cause) {
       if (token === generation) {
         const failure = extractApiError(cause, tm("errors.operationFailed"));
+        emit("validationIssues", failure.fields);
         error.value = [
           failure.message,
           ...failure.fields.map((field) => `${field.path}: ${field.message}`),
@@ -287,18 +305,11 @@ watch(
   },
   { immediate: true },
 );
-watch(
-  selectedArtifacts,
-  (values) => {
-    for (const [id, value] of Object.entries(values))
-      if (value) {
-        const item = JSON.parse(value);
-        artifactIds.value[id] = item.artifact_id;
-        artifactVersions.value[id] = item.version;
-      }
-  },
-  { deep: true },
-);
+function selectHistoricalArtifact(id: string | number, key: string | null) {
+  const item = key ? JSON.parse(key) : null;
+  artifactIds.value[id] = item?.artifact_id ?? "";
+  artifactVersions.value[id] = item?.version ?? 1;
+}
 function manualFields(requirement: any): { path: string; types: string[] }[] {
   const fields: Record<string, string[]> = {};
   const visit = (schema: any, prefix = "") => {
@@ -334,18 +345,18 @@ async function start() {
     for (const [id, requirement] of Object.entries(
       preview.value.requirements,
     ) as [string, any][]) {
-      if (sourceModes.value[id] === "artifact")
-        sources[id] = {
-          artifact: {
-            artifact_id: artifactIds.value[id],
-            version: Number(artifactVersions.value[id]),
-          },
-        };
-      else {
+      if (sourceModes.value[id] === "omit") continue;
+      if (sourceModes.value[id] === "artifact") {
+        const artifactId = artifactIds.value[id]?.trim();
+        const version = Number(artifactVersions.value[id]);
+        if (!artifactId || !Number.isSafeInteger(version) || version < 1)
+          throw new Error(`${requirement.name}: ${tm("trial.required")}`);
+        sources[id] = { artifact: { artifact_id: artifactId, version } };
+      } else {
         const fields = useRaw.value[id] ? [] : manualFields(requirement);
         const content: Record<string, any> = fields.length
           ? {}
-          : JSON.parse(rawContent.value[id] || "{}");
+          : parseWorkflowInputs(rawContent.value[id] || "{}");
         for (const field of fields) {
           const raw = manual.value[id][field.path];
           const type = fieldTypes.value[id][field.path] ?? field.types[0];
@@ -359,6 +370,8 @@ async function start() {
               : ["integer", "number"].includes(type)
               ? Number(raw)
               : raw;
+          if (typeof value === "number" && !Number.isFinite(value))
+            throw new Error(`${field.path}: ${tm("graph.finiteJsonNumbers")}`);
           const parts = field.path.split(".");
           let target = content;
           for (const part of parts.slice(0, -1)) target = target[part] ??= {};
@@ -372,13 +385,14 @@ async function start() {
       revision: props.revision,
       mode: mode.value,
       node_id: mode.value === "full" ? null : node.value,
-      inputs: inputs.value,
+      inputs: preview.value.input_contract ? parseWorkflowInputs(structuredInputs.value) : inputs.value,
       sources,
     });
     emit("update:modelValue", false);
     emit("started", result.run_id);
   } catch (cause) {
     const failure = extractApiError(cause, tm("errors.operationFailed"));
+    emit("validationIssues", failure.fields);
     error.value = [
       failure.message,
       ...failure.fields.map((field) => `${field.path}: ${field.message}`),

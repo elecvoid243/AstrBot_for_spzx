@@ -533,7 +533,7 @@ class WecomAIBotAdapter(Platform):
         abm = AstrBotMessage()
         abm.self_id = self.bot_name
         abm.message_str = content or "[未知消息]"
-        abm.message_id = str(uuid.uuid4())
+        abm.message_id = str(message_data.get("msgid") or uuid.uuid4())
         abm.timestamp = int(time.time())
         abm.raw_message = payload
 

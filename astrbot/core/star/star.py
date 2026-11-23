@@ -11,6 +11,8 @@ star_map: dict[str, StarMetadata] = {}
 """key 是模块路径，__module__"""
 
 if TYPE_CHECKING:
+    from astrbot.core.agent_teams.components import WorkflowComponent
+
     from . import Star
 
 
@@ -71,6 +73,9 @@ class StarMetadata:
 
     i18n: dict[str, dict] = field(default_factory=dict)
     """插件自带的国际化文案，按 locale 分组。"""
+
+    workflow_components: tuple[WorkflowComponent, ...] = ()
+    """Components published after successful initialization."""
 
     views: list[dict] = field(default_factory=list)
     """View metadata declared by the plugin."""

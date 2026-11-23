@@ -3,10 +3,10 @@
     <!-- Handles only render inside a real Vue Flow node context; hiding them
          via `interactive === false` doubles as the provider-free test seam. -->
     <Handle
-      v-if="data.interactive !== false"
+      v-if="data.interactive !== false && !data.interfaceNode"
       type="target"
       :position="Position.Left"
-      class="at-node-handle"
+      class="at-node-handle at-control-handle"
       role="button"
       :aria-label="tm('editor.handleTarget')"
     />
@@ -17,10 +17,11 @@
       <Handle id="matched-false" type="source" :position="Position.Right" class="at-node-handle control-handle-false" :aria-label="data.falseLabel" />
     </template>
     <Handle
-      v-else-if="data.interactive !== false"
+      v-else-if="data.interactive !== false && (!data.interfaceNode || data.controlEntry)"
+      :id="data.controlEntry ? 'control-entry' : undefined"
       type="source"
       :position="Position.Right"
-      class="at-node-handle"
+      class="at-node-handle at-control-handle"
       role="button"
       :aria-label="tm('editor.handleSource')"
     />
@@ -30,6 +31,7 @@
         <template v-if="data.nodeKind === 'control'"><circle cx="6" cy="5" r="2"/><circle cx="18" cy="6" r="2"/><circle cx="18" cy="18" r="2"/><path d="M6 7v3c0 5 4 8 10 8M6 10c0-3 4-4 10-4"/></template>
         <template v-else-if="data.nodeKind === 'human'"><circle cx="12" cy="8" r="3"/><path d="M5 20c0-4 3-6 7-6s7 2 7 6"/></template>
         <template v-else-if="data.nodeKind === 'call'"><rect x="4" y="5" width="16" height="14" rx="3"/><path d="M8 12h8m-3-3 3 3-3 3"/></template>
+        <template v-else-if="data.nodeKind === 'transform'"><path d="m8 6-5 6 5 6m8-12 5 6-5 6m-3-13-2 14"/></template>
         <template v-else><rect x="4" y="7" width="16" height="12" rx="4"/><path d="M12 4v3M8 12h.01M16 12h.01M9 16h6"/></template>
       </svg>
     </div>
@@ -65,7 +67,30 @@
 
     <p v-if="data.taskPreview" class="at-node-task at-node-task-clamp">{{ data.taskPreview }}</p>
 
-    <div class="at-node-footer">
+    <div v-if="data.inputPorts?.length || data.outputPorts?.length" class="at-data-ports">
+      <div v-for="column in portColumns" :key="column.type">
+        <div
+          v-for="port in column.ports"
+          :key="port.id"
+          class="at-data-port"
+          :class="{ 'at-data-output': column.type === 'source', 'at-port-invalid': port.invalid }"
+        >
+          <Handle
+            v-if="data.interactive !== false"
+            :id="port.id"
+            :type="column.type"
+            :position="column.position"
+            :aria-label="port.accessibleLabel"
+            :aria-invalid="port.invalid || undefined"
+            class="at-node-handle at-data-handle"
+          />
+          <span>{{ port.label }}</span>
+          <span v-if="port.requirement" class="at-port-detail">{{ port.requirement }}</span>
+          <span v-if="port.defaultLabel" class="at-port-detail at-port-default" :title="port.defaultLabel">{{ port.defaultLabel }}</span>
+        </div>
+      </div>
+    </div>
+    <div v-else class="at-node-footer">
       <template v-if="data.inputLabel || data.outputLabel">
         <span class="at-node-indegree">{{ data.inputLabel }}</span>
         <span class="at-node-indegree">{{ data.outputLabel }}</span>
@@ -81,6 +106,16 @@
  * (WorkflowEditor / RunMonitor) enrich their node lists with these fields;
  * everything except `memberName`/`memberColor` is optional.
  */
+export interface FlowPort {
+  id: string;
+  label: string;
+  invalid?: boolean;
+  types?: string[];
+  required?: boolean;
+  defaultValue?: unknown;
+  schema?: Record<string, unknown>;
+}
+
 export interface MemberFlowNodeData {
   /** Legacy default-node label (header fallback when `nodeTitle` is unset). */
   label?: string;
@@ -105,6 +140,10 @@ export interface MemberFlowNodeData {
   falseLabel?: string;
   missingMember?: boolean;
   inDegree?: number;
+  interfaceNode?: boolean;
+  controlEntry?: boolean;
+  inputPorts?: FlowPort[];
+  outputPorts?: FlowPort[];
   /**
    * False hides the connect handles (test seam); production always passes
    * true / leaves it undefined, which keeps the handles visible.
@@ -140,6 +179,18 @@ const { tm } = useModuleI18n('features/agent-teams');
 
 const titleText = computed(() => props.data.nodeTitle ?? props.data.label ?? '');
 
+const portColumns = computed(() => [
+  { type: 'target' as const, position: Position.Left, ports: props.data.inputPorts },
+  { type: 'source' as const, position: Position.Right, ports: props.data.outputPorts },
+].filter((column) => column.ports?.length).map((column) => ({
+  ...column,
+  ports: column.ports?.map((port) => {
+    const requirement = port.required === undefined ? '' : tm(port.required ? 'graph.portRequired' : 'graph.portOptional');
+    const defaultLabel = port.defaultValue === undefined ? '' : tm('graph.portDefault', { value: JSON.stringify(port.defaultValue) });
+    return { ...port, requirement, defaultLabel, accessibleLabel: [port.label, requirement, defaultLabel].filter(Boolean).join(' · ') };
+  }),
+})));
+
 /** Status text reuses the monitor.node.* keys (not color-only signaling). */
 const statusText = computed(() =>
   props.data.status ? tm(`monitor.node.${props.data.status}`) : '',
@@ -155,6 +206,32 @@ const cardClasses = computed(() => ({
 </script>
 
 <style scoped>
+.member-flow-node:has(.at-data-ports) > .at-control-handle { top: 22px; }
+.at-data-ports {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  gap: 6px;
+  margin: 8px -12px 0;
+  padding-top: 4px;
+  border-top: 1px solid var(--at-line, #d8e2eb);
+}
+
+.at-data-port {
+  position: relative;
+  padding: 3px 9px;
+  color: var(--at-ink, #263849);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.at-data-output { text-align: right; }
+.at-port-detail { display: block; font-size: 10px; }
+.at-port-default { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.at-data-port .at-node-handle.at-data-handle { top: 50%; border-color: #087d74; background: #d7f2ef; }
+.at-port-invalid { color: rgb(var(--v-theme-error)); font-weight: 700; }
+.at-port-invalid .at-node-handle.at-data-handle { border-color: currentColor; background: currentColor; }
+
 .is-control { border-style: dashed; border-color: #7c3aed; }
 .control-handle-true { top: 32%; }
 .control-handle-false { top: 68%; }
@@ -366,6 +443,7 @@ const cardClasses = computed(() => ({
 .at-node-type-icon svg { width: 16px; height: 16px; }
 .at-node-type-icon.kind-control { color: #8066a6; background: #f1edf8; }
 .at-node-type-icon.kind-human { color: #a47332; background: #fbf2e4; }
+.at-node-type-icon.kind-transform { color: #087d74; background: #d7f2ef; }
 .at-node-type-icon.kind-call { color: #568374; background: #eaf5f0; }
 .at-node-member, .at-node-task, .at-node-footer, .at-node-number { color: var(--at-muted, #788b9b); }
 .at-node-member { font-weight: 400; }

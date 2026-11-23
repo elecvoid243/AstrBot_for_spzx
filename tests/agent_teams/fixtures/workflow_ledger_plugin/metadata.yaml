@@ -1,0 +1,6 @@
+name: astrbot_plugin_workflow_ledger
+display_name: Workflow ledger fixture
+author: workflow_tests
+version: 1.0.0
+desc: Records a typed result in an isolated test ledger
+repo: https://example.invalid/workflow-ledger

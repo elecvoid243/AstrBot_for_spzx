@@ -64,6 +64,7 @@
     "markstream-vue": "1.0.5-beta.0",
     "mermaid": "^11.12.2",
     "monaco-editor": "^0.52.2",
+    "ohash": "1.1.6",
     "papaparse": "^5.5.3",
     "pdfjs-dist": "^4.10.38",
     "pinia": "2.1.6",

@@ -279,6 +279,26 @@ export type BrowserControlTarget = {
     position_revision?: (number | null);
 };
 
+export type CanvasAnnotations = {
+    groups?: Array<CanvasGroup>;
+    notes?: Array<CanvasNote>;
+};
+
+export type CanvasGroup = {
+    id: string;
+    title: string;
+    task_ids: Array<(string)>;
+};
+
+export type CanvasNote = {
+    id: string;
+    text: string;
+    position?: {
+        x?: number;
+        y?: number;
+    };
+};
+
 /**
  * A deliberate local grant; importing an asset never grants access.
  */
@@ -554,6 +574,14 @@ export type ChatRequest = {
     _thread_selected_text?: string;
 };
 
+export type ChatSessionBatchArchiveRequest = {
+    session_ids: Array<(string)>;
+    /**
+     * Owned root run IDs, accepted only for administrator Dashboard sessions.
+     */
+    run_ids?: Array<(string)>;
+};
+
 export type ChatSessionBatchDeleteRequest = {
     session_ids: Array<(string)>;
 };
@@ -579,7 +607,12 @@ export type ChatSessionMetadata = {
     created_at: (string) | null;
     updated_at: (string) | null;
     starred: boolean;
+    session_type?: 'workflow_run';
+    run_conversation?: RunConversationSummary;
+    archived?: boolean;
 };
+
+export type session_type = 'workflow_run';
 
 export type ChatSessionPatchRequest = {
     display_name?: string;
@@ -699,6 +732,12 @@ export type CommandPatchRequest = {
     alias?: string;
     aliases?: Array<(string)>;
     permission_group?: string;
+};
+
+export type ComponentReference = {
+    id: string;
+    version: string;
+    contract_digest: string;
 };
 
 /**
@@ -832,6 +871,14 @@ export type DeveloperModeState = {
 };
 
 /**
+ * Bound the number of items and running Agents in a list dispatch.
+ */
+export type DispatchLimits = {
+    max_items?: number;
+    max_parallel?: number;
+};
+
+/**
  * Initial editable snapshot and optional existing asset identity.
  */
 export type DraftCreateRequest = {
@@ -854,6 +901,7 @@ export type DraftPublishRequest = {
 export type DraftRebaseRequest = {
     expected_revision: number;
     published_version: number;
+    restore_version?: (number | null);
 };
 
 /**
@@ -904,6 +952,15 @@ export type GraphDefinition = {
     name: string;
     default_provider_id?: (string | null);
     required_inputs?: Array<(string)>;
+    /**
+     * Version 1 uses text ports. Version 2 supports structured ports. Omit for legacy bindings.
+     */
+    port_contract_version?: (1 | 2 | null);
+    input_contract?: WorkflowPortContract;
+    /**
+     * Explicit V2 control entry tasks. Omit to retain implicit entries.
+     */
+    entry_task_ids?: (Array<(string)> | null);
     result_task_id?: (string | null);
     max_parallel?: number;
     max_depth?: number;
@@ -911,6 +968,7 @@ export type GraphDefinition = {
     tasks: Array<GraphTask>;
     edges?: Array<GraphEdge>;
     loops?: Array<GraphLoop>;
+    canvas?: (CanvasAnnotations | null);
 };
 
 /**
@@ -947,6 +1005,7 @@ export type GraphTask = {
     role?: (RoleDefinition | null);
     installation?: (RoleInstallation | null);
     task?: string;
+    dispatch?: (DispatchLimits | null);
     control?: (ConditionTask | JoinTask | null);
     human?: (HumanTask | null);
     team?: (TeamCall | null);
@@ -958,6 +1017,16 @@ export type GraphTask = {
     output_contract?: ({
     [key: string]: unknown;
 } | null);
+    transform?: ('parse_json' | 'map_fields' | 'json_text' | 'read_document_v1' | 'retrieve_knowledge_v1' | 'plugin_component_v1' | null);
+    component?: (ComponentReference | null);
+    /**
+     * Exact local knowledge base selected by a retrieval or plugin component node.
+     */
+    knowledge_base_id?: (string | null);
+    /**
+     * Explicit V2 input ports for an Agent, field mapping, or fixed child call. A fixed child call uses the pinned input contract.
+     */
+    input_contract?: WorkflowPortContract;
     position?: {
         [key: string]: (number);
     };
@@ -1563,6 +1632,18 @@ export type RoleSaveRequest = {
     expected_version?: (number | null);
 };
 
+export type RunConversationArchiveRequest = {
+    archived: boolean;
+};
+
+export type RunConversationSummary = {
+    run_id: string;
+    asset_id: string;
+    asset_version: number;
+    status: string;
+    draft_revision?: number;
+};
+
 /**
  * Optional whole-scope ceilings; nested scopes also obey their ancestors.
  */
@@ -1681,6 +1762,9 @@ export type T2iTemplateRequest = {
 export type TaskInput = {
     input?: (string | null);
     task_id?: (string | null);
+    /**
+     * An upstream field path, or the V2 intrinsic $artifact or $file output.
+     */
     field?: string;
 };
 
@@ -1739,7 +1823,7 @@ export type TrialRunRequest = {
     mode: 'full' | 'single' | 'partial';
     node_id?: (string | null);
     inputs?: {
-        [key: string]: (string);
+        [key: string]: unknown;
     };
     sources?: {
         [key: string]: TrialSource;
@@ -1809,6 +1893,35 @@ export type ValidationError = {
     };
 };
 
+export type WorkflowApiGrantRequest = {
+    version: number;
+};
+
+export type WorkflowApiRunResponse = {
+    status: "ok";
+    message?: (string | null);
+    data: {
+        run_id: string;
+        asset_id: string;
+        asset_version: number;
+        status: string;
+        result: ({
+    [key: string]: unknown;
+} | null);
+    };
+};
+
+export type WorkflowApiStartRequest = {
+    version: number;
+    /**
+     * Unique identity for one explicit launch by this API key.
+     */
+    request_id: string;
+    inputs?: {
+        [key: string]: unknown;
+    };
+};
+
 /**
  * An exact workflow version invoked in an independent scope.
  */
@@ -1816,6 +1929,22 @@ export type WorkflowCall = {
     asset_id: string;
     version: number;
 };
+
+export type WorkflowComponent = {
+    reference: ComponentReference;
+    label: string;
+    input_contract: WorkflowPortContract;
+    output_contract: {
+        [key: string]: unknown;
+    };
+    effect: 'read_only' | 'external';
+    permissions: Array<("knowledge_base:read")>;
+    recovery: ({
+    [key: string]: unknown;
+} | null);
+};
+
+export type effect = 'read_only' | 'external';
 
 /**
  * Idempotent whole-run decision, optionally conditional on its revision.
@@ -1828,9 +1957,26 @@ export type WorkflowControlRequest = {
 
 export type action4 = 'pause' | 'continue' | 'cancel';
 
+export type WorkflowDraftGenerationRequest = {
+    description: string;
+    provider_id: string;
+};
+
 export type WorkflowEdge = {
     from: string;
     to: string;
+};
+
+export type WorkflowFieldDiagnostic = {
+    /**
+     * Definition path, including task index and input alias for input port errors.
+     */
+    path: string;
+    /**
+     * Port diagnostics include REQUIRED, REFERENCE, INCOMPATIBLE, UNREACHABLE_DATA, and CYCLE.
+     */
+    code: string;
+    message: string;
 };
 
 export type WorkflowGraph = {
@@ -1861,10 +2007,33 @@ export type WorkflowPackage = {
     version: number;
     definition: (GraphDefinition | AutonomousDefinition);
     format: "astrbot.workflow";
-    format_version: 3;
+    format_version: 3 | 4;
     roles: Array<PackageRole>;
     assets?: Array<PackageAsset>;
     requirements?: Array<PackageDependency>;
+};
+
+export type format_version = 3 | 4;
+
+/**
+ * Inline JSON Schema object declaring named data ports and presence defaults. Top-level object ports may use astrbot-message (text), astrbot-artifact (artifact_id and version), or astrbot-file (artifact_id, version and file_id). These semantic formats do not accept defaults.
+ */
+export type WorkflowPortContract = {
+    type: "object";
+    properties: {
+        [key: string]: {
+            [key: string]: unknown;
+        };
+    };
+    required?: Array<(string)>;
+    [key: string]: unknown | "object" | string;
+};
+
+/**
+ * Start one new root from the completed run's exact launch inputs.
+ */
+export type WorkflowRerunRequest = {
+    request_id: string;
 };
 
 /**
@@ -1890,13 +2059,33 @@ export type WorkflowSaveRequest = {
 export type WorkflowStartRequest = {
     version: number;
     inputs?: {
-        [key: string]: (string);
+        [key: string]: unknown;
     };
+    /**
+     * Stable request identity for retrying one Dashboard launch.
+     */
+    request_id?: (string | null);
+    /**
+     * The server assigns the Dashboard source.
+     * @deprecated
+     */
     source?: string;
+    /**
+     * Return and wake a matching committed launch without creating a new run.
+     */
+    replay_only?: boolean;
     /**
      * Fixed full-artifact inputs for autonomous teams. Workflow graphs use explicitly selected node inputs.
      */
     input_artifacts?: Array<ArtifactReference>;
+};
+
+export type WorkflowValidationError = {
+    status: "error";
+    message: string;
+    data: {
+        fields: Array<WorkflowFieldDiagnostic>;
+    };
 };
 
 export type AnswerConnectionHumanChoiceApiV1ChatRemoteConnectionsConnectionIdSessionsSessionIdHumanChoicesRequestIdPostData = {
@@ -3113,8 +3302,16 @@ export type ListChatSessionsData = {
          * Dashboard-only pagination cursor, or start for a new list.
          */
         cursor?: string;
+        /**
+         * Include owned root run conversations when using a Dashboard cursor and administrator session.
+         */
+        include_run_conversations?: boolean;
         page?: number;
         page_size?: number;
+        /**
+         * Filter by platform. Set to workflow_run with include_run_conversations=true and a Dashboard cursor to list only owned run conversations.
+         */
+        platform_id?: string;
         username?: string;
     };
 };
@@ -3178,7 +3375,7 @@ export type BatchDeleteChatSessionsResponse = (SuccessEnvelope);
 export type BatchDeleteChatSessionsError = unknown;
 
 export type BatchArchiveChatSessionsData = {
-    body: ChatSessionBatchDeleteRequest;
+    body: ChatSessionBatchArchiveRequest;
 };
 
 export type BatchArchiveChatSessionsResponse = (SuccessEnvelope);
@@ -3186,7 +3383,7 @@ export type BatchArchiveChatSessionsResponse = (SuccessEnvelope);
 export type BatchArchiveChatSessionsError = unknown;
 
 export type BatchUnarchiveChatSessionsData = {
-    body: ChatSessionBatchDeleteRequest;
+    body: ChatSessionBatchArchiveRequest;
 };
 
 export type BatchUnarchiveChatSessionsResponse = (SuccessEnvelope);
@@ -3195,6 +3392,10 @@ export type BatchUnarchiveChatSessionsError = unknown;
 
 export type ListArchivedChatSessionsData = {
     query?: {
+        /**
+         * Include owned root run conversations for Dashboard administrators.
+         */
+        include_run_conversations?: boolean;
         page?: number;
         page_size?: number;
         platform_id?: string;
@@ -3225,6 +3426,27 @@ export type UnarchiveChatSessionData = {
 export type UnarchiveChatSessionResponse = (SuccessEnvelope);
 
 export type UnarchiveChatSessionError = unknown;
+
+export type GetChatRunConversationData = {
+    path: {
+        run_id: string;
+    };
+};
+
+export type GetChatRunConversationResponse = (ChatHistoryResponse);
+
+export type GetChatRunConversationError = (unknown);
+
+export type ArchiveChatRunConversationData = {
+    body: RunConversationArchiveRequest;
+    path: {
+        run_id: string;
+    };
+};
+
+export type ArchiveChatRunConversationResponse = (SuccessEnvelope);
+
+export type ArchiveChatRunConversationError = (unknown);
 
 export type GetChatSessionData = {
     path: {
@@ -6197,7 +6419,21 @@ export type OpenChatBrowserApiV1WorkflowChatRunsRunIdConnectionPostData = {
     };
 };
 
-export type OpenChatBrowserApiV1WorkflowChatRunsRunIdConnectionPostResponse = (unknown);
+export type OpenChatBrowserApiV1WorkflowChatRunsRunIdConnectionPostResponse = ({
+    data: {
+        session_id: string;
+        token: string;
+        command: string;
+        /**
+         * Expiration as a Unix timestamp in seconds.
+         */
+        expires_at: number;
+        /**
+         * Connection lifetime in seconds from issuance.
+         */
+        expires_in: number;
+    };
+});
 
 export type OpenChatBrowserApiV1WorkflowChatRunsRunIdConnectionPostError = (HTTPValidationError);
 
@@ -6209,7 +6445,7 @@ export type ChatBrowserStatusApiV1WorkflowChatRunsRunIdConnectionGetData = {
 
 export type ChatBrowserStatusApiV1WorkflowChatRunsRunIdConnectionGetResponse = (unknown);
 
-export type ChatBrowserStatusApiV1WorkflowChatRunsRunIdConnectionGetError = (HTTPValidationError);
+export type ChatBrowserStatusApiV1WorkflowChatRunsRunIdConnectionGetError = (ErrorEnvelope | HTTPValidationError);
 
 export type GetChatRunApiV1WorkflowChatRunsRunIdGetData = {
     path: {
@@ -6219,7 +6455,7 @@ export type GetChatRunApiV1WorkflowChatRunsRunIdGetData = {
 
 export type GetChatRunApiV1WorkflowChatRunsRunIdGetResponse = (unknown);
 
-export type GetChatRunApiV1WorkflowChatRunsRunIdGetError = (HTTPValidationError);
+export type GetChatRunApiV1WorkflowChatRunsRunIdGetError = (ErrorEnvelope | HTTPValidationError);
 
 export type AnswerChatTodoApiV1WorkflowChatRunsRunIdTodosTodoIdAnswerPostData = {
     body: HumanAnswerRequest;
@@ -6231,7 +6467,7 @@ export type AnswerChatTodoApiV1WorkflowChatRunsRunIdTodosTodoIdAnswerPostData = 
 
 export type AnswerChatTodoApiV1WorkflowChatRunsRunIdTodosTodoIdAnswerPostResponse = (unknown);
 
-export type AnswerChatTodoApiV1WorkflowChatRunsRunIdTodosTodoIdAnswerPostError = (HTTPValidationError);
+export type AnswerChatTodoApiV1WorkflowChatRunsRunIdTodosTodoIdAnswerPostError = (ErrorEnvelope | HTTPValidationError);
 
 export type PreviewChatApprovalApiV1WorkflowChatRunsRunIdTodosTodoIdArtifactGetData = {
     path: {
@@ -6242,7 +6478,7 @@ export type PreviewChatApprovalApiV1WorkflowChatRunsRunIdTodosTodoIdArtifactGetD
 
 export type PreviewChatApprovalApiV1WorkflowChatRunsRunIdTodosTodoIdArtifactGetResponse = (unknown);
 
-export type PreviewChatApprovalApiV1WorkflowChatRunsRunIdTodosTodoIdArtifactGetError = (HTTPValidationError);
+export type PreviewChatApprovalApiV1WorkflowChatRunsRunIdTodosTodoIdArtifactGetError = (ErrorEnvelope | HTTPValidationError);
 
 export type PreviewChatApprovalFileApiV1WorkflowChatRunsRunIdTodosTodoIdArtifactFilesFileIdGetData = {
     path: {
@@ -6254,7 +6490,7 @@ export type PreviewChatApprovalFileApiV1WorkflowChatRunsRunIdTodosTodoIdArtifact
 
 export type PreviewChatApprovalFileApiV1WorkflowChatRunsRunIdTodosTodoIdArtifactFilesFileIdGetResponse = (unknown);
 
-export type PreviewChatApprovalFileApiV1WorkflowChatRunsRunIdTodosTodoIdArtifactFilesFileIdGetError = (HTTPValidationError);
+export type PreviewChatApprovalFileApiV1WorkflowChatRunsRunIdTodosTodoIdArtifactFilesFileIdGetError = (ErrorEnvelope | HTTPValidationError);
 
 export type GetChatResultFileApiV1WorkflowChatRunsRunIdResultFilesFileIdGetData = {
     path: {
@@ -6268,7 +6504,48 @@ export type GetChatResultFileApiV1WorkflowChatRunsRunIdResultFilesFileIdGetData 
 
 export type GetChatResultFileApiV1WorkflowChatRunsRunIdResultFilesFileIdGetResponse = ((Blob | File));
 
-export type GetChatResultFileApiV1WorkflowChatRunsRunIdResultFilesFileIdGetError = (HTTPValidationError);
+export type GetChatResultFileApiV1WorkflowChatRunsRunIdResultFilesFileIdGetError = (ErrorEnvelope | HTTPValidationError);
+
+export type RebaseAgentAssetDraftData = {
+    body: DraftRebaseRequest;
+    path: {
+        asset_id: string;
+        kind: 'role' | 'workflow' | 'autonomous';
+    };
+};
+
+export type RebaseAgentAssetDraftResponse = (unknown);
+
+export type RebaseAgentAssetDraftError = (WorkflowValidationError);
+
+export type PublishAgentAssetDraftData = {
+    body: DraftPublishRequest;
+    path: {
+        asset_id: string;
+        kind: 'role' | 'workflow' | 'autonomous';
+    };
+};
+
+export type PublishAgentAssetDraftResponse = (unknown);
+
+export type PublishAgentAssetDraftError = (WorkflowValidationError);
+
+export type GenerateWorkflowDraftData = {
+    body: WorkflowDraftGenerationRequest;
+};
+
+export type GenerateWorkflowDraftResponse = ({
+    data: GraphDefinition;
+});
+
+export type GenerateWorkflowDraftError = ((WorkflowValidationError | HTTPValidationError) | ErrorEnvelope);
+
+export type ListWorkflowComponentsApiV1WorkflowComponentsGetResponse = ({
+    status: string;
+    data: Array<WorkflowComponent>;
+});
+
+export type ListWorkflowComponentsApiV1WorkflowComponentsGetError = (unknown);
 
 export type ListAssetsApiV1WorkflowAssetsGetResponse = (unknown);
 
@@ -6283,7 +6560,7 @@ export type SaveAssetApiV1WorkflowAssetsPostData = {
 
 export type SaveAssetApiV1WorkflowAssetsPostResponse = (unknown);
 
-export type SaveAssetApiV1WorkflowAssetsPostError = (HTTPValidationError);
+export type SaveAssetApiV1WorkflowAssetsPostError = (WorkflowValidationError | HTTPValidationError);
 
 export type GetAssetApiV1WorkflowAssetsAssetIdGetData = {
     path: {
@@ -6307,7 +6584,7 @@ export type SaveAssetApiV1WorkflowAssetsAssetIdPutData = {
 
 export type SaveAssetApiV1WorkflowAssetsAssetIdPutResponse = (unknown);
 
-export type SaveAssetApiV1WorkflowAssetsAssetIdPutError = (HTTPValidationError);
+export type SaveAssetApiV1WorkflowAssetsAssetIdPutError = (WorkflowValidationError | HTTPValidationError);
 
 export type DeleteWorkflowAssetData = {
     path: {
@@ -6352,6 +6629,50 @@ export type RevokeChatAccessApiV1WorkflowAssetsAssetIdChatAccessPlatformIdSender
 
 export type RevokeChatAccessApiV1WorkflowAssetsAssetIdChatAccessPlatformIdSenderIdDeleteError = (HTTPValidationError);
 
+export type SaveWorkflowApiAccessApiV1WorkflowAssetsAssetIdApiAccessKeyIdPutData = {
+    body: WorkflowApiGrantRequest;
+    path: {
+        asset_id: string;
+        key_id: string;
+    };
+};
+
+export type SaveWorkflowApiAccessApiV1WorkflowAssetsAssetIdApiAccessKeyIdPutResponse = (unknown);
+
+export type SaveWorkflowApiAccessApiV1WorkflowAssetsAssetIdApiAccessKeyIdPutError = (unknown);
+
+export type RevokeWorkflowApiAccessApiV1WorkflowAssetsAssetIdApiAccessKeyIdDeleteData = {
+    path: {
+        asset_id: string;
+        key_id: string;
+    };
+};
+
+export type RevokeWorkflowApiAccessApiV1WorkflowAssetsAssetIdApiAccessKeyIdDeleteResponse = (unknown);
+
+export type RevokeWorkflowApiAccessApiV1WorkflowAssetsAssetIdApiAccessKeyIdDeleteError = (unknown);
+
+export type StartPublicWorkflowApiV1WorkflowsAssetIdRunsPostData = {
+    body: WorkflowApiStartRequest;
+    path: {
+        asset_id: string;
+    };
+};
+
+export type StartPublicWorkflowApiV1WorkflowsAssetIdRunsPostResponse = (WorkflowApiRunResponse);
+
+export type StartPublicWorkflowApiV1WorkflowsAssetIdRunsPostError = (WorkflowValidationError | unknown);
+
+export type GetPublicWorkflowRunApiV1WorkflowsRunsRunIdGetData = {
+    path: {
+        run_id: string;
+    };
+};
+
+export type GetPublicWorkflowRunApiV1WorkflowsRunsRunIdGetResponse = (WorkflowApiRunResponse);
+
+export type GetPublicWorkflowRunApiV1WorkflowsRunsRunIdGetError = (unknown);
+
 export type StartRunApiV1WorkflowAssetsAssetIdRunsPostData = {
     body: WorkflowStartRequest;
     path: {
@@ -6361,7 +6682,7 @@ export type StartRunApiV1WorkflowAssetsAssetIdRunsPostData = {
 
 export type StartRunApiV1WorkflowAssetsAssetIdRunsPostResponse = (unknown);
 
-export type StartRunApiV1WorkflowAssetsAssetIdRunsPostError = (HTTPValidationError);
+export type StartRunApiV1WorkflowAssetsAssetIdRunsPostError = (WorkflowValidationError | unknown | HTTPValidationError);
 
 export type PreviewTrialApiV1WorkflowAssetsAssetIdTrialsPreviewPostData = {
     body: TrialRunRequest;
@@ -6370,9 +6691,30 @@ export type PreviewTrialApiV1WorkflowAssetsAssetIdTrialsPreviewPostData = {
     };
 };
 
-export type PreviewTrialApiV1WorkflowAssetsAssetIdTrialsPreviewPostResponse = (unknown);
+export type PreviewTrialApiV1WorkflowAssetsAssetIdTrialsPreviewPostResponse = ({
+    status?: string;
+    message?: string;
+    data?: {
+        selected_nodes: Array<(string)>;
+        required_inputs: Array<(string)>;
+        input_contract?: WorkflowPortContract;
+        requirements: {
+            [key: string]: {
+                name?: string;
+                pinned_only?: boolean;
+                optional?: boolean;
+                contract?: {
+                    [key: string]: unknown;
+                } | null;
+                fields?: {
+                    [key: string]: Array<(string)>;
+                };
+            };
+        };
+    };
+});
 
-export type PreviewTrialApiV1WorkflowAssetsAssetIdTrialsPreviewPostError = (unknown);
+export type PreviewTrialApiV1WorkflowAssetsAssetIdTrialsPreviewPostError = (WorkflowValidationError | HTTPValidationError);
 
 export type StartTrialApiV1WorkflowAssetsAssetIdTrialsPostData = {
     body: TrialRunRequest;
@@ -6383,7 +6725,7 @@ export type StartTrialApiV1WorkflowAssetsAssetIdTrialsPostData = {
 
 export type StartTrialApiV1WorkflowAssetsAssetIdTrialsPostResponse = (unknown);
 
-export type StartTrialApiV1WorkflowAssetsAssetIdTrialsPostError = (unknown);
+export type StartTrialApiV1WorkflowAssetsAssetIdTrialsPostError = (WorkflowValidationError | HTTPValidationError);
 
 export type ListHumanRequestsApiV1WorkflowHumanRequestsGetResponse = (unknown);
 
@@ -6488,6 +6830,17 @@ export type ControlRunApiV1WorkflowRunsRunIdControlPostData = {
 export type ControlRunApiV1WorkflowRunsRunIdControlPostResponse = (unknown);
 
 export type ControlRunApiV1WorkflowRunsRunIdControlPostError = (HTTPValidationError);
+
+export type RerunWorkflowApiV1WorkflowRunsRunIdRerunPostData = {
+    body: WorkflowRerunRequest;
+    path: {
+        run_id: string;
+    };
+};
+
+export type RerunWorkflowApiV1WorkflowRunsRunIdRerunPostResponse = (unknown);
+
+export type RerunWorkflowApiV1WorkflowRunsRunIdRerunPostError = (unknown | HTTPValidationError);
 
 export type RetryTaskApiV1WorkflowRunsRunIdRetryPostData = {
     body: WorkflowRetryRequest;

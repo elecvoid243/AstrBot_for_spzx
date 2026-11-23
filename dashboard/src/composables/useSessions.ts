@@ -2,9 +2,11 @@ import {
   accountSessionRevision,
   assertCurrentAccount,
 } from "@/utils/accountSession";
-import { ref, computed, watch } from "vue";
+import { ref, computed, watch, toValue, type MaybeRef } from "vue";
+import type { RunConversationSummary } from "@/api/generated/openapi-v1";
 import { useRouter } from "vue-router";
 import { chatApi } from "@/api/v1";
+import { sessionRowKey } from "@/utils/runConversation";
 import { getStoredSelectedChatConfigId } from "@/utils/chatConfigBinding";
 
 export interface Session {
@@ -23,6 +25,8 @@ export interface Session {
    * persisted on the server (platform_sessions.starred). Rendered as a
    * leading marker so a starred conversation is quick to find. */
   starred?: boolean;
+  session_type?: "workflow_run";
+  run_conversation?: RunConversationSummary;
 }
 
 /** Archived session: same shape as Session plus project membership, so the
@@ -50,13 +54,23 @@ export interface ArchivedSessionsPayload {
 const SESSION_PAGE_SIZE = 50;
 const MAX_SESSION_PAGE_SIZE = 200;
 
-export function useSessions(chatboxMode: boolean = false) {
+export function useSessions(
+  chatboxMode = false,
+  includeRunConversations: MaybeRef<boolean> = false,
+) {
   const router = useRouter();
   const accountRevision = accountSessionRevision.value;
+  const runConversationsOnly = ref(false);
+  const sidebarScope = computed(() => toValue(includeRunConversations)
+    ? (runConversationsOnly.value ? "runs" : "mixed")
+    : "ordinary");
   const sessions = ref<Session[]>([]);
+  const ordinarySessions = ref<Session[]>([]);
   const sessionCursor = ref<string | null>(null);
   const sessionsHasMore = computed(() => sessionCursor.value !== null);
   const sessionsLoadingMore = ref(false);
+  const sessionsStatus = ref<"loading" | "ready" | "error">("loading");
+  let sessionListRevision = 0;
   let sessionListQueue = Promise.resolve();
   // Set once the archive dialog has fetched its first page; archive
   // refreshes stay dormant until then so opening ChatUI never queries it.
@@ -78,14 +92,18 @@ export function useSessions(chatboxMode: boolean = false) {
 
   const getCurrentSession = computed(() => {
     if (!currSessionId.value) return null;
-    return sessions.value.find((s) => s.session_id === currSessionId.value);
+    return ordinarySessions.value.find((s) => s.session_id === currSessionId.value);
   });
 
   /** Serialize list updates so a refresh preserves rows that just finished loading. */
   function getSessions({ append = false }: { append?: boolean } = {}) {
+    const revision = sessionListRevision;
+    const scope = sidebarScope.value;
     sessionListQueue = sessionListQueue
       .then(async () => {
         assertCurrentAccount(accountRevision);
+        if (revision !== sessionListRevision) return;
+        if (!append && !sessions.value.length) sessionsStatus.value = "loading";
         let replace = !append;
         let cursor = append ? sessionCursor.value : "start";
         let target = append
@@ -96,9 +114,12 @@ export function useSessions(chatboxMode: boolean = false) {
         while (cursor && items.length < target) {
           const response = await chatApi.listSessions({
             cursor,
+            ...(scope !== "ordinary" ? { include_run_conversations: true } : {}),
+            ...(scope === "runs" ? { platform_id: "workflow_run" } : {}),
             page_size: Math.min(MAX_SESSION_PAGE_SIZE, target - items.length),
           });
           assertCurrentAccount(accountRevision);
+          if (revision !== sessionListRevision) return;
           if (response.data?.status !== "ok") {
             throw new Error(response.data?.message || "Sessions are unavailable");
           }
@@ -120,15 +141,21 @@ export function useSessions(chatboxMode: boolean = false) {
         if (replace) {
           sessions.value = items;
         } else {
-          const known = new Set(sessions.value.map((s) => s.session_id));
+          const known = new Set(sessions.value.map(sessionRowKey));
           sessions.value = [
             ...sessions.value,
-            ...items.filter((s) => !known.has(s.session_id)),
+            ...items.filter((s) => !known.has(sessionRowKey(s))),
           ];
         }
+        if (scope !== "runs") {
+          ordinarySessions.value = sessions.value.filter((session) => session.session_type !== "workflow_run");
+        }
         sessionCursor.value = cursor;
+        sessionsStatus.value = "ready";
       })
       .catch((err) => {
+        if (revision !== sessionListRevision || accountRevision !== accountSessionRevision.value) return;
+        sessionsStatus.value = "error";
         if (err.response?.status === 401) {
           void router.push("/auth/login?redirect=/chatbox");
         }
@@ -140,13 +167,26 @@ export function useSessions(chatboxMode: boolean = false) {
   /** Fetch the next sidebar page; no-op while one is in flight or at the end. */
   async function loadMoreSessions() {
     if (sessionsLoadingMore.value || !sessionsHasMore.value) return;
+    const revision = sessionListRevision;
     sessionsLoadingMore.value = true;
     try {
       await getSessions({ append: true });
     } finally {
-      sessionsLoadingMore.value = false;
+      if (revision === sessionListRevision) sessionsLoadingMore.value = false;
     }
   }
+
+  watch(sidebarScope, () => {
+    // Each scope has its own server cursor. A slow page from the previous
+    // scope must neither block the new snapshot nor update its rows.
+    sessionListRevision += 1;
+    sessionListQueue = Promise.resolve();
+    sessions.value = [];
+    sessionCursor.value = null;
+    sessionsLoadingMore.value = false;
+    sessionsStatus.value = "loading";
+    void getSessions();
+  }, { flush: "sync" });
 
   // In-flight creation promise. When "new chat" is clicked and the user
   // immediately sends a message (or double-clicks), both callers would
@@ -218,7 +258,11 @@ export function useSessions(chatboxMode: boolean = false) {
     search?: string;
   }): Promise<ArchivedSessionsPayload> {
     try {
-      const response = await chatApi.listArchivedSessions(params);
+      const response = await chatApi.listArchivedSessions(
+        toValue(includeRunConversations)
+          ? { ...params, include_run_conversations: true }
+          : params,
+      );
       assertCurrentAccount(accountRevision);
       if (response.data?.status !== "ok")
         throw new Error(response.data?.message || "Archive is unavailable");
@@ -258,9 +302,12 @@ export function useSessions(chatboxMode: boolean = false) {
   async function setSessionArchived(
     sessionId: string,
     archived: boolean,
+    sessionType?: "workflow_run",
   ): Promise<boolean> {
     try {
-      const response = archived
+      const response = sessionType === "workflow_run"
+        ? await chatApi.setRunConversationArchived(sessionId, archived)
+        : archived
         ? await chatApi.archiveSession(sessionId)
         : await chatApi.unarchiveSession(sessionId);
       assertCurrentAccount(accountRevision);
@@ -295,7 +342,7 @@ export function useSessions(chatboxMode: boolean = false) {
         console.error(response.data?.message || "Failed to update star state");
         return false;
       }
-      const session = sessions.value.find((s) => s.session_id === sessionId);
+      const session = ordinarySessions.value.find((s) => s.session_id === sessionId);
       if (session) session.starred = starred;
       return true;
     } catch (err) {
@@ -399,7 +446,7 @@ export function useSessions(chatboxMode: boolean = false) {
         throw new Error(response.data?.message || "Failed to rename session");
 
       // 更新本地会话标题
-      const session = sessions.value.find(
+      const session = ordinarySessions.value.find(
         (s) => s.session_id === editingSessionId.value,
       );
       if (session) {
@@ -412,7 +459,7 @@ export function useSessions(chatboxMode: boolean = false) {
   }
 
   function updateSessionTitle(sessionId: string, title: string) {
-    const session = sessions.value.find((s) => s.session_id === sessionId);
+    const session = ordinarySessions.value.find((s) => s.session_id === sessionId);
     if (session) {
       session.display_name = title;
     }
@@ -421,8 +468,11 @@ export function useSessions(chatboxMode: boolean = false) {
   watch(
     accountSessionRevision,
     () => {
+      sessionListRevision += 1;
       sessions.value = [];
+      ordinarySessions.value = [];
       sessionCursor.value = null;
+      sessionsLoadingMore.value = false;
       archivedLoaded.value = false;
       archivedSessions.value = [];
       selectedSessions.value = [];
@@ -437,6 +487,8 @@ export function useSessions(chatboxMode: boolean = false) {
 
   return {
     sessions,
+    runConversationsOnly,
+    ordinarySessions,
     archivedSessions,
     archivedPagination,
     selectedSessions,
@@ -449,6 +501,7 @@ export function useSessions(chatboxMode: boolean = false) {
     getSessions,
     sessionsHasMore,
     sessionsLoadingMore,
+    sessionsStatus,
     loadMoreSessions,
     newSession,
     deleteSession,

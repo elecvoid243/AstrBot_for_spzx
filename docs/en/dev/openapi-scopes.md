@@ -383,3 +383,12 @@ Manage Skills, archives, files, and Shipyard Neo Skill workflows.
 | `GET` | `/api/v1/skills/{skill_name}/files` | — |
 | `GET` | `/api/v1/skills/{skill_name}/files/{file_path}` | — |
 | `PUT` | `/api/v1/skills/{skill_name}/files/{file_path}` | — |
+
+## `workflow`
+
+Start and read published workflow runs explicitly granted to this API key.
+
+| Method | Endpoint | Conditional sensitive sub-scope |
+| --- | --- | --- |
+| `GET` | `/api/v1/workflows/runs/{run_id}` | — |
+| `POST` | `/api/v1/workflows/{asset_id}/runs` | — |

@@ -8,9 +8,9 @@ info:
     JSON objects because their schemas are provided at runtime by template
     endpoints.
     Developer API keys currently support these scopes only: bot, provider,
-    persona, im, config, chat, data, file, plugin, mcp, skill, plus the sensitive
-    config:edit_admin and chat:admin sub-scopes. The config scope also grants bot
-    and provider access, but no parent scope grants a sensitive sub-scope.
+    persona, im, config, chat, data, file, plugin, mcp, skill, workflow, plus the
+    sensitive config:edit_admin and chat:admin sub-scopes. The config scope also
+    grants bot and provider access, but no parent scope grants a sensitive sub-scope.
 x-astrbot-scope-definitions:
   bot:
     description: Manage bot and platform configurations.
@@ -56,6 +56,9 @@ x-astrbot-scope-definitions:
   skill:
     description: Manage Skills, archives, files, and Shipyard Neo Skill workflows.
     description_zh: 管理 Skills、Skill 压缩包、Skill 文件和 Shipyard Neo Skill 流程。
+  workflow:
+    description: Start and read published workflow runs explicitly granted to this API key.
+    description_zh: 启动和读取显式授予此 API Key 的固定版本工作流运行。
 servers:
   - url: http://localhost:6185
     description: Local AstrBot server
@@ -2946,6 +2949,14 @@ paths:
           in: query
           schema:
             type: string
+        - name: include_run_conversations
+          in: query
+          description: Include owned root run conversations when using a Dashboard cursor and administrator session.
+          schema: { type: boolean, default: false }
+        - name: platform_id
+          in: query
+          description: Filter by platform. Set to workflow_run with include_run_conversations=true and a Dashboard cursor to list only owned run conversations.
+          schema: { type: string }
       responses:
         "200":
           $ref: "#/components/responses/Ok"
@@ -3072,7 +3083,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/ChatSessionBatchDeleteRequest"
+              $ref: "#/components/schemas/ChatSessionBatchArchiveRequest"
       responses:
         "200":
           $ref: "#/components/responses/Ok"
@@ -3092,7 +3103,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/ChatSessionBatchDeleteRequest"
+              $ref: "#/components/schemas/ChatSessionBatchArchiveRequest"
       responses:
         "200":
           $ref: "#/components/responses/Ok"
@@ -3126,6 +3137,10 @@ paths:
           schema:
             type: string
             default: ""
+        - name: include_run_conversations
+          in: query
+          description: Include owned root run conversations for Dashboard administrators.
+          schema: { type: boolean, default: false }
       responses:
         "200":
           $ref: "#/components/responses/Ok"
@@ -3159,6 +3174,43 @@ paths:
       responses:
         "200":
           $ref: "#/components/responses/Ok"
+
+  /api/v1/chat/run-conversations/{run_id}:
+    parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [Chat]
+      summary: Open a root run conversation owned by a Dashboard administrator
+      operationId: getChatRunConversation
+      security: [{ BearerAuth: [] }]
+      responses:
+        "200":
+          description: Scoped run conversation metadata.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChatHistoryResponse"
+        "404":
+          description: Run conversation unavailable.
+    patch:
+      tags: [Chat]
+      summary: Archive or restore an owned run conversation
+      operationId: archiveChatRunConversation
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RunConversationArchiveRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/Ok"
+        "404":
+          description: Run conversation unavailable.
 
   /api/v1/chat/sessions/{session_id}:
     get:
@@ -8301,7 +8353,26 @@ paths:
           description: Successful Response
           content:
             application/json:
-              schema: {}
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [session_id, token, command, expires_at, expires_in]
+                    properties:
+                      session_id:
+                        type: string
+                      token:
+                        type: string
+                      command:
+                        type: string
+                      expires_at:
+                        type: number
+                        description: Expiration as a Unix timestamp in seconds.
+                      expires_in:
+                        type: integer
+                        description: Connection lifetime in seconds from issuance.
         '422':
           description: Validation Error
           content:
@@ -8333,6 +8404,12 @@ paths:
           content:
             application/json:
               schema: {}
+        '401':
+          $ref: '#/components/responses/ChatBrowserAccessError'
+        '403':
+          $ref: '#/components/responses/ChatBrowserAccessError'
+        '404':
+          $ref: '#/components/responses/ChatBrowserAccessError'
         '422':
           description: Validation Error
           content:
@@ -8365,6 +8442,12 @@ paths:
           content:
             application/json:
               schema: {}
+        '401':
+          $ref: '#/components/responses/ChatBrowserAccessError'
+        '403':
+          $ref: '#/components/responses/ChatBrowserAccessError'
+        '404':
+          $ref: '#/components/responses/ChatBrowserAccessError'
         '422':
           description: Validation Error
           content:
@@ -8410,6 +8493,12 @@ paths:
           content:
             application/json:
               schema: {}
+        '401':
+          $ref: '#/components/responses/ChatBrowserAccessError'
+        '403':
+          $ref: '#/components/responses/ChatBrowserAccessError'
+        '404':
+          $ref: '#/components/responses/ChatBrowserAccessError'
         '422':
           description: Validation Error
           content:
@@ -8448,6 +8537,12 @@ paths:
           content:
             application/json:
               schema: {}
+        '401':
+          $ref: '#/components/responses/ChatBrowserAccessError'
+        '403':
+          $ref: '#/components/responses/ChatBrowserAccessError'
+        '404':
+          $ref: '#/components/responses/ChatBrowserAccessError'
         '422':
           description: Validation Error
           content:
@@ -8493,6 +8588,12 @@ paths:
           content:
             application/json:
               schema: {}
+        '401':
+          $ref: '#/components/responses/ChatBrowserAccessError'
+        '403':
+          $ref: '#/components/responses/ChatBrowserAccessError'
+        '404':
+          $ref: '#/components/responses/ChatBrowserAccessError'
         '422':
           description: Validation Error
           content:
@@ -8542,12 +8643,130 @@ paths:
               schema:
                 type: string
                 format: binary
+        '401':
+          $ref: '#/components/responses/ChatBrowserAccessError'
+        '403':
+          $ref: '#/components/responses/ChatBrowserAccessError'
+        '404':
+          $ref: '#/components/responses/ChatBrowserAccessError'
         '422':
           description: Validation Error
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/agent_drafts/{kind}/{asset_id}/rebase:
+    post:
+      tags: [Agent Teams drafts]
+      summary: Rebase a draft or restore a fixed workflow version into it
+      operationId: rebaseAgentAssetDraft
+      parameters:
+      - name: kind
+        in: path
+        required: true
+        schema: {type: string, enum: [role, workflow, autonomous]}
+      - name: asset_id
+        in: path
+        required: true
+        schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DraftRebaseRequest'
+      responses:
+        '200':
+          description: Updated draft
+        '404':
+          $ref: '#/components/responses/WorkflowValidationFailure'
+        '409':
+          $ref: '#/components/responses/WorkflowValidationFailure'
+  /api/v1/agent_drafts/{kind}/{asset_id}/publish:
+    post:
+      tags: [Agent Teams drafts]
+      summary: Publish the given draft revision
+      operationId: publishAgentAssetDraft
+      parameters:
+      - name: kind
+        in: path
+        required: true
+        schema: {type: string, enum: [role, workflow, autonomous]}
+      - name: asset_id
+        in: path
+        required: true
+        schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DraftPublishRequest'
+      responses:
+        '200':
+          description: Published fixed version
+        '400':
+          $ref: '#/components/responses/WorkflowValidationFailure'
+        '409':
+          $ref: '#/components/responses/WorkflowValidationFailure'
+  /api/v1/workflow_assets/generate_draft:
+    post:
+      tags: [Agent Teams workflows]
+      summary: Propose a workflow definition using a selected local model
+      operationId: generateWorkflowDraft
+      security:
+      - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WorkflowDraftGenerationRequest'
+      responses:
+        '200':
+          description: Editable workflow proposal
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/GraphDefinition'
+        '422':
+          description: Request validation, provider configuration, or generated draft validation failed.
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - $ref: '#/components/schemas/WorkflowValidationError'
+                - $ref: '#/components/schemas/HTTPValidationError'
+        '502':
+          $ref: '#/components/responses/Error'
+          description: Model call failed
+  /api/v1/workflow_components:
+    get:
+      tags: [Agent Teams workflows]
+      summary: List installed workflow components
+      operationId: list_workflow_components_api_v1_workflow_components_get
+      security:
+      - BearerAuth: []
+      responses:
+        '200':
+          description: Registered components available to the editor.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, data]
+                properties:
+                  status: {type: string}
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/WorkflowComponent'
+        '403':
+          description: Component catalog access denied.
   /api/v1/workflow_assets:
     get:
       tags:
@@ -8586,6 +8805,8 @@ paths:
           content:
             application/json:
               schema: {}
+        '400':
+          $ref: '#/components/responses/WorkflowValidationFailure'
         '422':
           description: Validation Error
           content:
@@ -8652,6 +8873,8 @@ paths:
           content:
             application/json:
               schema: {}
+        '400':
+          $ref: '#/components/responses/WorkflowValidationFailure'
         '422':
           description: Validation Error
           content:
@@ -8780,6 +9003,81 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/workflow_assets/{asset_id}/api_access/{key_id}:
+    parameters:
+    - {name: asset_id, in: path, required: true, schema: {type: string}}
+    - {name: key_id, in: path, required: true, schema: {type: string}}
+    put:
+      tags: [Agent Teams workflows]
+      summary: Grant a fixed workflow version to an API key (Dashboard only)
+      operationId: save_workflow_api_access_api_v1_workflow_assets__asset_id__api_access__key_id__put
+      security:
+      - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/WorkflowApiGrantRequest'}
+      responses:
+        '200': {description: Grant saved}
+        '403': {description: Dashboard-only workflow components or resources}
+        '404': {description: Asset, version, or eligible key not found}
+        '409': {description: Asset deleted}
+        '422': {description: Invalid grant request}
+    delete:
+      tags: [Agent Teams workflows]
+      summary: Revoke workflow launch and result access (Dashboard only)
+      operationId: revoke_workflow_api_access_api_v1_workflow_assets__asset_id__api_access__key_id__delete
+      security:
+      - BearerAuth: []
+      responses:
+        '200': {description: Grant revoked}
+        '404': {description: Owned asset not found}
+  /api/v1/workflows/{asset_id}/runs:
+    post:
+      tags: [Agent Teams workflows]
+      summary: Start an authorized fixed workflow version
+      operationId: start_public_workflow_api_v1_workflows__asset_id__runs_post
+      description: The API key needs an explicit grant for this asset and exact published version. The request ID is scoped to the key. Retrying it with the same effective inputs returns the original root run.
+      x-astrbot-scope: workflow
+      parameters:
+      - {name: asset_id, in: path, required: true, schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/WorkflowApiStartRequest'}
+      responses:
+        '200':
+          description: Committed root run and restricted result projection.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/WorkflowApiRunResponse'}
+        '400':
+          $ref: '#/components/responses/WorkflowValidationFailure'
+        '401': {description: Invalid or missing API key}
+        '403': {description: Insufficient scope or Dashboard-only inputs or resources}
+        '404': {description: Workflow version not granted to this key}
+        '409': {description: Changed payload under the same request ID or deleted asset}
+        '422': {description: Invalid request envelope}
+  /api/v1/workflows/runs/{run_id}:
+    get:
+      tags: [Agent Teams workflows]
+      summary: Read the root run started by this API key
+      operationId: get_public_workflow_run_api_v1_workflows_runs__run_id__get
+      description: Returns status and the published result when complete. Requires the original API key and a current grant for the same fixed version.
+      x-astrbot-scope: workflow
+      parameters:
+      - {name: run_id, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: Restricted root status and result.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/WorkflowApiRunResponse'}
+        '401': {description: Invalid or missing API key}
+        '403': {description: Insufficient scope}
+        '404': {description: Run or fixed version not available to this key}
   /api/v1/workflow_assets/{asset_id}/runs:
     post:
       tags:
@@ -8805,6 +9103,12 @@ paths:
           content:
             application/json:
               schema: {}
+        '400':
+          $ref: '#/components/responses/WorkflowValidationFailure'
+        '404':
+          description: Workflow not found or the replay has no committed launch.
+        '409':
+          description: Request ID reused with changed inputs or workflow deleted.
         '422':
           description: Validation Error
           content:
@@ -8828,8 +9132,49 @@ paths:
             schema:
               $ref: '#/components/schemas/TrialRunRequest'
       responses:
-        '200': {description: Successful Response}
-        '422': {description: Validation Error}
+        '200':
+          description: Selected nodes and boundary inputs for the saved draft.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: {type: string}
+                  message: {type: string}
+                  data:
+                    type: object
+                    required: [selected_nodes, required_inputs, requirements]
+                    properties:
+                      selected_nodes:
+                        type: array
+                        items: {type: string}
+                      required_inputs:
+                        type: array
+                        items: {type: string}
+                      input_contract:
+                        $ref: '#/components/schemas/WorkflowPortContract'
+                      requirements:
+                        type: object
+                        additionalProperties:
+                          type: object
+                          properties:
+                            name: {type: string}
+                            pinned_only: {type: boolean}
+                            optional: {type: boolean}
+                            contract: {type: [object, 'null'], additionalProperties: true}
+                            fields:
+                              type: object
+                              additionalProperties:
+                                type: array
+                                items: {type: string}
+        '400':
+          $ref: '#/components/responses/WorkflowValidationFailure'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/workflow_assets/{asset_id}/trials:
     post:
       tags: [Agent Teams workflows]
@@ -8848,7 +9193,14 @@ paths:
               $ref: '#/components/schemas/TrialRunRequest'
       responses:
         '200': {description: Successful Response}
-        '422': {description: Validation Error}
+        '400':
+          $ref: '#/components/responses/WorkflowValidationFailure'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/workflow_human_requests:
     get:
       tags:
@@ -8907,7 +9259,12 @@ paths:
       tags:
       - Agent Teams workflows
       summary: Get Run
-      description: Run details include at most 128 recent process observations. Read older observations through the process page endpoint. The snapshot cursor is the committed event high-water mark.
+      description: >-
+        Run details include at most 128 recent process observations. Read older
+        observations through the process page endpoint. The snapshot cursor is
+        the committed event high-water mark. The recovery.has_saved_tool_results
+        flag accounts for saved results from all tool invocations of the current
+        attempt.
       operationId: get_run_api_v1_workflow_runs__run_id__get
       parameters:
       - name: run_id
@@ -9184,6 +9541,48 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/workflow_runs/{run_id}/rerun:
+    post:
+      tags:
+      - Agent Teams workflows
+      summary: Rerun Workflow
+      description: Start an independent run with a completed root's exact asset version and frozen inputs. Reusing the request ID for the same source run returns the same new run.
+      operationId: rerun_workflow_api_v1_workflow_runs__run_id__rerun_post
+      security:
+      - BearerAuth: []
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Run Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WorkflowRerunRequest'
+      responses:
+        '200':
+          description: The new run's persisted snapshot.
+          content:
+            application/json:
+              schema: {}
+        '401':
+          description: A Dashboard session is required.
+        '403':
+          description: This account cannot control workflow runs.
+        '404':
+          description: The run, asset version, or input artifact is unavailable.
+        '409':
+          description: The source is not a completed published root or its asset cannot start a new run.
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/workflow_runs/{run_id}/retry:
     post:
       tags:
@@ -9193,8 +9592,8 @@ paths:
         \nArgs:\n    run_id: Failed task within the root run or an existing workflow.\n\
         \    payload: Idempotent request with the failed attempt and input policy.\n\
         \    username: Authenticated owner.\n    service: Core-owned public run service.\n\
-        \nReturns:\n    New attempt and preserved failure history; uncertain tools require\
-        \ resolution."
+        \nReturns:\n    New attempt and preserved failure history, or HTTP 409 when uncertain\
+        \ effects or saved tool results require handling in the original attempt."
       operationId: retry_task_api_v1_workflow_runs__run_id__retry_post
       parameters:
       - name: run_id
@@ -9227,12 +9626,13 @@ paths:
       - Agent Teams workflows
       summary: Recover Run
       description: "Continue the same attempt from saved model and per-tool boundaries.\n\
-        \nArgs:\n    run_id: Interrupted task; no new attempt or iteration is created.\n\
+        \nArgs:\n    run_id: Task with a resumable checkpoint in its original attempt.\n\
         \    username: Authenticated owner of the original run.\n    service: Shared\
         \ public run service.\n\nReturns:\n    Persisted progress with per-call intents, results, context positions and\n\
         \    execution ownership. Saved results are reused, unstarted calls may run,\n\
-        \    and unknown effects require confirmation. Contracted submissions finish\n\
-        \    through the existing idempotent result protocol."
+        \    and unknown effects require confirmation. A failed model request may be\n\
+        \    sent again with the saved tool results in context. Contracted submissions\n\
+        \    finish through the existing idempotent result protocol."
       operationId: recover_run_api_v1_workflow_runs__run_id__recover_post
       parameters:
       - name: run_id
@@ -10096,6 +10496,12 @@ components:
       bearerFormat: JWT
 
   responses:
+    WorkflowValidationFailure:
+      description: Workflow validation failed
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/WorkflowValidationError'
     Ok:
       description: Standard AstrBot success response
       content:
@@ -10108,6 +10514,18 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/ErrorEnvelope"
+    ChatBrowserAccessError:
+      description: Restricted chat run access or resource error.
+      headers:
+        X-AstrBot-Chat-Access-Error:
+          description: Reason access to the run was denied. Omitted for resource-specific errors.
+          schema:
+            type: string
+            enum: [expired, invalid, revoked, identity_mismatch]
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
     Text:
       description: Text response
       content:
@@ -10666,6 +11084,10 @@ components:
           type: integer
           minimum: 1.0
           title: Published Version
+        restore_version:
+          anyOf:
+          - {type: integer, minimum: 1}
+          - {type: 'null'}
       additionalProperties: false
       type: object
       required:
@@ -10690,6 +11112,13 @@ components:
       - body
       title: DraftCreateRequest
       description: Initial editable snapshot and optional existing asset identity.
+    WorkflowDraftGenerationRequest:
+      type: object
+      additionalProperties: false
+      required: [description, provider_id]
+      properties:
+        description: {type: string, minLength: 1, maxLength: 4000}
+        provider_id: {type: string, minLength: 1, maxLength: 128}
     DraftPublishRequest:
       properties:
         revision:
@@ -11465,6 +11894,22 @@ components:
             type: string
       additionalProperties: false
 
+    ChatSessionBatchArchiveRequest:
+      type: object
+      required: [session_ids]
+      properties:
+        session_ids:
+          type: array
+          items: { type: string }
+        run_ids:
+          description: Owned root run IDs, accepted only for administrator Dashboard sessions.
+          type: array
+          items: { type: string }
+    RunConversationArchiveRequest:
+      type: object
+      required: [archived]
+      properties:
+        archived: { type: boolean }
     ChatSessionPatchRequest:
       type: object
       properties:
@@ -13157,6 +13602,45 @@ components:
       - value
       title: FieldCondition
       type: object
+    CanvasGroup:
+      type: object
+      additionalProperties: false
+      required: [id, title, task_ids]
+      properties:
+        id: {type: string, minLength: 1, maxLength: 128}
+        title: {type: string, minLength: 1, maxLength: 128}
+        task_ids:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items: {type: string}
+    CanvasNote:
+      type: object
+      additionalProperties: false
+      required: [id, text]
+      properties:
+        id: {type: string, minLength: 1, maxLength: 128}
+        text: {type: string, maxLength: 4000}
+        position:
+          type: object
+          additionalProperties: false
+          properties:
+            x: {type: number}
+            y: {type: number}
+    CanvasAnnotations:
+      type: object
+      additionalProperties: false
+      properties:
+        groups:
+          type: array
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/CanvasGroup'
+        notes:
+          type: array
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/CanvasNote'
     GraphDefinition:
       properties:
         name:
@@ -13177,6 +13661,22 @@ components:
           type: array
           maxItems: 30
           title: Required Inputs
+        port_contract_version:
+          anyOf:
+          - type: integer
+            enum: [1, 2]
+          - type: 'null'
+          description: Version 1 uses text ports. Version 2 supports structured ports. Omit for legacy bindings.
+        input_contract:
+          $ref: '#/components/schemas/WorkflowPortContract'
+        entry_task_ids:
+          anyOf:
+          - type: array
+            items:
+              type: string
+            maxItems: 100
+          - type: 'null'
+          description: Explicit V2 control entry tasks. Omit to retain implicit entries.
         result_task_id:
           anyOf:
           - type: string
@@ -13219,6 +13719,10 @@ components:
           type: array
           maxItems: 30
           title: Loops
+        canvas:
+          anyOf:
+          - $ref: '#/components/schemas/CanvasAnnotations'
+          - type: 'null'
       additionalProperties: false
       type: object
       required:
@@ -13281,6 +13785,21 @@ components:
       required: [kind]
       title: JoinTask
       type: object
+    DispatchLimits:
+      additionalProperties: false
+      type: object
+      description: Bound the number of items and running Agents in a list dispatch.
+      properties:
+        max_items:
+          type: integer
+          minimum: 1
+          maximum: 30
+          default: 20
+        max_parallel:
+          type: integer
+          minimum: 1
+          maximum: 30
+          default: 2
     GraphTask:
       additionalProperties: false
       description: A task bound to a named member with inline or pinned configuration.
@@ -13331,6 +13850,10 @@ components:
           maxLength: 100000
           title: Task
           type: string
+        dispatch:
+          anyOf:
+          - $ref: '#/components/schemas/DispatchLimits'
+          - type: 'null'
         control:
           anyOf:
           - $ref: '#/components/schemas/ConditionTask'
@@ -13368,6 +13891,25 @@ components:
           - type: 'null'
           default: null
           title: Output Contract
+        transform:
+          anyOf:
+          - type: string
+            enum: [parse_json, map_fields, json_text, read_document_v1, retrieve_knowledge_v1, plugin_component_v1]
+          - type: 'null'
+        component:
+          anyOf:
+          - $ref: '#/components/schemas/ComponentReference'
+          - type: 'null'
+        knowledge_base_id:
+          description: Exact local knowledge base selected by a retrieval or plugin component node.
+          anyOf:
+          - type: string
+            minLength: 1
+            maxLength: 128
+          - type: 'null'
+        input_contract:
+          description: Explicit V2 input ports for an Agent, field mapping, or fixed child call. A fixed child call uses the pinned input contract.
+          $ref: '#/components/schemas/WorkflowPortContract'
         position:
           additionalProperties:
             type: number
@@ -13400,11 +13942,38 @@ components:
           default: null
           title: Task Id
         field:
+          description: An upstream field path, or the V2 intrinsic $artifact or $file output.
           default: text
           title: Field
           type: string
       title: TaskInput
       type: object
+    WorkflowValidationError:
+      type: object
+      required: [status, message, data]
+      properties:
+        status: {type: string, const: error}
+        message: {type: string}
+        data:
+          type: object
+          required: [fields]
+          properties:
+            fields:
+              type: array
+              items:
+                $ref: '#/components/schemas/WorkflowFieldDiagnostic'
+    WorkflowFieldDiagnostic:
+      type: object
+      required: [path, code, message]
+      properties:
+        path:
+          type: string
+          description: Definition path, including task index and input alias for input port errors.
+        code:
+          type: string
+          description: Port diagnostics include REQUIRED, REFERENCE, INCOMPATIBLE, UNREACHABLE_DATA, and CYCLE.
+        message:
+          type: string
     WorkflowSaveRequest:
       additionalProperties: false
       description: Create an asset or append an immutable version using optimistic locking.
@@ -13487,6 +14056,19 @@ components:
       - action
       title: WorkflowControlRequest
       description: Idempotent whole-run decision, optionally conditional on its revision.
+    WorkflowRerunRequest:
+      properties:
+        request_id:
+          type: string
+          maxLength: 128
+          minLength: 1
+          title: Request Id
+      additionalProperties: false
+      type: object
+      required:
+      - request_id
+      title: WorkflowRerunRequest
+      description: Start one new root from the completed run's exact launch inputs.
     WorkflowRetryRequest:
       properties:
         request_id:
@@ -13547,6 +14129,56 @@ components:
       - source
       title: ChatAccessRequest
       description: A deliberate local grant; importing an asset never grants access.
+    ComponentReference:
+      type: object
+      additionalProperties: false
+      required: [id, version, contract_digest]
+      properties:
+        id: {type: string, minLength: 5, maxLength: 300}
+        version: {type: string, minLength: 1, maxLength: 64}
+        contract_digest: {type: string, pattern: '^[a-f0-9]{64}$'}
+    WorkflowComponent:
+      type: object
+      required: [reference, label, input_contract, output_contract, effect, permissions, recovery]
+      properties:
+        reference:
+          $ref: '#/components/schemas/ComponentReference'
+        label: {type: string}
+        input_contract:
+          $ref: '#/components/schemas/WorkflowPortContract'
+        output_contract:
+          type: object
+          additionalProperties: true
+        effect:
+          type: string
+          enum: [read_only, external]
+        permissions:
+          type: array
+          items: {type: string, const: 'knowledge_base:read'}
+        recovery:
+          anyOf:
+          - type: object
+            additionalProperties: true
+          - type: 'null'
+    WorkflowPortContract:
+      type: object
+      description: >-
+        Inline JSON Schema object declaring named data ports and presence defaults.
+        Top-level object ports may use astrbot-message (text), astrbot-artifact
+        (artifact_id and version), or astrbot-file (artifact_id, version and file_id).
+        These semantic formats do not accept defaults.
+      additionalProperties: true
+      required: [type, properties]
+      properties:
+        type: {type: string, const: object}
+        properties:
+          type: object
+          additionalProperties:
+            type: object
+            additionalProperties: true
+        required:
+          type: array
+          items: {type: string}
     TrialSource:
       type: object
       additionalProperties: false
@@ -13574,11 +14206,47 @@ components:
           - type: 'null'
         inputs:
           type: object
-          additionalProperties: {type: string}
+          additionalProperties: true
         sources:
           type: object
           additionalProperties:
             $ref: '#/components/schemas/TrialSource'
+    WorkflowApiGrantRequest:
+      type: object
+      additionalProperties: false
+      required: [version]
+      properties:
+        version: {type: integer, minimum: 1}
+    WorkflowApiStartRequest:
+      type: object
+      additionalProperties: false
+      required: [version, request_id]
+      properties:
+        version: {type: integer, minimum: 1}
+        request_id:
+          type: string
+          minLength: 1
+          maxLength: 128
+          pattern: '^\S+$'
+          description: Unique identity for one explicit launch by this API key.
+        inputs: {type: object, additionalProperties: true}
+    WorkflowApiRunResponse:
+      type: object
+      required: [status, data]
+      properties:
+        status: {type: string, const: ok}
+        message:
+          anyOf: [{type: string}, {type: 'null'}]
+        data:
+          type: object
+          required: [run_id, asset_id, asset_version, status, result]
+          properties:
+            run_id: {type: string}
+            asset_id: {type: string}
+            asset_version: {type: integer}
+            status: {type: string}
+            result:
+              anyOf: [{type: object, additionalProperties: true}, {type: 'null'}]
     WorkflowStartRequest:
       properties:
         version:
@@ -13586,16 +14254,26 @@ components:
           minimum: 1.0
           title: Version
         inputs:
-          additionalProperties:
-            type: string
+          additionalProperties: true
           type: object
           title: Inputs
+        request_id:
+          anyOf:
+          - {type: string, minLength: 1, maxLength: 128, pattern: '^\S+$'}
+          - {type: 'null'}
+          description: Stable request identity for retrying one Dashboard launch.
         source:
           type: string
           maxLength: 512
           minLength: 1
           title: Source
           default: dashboard
+          deprecated: true
+          description: The server assigns the Dashboard source.
+        replay_only:
+          type: boolean
+          default: false
+          description: Return and wake a matching committed launch without creating a new run.
         input_artifacts:
           items:
             $ref: '#/components/schemas/ArtifactReference'
@@ -14152,7 +14830,7 @@ components:
           title: Format
           type: string
         format_version:
-          const: 3
+          enum: [3, 4]
           title: Format Version
           type: integer
         roles:
@@ -14240,6 +14918,15 @@ components:
       properties:
         id: { type: integer }
         content: { $ref: "#/components/schemas/ChatHistoryContent" }
+    RunConversationSummary:
+      type: object
+      required: [run_id, asset_id, asset_version, status]
+      properties:
+        run_id: { type: string }
+        asset_id: { type: string }
+        asset_version: { type: integer }
+        status: { type: string }
+        draft_revision: { type: integer }
     ChatSessionMetadata:
       type: object
       required: [session_id, platform_id, creator, display_name, is_group, created_at, updated_at, starred]
@@ -14252,6 +14939,9 @@ components:
         created_at: { type: [string, "null"] }
         updated_at: { type: [string, "null"] }
         starred: { type: boolean }
+        session_type: { type: string, enum: [workflow_run] }
+        run_conversation: { $ref: "#/components/schemas/RunConversationSummary" }
+        archived: { type: boolean }
     ChatHistoryPage:
       type: object
       additionalProperties: true

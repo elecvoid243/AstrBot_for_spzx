@@ -733,7 +733,8 @@ const availableScopes = [
     { value: 'file', label: 'file', descriptionKey: 'apiKey.scopeDescriptions.file' },
     { value: 'plugin', label: 'plugin', descriptionKey: 'apiKey.scopeDescriptions.plugin' },
     { value: 'mcp', label: 'mcp', descriptionKey: 'apiKey.scopeDescriptions.mcp' },
-    { value: 'skill', label: 'skill', descriptionKey: 'apiKey.scopeDescriptions.skill' }
+    { value: 'skill', label: 'skill', descriptionKey: 'apiKey.scopeDescriptions.skill' },
+    { value: 'workflow', label: 'workflow', descriptionKey: 'apiKey.scopeDescriptions.workflow' }
 ];
 const apiKeyScopeOrder = availableScopes.flatMap((scope) => [
     scope.value,

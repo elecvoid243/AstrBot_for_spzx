@@ -5,32 +5,170 @@ import binascii
 import json
 from collections.abc import Awaitable, Callable
 
-from jsonschema import Draft202012Validator
+from jsonschema import Draft202012Validator, FormatChecker
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from referencing.jsonschema import DRAFT202012
 
 from astrbot.core.agent.run_context import ContextWrapper
 from astrbot.core.agent.tool import FunctionTool
 from astrbot.core.agent_teams.assets import RoleAssetError
 
 
-def validate_result(contract: dict | None, payload: dict) -> list[dict]:
+class ArtifactReference(BaseModel):
+    """An exact immutable artifact version."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    artifact_id: str = Field(min_length=1, max_length=128)
+    version: int = Field(ge=1)
+
+
+class FileReference(ArtifactReference):
+    """A managed file belonging to an exact artifact version."""
+
+    file_id: str = Field(min_length=1, max_length=128)
+
+
+class WorkflowMessage(BaseModel):
+    """Explicit message content carried by a workflow port."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    text: str = Field(min_length=1, max_length=100_000)
+
+
+PORT_FORMATS = {
+    "astrbot-message": WorkflowMessage,
+    "astrbot-artifact": ArtifactReference,
+    "astrbot-file": FileReference,
+}
+PORT_FORMAT_CHECKER = FormatChecker(formats=[])
+for port_format, model in PORT_FORMATS.items():
+    PORT_FORMAT_CHECKER.checks(port_format, raises=ValidationError)(
+        model.model_validate
+    )
+
+
+def validate_inline_port_contract(contract: dict) -> None:
+    """Apply the shared structured workflow port schema restrictions.
+
+    Args:
+        contract: Input or output object schema.
+
+    Raises:
+        ValueError: The schema permits external resolution or a synthetic reference.
+        SchemaError: The declaration is not a JSON Schema.
+    """
+    if not isinstance(contract, dict) or contract.get("type") != "object":
+        raise ValueError("Declare an object contract")
+    Draft202012Validator.check_schema(contract)
+    ports = {id(schema) for schema in contract.get("properties", {}).values()}
+    pending = [contract]
+    while pending:
+        schema = pending.pop()
+        if not isinstance(schema, dict):
+            continue
+        if schema.get("format") in PORT_FORMATS and (
+            id(schema) not in ports
+            or schema.get("type") != "object"
+            or "default" in schema
+        ):
+            raise ValueError("Declare semantic ports as named objects without defaults")
+        if any(key in schema for key in ("$ref", "$dynamicRef", "$id")):
+            raise ValueError("Use inline schemas for structured ports")
+        pending.extend(DRAFT202012.subresources_of(schema))
+
+
+def validate_component_result(
+    contract: dict, payload: dict, port_sources: dict
+) -> list[dict]:
+    """Validate plugin output using only exact references bound to this attempt.
+
+    Args:
+        contract: Frozen component output contract.
+        payload: Observed result from the adapter, query, or authorized operator.
+        port_sources: Persisted input-port provenance already authorized by the scheduler.
+
+    Returns:
+        Schema or provenance issues preventing downstream use.
+    """
+    fields = validate_result(contract, payload, port_formats=True)
+    if fields:
+        return fields
+    if payload.get("files"):
+        fields.append(
+            {
+                "path": "result.files",
+                "code": "REFERENCE",
+                "message": "Return bound files through typed file ports",
+            }
+        )
+
+    allowed = [
+        source["reference"] for source in port_sources.values() if "reference" in source
+    ]
+    checker = FormatChecker(formats=[])
+
+    @checker.checks("astrbot-file")
+    @checker.checks("astrbot-artifact")
+    def is_bound(value):
+        """Check the exact reference against the scheduler's authorized bindings.
+
+        Args:
+            value: Candidate artifact or file reference from the fixed output.
+
+        Returns:
+            Whether the persisted inputs grant this exact reference.
+        """
+        return isinstance(value, dict) and any(
+            all(value[key] == selected.get(key) for key in value)
+            for selected in allowed
+        )
+
+    for issue in Draft202012Validator(contract, format_checker=checker).iter_errors(
+        payload
+    ):
+        fields.append(
+            {
+                "path": ".".join(["result", *map(str, issue.absolute_path)]),
+                "code": "REFERENCE",
+                "message": "Select a reference bound to this attempt",
+            }
+        )
+    return fields
+
+
+def validate_result(
+    contract: dict | None,
+    payload: dict,
+    *,
+    validate_files: bool = True,
+    port_formats: bool = False,
+) -> list[dict]:
     """Return contract field errors shared by submission and revision.
 
     Args:
         contract: The immutable output schema, or the default text contract.
-        payload: Complete task result to validate.
+        payload: Complete object to validate.
+        validate_files: Enforce stable attachment references for persisted results.
+        port_formats: Validate the semantic formats declared by structured ports.
 
     Returns:
         Specific field errors; an empty list means the result is consumable.
     """
     fields = []
     try:
-        json.dumps(payload, allow_nan=False)
-    except (TypeError, ValueError):
+        json.dumps(payload, ensure_ascii=False, allow_nan=False).encode("utf-8")
+    except (TypeError, ValueError, RecursionError):
         return [
-            {"path": "result", "code": "INVALID", "message": "Submit finite JSON data"}
+            {
+                "path": "result",
+                "code": "INVALID",
+                "message": "Submit finite UTF-8 JSON data",
+            }
         ]
     if contract is not None:
-        for issue in Draft202012Validator(contract).iter_errors(payload):
+        for issue in Draft202012Validator(
+            contract, format_checker=PORT_FORMAT_CHECKER if port_formats else None
+        ).iter_errors(payload):
             path = ["result", *map(str, issue.absolute_path)]
             if issue.validator == "required":
                 for name in issue.validator_value:
@@ -46,7 +184,11 @@ def validate_result(contract: dict | None, payload: dict) -> list[dict]:
                 {
                     "path": ".".join(path),
                     "code": str(issue.validator),
-                    "message": issue.message,
+                    "message": (
+                        "Provide a valid " + issue.validator_value
+                        if issue.validator == "format"
+                        else issue.message
+                    ),
                 }
             )
     else:
@@ -67,7 +209,7 @@ def validate_result(contract: dict | None, payload: dict) -> list[dict]:
             for name in payload
             if name != "text"
         )
-    if "files" in payload:
+    if validate_files and "files" in payload:
         files = payload["files"]
         if not isinstance(files, list):
             fields.append(

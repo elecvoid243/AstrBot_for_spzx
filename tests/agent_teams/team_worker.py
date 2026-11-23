@@ -313,7 +313,7 @@ async def run_team_scenario(
             current = await service.get_run("alice", run_id)
             for task in current["tasks"]:
                 if (
-                    task["status"] in {"interrupted", "failed", "blocked"}
+                    task["status"] in {"interrupted", "failed", "blocked", "awaiting_result"}
                     and task["recovery"]["available"]
                 ):
                     try:
@@ -324,6 +324,12 @@ async def run_team_scenario(
                 break
             if scenario == "team_unknown" and current["status"] == "blocked":
                 break
+            if scenario == "team_message_saved_receipt" and any(
+                task["snapshot"].get("task") == "writer-one-first"
+                and task["status"] == "completed"
+                for task in current["tasks"]
+            ):
+                break
             await asyncio.sleep(0.02)
         (folder / "team-evidence.json").write_text(
             json.dumps({"before": before, "after": current, "late_rejections": late_rejections}), encoding="utf-8"
@@ -331,7 +337,11 @@ async def run_team_scenario(
         return
     for _ in range(1000):
         current = await service.get_run("alice", run["run_id"])
-        if scenario == "team_message_live" and (folder / "model-held").exists() and not (folder / "mid-model-sent").exists():
+        if (
+            scenario in {"team_message_live", "team_message_saved_receipt"}
+            and (folder / "model-held").exists()
+            and not (folder / "mid-model-sent").exists()
+        ):
             coordinator = next(task for task in current["tasks"] if task["snapshot"].get("coordinator"))
             recipient = next(member for member in current["members"].values() if member["name"] == "Writer A")
             await service.communicate_member("alice", coordinator["run_id"], coordinator["state"]["attempt_id"], coordinator["state"]["execution_id"], {
@@ -346,6 +356,6 @@ async def run_team_scenario(
             json.dumps({"after": current}), encoding="utf-8"
         )
         return
-    if scenario in {"team_save_failure", "team_message_delivery_failure", "team_message_consume_failure"}:
+    if scenario in {"team_save_failure", "team_message_delivery_failure", "team_message_consume_failure", "team_message_saved_receipt"}:
         (folder / "kill-ready.json").write_text("ready", encoding="utf-8")
         await asyncio.Future()

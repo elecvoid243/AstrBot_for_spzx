@@ -542,6 +542,7 @@ async def test_invalid_child_call_is_rejected_without_partial_execution(
     )
     definition = {
         "name": "Validation",
+        "result_task_id": "call",
         "required_inputs": ["goal"],
         "tasks": [
             {
@@ -1094,6 +1095,7 @@ async def test_missing_child_resources_cannot_leave_a_started_root(workflow_env)
         {
             "definition": {
                 "name": "Resource parent",
+                "result_task_id": "call",
                 "required_inputs": ["goal"],
                 "tasks": [
                     {

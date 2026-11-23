@@ -11,6 +11,8 @@ from astrbot.core.utils.plugin_kv_store import PluginKVStoreMixin
 from .star import StarMetadata, star_map, star_registry
 
 if TYPE_CHECKING:
+    from astrbot.core.agent_teams.components import WorkflowComponent
+
     from .context import Context
 
 logger = logging.getLogger("astrbot")
@@ -106,6 +108,14 @@ class Star(CommandParserMixin, PluginKVStoreMixin):
 
     async def initialize(self) -> None:
         """当插件被激活时会调用这个方法"""
+
+    def workflow_components(self) -> tuple[WorkflowComponent, ...]:
+        """Declare the components exposed by this initialized plugin.
+
+        Returns:
+            Component contracts and their bound async operations.
+        """
+        return ()
 
     async def terminate(self) -> None:
         """当插件被禁用、重载插件时会调用这个方法"""

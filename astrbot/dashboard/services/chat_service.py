@@ -30,10 +30,12 @@ from astrbot.core.agent.message import get_checkpoint_id, is_checkpoint_message
 from astrbot.core.core_lifecycle import AstrBotCoreLifecycle
 from astrbot.core.db import BaseDatabase
 from astrbot.core.db.po import (
+    RUN_CONVERSATION_PREFIX,
     DashboardAccount,
     PlatformMessageHistory,
     PlatformSession,
     WebChatThread,
+    is_run_conversation_id,
 )
 from astrbot.core.platform.message_type import MessageType
 from astrbot.core.platform.sources.webchat.message_parts_helper import (
@@ -1350,7 +1352,7 @@ class ChatService:
         self.umop_config_router = core_lifecycle.umop_config_router
         self.running_convs: dict[str, bool] = {}
         self.session_list_snapshots: dict[
-            str, tuple[float, str, str | None, list[str]]
+            str, tuple[float, str, str | None, bool, list[str]]
         ] = {}
         self.chat_runs: dict[str, ChatRunState] = {}
         self.chat_runs_by_session: dict[str, set[str]] = {}
@@ -3900,8 +3902,19 @@ class ChatService:
                 "Message content is empty (reply only is not allowed)"
             )
 
+        platform_session = (
+            await self.db.get_platform_session_by_id(webchat_conv_id)
+            if platform_history_id == "webchat"
+            else None
+        )
+        if (
+            platform_session is None
+            and isinstance(session_id, str)
+            and is_run_conversation_id(session_id)
+        ):
+            raise ChatServiceError("Run conversations do not accept chat messages")
+
         if platform_history_id == "webchat":
-            platform_session = await self.db.get_platform_session_by_id(webchat_conv_id)
             if agent_source is not None and (
                 platform_session is None
                 or platform_session.archived
@@ -5177,6 +5190,8 @@ class ChatService:
         self,
         username: str,
         payload: object,
+        *,
+        allow_run_conversations: bool = False,
     ) -> dict:
         """Archive multiple sessions owned by the user in one request.
 
@@ -5185,15 +5200,20 @@ class ChatService:
 
         Args:
             username: Dashboard username; must own every session.
-            payload: Dict with ``session_ids`` (list of session ids).
+            payload: Ordinary session IDs and optional root run IDs.
+            allow_run_conversations: Whether the caller can open Dashboard runs.
 
         Returns:
-            Dict with ``archived_count``, ``failed_count`` and
-            ``failed_items`` (``{"session_id", "reason"}``).
+            Counts and failed items identified by session ID or root run ID.
         """
         data = self._dashboard_payload(payload)
         session_ids = data.get("session_ids")
-        if not session_ids or not isinstance(session_ids, list):
+        run_ids = data.get("run_ids", [])
+        if (
+            not isinstance(session_ids, list)
+            or not isinstance(run_ids, list)
+            or not (session_ids or run_ids)
+        ):
             raise ChatServiceError("Missing or invalid key: session_ids")
 
         archived_count = 0
@@ -5205,6 +5225,14 @@ class ChatService:
             except ChatServiceError as exc:
                 failed_items.append({"session_id": session_id, "reason": str(exc)})
 
+        for run_id in run_ids:
+            if allow_run_conversations and await self.db.set_run_conversation_archived(
+                username, run_id, True
+            ):
+                archived_count += 1
+            else:
+                failed_items.append({"run_id": run_id, "reason": "Run not found"})
+
         return {
             "archived_count": archived_count,
             "failed_count": len(failed_items),
@@ -5215,6 +5243,8 @@ class ChatService:
         self,
         username: str,
         payload: object,
+        *,
+        allow_run_conversations: bool = False,
     ) -> dict:
         """Restore multiple archived sessions owned by the user in one request.
 
@@ -5223,15 +5253,20 @@ class ChatService:
 
         Args:
             username: Dashboard username; must own every session.
-            payload: Dict with ``session_ids`` (list of session ids).
+            payload: Ordinary session IDs and optional root run IDs.
+            allow_run_conversations: Whether the caller can open Dashboard runs.
 
         Returns:
-            Dict with ``unarchived_count``, ``failed_count`` and
-            ``failed_items`` (``{"session_id", "reason"}``).
+            Counts and failed items identified by session ID or root run ID.
         """
         data = self._dashboard_payload(payload)
         session_ids = data.get("session_ids")
-        if not session_ids or not isinstance(session_ids, list):
+        run_ids = data.get("run_ids", [])
+        if (
+            not isinstance(session_ids, list)
+            or not isinstance(run_ids, list)
+            or not (session_ids or run_ids)
+        ):
             raise ChatServiceError("Missing or invalid key: session_ids")
 
         unarchived_count = 0
@@ -5242,6 +5277,14 @@ class ChatService:
                 unarchived_count += 1
             except ChatServiceError as exc:
                 failed_items.append({"session_id": session_id, "reason": str(exc)})
+
+        for run_id in run_ids:
+            if allow_run_conversations and await self.db.set_run_conversation_archived(
+                username, run_id, False
+            ):
+                unarchived_count += 1
+            else:
+                failed_items.append({"run_id": run_id, "reason": "Run not found"})
 
         return {
             "unarchived_count": unarchived_count,
@@ -5408,8 +5451,64 @@ class ChatService:
             ]
         return sessions_data
 
+    @staticmethod
+    def _run_conversation_metadata(run: dict) -> dict:
+        """Serialize an authorized root summary as a typed Chat session.
+
+        Args:
+            run: Root summary and archive state loaded from the database.
+
+        Returns:
+            Public session metadata without inputs, history or artifacts.
+        """
+        summary = {
+            field: run[field]
+            for field in ("run_id", "asset_id", "asset_version", "status")
+        }
+        if run["draft_revision"] is not None:
+            summary["draft_revision"] = run["draft_revision"]
+        return {
+            "session_id": RUN_CONVERSATION_PREFIX + run["run_id"],
+            "session_type": "workflow_run",
+            "platform_id": "workflow_run",
+            "display_name": run["display_name"],
+            "creator": run["owner_username"],
+            "is_group": 0,
+            "created_at": to_utc_isoformat(run["created_at"]),
+            "updated_at": to_utc_isoformat(run["updated_at"]),
+            "starred": False,
+            "branch_source": None,
+            "branches": [],
+            "archived": run["archived"],
+            "run_conversation": summary,
+        }
+
+    async def get_run_conversation(self, username: str, run_id: str) -> dict:
+        """Read the session summary without loading normal Chat or run history.
+
+        Args:
+            username: Authenticated Dashboard owner.
+            run_id: Root run from the run conversation route.
+
+        Returns:
+            Typed session metadata and an empty ordinary message history.
+
+        Raises:
+            ChatServiceError: The root run does not exist or belongs to another owner.
+        """
+        rows = await self.db.get_run_conversations(username, [run_id])
+        if not rows:
+            raise ChatServiceError("Session not found")
+        return {"session": self._run_conversation_metadata(rows[0]), "history": []}
+
     async def get_sidebar_session_page(
-        self, username: str, platform_id: str | None, page_size: int, cursor: str
+        self,
+        username: str,
+        platform_id: str | None,
+        page_size: int,
+        cursor: str,
+        *,
+        include_run_conversations: bool = False,
     ) -> dict:
         """Page over a stable ordering while reading current session metadata.
 
@@ -5418,6 +5517,7 @@ class ChatService:
             platform_id: Optional platform filter.
             page_size: Maximum number of sessions in the response.
             cursor: ``start`` or an opaque cursor from this owner's previous page.
+            include_run_conversations: Include owned root runs in the snapshot.
 
         Returns:
             Current rows, the next cursor, or an expired flag to restart.
@@ -5425,8 +5525,12 @@ class ChatService:
         if not 1 <= page_size <= MAX_SESSION_PAGE_SIZE:
             raise ChatServiceError("Invalid page_size")
         snapshots = self.session_list_snapshots
+        scope = (username, platform_id, include_run_conversations)
         if cursor == "start":
-            ids = await self.db.get_sidebar_session_ids(username, platform_id)
+            if include_run_conversations:
+                ids, _ = await self.db.get_mixed_chat_session_ids(username, platform_id)
+            else:
+                ids = await self.db.get_sidebar_session_ids(username, platform_id)
             token = uuid.uuid4().hex
             offset = 0
         else:
@@ -5435,13 +5539,13 @@ class ChatService:
             if (
                 snapshot is None
                 or snapshot[0] <= time.monotonic()
-                or snapshot[1:3] != (username, platform_id)
+                or snapshot[1:4] != scope
                 or not raw_offset.isascii()
                 or not raw_offset.isdecimal()
                 or len(raw_offset) > 18
             ):
                 return {"items": [], "next_cursor": None, "expired": True}
-            ids = snapshot[3]
+            ids = snapshot[4]
             offset = int(raw_offset)
             if not 0 < offset < len(ids):
                 return {"items": [], "next_cursor": None, "expired": True}
@@ -5451,15 +5555,36 @@ class ChatService:
             snapshots.pop(token, None)
             snapshots[token] = (
                 time.monotonic() + SESSION_LIST_SNAPSHOT_TTL_SECONDS,
-                username,
-                platform_id,
+                *scope,
                 ids,
             )
             if len(snapshots) > MAX_SESSION_LIST_SNAPSHOTS:
                 del snapshots[next(iter(snapshots))]
-        items = await self.get_sessions(
-            username, platform_id, page_size=page_size, session_ids=ids[offset:end]
+        page_ids = ids[offset:end]
+        chat_ids = (
+            [sid.removeprefix("chat:") for sid in page_ids if sid.startswith("chat:")]
+            if include_run_conversations
+            else page_ids
         )
+        items = await self.get_sessions(
+            username, platform_id, page_size=page_size, session_ids=chat_ids
+        )
+        if include_run_conversations:
+            runs = await self.db.get_run_conversations(
+                username,
+                [
+                    sid.removeprefix("run:")
+                    for sid in page_ids
+                    if sid.startswith("run:")
+                ],
+                archived=False,
+            )
+            by_key = {"chat:" + item["session_id"]: item for item in items}
+            by_key.update(
+                ("run:" + run["run_id"], self._run_conversation_metadata(run))
+                for run in runs
+            )
+            items = [by_key[sid] for sid in page_ids if sid in by_key]
         return {
             "items": items,
             "next_cursor": f"{token}:{end}" if end < len(ids) else None,
@@ -5472,6 +5597,8 @@ class ChatService:
         page: int = 1,
         page_size: int = 20,
         search: str | None = None,
+        *,
+        include_run_conversations: bool = False,
     ) -> dict:
         """List archived sessions with title search and pagination.
 
@@ -5487,6 +5614,7 @@ class ChatService:
             page: 1-based page number.
             page_size: Items per page (clamped to 1..100).
             search: Optional display-name substring filter.
+            include_run_conversations: Include owned archived root runs.
 
         Returns:
             Dict with ``items`` (session dicts with branch relations) and
@@ -5500,14 +5628,34 @@ class ChatService:
         # Pagination and the display-name search are both applied at the
         # database layer; only the requested page is loaded instead of the
         # full archived set (see get_platform_sessions_by_creator_paginated).
+        page_ids = None
+        paging = {"page": page}
+        if include_run_conversations:
+            page_ids, mixed_total = await self.db.get_mixed_chat_session_ids(
+                username,
+                platform_id,
+                archived=True,
+                search=search,
+                offset=min((page - 1) * page_size, 2**63 - 1),
+                limit=page_size,
+            )
+            paging = {
+                "page": 1,
+                "session_ids": [
+                    sid.removeprefix("chat:")
+                    for sid in page_ids
+                    if sid.startswith("chat:")
+                ],
+                "count_total": False,
+            }
         sessions, total = await self.db.get_platform_sessions_by_creator_paginated(
             creator=username,
             platform_id=platform_id,
-            page=page,
             page_size=page_size,
             exclude_project_sessions=False,
             archived=True,
             search=search,
+            **paging,
         )
 
         items = []
@@ -5548,6 +5696,31 @@ class ChatService:
                 and child_id in session_ids
             ]
 
+        if page_ids is not None:
+            runs = await self.db.get_run_conversations(
+                username,
+                [
+                    sid.removeprefix("run:")
+                    for sid in page_ids
+                    if sid.startswith("run:")
+                ],
+                archived=True,
+            )
+            by_key = {"chat:" + item["session_id"]: item for item in items}
+            by_key.update(
+                (
+                    "run:" + run["run_id"],
+                    {
+                        **self._run_conversation_metadata(run),
+                        "project_id": None,
+                        "project_title": None,
+                        "project_emoji": None,
+                    },
+                )
+                for run in runs
+            )
+            items = [by_key[sid] for sid in page_ids if sid in by_key]
+            total = mixed_total
         total_pages = (total + page_size - 1) // page_size if total else 1
         return {
             "items": items,
@@ -5562,12 +5735,15 @@ class ChatService:
     async def set_session_archived(
         self, username: str, session_id: str, archived: bool
     ) -> None:
-        """Archive or unarchive a webchat session owned by the user.
+        """Archive or restore an ordinary Chat session owned by the user.
 
         Args:
             username: Dashboard username; must own the session.
-            session_id: Session to update.
+            session_id: Ordinary Chat session to update.
             archived: True to archive, False to restore.
+
+        Raises:
+            ChatServiceError: The session is unavailable to the caller.
         """
         session = await self.db.get_platform_session_by_id(session_id)
         if not session:

@@ -1,5 +1,5 @@
 <template>
-  <v-card variant="outlined" class="human-todo my-3" data-testid="human-todo">
+  <v-card variant="outlined" class="human-todo my-3" data-testid="human-todo" :data-todo-id="todo.todo_id">
     <v-card-text>
       <div v-if="dynamic && todo.choice_spec?.title" class="text-overline">
         {{ todo.choice_spec.title }}
@@ -24,6 +24,7 @@
       <details v-if="!restricted" class="text-caption mt-2">
         <summary>{{ tm('workbench.identifiers') }}</summary>
         <p class="human-content">{{ todo.root_run_id }} / {{ todo.task_run_id }}</p>
+        <p class="human-content">{{ tm("human.requestId") }}: {{ todo.todo_id }}</p>
       </details>
       <div class="text-caption mt-2" data-testid="human-deadline">
         <p>

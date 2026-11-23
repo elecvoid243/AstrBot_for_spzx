@@ -3,7 +3,7 @@
   "info": {
     "title": "AstrBot OpenAPI v1",
     "version": "0.1.0",
-    "description": "Target REST contract for migrating AstrBot HTTP APIs to /api/v1. Dynamic AstrBot configuration payloads are intentionally modeled as open JSON objects because their schemas are provided at runtime by template endpoints. Developer API keys currently support these scopes only: bot, provider, persona, im, config, chat, data, file, plugin, mcp, skill, plus the sensitive config:edit_admin and chat:admin sub-scopes. The config scope also grants bot and provider access, but no parent scope grants a sensitive sub-scope.\n"
+    "description": "Target REST contract for migrating AstrBot HTTP APIs to /api/v1. Dynamic AstrBot configuration payloads are intentionally modeled as open JSON objects because their schemas are provided at runtime by template endpoints. Developer API keys currently support these scopes only: bot, provider, persona, im, config, chat, data, file, plugin, mcp, skill, workflow, plus the sensitive config:edit_admin and chat:admin sub-scopes. The config scope also grants bot and provider access, but no parent scope grants a sensitive sub-scope.\n"
   },
   "x-astrbot-scope-definitions": {
     "bot": {
@@ -65,6 +65,10 @@
     "skill": {
       "description": "Manage Skills, archives, files, and Shipyard Neo Skill workflows.",
       "description_zh": "管理 Skills、Skill 压缩包、Skill 文件和 Shipyard Neo Skill 流程。"
+    },
+    "workflow": {
+      "description": "Start and read published workflow runs explicitly granted to this API key.",
+      "description_zh": "启动和读取显式授予此 API Key 的固定版本工作流运行。"
     }
   },
   "servers": [
@@ -1906,6 +1910,7 @@
           "Chat"
         ],
         "summary": "List webchat sessions",
+        "description": "Dashboard sessions may send cursor=start to pin the order for scrolling. Cursor requests return items and next_cursor in data, or expired=true when the client should restart with cursor=start. Numbered pages retain their existing response format.\n\n**Required scope:** `chat`",
         "operationId": "listChatSessions",
         "x-astrbot-scope": "chat",
         "parameters": [
@@ -1916,8 +1921,33 @@
             "$ref": "#/components/parameters/PageSize"
           },
           {
+            "name": "cursor",
+            "in": "query",
+            "description": "Dashboard-only pagination cursor, or start for a new list.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "username",
             "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "include_run_conversations",
+            "in": "query",
+            "description": "Include owned root run conversations when using a Dashboard cursor and administrator session.",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            }
+          },
+          {
+            "name": "platform_id",
+            "in": "query",
+            "description": "Filter by platform. Set to workflow_run with include_run_conversations=true and a Dashboard cursor to list only owned run conversations.",
             "schema": {
               "type": "string"
             }
@@ -1927,8 +1957,7 @@
           "200": {
             "$ref": "#/components/responses/Ok"
           }
-        },
-        "description": "**Required scope:** `chat`"
+        }
       }
     },
     "/api/v1/chat/active-runs": {
@@ -2121,7 +2150,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/ChatSessionBatchDeleteRequest"
+                "$ref": "#/components/schemas/ChatSessionBatchArchiveRequest"
               }
             }
           }
@@ -2147,7 +2176,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/ChatSessionBatchDeleteRequest"
+                "$ref": "#/components/schemas/ChatSessionBatchArchiveRequest"
               }
             }
           }
@@ -2198,6 +2227,15 @@
             "schema": {
               "type": "string",
               "default": ""
+            }
+          },
+          {
+            "name": "include_run_conversations",
+            "in": "query",
+            "description": "Include owned root run conversations for Dashboard administrators.",
+            "schema": {
+              "type": "boolean",
+              "default": false
             }
           }
         ],
@@ -3142,7 +3180,7 @@
         "tags": [
           "Chat"
         ],
-        "summary": "Deliver a user follow-up message into a running foreground subagent",
+        "summary": "Retain an owned subagent or send it a follow-up",
         "operationId": "postSubagentFollowUp",
         "description": "Requires current account ownership of the persisted WebChat session. Run and subagent identifiers do not grant access to another account.\n\n**Required scope:** `chat`",
         "x-astrbot-scope": "chat",
@@ -8621,6 +8659,109 @@
         },
         "description": "**Required scope:** `config`"
       }
+    },
+    "/api/v1/workflows/{asset_id}/runs": {
+      "post": {
+        "tags": [
+          "Agent Teams workflows"
+        ],
+        "summary": "Start an authorized fixed workflow version",
+        "operationId": "start_public_workflow_api_v1_workflows__asset_id__runs_post",
+        "description": "The API key needs an explicit grant for this asset and exact published version. The request ID is scoped to the key. Retrying it with the same effective inputs returns the original root run.\n\n**Required scope:** `workflow`",
+        "x-astrbot-scope": "workflow",
+        "parameters": [
+          {
+            "name": "asset_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkflowApiStartRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Committed root run and restricted result projection.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkflowApiRunResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/WorkflowValidationFailure"
+          },
+          "401": {
+            "description": "Invalid or missing API key"
+          },
+          "403": {
+            "description": "Insufficient scope or Dashboard-only inputs or resources"
+          },
+          "404": {
+            "description": "Workflow version not granted to this key"
+          },
+          "409": {
+            "description": "Changed payload under the same request ID or deleted asset"
+          },
+          "422": {
+            "description": "Invalid request envelope"
+          }
+        }
+      }
+    },
+    "/api/v1/workflows/runs/{run_id}": {
+      "get": {
+        "tags": [
+          "Agent Teams workflows"
+        ],
+        "summary": "Read the root run started by this API key",
+        "operationId": "get_public_workflow_run_api_v1_workflows_runs__run_id__get",
+        "description": "Returns status and the published result when complete. Requires the original API key and a current grant for the same fixed version.\n\n**Required scope:** `workflow`",
+        "x-astrbot-scope": "workflow",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Restricted root status and result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkflowApiRunResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or missing API key"
+          },
+          "403": {
+            "description": "Insufficient scope"
+          },
+          "404": {
+            "description": "Run or fixed version not available to this key"
+          }
+        }
+      }
     }
   },
   "components": {
@@ -8649,6 +8790,16 @@
       }
     },
     "responses": {
+      "WorkflowValidationFailure": {
+        "description": "Workflow validation failed",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/WorkflowValidationError"
+            }
+          }
+        }
+      },
       "Ok": {
         "description": "Standard AstrBot success response",
         "content": {
@@ -9391,6 +9542,27 @@
         },
         "additionalProperties": false
       },
+      "ChatSessionBatchArchiveRequest": {
+        "type": "object",
+        "required": [
+          "session_ids"
+        ],
+        "properties": {
+          "session_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "run_ids": {
+            "description": "Owned root run IDs, accepted only for administrator Dashboard sessions.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
       "ChatSessionPatchRequest": {
         "type": "object",
         "properties": {
@@ -9419,8 +9591,7 @@
         "type": "object",
         "required": [
           "session_id",
-          "subagent_run_id",
-          "text"
+          "subagent_run_id"
         ],
         "properties": {
           "session_id": {
@@ -9431,6 +9602,14 @@
           },
           "text": {
             "type": "string"
+          },
+          "keep_alive": {
+            "type": "boolean",
+            "description": "Set instance retention for the current server lifetime."
+          },
+          "continue_conversation": {
+            "type": "boolean",
+            "description": "Start a new turn on a retained invocation after its current turn."
           }
         },
         "additionalProperties": false
@@ -10817,6 +10996,141 @@
         },
         "additionalProperties": true
       },
+      "WorkflowValidationError": {
+        "type": "object",
+        "required": [
+          "status",
+          "message",
+          "data"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "const": "error"
+          },
+          "message": {
+            "type": "string"
+          },
+          "data": {
+            "type": "object",
+            "required": [
+              "fields"
+            ],
+            "properties": {
+              "fields": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/WorkflowFieldDiagnostic"
+                }
+              }
+            }
+          }
+        }
+      },
+      "WorkflowFieldDiagnostic": {
+        "type": "object",
+        "required": [
+          "path",
+          "code",
+          "message"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Definition path, including task index and input alias for input port errors."
+          },
+          "code": {
+            "type": "string",
+            "description": "Port diagnostics include REQUIRED, REFERENCE, INCOMPATIBLE, UNREACHABLE_DATA, and CYCLE."
+          },
+          "message": {
+            "type": "string"
+          }
+        }
+      },
+      "WorkflowApiStartRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "version",
+          "request_id"
+        ],
+        "properties": {
+          "version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "request_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^\\S+$",
+            "description": "Unique identity for one explicit launch by this API key."
+          },
+          "inputs": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        }
+      },
+      "WorkflowApiRunResponse": {
+        "type": "object",
+        "required": [
+          "status",
+          "data"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "const": "ok"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "data": {
+            "type": "object",
+            "required": [
+              "run_id",
+              "asset_id",
+              "asset_version",
+              "status",
+              "result"
+            ],
+            "properties": {
+              "run_id": {
+                "type": "string"
+              },
+              "asset_id": {
+                "type": "string"
+              },
+              "asset_version": {
+                "type": "integer"
+              },
+              "status": {
+                "type": "string"
+              },
+              "result": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "additionalProperties": true
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            }
+          }
+        }
+      },
       "ChatAgentMessageSource": {
         "type": "object",
         "description": "Server-owned Agent source, never accepted from message request bodies.",
@@ -10903,6 +11217,92 @@
           }
         }
       },
+      "RunConversationSummary": {
+        "type": "object",
+        "required": [
+          "run_id",
+          "asset_id",
+          "asset_version",
+          "status"
+        ],
+        "properties": {
+          "run_id": {
+            "type": "string"
+          },
+          "asset_id": {
+            "type": "string"
+          },
+          "asset_version": {
+            "type": "integer"
+          },
+          "status": {
+            "type": "string"
+          },
+          "draft_revision": {
+            "type": "integer"
+          }
+        }
+      },
+      "ChatSessionMetadata": {
+        "type": "object",
+        "required": [
+          "session_id",
+          "platform_id",
+          "creator",
+          "display_name",
+          "is_group",
+          "created_at",
+          "updated_at",
+          "starred"
+        ],
+        "properties": {
+          "session_id": {
+            "type": "string"
+          },
+          "platform_id": {
+            "type": "string"
+          },
+          "creator": {
+            "type": "string"
+          },
+          "display_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "is_group": {
+            "type": "integer"
+          },
+          "created_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "updated_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "starred": {
+            "type": "boolean"
+          },
+          "session_type": {
+            "type": "string",
+            "enum": [
+              "workflow_run"
+            ]
+          },
+          "run_conversation": {
+            "$ref": "#/components/schemas/RunConversationSummary"
+          },
+          "archived": {
+            "type": "boolean"
+          }
+        }
+      },
       "ChatHistoryPage": {
         "type": "object",
         "additionalProperties": true,
@@ -10912,6 +11312,9 @@
             "items": {
               "$ref": "#/components/schemas/ChatHistoryRecord"
             }
+          },
+          "session": {
+            "$ref": "#/components/schemas/ChatSessionMetadata"
           }
         }
       },

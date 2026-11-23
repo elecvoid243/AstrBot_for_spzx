@@ -6,12 +6,16 @@ from typing import Literal
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Query, Request, Security
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.security import APIKeyHeader
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError
 from starlette.background import BackgroundTask
 
+from astrbot.core.agent_teams import WORKFLOW_API_SCOPE
 from astrbot.core.agent_teams.assets import RoleAssetError
-from astrbot.core.agent_teams.chat import ChatAccessRequest
+from astrbot.core.agent_teams.chat import ChatAccessRequest, ChatSourceAccessError
+from astrbot.core.agent_teams.graph import GraphDefinition, validate_graph
 from astrbot.core.agent_teams.history import RunHistoryService
 from astrbot.core.agent_teams.workflows import (
     ArtifactRevisionRequest,
@@ -20,16 +24,19 @@ from astrbot.core.agent_teams.workflows import (
     TrialRunRequest,
     WorkflowControlRequest,
     WorkflowImportRequest,
+    WorkflowRerunRequest,
     WorkflowRetryRequest,
     WorkflowSaveRequest,
     WorkflowService,
     WorkflowStartRequest,
 )
-from astrbot.dashboard.responses import error, ok
+from astrbot.core.provider.provider import Provider
+from astrbot.dashboard.responses import ApiError, error, ok
 
-from .auth import require_dashboard_user
+from .auth import AuthContext, ScopeDependency, require_dashboard_user
 
 router = APIRouter(tags=["Agent Teams workflows"])
+require_workflow_scope = ScopeDependency(WORKFLOW_API_SCOPE)
 _process_observers = asyncio.Semaphore(32)
 chat_browser_header = APIKeyHeader(
     name="X-AstrBot-Chat-Session",
@@ -84,6 +91,43 @@ async def list_history(
     return ok(await service.list_records(username, limit, offset))
 
 
+_CHAT_NO_STORE = {"Cache-Control": "no-store"}
+
+
+def _chat_json(data: object) -> JSONResponse:
+    """Keep restricted chat data and credentials out of HTTP caches.
+
+    Args:
+        data: Result of a restricted chat operation.
+
+    Returns:
+        The success envelope with caching disabled.
+    """
+    return JSONResponse(jsonable_encoder(ok(data)), headers=_CHAT_NO_STORE)
+
+
+def _chat_error_response(
+    exc: RoleAssetError, *, include_fields: bool = False
+) -> JSONResponse:
+    """Mark a connection denial even when the client is expecting file bytes.
+
+    Args:
+        exc: Error from a restricted run endpoint.
+        include_fields: Preserve the answer endpoint's validation diagnostics.
+
+    Returns:
+        The original failure with a reason header for scope-wide denials.
+    """
+    headers = _CHAT_NO_STORE.copy()
+    if isinstance(exc, ChatSourceAccessError):
+        headers["X-AstrBot-Chat-Access-Error"] = exc.reason
+    return JSONResponse(
+        error(str(exc), {"fields": exc.fields} if include_fields else None),
+        status_code=exc.status,
+        headers=headers,
+    )
+
+
 @router.post("/workflow_chat_runs/{run_id}/connection")
 async def open_chat_browser(
     run_id: str, service: WorkflowService = Depends(get_workflow_service)
@@ -98,9 +142,9 @@ async def open_chat_browser(
         A browser credential and source confirmation command, without run content.
     """
     try:
-        return ok(await service.chat.open_browser(run_id))
+        return _chat_json(await service.chat.open_browser(run_id))
     except RoleAssetError as exc:
-        return JSONResponse(error(str(exc)), status_code=exc.status)
+        return _chat_error_response(exc)
 
 
 @router.get("/workflow_chat_runs/{run_id}/connection")
@@ -120,12 +164,12 @@ async def chat_browser_status(
         Confirmation state without private execution data.
     """
     try:
-        caller = await service.chat.authenticate_browser(
+        caller, _ = await service.chat.authenticate_browser(
             run_id, credential or "", allow_pending=True
         )
-        return ok({"confirmed": caller is not None})
+        return _chat_json({"confirmed": caller is not None})
     except RoleAssetError as exc:
-        return JSONResponse(error(str(exc)), status_code=exc.status)
+        return _chat_error_response(exc)
 
 
 @router.get("/workflow_chat_runs/{run_id}")
@@ -145,11 +189,13 @@ async def get_chat_run(
         Safe status, final result and explicit human prompts from the same run.
     """
     try:
-        caller = await service.chat.authenticate_browser(run_id, credential or "")
+        caller, _ = await service.chat.authenticate_browser(run_id, credential or "")
         assert caller is not None
-        return ok(await service.chat.get_run(caller, run_id, include_todos=True))
+        return _chat_json(
+            await service.chat.get_run(caller, run_id, include_todos=True)
+        )
     except RoleAssetError as exc:
-        return JSONResponse(error(str(exc)), status_code=exc.status)
+        return _chat_error_response(exc)
 
 
 @router.post("/workflow_chat_runs/{run_id}/todos/{todo_id}/answer")
@@ -173,17 +219,21 @@ async def answer_chat_todo(
         Restricted progress after the shared service accepts the answer.
     """
     try:
-        caller = await service.chat.authenticate_browser(run_id, credential or "")
+        caller, expires_at = await service.chat.authenticate_browser(
+            run_id, credential or ""
+        )
         assert caller is not None
-        return ok(
+        return _chat_json(
             await service.chat.answer_browser_todo(
-                caller, run_id, todo_id, payload.model_dump()
+                caller,
+                run_id,
+                todo_id,
+                payload.model_dump(),
+                browser_expires_at=expires_at,
             )
         )
     except RoleAssetError as exc:
-        return JSONResponse(
-            error(str(exc), {"fields": exc.fields}), status_code=exc.status
-        )
+        return _chat_error_response(exc, include_fields=True)
 
 
 @router.get("/workflow_chat_runs/{run_id}/todos/{todo_id}/artifact")
@@ -205,11 +255,13 @@ async def preview_chat_approval(
         The requested review content without arbitrary artifact access.
     """
     try:
-        caller = await service.chat.authenticate_browser(run_id, credential or "")
+        caller, _ = await service.chat.authenticate_browser(run_id, credential or "")
         assert caller is not None
-        return ok(await service.chat.read_browser_artifact(caller, run_id, todo_id))
+        return _chat_json(
+            await service.chat.read_browser_artifact(caller, run_id, todo_id)
+        )
     except RoleAssetError as exc:
-        return JSONResponse(error(str(exc)), status_code=exc.status)
+        return _chat_error_response(exc)
 
 
 @router.get("/workflow_chat_runs/{run_id}/todos/{todo_id}/artifact/files/{file_id}")
@@ -233,7 +285,7 @@ async def preview_chat_approval_file(
         Restricted preview bytes; this route grants no export or download action.
     """
     try:
-        caller = await service.chat.authenticate_browser(run_id, credential or "")
+        caller, _ = await service.chat.authenticate_browser(run_id, credential or "")
         assert caller is not None
         file = await service.chat.read_browser_artifact(
             caller, run_id, todo_id, file_id
@@ -242,6 +294,7 @@ async def preview_chat_approval_file(
             file["content"],
             media_type=file["media_type"],
             headers={
+                **_CHAT_NO_STORE,
                 "X-Content-Type-Options": "nosniff",
                 "Content-Security-Policy": "sandbox; default-src 'none'",
                 "Content-Disposition": "inline; filename*=UTF-8''"
@@ -249,7 +302,7 @@ async def preview_chat_approval_file(
             },
         )
     except RoleAssetError as exc:
-        return JSONResponse(error(str(exc)), status_code=exc.status)
+        return _chat_error_response(exc)
 
 
 @router.get(
@@ -285,7 +338,7 @@ async def get_chat_result_file(
         Scoped final file bytes without arbitrary artifact or owner access.
     """
     try:
-        caller = await service.chat.authenticate_browser(run_id, credential or "")
+        caller, _ = await service.chat.authenticate_browser(run_id, credential or "")
         assert caller is not None
         file = await service.chat.read_browser_result_file(caller, run_id, file_id)
         disposition = "attachment" if download else "inline"
@@ -293,6 +346,7 @@ async def get_chat_result_file(
             file["content"],
             media_type=file["media_type"],
             headers={
+                **_CHAT_NO_STORE,
                 "X-Content-Type-Options": "nosniff",
                 "Content-Security-Policy": "sandbox; default-src 'none'",
                 "Content-Disposition": f"{disposition}; filename*=UTF-8''"
@@ -300,7 +354,7 @@ async def get_chat_result_file(
             },
         )
     except RoleAssetError as exc:
-        return JSONResponse(error(str(exc)), status_code=exc.status)
+        return _chat_error_response(exc)
 
 
 @router.get("/workflow_assets/{asset_id}/chat_access")
@@ -384,12 +438,200 @@ async def revoke_chat_access(
         )
 
 
+@router.get("/workflow_components")
+async def list_workflow_components(
+    username: str = Depends(require_dashboard_user),
+    service: WorkflowService = Depends(get_workflow_service),
+):
+    """Return the current installed workflow component catalog.
+
+    Args:
+        username: Authenticated Dashboard resource owner.
+        service: Shared workflow service.
+
+    Returns:
+        The portable registered declarations or an authorization error.
+    """
+    try:
+        return ok(await service.list_components(username))
+    except RoleAssetError as exc:
+        return JSONResponse(
+            error(str(exc), {"fields": exc.fields}), status_code=exc.status
+        )
+
+
 @router.get("/workflow_assets")
 async def list_assets(
     username: str = Depends(require_dashboard_user),
     service: WorkflowService = Depends(get_workflow_service),
 ):
     return ok(await service.list_assets(username))
+
+
+class WorkflowDraftGenerationRequest(BaseModel):
+    """A workflow description and the locally configured model to answer it."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    description: str = Field(min_length=1, max_length=4000)
+    provider_id: str = Field(min_length=1, max_length=128)
+
+
+class GeneratedWorkflowStep(BaseModel):
+    """One reviewable Agent task proposed by the model."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    name: str = Field(min_length=1, max_length=128)
+    instructions: str = Field(min_length=1, max_length=6000)
+
+
+class GeneratedWorkflowPlan(BaseModel):
+    """A bounded sequence of tasks over a user-supplied text input."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    name: str = Field(min_length=1, max_length=128)
+    steps: list[GeneratedWorkflowStep] = Field(min_length=1, max_length=8)
+
+
+@router.post("/workflow_assets/generate_draft")
+async def generate_workflow_draft(
+    payload: WorkflowDraftGenerationRequest,
+    _username: str = Depends(require_dashboard_user),
+    service: WorkflowService = Depends(get_workflow_service),
+):
+    """Return an editable graph proposal without creating an asset or a run.
+
+    Args:
+        payload: Description and explicit local model selection.
+        _username: Authenticated Dashboard user.
+        service: Provider of the live workflow resource catalog.
+
+    Returns:
+        The generated native definition or a structured request error.
+    """
+    core = service.roles.core_lifecycle
+    if not core:
+        message = "Choose an available model"
+        return JSONResponse(
+            error(
+                message,
+                {
+                    "fields": [
+                        {"path": "provider_id", "code": "MISSING", "message": message}
+                    ]
+                },
+            ),
+            status_code=422,
+        )
+    role = {
+        "name": "Workflow draft",
+        "prompt": "Follow the task instructions and submit the result.",
+        "tools": [],
+        "skills": [],
+        "knowledge_bases": [],
+        "model_capabilities": ["tool_use"],
+    }
+    installation = {"profile_id": "default"}
+    resolved = await service.roles.preview_role(
+        {
+            "definition": {**role, "provider_id": payload.provider_id},
+            "installation": installation,
+        }
+    )
+    if resolved["issues"] or resolved["effective"]["runner"]["type"] != "local":
+        return JSONResponse(
+            error(
+                "Selected model is unavailable to the default local workflow profile",
+                {"fields": resolved["issues"]},
+            ),
+            status_code=422,
+        )
+    provider = await core.provider_manager.get_provider_by_id(payload.provider_id)
+    if not isinstance(provider, Provider):
+        message = "Choose an available chat model"
+        return JSONResponse(
+            error(
+                message,
+                {
+                    "fields": [
+                        {
+                            "path": "provider_id",
+                            "code": "INCOMPATIBLE",
+                            "message": message,
+                        }
+                    ]
+                },
+            ),
+            status_code=422,
+        )
+    try:
+        response = await asyncio.wait_for(
+            provider.text_chat(
+                system_prompt=(
+                    "Design a short sequential workflow for the user's request. "
+                    "Return only JSON with a name and a steps array of 1 to 8 objects. "
+                    "Each step has a name and instructions in the user's language. "
+                    "The first step gets the workflow's input text. Later steps get "
+                    "the previous step's text. Do not name tools, resources or IDs."
+                ),
+                prompt=payload.description,
+                request_max_retries=1,
+            ),
+            timeout=60,
+        )
+    except Exception:
+        return JSONResponse(
+            error("Model could not generate a workflow draft"), status_code=502
+        )
+    content = (response.completion_text or "").strip()
+    if content.startswith("```") and content.endswith("```"):
+        content = content.partition("\n")[2][:-3].strip()
+    try:
+        plan = GeneratedWorkflowPlan.model_validate_json(content)
+        tasks = []
+        edges = []
+        for index, step in enumerate(plan.steps, start=1):
+            identity = f"step-{index}"
+            source = f"step-{index - 1}"
+            if index > 1:
+                edges.append({"source": source, "target": identity})
+            instructions = step.instructions.replace("{", "{{").replace("}", "}}")
+            tasks.append(
+                {
+                    "id": identity,
+                    "name": step.name,
+                    "member": identity,
+                    "role": {**role, "name": step.name},
+                    "installation": installation,
+                    "task": instructions + "\n\n{input}",
+                    "inputs": {
+                        "input": {"input": "input"}
+                        if index == 1
+                        else {"task_id": source}
+                    },
+                    "position": {"x": index * 300.0, "y": 100.0},
+                }
+            )
+        graph = GraphDefinition.model_validate(
+            {
+                "name": plan.name,
+                "default_provider_id": payload.provider_id,
+                "required_inputs": ["input"],
+                "port_contract_version": 1,
+                "result_task_id": tasks[-1]["id"],
+                "tasks": tasks,
+                "edges": edges,
+            }
+        )
+        validate_graph(graph, result_requirement="reachable")
+    except (ValidationError, RoleAssetError) as exc:
+        return JSONResponse(
+            error(
+                "Model returned an invalid workflow draft",
+                {"fields": exc.fields if isinstance(exc, RoleAssetError) else []},
+            ),
+            status_code=422,
+        )
+    return ok(graph.model_dump())
 
 
 @router.get("/workflow_assets/{asset_id}")
@@ -538,15 +780,198 @@ async def import_asset(
         )
 
 
+class DashboardWorkflowStartRequest(WorkflowStartRequest):
+    replay_only: bool = False
+
+
+class WorkflowApiGrantRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    version: int = Field(ge=1)
+
+
+class WorkflowApiStartRequest(WorkflowApiGrantRequest):
+    request_id: str = Field(min_length=1, max_length=128, pattern=r"^\S+$")
+    inputs: dict[str, JsonValue] = Field(default_factory=dict)
+
+
+class WorkflowApiRun(BaseModel):
+    run_id: str
+    asset_id: str
+    asset_version: int
+    status: str
+    result: dict | None
+
+
+class WorkflowApiRunResponse(BaseModel):
+    status: Literal["ok"] = "ok"
+    message: str | None = None
+    data: WorkflowApiRun
+
+
+@router.put("/workflow_assets/{asset_id}/api_access/{key_id}")
+async def save_workflow_api_access(
+    asset_id: str,
+    key_id: str,
+    payload: WorkflowApiGrantRequest,
+    username: str = Depends(require_dashboard_user),
+    service: WorkflowService = Depends(get_workflow_service),
+):
+    """Delegate launch and result access for one published asset version.
+
+    Args:
+        asset_id: Owned workflow asset.
+        key_id: Identifier of the authorized API key.
+        payload: Fixed asset version being opened.
+        username: Dashboard asset owner.
+        service: Shared workflow service.
+
+    Returns:
+        The authorized version.
+    """
+    try:
+        await service.set_api_access(username, asset_id, key_id, payload.version)
+        return ok(payload.model_dump())
+    except RoleAssetError as exc:
+        return JSONResponse(
+            error(str(exc), {"fields": exc.fields}), status_code=exc.status
+        )
+
+
+@router.delete("/workflow_assets/{asset_id}/api_access/{key_id}")
+async def revoke_workflow_api_access(
+    asset_id: str,
+    key_id: str,
+    username: str = Depends(require_dashboard_user),
+    service: WorkflowService = Depends(get_workflow_service),
+):
+    """Revoke launches, replays and result access under an API key grant.
+
+    Args:
+        asset_id: Owned workflow asset.
+        key_id: Identifier of the previously authorized key.
+        username: Dashboard asset owner.
+        service: Shared workflow service.
+
+    Returns:
+        An empty confirmation.
+    """
+    try:
+        await service.set_api_access(username, asset_id, key_id, None)
+        return ok()
+    except RoleAssetError as exc:
+        return JSONResponse(
+            error(str(exc), {"fields": exc.fields}), status_code=exc.status
+        )
+
+
+@router.post("/workflows/{asset_id}/runs", response_model=WorkflowApiRunResponse)
+async def start_public_workflow(
+    asset_id: str,
+    payload: WorkflowApiStartRequest,
+    auth: AuthContext = Depends(require_workflow_scope),
+    service: WorkflowService = Depends(get_workflow_service),
+):
+    """Start a fixed published workflow on behalf of an explicitly granted key.
+
+    Args:
+        asset_id: Authorized workflow asset.
+        payload: Exact version, declared JSON inputs and request identity.
+        auth: Authenticated caller with workflow scope.
+        service: Shared workflow service.
+
+    Returns:
+        Root run identity and restricted result projection.
+    """
+    key_id = auth.api_key_id
+    if key_id is None:
+        raise ApiError("Workflow API key required", status_code=401)
+    try:
+        async with service.db.get_db() as session:
+            grant = await service.require_api_access(
+                session, key_id, asset_id, payload.version
+            )
+        run = await service.start_run(
+            grant.owner_username,
+            asset_id,
+            {**payload.model_dump(), "source": "api"},
+            api_key_id=key_id,
+        )
+        return ok(await service.get_api_run(key_id, run["run_id"]))
+    except RoleAssetError as exc:
+        return JSONResponse(
+            error(str(exc), {"fields": exc.fields}), status_code=exc.status
+        )
+
+
+@router.get("/workflows/runs/{run_id}", response_model=WorkflowApiRunResponse)
+async def get_public_workflow_run(
+    run_id: str,
+    auth: AuthContext = Depends(require_workflow_scope),
+    service: WorkflowService = Depends(get_workflow_service),
+):
+    """Read the root result using the same key and current fixed-version grant.
+
+    Args:
+        run_id: Root identity returned by the launch.
+        auth: Authenticated caller with workflow scope.
+        service: Shared workflow service.
+
+    Returns:
+        Restricted status and the completed root's result.
+    """
+    key_id = auth.api_key_id
+    if key_id is None:
+        raise ApiError("Workflow API key required", status_code=401)
+    try:
+        return ok(await service.get_api_run(key_id, run_id))
+    except RoleAssetError as exc:
+        return JSONResponse(
+            error(str(exc), {"fields": exc.fields}), status_code=exc.status
+        )
+
+
 @router.post("/workflow_assets/{asset_id}/runs")
 async def start_run(
     asset_id: str,
-    payload: WorkflowStartRequest,
+    payload: DashboardWorkflowStartRequest,
     username: str = Depends(require_dashboard_user),
     service: WorkflowService = Depends(get_workflow_service),
 ):
     try:
-        return ok(await service.start_run(username, asset_id, payload.model_dump()))
+        return ok(
+            await service.start_run(
+                username,
+                asset_id,
+                payload.model_dump(exclude={"source", "replay_only"}),
+                replay_only=payload.replay_only,
+            )
+        )
+    except RoleAssetError as exc:
+        return JSONResponse(
+            error(str(exc), {"fields": exc.fields}), status_code=exc.status
+        )
+
+
+@router.post("/workflow_runs/{run_id}/rerun")
+async def rerun_workflow(
+    run_id: str,
+    payload: WorkflowRerunRequest,
+    username: str = Depends(require_dashboard_user),
+    service: WorkflowService = Depends(get_workflow_service),
+):
+    """Start an independent run with the completed root's version and inputs.
+
+    Args:
+        run_id: Completed published root run.
+        payload: Idempotency identity for the new run.
+        username: Current authenticated resource owner.
+        service: Shared public run service.
+
+    Returns:
+        The new run's persisted snapshot.
+    """
+    try:
+        return ok(await service.rerun(username, run_id, payload))
     except RoleAssetError as exc:
         return JSONResponse(
             error(str(exc), {"fields": exc.fields}), status_code=exc.status
@@ -680,15 +1105,16 @@ async def recover_run(
     """Continue the same attempt from saved model and per-tool boundaries.
 
     Args:
-        run_id: Interrupted task; no new attempt or iteration is created.
+        run_id: Task with a resumable checkpoint in its original attempt.
         username: Authenticated owner of the original run.
         service: Shared public run service.
 
     Returns:
         Persisted progress with per-call intents, results, context positions and
         execution ownership. Saved results are reused, unstarted calls may run,
-        and unknown effects require confirmation. Contracted submissions finish
-        through the existing idempotent result protocol.
+        and unknown effects require confirmation. A failed model request may be
+        sent again with the saved tool results in context. Contracted submissions
+        finish through the existing idempotent result protocol.
     """
     try:
         await service.recover_run(username, run_id)
@@ -797,7 +1223,8 @@ async def retry_task(
         service: Core-owned public run service.
 
     Returns:
-        New attempt and preserved failure history; uncertain tools require resolution.
+        New attempt and preserved failure history, or HTTP 409 when uncertain
+        effects or saved tool results require handling in the original attempt.
     """
     try:
         await service.retry_task(username, run_id, payload.model_dump())

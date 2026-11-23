@@ -18,11 +18,15 @@
       :label="tm('resolution.evidence')"
       data-testid="resolution-evidence"
     />
+    <details v-if="structuredResult" class="mb-3">
+      <summary>{{ tm("resolution.outputContract") }}</summary>
+      <pre>{{ JSON.stringify(outputContract, null, 2) }}</pre>
+    </details>
     <v-textarea
       v-if="action === 'confirm_result' || action === 'confirm_failure'"
       v-model="result"
       :disabled="busy"
-      :label="tm('resolution.result')"
+      :label="tm(structuredResult ? 'resolution.structuredResult' : 'resolution.result')"
       data-testid="resolution-result"
     />
     <v-btn variant="tonal" :loading="busy" :disabled="!valid" @click="submit">{{
@@ -39,6 +43,7 @@ import type { ToolResolutionRequest } from "@/api/generated/openapi-v1";
 const props = defineProps<{
   actions: ToolResolutionRequest["action"][];
   busy: boolean;
+  outputContract?: Record<string, unknown>;
 }>();
 const emit = defineEmits<{
   (event: "submit", payload: ToolResolutionRequest): void;
@@ -59,12 +64,22 @@ let requestId: string | null = null;
 watch([action, evidence, result], () => {
   requestId = null;
 });
+const structuredResult = computed(() => action.value === "confirm_result" && !!props.outputContract);
+const validResult = computed(() => {
+  if (!structuredResult.value) return Boolean(result.value.trim());
+  try {
+    const value = JSON.parse(result.value);
+    return value !== null && typeof value === "object" && !Array.isArray(value);
+  } catch {
+    return false;
+  }
+});
 const valid = computed(
   () =>
     props.actions.includes(action.value) &&
     evidence.value.trim() &&
     (!["confirm_result", "confirm_failure"].includes(action.value) ||
-      result.value.trim()),
+      validResult.value),
 );
 
 function submit() {

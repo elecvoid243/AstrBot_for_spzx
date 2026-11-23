@@ -1,15 +1,462 @@
-import { flushPromises, mount } from "@vue/test-utils";
+import { flushPromises, mount, type VueWrapper } from "@vue/test-utils";
 import { describe, expect, it, vi } from "vitest";
 import { reactive } from "vue";
 import WorkflowGraphCanvas from "./WorkflowGraphCanvas.vue";
 import RoleResourcesEditor from "./RoleResourcesEditor.vue";
 import { VueFlow } from "@vue-flow/core";
+import type { FlowNode } from "./TeamsFlowCanvas.vue";
 
 vi.mock("@/i18n/composables", () => ({
   useModuleI18n: () => ({ tm: (key: string) => key }),
 }));
 
 describe("canvas asset editing", () => {
+  it("adds native nodes with typed ports and an exact knowledge base selection", async () => {
+    const wrapper = mount(WorkflowGraphCanvas, {
+      props: {
+        definition: {
+          name: "Inspect documents",
+          port_contract_version: 2,
+          input_contract: {
+            type: "object",
+            properties: { document: { type: "object", format: "astrbot-file" } },
+          },
+          tasks: [],
+        },
+        catalog: { knowledge_bases: [{ id: "kb-local", name: "Local reference" }] },
+      },
+      global: {
+        stubs: {
+          TeamsFlowCanvas: {
+            name: "TeamsFlowCanvas",
+            props: ["nodes"],
+            emits: ["connect", "select-node"],
+            template: "<div />",
+          },
+          WorkflowLoopPanel: true,
+          "v-select": { props: ["items"], emits: ["update:modelValue"], template: "<div />" },
+          "v-btn": { emits: ["click"], template: '<button @click="$emit(\'click\')"><slot /></button>' },
+          "v-alert": true, "v-chip": true, "v-icon": true, "v-spacer": true,
+          "v-switch": true, "v-textarea": true, "v-text-field": true,
+        },
+      },
+    });
+    try {
+      await wrapper.get('[data-testid="add-read_document_v1"]').trigger("click");
+      const canvas = wrapper.getComponent({ name: "TeamsFlowCanvas" });
+      const graph = () => wrapper.emitted("update:definition")!.at(-1)![0] as {
+        tasks: { id: string }[];
+      };
+      expect(canvas.props("nodes")).toEqual(expect.arrayContaining([
+        expect.objectContaining({ data: expect.objectContaining({
+          inputPorts: [expect.objectContaining({ id: "data-in:file", types: ["astrbot-file"] })],
+          outputPorts: expect.arrayContaining([
+            expect.objectContaining({ id: "data-out:filename", types: ["string"] }),
+          ]),
+        }) }),
+      ]));
+      canvas.vm.$emit("connect", {
+        from: "__input", to: graph().tasks[0].id,
+        sourceHandle: "data-out:document", targetHandle: "data-in:file",
+      });
+      await wrapper.get('[data-testid="add-retrieve_knowledge_v1"]').trigger("click");
+      const picker = wrapper.getComponent('[data-testid="native-knowledge-base"]') as VueWrapper;
+      expect(picker.props()).toMatchObject({ items: [{ id: "kb-local", name: "Local reference" }] });
+      picker.vm.$emit("update:modelValue", "kb-local");
+      expect(graph().tasks).toEqual([
+        expect.objectContaining({ transform: "read_document_v1", inputs: { file: { input: "document" } } }),
+        expect.objectContaining({ transform: "retrieve_knowledge_v1", knowledge_base_id: "kb-local" }),
+      ]);
+    } finally {
+      wrapper.unmount();
+    }
+  });
+
+  it("keeps clipboard task identity, shared members and detached gates consistent", async () => {
+    const wrapper = mount(WorkflowGraphCanvas, {
+      props: {
+        definition: {
+          name: "Clipboard",
+          tasks: [
+            { id: "gate", name: "Gate" },
+            { id: "a", name: "A", member: "shared", inputs: { external: { task_id: "gate" } } },
+            { id: "b", name: "B", member: "shared", inputs: { text: { task_id: "a", field: "text" } } },
+          ],
+          result_task_id: "b",
+          edges: [{ source: "gate", target: "a" }, { source: "a", target: "b" }],
+        },
+      },
+      global: {
+        stubs: {
+          TeamsFlowCanvas: {
+            name: "TeamsFlowCanvas",
+            emits: ["select-node", "selection-change"],
+            template: "<div />",
+          },
+          WorkflowLoopPanel: true,
+          "v-btn": true, "v-alert": true, "v-text-field": true, "v-select": true,
+          "v-chip": true, "v-spacer": true, "v-checkbox": true, "v-icon": true,
+        },
+      },
+    });
+    try {
+      const canvas = wrapper.getComponent({ name: "TeamsFlowCanvas" });
+      const stage = wrapper.get(".graph-stage");
+      const graph = () => wrapper.emitted("update:definition")!.at(-1)![0] as {
+        tasks: { id: string; member?: string; inputs?: Record<string, { task_id: string }> }[];
+        edges: { source: string; target: string }[];
+        result_task_id: string;
+      };
+      canvas.vm.$emit("selection-change", ["a", "b"]);
+      await stage.trigger("keydown", { key: "c", ctrlKey: true });
+      await stage.trigger("keydown", { key: "v", ctrlKey: true });
+      const [, , , a, b] = graph().tasks;
+      expect(a.member).toBe(b.member);
+      expect(a.member).not.toBe("shared");
+      expect(a.inputs?.external.task_id).toBe("__detached:gate");
+      expect(b.inputs?.text.task_id).toBe(a.id);
+      expect(graph().edges.slice(-2)).toEqual([
+        { source: "__detached:gate", target: a.id },
+        { source: a.id, target: b.id },
+      ]);
+      expect(graph().result_task_id).toBe("b");
+      await stage.trigger("keydown", { key: "z", ctrlKey: true });
+      expect(graph().tasks).toHaveLength(3);
+      await stage.trigger("keydown", { key: "Z", ctrlKey: true, shiftKey: true });
+      expect(graph().tasks).toHaveLength(5);
+      await stage.trigger("keydown", { key: "z", ctrlKey: true });
+      canvas.vm.$emit("select-node", "a");
+      canvas.vm.$emit("selection-change", ["b"]);
+      await stage.trigger("keydown", { key: "Delete" });
+      expect(graph().tasks.map(({ id }) => id)).toEqual(["gate", "a"]);
+    } finally {
+      wrapper.unmount();
+    }
+  });
+
+  it("keeps V2 control entry, boolean data, and result links independent", async () => {
+    const wrapper = mount(WorkflowGraphCanvas, {
+      props: {
+        definition: {
+          name: "Control diamond",
+          port_contract_version: 2,
+          input_contract: { type: "object", properties: { choose: { type: "boolean" } } },
+          tasks: [
+            { id: "choose", name: "Choose", control: { kind: "condition", value: "" }, inputs: { value: {} } },
+            { id: "collect", name: "Collect", control: { kind: "join" } },
+            { id: "format", name: "Format", transform: "json_text", inputs: { value: {} } },
+          ],
+          edges: [{ source: "choose", target: "collect", condition: { field: "matched", value: false } }],
+        },
+      },
+      global: {
+        stubs: {
+          TeamsFlowCanvas: {
+            name: "TeamsFlowCanvas",
+            props: ["edges"],
+            emits: ["connect", "select-node"],
+            template: "<div />",
+          },
+          WorkflowLoopPanel: true,
+          "v-select": { props: ["items"], template: "<div />" },
+          "v-alert": true, "v-btn": true, "v-checkbox": true, "v-chip": true,
+          "v-expansion-panels": true, "v-icon": true, "v-spacer": true,
+          "v-switch": true, "v-textarea": true, "v-text-field": true,
+        },
+      },
+    });
+    try {
+      const canvas = wrapper.getComponent({ name: "TeamsFlowCanvas" });
+      canvas.vm.$emit("connect", {
+        from: "__input", to: "choose", sourceHandle: "control-entry",
+      });
+      canvas.vm.$emit("connect", {
+        from: "__input", to: "choose", sourceHandle: "data-out:choose", targetHandle: "data-in:value",
+      });
+      await flushPromises();
+      expect(wrapper.find('[data-testid="control-value-boolean"]').exists()).toBe(true);
+      canvas.vm.$emit("connect", {
+        from: "collect", to: "format", sourceHandle: "data-out:results", targetHandle: "data-in:value",
+      });
+      canvas.vm.$emit("connect", {
+        from: "collect", to: "__output", sourceHandle: "data-out-result", targetHandle: "data-in-result",
+      });
+      canvas.vm.$emit("select-node", "__output");
+      await flushPromises();
+      const resultPicker = wrapper.getComponent('[data-testid="result-task"]') as VueWrapper;
+      expect(resultPicker.props()).toMatchObject({
+        items: expect.arrayContaining([{ title: "Collect", value: "collect" }]),
+      });
+      expect(wrapper.emitted("update:definition")!.at(-1)![0]).toMatchObject({
+        entry_task_ids: ["choose"],
+        result_task_id: "collect",
+        tasks: [
+          { inputs: { value: { input: "choose" } }, control: { value: false } },
+          { id: "collect" },
+          { inputs: { value: { task_id: "collect", field: "results" } } },
+        ],
+        edges: [{ source: "choose", target: "collect" }],
+      });
+      expect(canvas.props("edges")).toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: "__input:choose", sourceHandle: "control-entry" }),
+        expect.objectContaining({ id: "data:input:choose:value", targetHandle: "data-in:value" }),
+      ]));
+    } finally {
+      wrapper.unmount();
+    }
+  });
+
+  it("connects named data handles and restores their bindings on undo and reopen", async () => {
+    const stubs = {
+      TeamsFlowCanvas: {
+        name: "TeamsFlowCanvas",
+        props: ["edges"],
+        emits: ["connect", "delete-edge", "select-node"],
+        template: "<div />",
+      },
+      WorkflowLoopPanel: true,
+      RoleResourcesEditor: true,
+      "v-btn": { template: "<button><slot /></button>" },
+      "v-icon": true, "v-chip": true, "v-select": true, "v-text-field": true,
+      "v-textarea": true, "v-spacer": true, "v-alert": true, "v-switch": true,
+      "v-expansion-panels": true,
+    };
+    const definition = {
+      name: "Text ports",
+      port_contract_version: 1 as const,
+      required_inputs: ["topic", "other"],
+      tasks: [{ id: "agent", name: "Agent", member: "agent", task: "Echo {subject:}" }],
+      edges: [],
+    };
+    const wrapper = mount(WorkflowGraphCanvas, { props: { definition }, global: { stubs } });
+    try {
+      const canvas = wrapper.getComponent({ name: "TeamsFlowCanvas" });
+      const saved = () => wrapper.emitted("update:definition")!.at(-1)![0];
+      expect(canvas.props("edges")).toEqual([]);
+      canvas.vm.$emit("connect", {
+        from: "__input", to: "agent", sourceHandle: "data-out:topic", targetHandle: "data-in:subject",
+      });
+      canvas.vm.$emit("connect", {
+        from: "agent", to: "__output", sourceHandle: "data-out:text", targetHandle: "data-in:text",
+      });
+      await flushPromises();
+      expect(saved()).toMatchObject({
+        tasks: [{ inputs: { subject: { input: "topic" } } }],
+        result_task_id: "agent", edges: [],
+      });
+      expect(canvas.props("edges")).toMatchObject([
+        { sourceHandle: "data-out:topic", targetHandle: "data-in:subject" },
+        { sourceHandle: "data-out:text", targetHandle: "data-in:text" },
+      ]);
+
+      await wrapper.findAll("button").find((button) => button.text() === "graph.undo")!.trigger("click");
+      expect(canvas.props("edges")).toHaveLength(1);
+      await wrapper.findAll("button").find((button) => button.text() === "graph.redo")!.trigger("click");
+      const reopenedDefinition = JSON.parse(JSON.stringify(saved()));
+      reopenedDefinition.tasks[0].output_contract = {
+        allOf: [
+          { type: "object", properties: { text: { type: "string" } }, required: ["text"] },
+        ],
+      };
+      const reopened = mount(WorkflowGraphCanvas, {
+        props: { definition: reopenedDefinition },
+        global: { stubs },
+      });
+      try {
+        const restored = reopened.getComponent({ name: "TeamsFlowCanvas" });
+        expect(restored.props("edges")).toEqual(canvas.props("edges"));
+        restored.vm.$emit("select-node", "__input");
+        await flushPromises();
+        const workflowInputs = reopened.getComponent(
+          '[data-testid="workflow-input-names"]',
+        ) as VueWrapper;
+        workflowInputs.vm.$emit("update:modelValue", "");
+        await flushPromises();
+        expect(restored.props("edges")[0]).toMatchObject({ sourceHandle: "data-out:topic" });
+        workflowInputs.vm.$emit("update:modelValue", "renamed, other");
+        workflowInputs.vm.$emit("update:focused", false);
+        await flushPromises();
+        expect(restored.props("edges")[0]).toMatchObject({ sourceHandle: "data-out:renamed" });
+        expect(reopened.emitted("update:definition")!.at(-1)![0]).toMatchObject({
+          tasks: [{ inputs: { subject: { input: "renamed" } } }],
+        });
+        restored.vm.$emit("delete-edge", restored.props("edges")[0].id);
+        await flushPromises();
+        expect(restored.props("edges")).toHaveLength(1);
+        expect(reopened.emitted("update:definition")!.at(-1)![0]).toMatchObject({
+          tasks: [{ inputs: { subject: {} } }], result_task_id: "agent", edges: [],
+        });
+      } finally {
+        reopened.unmount();
+      }
+    } finally {
+      wrapper.unmount();
+    }
+  });
+
+  it("connects managed references and messages only to ports of the same format", async () => {
+    const message = { type: "object", format: "astrbot-message" };
+    const artifact = { type: "object", format: "astrbot-artifact" };
+    const file = { type: "object", format: "astrbot-file" };
+    const wrapper = mount(WorkflowGraphCanvas, {
+      props: { definition: {
+        name: "Evidence",
+        port_contract_version: 2,
+        input_contract: { type: "object", properties: { ordinary: { type: "object" } } },
+        tasks: [
+          { id: "author", name: "Author", output_contract: {
+            type: "object", properties: { message, files: { type: "array" } },
+          } },
+          { id: "sink", name: "Sink", transform: "map_fields", input_contract: {
+            type: "object", properties: { message, artifact, file },
+          } },
+        ],
+        edges: [{ source: "author", target: "sink" }],
+      } },
+      global: { stubs: {
+        TeamsFlowCanvas: { name: "TeamsFlowCanvas", emits: ["connect"], template: "<div />" },
+        WorkflowLoopPanel: true,
+        "v-btn": true, "v-icon": true, "v-chip": true, "v-select": true,
+        "v-text-field": true, "v-textarea": true, "v-spacer": true, "v-alert": true,
+        "v-switch": true, "v-expansion-panels": true,
+      } },
+    });
+    try {
+      const canvas = wrapper.getComponent({ name: "TeamsFlowCanvas" });
+      canvas.vm.$emit("connect", {
+        from: "__input", to: "sink", sourceHandle: "data-out:ordinary", targetHandle: "data-in:file",
+      });
+      expect(wrapper.emitted("update:definition")).toBeUndefined();
+      for (const [source, target] of [["message", "message"], ["$artifact", "artifact"], ["$file", "file"]])
+        canvas.vm.$emit("connect", {
+          from: "author", to: "sink", sourceHandle: `data-out:${source}`, targetHandle: `data-in:${target}`,
+        });
+      expect(wrapper.emitted("update:definition")?.at(-1)?.[0]).toMatchObject({
+        tasks: [{ id: "author" }, { inputs: {
+          message: { task_id: "author", field: "message" },
+          artifact: { task_id: "author", field: "$artifact" },
+          file: { task_id: "author", field: "$file" },
+        } }],
+      });
+    } finally {
+      wrapper.unmount();
+    }
+  });
+
+  it("projects workflow, task, fixed call and component port contracts and marks a cycle's consuming port", async () => {
+    const contract = {
+      type: "object" as const,
+      properties: {
+        flag: { type: "boolean", default: false },
+        count: { type: "integer", default: 0 },
+      },
+      required: ["flag"],
+    };
+    const wrapper = mount(WorkflowGraphCanvas, {
+      props: { definition: {
+        name: "Contracts",
+        port_contract_version: 2,
+        input_contract: contract,
+        tasks: [
+          { id: "map", name: "Mapping", transform: "map_fields", input_contract: contract, output_contract: contract },
+          { id: "call", name: "Child", workflow: { asset_id: "child", version: 2 }, input_contract: contract, output_contract: contract },
+          { id: "plugin", name: "Connector", transform: "plugin_component_v1",
+            component: { id: "connector", version: "2", contract_digest: "snapshot" },
+            input_contract: contract, output_contract: contract },
+        ],
+      } },
+      global: { stubs: {
+        TeamsFlowCanvas: { name: "TeamsFlowCanvas", props: ["nodes"], template: "<div />" },
+        WorkflowLoopPanel: true,
+        "v-btn": true, "v-icon": true, "v-chip": true, "v-select": true,
+        "v-text-field": true, "v-textarea": true, "v-spacer": true, "v-alert": true,
+        "v-switch": true, "v-expansion-panels": true,
+      } },
+    });
+    try {
+      const canvas = wrapper.getComponent({ name: "TeamsFlowCanvas" });
+      const node = (id: string) => (canvas.props("nodes") as FlowNode[]).find((item) => item.id === id)!.data;
+      for (const side of [node("__input").outputPorts, ...["map", "call", "plugin"].flatMap((id) =>
+        [node(id).inputPorts, node(id).outputPorts])]) {
+        expect(side).toEqual(expect.arrayContaining([
+          expect.objectContaining({ label: "flag · boolean", required: true, defaultValue: false }),
+          expect.objectContaining({ label: "count · integer", required: false, defaultValue: 0 }),
+        ]));
+      }
+      await wrapper.setProps({ issues: [{ path: "definition.tasks.0.inputs.flag", message: "Data dependency cycle" }] });
+      expect(wrapper.emitted("selectTask")?.at(-1)).toEqual(["map"]);
+      expect(node("map").inputPorts).toMatchObject([{ invalid: true }, { invalid: false }]);
+      expect(node("call").inputPorts).toMatchObject([{ invalid: false }, { invalid: false }]);
+    } finally {
+      wrapper.unmount();
+    }
+  });
+
+  it("rejects disjoint object fields and array items on new drops while preserving saved links", async () => {
+    const object = (type: string) => ({
+      type: "object", properties: { count: { type } }, required: ["count"],
+    });
+    const rows = (type: string) => ({ type: "array", items: object(type) });
+    const allOf = (schema: Record<string, unknown>) => ({ allOf: [schema] });
+    const wrapper = mount(WorkflowGraphCanvas, {
+      props: { definition: {
+        name: "Nested shapes",
+        port_contract_version: 2,
+        input_contract: { type: "object", properties: { settings: allOf(object("integer")) } },
+        tasks: [
+          { id: "source", name: "Source", output_contract: {
+            type: "object", properties: {
+              existing: object("string"), payload: object("string"), rows: rows("string"), valid: allOf(rows("integer")),
+              empty: { ...rows("string"), maxItems: 0 },
+            },
+          } },
+          { id: "target", name: "Target", transform: "map_fields", input_contract: {
+            type: "object", properties: { existing: object("number"), payload: object("number"), rows: rows("number"),
+              settings: allOf(object("number")), empty: rows("number") },
+          }, inputs: { existing: { task_id: "source", field: "existing" } } },
+        ],
+        edges: [{ source: "source", target: "target" }],
+      } },
+      global: { stubs: {
+        TeamsFlowCanvas: { name: "TeamsFlowCanvas", props: ["nodes", "edges"], emits: ["connect"], template: "<div />" },
+        WorkflowLoopPanel: true,
+        "v-btn": true, "v-icon": true, "v-chip": true, "v-select": true,
+        "v-text-field": true, "v-textarea": true, "v-spacer": true, "v-alert": true,
+        "v-switch": true, "v-expansion-panels": true,
+      } },
+    });
+    try {
+      const canvas = wrapper.getComponent({ name: "TeamsFlowCanvas" });
+      const connect = (field: string, alias: string) => canvas.vm.$emit("connect", {
+        from: "source", to: "target", sourceHandle: `data-out:${field}`, targetHandle: `data-in:${alias}`,
+      });
+      expect(canvas.props("edges")).toEqual(expect.arrayContaining([
+        expect.objectContaining({ sourceHandle: "data-out:existing", targetHandle: "data-in:existing" }),
+      ]));
+      connect("payload", "payload");
+      connect("rows", "rows");
+      expect(wrapper.emitted("update:definition")).toBeUndefined();
+      await wrapper.vm.$nextTick();
+      expect((canvas.props("nodes") as FlowNode[]).find((item) => item.id === "target")?.data.inputPorts)
+        .toContainEqual(expect.objectContaining({ id: "data-in:rows", invalid: true }));
+      connect("empty", "empty");
+      connect("valid", "rows");
+      canvas.vm.$emit("connect", {
+        from: "__input", to: "target", sourceHandle: "data-out:settings", targetHandle: "data-in:settings",
+      });
+      expect(wrapper.emitted("update:definition")?.at(-1)?.[0]).toMatchObject({
+        tasks: [{ id: "source" }, { inputs: {
+          existing: { task_id: "source", field: "existing" },
+          empty: { task_id: "source", field: "empty" },
+          rows: { task_id: "source", field: "valid" },
+          settings: { input: "settings" },
+        } }],
+      });
+    } finally {
+      wrapper.unmount();
+    }
+  });
+
   it("adds a directly configured Agent without any role templates", async () => {
     const wrapper = mount(WorkflowGraphCanvas, {
       props: { definition: { name: "Direct", tasks: [], edges: [], required_inputs: [] }, roles: [] },

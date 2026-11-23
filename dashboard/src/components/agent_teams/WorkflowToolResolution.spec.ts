@@ -77,3 +77,47 @@ describe("tool resolution decision identity", () => {
     },
   );
 });
+
+
+it.each([false, true])("validates only structured component confirmations (%s)", async (structured) => {
+  const outputContract = structured
+    ? { type: "object", properties: { count: { type: "integer" } }, required: ["count"] }
+    : undefined;
+  const wrapper = mount(WorkflowToolResolution, {
+    props: { actions: ["confirm_result"], busy: false, outputContract },
+    global: {
+      stubs: {
+        "v-alert": { template: "<div><slot /></div>" },
+        "v-select": true,
+        "v-textarea": {
+          props: ["modelValue", "label"],
+          emits: ["update:modelValue"],
+          template: `<textarea :aria-label="label" :value="modelValue" @input="$emit('update:modelValue', $event.target.value)" />`,
+        },
+        "v-btn": { props: ["disabled"], template: '<button :disabled="disabled"><slot /></button>' },
+      },
+    },
+  });
+  try {
+    await wrapper.get('[data-testid="resolution-evidence"]').setValue("Independent receipt");
+    const result = wrapper.get('[data-testid="resolution-result"]');
+    const button = wrapper.get("button");
+    await result.setValue("plain text");
+    expect(button.attributes("disabled") !== undefined).toBe(structured);
+    expect(wrapper.find("details").exists()).toBe(structured);
+    if (structured) {
+      expect(result.attributes("aria-label")).toBe("resolution.structuredResult");
+      await result.setValue('[42]');
+      expect(button.attributes("disabled")).toBeDefined();
+      await result.setValue('{"count":42}');
+    } else {
+      expect(result.attributes("aria-label")).toBe("resolution.result");
+    }
+    await button.trigger("click");
+    expect(wrapper.emitted("submit")?.[0]?.[0]).toMatchObject({
+      action: "confirm_result", result: structured ? '{"count":42}' : "plain text",
+    });
+  } finally {
+    wrapper.unmount();
+  }
+});

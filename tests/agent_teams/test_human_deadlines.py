@@ -335,7 +335,7 @@ async def test_core_watcher_handles_deadlines_without_viewers_and_stops(deadline
     env = deadline_env
     run = await env.create()
     env.clock[0] = 1011
-    watcher = asyncio.create_task(env.service.run_human_deadlines())
+    watcher = asyncio.create_task(env.service.run_maintenance())
     try:
         for _ in range(200):
             after = await env.service.get_run("alice", run["run_id"])

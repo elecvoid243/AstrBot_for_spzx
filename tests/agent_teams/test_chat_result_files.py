@@ -182,6 +182,7 @@ async def test_only_published_final_files_are_delivered_to_confirmed_initiator(
         )
         assert response.status_code == 200
         assert response.content == b"COMPLETE_FINAL_FILE_CONTENT"
+        assert response.headers["Cache-Control"] == "no-store"
         assert response.headers["x-content-type-options"] == "nosniff"
         assert "sandbox" in response.headers["content-security-policy"]
         assert response.headers["content-disposition"].startswith(

@@ -523,6 +523,17 @@
   },
   "conversation": {
     "title": "对话",
+    "filter": {
+      "label": "筛选本机会话",
+      "all": "全部",
+      "runs": "运行会话",
+      "loading": "正在加载运行会话…",
+      "empty": "暂无运行会话",
+      "error": "加载运行会话失败",
+      "retry": "重试",
+      "loadingMore": "正在加载更多…",
+      "loadMore": "加载更多"
+    },
     "newConversation": "新的聊天",
     "noHistory": "暂无对话历史",
     "systemStatus": "系统状态",

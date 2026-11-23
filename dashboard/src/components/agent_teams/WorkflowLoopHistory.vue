@@ -114,7 +114,8 @@
             v-if="task.result_ref"
             type="button"
             class="loop-task-link"
-            @click="$emit('select', task.run_id)"
+            :data-testid="'iteration-artifact-' + task.run_id"
+            @click="$emit('open-artifact', task.run_id, task.result_ref)"
           >
             {{ tm("loops.openArtifact") }} · {{ task.result_ref.artifact_id }} /
             v{{ task.result_ref.version }}
@@ -147,6 +148,10 @@
                   iteration.task_runs[edge.source] &&
                   iteration.task_runs[edge.target],
               ),
+              entry_task_ids: run.snapshot.definition.entry_task_ids
+                ?.filter((id: string) => iteration.task_runs[id]) ?? null,
+              result_task_id: iteration.task_runs[run.snapshot.definition.result_task_id]
+                ? run.snapshot.definition.result_task_id : null,
               loops: [],
             }"
             :tasks="iteration.tasks"
@@ -161,13 +166,17 @@
 
 <script setup lang="ts">
 import { computed } from "vue";
+import type { ArtifactReference } from "@/api/generated/openapi-v1";
 import MarkdownMessagePart from "@/components/chat/message_list_comps/MarkdownMessagePart.vue";
 import { CHAT_MARKDOWN_CUSTOM_TAGS } from "@/components/chat/chatMarkdownComponents";
 import { useCustomizerStore } from "@/stores/customizer";
 import { useModuleI18n } from "@/i18n/composables";
 import WorkflowGraphCanvas from "./WorkflowGraphCanvas.vue";
 const props = defineProps<{ run: any }>();
-defineEmits<{ select: [taskRunId: string] }>();
+defineEmits<{
+  select: [taskRunId: string];
+  "open-artifact": [taskRunId: string, artifact: ArtifactReference];
+}>();
 const { tm } = useModuleI18n("features/agent-teams");
 const customizer = useCustomizerStore();
 const isDark = computed(() => customizer.isDark);
@@ -187,7 +196,8 @@ const taskInputs = computed<Record<string, [string, unknown][]>>(() => {
         for (const [name, input] of Object.entries(
           task.snapshot.iteration_inputs ?? {},
         )) {
-          inputs[name] = (input as { raw_value: unknown }).raw_value;
+          const feedback = input as { raw_value?: unknown; missing?: boolean };
+          if (!feedback.missing) inputs[name] = feedback.raw_value;
         }
         values[task.run_id] = Object.entries(inputs);
       }

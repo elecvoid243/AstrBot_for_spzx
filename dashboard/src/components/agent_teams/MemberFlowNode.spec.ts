@@ -117,6 +117,27 @@ describe('MemberFlowNode body', () => {
 });
 
 describe('MemberFlowNode footer', () => {
+  it('renders port requirements and JSON defaults without swallowing falsy values', () => {
+    const wrapper = mountNode({
+      inputPorts: [{ id: 'in', label: 'source · string', required: true }],
+      outputPorts: [
+        { id: 'flag', label: 'flag · boolean', required: false, defaultValue: false },
+        { id: 'limit', label: 'limit · integer', required: false, defaultValue: 0 },
+        { id: 'text', label: 'text · string', required: false, defaultValue: '' },
+        { id: 'extra', label: 'extra · object|null', required: false, defaultValue: null },
+        { id: 'rows', label: 'rows · array', required: false, defaultValue: [{ id: 1 }] },
+      ],
+    });
+    const ports = wrapper.findAll('.at-data-port');
+    expect(ports[0].text()).toContain(zh.graph.portRequired);
+    expect(ports[0].find('.at-port-default').exists()).toBe(false);
+    expect(ports.slice(1).every((port) => port.text().includes(zh.graph.portOptional))).toBe(true);
+    expect(wrapper.findAll('.at-port-default').map((value) => value.text())).toEqual(
+      ['false', '0', '""', 'null', '[{"id":1}]'].map((value) => zh.graph.portDefault.replace('{value}', value)),
+    );
+    wrapper.unmount();
+  });
+
   it('renders the inbound dependency count', () => {
     const wrapper = mountNode();
     expect(wrapper.find('.at-node-indegree').text()).toBe(`${zh.editor.inDegree} 2`);

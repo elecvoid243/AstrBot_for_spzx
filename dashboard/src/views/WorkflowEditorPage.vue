@@ -27,6 +27,12 @@
         />
       </div>
       <div class="editor-actions">
+        <v-btn variant="text" :disabled="!ready || saving || draft.busy.value" @click="sourcesOpen = true">
+          {{ tm("reuse.sources") }}
+        </v-btn>
+        <v-btn v-if="publishedAsset" variant="text" :disabled="!ready || saving || draft.busy.value" @click="versionsOpen = true">
+          {{ tm("reuse.versions") }}
+        </v-btn>
         <v-btn
           variant="text"
           prepend-icon="mdi-cog-outline"
@@ -165,6 +171,18 @@
         </div>
       </aside>
     </div>
+    <WorkflowDraftSources v-if="sourcesOpen"
+      :models="catalog.models.filter((model) => model.enabled !== false && model.capabilities?.includes('tool_use'))"
+      :default-provider="form.default_provider_id"
+      @close="sourcesOpen = false"
+      @apply="form = $event; sourcesOpen = false"
+    />
+    <WorkflowVersionDialog v-if="versionsOpen && openedId"
+      :asset-id="openedId"
+      :blocked="draft.status.value === 'conflict' || draft.status.value === 'failed'"
+      :restore-version="restoreFixedVersion"
+      @close="versionsOpen = false"
+    />
     <TrialRunDialog
       v-if="trialDraft"
       v-model="trialOpen"
@@ -173,6 +191,7 @@
       kind="workflow"
       :nodes="form.tasks"
       :initial-node="selectedNode"
+      @validation-issues="showIssues"
       @started="
         router.push({ path: '/agent-teams', query: { workflow_run: $event } })
       "
@@ -197,8 +216,10 @@ import {
 import { roleAssetsApi } from "@/api/roleAssets";
 import { workflowAssetsApi } from "@/api/workflowAssets";
 import type { GraphDefinition } from "@/api/generated/openapi-v1";
-import { extractApiError } from "@/utils/extractApiError";
+import { extractApiError, type ApiErrorField } from "@/utils/extractApiError";
 import DraftStatus from "@/components/agent_teams/DraftStatus.vue";
+import WorkflowDraftSources from "@/components/agent_teams/WorkflowDraftSources.vue";
+import WorkflowVersionDialog from "@/components/agent_teams/WorkflowVersionDialog.vue";
 import WorkflowGraphCanvas from "@/components/agent_teams/WorkflowGraphCanvas.vue";
 import RunLimitsForm from "@/components/agent_teams/RunLimitsForm.vue";
 import TrialRunDialog from "@/components/agent_teams/TrialRunDialog.vue";
@@ -215,7 +236,7 @@ const invalid = ref(false);
 const usageInvalid = ref(false);
 const settingsOpen = ref(false);
 const error = ref("");
-const issues = ref<{ path: string; message: string }[]>([]);
+const issues = ref<ApiErrorField[]>([]);
 const assets = ref<any[]>([]);
 const roles = ref<any[]>([]);
 const catalog = ref<Record<string, any[]>>({
@@ -228,6 +249,9 @@ const catalog = ref<Record<string, any[]>>({
 });
 const form = ref<GraphDefinition>({ name: "", tasks: [], edges: [] });
 const openedId = ref<string | null>(null);
+const publishedAsset = computed(() => assets.value.some((asset) => asset.asset_id === openedId.value));
+const sourcesOpen = ref(false);
+const versionsOpen = ref(false);
 const teams = computed(() =>
   assets.value.filter((asset) => asset.definition.kind === "autonomous"),
 );
@@ -255,6 +279,7 @@ async function loadEditor() {
   selectedNode.value = null;
   trialDraft.value = null;
   trialOpen.value = false;
+  sourcesOpen.value = versionsOpen.value = false;
   invalid.value = false;
   draft.close();
   try {
@@ -279,6 +304,7 @@ async function loadEditor() {
         name: "",
         default_provider_id: null,
         required_inputs: ["input"],
+        port_contract_version: 1,
         result_task_id: "agent",
         max_parallel: 4,
         max_depth: 3,
@@ -331,13 +357,26 @@ watch(
 watch(
   form,
   () => {
-    if (ready.value) draft.change({ definition: form.value });
+    if (ready.value) {
+      if (issues.value.length) error.value = "";
+      issues.value = [];
+      draft.change({ definition: form.value });
+    }
   },
   { deep: true },
 );
 watch(usageInvalid, (value) => {
   if (value) settingsOpen.value = true;
 });
+
+async function restoreFixedVersion(source: number, latest: number) {
+  const restored = await draft.restoreVersion(source, latest);
+  form.value = JSON.parse(JSON.stringify(restored.body.definition));
+  editorKey.value++;
+  selectedNode.value = null;
+  error.value = "";
+  issues.value = [];
+}
 
 async function reloadDraft() {
   try {
@@ -385,6 +424,18 @@ async function openTrial() {
   }
 }
 
+function showIssues(fields: ApiErrorField[]) {
+  issues.value = fields
+    .filter((field) => !field.path.includes(".AutonomousDefinition."))
+    .map((field) => ({
+      ...field,
+      path: field.path
+        .replace(/^body\./, "")
+        .replace("definition.GraphDefinition.", "definition.")
+        .replace(/^tasks\./, "definition.tasks."),
+    }));
+}
+
 async function publish() {
   if (saving.value || invalid.value || usageInvalid.value) return;
   saving.value = true;
@@ -396,14 +447,7 @@ async function publish() {
     published = true;
   } catch (cause) {
     const failure = extractApiError(cause, tm("errors.operationFailed"));
-    issues.value = failure.fields
-      .filter((field) => !field.path.includes(".AutonomousDefinition."))
-      .map((field) => ({
-        ...field,
-        path: field.path
-          .replace(/^body\./, "")
-          .replace("definition.GraphDefinition.", "definition."),
-      }));
+    showIssues(failure.fields);
     error.value = failure.message;
   } finally {
     saving.value = false;

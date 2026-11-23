@@ -159,7 +159,9 @@ class SlackAdapter(Platform):
         else:
             abm.session_id = user_id
 
-        abm.message_id = event.get("client_msg_id", uuid.uuid4().hex)
+        abm.message_id = (
+            event.get("client_msg_id") or event.get("ts") or uuid.uuid4().hex
+        )
         abm.timestamp = int(float(event.get("ts", time.time())))
 
         # 处理消息内容

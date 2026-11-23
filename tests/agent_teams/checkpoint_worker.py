@@ -528,6 +528,13 @@ async def run_worker(
                 None after recording any matching kill boundary on the session.
             """
             for row in [*session.new, *session.dirty]:
+                if (
+                    scenario == "dispatch_commit"
+                    and isinstance(row, AgentWorkflowEvent)
+                    and row.kind == "task.running"
+                    and row.data["node_id"] == "deliver"
+                ):
+                    session.info["kill_boundary"] = row.run_id
                 if isinstance(row, AgentWorkflowUsage) and row.data["kind"] == "model" and ((scenario == "usage_reserved" and row.data["quality"] == "in_flight") or (scenario == "usage_reported" and row.data["quality"] == "reported")):
                     session.info["kill_boundary"] = row.run_id
                 if scenario.startswith("overflow") and not scenario.endswith("request") and isinstance(row, AgentWorkflowCheckpoint) and row.phase == ("tools_applied" if scenario.endswith("applied") else "tool_result") and row.data["response"]["id"] == "plan-original":
@@ -583,6 +590,29 @@ async def run_worker(
             "installation": {"profile_id": "default"},
         })
         definition = {"name": "Original report", "result_task_id": "write", "tasks": [{"id": "write", "name": "Writer", "member": "writer", "role_id": role["role_id"], "role_version": 1, "task": "Read evidence and submit a report."}], "edges": []}
+        if scenario == "dispatch_commit":
+            definition["required_inputs"] = ["topic"]
+            definition["result_task_id"] = "deliver"
+            definition["tasks"].append(
+                {
+                    **definition["tasks"][0],
+                    "id": "deliver",
+                    "name": "Deliver",
+                    "task": "Finish the report for {topic}.",
+                    "inputs": {"topic": {"input": "topic"}},
+                }
+            )
+            definition["edges"] = [{"source": "write", "target": "deliver"}]
+        if scenario in {"control_saved_receipt", "control_cancel"}:
+            definition["result_task_id"] = "deliver"
+            definition["tasks"].append(
+                {
+                    **definition["tasks"][0],
+                    "id": "deliver",
+                    "task": "Deliver without a connector.",
+                }
+            )
+            definition["edges"] = [{"source": "write", "target": "deliver"}]
         if limits is not None:
             definition["limits"] = limits
         if scenario in {"usage_reservation_failure", "usage_report_failure"}:
@@ -779,9 +809,51 @@ async def run_worker(
             await serve(app, config)
             return
         if action == "start":
-            run = await service.start_run("alice", asset["asset_id"], {"version": 1})
+            launch = {"version": 1}
+            if scenario == "dispatch_commit":
+                launch["inputs"] = {"topic": "Frozen field notes"}
+            run = await service.start_run("alice", asset["asset_id"], launch)
         else:
             run_id = json.loads((folder / "kill-ready.json").read_text(encoding="utf-8"))["run_id"]
+            if scenario == "dispatch_commit":
+                from astrbot.core.agent_teams.history import RunHistoryService
+
+                history = RunHistoryService(db, service)
+                [record] = (await history.list_records("alice"))["records"]
+                root_id = record["source"]["id"]
+                previous = await service.get_run("alice", root_id)
+                assert run_id == previous["tasks"][1]["run_id"]
+                await service.boot_sweep()
+                deadline = time.monotonic() + 15
+                while time.monotonic() < deadline:
+                    current = await service.get_run("alice", root_id)
+                    if current["status"] != "running":
+                        break
+                    await asyncio.sleep(0.02)
+                else:
+                    raise TimeoutError("Startup did not dispatch the committed task")
+                await asyncio.gather(
+                    service.sweep_pending_dispatches(),
+                    service.advance_run("alice", root_id),
+                    service.advance_run("alice", root_id),
+                )
+                [reopened] = (await history.list_records("alice"))["records"]
+                evidence = {
+                    "before": previous,
+                    "after": current,
+                    "reopened": {
+                        "source": reopened["source"],
+                        "status": reopened["status"],
+                    },
+                    "result": await service.get_result("alice", root_id),
+                    "predecessor_result": await service.get_result(
+                        "alice", previous["tasks"][0]["run_id"]
+                    ),
+                }
+                (folder / "recovered.json").write_text(
+                    json.dumps(evidence), encoding="utf-8"
+                )
+                return
             before = await service.get_run("alice", run_id)
             if scenario in {"usage_parallel", "usage_compression", "usage_shared_wait"} or scenario.startswith("usage_native_"):
                 await service.boot_sweep()
@@ -915,6 +987,76 @@ async def run_worker(
                 elif scenario == "control_retry":
                     old = before["tasks"][0]["attempts"][0]
                     await service.retry_task("alice", before["tasks"][0]["run_id"], {"request_id": "retry-control", "attempt_id": old["attempt_id"], "input_policy": "original"})
+                elif scenario.startswith("control_saved_receipt"):
+                    original = stopped["tasks"][0]
+                    attempt_id = original["state"]["attempt_id"]
+                    from fastapi import FastAPI
+
+                    from astrbot.dashboard.api.auth import require_dashboard_user
+                    from astrbot.dashboard.api.workflow_assets import router
+
+                    app = FastAPI()
+                    app.state.services = SimpleNamespace(workflow_assets=service)
+                    app.include_router(router, prefix="/api/v1")
+                    app.dependency_overrides[require_dashboard_user] = lambda: "alice"
+                    async with httpx.AsyncClient(
+                        transport=httpx.ASGITransport(app=app), base_url="http://test"
+                    ) as client:
+                        url = f"/api/v1/workflow_runs/{original['run_id']}"
+                        snapshot = (await client.get(url)).json()["data"]
+                        assert snapshot["recovery"]["has_saved_tool_results"]
+                        terminal = scenario.endswith("_terminal")
+                        assert snapshot["recovery"]["available"] is not terminal
+                        retry = await client.post(
+                            url + "/retry",
+                            json={
+                                "request_id": "unsafe-retry",
+                                "attempt_id": attempt_id,
+                                "input_policy": "original",
+                            },
+                        )
+                        assert retry.status_code == 409, retry.text
+                        retry_error = {
+                            "status": retry.status_code,
+                            "body": retry.json(),
+                        }
+                        recovered = await client.post(url + "/recover")
+                        if terminal:
+                            assert recovered.status_code == 409, recovered.text
+                            assert "cannot continue" in snapshot["recovery"]["reason"]
+                            (folder / "recovered.json").write_text(
+                                json.dumps(
+                                    {
+                                        "before": before,
+                                        "after": await service.get_run("alice", run_id),
+                                        "retry_error": retry_error,
+                                        "recovery_error": {
+                                            "status": recovered.status_code,
+                                            "message": recovered.json()["message"],
+                                        },
+                                    }
+                                ),
+                                encoding="utf-8",
+                            )
+                            return
+                        assert recovered.status_code == 200, recovered.text
+                    for _ in range(500):
+                        current = await service.get_run("alice", run_id)
+                        if current["status"] == "completed":
+                            break
+                        await asyncio.sleep(0.02)
+                    (folder / "recovered.json").write_text(
+                        json.dumps(
+                            {
+                                "before": before,
+                                "after": current,
+                                "retry_error": retry_error,
+                                "result": await service.get_result("alice", run_id),
+                            }
+                        ),
+                        encoding="utf-8",
+                    )
+                    return
                 elif scenario == "control_unknown":
                     with contextlib.suppress(RoleAssetError):
                         await service.recover_run("alice", run_id)

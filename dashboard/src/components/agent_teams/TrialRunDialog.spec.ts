@@ -104,13 +104,14 @@ describe("draft trial dialog", () => {
     });
     expect(wrapper.emitted("started")).toEqual([["trial-run"]]);
   });
-  it("selects the exact historical artifact for approval", async () => {
+  it("keeps each exact historical selection through edits and clearing", async () => {
     api.runs.mockResolvedValue({
       runs: [
         {
           snapshot: { definition: { name: "Past" } },
           artifacts: [
             { artifact_id: "report", version: 2, summary: "Revision" },
+            { artifact_id: "evidence", version: 5, summary: "Evidence" },
           ],
         },
       ],
@@ -125,9 +126,10 @@ describe("draft trial dialog", () => {
           fields: {},
           contract: null,
         },
+        evidence: { name: "Evidence", pinned_only: true, fields: {}, contract: null },
       },
     });
-    api.startTrial.mockResolvedValue({ run_id: "approval-run" });
+    api.startTrial.mockReset().mockResolvedValue({ run_id: "approval-run" });
     const wrapper = mount(TrialRunDialog, {
       props: {
         modelValue: true,
@@ -142,14 +144,18 @@ describe("draft trial dialog", () => {
     await flushPromises();
     await wrapper.get('select[aria-label="trial.scope"]').setValue("single");
     await flushPromises();
-    await wrapper
-      .get('select[aria-label="trial.history"]')
-      .setValue(JSON.stringify({ artifact_id: "report", version: 2 }));
-    await flushPromises();
-    await wrapper
-      .findAll("button")
-      .find((button) => button.text() === "trial.start")!
-      .trigger("click");
+    const options = wrapper.findAll('select[aria-label="trial.history"]');
+    const v2 = JSON.stringify({ artifact_id: "report", version: 2 });
+    const v5 = JSON.stringify({ artifact_id: "evidence", version: 5 });
+    await options[0].setValue(v2);
+    await wrapper.findAll('input[aria-label="trial.artifactVersion"]')[0].setValue("7");
+    await options[1].setValue(v5);
+    await options[1].setValue("");
+    const start = wrapper.findAll("button").find((button) => button.text() === "trial.start")!;
+    await start.trigger("click");
+    expect(api.startTrial).not.toHaveBeenCalled();
+    await options[1].setValue(v5);
+    await start.trigger("click");
     await flushPromises();
     expect(api.startTrial).toHaveBeenLastCalledWith("draft", {
       kind: "workflow",
@@ -157,7 +163,10 @@ describe("draft trial dialog", () => {
       mode: "single",
       node_id: "approval",
       inputs: {},
-      sources: { report: { artifact: { artifact_id: "report", version: 2 } } },
+      sources: {
+        report: { artifact: { artifact_id: "report", version: 7 } },
+        evidence: { artifact: { artifact_id: "evidence", version: 5 } },
+      },
     });
   });
 });

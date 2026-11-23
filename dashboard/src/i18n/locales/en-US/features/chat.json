@@ -523,6 +523,17 @@
   },
   "conversation": {
     "title": "Conversations",
+    "filter": {
+      "label": "Filter local conversations",
+      "all": "All",
+      "runs": "Run conversations",
+      "loading": "Loading run conversations…",
+      "empty": "No run conversations",
+      "error": "Couldn't load run conversations",
+      "retry": "Retry",
+      "loadingMore": "Loading more…",
+      "loadMore": "Load more"
+    },
     "newConversation": "New Conversation",
     "noHistory": "No conversation history",
     "systemStatus": "System Status",

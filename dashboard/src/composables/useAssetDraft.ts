@@ -45,11 +45,13 @@ export const draftApi = {
     id: string,
     expected_revision: number,
     published_version: number,
+    restore_version?: number,
   ): Promise<Draft> {
     return (
       await httpClient.post(`${url(kind, id)}/rebase`, {
         expected_revision,
         published_version,
+        restore_version,
       })
     ).data.data;
   },
@@ -196,6 +198,32 @@ export function useAssetDraft(kind: Kind) {
       }
     }
   }
+  async function restoreVersion(source: number, latest: number) {
+    const current = session;
+    if (!current || busy.value || status.value === "conflict" || status.value === "failed")
+      throw new Error("Draft is not saved");
+    busy.value = true;
+    try {
+      await flush();
+      if (session !== current) throw new Error("Draft session changed");
+      const restored = await draftApi.rebase(
+        kind, current.draft.asset_id, current.draft.revision, latest, source,
+      );
+      if (session !== current) throw new Error("Draft session changed");
+      const confirmed = JSON.stringify(restored.body);
+      current.draft = restored;
+      current.latest = current.confirmed = confirmed;
+      baseVersion.value = restored.base_version;
+      reviewed.value = null;
+      status.value = "saved";
+      return restored;
+    } catch (error: any) {
+      if (session === current && error?.response?.status === 409) status.value = "conflict";
+      throw error;
+    } finally {
+      if (session === current) busy.value = false;
+    }
+  }
   async function publish() {
     const current = session;
     if (!current || status.value === "failed" || status.value === "conflict")
@@ -232,6 +260,7 @@ export function useAssetDraft(kind: Kind) {
     reload,
     publish,
     reviewPublished,
+    restoreVersion,
     rebase,
     close,
   };

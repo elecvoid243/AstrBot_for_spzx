@@ -177,6 +177,8 @@ describe("bounded loop canvas", () => {
             ? [
                 { title: "approved · boolean", value: "approved" },
                 { title: "score · number", value: "score" },
+                { title: "choice · boolean|null", value: "choice", type: "boolean|null", required: true },
+                { title: "optional · string", value: "optional", type: "string", required: false },
                 { title: "text · string", value: "text" },
               ]
             : [{ title: "text · string", value: "text" }],
@@ -203,6 +205,8 @@ describe("bounded loop canvas", () => {
       title: "score · number",
       value: "score",
     });
+    expect(fields[0].props("items").map((field: { value: string }) => field.value))
+      .not.toContain("optional");
     fields[0].vm.$emit("update:modelValue", "score");
     await flushPromises();
     expect(
@@ -213,6 +217,23 @@ describe("bounded loop canvas", () => {
     expect(
       (wrapper.emitted("update:loops")!.at(-1)![0] as any)[0].feedback[0].field,
     ).toBe("approved");
+    await wrapper.setProps({
+      definition: {
+        ...definition,
+        loops: [{
+          ...definition.loops![0],
+          exit_condition: { field: "choice", operator: "eq", value: true },
+        }],
+      },
+    });
+    const valueType = wrapper.findAllComponents({ name: "VSelect" })
+      .find((item) => item.props("label") === "trial.valueType");
+    expect(valueType?.props("items")).toEqual(["boolean", "null"]);
+    valueType!.vm.$emit("update:modelValue", "null");
+    await flushPromises();
+    expect(
+      (wrapper.emitted("update:loops")!.at(-1)![0] as any)[0].exit_condition,
+    ).toEqual({ field: "choice", operator: "eq", value: null });
     wrapper.unmount();
   });
 });

@@ -99,6 +99,87 @@ describe("useSessions sidebar pagination", () => {
     expect(state.sessionsHasMore.value).toBe(false);
   });
 
+  it("requests run conversations across Dashboard pages while ChatBox keeps ordinary sessions", async () => {
+    const legacy = { ...rows(1)[0], session_id: "workflow-run-example" };
+    const run: Session = {
+      ...legacy,
+      session_type: "workflow_run",
+      run_conversation: { run_id: "example", asset_id: "asset", asset_version: 1, status: "running" },
+    };
+    vi.mocked(chatApi.listSessions)
+      .mockResolvedValueOnce(sessionsOk([legacy, ...rows(49, 1)], "snapshot:50"))
+      .mockResolvedValueOnce(sessionsOk([run]))
+      .mockResolvedValueOnce(sessionsOk([legacy]));
+    const dashboard = scope.run(() => useSessions(false, true))!;
+    const chatbox = scope.run(() => useSessions(true))!;
+
+    await dashboard.getSessions();
+    await dashboard.loadMoreSessions();
+    await chatbox.getSessions();
+
+    expect(vi.mocked(chatApi.listSessions).mock.calls.map(([params]) => params)).toEqual([
+      { cursor: "start", page_size: 50, include_run_conversations: true },
+      { cursor: "snapshot:50", page_size: 50, include_run_conversations: true },
+      { cursor: "start", page_size: 50 },
+    ]);
+    expect(dashboard.sessions.value.at(-1)).toEqual(run);
+    expect(dashboard.ordinarySessions.value[0]).toEqual(legacy);
+    expect(chatbox.sessions.value).toEqual([legacy]);
+  });
+
+  it("starts a run-only snapshot without waiting for mixed pagination", async () => {
+    const ordinary = rows(50);
+    const runs: Session[] = rows(51).map((row) => ({
+      ...row,
+      platform_id: "workflow_run",
+      session_type: "workflow_run",
+      run_conversation: { run_id: row.session_id, asset_id: "asset", asset_version: 1, status: "running" },
+    }));
+    let finishMixedPage!: (response: ReturnType<typeof sessionsOk>) => void;
+    let finishRunPage!: (response: ReturnType<typeof sessionsOk>) => void;
+    vi.mocked(chatApi.listSessions)
+      .mockResolvedValueOnce(sessionsOk(ordinary, "mixed:50"))
+      .mockReturnValueOnce(new Promise((resolve) => { finishMixedPage = resolve; }))
+      .mockResolvedValueOnce(sessionsOk(runs.slice(0, 50), "runs:50"))
+      .mockReturnValueOnce(new Promise((resolve) => { finishRunPage = resolve; }))
+      .mockResolvedValueOnce(sessionsOk(ordinary));
+    const state = scope.run(() => useSessions(false, true))!;
+    await state.getSessions();
+    state.currSessionId.value = ordinary[0].session_id;
+    const mixedPage = state.loadMoreSessions();
+    await Promise.resolve();
+
+    state.runConversationsOnly.value = true;
+    expect(state.sessions.value).toEqual([]);
+    expect(state.sessionsHasMore.value).toBe(false);
+    await vi.waitFor(() => expect(state.sessions.value).toEqual(runs.slice(0, 50)));
+    expect(state.sessionsLoadingMore.value).toBe(false);
+    const runPage = state.loadMoreSessions();
+    await Promise.resolve();
+    finishMixedPage(sessionsOk(rows(50, 50), "mixed:100"));
+    await mixedPage;
+    expect(state.sessionsLoadingMore.value).toBe(true);
+    finishRunPage(sessionsOk(runs.slice(50)));
+    await runPage;
+
+    expect(chatApi.listSessions).toHaveBeenNthCalledWith(3, {
+      cursor: "start", page_size: 50, include_run_conversations: true, platform_id: "workflow_run",
+    });
+    expect(chatApi.listSessions).toHaveBeenNthCalledWith(4, {
+      cursor: "runs:50", page_size: 50, include_run_conversations: true, platform_id: "workflow_run",
+    });
+    expect(state.sessions.value).toEqual(runs);
+    expect(state.sessionsHasMore.value).toBe(false);
+    expect(state.sessionsLoadingMore.value).toBe(false);
+    expect(state.getCurrentSession.value).toEqual(ordinary[0]);
+
+    state.runConversationsOnly.value = false;
+    await vi.waitFor(() => expect(state.sessions.value).toEqual(ordinary));
+    expect(chatApi.listSessions).toHaveBeenLastCalledWith({
+      cursor: "start", page_size: 50, include_run_conversations: true,
+    });
+  });
+
   it("refreshes the loaded rows in batches within the API limit", async () => {
     vi.mocked(chatApi.listSessions)
       .mockResolvedValueOnce(sessionsOk(rows(200), "fresh:200"))

@@ -217,6 +217,14 @@ class ChatSessionBatchDeleteRequest(OpenModel):
     session_ids: list[str]
 
 
+class ChatSessionBatchArchiveRequest(ChatSessionBatchDeleteRequest):
+    run_ids: list[str] = Field(default_factory=list)
+
+
+class RunConversationArchiveRequest(BaseModel):
+    archived: bool
+
+
 class ChatSessionPatchRequest(OpenModel):
     display_name: str | None = None
     starred: bool | None = None
@@ -331,6 +339,16 @@ class ChatHistoryRecord(OpenModel):
     content: ChatHistoryContent
 
 
+class RunConversationSummary(BaseModel):
+    """Safe metadata for a single Dashboard root run conversation."""
+
+    run_id: str
+    asset_id: str
+    asset_version: int
+    status: str
+    draft_revision: int | None = None
+
+
 class ChatSessionMetadata(BaseModel):
     session_id: str
     platform_id: str
@@ -340,6 +358,9 @@ class ChatSessionMetadata(BaseModel):
     created_at: str | None
     updated_at: str | None
     starred: bool
+    session_type: Literal["workflow_run"] | None = None
+    run_conversation: RunConversationSummary | None = None
+    archived: bool | None = None
 
 
 class ChatHistoryPage(OpenModel):

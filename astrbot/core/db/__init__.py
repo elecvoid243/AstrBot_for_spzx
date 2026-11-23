@@ -1001,6 +1001,34 @@ class BaseDatabase(abc.ABC):
         ...
 
     @abc.abstractmethod
+    async def get_mixed_chat_session_ids(
+        self,
+        creator: str,
+        platform_id: str | None,
+        *,
+        archived: bool = False,
+        search: str | None = None,
+        offset: int = 0,
+        limit: int | None = None,
+    ) -> tuple[list[str], int]:
+        """List ordered Chat and run conversation IDs for the Dashboard."""
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    async def get_run_conversations(
+        self, creator: str, run_ids: list[str], *, archived: bool | None = None
+    ) -> list[dict]:
+        """Read owned root runs and their conversation archive state."""
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    async def set_run_conversation_archived(
+        self, creator: str, run_id: str, archived: bool
+    ) -> bool:
+        """Set archive visibility if the root run belongs to the creator."""
+        raise NotImplementedError
+
+    @abc.abstractmethod
     async def get_sidebar_session_ids(
         self, creator: str, platform_id: str | None
     ) -> list[str]:

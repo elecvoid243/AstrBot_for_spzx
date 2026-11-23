@@ -61,6 +61,7 @@ describe("nested run progress", () => {
               },
               state: { scope_id: "scope-child" },
               control: { root_run_id: "root" },
+              usage: { model_calls: 7, steps_used: null },
               tasks: [child],
             },
           ],
@@ -92,6 +93,9 @@ describe("nested run progress", () => {
       expect(
         wrapper.get('[data-testid="child-scope"] summary').text(),
       ).toContain("Team call → Pinned child");
+      const scopeUsage = wrapper.get('[data-testid="child-scope-usage"]');
+      expect(scopeUsage.text()).toContain("child.modelCalls: 7");
+      expect(scopeUsage.text()).toContain("child.steps: child.unknownUsage");
       expect(wrapper.text()).toContain("child.modelCalls: 20");
     } finally {
       wrapper.unmount();

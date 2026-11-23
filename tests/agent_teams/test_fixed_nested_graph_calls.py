@@ -1,11 +1,14 @@
 """Fixed nested graph calls through the public workflow service."""
 
+from types import SimpleNamespace
+
 import pytest
 
 from astrbot.core.agent_team_execution import AgentTeamExecutionRegistry
 from astrbot.core.agent_team_tools import AgentTeamToolRegistry
 from astrbot.core.agent_teams.assets import RoleAssetError
 from astrbot.dashboard.services.agent_team_ports import TeamPorts
+from astrbot.dashboard.services.chat_service import ChatService
 from tests.agent_teams.test_workflow_assets import completed_run
 from tests.agent_teams.test_workflow_assets import workflow_env as workflow_env
 
@@ -23,6 +26,7 @@ async def test_fixed_graph_calls_reuse_and_isolate_public_results(workflow_env):
         {
             "definition": {
                 "name": "Leaf",
+                "port_contract_version": 1,
                 "required_inputs": ["value"],
                 "result_task_id": "public",
                 "tasks": [
@@ -125,6 +129,29 @@ async def test_fixed_graph_calls_reuse_and_isolate_public_results(workflow_env):
     assert all("HIDDEN" not in str(item[:2]) for item in observed.values())
     assert len({item[2].conversation_id for item in observed.values()}) == 3
     assert len(result["scopes"]) == 4
+    chat = ChatService(
+        env.service.db,
+        SimpleNamespace(
+            conversation_manager=None,
+            platform_message_history_manager=None,
+            umop_config_router=None,
+        ),
+    )
+    sidebar = await chat.get_sidebar_session_page(
+        "alice", None, 10, "start", include_run_conversations=True
+    )
+    assert [item["session_id"] for item in sidebar["items"]] == [
+        f"workflow-run-{run['run_id']}"
+    ]
+    assert await env.service.db.set_run_conversation_archived(
+        "alice", run["run_id"], True
+    )
+    archive = await chat.get_archived_sessions(
+        "alice", None, include_run_conversations=True
+    )
+    assert [item["session_id"] for item in archive["items"]] == [
+        f"workflow-run-{run['run_id']}"
+    ]
     assert result["result"]["text"] == "Leaf THREE"
     assert (
         result["result_ref"]

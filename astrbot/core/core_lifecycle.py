@@ -364,8 +364,8 @@ class AstrBotCoreLifecycle:
             )
             tasks_.append(
                 asyncio.create_task(
-                    self.workflow_service.run_human_deadlines(),
-                    name="asset_human_deadlines",
+                    self.workflow_service.run_maintenance(),
+                    name="asset_workflow_maintenance",
                 )
             )
         if cron_task:

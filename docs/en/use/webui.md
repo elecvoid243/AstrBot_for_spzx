@@ -134,6 +134,7 @@ These paths use the current default sidebar. If you customized it, open `Setting
 | Previous History tab | Agent Teams → Runs → History, showing asset runs only |
 | Legacy autonomous team sidebar / Run Monitor | Versioned autonomous assets: Assets → Teams → New Autonomous Team; Runs → View Run displays dynamic members, task relationships and complete artifacts |
 | Runs → View Run → select task → Continue the same attempt | Compatible remote executors show **Query original remote run**; built-in checkpoint recovery retains **Continue the same attempt**. The action stays in the selected task's details. |
+| Cancel run beneath the Chat run conversation heading | Chat run conversation → Inbox & artifacts → Whole run controls → Cancel run |
 | New runs only showed waiting reasons | Agent Teams → Assets → Workflows → Edit Asset configures human questions / version approval; Runs → View Run → Human requests handles answers, previews, approvals or rejection and exact-version exports |
 
 Old log, trace, conversation, and statistics URLs still redirect to the corresponding tabs. Agent runners are now saved in each profile; they are no longer created as model providers. See [Agent Runners](./agent-runner.md) for the setup steps.
@@ -833,7 +834,7 @@ Modify the `password` in the `dashboard` configuration in the data/cmd_config.js
 > [!TIP]
 > For more details, see [FAQ - Forgot Dashboard Password](/en/faq.md#forgot-dashboard-password).
 
-Workspace entry mapping: **Workflow Assets → Assets → Teams / Workflows**, **Role templates → Assets → Role templates**, **Independent Runs → Runs → All runs / In progress / Needs attention / History**. Configure versioned assets and start runs directly, without migration or legacy run checks. History displays asset runs only. See the [asset and run workspace](./agent-team-workflows.md#navigation-and-previous-entry-points) for current screenshots and controls.
+Workspace entry mapping: **Workflow Assets → Assets → Teams / Workflows**, **Role templates → Assets → Role templates**, **Independent Runs → Runs → All runs / In progress / Needs attention / History**. Configure versioned assets and start runs directly, without migration or legacy run checks. History displays asset runs only. See the [asset and run workspace](./agent-team-workflows.md#previous-entry-points) for current screenshots and controls.
 
 
 ## Skill Store

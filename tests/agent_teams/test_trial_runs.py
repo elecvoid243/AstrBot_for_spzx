@@ -48,7 +48,7 @@ async def test_trial_scope_runs_only_selected_nodes(workflow_env, mode, expected
     base = {"member": "writer", "role_id": env.role["role_id"], "role_version": 1}
     definition = {
         "name": "Trial graph",
-        "result_task_id": "b",
+        "result_task_id": "b" if mode == "full" else None,
         "tasks": [
             {**base, "id": "a", "name": "A", "task": "first"},
             {
@@ -85,11 +85,14 @@ async def test_trial_scope_runs_only_selected_nodes(workflow_env, mode, expected
 
 
 @pytest.mark.asyncio
-async def test_control_trial_uses_typed_boundary_without_result_artifact(workflow_env):
+@pytest.mark.parametrize("result_task_id", ["producer", "condition", ""])
+async def test_control_trial_uses_typed_boundary_without_result_artifact(
+    workflow_env, result_task_id
+):
     env = workflow_env
     definition = {
         "name": "Condition trial",
-        "result_task_id": "producer",
+        "result_task_id": result_task_id,
         "tasks": [
             {
                 "id": "producer",

@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import uuid
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlsplit
 
@@ -63,7 +64,9 @@ async def browser_http(chat_env, monkeypatch):
         yield client, app.state.jwt_secret
 
 
-async def send_chat_command(service, text, sender="12345", source="12345", group=False):
+async def send_chat_command(
+    service, text, sender="12345", source="12345", group=False, *, message_id=None
+):
     """Dispatch the real command with trusted platform identity and source.
 
     Args:
@@ -72,6 +75,7 @@ async def send_chat_command(service, text, sender="12345", source="12345", group
         sender: Actual OneBot sender ID.
         source: Actual private conversation ID.
         group: Use a real group event with an independently identified sender.
+        message_id: Optional stable upstream ID to simulate transport redelivery.
 
     Returns:
         The consumed platform event and externally sent messages.
@@ -89,7 +93,7 @@ async def send_chat_command(service, text, sender="12345", source="12345", group
         message.group_id = source
     message.self_id = "9999"
     message.sender = MessageMember(sender, "Caller")
-    message.message_id = "chat-browser-command"
+    message.message_id = message_id or uuid.uuid4().hex
     message.message_str = text
     message.message = [Plain(text)]
     event = AiocqhttpMessageEvent(
@@ -183,13 +187,15 @@ async def test_initiator_connects_through_returned_entry_and_answers_original_to
     ).status_code == 401
     response = await client.post(path + "/connection")
     assert response.status_code == 200
+    assert response.headers["Cache-Control"] == "no-store"
     connection = response.json()["data"]
+    assert connection["expires_in"] == 1800
     headers = {
         "X-AstrBot-Chat-Session": connection["session_id"] + "." + connection["token"]
     }
-    assert (await client.get(path + "/connection", headers=headers)).json()["data"][
-        "confirmed"
-    ] is False
+    pending = await client.get(path + "/connection", headers=headers)
+    assert pending.headers["Cache-Control"] == "no-store"
+    assert pending.json()["data"]["confirmed"] is False
     assert (await client.get(path, headers=headers)).status_code == 403
     await send_chat_command(
         service, connection["command"], sender="54321", source="54321"
@@ -204,6 +210,7 @@ async def test_initiator_connects_through_returned_entry_and_answers_original_to
     await send_chat_command(service, connection["command"])
     detail = await client.get(path, headers=headers)
     assert detail.status_code == 200
+    assert detail.headers["Cache-Control"] == "no-store"
     data = detail.json()["data"]
     assert set(data) == {
         "run_id",
@@ -260,7 +267,9 @@ async def test_initiator_connects_through_returned_entry_and_answers_original_to
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("change", ["revoke", "profile", "expiry"])
+@pytest.mark.parametrize(
+    "change", ["revoke", "revoke_in_flight", "profile", "expiry", "expiry_in_flight"]
+)
 async def test_confirmed_browser_loses_read_and_answer_access_after_source_changes(
     chat_env, browser_http, tmp_path, monkeypatch, change
 ):
@@ -270,8 +279,8 @@ async def test_confirmed_browser_loses_read_and_answer_access_after_source_chang
         chat_env: Real shared application service and SQLite.
         browser_http: Actual routes with no authenticated-owner override.
         tmp_path: Isolated configuration files.
-        monkeypatch: Moves only the external clock for the expiry scenario.
-        change: Grant revocation or a real source-profile routing update.
+        monkeypatch: Controls the expiry clock or the in-flight answer barrier.
+        change: Changes to the grant, routing, or browser connection.
     """
     from astrbot.core.astrbot_config_mgr import AstrBotConfigManager
     from astrbot.core.config import AstrBotConfig
@@ -315,7 +324,47 @@ async def test_confirmed_browser_loses_read_and_answer_access_after_source_chang
     }
     await send_chat_command(service, connection["command"])
     todo = (await client.get(path, headers=headers)).json()["data"]["todos"][0]
-    if change == "revoke":
+    todo_path = path + "/todos/" + todo["todo_id"]
+    answer = {"request_id": "denied", "action": "answer", "answer": "Unauthorized"}
+    denied_status, reason = {
+        "revoke": (403, "revoked"),
+        "revoke_in_flight": (403, "revoked"),
+        "profile": (403, "identity_mismatch"),
+        "expiry": (401, "expired"),
+        "expiry_in_flight": (401, "expired"),
+    }[change]
+    if change in {"revoke_in_flight", "expiry_in_flight"}:
+        entered = asyncio.Event()
+        released = asyncio.Event()
+        original_answer = service.answer_todo
+
+        async def answer_after_access_change(*args, **kwargs):
+            entered.set()
+            await released.wait()
+            return await original_answer(*args, **kwargs)
+
+        monkeypatch.setattr(service, "answer_todo", answer_after_access_change)
+        in_flight = asyncio.create_task(
+            client.post(todo_path + "/answer", headers=headers, json=answer)
+        )
+        try:
+            await asyncio.wait_for(entered.wait(), timeout=5)
+            if change == "revoke_in_flight":
+                await service.chat.revoke_access(
+                    "operator", asset["asset_id"], caller.platform_id, caller.sender_id
+                )
+            else:
+                monkeypatch.setattr(
+                    "astrbot.core.agent_teams.chat.time.time",
+                    lambda: connection["expires_at"] + 1,
+                )
+        finally:
+            released.set()
+            response = await asyncio.wait_for(in_flight, timeout=5)
+        assert response.status_code == denied_status
+        assert response.headers["Cache-Control"] == "no-store"
+        assert response.headers["X-AstrBot-Chat-Access-Error"] == reason
+    elif change == "revoke":
         await service.chat.revoke_access(
             "operator", asset["asset_id"], caller.platform_id, caller.sender_id
         )
@@ -338,21 +387,26 @@ async def test_confirmed_browser_loses_read_and_answer_access_after_source_chang
             "astrbot.core.agent_teams.chat.time.time",
             lambda: connection["expires_at"] + 1,
         )
-    denied_status = 401 if change == "expiry" else 403
-    assert (await client.get(path, headers=headers)).status_code == denied_status
-    assert (
-        await client.get(path + "/result/files/unknown", headers=headers)
-    ).status_code == denied_status
-    assert (
-        await client.post(
-            path + "/todos/" + todo["todo_id"] + "/answer",
-            headers=headers,
-            json={"request_id": "denied", "action": "answer", "answer": "Unauthorized"},
-        )
-    ).status_code == denied_status
+    for url in [
+        path + "/connection",
+        path,
+        todo_path + "/artifact",
+        todo_path + "/artifact/files/unknown",
+        path + "/result/files/unknown",
+    ]:
+        response = await client.get(url, headers=headers)
+        assert response.status_code == denied_status
+        assert response.headers["Cache-Control"] == "no-store"
+        assert response.headers["X-AstrBot-Chat-Access-Error"] == reason
+    response = await client.post(todo_path + "/answer", headers=headers, json=answer)
+    assert response.status_code == denied_status
+    assert response.headers["Cache-Control"] == "no-store"
+    assert response.headers["X-AstrBot-Chat-Access-Error"] == reason
     original = await service.get_run("operator", run["run_id"])
     assert original["todos"][0]["todo_id"] == todo["todo_id"]
     assert original["todos"][0]["status"] == "pending"
+    assert original["todos"][0]["response"] is None
+    assert not any(event["kind"] == "human.answered" for event in original["events"])
     if change == "profile":
         await preferences.close()
 
@@ -445,6 +499,7 @@ async def test_browser_previews_only_the_version_named_by_its_approval_request(
     preview_path = path + "/todos/" + todo["todo_id"] + "/artifact"
     preview = await client.get(preview_path, headers=headers)
     assert preview.status_code == 200
+    assert preview.headers["Cache-Control"] == "no-store"
     assert preview.json()["data"]["version"] == 1
     assert preview.json()["data"]["content"] == {"text": "Verified final report."}
     assert "UNAPPROVED_OTHER_VERSION" not in preview.text
@@ -545,22 +600,21 @@ async def test_other_authorized_group_sender_cannot_connect_or_read_the_initiato
             + connection["token"]
         }
         if not accepted:
-            await send_chat_command(
-                service,
-                connection["command"],
-                sender="54321",
-                source="88888",
-                group=True,
-            )
-            assert (await client.get(path, headers=headers)).status_code == 403
-            await send_chat_command(
-                service,
-                connection["command"],
-                sender="12345",
-                source="99999",
-                group=True,
-            )
-            assert (await client.get(path, headers=headers)).status_code == 403
+            for sender, source in [("54321", "88888"), ("12345", "99999")]:
+                _, messages = await send_chat_command(
+                    service,
+                    connection["command"],
+                    sender=sender,
+                    source=source,
+                    group=True,
+                )
+                assert (
+                    "initiating sender in the original chat"
+                    in (messages[0]["message"][0]["data"]["text"])
+                )
+                status = await client.get(path + "/connection", headers=headers)
+                assert status.json()["data"] == {"confirmed": False}
+                assert (await client.get(path, headers=headers)).status_code == 403
         await send_chat_command(
             service,
             connection["command"],
@@ -572,7 +626,9 @@ async def test_other_authorized_group_sender_cannot_connect_or_read_the_initiato
         accepted.append((run["run_id"], headers))
     first_path = "/api/v1/workflow_chat_runs/" + accepted[0][0]
     first = (await client.get(first_path, headers=accepted[0][1])).json()["data"]
-    assert (await client.get(first_path, headers=accepted[1][1])).status_code == 404
+    denied = await client.get(first_path, headers=accepted[1][1])
+    assert denied.status_code == 404
+    assert denied.headers["X-AstrBot-Chat-Access-Error"] == "identity_mismatch"
     assert (
         await client.post(
             first_path + "/todos/" + first["todos"][0]["todo_id"] + "/answer",

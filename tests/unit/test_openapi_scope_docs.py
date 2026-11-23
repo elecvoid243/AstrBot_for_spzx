@@ -26,6 +26,15 @@ def test_public_openapi_is_filtered_by_supported_scope() -> None:
     assert "/api/v1/conversations" in spec["paths"]
     assert spec["paths"]["/api/v1/conversations"]["get"]["x-astrbot-scope"] == "data"
     assert "/api/v1/commands" not in spec["paths"]
+    assert (
+        spec["paths"]["/api/v1/workflows/{asset_id}/runs"]["post"]["x-astrbot-scope"]
+        == "workflow"
+    )
+    assert (
+        spec["paths"]["/api/v1/workflows/runs/{run_id}"]["get"]["x-astrbot-scope"]
+        == "workflow"
+    )
+    assert "/api/v1/workflow_assets/{asset_id}/api_access/{key_id}" not in spec["paths"]
     assert "/api/v1/files/tokens/{file_token}" not in spec["paths"]
     assert "/api/v1/stats/versions" not in spec["paths"]
 
@@ -49,17 +58,51 @@ def test_public_openapi_documents_sensitive_subscopes() -> None:
     assert "`config:edit_admin`" in system_config_update["description"]
 
 
-def test_agent_teams_remain_documented_as_dashboard_only() -> None:
+def test_workflow_management_remains_dashboard_only() -> None:
     spec = load_yaml(SPEC_PATH)
     public_spec = filter_public_openapi(spec)
-
-    assert "/api/v1/agent_teams" in spec["paths"]
-    assert "AgentTeamRunStartPayload" in spec["components"]["schemas"]
-    for path, methods in spec["paths"].items():
-        if path.startswith("/api/v1/agent_teams"):
-            for operation in methods.values():
-                assert "x-astrbot-scope" not in operation
-            assert path not in public_spec["paths"]
+    management_prefixes = (
+        "/api/v1/workflow_assets",
+        "/api/v1/workflow_components",
+        "/api/v1/workflow_runs",
+        "/api/v1/chat/run-conversations",
+    )
+    dashboard_paths = [
+        path for path in spec["paths"] if path.startswith(management_prefixes)
+    ]
+    assert {
+        "/api/v1/workflow_assets/{asset_id}/runs",
+        "/api/v1/workflow_assets/{asset_id}/api_access/{key_id}",
+        "/api/v1/workflow_assets/{asset_id}/chat_access",
+        "/api/v1/workflow_runs/{run_id}",
+        "/api/v1/chat/run-conversations/{run_id}",
+    } <= set(dashboard_paths)
+    for path in dashboard_paths:
+        assert path not in public_spec["paths"]
+        assert all(
+            "x-astrbot-scope" not in operation
+            for method, operation in spec["paths"][path].items()
+            if method in {"get", "post", "put", "delete", "patch"}
+        )
+    grant = spec["paths"]["/api/v1/workflow_assets/{asset_id}/api_access/{key_id}"]
+    assert (
+        grant["put"]["security"] == grant["delete"]["security"] == [{"BearerAuth": []}]
+    )
+    for path, method in (
+        ("/api/v1/workflow_assets/generate_draft", "post"),
+        ("/api/v1/workflow_components", "get"),
+        ("/api/v1/workflow_runs/{run_id}/rerun", "post"),
+    ):
+        assert spec["paths"][path][method]["security"] == [{"BearerAuth": []}]
+    assert "workflow" in spec["info"]["description"]
+    assert {
+        path
+        for path, operations in public_spec["paths"].items()
+        if any(
+            operation["x-astrbot-scope"] == "workflow"
+            for operation in operations.values()
+        )
+    } == {"/api/v1/workflows/{asset_id}/runs", "/api/v1/workflows/runs/{run_id}"}
 
 
 def test_scope_reference_lists_every_supported_scope() -> None:

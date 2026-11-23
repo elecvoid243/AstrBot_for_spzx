@@ -80,3 +80,35 @@ it("associates each actual context with its delivery receipt", () => {
   expect(cards[1].text()).toContain("Parameter request");
   expect(cards[1].text()).toContain("progress.contextStages.parameters");
 });
+
+it("shows execution cleanup failures in the workbench event details", async () => {
+  const wrapper = mount(WorkflowRunProcess, {
+    props: {
+      run: {
+        state: {},
+        status: "completed",
+        cursor: 12,
+        events: [
+          {
+            cursor: 12,
+            kind: "task.cleanup_failed",
+            data: {
+              attempt_id: "attempt-1",
+              reason: "Execution subscription cleanup failed",
+            },
+          },
+        ],
+      },
+    },
+    global: { stubs: { "v-btn": true } },
+  });
+  const events = wrapper.findAll("details").find((section) =>
+    section.get("summary").text().includes("progress.events"),
+  );
+  expect(events?.get("summary").text()).toContain("12");
+  await events?.get("summary").trigger("click");
+  expect(events?.get("pre").text()).toContain(
+    "Execution subscription cleanup failed",
+  );
+  wrapper.unmount();
+});

@@ -125,6 +125,7 @@ def test_workflow_and_team_drafts_publish_pinned_versions(tmp_path):
         definitions = {
             "workflow": {
                 "name": "Flow",
+                "result_task_id": "writer",
                 "required_inputs": ["topic"],
                 "tasks": [
                     {

@@ -214,18 +214,32 @@ async def test_export_preserves_inherited_knowledge_without_expanding_source_def
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("port_contract_version", [None, 1])
 async def test_different_instance_requires_explicit_selection_before_install(
-    workflow_env, tmp_path
+    workflow_env, tmp_path, port_contract_version
 ):
     """Explicitly select compatible resources, then execute through normal ports.
 
     Args:
         workflow_env: Source public services and controlled execution ports.
         tmp_path: Separate target database directory.
+        port_contract_version: Legacy or typed text workflow definition.
     """
     env = workflow_env
     env.inventory["models"][0]["fingerprint"] = "same-source"
-    package = await env.service.export_asset("alice", env.asset["asset_id"], 1)
+    asset = await env.service.save_asset(
+        "alice",
+        {
+            "definition": {
+                **env.asset["definition"],
+                "port_contract_version": port_contract_version,
+            }
+        },
+    )
+    package = await env.service.export_asset("alice", asset["asset_id"], 1)
+    assert package["definition"].get("port_contract_version") == port_contract_version
+    if port_contract_version is None:
+        assert "port_contract_version" not in package["definition"]
     catalog = copy.deepcopy(env.inventory)
     catalog["profiles"][0]["id"] = "target-profile"
     catalog["models"][0]["id"] = "target-model"
@@ -248,6 +262,10 @@ async def test_different_instance_requires_explicit_selection_before_install(
         payload = {"package": package, "selections": choices}
         assert (await service.preview_import("bob", payload))["ready"]
         installed = await service.import_asset("bob", payload)
+        assert (
+            installed["asset"]["definition"].get("port_contract_version")
+            == port_contract_version
+        )
         run = await service.start_run(
             "bob", installed["asset"]["asset_id"], {"version": 1}
         )
@@ -289,7 +307,16 @@ async def test_unselected_resources_cannot_create_pending_assets(workflow_env):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "change", ["version", "reference", "contract", "extra", "dependency", "legacy_slot"]
+    "change",
+    [
+        "version",
+        "reference",
+        "contract",
+        "extra",
+        "dependency",
+        "legacy_slot",
+        "unreachable_ports",
+    ],
 )
 async def test_invalid_packages_create_neither_assets_nor_roles(workflow_env, change):
     """Reject malformed packages before writing any target assets.
@@ -317,12 +344,23 @@ async def test_invalid_packages_create_neither_assets_nor_roles(workflow_env, ch
         package["script"] = "install-plugin"
     elif change == "dependency":
         package["requirements"] = []
+    elif change == "unreachable_ports":
+        definition = package["definition"]
+        definition["port_contract_version"] = 1
+        definition["tasks"].append(
+            {"id": "gate", "name": "Gate", "control": {"kind": "join"}}
+        )
+        definition["edges"] = [{"source": "gate", "target": "writer"}]
     else:
         package["requirements"][0]["slot"] = "old-slot"
-    with pytest.raises(RoleAssetError):
+    with pytest.raises(RoleAssetError) as exc_info:
         await env.service.import_asset(
             "bob", {"package": package, "selections": selections}
         )
+    if change == "unreachable_ports":
+        assert [(issue["path"], issue["code"]) for issue in exc_info.value.fields] == [
+            ("definition.result_task_id", "UNREACHABLE")
+        ]
     assert (await env.service.list_assets("bob"))["assets"] == []
     assert (await env.roles.list_roles("bob"))["roles"] == []
     assert (await env.service.list_runs("bob"))["runs"] == []

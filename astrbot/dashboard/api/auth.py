@@ -55,6 +55,11 @@ class AuthContext:
     role: str | None = None
 
 
+def can_access_run_conversations(auth: AuthContext) -> bool:
+    """Match the Dashboard run workbench's credential and account requirements."""
+    return auth.via == "jwt" and auth.role == "admin"
+
+
 @dataclass(frozen=True)
 class ScopeDependency:
     """Authenticate a request and expose its API key scope to OpenAPI."""

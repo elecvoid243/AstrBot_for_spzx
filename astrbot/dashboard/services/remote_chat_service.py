@@ -26,6 +26,10 @@ from astrbot.core.db.po import (
     RemoteChatConnection,
     RemoteChatCredential,
     RemoteChatExposure,
+    WebChatSubagentRun,
+)
+from astrbot.core.platform.sources.webchat.message_parts_helper import (
+    message_part_attachment_ids,
 )
 from astrbot.dashboard.responses import ApiError
 from astrbot.dashboard.services.chat_service import ChatService, ChatServiceError
@@ -810,8 +814,7 @@ class RemoteChatService:
             for record in records:
                 content = record.content if isinstance(record.content, dict) else {}
                 if any(
-                    isinstance(part, dict)
-                    and part.get("attachment_id") == attachment_id
+                    attachment_id in message_part_attachment_ids(part)
                     for part in content.get("message", [])
                 ):
                     allowed = True
@@ -821,12 +824,23 @@ class RemoteChatService:
             page += 1
         if not allowed:
             allowed = any(
-                isinstance(part, dict) and part.get("attachment_id") == attachment_id
+                attachment_id in message_part_attachment_ids(part)
                 for run in self.chat.get_active_chat_runs(
                     account.resource_owner, session_id
                 )
                 for part in run.get("content", {}).get("message", [])
             )
+        if not allowed:
+            async with self.db.get_db() as connection:
+                traces = await connection.execute(
+                    select(WebChatSubagentRun.data).where(
+                        WebChatSubagentRun.session_id == session_id
+                    )
+                )
+                allowed = any(
+                    attachment_id in message_part_attachment_ids(trace)
+                    for trace in traces.scalars()
+                )
         attachment = (
             await self.db.get_attachment_by_id(attachment_id) if allowed else None
         )

@@ -266,6 +266,7 @@
     "providerConfig": "Настройки AI",
     "toolsUsed": "Использованные инструменты",
     "toolCallUsed": "Использован инструмент {name}",
+    "toolCallViewedImage": "Изображение просмотрено",
     "pythonCodeAnalysis": "Использован анализ кода Python",
     "spcodeTool": {
       "codeCheck": "Проверка кода",

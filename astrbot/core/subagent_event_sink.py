@@ -164,6 +164,16 @@ class SubAgentEventSink:
                             "result": str(result)[:TOOL_RESULT_MAX_CHARS]
                             if result is not None
                             else "",
+                            **(
+                                {
+                                    "name": comp.data.get("name"),
+                                    "image_attachment_ids": comp.data[
+                                        "image_attachment_ids"
+                                    ],
+                                }
+                                if comp.data.get("image_attachment_ids")
+                                else {}
+                            ),
                         },
                     )
                     break

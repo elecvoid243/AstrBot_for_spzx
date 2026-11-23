@@ -83,6 +83,9 @@ from astrbot.core.pipeline.llm_request_trace import (
     read_injections,
     record_team_source,
 )
+from astrbot.core.platform.sources.webchat.message_parts_helper import (
+    save_tool_image_attachment,
+)
 from astrbot.core.provider.entities import (
     LLMResponse,
     ProviderRequest,
@@ -4491,6 +4494,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             # the last chunk.
             snapshot_result_chunks: list[str] = []
             snapshot_result_ref: str | None = None
+            read_images: list[ImageContent] = []
             try:
                 if not req.func_tool:
                     return
@@ -4771,6 +4775,11 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                                     content_item, func_tool_id, func_tool_name, index
                                 )
                                 assert cached_img is not None
+                                if (
+                                    func_tool_name == "astrbot_file_read_tool"
+                                    and not res.isError
+                                ):
+                                    read_images.append(content_item)
                                 result_parts.append(
                                     self.TOOL_IMAGE_NOTICE_TEMPLATE.format(
                                         file_path=cached_img.file_path
@@ -5072,6 +5081,14 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
 
             if len(tool_call_result_blocks) > tool_result_blocks_start:
                 tool_result_content = str(tool_call_result_blocks[-1].content)
+                image_attachment_ids = []
+                if not tool_failed:
+                    for image in read_images:
+                        attachment_id = await save_tool_image_attachment(
+                            image.data, image.mimeType
+                        )
+                        if attachment_id:
+                            image_attachment_ids.append(attachment_id)
                 yield _HandleFunctionToolsResult.from_message_chain(
                     MessageChain(
                         type="tool_call_result",
@@ -5081,6 +5098,14 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                                     "id": func_tool_id,
                                     "ts": time.time(),
                                     "result": tool_result_content,
+                                    **(
+                                        {
+                                            "name": func_tool_name,
+                                            "image_attachment_ids": image_attachment_ids,
+                                        }
+                                        if image_attachment_ids
+                                        else {}
+                                    ),
                                 }
                             )
                         ],

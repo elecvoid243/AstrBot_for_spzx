@@ -299,6 +299,7 @@
     "providerConfig": "Model Configuration",
     "toolsUsed": "Tool Used",
     "toolCallUsed": "Used {name} tool",
+    "toolCallViewedImage": "Viewed image",
     "pythonCodeAnalysis": "Python Code Analysis Used",
     "spcodeTool": {
       "codeCheck": "Code Check",

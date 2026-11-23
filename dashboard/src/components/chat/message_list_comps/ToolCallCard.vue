@@ -1,9 +1,18 @@
 <template>
   <div class="tool-call-card" :class="{ expanded: isExpanded }">
-    <button class="tool-call-header" type="button" @click="toggleExpanded">
+    <button
+      class="tool-call-header"
+      type="button"
+      :aria-expanded="isExpanded"
+      @click="toggleExpanded"
+    >
       <v-icon size="16" class="tool-call-icon">{{ toolCallIcon }}</v-icon>
       <span class="tool-call-title">
-        {{ tm("actions.toolCallUsed", { name: displayToolName }) }}
+        {{
+          imageAttachmentIds.length
+            ? tm("actions.toolCallViewedImage")
+            : tm("actions.toolCallUsed", { name: displayToolName })
+        }}
       </span>
       <span class="tool-call-duration">{{ toolCallDuration }}</span>
       <v-icon
@@ -15,8 +24,18 @@
       </v-icon>
     </button>
 
+    <div v-if="imageAttachmentIds.length" class="tool-call-images">
+      <ToolCallImage
+        v-for="id in imageAttachmentIds"
+        :key="id"
+        :attachment-id="id"
+        :filename="imageFilename"
+        :inert="inert"
+      />
+    </div>
+
     <div
-      v-if="!isExpanded && collapsedResultPreview"
+      v-else-if="!isExpanded && collapsedResultPreview"
       class="tool-call-result-preview"
     >
       {{ collapsedResultPreview }}
@@ -169,6 +188,7 @@ import {
 } from "@/utils/fileChangeTool";
 import DiffPreview from "./DiffPreview.vue";
 import ToolResultView from "./ToolResultView.vue";
+import ToolCallImage from "./ToolCallImage.vue";
 import CopyableText from "./__shared__/CopyableText.vue";
 import { SPCODE_ICONS } from "./spcode_tools/icons";
 import {
@@ -250,10 +270,23 @@ const elapsedTime = computed(() => {
   return formatDuration(currentTime.value - startTime);
 });
 
+const imageAttachmentIds = computed(() => {
+  const ids = props.toolCall.image_attachment_ids;
+  if (props.toolCall.name !== "astrbot_file_read_tool" || !Array.isArray(ids)) {
+    return [];
+  }
+  return ids.filter((id) => typeof id === "string" && id);
+});
+const imageFilename = computed(() => {
+  const path = props.toolCall.args?.path;
+  return typeof path === "string" ? path.split(/[\\/]/).pop() || "" : "";
+});
+
 // ── Icons ─────────────────────────────────────────────────────
 
 const toolCallIcon = computed(() => {
   const name = String(props.toolCall.name || "");
+  if (imageAttachmentIds.value.length) return "mdi-image-outline";
   if (name === "astrbot_file_read_tool") return "mdi-file-document-outline";
   if (name === "astrbot_file_write_tool") return "mdi-content-save-outline";
   if (name === "astrbot_file_edit_tool") return "mdi-file-document-edit-outline";
@@ -554,6 +587,13 @@ onUnmounted(() => {
   font-size: 11px;
   line-height: 1.5;
   color: rgba(var(--v-theme-on-surface), 0.5);
+}
+
+.tool-call-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 4px 0 0 24px;
 }
 
 .tool-result-status {

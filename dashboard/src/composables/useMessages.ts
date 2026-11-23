@@ -230,6 +230,7 @@ export interface ToolCall {
   name?: string;
   arguments?: unknown;
   result?: unknown;
+  image_attachment_ids?: string[];
   ts?: number;
   finished_ts?: number;
   [key: string]: unknown;
@@ -3963,6 +3964,9 @@ export function finishToolCall(record: ChatRecord, result: any) {
       if (result.result !== undefined) tool.result = result.result;
       if (result.result_ref) tool.result_ref = result.result_ref;
       if (result.result_preview) tool.result_preview = result.result_preview;
+      if (Array.isArray(result.image_attachment_ids)) {
+        tool.image_attachment_ids = result.image_attachment_ids;
+      }
       tool.finished_ts = result.ts || Date.now() / 1000;
       return;
     }
@@ -3972,6 +3976,9 @@ export function finishToolCall(record: ChatRecord, result: any) {
     tool_calls: [
       {
         id: targetId,
+        ...(Array.isArray(result.image_attachment_ids)
+          ? { name: result.name, image_attachment_ids: result.image_attachment_ids }
+          : {}),
         result: result.result,
         ...(result.result_ref ? { result_ref: result.result_ref } : {}),
         ...(result.result_preview

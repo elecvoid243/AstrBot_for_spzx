@@ -11,6 +11,7 @@ export interface SubAgentToolCall {
   name?: string;
   args?: Record<string, unknown>;
   result?: string;
+  image_attachment_ids?: string[];
   [key: string]: unknown;
 }
 
@@ -129,6 +130,9 @@ export function applySubAgentEvent(parts: MessagePart[], data: unknown): void {
     const existing = part.tool_calls.find((t) => t.id === callId);
     if (existing) {
       existing.result = String(payload.result ?? "");
+      if (Array.isArray(payload.image_attachment_ids)) {
+        existing.image_attachment_ids = payload.image_attachment_ids;
+      }
       if (event.ts != null) existing.finished_ts = event.ts;
     } else if (callId != null) {
       const call = { ...payload } as SubAgentToolCall;

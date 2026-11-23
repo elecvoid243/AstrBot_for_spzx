@@ -1,10 +1,15 @@
+import asyncio
+import base64
 import json
 import mimetypes
 import shutil
+import uuid
 from collections.abc import Awaitable, Callable, Sequence
+from contextlib import suppress
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from astrbot import logger
 from astrbot.core.db.po import Attachment
 from astrbot.core.message.components import (
     File,
@@ -16,8 +21,10 @@ from astrbot.core.message.components import (
     Video,
 )
 from astrbot.core.message.message_event_result import MessageChain
+from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 from astrbot.core.utils.datetime_utils import generate_timestamp_id
 from astrbot.core.utils.media_utils import MediaResolver
+from astrbot.core.utils.webchat_access import webchat_resource_owner
 
 AttachmentGetter = Callable[[str], Awaitable[Attachment | None]]
 AttachmentInserter = Callable[[str, str, str], Awaitable[Attachment | None]]
@@ -355,6 +362,63 @@ async def build_message_chain_from_payload(
     return MessageChain(chain=components)
 
 
+def message_part_attachment_ids(part: object) -> list[str]:
+    """Collect direct and tool-result attachment references from a message part.
+
+    Args:
+        part: Stored or live WebChat message part.
+
+    Returns:
+        Attachment IDs associated with the part.
+    """
+    if not isinstance(part, dict):
+        return []
+    attachment_id = part.get("attachment_id")
+    ids = [attachment_id] if isinstance(attachment_id, str) else []
+    if part.get("type") in {"tool_call", "subagent_run"}:
+        calls = part.get("tool_calls")
+        for call in calls if isinstance(calls, list) else []:
+            images = (
+                call.get("image_attachment_ids") if isinstance(call, dict) else None
+            )
+            if isinstance(images, list):
+                ids.extend(image_id for image_id in images if isinstance(image_id, str))
+    return ids
+
+
+async def save_tool_image_attachment(data: str, mime_type: str) -> str | None:
+    """Save the image observed by a WebChat agent as an owned attachment.
+
+    Args:
+        data: Base64 image bytes returned by the file read tool.
+        mime_type: MIME type of those bytes.
+
+    Returns:
+        The attachment ID, if the image could be saved for the current account.
+    """
+    from astrbot.core import db_helper
+
+    suffix = {"image/jpeg": ".jpg", "image/png": ".png"}.get(mime_type)
+    if suffix is None or webchat_resource_owner.get() is None:
+        return None
+
+    directory = Path(get_astrbot_data_path()) / "attachments"
+    target = directory / f"tool-image-{uuid.uuid4().hex}{suffix}"
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        await asyncio.to_thread(
+            target.write_bytes, base64.b64decode(data, validate=True)
+        )
+        attachment = await db_helper.insert_attachment(str(target), "image", mime_type)
+        if attachment:
+            return attachment.attachment_id
+    except Exception as exc:
+        logger.warning(f"Failed to save tool image preview: {exc}")
+    with suppress(OSError):
+        target.unlink(missing_ok=True)
+    return None
+
+
 async def create_attachment_part_from_existing_file(
     filename: str,
     *,
@@ -411,6 +475,13 @@ async def message_chain_to_storage_message_parts(
         if isinstance(comp, Json):
             if message_chain.type == "reasoning_loop" and isinstance(comp.data, dict):
                 parts.append({**comp.data, "type": "reasoning_loop"})
+            elif (
+                message_chain.type == "tool_call_result"
+                and isinstance(comp.data, dict)
+                and comp.data.get("image_attachment_ids")
+            ):
+                tool_call = {**comp.data, "finished_ts": comp.data["ts"]}
+                parts.append({"type": "tool_call", "tool_calls": [tool_call]})
             else:
                 parts.append(
                     {"type": "plain", "text": json.dumps(comp.data, ensure_ascii=False)}

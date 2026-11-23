@@ -1194,6 +1194,29 @@ class SessionTransferService:
                         part.pop("stored_filename", None)
                         part.pop("url", None)
                         part.pop("path", None)
+                    if part.get("type") in ("tool_call", "subagent_run"):
+                        calls = part.get("tool_calls")
+                        activity = part.get("activity")
+                        for call in [
+                            *(calls if isinstance(calls, list) else []),
+                            *(
+                                item.get("call")
+                                for item in (
+                                    activity if isinstance(activity, list) else []
+                                )
+                                if isinstance(item, dict)
+                                and item.get("kind") == "tool_call"
+                            ),
+                        ]:
+                            if isinstance(call, dict) and isinstance(
+                                images := call.get("image_attachment_ids"), list
+                            ):
+                                call["image_attachment_ids"] = [
+                                    attachment_map[image_id]
+                                    for image_id in images
+                                    if isinstance(image_id, str)
+                                    and image_id in attachment_map
+                                ]
                     parts.append(part)
                 if isinstance(content.get("message"), list):
                     content["message"] = parts

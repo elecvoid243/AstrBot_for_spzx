@@ -1866,16 +1866,32 @@ class SQLiteDatabase(BaseDatabase):
                 parts = func.json_each(
                     PlatformMessageHistory.content, "$.message"
                 ).table_valued("value", "type", joins_implicitly=True)
+                part = case((parts.c.type == "object", parts.c.value), else_="{}")
+                calls = func.json_each(part, "$.tool_calls").table_valued(
+                    "value", "type", joins_implicitly=True
+                )
+                call = case((calls.c.type == "object", calls.c.value), else_="{}")
+                images = func.json_each(call, "$.image_attachment_ids").table_valued(
+                    "value", joins_implicitly=True
+                )
+                retained_tool_image = (
+                    select(1)
+                    .select_from(calls)
+                    .select_from(images)
+                    .where(images.c.value == Attachment.attachment_id)
+                    .correlate(parts, Attachment)
+                    .exists()
+                )
                 retained = (
                     select(1)
                     .select_from(PlatformMessageHistory)
                     .select_from(parts)
                     .where(
-                        func.json_extract(
-                            case((parts.c.type == "object", parts.c.value), else_="{}"),
-                            "$.attachment_id",
-                        )
-                        == Attachment.attachment_id,
+                        or_(
+                            func.json_extract(part, "$.attachment_id")
+                            == Attachment.attachment_id,
+                            retained_tool_image,
+                        ),
                         or_(
                             (PlatformMessageHistory.platform_id == "webchat_thread")
                             & col(PlatformMessageHistory.user_id).in_(threads),

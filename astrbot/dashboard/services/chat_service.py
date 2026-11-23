@@ -41,6 +41,7 @@ from astrbot.core.platform.message_type import MessageType
 from astrbot.core.platform.sources.webchat.message_parts_helper import (
     build_webchat_message_parts,
     create_attachment_part_from_existing_file,
+    message_part_attachment_ids,
     strip_message_parts_path_fields,
     webchat_message_parts_have_content,
 )
@@ -748,6 +749,8 @@ class BotMessageAccumulator:
             )
             if existing:
                 existing["result"] = payload.get("result", "")
+                if payload.get("image_attachment_ids"):
+                    existing["image_attachment_ids"] = payload["image_attachment_ids"]
                 if data.get("ts") is not None:
                     existing["finished_ts"] = data["ts"]
             elif call_id is not None:
@@ -895,6 +898,9 @@ class BotMessageAccumulator:
         }
         tool_call["result"] = tool_result.get("result")
         tool_call["finished_ts"] = tool_result.get("ts")
+        if tool_result.get("image_attachment_ids"):
+            tool_call.setdefault("name", tool_result.get("name"))
+            tool_call["image_attachment_ids"] = tool_result["image_attachment_ids"]
         self.parts.append({"type": "tool_call", "tool_calls": [tool_call]})
 
     # Author: elecvoid243
@@ -1285,8 +1291,7 @@ def extract_attachment_ids(history_list) -> list[str]:
             continue
         message_parts = content.get("message", [])
         for part in message_parts:
-            if isinstance(part, dict) and "attachment_id" in part:
-                attachment_ids.append(part["attachment_id"])
+            attachment_ids.extend(message_part_attachment_ids(part))
     return attachment_ids
 
 
@@ -2093,19 +2098,21 @@ class ChatService:
                 offset_sec=99999999,
             )
             attachment_ids = extract_attachment_ids(history)
-            if attachment_ids:
-                principal = dashboard_account_context.get()
-                await self.delete_attachments(
-                    attachment_ids,
-                    owner=principal.resource_owner if principal is not None else None,
-                )
             webchat_queue_mgr.remove_queues(thread_id)
             self.running_convs.pop(thread_id, None)
             from astrbot.core.subagent_manager import SubAgentManager
             from astrbot.core.subagent_progress import subagent_progress
 
             await SubAgentManager.cleanup_session(unified_msg_origin)
-            await subagent_progress.delete_session(thread_id, db=self.db)
+            attachment_ids.extend(
+                await subagent_progress.delete_session(thread_id, db=self.db)
+            )
+            if attachment_ids:
+                principal = dashboard_account_context.get()
+                await self.delete_attachments(
+                    attachment_ids,
+                    owner=principal.resource_owner if principal is not None else None,
+                )
             await self.db.delete_webchat_thread(thread_id)
 
     async def load_current_conversation_history(self, session) -> tuple[str, list]:
@@ -5092,13 +5099,6 @@ class ChatService:
             [thread.thread_id for thread in threads], username
         )
 
-        if attachment_ids:
-            principal = dashboard_account_context.get()
-            await self.delete_attachments(
-                attachment_ids,
-                owner=principal.resource_owner if principal is not None else None,
-            )
-
         try:
             await self.umop_config_router.delete_route(unified_msg_origin)
         except ValueError as exc:
@@ -5114,7 +5114,16 @@ class ChatService:
             from astrbot.core.subagent_progress import subagent_progress
 
             await SubAgentManager.cleanup_session(unified_msg_origin)
-            await subagent_progress.delete_session(session_id, db=self.db)
+            attachment_ids.extend(
+                await subagent_progress.delete_session(session_id, db=self.db)
+            )
+
+        if attachment_ids:
+            principal = dashboard_account_context.get()
+            await self.delete_attachments(
+                attachment_ids,
+                owner=principal.resource_owner if principal is not None else None,
+            )
 
         await self.db.remove_preference(
             "webchat_session", session_id, "model_selection"

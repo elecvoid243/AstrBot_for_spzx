@@ -213,6 +213,7 @@
     "providerConfig": "モデル設定",
     "toolsUsed": "使用したツール",
     "toolCallUsed": "{name} ツールを使用しました",
+    "toolCallViewedImage": "画像を確認しました",
     "pythonCodeAnalysis": "Python コード分析を使用しました"
   },
   "ipython": {

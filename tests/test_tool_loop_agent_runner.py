@@ -1034,15 +1034,23 @@ async def test_hooks_called_with_max_step(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("tool_name", ["test_tool", "astrbot_file_read_tool"])
 async def test_tool_result_includes_all_calltoolresult_content(
-    runner, mock_provider, provider_request, mock_hooks, monkeypatch
+    runner, provider_request, mock_hooks, monkeypatch, tool_name
 ):
     """工具返回多个 content 项时，tool result 应包含全部内容。"""
 
     from astrbot.core.agent.tool_image_cache import tool_image_cache
 
-    mock_provider.should_call_tools = True
-    mock_provider.max_calls_before_normal_response = 1
+    provider = SingleToolThenFinalProvider(tool_name)
+    provider_request.func_tool = ToolSet(
+        [FunctionTool(name=tool_name, description="Read a file.", parameters={})]
+    )
+    save_attachment = AsyncMock(return_value="viewed-image-id")
+    monkeypatch.setattr(
+        "astrbot.core.agent.runners.tool_loop_agent_runner.save_tool_image_attachment",
+        save_attachment,
+    )
 
     saved_images = []
 
@@ -1065,7 +1073,7 @@ async def test_tool_result_includes_all_calltoolresult_content(
     monkeypatch.setattr(tool_image_cache, "save_image", fake_save_image)
 
     await runner.reset(
-        provider=mock_provider,
+        provider=provider,
         request=provider_request,
         run_context=ContextWrapper(context=None),
         tool_executor=MockMixedContentToolExecutor,
@@ -1073,8 +1081,17 @@ async def test_tool_result_includes_all_calltoolresult_content(
         streaming=False,
     )
 
-    async for _ in runner.step_until_done(3):
-        pass
+    tool_result = None
+    async for response in runner.step_until_done(3):
+        if response.type == "tool_call_result":
+            tool_result = response.data["chain"].chain[0].data
+    assert tool_result is not None
+    if tool_name == "astrbot_file_read_tool":
+        assert tool_result["image_attachment_ids"] == ["viewed-image-id"]
+        save_attachment.assert_awaited_once_with("dGVzdA==", "image/png")
+    else:
+        assert "image_attachment_ids" not in tool_result
+        save_attachment.assert_not_awaited()
 
     tool_messages = [
         m for m in runner.run_context.messages if getattr(m, "role", None) == "tool"
@@ -1082,13 +1099,15 @@ async def test_tool_result_includes_all_calltoolresult_content(
     assert len(tool_messages) == 1
 
     content = str(tool_messages[0].content)
-    assert "Image returned and cached at path='/tmp/call_123_0.png'." in content
+    call_id = "call_large_result"
+    assert f"Image returned and cached at path='/tmp/{call_id}_0.png'." in content
+    assert "viewed-image-id" not in content
     assert "直播间标题：新游首发：零~红蝶~" in content
     assert saved_images == [
         {
             "base64_data": "dGVzdA==",
-            "tool_call_id": "call_123",
-            "tool_name": "test_tool",
+            "tool_call_id": call_id,
+            "tool_name": tool_name,
             "index": 0,
             "mime_type": "image/png",
         }

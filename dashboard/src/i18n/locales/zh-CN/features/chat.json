@@ -299,6 +299,7 @@
     "providerConfig": "模型配置",
     "toolsUsed": "已使用工具",
     "toolCallUsed": "已使用 {name} 工具",
+    "toolCallViewedImage": "已查看图像",
     "pythonCodeAnalysis": "已使用 Python 代码分析",
     "spcodeTool": {
       "codeCheck": "代码检查",

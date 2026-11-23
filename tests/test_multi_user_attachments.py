@@ -1,6 +1,9 @@
 """Attachment consumption through real account authentication and SQLite."""
 
 import asyncio
+import base64
+import io
+import json
 import sqlite3
 import wave
 from pathlib import Path
@@ -19,9 +22,14 @@ from astrbot.core.db.po import Attachment, DashboardAccount
 from astrbot.core.db.sqlite import SQLiteDatabase
 from astrbot.core.message.components import File, Image, Record, Video
 from astrbot.core.message.message_event_result import MessageChain
-from astrbot.core.platform.sources.webchat import webchat_adapter, webchat_event
+from astrbot.core.platform.sources.webchat import (
+    message_parts_helper,
+    webchat_adapter,
+    webchat_event,
+)
 from astrbot.core.platform.sources.webchat.webchat_queue_mgr import webchat_queue_mgr
 from astrbot.core.utils.webchat_access import webchat_resource_owner
+from astrbot.dashboard.services.chat_service import BotMessageAccumulator
 from tests.test_multi_user_chat import account_dashboard as account_dashboard
 from tests.test_multi_user_chat import fake_core_lifecycle as fake_core_lifecycle
 from tests.test_multi_user_chat import ordinary_chat as ordinary_chat
@@ -46,6 +54,58 @@ async def attachment_chat(ordinary_chat, tmp_path, monkeypatch):
     if task:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_file_read_preview_round_trips_as_owned_attachment(
+    attachment_chat, tmp_path, monkeypatch
+):
+    client, server, _, db, _, (owner, other) = attachment_chat
+    headers = {"Authorization": f"Bearer {owner['token']}"}
+    created = await client.get("/api/v1/chat/sessions/new", headers=headers)
+    session_id = created.json()["data"]["session_id"]
+    monkeypatch.setattr("astrbot.core.db_helper", db)
+    monkeypatch.setattr(message_parts_helper, "get_astrbot_data_path", lambda: tmp_path)
+    monkeypatch.setattr(
+        server.asgi_app.state.services.chat,
+        "attachments_dir",
+        str(tmp_path / "attachments"),
+    )
+    buffer = io.BytesIO()
+    PILImage.new("RGB", (24, 12), "blue").save(buffer, format="JPEG")
+    image = buffer.getvalue()
+    owner_token = webchat_resource_owner.set(owner["resource_owner"])
+    try:
+        attachment_id = await message_parts_helper.save_tool_image_attachment(
+            base64.b64encode(image).decode(), "image/jpeg"
+        )
+    finally:
+        webchat_resource_owner.reset(owner_token)
+    assert attachment_id
+    acc = BotMessageAccumulator()
+    acc.add_plain(
+        json.dumps({"id": "read-1", "name": "astrbot_file_read_tool"}),
+        chain_type="tool_call",
+        streaming=False,
+    )
+    acc.add_plain(
+        json.dumps({"id": "read-1", "image_attachment_ids": [attachment_id], "ts": 2}),
+        chain_type="tool_call_result",
+        streaming=False,
+    )
+    await db.insert_platform_message_history(
+        "webchat", session_id, {"type": "bot", "message": acc.build_message_parts()}
+    )
+    history = await client.get(f"/api/v1/chat/sessions/{session_id}", headers=headers)
+    assert attachment_id in history.text
+    path = f"/api/v1/files/{attachment_id}/content"
+    assert (await client.get(path, headers=headers)).content == image
+    assert (
+        await client.get(path, headers={"Authorization": f"Bearer {other['token']}"})
+    ).content != image
+    assert not await db.get_attachments(
+        [attachment_id], owner=owner["resource_owner"], unreferenced_only=True
+    )
 
 
 @pytest.mark.asyncio

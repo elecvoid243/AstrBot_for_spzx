@@ -268,7 +268,10 @@ async def test_upload_consumption_history_download_and_scope(resources):
 
 
 @pytest.mark.asyncio
-async def test_existing_history_attachment_requires_exact_exposed_session(resources):
+@pytest.mark.parametrize("tool_image", [False, True])
+async def test_existing_history_attachment_requires_exact_exposed_session(
+    resources, tool_image
+):
     local, remote, _, session, other, headers, row, path = resources
     client = local[0]
     target, server, _, db, admin, credential = remote
@@ -280,12 +283,23 @@ async def test_existing_history_attachment_requires_exact_exposed_session(resour
     assert (
         await client.get(url, headers=headers, params={"revision": row["revision"]})
     ).status_code == 502
+    part = {"type": "file", "attachment_id": attachment.attachment_id}
+    if tool_image:
+        part = {
+            "type": "tool_call",
+            "tool_calls": [
+                {
+                    "name": "astrbot_file_read_tool",
+                    "image_attachment_ids": [attachment.attachment_id],
+                }
+            ],
+        }
     await db.insert_platform_message_history(
         "webchat",
         session.session_id,
         {
             "type": "bot",
-            "message": [{"type": "file", "attachment_id": attachment.attachment_id}],
+            "message": [part],
         },
     )
     assert (

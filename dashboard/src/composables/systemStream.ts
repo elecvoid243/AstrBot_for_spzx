@@ -277,6 +277,10 @@ function mergeToolCallResult(entry: LiveEntry, parsed: unknown): void {
       );
       if (existing) {
         (existing as Record<string, unknown>).result = result.result;
+        if (Array.isArray(result.image_attachment_ids)) {
+          (existing as Record<string, unknown>).image_attachment_ids =
+            result.image_attachment_ids;
+        }
         (existing as Record<string, unknown>).finished_ts =
           typeof result.ts === "number" ? result.ts : Date.now() / 1000;
         return;
@@ -291,6 +295,9 @@ function mergeToolCallResult(entry: LiveEntry, parsed: unknown): void {
     tool_calls: [
       {
         id,
+        ...(Array.isArray(result.image_attachment_ids)
+          ? { name: result.name, image_attachment_ids: result.image_attachment_ids }
+          : {}),
         result: result.result,
         finished_ts:
           typeof result.ts === "number" ? result.ts : Date.now() / 1000,

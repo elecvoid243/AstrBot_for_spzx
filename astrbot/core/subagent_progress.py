@@ -12,6 +12,9 @@ from sqlmodel import col, delete, select
 
 from astrbot import logger
 from astrbot.core.db.po import PlatformMessageHistory, WebChatSubagentRun
+from astrbot.core.platform.sources.webchat.message_parts_helper import (
+    message_part_attachment_ids,
+)
 
 
 class SubagentProgress:
@@ -166,7 +169,11 @@ class SubagentProgress:
         row.status = row.data.get("status", "running")
         row.data.update(self.metadata(row))
         terminal = kind in {"completed", "failed", "timeout"}
-        if kind in {"started", "continued"} or terminal:
+        # The preview can be requested as soon as the event is published.
+        has_image_preview = kind == "tool_call_result" and data.get("payload", {}).get(
+            "image_attachment_ids"
+        )
+        if kind in {"started", "continued"} or terminal or has_image_preview:
             await self.persist(row)
         elif run_id not in self.pending:
 
@@ -443,12 +450,15 @@ class SubagentProgress:
         self.tasks.add(task)
         task.add_done_callback(self.tasks.discard)
 
-    async def delete_session(self, session_id: str, db=None) -> None:
+    async def delete_session(self, session_id: str, db=None) -> list[str]:
         """Delete stored traces with their parent conversation.
 
         Args:
             session_id: Owned session or thread being deleted.
             db: Optional database supplied by the owning service.
+
+        Returns:
+            Attachment IDs referenced by the deleted traces.
         """
         async with self.write_lock:
             self.deleted_sessions.add(session_id)
@@ -456,13 +466,19 @@ class SubagentProgress:
                 if row.session_id == session_id:
                     self.active.pop(run_id, None)
             async with (db or self.database()).get_db() as session:
-                await session.execute(
-                    delete(WebChatSubagentRun).where(
-                        WebChatSubagentRun.session_id == session_id
-                    )
+                scope = WebChatSubagentRun.session_id == session_id
+                traces = await session.execute(
+                    select(WebChatSubagentRun.data).where(scope)
                 )
+                attachment_ids = [
+                    attachment_id
+                    for trace in traces.scalars()
+                    for attachment_id in message_part_attachment_ids(trace)
+                ]
+                await session.execute(delete(WebChatSubagentRun).where(scope))
                 await session.commit()
             self.legacy_indexed.discard(session_id)
+            return attachment_ids
 
     async def stream(self, session_id: str, run_id: str | None = None):
         """Yield initial and recoverable live snapshots for one owned page.

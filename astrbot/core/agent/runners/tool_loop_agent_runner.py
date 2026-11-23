@@ -1803,10 +1803,10 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             lines.append(f"Previous window id: {state.prev_id}")
         if state.seq > 0:
             lines.append(
-                "If continuing an unfinished task, read task-checkpoint.md first "
-                "with notes_read. Recover missing details with history_read for "
-                "known locations or history_search to find them, then resume "
-                "the recorded next action."
+                "If continuing an unfinished task, find its handoff note with "
+                "notes_list if needed and read it first with notes_read. Recover "
+                "missing details with history_read for known locations or "
+                "history_search to find them, then resume the recorded next action."
             )
         if state.notes:
             lines.append("Private notes (shared across windows, newest first):")

@@ -14,12 +14,12 @@ Selecting `Token Budget` (taken from Codex's implementation) replaces the window
 
 Each window has four budget reminders. They are English control messages sent to the model and saved in its conversation history:
 
-- **25%**: Plan the remaining work and start `task-checkpoint.md` if the task may span windows.
-- **50%**: Limit what you read and update the checkpoint with verified progress and decisions.
-- **75%**: Finish or safely pause the current step. Update the checkpoint before any tool call likely to produce a large result. If a fresh window would help, confirm the write and switch windows.
+- **25%**: Plan the remaining work. If the task may span windows, the model starts a handoff note and chooses its name.
+- **50%**: Limit what you read and update the handoff note with verified progress and decisions.
+- **75%**: Finish or safely pause the current step. Update the handoff note before any tool call likely to produce a large result. If a fresh window would help, confirm the write and switch windows.
 - **90%**: Hand off any unfinished task immediately. Stop starting new work and use `notes_write` to record the goal, constraints, verification results, decisions, unverified work, blockers, next action, completion criteria, and references. Confirm the write succeeded before resetting and continuing the task.
 
-To resume after a reset, read `task-checkpoint.md` if it applies to the current task, then use history tools for missing details. If a request crosses several levels at once, only the highest new notice is sent. Percentages are measured against the compression trigger. If trimming still leaves the request above that trigger, the exhausted notice takes priority and asks the model to report its current result, remaining work, and blocker.
+To resume after a reset, the model finds the handoff note for the current task with `notes_list` if needed, reads it with `notes_read`, and uses history tools for missing details. If a request crosses several levels at once, only the highest new notice is sent. Percentages are measured against the compression trigger. If trimming still leaves the request above that trigger, the exhausted notice takes priority and asks the model to report its current result, remaining work, and blocker.
 
 Truncation by conversation rounds is no longer a separate strategy, and there is no "discard N turns / drop to 40%" setting. If pressure remains after the summary, AstrBot removes the oldest ordinary rounds one at a time, preserving system messages, summaries, and the current complete round. Exceeding only the compression trigger does not force protected content to be removed. If protected content, tool definitions, and the output budget still exceed the model window, the request stops with an explicit capacity error. Reduce the current input, tool definitions, or output limit, or select a larger model window.
 

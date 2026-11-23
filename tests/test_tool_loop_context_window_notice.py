@@ -32,7 +32,7 @@ def test_first_window_appends_its_identity_to_the_system_prompt():
     assert "Current window id: w1" in system
     assert "Window seq: 0" in system
     assert "Previous window id:" not in system
-    assert "read task-checkpoint.md first" not in system
+    assert "find its handoff note" not in system
 
 
 def test_the_notice_never_reaches_the_history():
@@ -52,8 +52,13 @@ def test_later_window_restores_the_checkpoint_before_searching_history():
 
     system = contexts[0]["content"]
     assert "Previous window id: w1" in system
-    assert "read task-checkpoint.md first with notes_read" in system
-    assert system.index("notes_read") < system.index("history_read")
+    assert "find its handoff note with notes_list if needed" in system
+    assert "read it first with notes_read" in system
+    assert (
+        system.index("notes_list")
+        < system.index("notes_read")
+        < system.index("history_read")
+    )
     assert "history_search" in system
 
 

@@ -10,18 +10,18 @@ SYSTEM_NOTICE_PREFIX = "[SYSTEM NOTICE]"
 EARLY_NOTICE = (
     f"{SYSTEM_NOTICE_PREFIX} 25% of this window's context budget is used. The "
     "window is replaced when it fills. Plan the remaining work and start "
-    "task-checkpoint.md if the task may span windows."
+    "a handoff note if the task may span windows."
 )
 
 PLANNING_NOTICE = (
     f"{SYSTEM_NOTICE_PREFIX} 50% of this window's context budget is used. Keep "
-    "the task scoped. Read only what you need and update task-checkpoint.md "
+    "the task scoped. Read only what you need and update the handoff note "
     "with verified progress and decisions needed in the next window."
 )
 
 WRAP_UP_NOTICE = (
     f"{SYSTEM_NOTICE_PREFIX} 75% of this window's context budget is used. "
-    "Finish or safely pause the current step and update task-checkpoint.md "
+    "Finish or safely pause the current step and update the handoff note "
     "before any tool call likely to return a large result. If more work remains "
     "and a fresh window will help, confirm the note was written and call new_context."
 )
@@ -29,8 +29,9 @@ WRAP_UP_NOTICE = (
 HANDOFF_NOTICE = (
     f"{SYSTEM_NOTICE_PREFIX} 90% of this window's context budget is used. "
     "You must hand off any unfinished task now. Stop starting new work. "
-    "Use notes_write to update task-checkpoint.md with a detailed handoff: "
-    "the user's goal and constraints, completed work and verification results, "
+    "Use notes_write to write or update a detailed handoff note. "
+    "Choose a descriptive path if you are creating it. "
+    "Include the user's goal and constraints, completed work and verification results, "
     "decisions and reasons, unverified work, blockers, and the exact next "
     "action and completion criteria. Include the current window ID and "
     "references to relevant user requests, files, and tool results. "

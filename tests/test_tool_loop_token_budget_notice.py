@@ -81,7 +81,8 @@ def test_wrap_up_and_handoff_notices_fire_at_their_thresholds():
     assert third[-1].internal is True
     assert "90%" in third[-1].content
     assert "notes_write" in third[-1].content
-    assert "task-checkpoint.md" in third[-1].content
+    assert "write or update a detailed handoff note" in third[-1].content
+    assert "Choose a descriptive path if you are creating it" in third[-1].content
     assert "Confirm the write succeeded before calling new_context" in third[-1].content
     assert runner.window_state.notice_level == 90
     assert runner._inject_budget_notices(third + follow_up) == third + follow_up

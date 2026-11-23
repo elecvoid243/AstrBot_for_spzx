@@ -95,9 +95,9 @@ class NotesListTool(FunctionTool[AstrAgentContext]):
 class NotesReadTool(FunctionTool[AstrAgentContext]):
     name: str = "notes_read"
     description: str = (
-        "Read a line range from a private model-only note. Call it after "
-        "notes_search names the file. Lines are 1-based; negative values count "
-        "backward from the end."
+        "Read a line range from a private model-only note. Use the note path "
+        "from the window notice, notes_list, or notes_search. Lines are 1-based. "
+        "Negative values count backward from the end."
     )
     parameters: dict = Field(
         default_factory=lambda: {

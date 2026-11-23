@@ -38,6 +38,8 @@ export interface GraphCommit {
 export interface GraphRow {
   /** 本行节点所在列。 */
   lane: number;
+  /** Whether the node's own lane connects from the preceding row. */
+  hasIncoming: boolean;
   /** 自上方收敛进本行节点的列（画 col@0 → lane@NODE_CY 曲线）。 */
   ins: number[];
   /** 贯穿整行的列（画满高竖线）。 */
@@ -57,16 +59,14 @@ export interface GraphLayout {
 }
 
 /**
- * O(rows × lanes) 单趟布局。任何指向窗口外父提交的行都会得到
- * `dangling: true`，由渲染层画淡化短线，而不是伪造一条通向别处的边。
+ * Lay out a topologically ordered window in O(rows × lanes).
+ * An unseen first parent gets a faded stub. Only visible targets reserve lanes.
  */
 export function layoutGraph(commits: GraphCommit[]): GraphLayout {
   const inWindow = new Set(commits.map((c) => c.sha));
 
   /** 每列期望的下一个 sha（null = 空闲）。 */
   const laneSha: (string | null)[] = [];
-  /** 该列期望的 sha 是否在窗口外。 */
-  const laneDangling: boolean[] = [];
   const rows: GraphRow[] = [];
   let lanes = 0;
 
@@ -74,11 +74,9 @@ export function layoutGraph(commits: GraphCommit[]): GraphLayout {
     let l = laneSha.indexOf(null);
     if (l < 0) {
       laneSha.push(null);
-      laneDangling.push(false);
       l = laneSha.length - 1;
     }
     laneSha[l] = sha;
-    laneDangling[l] = !inWindow.has(sha);
     return l;
   };
 
@@ -86,7 +84,8 @@ export function layoutGraph(commits: GraphCommit[]): GraphLayout {
     const before = laneSha.slice();
 
     let lane = laneSha.indexOf(commit.sha);
-    if (lane < 0) lane = allocate(commit.sha);
+    const hasIncoming = lane >= 0;
+    if (!hasIncoming) lane = allocate(commit.sha);
 
     const ins: number[] = [];
     const passIn: number[] = [];
@@ -100,33 +99,28 @@ export function layoutGraph(commits: GraphCommit[]): GraphLayout {
     // allocate() 会白白新开一列而不是复用刚空出的那一列。
     for (const l of ins) {
       laneSha[l] = null;
-      laneDangling[l] = false;
     }
 
     const outs: number[] = [];
-    commit.parents.forEach((parent, k) => {
-      if (k === 0) {
-        laneSha[lane] = parent;
-        laneDangling[lane] = !inWindow.has(parent);
-        return;
-      }
+    const [firstParent, ...otherParents] = commit.parents;
+    const dangling = firstParent !== undefined && !inWindow.has(firstParent);
+    if (firstParent !== undefined && !dangling) laneSha[lane] = firstParent;
+    for (const parent of otherParents) {
+      if (!inWindow.has(parent)) continue;
       const tgt = laneSha.indexOf(parent);
       if (tgt < 0) outs.push(allocate(parent));
       else if (tgt !== lane) outs.push(tgt);
-    });
-    if (commit.parents.length === 0) {
-      laneSha[lane] = null;
-      laneDangling[lane] = false;
     }
+    if (firstParent === undefined || dangling) laneSha[lane] = null;
 
-    const cont = laneSha[lane] != null;
     rows.push({
       lane,
+      hasIncoming,
       ins,
       passIn,
       outs,
-      cont,
-      dangling: cont && laneDangling[lane] === true,
+      cont: firstParent !== undefined,
+      dangling,
     });
 
     lanes = Math.max(

@@ -83,6 +83,7 @@ const outPath = (to: number): string =>
       :style="{ ...lineBox(l), background: laneColor(l) }"
     />
     <span
+      v-if="row.hasIncoming"
       class="git-log-gutter-v"
       data-seg="node-up"
       :data-lane="row.lane"

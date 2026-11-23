@@ -42,6 +42,20 @@ describe("parseSpcodeGitLog", () => {
     expect(parsed.snapshot.resolvedRef).toBe("b".repeat(40));
   });
 
+  it("keeps filtered graph parents separate from the original commit parents", () => {
+    const commit = {
+      ...envelope().data.commits[0],
+      parents: ["b".repeat(40)],
+      graph_parents: [],
+    };
+    const parsed = parseSpcodeGitLog(envelope({ commits: [commit] }));
+    if (parsed.kind !== "ok") throw new Error("expected ok");
+    expect(parsed.snapshot.commits[0]).toMatchObject({
+      parents: commit.parents,
+      graphParents: [],
+    });
+  });
+
   it("defaults tags to [] and resolvedRef to '' when backend is older", () => {
     const raw = envelope();
     // 模拟旧插件:删除新字段
@@ -51,6 +65,7 @@ describe("parseSpcodeGitLog", () => {
     const parsed = parseSpcodeGitLog(raw);
     if (parsed.kind !== "ok") throw new Error("expected ok");
     expect(parsed.snapshot.commits[0].tags).toEqual([]);
+    expect(parsed.snapshot.commits[0].graphParents).toBeUndefined();
     expect(parsed.snapshot.resolvedRef).toBe("");
   });
 });

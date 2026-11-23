@@ -16,6 +16,7 @@ import {
 
 const row = (over: Partial<GraphRow> = {}): GraphRow => ({
   lane: 0,
+  hasIncoming: false,
   ins: [],
   passIn: [],
   outs: [],
@@ -78,7 +79,7 @@ describe("GitLogGraphGutter", () => {
   it("centers every vertical on the lane axis, not on its own left edge", () => {
     const w = mount(GitLogGraphGutter, {
       props: {
-        row: row({ lane: 0, passIn: [2], outs: [1], cont: true }),
+        row: row({ lane: 0, hasIncoming: true, passIn: [2], outs: [1], cont: true }),
         lanes: 3,
       },
     });
@@ -109,13 +110,14 @@ describe("GitLogGraphGutter", () => {
     expect(w.find("path").attributes("stroke-width")).toBe(String(STROKE_W));
   });
 
-  it("draws the node at NODE_CY and only renders the lower half when it continues", () => {
+  it("draws the node at NODE_CY and only renders the line halves it connects to", () => {
     const w = mount(GitLogGraphGutter, {
       props: { row: row({ cont: true }), lanes: 2 },
     });
 
     expect(w.find("circle").attributes("cy")).toBe(String(NODE_CY));
     expect(w.find('[data-seg="node-down"]').exists()).toBe(true);
+    expect(w.find('[data-seg="node-up"]').exists()).toBe(false);
 
     const stopped = mount(GitLogGraphGutter, {
       props: { row: row({ cont: false }), lanes: 2 },

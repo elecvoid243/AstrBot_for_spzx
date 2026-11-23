@@ -136,6 +136,7 @@ export interface SpcodeLogRawCommit {
   subject: string;
   body: string | null;
   parents: string[];
+  graph_parents?: unknown;
   shortstat: { files: number; additions: number; deletions: number };
   /** 2026-09-08: 指向该 commit 的 tag 名列表(旧插件可能不返回)。 */
   tags?: unknown;
@@ -168,6 +169,8 @@ export interface SpcodeLogCommit {
   subject: string;
   body: string | null;
   parents: string[];
+  /** Visible ancestors for the filtered graph. Older plugins omit this field. */
+  graphParents?: string[];
   shortstat: { files: number; additions: number; deletions: number };
   /** 2026-09-08: 指向该 commit 的 tag 名列表(无 tag 时为 [])。 */
   tags: string[];
@@ -360,6 +363,9 @@ export function parseSpcodeGitLog(raw: unknown): ParseResult<SpcodeLogSnapshot> 
       subject: asString(c0.subject),
       body: typeof c0.body === "string" ? c0.body : null,
       parents: asStringArray(c0.parents),
+      ...(Array.isArray(c0.graph_parents)
+        ? { graphParents: asStringArray(c0.graph_parents) }
+        : {}),
       shortstat: {
         files: asNumber(c0.shortstat?.files),
         additions: asNumber(c0.shortstat?.additions),

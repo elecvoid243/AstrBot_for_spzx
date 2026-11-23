@@ -10,7 +10,10 @@ import { mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import { nextTick } from "vue";
 import GitLogView from "./GitLogView.vue";
-import type { SpcodeLogSnapshot } from "@/composables/parseSpcodeGitWorkflow";
+import type {
+  SpcodeLogCommit,
+  SpcodeLogSnapshot,
+} from "@/composables/parseSpcodeGitWorkflow";
 
 const vuetifyStubs = {
   "v-icon": { template: "<i />" },
@@ -53,7 +56,10 @@ const vuetifyStubs = {
     name: "v-list-subheader",
     template: '<div class="v-list-subheader"><slot /></div>',
   },
-  "v-tooltip": { template: "<i />" },
+  "v-tooltip": {
+    props: ["text", "activator", "contentClass"],
+    template: '<i :class="contentClass" :data-activator="activator">{{ text }}</i>',
+  },
   GitStatsPanel: { template: "<div />" },
   FilePatchPanel: { template: "<div />" },
 };
@@ -63,7 +69,7 @@ const M1 = SH("a");
 const A1 = SH("b");
 const B1 = SH("c");
 
-function makeCommit(sha: string, parents: string[]) {
+function makeCommit(sha: string, parents: string[]): SpcodeLogCommit {
   return {
     sha,
     shaShort: sha.slice(0, 7),
@@ -78,9 +84,7 @@ function makeCommit(sha: string, parents: string[]) {
   };
 }
 
-function makeSnapshot(
-  commits: ReturnType<typeof makeCommit>[],
-): SpcodeLogSnapshot {
+function makeSnapshot(commits: SpcodeLogCommit[]): SpcodeLogSnapshot {
   return {
     success: true,
     reason: null,
@@ -180,5 +184,33 @@ describe("GitLogView lane gutter (2026-10-05)", () => {
 
     expect(w.find(".git-log-list").classes()).toContain("squash-selecting");
     expect(w.find(".git-log-gutter").exists()).toBe(true);
+  });
+
+  it("draws filtered forks using visible ancestors from the log response", () => {
+    const snapshot = makeSnapshot([
+      { ...makeCommit(M1, [SH("d")]), graphParents: [A1, B1] },
+      { ...makeCommit(A1, [SH("e")]), graphParents: [B1] },
+      { ...makeCommit(B1, [SH("f")]), graphParents: [] },
+    ]);
+    const w = mountView({
+      state: { kind: "ok", snapshot },
+      appliedGrep: "commit",
+    });
+
+    expect(w.findAll(".git-log-gutter")).toHaveLength(3);
+    expect(w.find(".git-log-item").attributes("style")).toContain("--gw: 34px");
+    expect(w.findAll('.git-log-gutter [data-dangling="true"]')).toHaveLength(0);
+    expect(w.findAll('.git-log-gutter [data-seg="node-up"]')).toHaveLength(2);
+  });
+
+  it("makes the full subject and body available on the row header", () => {
+    const subject = "A long commit subject that can be clipped in the sidebar";
+    const body = "First detail\nSecond detail";
+    const snapshot = makeSnapshot([{ ...makeCommit(M1, []), subject, body }]);
+    const w = mountView({ state: { kind: "ok", snapshot } });
+
+    const tooltip = w.get(".git-log-item-header .git-log-message-tooltip");
+    expect(tooltip.attributes("data-activator")).toBe("parent");
+    expect(tooltip.element.textContent).toBe(`${subject}\n\n${body}`);
   });
 });

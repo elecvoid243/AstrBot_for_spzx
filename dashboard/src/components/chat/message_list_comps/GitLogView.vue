@@ -476,7 +476,12 @@ const commits = computed(() => {
 // 2026-10-05 (elecvoid243): 分支树 lane 布局。行序与 commits 严格一致
 // (layoutGraph 不重排),所以模板直接用下标取行,不必建 sha → row 的 Map。
 const graphLayout = computed(() =>
-  layoutGraph(commits.value.map((c) => ({ sha: c.sha, parents: c.parents }))),
+  layoutGraph(
+    commits.value.map((c) => ({
+      sha: c.sha,
+      parents: c.graphParents ?? c.parents,
+    })),
+  ),
 );
 const graphLanes = computed(() => graphLayout.value.lanes);
 const gw = computed(() => gutterWidth(graphLanes.value));
@@ -1508,6 +1513,15 @@ function fileErrorMessage(state: GitShowFetchState): string | null {
             </v-tooltip>
           </span>
           <span class="git-log-item-subject">{{ c.subject }}</span>
+          <v-tooltip
+            activator="parent"
+            location="start"
+            :eager="false"
+            :open-delay="350"
+            :close-delay="200"
+            content-class="git-log-message-tooltip"
+            :text="c.body ? `${c.subject}\n\n${c.body}` : c.subject"
+          />
         </div>
         <div class="git-log-item-meta">
           <span class="git-log-item-author">{{ c.author.name }}</span>
@@ -2078,6 +2092,14 @@ function fileErrorMessage(state: GitShowFetchState): string | null {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+:global(.v-tooltip > .v-overlay__content.git-log-message-tooltip) {
+  max-width: min(36rem, calc(100vw - 24px));
+  max-height: min(28rem, 70vh);
+  overflow: auto;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  pointer-events: auto;
 }
 .git-log-item-tags {
   display: inline-flex;

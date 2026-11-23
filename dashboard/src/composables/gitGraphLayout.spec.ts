@@ -33,6 +33,25 @@ describe("layoutGraph", () => {
     expect(rows[2]).toMatchObject({ cont: true, dangling: true });
   });
 
+  it("releases missing parents instead of carrying them through filtered rows", () => {
+    const { rows, lanes } = layoutGraph([
+      c("match3", ["hidden3", "hidden-side"]),
+      c("match2", ["hidden2"]),
+      c("match1", ["hidden1"]),
+    ]);
+
+    expect(lanes).toBe(1);
+    for (const row of rows) {
+      expect(row).toMatchObject({
+        lane: 0,
+        hasIncoming: false,
+        passIn: [],
+        outs: [],
+        dangling: true,
+      });
+    }
+  });
+
   it("forks the second parent of a merge commit into a new lane", () => {
     const { rows, lanes } = layoutGraph([
       c("m", ["a", "b"]),

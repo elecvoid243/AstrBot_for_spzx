@@ -671,7 +671,10 @@
     "dataLink": "Data",
     "contractType": "Schema type",
     "disconnectData": "Disconnect data",
-    "invalidPortConnection": "Connect compatible text ports",
+    "invalidPortConnection": "Connect ports with compatible types and shapes",
+    "portRequired": "Required",
+    "portOptional": "Optional",
+    "portDefault": "Default {value}",
     "dataSourceUpstream": "Connect a text output from a control predecessor",
     "invalidSource": "Unavailable input source"
   },

@@ -183,6 +183,27 @@
             tm("remoteConnections.local")
           }}</span>
         </div>
+        <div
+          v-if="includeRunConversations"
+          class="sidebar-top-actions"
+          role="group"
+          :aria-label="tm('conversation.filter.label')"
+        >
+          <button
+            type="button"
+            class="sidebar-top-action-btn"
+            :class="{ active: !runConversationsOnly }"
+            :aria-pressed="!runConversationsOnly"
+            @click="runConversationsOnly = false"
+          >{{ tm("conversation.filter.all") }}</button>
+          <button
+            type="button"
+            class="sidebar-top-action-btn"
+            :class="{ active: runConversationsOnly }"
+            :aria-pressed="runConversationsOnly"
+            @click="runConversationsOnly = true"
+          >{{ tm("conversation.filter.runs") }}</button>
+        </div>
         <!-- 2026-08-09 sidebar batch delete (elecvoid243): batch action
              bar shown while selection mode is active. -->
         <div v-if="selectionMode" class="batch-select-bar">
@@ -231,6 +252,7 @@
         </div>
 
         <ProjectList
+          v-show="!showRunConversationsOnly"
           ref="projectListRef"
           :projects="projects"
           :project-sessions="projectSessionsById"
@@ -276,7 +298,7 @@
           @dragleave="onUnsortedDragLeave"
           @drop.prevent="onUnsortedDrop"
         >
-          <div class="sidebar-section-header">
+          <div v-if="!showRunConversationsOnly" class="sidebar-section-header">
             <span>{{ tm("conversation.title") }}</span>
           </div>
           <Transition name="drag-hint">
@@ -572,6 +594,13 @@
             </template>
           </StyledMenu>
 
+          <div v-if="showRunConversationsOnly && !sessions.length" class="empty-sessions">
+            <div role="status">{{ tm(`conversation.filter.${sessionsStatus === 'ready' ? 'empty' : sessionsStatus}`) }}</div>
+            <v-btn v-if="sessionsStatus === 'error'" variant="text" size="small" @click="getSessions()">
+              {{ tm("conversation.filter.retry") }}
+            </v-btn>
+          </div>
+
           <!-- Progressive loading: the next page is requested when this
                list scrolls near its bottom (see handleSidebarScroll). -->
           <div
@@ -579,8 +608,11 @@
             class="session-load-more"
           >
             <span v-if="sessionsLoadingMore">{{
-              tm("conversation.loadingMore")
+              tm(showRunConversationsOnly ? "conversation.filter.loadingMore" : "conversation.loadingMore")
             }}</span>
+            <v-btn v-else-if="showRunConversationsOnly" variant="text" size="small" @click="loadMoreSessions()">
+              {{ tm("conversation.filter.loadMore") }}
+            </v-btn>
           </div>
         </section>
       </div>
@@ -1713,11 +1745,13 @@ const { languageOptions, currentLanguage, switchLanguage, locale } =
   useLanguageSwitcher();
 const {
   sessions,
+  runConversationsOnly,
   ordinarySessions,
   currSessionId,
   getSessions,
   sessionsHasMore,
   sessionsLoadingMore,
+  sessionsStatus,
   loadMoreSessions,
   newSession,
   deleteSession,
@@ -1727,6 +1761,7 @@ const {
   setSessionStarred,
   updateSessionTitle,
 } = useSessions(props.chatboxMode, includeRunConversations);
+const showRunConversationsOnly = computed(() => includeRunConversations.value && runConversationsOnly.value);
 const runConversationId = computed(() =>
   route.name === "ChatRunConversation" && typeof route.params.runId === "string"
     ? route.params.runId
@@ -3842,12 +3877,18 @@ const checkedChatSessionIds = computed(() => new Set(checkedSessions.value.sessi
 /** Sidebar conversations and the project sessions loaded so far. */
 const selectableSessionKeys = computed(() => {
   const ids = sessions.value.map(sessionRowKey);
+  if (showRunConversationsOnly.value) return ids;
   for (const projectSessionList of Object.values(projectSessionsById.value)) {
     for (const session of projectSessionList) {
       ids.push(sessionRowKey(session));
     }
   }
   return ids;
+});
+
+watch(showRunConversationsOnly, () => {
+  checkedSessionKeys.value = new Set();
+  if (sidebarContentRef.value) sidebarContentRef.value.scrollTop = 0;
 });
 
 const allChecked = computed(

@@ -1,4 +1,11 @@
 {
+  "graph": {
+    "contractType": "Тип схемы",
+    "invalidPortConnection": "Соедините порты с совместимыми типами и структурой",
+    "portRequired": "Обязательный",
+    "portOptional": "Необязательный",
+    "portDefault": "По умолчанию {value}"
+  },
   "reuse": {
     "detachedGate": "{task}: требуется управляющая связь из {source}",
     "removeDetachedGate": "Удалить отсутствующую управляющую связь",

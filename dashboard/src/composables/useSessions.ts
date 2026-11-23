@@ -60,10 +60,17 @@ export function useSessions(
 ) {
   const router = useRouter();
   const accountRevision = accountSessionRevision.value;
+  const runConversationsOnly = ref(false);
+  const sidebarScope = computed(() => toValue(includeRunConversations)
+    ? (runConversationsOnly.value ? "runs" : "mixed")
+    : "ordinary");
   const sessions = ref<Session[]>([]);
+  const ordinarySessions = ref<Session[]>([]);
   const sessionCursor = ref<string | null>(null);
   const sessionsHasMore = computed(() => sessionCursor.value !== null);
   const sessionsLoadingMore = ref(false);
+  const sessionsStatus = ref<"loading" | "ready" | "error">("loading");
+  let sessionListRevision = 0;
   let sessionListQueue = Promise.resolve();
   // Set once the archive dialog has fetched its first page; archive
   // refreshes stay dormant until then so opening ChatUI never queries it.
@@ -83,9 +90,6 @@ export function useSessions(
   const editingTitle = ref("");
   const editingSessionId = ref("");
 
-  const ordinarySessions = computed(() =>
-    sessions.value.filter((session) => session.session_type !== "workflow_run"),
-  );
   const getCurrentSession = computed(() => {
     if (!currSessionId.value) return null;
     return ordinarySessions.value.find((s) => s.session_id === currSessionId.value);
@@ -93,9 +97,13 @@ export function useSessions(
 
   /** Serialize list updates so a refresh preserves rows that just finished loading. */
   function getSessions({ append = false }: { append?: boolean } = {}) {
+    const revision = sessionListRevision;
+    const scope = sidebarScope.value;
     sessionListQueue = sessionListQueue
       .then(async () => {
         assertCurrentAccount(accountRevision);
+        if (revision !== sessionListRevision) return;
+        if (!append && !sessions.value.length) sessionsStatus.value = "loading";
         let replace = !append;
         let cursor = append ? sessionCursor.value : "start";
         let target = append
@@ -106,10 +114,12 @@ export function useSessions(
         while (cursor && items.length < target) {
           const response = await chatApi.listSessions({
             cursor,
-            ...(toValue(includeRunConversations) ? { include_run_conversations: true } : {}),
+            ...(scope !== "ordinary" ? { include_run_conversations: true } : {}),
+            ...(scope === "runs" ? { platform_id: "workflow_run" } : {}),
             page_size: Math.min(MAX_SESSION_PAGE_SIZE, target - items.length),
           });
           assertCurrentAccount(accountRevision);
+          if (revision !== sessionListRevision) return;
           if (response.data?.status !== "ok") {
             throw new Error(response.data?.message || "Sessions are unavailable");
           }
@@ -137,9 +147,15 @@ export function useSessions(
             ...items.filter((s) => !known.has(sessionRowKey(s))),
           ];
         }
+        if (scope !== "runs") {
+          ordinarySessions.value = sessions.value.filter((session) => session.session_type !== "workflow_run");
+        }
         sessionCursor.value = cursor;
+        sessionsStatus.value = "ready";
       })
       .catch((err) => {
+        if (revision !== sessionListRevision || accountRevision !== accountSessionRevision.value) return;
+        sessionsStatus.value = "error";
         if (err.response?.status === 401) {
           void router.push("/auth/login?redirect=/chatbox");
         }
@@ -151,13 +167,26 @@ export function useSessions(
   /** Fetch the next sidebar page; no-op while one is in flight or at the end. */
   async function loadMoreSessions() {
     if (sessionsLoadingMore.value || !sessionsHasMore.value) return;
+    const revision = sessionListRevision;
     sessionsLoadingMore.value = true;
     try {
       await getSessions({ append: true });
     } finally {
-      sessionsLoadingMore.value = false;
+      if (revision === sessionListRevision) sessionsLoadingMore.value = false;
     }
   }
+
+  watch(sidebarScope, () => {
+    // Each scope has its own server cursor. A slow page from the previous
+    // scope must neither block the new snapshot nor update its rows.
+    sessionListRevision += 1;
+    sessionListQueue = Promise.resolve();
+    sessions.value = [];
+    sessionCursor.value = null;
+    sessionsLoadingMore.value = false;
+    sessionsStatus.value = "loading";
+    void getSessions();
+  }, { flush: "sync" });
 
   // In-flight creation promise. When "new chat" is clicked and the user
   // immediately sends a message (or double-clicks), both callers would
@@ -439,8 +468,11 @@ export function useSessions(
   watch(
     accountSessionRevision,
     () => {
+      sessionListRevision += 1;
       sessions.value = [];
+      ordinarySessions.value = [];
       sessionCursor.value = null;
+      sessionsLoadingMore.value = false;
       archivedLoaded.value = false;
       archivedSessions.value = [];
       selectedSessions.value = [];
@@ -455,6 +487,7 @@ export function useSessions(
 
   return {
     sessions,
+    runConversationsOnly,
     ordinarySessions,
     archivedSessions,
     archivedPagination,
@@ -468,6 +501,7 @@ export function useSessions(
     getSessions,
     sessionsHasMore,
     sessionsLoadingMore,
+    sessionsStatus,
     loadMoreSessions,
     newSession,
     deleteSession,

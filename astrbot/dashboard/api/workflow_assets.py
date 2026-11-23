@@ -510,7 +510,18 @@ async def generate_workflow_draft(
     """
     core = service.roles.core_lifecycle
     if not core:
-        return JSONResponse(error("Choose an available model"), status_code=422)
+        message = "Choose an available model"
+        return JSONResponse(
+            error(
+                message,
+                {
+                    "fields": [
+                        {"path": "provider_id", "code": "MISSING", "message": message}
+                    ]
+                },
+            ),
+            status_code=422,
+        )
     role = {
         "name": "Workflow draft",
         "prompt": "Follow the task instructions and submit the result.",
@@ -536,7 +547,22 @@ async def generate_workflow_draft(
         )
     provider = await core.provider_manager.get_provider_by_id(payload.provider_id)
     if not isinstance(provider, Provider):
-        return JSONResponse(error("Choose an available chat model"), status_code=422)
+        message = "Choose an available chat model"
+        return JSONResponse(
+            error(
+                message,
+                {
+                    "fields": [
+                        {
+                            "path": "provider_id",
+                            "code": "INCOMPATIBLE",
+                            "message": message,
+                        }
+                    ]
+                },
+            ),
+            status_code=422,
+        )
     try:
         response = await asyncio.wait_for(
             provider.text_chat(
@@ -597,9 +623,13 @@ async def generate_workflow_draft(
             }
         )
         validate_graph(graph, result_requirement="reachable")
-    except (ValidationError, RoleAssetError):
+    except (ValidationError, RoleAssetError) as exc:
         return JSONResponse(
-            error("Model returned an invalid workflow draft"), status_code=422
+            error(
+                "Model returned an invalid workflow draft",
+                {"fields": exc.fields if isinstance(exc, RoleAssetError) else []},
+            ),
+            status_code=422,
         )
     return ok(graph.model_dump())
 

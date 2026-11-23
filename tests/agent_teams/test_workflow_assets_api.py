@@ -235,6 +235,202 @@ async def test_structured_ports_across_trial_and_published_run(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("source_kind", ["workflow-object", "task-array"])
+async def test_structured_publication_checks_the_bound_shape(
+    workflow_env, publication_client, source_kind
+):
+    """Locate incompatible structured bindings and let the draft be repaired.
+
+    Args:
+        workflow_env: Persistent workflow services backed by isolated SQLite.
+        publication_client: Authenticated client for the real draft and run routes.
+        source_kind: Workflow object input or an upstream node's typed list.
+    """
+    source_field = {
+        "type": "object",
+        "properties": {"id": {"type": "integer"}, "hint": {"type": "string"}},
+        "required": ["id"],
+        "additionalProperties": False,
+    }
+    target_field = {
+        **source_field,
+        "properties": {"id": {"type": "string"}},
+    }
+    repaired_field = {
+        **source_field,
+        "properties": {"id": {"type": "number"}, "hint": {"type": "boolean"}},
+    }
+    value = {"id": 1}
+    if source_kind == "task-array":
+        source_field = {"type": "array", "items": source_field}
+        target_field = {"type": "array", "items": target_field}
+        repaired_field = {"type": "array", "items": repaired_field}
+        value = [value]
+    source_contract = {
+        "type": "object",
+        "properties": {"value": source_field},
+        "required": ["value"],
+    }
+    target_contract = {**source_contract, "properties": {"value": target_field}}
+    definition = {
+        "name": "Structured bindings",
+        "port_contract_version": 2,
+        "input_contract": source_contract,
+        "entry_task_ids": ["map"],
+        "result_task_id": "map",
+        "tasks": [
+            {
+                "id": "map",
+                "name": "Map",
+                "transform": "map_fields",
+                "input_contract": target_contract,
+                "output_contract": target_contract,
+                "inputs": {"value": {"input": "value"}},
+            }
+        ],
+    }
+    target = definition["tasks"][0]
+    inputs = {"value": value}
+    if source_kind == "task-array":
+        definition["input_contract"] = {
+            "type": "object",
+            "properties": {"raw": {"type": "string"}},
+            "required": ["raw"],
+        }
+        inputs = {"raw": '{"value":[{"id":1}]}'}
+        definition["entry_task_ids"] = ["parse"]
+        definition["edges"] = [{"source": "parse", "target": "map"}]
+        definition["tasks"].insert(
+            0,
+            {
+                "id": "parse",
+                "name": "Parse",
+                "transform": "parse_json",
+                "inputs": {"text": {"input": "raw"}},
+                "output_contract": source_contract,
+            },
+        )
+        target["inputs"]["value"] = {"task_id": "parse", "field": "value"}
+
+    created = await publication_client.post(
+        "/api/v1/agent_drafts/workflow", json={"body": {"definition": definition}}
+    )
+    assert created.status_code == 200, created.text
+    asset_id = created.json()["data"]["asset_id"]
+    draft = f"/api/v1/agent_drafts/workflow/{asset_id}"
+    asset = f"/api/v1/workflow_assets/{asset_id}"
+    path = f"definition.tasks.{definition['tasks'].index(target)}.inputs.value"
+    for url, options in (
+        (f"{draft}/publish", {}),
+        (f"{asset}/trials/preview", {"kind": "workflow", "mode": "full"}),
+    ):
+        rejected = await publication_client.post(url, json={"revision": 1, **options})
+        assert rejected.status_code == 400, rejected.text
+        assert [
+            (field["path"], field["code"])
+            for field in rejected.json()["data"]["fields"]
+        ] == [(path, "INCOMPATIBLE")]
+    assert (await publication_client.get(asset)).status_code == 404
+
+    if source_kind == "task-array":
+        # An empty list used to satisfy both fixed contracts at runtime.
+        legacy_id = "historical-structured-workflow"
+        async with workflow_env.db.get_db() as session:
+            session.add(
+                AgentWorkflowVersion(
+                    asset_id=legacy_id,
+                    version=1,
+                    owner_username="alice",
+                    definition=definition,
+                )
+            )
+            await session.commit()
+        legacy = await publication_client.post(
+            f"/api/v1/workflow_assets/{legacy_id}/runs",
+            json={"version": 1, "inputs": {"raw": '{"value":[]}'}},
+        )
+        assert legacy.status_code == 200, legacy.text
+        run = await completed_run(workflow_env.service, legacy.json()["data"]["run_id"])
+        assert run["status"] == "completed", run
+        assert run["result"] == {"value": []}
+
+    # Integer values satisfy number ports, and either optional hint can be absent.
+    repaired = {**source_contract, "properties": {"value": repaired_field}}
+    target.update(input_contract=repaired, output_contract=repaired)
+    saved = await publication_client.put(
+        draft, json={"body": {"definition": definition}, "expected_revision": 1}
+    )
+    assert saved.status_code == 200, saved.text
+    published = await publication_client.post(f"{draft}/publish", json={"revision": 2})
+    assert published.status_code == 200, published.text
+    assert published.json()["data"]["version"] == 1
+    started = await publication_client.post(
+        f"{asset}/runs", json={"version": 1, "inputs": inputs}
+    )
+    assert started.status_code == 200, started.text
+    run = await completed_run(workflow_env.service, started.json()["data"]["run_id"])
+    assert run["status"] == "completed", run
+    assert run["result"] == {"value": value}
+
+
+@pytest.mark.asyncio
+async def test_structured_publication_reports_the_binding_in_a_dependency_cycle(
+    publication_client,
+):
+    """A control path and reverse data binding identify the consumer's input.
+
+    Args:
+        publication_client: Authenticated client for the real draft routes.
+    """
+    contract = {
+        "type": "object",
+        "properties": {"value": {"type": "string"}},
+        "required": ["value"],
+    }
+    node = {
+        "transform": "map_fields",
+        "input_contract": contract,
+        "output_contract": contract,
+    }
+    definition = {
+        "name": "Cycle",
+        "port_contract_version": 2,
+        "input_contract": contract,
+        "entry_task_ids": ["first"],
+        "result_task_id": "second",
+        "edges": [{"source": "first", "target": "second"}],
+        "tasks": [
+            {
+                **node,
+                "id": "first",
+                "name": "First",
+                "inputs": {"value": {"task_id": "second", "field": "value"}},
+            },
+            {
+                **node,
+                "id": "second",
+                "name": "Second",
+                "inputs": {"value": {"task_id": "first", "field": "value"}},
+            },
+        ],
+    }
+    created = await publication_client.post(
+        "/api/v1/agent_drafts/workflow", json={"body": {"definition": definition}}
+    )
+    assert created.status_code == 200, created.text
+    asset_id = created.json()["data"]["asset_id"]
+    rejected = await publication_client.post(
+        f"/api/v1/agent_drafts/workflow/{asset_id}/publish", json={"revision": 1}
+    )
+    assert rejected.status_code == 400, rejected.text
+    assert [
+        field["path"]
+        for field in rejected.json()["data"]["fields"]
+        if field["code"] == "CYCLE"
+    ] == ["definition.tasks.0.inputs.value"]
+
+
+@pytest.mark.asyncio
 async def test_explicit_json_conversion_and_default_text_binding(
     workflow_env, publication_client
 ):
@@ -1470,7 +1666,26 @@ async def test_model_proposes_editable_draft_without_saving(
     assert rejected.json()["data"]["fields"][0]["code"] == "INCOMPATIBLE"
     assert model.text_chat.await_count == 1
     workflow_env.inventory["models"][0]["capabilities"] = ["text", "tool_use"]
+
+    invalid_request = await publication_client.post(path, json={"description": "Read"})
+    assert invalid_request.status_code == 422
+    assert invalid_request.json()["detail"][0]["loc"] == ["body", "provider_id"]
+
+    select_model.return_value = None
+    unavailable = await publication_client.post(path, json=request)
+    assert unavailable.status_code == 422
+    assert unavailable.json()["data"]["fields"][0]["path"] == "provider_id"
+
+    select_model.return_value = model
+    model.text_chat.return_value = SimpleNamespace(completion_text="Invalid JSON")
+    invalid_plan = await publication_client.post(path, json=request)
+    assert invalid_plan.status_code == 422
+    assert invalid_plan.json()["data"]["fields"] == []
+
     monkeypatch.setattr(workflow_env.roles, "core_lifecycle", None)
+    missing = await publication_client.post(path, json=request)
+    assert missing.status_code == 422
+    assert missing.json()["data"]["fields"][0]["code"] == "MISSING"
     graph["name"] = "Reviewed report"
     draft = (
         await publication_client.post(

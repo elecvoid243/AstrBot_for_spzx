@@ -63,6 +63,7 @@ def test_workflow_management_remains_dashboard_only() -> None:
     public_spec = filter_public_openapi(spec)
     management_prefixes = (
         "/api/v1/workflow_assets",
+        "/api/v1/workflow_components",
         "/api/v1/workflow_runs",
         "/api/v1/chat/run-conversations",
     )
@@ -87,6 +88,13 @@ def test_workflow_management_remains_dashboard_only() -> None:
     assert (
         grant["put"]["security"] == grant["delete"]["security"] == [{"BearerAuth": []}]
     )
+    for path, method in (
+        ("/api/v1/workflow_assets/generate_draft", "post"),
+        ("/api/v1/workflow_components", "get"),
+        ("/api/v1/workflow_runs/{run_id}/rerun", "post"),
+    ):
+        assert spec["paths"][path][method]["security"] == [{"BearerAuth": []}]
+    assert "workflow" in spec["info"]["description"]
     assert {
         path
         for path, operations in public_spec["paths"].items()

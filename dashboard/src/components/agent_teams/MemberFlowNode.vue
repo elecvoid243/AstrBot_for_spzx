@@ -68,31 +68,25 @@
     <p v-if="data.taskPreview" class="at-node-task at-node-task-clamp">{{ data.taskPreview }}</p>
 
     <div v-if="data.inputPorts?.length || data.outputPorts?.length" class="at-data-ports">
-      <div>
-        <div v-for="port in data.inputPorts" :key="port.id" class="at-data-port" :class="{ 'at-port-invalid': port.invalid }">
+      <div v-for="column in portColumns" :key="column.type">
+        <div
+          v-for="port in column.ports"
+          :key="port.id"
+          class="at-data-port"
+          :class="{ 'at-data-output': column.type === 'source', 'at-port-invalid': port.invalid }"
+        >
           <Handle
             v-if="data.interactive !== false"
             :id="port.id"
-            type="target"
-            :position="Position.Left"
-            :aria-label="port.label"
+            :type="column.type"
+            :position="column.position"
+            :aria-label="port.accessibleLabel"
             :aria-invalid="port.invalid || undefined"
             class="at-node-handle at-data-handle"
           />
           <span>{{ port.label }}</span>
-        </div>
-      </div>
-      <div>
-        <div v-for="port in data.outputPorts" :key="port.id" class="at-data-port at-data-output">
-          <Handle
-            v-if="data.interactive !== false"
-            :id="port.id"
-            type="source"
-            :position="Position.Right"
-            :aria-label="port.label"
-            class="at-node-handle at-data-handle"
-          />
-          <span>{{ port.label }}</span>
+          <span v-if="port.requirement" class="at-port-detail">{{ port.requirement }}</span>
+          <span v-if="port.defaultLabel" class="at-port-detail at-port-default" :title="port.defaultLabel">{{ port.defaultLabel }}</span>
         </div>
       </div>
     </div>
@@ -117,6 +111,9 @@ export interface FlowPort {
   label: string;
   invalid?: boolean;
   types?: string[];
+  required?: boolean;
+  defaultValue?: unknown;
+  schema?: Record<string, unknown>;
 }
 
 export interface MemberFlowNodeData {
@@ -182,6 +179,18 @@ const { tm } = useModuleI18n('features/agent-teams');
 
 const titleText = computed(() => props.data.nodeTitle ?? props.data.label ?? '');
 
+const portColumns = computed(() => [
+  { type: 'target' as const, position: Position.Left, ports: props.data.inputPorts },
+  { type: 'source' as const, position: Position.Right, ports: props.data.outputPorts },
+].filter((column) => column.ports?.length).map((column) => ({
+  ...column,
+  ports: column.ports?.map((port) => {
+    const requirement = port.required === undefined ? '' : tm(port.required ? 'graph.portRequired' : 'graph.portOptional');
+    const defaultLabel = port.defaultValue === undefined ? '' : tm('graph.portDefault', { value: JSON.stringify(port.defaultValue) });
+    return { ...port, requirement, defaultLabel, accessibleLabel: [port.label, requirement, defaultLabel].filter(Boolean).join(' · ') };
+  }),
+})));
+
 /** Status text reuses the monitor.node.* keys (not color-only signaling). */
 const statusText = computed(() =>
   props.data.status ? tm(`monitor.node.${props.data.status}`) : '',
@@ -200,7 +209,8 @@ const cardClasses = computed(() => ({
 .member-flow-node:has(.at-data-ports) > .at-control-handle { top: 22px; }
 .at-data-ports {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
   gap: 6px;
   margin: 8px -12px 0;
   padding-top: 4px;
@@ -216,6 +226,8 @@ const cardClasses = computed(() => ({
 }
 
 .at-data-output { text-align: right; }
+.at-port-detail { display: block; font-size: 10px; }
+.at-port-default { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .at-data-port .at-node-handle.at-data-handle { top: 50%; border-color: #087d74; background: #d7f2ef; }
 .at-port-invalid { color: rgb(var(--v-theme-error)); font-weight: 700; }
 .at-port-invalid .at-node-handle.at-data-handle { border-color: currentColor; background: currentColor; }

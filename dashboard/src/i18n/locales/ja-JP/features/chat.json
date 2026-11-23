@@ -237,6 +237,17 @@
   },
   "conversation": {
     "title": "会話",
+    "filter": {
+      "label": "ローカル会話を絞り込む",
+      "all": "すべて",
+      "runs": "実行の会話",
+      "loading": "実行の会話を読み込み中…",
+      "empty": "実行の会話がありません",
+      "error": "実行の会話を読み込めませんでした",
+      "retry": "再試行",
+      "loadingMore": "さらに読み込み中…",
+      "loadMore": "さらに読み込む"
+    },
     "newConversation": "新しい会話",
     "noHistory": "会話履歴がありません",
     "systemStatus": "システム状態",

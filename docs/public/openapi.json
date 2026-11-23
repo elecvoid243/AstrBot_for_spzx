@@ -3,7 +3,7 @@
   "info": {
     "title": "AstrBot OpenAPI v1",
     "version": "0.1.0",
-    "description": "Target REST contract for migrating AstrBot HTTP APIs to /api/v1. Dynamic AstrBot configuration payloads are intentionally modeled as open JSON objects because their schemas are provided at runtime by template endpoints. Developer API keys currently support these scopes only: bot, provider, persona, im, config, chat, data, file, plugin, mcp, skill, plus the sensitive config:edit_admin and chat:admin sub-scopes. The config scope also grants bot and provider access, but no parent scope grants a sensitive sub-scope.\n"
+    "description": "Target REST contract for migrating AstrBot HTTP APIs to /api/v1. Dynamic AstrBot configuration payloads are intentionally modeled as open JSON objects because their schemas are provided at runtime by template endpoints. Developer API keys currently support these scopes only: bot, provider, persona, im, config, chat, data, file, plugin, mcp, skill, workflow, plus the sensitive config:edit_admin and chat:admin sub-scopes. The config scope also grants bot and provider access, but no parent scope grants a sensitive sub-scope.\n"
   },
   "x-astrbot-scope-definitions": {
     "bot": {
@@ -1942,6 +1942,14 @@
             "schema": {
               "type": "boolean",
               "default": false
+            }
+          },
+          {
+            "name": "platform_id",
+            "in": "query",
+            "description": "Filter by platform. Set to workflow_run with include_run_conversations=true and a Dashboard cursor to list only owned run conversations.",
+            "schema": {
+              "type": "string"
             }
           }
         ],
@@ -11033,7 +11041,7 @@
           },
           "code": {
             "type": "string",
-            "description": "Port diagnostics use REQUIRED, REFERENCE, or INCOMPATIBLE."
+            "description": "Port diagnostics include REQUIRED, REFERENCE, INCOMPATIBLE, UNREACHABLE_DATA, and CYCLE."
           },
           "message": {
             "type": "string"

@@ -1401,6 +1401,7 @@ const transformKinds = [
 const scalarTypes = ["boolean", "integer", "null", "number", "string"];
 const jsonTypes = ["array", ...scalarTypes, "object"].sort();
 const semanticPortTypes = ["astrbot-message", "astrbot-artifact", "astrbot-file"];
+type PortSchema = Record<string, unknown>;
 const workflowInputText = ref<string | null>(null);
 const invalidPortPath = ref("");
 const placeholderPattern = /\{\{|\}\}|\{([_\p{ID_Start}][\p{ID_Continue}]*):?\}/gu;
@@ -1775,10 +1776,29 @@ const boundOutputFields = computed(() => {
   return fields;
 });
 
+/** Resolve declared JSON types through inline allOf fragments. */
+function inlinePortTypes(schema: unknown): string[] {
+  const fragments: unknown[] = [schema];
+  let types: string[] | undefined;
+  for (const fragment of fragments) {
+    if (!fragment || typeof fragment !== "object" || Array.isArray(fragment)) continue;
+    const { type, allOf } = fragment as PortSchema;
+    if (Array.isArray(allOf)) fragments.push(...allOf);
+    const declared = (Array.isArray(type) ? type : [type]).filter(
+      (kind): kind is string => typeof kind === "string" && jsonTypes.includes(kind),
+    );
+    if (!declared.length) continue;
+    if (declared.includes("number") && !declared.includes("integer")) declared.push("integer");
+    types = types ? types.filter((kind) => declared.includes(kind)) : declared;
+  }
+  const resolved = types ?? [];
+  return resolved.includes("number") ? resolved.filter((kind) => kind !== "integer") : resolved;
+}
+
 function fieldsForTask(
   id: string,
   includeType = false,
-): { title: string; value: string; type?: string; required?: boolean }[] {
+): { title: string; value: string; type?: string; required?: boolean; schema?: PortSchema }[] {
   const task = draft.value.tasks.find((item) => item.id === id);
   if (!task) return [];
   const aggregate = task.dispatch || (explicitControl.value && task.control?.kind === "join");
@@ -1786,15 +1806,15 @@ function fieldsForTask(
   const outputContract = task.output_contract ?? (native
     ? { type: "object", properties: native.outputs, required: Object.keys(native.outputs) }
     : undefined);
-  const fields: { title: string; value: string; type: string; required?: boolean }[] = aggregate
-    ? [{ title: "results · array", value: "results", type: "array" }]
+  const fields: { title: string; value: string; type: string; required?: boolean; schema?: PortSchema }[] = aggregate
+    ? [{ title: "results · array", value: "results", type: "array", required: true }]
     : outputContract
     ? []
     : [
         ...(task.human?.kind === "approval"
-          ? [{ title: "approved · boolean", value: "approved", type: "boolean" }]
+          ? [{ title: "approved · boolean", value: "approved", type: "boolean", required: true }]
           : []),
-        { title: "text · string", value: "text", type: "string" },
+        { title: "text · string", value: "text", type: "string", required: true },
       ];
   const visit = (schema: any, prefix = "", parentRequired = true) => {
     if (
@@ -1807,15 +1827,14 @@ function fieldsForTask(
       const field = schema.properties[name];
       const required = parentRequired && (schema.required ?? []).includes(name);
       const path = prefix ? `${prefix}.${name}` : name;
-      const types: string[] = Array.isArray(field?.type) ? field.type : [field?.type];
-      if (types.every((type) => jsonTypes.includes(type)) &&
-        (structuredPorts.value || !["object", "array"].includes(field.type))) {
+      const types = inlinePortTypes(field);
+      if (types.length && (structuredPorts.value || !types.some((type) => type === "object" || type === "array"))) {
         const format = structuredPorts.value && semanticPortTypes.includes(field?.format)
           ? field.format : "";
         const type = format || types.join("|");
-        fields.push({ title: `${path} · ${format ? tm(`graph.portFormats.${format}`) : type}`, value: path, type, required });
+        fields.push({ title: `${path} · ${format ? tm(`graph.portFormats.${format}`) : type}`, value: path, type, required, schema: field });
       }
-      if (field?.type === "object") visit(field, path, required);
+      if (types.length === 1 && types[0] === "object") visit(field, path, required);
     }
   };
   if (outputContract) visit(outputContract);
@@ -1912,10 +1931,9 @@ const edgeSourceApproval = computed(
 const controlValueType = computed(() => {
   const ref = selectedTask.value?.inputs?.value;
   if (!ref) return "string";
-  const type = ref.input != null
-    ? workflowPorts.value[ref.input]?.type
-    : fieldsForTask(ref.task_id ?? "", true).find((item) => item.value === ref.field)?.type;
-  const types: string[] = Array.isArray(type) ? type : typeof type === "string" ? type.split("|") : [];
+  const types = ref.input != null
+    ? inlinePortTypes(workflowPorts.value[ref.input])
+    : fieldsForTask(ref.task_id ?? "", true).find((item) => item.value === ref.field)?.type?.split("|") ?? [];
   if (types.length > 1 && types.every((value) => value === "integer" || value === "number")) {
     return "number";
   }
@@ -1988,15 +2006,19 @@ const taskNodes = computed<FlowNode[]>(() =>
             ).map(([alias, schema]) => {
               const format = "format" in schema && semanticPortTypes.includes(String(schema.format))
                 ? String(schema.format) : "";
-              const types = format ? [format] : Array.isArray(schema.type) ? schema.type as string[] : [String(schema.type)];
+              const types = format ? [format] : inlinePortTypes(schema);
               const type = format ? tm(`graph.portFormats.${format}`)
                 : task.control?.kind === "condition" ? tm("graph.conditionScalar")
-                : types.length === jsonTypes.length ? "JSON" : types.join("|");
+                : task.transform === "json_text" && !task.input_contract ? "JSON"
+                : types.join("|") || tm("graph.contractType");
               const path = `definition.tasks.${index}.inputs.${alias}`;
               return {
                 id: `data-in:${alias}`,
                 label: `${alias} · ${type}`,
                 types,
+                required: task.input_contract ? (task.input_contract.required ?? []).includes(alias) : true,
+                defaultValue: "default" in schema ? schema.default : undefined,
+                schema,
                 invalid: invalidPortPath.value === path || task.inputs?.[alias]?.task_id?.startsWith(detachedPrefix) ||
                   [...props.issues, ...runtimeIssues].some(
                     (issue) => typeof issue.path === "string" && (issue.path === path || issue.path.startsWith(path + ".")),
@@ -2008,6 +2030,7 @@ const taskNodes = computed<FlowNode[]>(() =>
           ? [
               ...fieldsForTask(task.id, true).map((field) => ({
                 id: `data-out:${field.value}`, label: field.title, types: field.type?.split("|"),
+                required: field.required, defaultValue: field.schema?.default, schema: field.schema,
               })),
               ...(structuredPorts.value ? [{
                 id: "data-out-result", label: tm("graph.resultObject"), types: ["object"],
@@ -2149,9 +2172,13 @@ const nodes = computed<FlowNode[]>(() => [
               ? Object.entries(workflowPorts.value).map(([name, schema]) => {
                   const format = "format" in schema && semanticPortTypes.includes(String(schema.format))
                     ? String(schema.format) : "";
-                  const types = format ? [format] : Array.isArray(schema.type) ? schema.type as string[] : [String(schema.type)];
-                  const type = format ? tm(`graph.portFormats.${format}`) : types.join("|");
-                  return { id: `data-out:${name}`, label: `${name} · ${type}`, types };
+                  const types = format ? [format] : inlinePortTypes(schema);
+                  const type = format ? tm(`graph.portFormats.${format}`) : types.join("|") || tm("graph.contractType");
+                  return {
+                    id: `data-out:${name}`, label: `${name} · ${type}`, types, schema,
+                    required: !structuredPorts.value || (draft.value.input_contract?.required ?? []).includes(name),
+                    defaultValue: "default" in schema ? schema.default : undefined,
+                  };
                 })
               : undefined,
             memberName: typedPorts.value ? "" : (draft.value.required_inputs ?? []).join(", "),
@@ -2991,6 +3018,45 @@ async function saveInlineRole() {
     savingRole.value = false;
   }
 }
+/** Check simple inline shapes before dropping a link. The server resolves full JSON Schemas. */
+function incompatiblePortShapes(source: unknown, target: unknown): boolean {
+  if (!source || !target || typeof source !== "object" || typeof target !== "object" ||
+    Array.isArray(source) || Array.isArray(target)) return false;
+
+  const sourceSchema = source as PortSchema;
+  const targetSchema = target as PortSchema;
+  const sourceTypes = inlinePortTypes(sourceSchema);
+  const targetTypes = inlinePortTypes(targetSchema);
+  if (!sourceTypes.length || !targetTypes.length) return false;
+
+  const commonTypes = sourceTypes.filter((type) => targetTypes.includes(type) ||
+    (type === "integer" && targetTypes.includes("number")) || (type === "number" && targetTypes.includes("integer")));
+  if (!commonTypes.length) return true;
+
+  if (commonTypes.every((type) => type === "object")) {
+    const sourceFields = (sourceSchema.properties ?? {}) as Record<string, unknown>;
+    const targetFields = (targetSchema.properties ?? {}) as Record<string, unknown>;
+    const required = new Set([
+      ...(Array.isArray(sourceSchema.required) ? sourceSchema.required : []),
+      ...(Array.isArray(targetSchema.required) ? targetSchema.required : []),
+    ]);
+    return [...required].some((name) => {
+      const sourceField = Object.prototype.hasOwnProperty.call(sourceFields, name) ? sourceFields[name] : undefined;
+      const targetField = Object.prototype.hasOwnProperty.call(targetFields, name) ? targetFields[name] : undefined;
+      return (sourceField === undefined && sourceSchema.additionalProperties === false && !sourceSchema.patternProperties) ||
+        (targetField === undefined && targetSchema.additionalProperties === false && !targetSchema.patternProperties) ||
+        incompatiblePortShapes(sourceField, targetField);
+    });
+  }
+
+  if (commonTypes.every((type) => type === "array") && [sourceSchema, targetSchema].every(
+    (schema) => !schema.prefixItems && schema.maxItems !== 0 && schema.items !== false,
+  )) {
+    return incompatiblePortShapes(sourceSchema.items, targetSchema.items);
+  }
+  return false;
+}
+
 function connect({
   from,
   to,
@@ -3014,9 +3080,10 @@ function connect({
     invalidPortPath.value = to === "__output" ? "definition.result_task_id" :
       alias ? `definition.tasks.${taskIndex}.inputs.${alias}` : "";
     const resultHandle = structuredPorts.value ? "data-out-result" : "data-out:text";
-    if (!source || !target || !field || !source.types?.every(
+    if (!source || !target || !field || !source.types?.length || !source.types.every(
       (type) => target.types?.includes(type) || (type === "integer" && target.types?.includes("number")),
-    ) || (to === "__output" ? (from === "__input" || source.id !== resultHandle) : source.id === "data-out-result")) {
+    ) || (to === "__output" ? (from === "__input" || source.id !== resultHandle) : source.id === "data-out-result") ||
+      (structuredPorts.value && incompatiblePortShapes(source.schema, target.schema))) {
       localError.value = [source?.label, target?.label, tm("graph.invalidPortConnection")]
         .filter(Boolean).join(" · ");
       return;

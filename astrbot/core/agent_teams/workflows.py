@@ -1196,7 +1196,7 @@ class WorkflowService:
                         ],
                         status=exc.status,
                     ) from exc
-            validate_graph(definition)
+            validate_graph(definition, check_structured_shapes=True)
         version = 1
         if asset_id is not None and (
             draft is None or draft["base_version"] is not None
@@ -6408,6 +6408,7 @@ class WorkflowService:
         validate_graph(
             graph,
             result_requirement="reachable" if full_trial else "optional",
+            check_structured_shapes=full_trial,
             text_port_scope=None if full_trial else selected,
         )
         feedback = {}

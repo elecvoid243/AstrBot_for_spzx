@@ -1973,7 +1973,7 @@ export type WorkflowFieldDiagnostic = {
      */
     path: string;
     /**
-     * Port diagnostics use REQUIRED, REFERENCE, or INCOMPATIBLE.
+     * Port diagnostics include REQUIRED, REFERENCE, INCOMPATIBLE, UNREACHABLE_DATA, and CYCLE.
      */
     code: string;
     message: string;
@@ -3308,6 +3308,10 @@ export type ListChatSessionsData = {
         include_run_conversations?: boolean;
         page?: number;
         page_size?: number;
+        /**
+         * Filter by platform. Set to workflow_run with include_run_conversations=true and a Dashboard cursor to list only owned run conversations.
+         */
+        platform_id?: string;
         username?: string;
     };
 };
@@ -6534,7 +6538,7 @@ export type GenerateWorkflowDraftResponse = ({
     data: GraphDefinition;
 });
 
-export type GenerateWorkflowDraftError = (WorkflowValidationError | unknown);
+export type GenerateWorkflowDraftError = ((WorkflowValidationError | HTTPValidationError) | ErrorEnvelope);
 
 export type ListWorkflowComponentsApiV1WorkflowComponentsGetResponse = ({
     status: string;

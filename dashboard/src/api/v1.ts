@@ -220,6 +220,7 @@ export interface ChatSessionListParams {
   username?: string;
   cursor?: string;
   include_run_conversations?: boolean;
+  platform_id?: string;
 }
 
 /** Serialized kernel standing-goal state (mirrors core GoalState). */

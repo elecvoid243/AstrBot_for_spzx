@@ -117,6 +117,27 @@ async def test_run_conversations_share_paging_and_enforce_dashboard_ownership(tm
             (collision, None),
         ]
         assert remainder["next_cursor"] is None
+        run_listing = {
+            **listing,
+            "cursor": "start",
+            "page_size": 1,
+            "platform_id": "workflow_run",
+        }
+        filtered = (await client.get(path, params=run_listing)).json()["data"]
+        assert [row["run_conversation"]["run_id"] for row in filtered["items"]] == [
+            second
+        ]
+        filtered_cursor = filtered["next_cursor"]
+        assert filtered_cursor
+        run_next_page = {**run_listing, "cursor": filtered_cursor}
+        filtered = (await client.get(path, params=run_next_page)).json()["data"]
+        assert [row["run_conversation"]["run_id"] for row in filtered["items"]] == [
+            first
+        ]
+        assert filtered["next_cursor"] is None
+        assert (
+            await client.get(path, params={**listing, "cursor": filtered_cursor})
+        ).json()["data"]["expired"]
         for ordinary_id in (legacy, collision):
             ordinary = (await client.get(f"{path}/{ordinary_id}")).json()["data"][
                 "session"
@@ -141,8 +162,16 @@ async def test_run_conversations_share_paging_and_enforce_dashboard_ownership(tm
         identity = AuthContext("bob", ["chat"], role="admin")
         assert (await client.get(link)).status_code == 404
         assert (await client.get(path, params=listing)).json()["data"]["expired"]
+        assert (await client.get(path, params=run_next_page)).json()["data"]["expired"]
+        own_runs = (await client.get(path, params=run_listing)).json()["data"]
+        assert [row["run_conversation"]["run_id"] for row in own_runs["items"]] == [
+            foreign
+        ]
         identity = AuthContext("alice", ["chat"], role="user")
         assert (await client.get(link)).status_code == 404
+        assert (await client.get(path, params=run_listing)).json()["data"][
+            "items"
+        ] == []
         listing["cursor"] = "start"
         result = (await client.get(path, params=listing)).json()["data"]
         assert [entry["session_id"] for entry in result["items"]] == [legacy, collision]
@@ -187,6 +216,10 @@ async def test_run_conversations_share_paging_and_enforce_dashboard_ownership(tm
             legacy,
             collision,
         ]
+        key_list = (
+            await client.get(path, params={**run_listing, "username": "alice"})
+        ).json()["data"]
+        assert key_list["sessions"] == []
         assert (await client.get(link)).status_code == 404
         identity = AuthContext("alice", ["chat"], role="admin")
 
@@ -207,6 +240,11 @@ async def test_run_conversations_share_paging_and_enforce_dashboard_ownership(tm
         assert [entry["session_id"] for entry in archived["items"]] == [
             f"workflow-run-{first}"
         ]
+        filtered = (await client.get(path, params=run_listing)).json()["data"]
+        assert [row["run_conversation"]["run_id"] for row in filtered["items"]] == [
+            second
+        ]
+        assert filtered["next_cursor"] is None
         assert (await client.get(link)).json()["data"]["session"]["run_conversation"][
             "status"
         ] == "running"

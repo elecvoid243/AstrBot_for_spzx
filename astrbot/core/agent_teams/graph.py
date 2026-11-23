@@ -538,7 +538,8 @@ def field_schema(contract: dict | None, path: str, *, structured: bool = False) 
         structured: Permit optional and structured fields on a versioned data port.
 
     Returns:
-        The possible JSON types and, for structured ports, requiredness and format.
+        The possible JSON types and, for structured ports, their field constraints,
+        requiredness and semantic format.
 
     Raises:
         ValueError: The field does not have a compatible declared port schema.
@@ -626,8 +627,87 @@ def field_schema(contract: dict | None, path: str, *, structured: bool = False) 
     return {
         "type": sorted(declared),
         **({"format": next(iter(formats))} if formats else {}),
-        **({"required": guaranteed} if structured else {}),
+        **(
+            {"required": guaranteed, "constraints": current["allOf"]}
+            if structured
+            else {}
+        ),
     }
+
+
+def _structured_shape_conflict(source: dict, target: dict, port: str) -> str | None:
+    """Find a conflicting required property or declared homogeneous item type.
+
+    Args:
+        source: Resolved producer field with its inline schema constraints.
+        target: Resolved consumer field with its inline schema constraints.
+        port: Consumer port name used to describe the mismatched portion.
+
+    Returns:
+        A path within the port when its declared shapes conflict, or None when
+        runtime validation must decide.
+    """
+    pending = [(source.get("constraints", []), target.get("constraints", []), port)]
+    while pending:
+        incoming, expected, path = pending.pop()
+        if not incoming and not expected:
+            continue
+        allowed = JSON_TYPES.copy()
+        shapes = []
+        for fragments in (incoming, expected):
+            fragments = list(fragments)
+            shape = []
+            for schema in fragments:
+                if schema is False:
+                    return path
+                if not isinstance(schema, dict):
+                    continue
+                shape.append(schema)
+                # Other schema branches can depend on the actual value.
+                fragments.extend(schema.get("allOf", []))
+                if kinds := schema.get("type"):
+                    types = {kinds} if isinstance(kinds, str) else set(kinds)
+                    if "number" in types:
+                        types.add("integer")
+                    allowed &= types
+            shapes.append(shape)
+        if not allowed:
+            return path
+        if allowed == {"object"}:
+            required = {
+                name
+                for shape in shapes
+                for schema in shape
+                for name in schema.get("required", [])
+            }
+            for name in sorted(required, reverse=True):
+                fields = [
+                    [
+                        schema["properties"][name]
+                        if name in schema.get("properties", {})
+                        else schema["additionalProperties"]
+                        for schema in shape
+                        if name in schema.get("properties", {})
+                        or (
+                            "additionalProperties" in schema
+                            and not schema.get("patternProperties")
+                        )
+                    ]
+                    for shape in shapes
+                ]
+                pending.append((fields[0], fields[1], f"{path}.{name}"))
+        elif allowed == {"array"} and all(
+            not schema.get("prefixItems") and schema.get("maxItems") != 0
+            for shape in shapes
+            for schema in shape
+        ):
+            items = [
+                [schema["items"] for schema in shape if "items" in schema]
+                for shape in shapes
+            ]
+            if all(items) and all(False not in schemas for schemas in items):
+                pending.append((items[0], items[1], f"{path}[]"))
+    return None
 
 
 def port_value(content: dict, field: str, reference: dict | None = None):
@@ -808,6 +888,7 @@ def validate_graph(
     definition: GraphDefinition,
     *,
     result_requirement: Literal["optional", "required", "reachable"] = "optional",
+    check_structured_shapes: bool = False,
     external_sources: dict[str, GraphTask] | None = None,
     feedback_inputs: dict[str, dict[str, TaskInput]] | None = None,
     text_port_scope: set[str] | None = None,
@@ -818,6 +899,8 @@ def validate_graph(
         definition: Parsed graph whose contracts and roles are also validated.
         result_requirement: Whether the graph may leave its result unresolved,
             must name an existing result, or must also give it a possible path.
+        check_structured_shapes: Check declared nested types for new publications
+            and full draft trials while preserving existing fixed versions.
         external_sources: Trusted boundary contracts supplied by the trial compiler.
         feedback_inputs: Trusted single-node trial feedback bindings.
         text_port_scope: Executed tasks in a bounded trial, which may omit the
@@ -1133,15 +1216,15 @@ def validate_graph(
                 )
         dependencies = {}
         loop_gate_paths: dict[tuple[str, str], str] = {}
+        binding_paths: dict[tuple[str, str], str] = {}
         for index, task in enumerate(definition.tasks):
             sources = dict.fromkeys(predecessors[task.id], "definition.edges")
-            sources.update(
-                {
-                    ref.task_id: f"definition.tasks.{index}.inputs.{name}"
-                    for name, ref in task.inputs.items()
-                    if ref.task_id in tasks
-                }
-            )
+            for name, ref in task.inputs.items():
+                if ref.task_id is not None and ref.task_id in tasks:
+                    path = f"definition.tasks.{index}.inputs.{name}"
+                    sources[ref.task_id] = path
+                    if ref.task_id not in predecessors[task.id]:
+                        binding_paths[ref.task_id, task.id] = path
             dependencies[task.id] = set(sources)
             for source, path in sources.items():
                 exit_task = loop_exits.get(source)
@@ -1153,17 +1236,22 @@ def validate_graph(
         except CycleError as exc:
             if not any(issue["code"] == "CYCLE" for issue in fields):
                 cycle = exc.args[1]
+                pairs = list(zip(cycle, cycle[1:]))
                 gated_path = next(
                     (
                         loop_gate_paths[pair]
-                        for pair in zip(cycle, cycle[1:])
+                        for pair in pairs
                         if pair in loop_gate_paths
                     ),
                     None,
                 )
+                binding_path = next(
+                    (binding_paths[pair] for pair in pairs if pair in binding_paths),
+                    None,
+                )
                 fields.append(
                     {
-                        "path": gated_path or "definition.tasks",
+                        "path": gated_path or binding_path or "definition.edges",
                         "code": "CYCLE",
                         "message": (
                             "The loop must pass before an outside task can use its result, forming a dependency cycle."
@@ -1268,6 +1356,18 @@ def validate_graph(
                                 "path": feedback_path,
                                 "code": "INCOMPATIBLE",
                                 "message": "Feedback must match the declared next-round port type",
+                            }
+                        )
+                    elif check_structured_shapes and (
+                        conflict := _structured_shape_conflict(
+                            feedback_schema, target_schema, feedback.input
+                        )
+                    ):
+                        fields.append(
+                            {
+                                "path": feedback_path,
+                                "code": "INCOMPATIBLE",
+                                "message": f"Feedback does not match the declared type at {conflict}",
                             }
                         )
                 elif (
@@ -1534,6 +1634,15 @@ def validate_graph(
                         code = "INCOMPATIBLE"
                         raise ValueError(
                             "Connect a source matching the declared port type"
+                        )
+                    if check_structured_shapes and (
+                        conflict := _structured_shape_conflict(
+                            source_schema, target_schema, key
+                        )
+                    ):
+                        code = "INCOMPATIBLE"
+                        raise ValueError(
+                            f"Connect a source matching the declared type at {conflict}"
                         )
             except ValueError as exc:
                 fields.append(

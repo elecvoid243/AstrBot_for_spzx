@@ -8,9 +8,9 @@ info:
     JSON objects because their schemas are provided at runtime by template
     endpoints.
     Developer API keys currently support these scopes only: bot, provider,
-    persona, im, config, chat, data, file, plugin, mcp, skill, plus the sensitive
-    config:edit_admin and chat:admin sub-scopes. The config scope also grants bot
-    and provider access, but no parent scope grants a sensitive sub-scope.
+    persona, im, config, chat, data, file, plugin, mcp, skill, workflow, plus the
+    sensitive config:edit_admin and chat:admin sub-scopes. The config scope also
+    grants bot and provider access, but no parent scope grants a sensitive sub-scope.
 x-astrbot-scope-definitions:
   bot:
     description: Manage bot and platform configurations.
@@ -2953,6 +2953,10 @@ paths:
           in: query
           description: Include owned root run conversations when using a Dashboard cursor and administrator session.
           schema: { type: boolean, default: false }
+        - name: platform_id
+          in: query
+          description: Filter by platform. Set to workflow_run with include_run_conversations=true and a Dashboard cursor to list only owned run conversations.
+          schema: { type: string }
       responses:
         "200":
           $ref: "#/components/responses/Ok"
@@ -8710,6 +8714,8 @@ paths:
       tags: [Agent Teams workflows]
       summary: Propose a workflow definition using a selected local model
       operationId: generateWorkflowDraft
+      security:
+      - BearerAuth: []
       requestBody:
         required: true
         content:
@@ -8728,14 +8734,23 @@ paths:
                   data:
                     $ref: '#/components/schemas/GraphDefinition'
         '422':
-          $ref: '#/components/responses/WorkflowValidationFailure'
+          description: Request validation, provider configuration, or generated draft validation failed.
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - $ref: '#/components/schemas/WorkflowValidationError'
+                - $ref: '#/components/schemas/HTTPValidationError'
         '502':
+          $ref: '#/components/responses/Error'
           description: Model call failed
   /api/v1/workflow_components:
     get:
       tags: [Agent Teams workflows]
       summary: List installed workflow components
       operationId: list_workflow_components_api_v1_workflow_components_get
+      security:
+      - BearerAuth: []
       responses:
         '200':
           description: Registered components available to the editor.
@@ -9533,6 +9548,8 @@ paths:
       summary: Rerun Workflow
       description: Start an independent run with a completed root's exact asset version and frozen inputs. Reusing the request ID for the same source run returns the same new run.
       operationId: rerun_workflow_api_v1_workflow_runs__run_id__rerun_post
+      security:
+      - BearerAuth: []
       parameters:
       - name: run_id
         in: path
@@ -13954,7 +13971,7 @@ components:
           description: Definition path, including task index and input alias for input port errors.
         code:
           type: string
-          description: Port diagnostics use REQUIRED, REFERENCE, or INCOMPATIBLE.
+          description: Port diagnostics include REQUIRED, REFERENCE, INCOMPATIBLE, UNREACHABLE_DATA, and CYCLE.
         message:
           type: string
     WorkflowSaveRequest:

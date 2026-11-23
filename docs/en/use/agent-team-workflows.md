@@ -32,6 +32,8 @@ On the new canvas, each declared workflow input has a named `string` output port
 
 Choose **Use structured ports** in the editor. Select the workflow input node and declare an inline JSON Schema object with `properties`. Put mandatory field names in `required`. Set `default` to fill in an omitted input. To accept an explicit `null`, include `"null"` in its type. For example, a table can be an `array` whose `items` schema describes an object for each row.
 
+The canvas labels declared ports **Required** or **Optional** and displays defaults as JSON, including `false`, `0`, `""`, and `null`. A declared input default supplies a value when that port is omitted. An output default is a schema annotation. Fixed workflow calls and installed components display the contract of the selected version. If a drop has incompatible types or an obvious mismatch in object fields or array items, the receiving port is highlighted. Full-graph trial and publication check the structured connections.
+
 1. Add **Parse JSON object** and connect a declared string input to `text`. Declare the parser's output fields, such as an object named `query` and a row list named `rows`.
 2. Add **Map fields** and declare the destination names and types in its input and output contracts. Draw the solid control line from the parser to the mapper. Connect each named data port with a dashed line. The mapper passes the selected objects and lists through unchanged. Use **Convert JSON to text** before an Agent placeholder that needs a string.
 3. Connect the mapper's **result · object** to **Outputs**. Reopen the saved draft to check the links. In **Test draft** or **Start Run**, enter the workflow inputs as a JSON object. To test from the mapper, supply the parser's output in **Advanced object data (JSON)**. A trial with root-level constraints such as `minProperties` shows the full workflow input contract.
@@ -40,12 +42,14 @@ For the example above, use `{"raw":"{\"query\":{\"limit\":0},\"rows\":[{\"id\":1
 
 The structured port contract is version 2. It also supports fixed child workflow calls and bounded loop feedback. Text port and legacy fixed versions retain their bindings. Top-level `files` in a result is reserved for managed attachments. Ordinary inputs may declare a field with that name.
 
-![Structured workflow with object and row-list data ports](/images/agent-teams-structured-ports-en.jpg)
+![Structured workflow with required and optional ports, JSON defaults, and object and row-list links](/images/agent-teams-structured-ports-en.jpg)
 
 
 ### Installed plugin components
 
 An AstrBot administrator installs and enables the plugin under **Plugins**. In a workflow with **Use structured ports** enabled, find the component and its version in the left toolbox. Add it to the canvas, connect its named inputs and outputs, and select the local knowledge base when the component requests one. Test the draft with structured JSON inputs and publish the validated version.
+
+To run a tool as an independent workflow step, the plugin registers it as a workflow component with a declared input and output contract. For tools on an Agent node, the model decides when to call the tools on its allowlist.
 
 ![An installed component and its fixed ports on the workflow canvas](/images/agent-teams-plugin-component-en.jpg)
 
@@ -172,7 +176,9 @@ In Chat, the task list expands child workflows, team scopes and loop rounds. The
 
 In **Inbox & artifacts**, answer a specific human request or preview the exact version before approving or returning it with feedback. Bot and Chat show the same requests, including those from nested workflows. If another tab has already decided, the card refreshes to show the saved decision. A conflict from the Bot inbox opens the corresponding run if it is not already open. If the workflow sends revised work for review, open its new request and preview that version before deciding.
 
-If the connection drops, the open conversation will resume from the last applied event. You can also close or refresh Chat and reopen the same run from the sidebar.
+If the connection drops, the open conversation will resume from the last applied event. After closing or refreshing Chat or signing in again, choose **Run conversations** under **This instance** in the Chat sidebar. Scroll down or use **Load more** to find older runs. Use the root ID shown beside the name to tell repeated runs apart. Choose **All** to show ordinary chats alongside run conversations.
+
+![Chat sidebar filtered to run conversations with the selected root run open](/images/agent-teams-chat-filter-en.png)
 
 ![Open a run conversation from the Bot workbench](/images/agent-teams-run-bot-en.png)
 

@@ -671,7 +671,10 @@
     "dataLink": "数据",
     "contractType": "由契约指定",
     "disconnectData": "断开数据线",
-    "invalidPortConnection": "请连接兼容的文本端口",
+    "invalidPortConnection": "请连接类型和结构兼容的端口",
+    "portRequired": "必填",
+    "portOptional": "可选",
+    "portDefault": "默认值 {value}",
     "dataSourceUpstream": "请选择控制路径上游的文本输出",
     "invalidSource": "不可用的输入来源"
   },

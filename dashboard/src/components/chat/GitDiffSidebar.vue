@@ -725,15 +725,6 @@ const currentHeadSha = computed<string | null>(() => {
   if (!target) return null;
   return worktreeList.value.find((w) => w.path === target)?.headSha || null;
 });
-// Path of the loaded project's root directory (from
-// /spcode/project-status, independent of git). Used as a fallback
-// root for the file browser when the project is NOT a git project
-// (worktree list is empty → no main worktree path). Without this
-// fallback, fileBrowserCurrentPath would collapse to "" and
-// useSpcodeFileBrowser's watcher would skip the fetch
-// (`if (!path) return`), leaving the Files view empty.
-const projectRoot = computed(() => session.directory.value);
-
 // Persist viewMode / selectedScope / selectedWorktree on every change.
 // fileBrowserCurrentPath uses persistCurrentPath (300ms debounce).
 watch(viewMode, (v) => safeSetItem(STORAGE_KEYS.viewMode, v), {
@@ -754,58 +745,36 @@ watch(
 // unambiguous; Vue's `<script setup>` does not hoist `let`.
 let prevWorktreePaths: ReadonlySet<string> | null = null;
 
-// Singleton spcode project status + this sidebar's session identity.
-// `session` MUST be declared HERE — before the immediate worktree-list
-// watcher below — because that watcher's callback reads `projectRoot`
-// (→ `session`) on its immediate tick. Instantiating it further down
-// (its natural home next to the other composables) would put the binding
-// in TDZ during the immediate tick; production swallows the resulting
-// ReferenceError with a bare console.error and silently skips the
-// watcher's non-git hydration branch on every mount. `spcodeStatus` sits
-// here only to minimise migration noise — it is no longer on that path.
 const spcodeStatus = useSpcodeProjectStatus();
 // Session identity for every spcode call below: the sidebar acts on the
 // conversation it belongs to, not on whatever the shared singleton holds.
 const session = useSpcodeSession();
+const projectRoot = session.directory;
 
-// When the worktree list first loads, validate the persisted worktree
-// AND cross-validate the persisted currentPath against the new root.
-// This is the only place where fileBrowserCurrentPath is overwritten
-// during initial hydration; thereafter the user is in control.
-// Also clear any preview path: a preview from a different worktree
-// would be invalid in the new context.
+// Loading a project can leave the worktree list empty before and after
+// the load. Initialize Files as soon as the session supplies a directory.
+watch(
+  projectRoot,
+  (root, previousRoot) => {
+    // Keep the persisted worktree on mount so the worktree list can validate it.
+    if (previousRoot !== undefined) selectedWorktree.value = null;
+    if (!root || (viewMode.value === "files" && fileBrowserPreviewPath.value)) {
+      return;
+    }
+    fileBrowserCurrentPath.value = validateCurrentPath(
+      fileBrowserCurrentPath.value,
+      root,
+    );
+  },
+  { immediate: true },
+);
+
+// Revalidate the persisted worktree and current path when the worktree
+// list first arrives or its set of paths changes.
 watch(
   () => worktreesComposable.state.value,
   (s) => {
-    if (s.kind !== "ok") {
-      // Non-git project (or the worktree fetch failed): there is no
-      // worktree list to validate against, so the hydration logic
-      // below — which is gated on `kind === "ok"` — never runs. Without
-      // this branch, fileBrowserCurrentPath stays "" and
-      // useSpcodeFileBrowser's `if (!path) return` short-circuits EVERY
-      // fetch (the initial load AND the header refresh button), leaving
-      // the Files view permanently empty until the project is turned
-      // into a Git repo. projectRoot comes from /spcode/project-status
-      // (independent of git) and is guaranteed non-empty by the time
-      // this fires: the worktree request that drives this watcher is
-      // itself triggered by session.directory/umo becoming
-      // available, so directory (hence projectRoot) is already set. The
-      // non-empty guard keeps the `immediate` tick (state=idle,
-      // projectRoot still "") a no-op. validateCurrentPath preserves a
-      // valid persisted path and only adopts the root when the path is
-      // empty or outside it.
-      if (projectRoot.value) {
-        const validated = validateCurrentPath(
-          fileBrowserCurrentPath.value,
-          projectRoot.value,
-        );
-        if (fileBrowserCurrentPath.value !== validated) {
-          if (viewMode.value === "files" && fileBrowserPreviewPath.value) return;
-          fileBrowserCurrentPath.value = validated;
-        }
-      }
-      return;
-    }
+    if (s.kind !== "ok") return;
     const wtList = s.snapshot.worktrees;
     const newPaths = new Set(wtList.map((w) => w.path));
 
@@ -876,13 +845,12 @@ watch(
       fileBrowserPreviewPath.value = null;
     }
   },
-  { immediate: true },
 );
 
 // When selectedWorktree changes, reset currentPath to the new root.
 // This fires for BOTH manual worktree switches and project switches
-// (which reset selectedWorktree to null via the directory watcher
-// further below). Per spec §5.1: "reset currentPath regardless of
+// (which reset selectedWorktree to null via the projectRoot watcher).
+// Per spec §5.1: "reset currentPath regardless of
 // current viewMode" — we don't want stale paths leaking into a
 // different worktree. The preview path is also cleared: a preview
 // pointing into the old worktree is meaningless in the new one.
@@ -2802,17 +2770,10 @@ watch(
     }
   },
 );
-watch(
-  () => session.directory.value,
-  () => {
-    selectedWorktree.value = null;
-  },
-);
-
 // Spec 2026-06-20 §3.4: switching worktree is a new working context;
 // reset the scope to the default (`unstaged`). Handled in the click
 // handler (see ``onWorktreeChange``) rather than a ``selectedWorktree``
-// watcher, because the ``directory`` watcher above also writes to
+// watcher, because the ``projectRoot`` watcher also writes to
 // ``selectedWorktree`` on project switches and we MUST NOT reset the
 // user's scope preference in that case (spec §3.4: directory change
 // preserves scope).

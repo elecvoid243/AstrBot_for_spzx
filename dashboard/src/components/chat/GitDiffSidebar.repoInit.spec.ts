@@ -201,4 +201,69 @@ describe("GitDiffSidebar repo-init prompt", () => {
     expect(w.find('[data-testid="repo-init-error"]').exists()).toBe(true);
     w.unmount();
   });
+
+  it("lists files on first open after loading a non-Git project", async () => {
+    const status = useSpcodeProjectStatus().status;
+    const project = status.value.directory!;
+    status.value = { ...status.value, loaded: false, directory: null };
+
+    const viewKey = "astrbot.spcode.gitDiffSidebar.viewMode";
+    const pathKey = "astrbot.spcode.gitDiffSidebar.fileBrowserCurrentPath";
+    localStorage.setItem(viewKey, "files");
+    localStorage.removeItem(pathKey);
+
+    const getDefault = getMock.getMockImplementation()!;
+    getMock.mockImplementation(
+      async (route: string, config?: { params?: { path?: string } }) => {
+        if (route === "spcode/git-worktrees") {
+          const directory = status.value.directory;
+          return okEnvelope({
+            loaded: false,
+            directory,
+            worktrees: null,
+            reason: directory ? "not_a_git_repo" : "no_project_loaded",
+          });
+        }
+        if (route === "spcode/file-browser") {
+          const path = config?.params?.path;
+          return okEnvelope({
+            type: "directory",
+            path,
+            entries: [
+              { path: `${path}/readme.txt`, name: "readme.txt", type: "file" },
+            ],
+          });
+        }
+        return getDefault(route, config);
+      },
+    );
+
+    const w = mount(GitDiffSidebar, {
+      props: { modelValue: false },
+      global: { stubs: { ...STUBS, FileBrowserView: false } },
+    });
+    try {
+      await flushPromises();
+      expect(getMock).toHaveBeenCalledWith("spcode/git-worktrees", {
+        params: { umo: "session:test" },
+      });
+
+      status.value = { ...status.value, loaded: true, directory: project };
+      await flushPromises();
+      await w.setProps({ modelValue: true });
+      await flushPromises();
+
+      expect(getMock).toHaveBeenCalledWith(
+        "spcode/file-browser",
+        expect.objectContaining({ params: { path: project } }),
+      );
+      expect(w.get(`[data-path="${project}/readme.txt"]`).text()).toContain(
+        "readme.txt",
+      );
+    } finally {
+      w.unmount();
+      localStorage.removeItem(viewKey);
+      localStorage.removeItem(pathKey);
+    }
+  });
 });

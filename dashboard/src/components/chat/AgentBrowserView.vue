@@ -42,6 +42,7 @@ import { browserControlApi, pluginExtensionApi } from "@/api/v1";
 import { fetchWithAuth } from "@/api/http";
 
 const props = defineProps<{ chatId?: string | null; visible: boolean }>();
+const emit = defineEmits<{ (e: "open-chat", chatId: string): void }>();
 const { t } = useI18n();
 const key = "features.chat.agentBrowser";
 const fullscreen = ref(false);
@@ -136,6 +137,7 @@ interface BrowserAction {
 }
 
 const state = ref<BrowserState | null>(null);
+const busyChatId = ref<string | null>(null);
 const loading = ref(false);
 const observationStale = ref(false);
 const streamIdleTimeoutMs = 30000;
@@ -1406,6 +1408,7 @@ async function follow(
 async function refresh(): Promise<void> {
   disconnectControl();
   pending?.abort();
+  busyChatId.value = null;
   displayedFrame.value = null;
   const retain = Boolean(
     props.chatId &&
@@ -1523,6 +1526,16 @@ async function refresh(): Promise<void> {
       displayedFrame.value = null;
       const status = err.response?.status;
       const reason = err.response?.data?.data?.reason;
+      const ownerChatId = err.response?.data?.data?.owner_chat_id;
+      if (
+        status === 409 &&
+        reason === "busy" &&
+        typeof ownerChatId === "string" &&
+        ownerChatId.trim() &&
+        ownerChatId !== chatId
+      ) {
+        busyChatId.value = ownerChatId;
+      }
       connection.value =
         reason === "busy"
           ? "busy"
@@ -1727,6 +1740,7 @@ watch(
     } else if (!next[1] || !next[2] || !next[3]) {
       disconnectControl();
       pending?.abort();
+      busyChatId.value = null;
       displayedFrame.value = null;
       observationStale.value = Boolean(imageFrame.value?.image);
       if (state.value)
@@ -1761,6 +1775,7 @@ window.addEventListener("pagehide", disconnectControl);
 const accountChanged = () => {
   disconnectControl();
   pending?.abort();
+  busyChatId.value = null;
   state.value = null;
   imageFrame.value = null;
   displayedFrame.value = null;
@@ -1894,7 +1909,6 @@ onBeforeUnmount(() => {
       >
         <div
           v-if="!visibleFrame?.image"
-          role="status"
           class="agent-browser-empty"
         >
           <span class="agent-browser-empty-icon">
@@ -1906,7 +1920,7 @@ onBeforeUnmount(() => {
               aria-hidden="true"
             />
           </span>
-          <strong>{{ t(`${key}.statusLabels.${connection}`) }}</strong>
+          <strong role="status">{{ t(`${key}.statusLabels.${connection}`) }}</strong>
           <p>
             {{
               connection === "idle"
@@ -1914,6 +1928,14 @@ onBeforeUnmount(() => {
                 : t(`${key}.connectionStates.${connection}`)
             }}
           </p>
+          <button
+            v-if="connection === 'busy' && busyChatId"
+            type="button"
+            class="agent-browser-button agent-browser-open-chat"
+            @click="emit('open-chat', busyChatId)"
+          >
+            {{ t(`${key}.openOwningChat`) }}
+          </button>
         </div>
         <div v-else ref="browserDisplay" class="agent-browser-image">
           <div class="agent-browser-viewport" :style="fittedFrameSize">
@@ -2486,6 +2508,13 @@ onBeforeUnmount(() => {
   color: rgba(var(--browser-ink), 0.5);
   font-size: 11.5px;
   line-height: 1.7;
+}
+.agent-browser-open-chat {
+  width: auto;
+  max-width: 100%;
+  height: auto;
+  min-height: 26px;
+  padding: 3px 10px;
 }
 .agent-browser-actions-heading {
   flex: 0 0 auto;

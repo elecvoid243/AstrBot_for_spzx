@@ -1323,6 +1323,7 @@
       :file-reference="fileReferenceNavigation"
       :is-dark="isDark"
       :chat-id="currSessionId"
+      @open-chat="selectSession($event)"
     />
     <WorkspaceFilesPanel
       :model-value="chatHeader.workspaceFilesOpen"

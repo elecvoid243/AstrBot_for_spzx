@@ -28,6 +28,7 @@
     "upgradeControl": "Update Browser Use to enable manual control.",
     "switchMode": "Switch browser mode",
     "waitingUrl": "Waiting for the Agent to open a page",
+    "openOwningChat": "Go to owning chat",
     "readOnly": "Read-only observation",
     "emptyActions": "Browser actions will appear here when a task starts",
     "statusLabels": {

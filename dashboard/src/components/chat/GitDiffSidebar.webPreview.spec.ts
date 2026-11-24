@@ -206,6 +206,8 @@ describe("GitDiffSidebar web preview tab", () => {
       chatId: "chat-auto",
       visible: true,
     });
+    browser.vm.$emit("open-chat", "owning-chat");
+    expect(wrapper.emitted("open-chat")).toEqual([["owning-chat"]]);
     expect(localStorage.getItem(VIEW_MODE_STORAGE_KEY)).toBe("browser");
     wrapper.unmount();
   });

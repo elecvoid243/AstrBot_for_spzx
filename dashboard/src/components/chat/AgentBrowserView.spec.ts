@@ -2345,6 +2345,26 @@ describe("Agent browser snapshots", () => {
     await flushPromises();
     expect(view.attributes("data-connection")).toBe("busy");
     expect(view.find("img").exists()).toBe(false);
+    expect(view.find(".agent-browser-open-chat").exists()).toBe(false);
+    view.unmount();
+  });
+
+  it("opens the owning chat and clears the jump when the account changes", async () => {
+    get.mockRejectedValueOnce({
+      response: {
+        status: 409,
+        data: { data: { reason: "busy", owner_chat_id: "chat-1" } },
+      },
+    });
+    const view = mount(AgentBrowserView, {
+      props: { chatId: "chat-2", visible: true },
+    });
+    await flushPromises();
+    await view.get(".agent-browser-open-chat").trigger("click");
+    expect(view.emitted("open-chat")).toEqual([["chat-1"]]);
+    window.dispatchEvent(new Event("astrbot:account-changed"));
+    await flushPromises();
+    expect(view.find(".agent-browser-open-chat").exists()).toBe(false);
     view.unmount();
   });
 

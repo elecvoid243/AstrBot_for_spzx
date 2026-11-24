@@ -327,6 +327,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: "update:modelValue", v: boolean): void;
   (e: "fullscreen-change", v: boolean): void;
+  (e: "open-chat", chatId: string): void;
 }>();
 
 // ── Scope switcher (spec 2026-06-20 §3) ────────────────────────────
@@ -6017,6 +6018,7 @@ watch(
             v-show="viewMode === 'browser'"
             :chat-id="chatId"
             :visible="modelValue && viewMode === 'browser'"
+            @open-chat="emit('open-chat', $event)"
           />
         </div>
 

@@ -57,12 +57,18 @@ const MAX_SESSION_PAGE_SIZE = 200;
 export function useSessions(
   chatboxMode = false,
   includeRunConversations: MaybeRef<boolean> = false,
+  startInRunScope = false,
 ) {
   const router = useRouter();
   const accountRevision = accountSessionRevision.value;
-  const runConversationsOnly = ref(false);
+  // The two Dashboard scopes are exclusive: "chats" lists ordinary
+  // conversations, "runs" lists workflow root runs. Neither is a superset of
+  // the other, so the sidebar never has to explain a mixed list.
+  // Seeded by the caller so a deep link to a run fetches that scope first
+  // instead of loading chats and switching immediately after.
+  const runConversationsOnly = ref(startInRunScope);
   const sidebarScope = computed(() => toValue(includeRunConversations)
-    ? (runConversationsOnly.value ? "runs" : "mixed")
+    ? (runConversationsOnly.value ? "runs" : "chats")
     : "ordinary");
   const sessions = ref<Session[]>([]);
   const ordinarySessions = ref<Session[]>([]);
@@ -114,8 +120,9 @@ export function useSessions(
         while (cursor && items.length < target) {
           const response = await chatApi.listSessions({
             cursor,
-            ...(scope !== "ordinary" ? { include_run_conversations: true } : {}),
-            ...(scope === "runs" ? { platform_id: "workflow_run" } : {}),
+            ...(scope === "runs"
+              ? { include_run_conversations: true, platform_id: "workflow_run" }
+              : {}),
             page_size: Math.min(MAX_SESSION_PAGE_SIZE, target - items.length),
           });
           assertCurrentAccount(accountRevision);
@@ -147,9 +154,9 @@ export function useSessions(
             ...items.filter((s) => !known.has(sessionRowKey(s))),
           ];
         }
-        if (scope !== "runs") {
-          ordinarySessions.value = sessions.value.filter((session) => session.session_type !== "workflow_run");
-        }
+        // The runs scope replaces `sessions` with run rows; keep the ordinary
+        // list untouched so getCurrentSession still resolves the open chat.
+        if (scope !== "runs") ordinarySessions.value = sessions.value;
         sessionCursor.value = cursor;
         sessionsStatus.value = "ready";
       })

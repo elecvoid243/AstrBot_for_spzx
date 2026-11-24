@@ -17,6 +17,55 @@ from astrbot.dashboard.services.open_api_service import OpenApiService
 
 
 @pytest.mark.asyncio
+async def test_chats_scope_excludes_runs_and_workflow_member_storage(tmp_path):
+    """The two sidebar scopes are exclusive, and neither leaks member chats.
+
+    Args:
+        tmp_path: Temporary directory holding the SQLite database.
+    """
+    db = SQLiteDatabase(str(tmp_path / "scope.db"))
+    run_id = "a" * 32
+    member_session = "member-session"
+    when = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    async with db.get_db() as session, session.begin():
+        for index, session_id in enumerate(("ordinary", member_session)):
+            session.add(
+                PlatformSession(
+                    session_id=session_id,
+                    creator="alice",
+                    display_name=session_id,
+                    updated_at=when + timedelta(days=index),
+                )
+            )
+        session.add(
+            AgentWorkflowRun(
+                run_id=run_id,
+                owner_username="alice",
+                snapshot={
+                    "root_run_id": run_id,
+                    "asset_id": "research",
+                    "asset_version": 1,
+                    "definition": {"name": "Research"},
+                    # A frozen team member keeps private WebChat storage under
+                    # the run owner; the sidebar must never list it.
+                    "members": {"writer": {"member": {"session_id": member_session}}},
+                },
+                updated_at=when + timedelta(days=2),
+            )
+        )
+
+    assert await db.get_sidebar_session_ids("alice", None) == ["ordinary"]
+    assert await db.get_mixed_chat_session_ids("alice", None) == (
+        ["run:" + run_id, "chat:ordinary"],
+        0,
+    )
+    assert await db.get_mixed_chat_session_ids("alice", "workflow_run") == (
+        ["run:" + run_id],
+        0,
+    )
+
+
+@pytest.mark.asyncio
 async def test_run_conversations_share_paging_and_enforce_dashboard_ownership(tmp_path):
     """Open one session per root and archive it without changing the run."""
     db = SQLiteDatabase(str(tmp_path / "run-conversations.db"))

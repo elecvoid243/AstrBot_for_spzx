@@ -99,7 +99,7 @@ describe("useSessions sidebar pagination", () => {
     expect(state.sessionsHasMore.value).toBe(false);
   });
 
-  it("requests run conversations across Dashboard pages while ChatBox keeps ordinary sessions", async () => {
+  it("keeps the Dashboard chats scope exclusive of runs while ChatBox stays ordinary", async () => {
     const legacy = { ...rows(1)[0], session_id: "workflow-run-example" };
     const run: Session = {
       ...legacy,
@@ -108,6 +108,7 @@ describe("useSessions sidebar pagination", () => {
     };
     vi.mocked(chatApi.listSessions)
       .mockResolvedValueOnce(sessionsOk([legacy, ...rows(49, 1)], "snapshot:50"))
+      .mockResolvedValueOnce(sessionsOk(rows(20, 50)))
       .mockResolvedValueOnce(sessionsOk([run]))
       .mockResolvedValueOnce(sessionsOk([legacy]));
     const dashboard = scope.run(() => useSessions(false, true))!;
@@ -115,14 +116,18 @@ describe("useSessions sidebar pagination", () => {
 
     await dashboard.getSessions();
     await dashboard.loadMoreSessions();
+    dashboard.runConversationsOnly.value = true;
+    await vi.waitFor(() => expect(dashboard.sessions.value).toEqual([run]));
     await chatbox.getSessions();
 
     expect(vi.mocked(chatApi.listSessions).mock.calls.map(([params]) => params)).toEqual([
-      { cursor: "start", page_size: 50, include_run_conversations: true },
-      { cursor: "snapshot:50", page_size: 50, include_run_conversations: true },
+      { cursor: "start", page_size: 50 },
+      { cursor: "snapshot:50", page_size: 50 },
+      { cursor: "start", page_size: 50, include_run_conversations: true, platform_id: "workflow_run" },
       { cursor: "start", page_size: 50 },
     ]);
-    expect(dashboard.sessions.value.at(-1)).toEqual(run);
+    expect(dashboard.sessions.value).toEqual([run]);
+    // The ordinary list survives the runs scope so the open chat still resolves.
     expect(dashboard.ordinarySessions.value[0]).toEqual(legacy);
     expect(chatbox.sessions.value).toEqual([legacy]);
   });
@@ -176,7 +181,7 @@ describe("useSessions sidebar pagination", () => {
     state.runConversationsOnly.value = false;
     await vi.waitFor(() => expect(state.sessions.value).toEqual(ordinary));
     expect(chatApi.listSessions).toHaveBeenLastCalledWith({
-      cursor: "start", page_size: 50, include_run_conversations: true,
+      cursor: "start", page_size: 50,
     });
   });
 

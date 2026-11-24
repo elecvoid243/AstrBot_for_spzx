@@ -3341,6 +3341,16 @@ class SQLiteDatabase(BaseDatabase):
             self._build_platform_sessions_query(
                 creator, platform_id, exclude_project_sessions=True, archived=False
             )
+            # Workflow members keep their own WebChat storage under the run
+            # owner. The "chats" sidebar scope lists every platform except
+            # runs, so it must hide that storage exactly like the mixed list
+            # does; otherwise switching scope would surface private member
+            # conversations.
+            .where(
+                ~col(PlatformSession.session_id).in_(
+                    self._workflow_member_session_ids(creator)
+                )
+            )
             .with_only_columns(col(PlatformSession.session_id))
             .order_by(desc(PlatformSession.updated_at), col(PlatformSession.session_id))
         )

@@ -194,6 +194,8 @@ Administrators also use only their own daily Chat projects and conversations. Si
 
 While a reply is running, the send button becomes **Stop** when the composer is empty. Queue a follow-up with text, images or files, then choose **Append** to send it into the active conversation or interrupt the run first. The model receives files as readable attachment references. If the active run ends before consuming a follow-up, it is processed in the next turn. Reopening or refreshing your conversation reconnects to its active reply; another account cannot subscribe to that run, stop it, or answer its questions, even if it knows the identifiers. Interactive choice cards belong to their actual conversation.
 
+Intermediate replies stay visible while the run continues after **Append**. When the run ends, the **Worked** capsule folds its intermediate replies and consumed follow-ups. The final reply stays visible. **Force interrupt** ends the current run and sends the follow-up in a new turn.
+
 ![An ordinary user's own interactive question](./images/multi-user-runtime-choice.png)
 
 Use **+ → Set goal** in the existing composer to set a conversation goal. Its existing sidebar provides pause, resume, and clear actions for that conversation. Goals retain their meaning and persist after reconnecting. The previous administrator-only runtime controls now appear in the same Chat locations for each resource owner. Signing out clears pending cards, queued text, goal display, browser attention signals and subscriptions before the next account opens Chat.

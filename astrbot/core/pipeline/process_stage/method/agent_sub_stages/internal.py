@@ -321,9 +321,14 @@ class InternalAgentSubStage(Stage):
                     follow_up_activated,
                 ) = await prepare_follow_up_capture(follow_up_capture)
                 if follow_up_consumed_marked:
+                    capture_data = {"target_run_id": follow_up_capture.target_run_id}
+                    if follow_up_capture.target_checkpoint_id:
+                        capture_data["target_checkpoint_id"] = (
+                            follow_up_capture.target_checkpoint_id
+                        )
                     event.set_extra(
                         "_follow_up_captured",
-                        {"target_run_id": follow_up_capture.target_run_id},
+                        capture_data,
                     )
                     logger.info(
                         "Follow-up ticket already consumed, stopping processing. umo=%s, seq=%s",

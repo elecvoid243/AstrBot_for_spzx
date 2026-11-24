@@ -2737,6 +2737,36 @@ class ChatService:
                 streaming = result.get("streaming", False)
                 chain_type = result.get("chain_type")
 
+                if msg_type == "follow_up_captured" and isinstance(result_text, dict):
+                    # A history boundary can also precede a new turn. Persist
+                    # membership only once the running agent consumes the input.
+                    checkpoint_id = result_text.get("target_checkpoint_id")
+                    user_message = run.unified_input_message
+                    if (
+                        isinstance(checkpoint_id, str)
+                        and checkpoint_id
+                        and user_message is not None
+                    ):
+                        content = {
+                            **user_message["content"],
+                            "follow_up_checkpoint_id": checkpoint_id,
+                        }
+                        await self.platform_history_mgr.update(
+                            message_id=user_message["id"], content=content
+                        )
+                        user_message["content"] = content
+                        if run.input_message is not None:
+                            run.input_message["content"] = content
+                        result = {
+                            **result,
+                            "data": {
+                                **result_text,
+                                "user_message_id": user_message["id"],
+                            },
+                        }
+                    self._publish_chat_run(run, result)
+                    continue
+
                 if chain_type == "agent_stats":
                     try:
                         run.agent_stats = json.loads(result_text)

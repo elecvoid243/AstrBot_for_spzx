@@ -802,6 +802,16 @@ async def test_followup_timeline_survives_database_reopen(
             [{"type": "tool_call", "tool_calls": [tool]}] if pending_tool else []
         )
         assert resumed["preceding_plain_text"] == "before"
+        receipt = next(item for item in service.chat_runs.values() if item is not run)
+        receipt.back_queue.put_nowait(
+            {
+                "type": "follow_up_captured",
+                "data": {
+                    "target_run_id": run.run_id,
+                    "target_checkpoint_id": run.llm_checkpoint_id,
+                },
+            }
+        )
         if pending_tool:
             run.back_queue.put_nowait(
                 {
@@ -833,6 +843,8 @@ async def test_followup_timeline_survives_database_reopen(
             "".join(part.get("text", "") for part in row["content"]["message"])
             for row in rows
         ] == ["initial", "before", "follow-up", "after"]
+        assert rows[2]["content"]["follow_up_checkpoint_id"] == run.llm_checkpoint_id
+        assert "follow_up_checkpoint_id" not in rows[0]["content"]
         if pending_tool:
             calls = [
                 call

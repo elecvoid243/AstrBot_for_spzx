@@ -291,6 +291,8 @@ export interface TodoSnapshot {
 export interface ChatContent {
   type: "user" | "bot" | string;
   message: MessagePart[];
+  /** Checkpoint of the running turn that consumed this user message. */
+  follow_up_checkpoint_id?: string;
   agent_source?: {
     kind: "agent";
     account_id: string;
@@ -566,6 +568,26 @@ export function useMessages(options: UseMessagesOptions) {
       ? messagesBySession[options.currentSessionId.value] || []
       : [],
   );
+  const streamingBotRecords = computed(() => {
+    const live = new Set<ChatRecord>();
+    const sessionId = options.currentSessionId.value;
+    if (!sessionId) return live;
+    for (const connection of Object.values(activeConnections)) {
+      if (
+        connection.sessionId === sessionId &&
+        !connection.completed &&
+        connection.botRecord
+      ) {
+        live.add(connection.botRecord);
+      }
+    }
+    for (const record of Object.values(
+      systemStreamState.liveBySession[sessionId] || {},
+    )) {
+      live.add(record);
+    }
+    return live;
+  });
 
   // Pair loaded replies with their questions so the gutter previews stay live
   // while streaming. History-only questions use the server's marker previews.
@@ -1358,12 +1380,8 @@ export function useMessages(options: UseMessagesOptions) {
     const sessionMessages = messagesBySession[sessionId];
     sessionMessages.push(userRecord);
     void resolveRecordMedia([userRecord]);
-    // 2026-11-08 (elecvoid243): a dispatched follow-up lands while the
-    // previous turn is still streaming. That bot record was created before
-    // this question, but the rest of its output belongs after it — move it
-    // below the user row so the live list reads question → answer, the same
-    // order a reload derives from history (the backend now folds work-only
-    // segments into the turn's final row). Completed replies never move.
+    // The backend carries work-only output across the user boundary. Keep
+    // visible replies in place until the server sends the next segment.
     const userIndex = sessionMessages.indexOf(userRecord);
     for (let index = 0; index < userIndex; index += 1) {
       const candidate = sessionMessages[index];
@@ -1373,7 +1391,13 @@ export function useMessages(options: UseMessagesOptions) {
         (connection) =>
           connection.botRecord === candidate && !connection.completed,
       );
-      if (isUserMessage(candidate) || !streaming) {
+      if (
+        isUserMessage(candidate) ||
+        !streaming ||
+        messageParts(candidate).some(
+          (part) => part.type !== "think" && part.type !== "tool_call",
+        )
+      ) {
         continue;
       }
       sessionMessages.splice(index, 1);
@@ -2976,16 +3000,31 @@ export function useMessages(options: UseMessagesOptions) {
       }
       const targetRunId =
         typeof data?.target_run_id === "string" ? data.target_run_id : "";
+      const target = targetRunId
+        ? Object.values(activeConnections).find(
+            (candidate) =>
+              candidate.sessionId === sessionId &&
+              (candidate.runId === targetRunId ||
+                candidate.messageId === targetRunId),
+          )
+        : undefined;
+      const checkpointId = data?.target_checkpoint_id;
+      if (typeof checkpointId === "string" && checkpointId) {
+        const input = userRecord || connection.userRecord;
+        const savedId = data.user_message_id ?? input?.id;
+        const row = records.find(
+          (record) =>
+            isUserMessage(record) && String(record.id) === String(savedId),
+        );
+        if (input) input.content.follow_up_checkpoint_id = checkpointId;
+        if (row) row.content.follow_up_checkpoint_id = checkpointId;
+        if (target?.botRecord) target.botRecord.llm_checkpoint_id = checkpointId;
+      }
       if (
         targetRunId &&
         targetRunId !== connection.messageId &&
         !systemStreamState.liveBySession[sessionId]?.[targetRunId] &&
-        !Object.values(activeConnections).some(
-          (candidate) =>
-            candidate.sessionId === sessionId &&
-            (candidate.runId === targetRunId ||
-              candidate.messageId === targetRunId),
-        )
+        !target
       )
         attachLiveRun(sessionId, targetRunId);
       return;
@@ -3045,6 +3084,8 @@ export function useMessages(options: UseMessagesOptions) {
       }
       connection.precedingPlainText = String(data.preceding_plain_text || "");
       botRecord.id = `active-segment-${data.segment_id}`;
+      botRecord.llm_checkpoint_id =
+        data.previous?.llm_checkpoint_id || botRecord.llm_checkpoint_id;
       botRecord.created_at = savedUser?.created_at || new Date().toISOString();
       botRecord.content = normalizeHistoryRecord({
         content: data.content || { type: "bot", message: [] },
@@ -3496,6 +3537,7 @@ export function useMessages(options: UseMessagesOptions) {
     historyOffsetBySession,
     sessionMarkersBySession,
     activeMessages,
+    streamingBotRecords,
     streamRevisionBySession,
     activeMessagePreviews,
     isSessionRunning,
@@ -3780,7 +3822,10 @@ function visibleReplyParts(parts: MessagePart[]) {
   return hasReplyText(replyParts) ? replyParts : parts;
 }
 
-export function splitAgentWork(content: ChatContent): AgentWorkSplit | null {
+export function splitAgentWork(
+  content: ChatContent,
+  hasEarlierWork = false,
+): AgentWorkSplit | null {
   const blocks = messageBlocks(content);
   let finalStart = -1;
   for (let index = blocks.length - 1; index >= 0; index -= 1) {
@@ -3790,7 +3835,7 @@ export function splitAgentWork(content: ChatContent): AgentWorkSplit | null {
     }
   }
   // No final reply, or nothing produced before it — nothing to collapse.
-  if (finalStart <= 0) return null;
+  if (finalStart < 0 || (finalStart === 0 && !hasEarlierWork)) return null;
   // Work that landed after the reply stays in the work group instead of
   // hanging under the capsule: a tool call the run never returned gets
   // frozen into the record when the `interactive_choice` event saves it,

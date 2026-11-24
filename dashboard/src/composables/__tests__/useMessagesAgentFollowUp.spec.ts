@@ -55,6 +55,7 @@ async function mountConversation(startHuman = true) {
       return () =>
         h(ChatMessageList, {
           messages: core.activeMessages.value,
+          streamingBotRecords: core.streamingBotRecords.value,
           isStreaming:
             core.isSessionRunning("recipient") ||
             core.hasLiveSystemRecord("recipient"),
@@ -355,7 +356,10 @@ it("settles a captured human send without refreshing or interrupting the origina
   await flushPromises();
   push("/send", {
     type: "follow_up_captured",
-    data: { target_run_id: "human-run" },
+    data: {
+      target_run_id: "human-run",
+      target_checkpoint_id: "original-checkpoint",
+    },
   });
   push("/send", { type: "end" });
   feeds.get("/send")!.close();
@@ -390,6 +394,18 @@ it("settles a captured human send without refreshing or interrupting the origina
       }),
     ]),
   );
+
+  feeds.set("/original", originalFeed);
+  push("/original", { type: "plain", data: "Final answer", streaming: true });
+  push("/original", { type: "end" });
+  originalFeed.close();
+  await flushPromises();
+  const followUp = wrapper.get<HTMLElement>(
+    '[data-message-id="local-user-human-follow-up"]',
+  );
+  expect(followUp.element.style.display).toBe("none");
+  await wrapper.get(".agent-work-pill").trigger("click");
+  expect(followUp.element.style.display).toBe("");
 });
 
 it("moves the streaming bot bubble below a dispatched follow-up", async () => {
@@ -411,6 +427,118 @@ it("moves the streaming bot bubble below a dispatched follow-up", async () => {
     "local-user-human-follow-up",
     "local-bot-human-run",
   ]);
+});
+
+it("folds captured messages with the earlier replies only after their run ends", async () => {
+  await mountConversation();
+  feeds.set("/original", feeds.get("/send")!);
+  const visibleRows = () =>
+    wrapper
+      .findAll<HTMLElement>(".message-row")
+      .filter((row) => row.element.style.display !== "none");
+  const pills = () => wrapper.findAll(".agent-work-pill");
+  const firstReply = [
+    { type: "think", think: "before follow-up" },
+    { type: "plain", text: "First progress update" },
+  ];
+  push("/original", { type: "plain", data: firstReply[1].text, streaming: true });
+  await flushPromises();
+
+  for (const [index, text] of ["Add the dates", "Include a total"].entries()) {
+    const messageId = `follow-up-${index}`;
+    const exchange = core.createLocalExchange({
+      sessionId: "recipient",
+      messageId,
+      parts: [{ type: "plain", text }],
+    });
+    core.sendMessageStream({
+      ...exchange,
+      sessionId: "recipient",
+      messageId,
+      parts: [{ type: "plain", text }],
+      transport: "sse",
+    });
+    await flushPromises();
+    expect(visibleRows().at(-2)?.text()).toContain(
+      index === 0 ? "First progress update" : "Second progress update",
+    );
+    push("/original", {
+      type: "message_segment",
+      data: {
+        segment_id: messageId,
+        client_message_id: messageId,
+        previous: {
+          id: 2 + index * 2,
+          llm_checkpoint_id: "original-checkpoint",
+          content: {
+            type: "bot",
+            message:
+              index === 0
+                ? firstReply
+                : [{ type: "plain", text: "Second progress update" }],
+          },
+        },
+        user: { id: 3 + index * 2, content: exchange.userRecord.content },
+        content: { type: "bot", message: [] },
+      },
+    });
+    push("/send", {
+      type: "follow_up_captured",
+      data: {
+        target_run_id: "running-agent",
+        target_checkpoint_id: "original-checkpoint",
+        user_message_id: 3 + index * 2,
+      },
+    });
+    push("/send", { type: "end" });
+    feeds.get("/send")!.close();
+    push("/original", {
+      type: "plain",
+      data: index === 0 ? "Second progress update" : "Final report",
+      streaming: true,
+    });
+    await flushPromises();
+    expect(pills()).toHaveLength(0);
+    expect(visibleRows().some((row) => row.text().includes(text))).toBe(true);
+    expect(
+      visibleRows().some((row) => row.text().includes("First progress update")),
+    ).toBe(true);
+  }
+
+  push("/original", { type: "end" });
+  feeds.get("/original")!.close();
+  await flushPromises();
+  expect(core.streamingBotRecords.value.size).toBe(0);
+  expect(pills()).toHaveLength(1);
+  expect(visibleRows()).toHaveLength(2);
+  expect(visibleRows()[0].text()).toContain("initial request");
+  expect(visibleRows()[1].text()).toContain("Final report");
+  await pills()[0].trigger("click");
+  expect(visibleRows().map((row) => row.attributes("data-message-id"))).toEqual([
+    "local-user-human-run",
+    "2",
+    "3",
+    "4",
+    "5",
+    "active-segment-follow-up-1",
+  ]);
+
+  await pills()[0].trigger("click");
+  const fresh = core.createLocalExchange({
+    sessionId: "recipient",
+    messageId: "after-stop",
+    parts: [{ type: "plain", text: "Start over" }],
+  });
+  core.sendMessageStream({
+    ...fresh,
+    sessionId: "recipient",
+    messageId: "after-stop",
+    parts: [{ type: "plain", text: "Start over" }],
+    transport: "sse",
+  });
+  await flushPromises();
+  expect(pills()).toHaveLength(1);
+  expect(visibleRows().some((row) => row.text().includes("Start over"))).toBe(true);
 });
 
 it("renders an independent Agent reply after an idle-session announcement", async () => {

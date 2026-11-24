@@ -1027,6 +1027,7 @@
               :current-umo="currentUmo ?? undefined"
               :session-id="currSessionId ?? undefined"
               :is-dark="isDark"
+              :streaming-bot-records="streamingBotRecords"
               :is-streaming="
                 Boolean(
                   currSessionId &&
@@ -2342,6 +2343,7 @@ const {
   historyOffsetBySession,
   sessionMarkersBySession,
   activeMessages,
+  streamingBotRecords,
   streamRevisionBySession,
   activeMessagePreviews,
   isSessionRunning,

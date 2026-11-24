@@ -242,6 +242,27 @@ describe("ChatMessageList agent-work reveal", () => {
     expect(capsuleExpanded(mountList({ revealWorkIndex: 1 }))).toBe(true);
   });
 
+  it("opens the final reply's capsule for a saved follow-up search hit", () => {
+    const checkpoint = "saved-checkpoint";
+    const previous = { ...workedBotRecord("b1"), llm_checkpoint_id: checkpoint };
+    const followUp = userRecord("u2");
+    followUp.content.follow_up_checkpoint_id = checkpoint;
+    const reply: ChatRecord = {
+      id: "b2",
+      llm_checkpoint_id: checkpoint,
+      content: { type: "bot", message: [TEXT("Final reply")] },
+    };
+    const wrapper = mountList({
+      messages: [userRecord("u1"), previous, followUp, reply],
+      revealWorkIndex: 2,
+    });
+    const replyRow = wrapper.get('[data-message-id="b2"]');
+    expect(replyRow.get(".agent-work-pill").attributes("aria-expanded")).toBe(
+      "true",
+    );
+    expect(wrapper.findAll(".agent-work-pill")).toHaveLength(1);
+  });
+
   it("resolves the reveal against absolute history indices", () => {
     // Only the bot turn is loaded and it sits at absolute index 5.
     const windowed = mountList({

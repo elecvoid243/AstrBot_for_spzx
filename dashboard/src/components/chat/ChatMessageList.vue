@@ -256,7 +256,7 @@
 
               <template v-else>
                 <button
-                  v-if="agentWorkPillVisible(msg, msgIndex)"
+                  v-if="agentWorkLayout.splits.has(msgIndex)"
                   class="agent-work-pill"
                   :class="{
                     'agent-work-pill--expanded': agentWorkExpanded(
@@ -293,7 +293,7 @@
                   />
                 </button>
                 <div
-                  v-if="agentWorkPillVisible(msg, msgIndex)"
+                  v-if="agentWorkLayout.splits.has(msgIndex)"
                   class="agent-work-divider"
                   aria-hidden="true"
                 ></div>
@@ -805,7 +805,7 @@ import {
   displayParts as displayMessageParts,
   messageBlocks as buildMessageBlocks,
   splitAgentWork,
-  isFinalReplyBlock,
+  type AgentWorkSplit,
   type MessageDisplayBlock,
 } from "@/composables/useMessages";
 import type {
@@ -827,6 +827,7 @@ const props = withDefaults(
     remoteReady?: boolean;
     isDark?: boolean;
     isStreaming?: boolean;
+    streamingBotRecords?: ReadonlySet<ChatRecord>;
     variant?: "main" | "thread";
     enableEdit?: boolean;
     enableRegenerate?: boolean;
@@ -1406,9 +1407,7 @@ function shouldShowMessageBubble(message: ChatRecord) {
   );
 }
 
-// The last non-user row is the only assistant row that can still be streaming:
-// every row after it is an optimistic user follow-up. Precomputing that index
-// keeps the predicate O(1) instead of copying the tail on every template call.
+// Lists that only track session-level liveness use the last assistant row.
 const lastNonUserIndex = computed(() => {
   for (let index = props.messages.length - 1; index >= 0; index -= 1) {
     if (!isUserMessage(props.messages[index])) return index;
@@ -1417,6 +1416,9 @@ const lastNonUserIndex = computed(() => {
 });
 
 function isMessageStreaming(message: ChatRecord, messageIndex: number) {
+  if (props.streamingBotRecords) {
+    return props.streamingBotRecords.has(message);
+  }
   if (props.remoteHistory) {
     return (
       props.isStreaming &&
@@ -1664,30 +1666,12 @@ function agentWorkKey(message: ChatRecord, messageIndex: number) {
 }
 
 /**
- * Whether the "worked for ..." capsule replaces this message's live render.
- *
- * The capsule's collapsed state renders only the reply region, and that
- * region leaves out its `interactive_choice` parts, so a box that is still
- * waiting for an answer must keep its whole message out of the collapse —
- * otherwise the box is rendered nowhere at all. Tab liveness is not a safe
- * gate for that: a page reload drops the run's SSE connection (or the run is
- * gone: server restart, the answer arrived in another tab) while the box
- * still waits, and the capsule then swallowed it. Submitted / cancelled /
- * ignored boxes are terminal history and fold like everything else.
+ * Check whether this message still has a choice the user can answer.
  *
  * @param message - The bot record being rendered.
- * @param messageIndex - Its position in the loaded list.
- * @returns True when the message may collapse behind the capsule.
+ * @returns True when collapsing would hide an unanswered choice.
  */
-function agentWorkPillVisible(message: ChatRecord, messageIndex: number) {
-  if (
-    isUserMessage(message) ||
-    messageContent(message).isLoading ||
-    isMessageStreaming(message, messageIndex) ||
-    splitAgentWork(messageContent(message)) === null
-  ) {
-    return false;
-  }
+function hasPendingChoice(message: ChatRecord) {
   // Terminal boxes need no live render; the box itself decides with the same
   // three flags (see `InteractiveChoiceBox`'s state machine).
   if (
@@ -1699,8 +1683,8 @@ function agentWorkPillVisible(message: ChatRecord, messageIndex: number) {
         !part.resolved &&
         !part.cancelled,
     )
-  ) return false;
-  if (!props.currentUmo || isInteractiveChoiceIgnored(message)) return true;
+  ) return true;
+  if (!props.currentUmo || isInteractiveChoiceIgnored(message)) return false;
   for (const part of messageParts(message)) {
     if (!isInteractiveChoicePayload(part)) continue;
     const requestId =
@@ -1712,87 +1696,86 @@ function agentWorkPillVisible(message: ChatRecord, messageIndex: number) {
     ) {
       continue;
     }
-    return false;
+    return true;
   }
-  return true;
+  return false;
 }
 
 function agentWorkExpanded(message: ChatRecord, messageIndex: number) {
   return expandedAgentWork.value.has(agentWorkKey(message, messageIndex));
 }
 
-/**
- * Rows folded into a completed turn's "worked for ..." capsule.
- *
- * A follow-up boundary splits one agent turn into several rows: work segment
- * / appended user message / work segment / ... / final reply. Once the final
- * reply exists and its capsule is collapsed, those intermediate rows are the
- * turn's work trail, not separate answers: hiding them makes the conversation
- * read as question(s) → answer, and the user's appended messages fold in with
- * the work. Expanding the capsule brings the whole chain back.
- *
- * Telemetry-only bot rows (a captured follow-up leaves `message: []` with
- * stats/injections) are hidden unconditionally — they are never a reply.
- */
-const foldedRowIndexes = computed(() => {
+// A checkpoint ties reply segments together across live output and history.
+// Only a confirmed follow-up joins that checkpoint as a user row.
+const agentWorkLayout = computed(() => {
   const rows = props.messages;
-  const hidden = new Set<number>();
-  // A bot row "has a reply" when it renders a plain-text block: that is what
-  // a reader sees as an answer. `agentWorkPillVisible` is NOT this test — a
-  // simple reply with no work before it has nothing to collapse, so it has no
-  // pill and would otherwise be mistaken for a work-only segment.
-  const hasVisibleReply = (row: ChatRecord) =>
-    renderBlocks(row).some(isFinalReplyBlock);
+  const groups = new Map<string | number, number[]>();
+  const emptyRows = new Set<number>();
+  const splits = new Map<number, AgentWorkSplit>();
+  const ownerByRow = new Map<number, number>();
+  let branchStart = 0;
 
   for (let index = 0; index < rows.length; index += 1) {
     const row = rows[index];
-    if (isUserMessage(row) || isBranchDivider(row)) continue;
-    if (messageContent(row).isLoading) continue;
-    if (isMessageStreaming(row, index)) continue;
-    const hasChoice = messageParts(row).some((part) =>
-      isInteractiveChoicePayload(part),
+    if (isBranchDivider(row)) {
+      branchStart = index + 1;
+      continue;
+    }
+    const content = messageContent(row);
+    const user = isUserMessage(row);
+    const checkpoint = user
+      ? content.follow_up_checkpoint_id
+      : row.llm_checkpoint_id;
+    if (user && !checkpoint) continue;
+    if (
+      !user &&
+      !content.isLoading &&
+      !isMessageStreaming(row, index) &&
+      renderBlocks(row).length === 0 &&
+      !messageParts(row).some(isInteractiveChoicePayload)
+    ) {
+      emptyRows.add(index);
+      continue;
+    }
+    const key = checkpoint ? `${branchStart}:${checkpoint}` : index;
+    const members = groups.get(key);
+    if (members) members.push(index);
+    else groups.set(key, [index]);
+  }
+
+  for (const members of groups.values()) {
+    const botIndexes = members.filter((index) => !isUserMessage(rows[index]));
+    const finalIndex = botIndexes[botIndexes.length - 1];
+    if (
+      finalIndex === undefined ||
+      botIndexes.some(
+        (index) =>
+          messageContent(rows[index]).isLoading ||
+          isMessageStreaming(rows[index], index) ||
+          hasPendingChoice(rows[index]),
+      )
+    ) {
+      continue;
+    }
+    const split = splitAgentWork(
+      messageContent(rows[finalIndex]),
+      members.length > 1,
     );
-    if (!hasChoice && renderBlocks(row).length === 0) hidden.add(index);
+    if (!split) continue;
+    splits.set(finalIndex, split);
+    for (const index of members) ownerByRow.set(index, finalIndex);
   }
+  return { emptyRows, splits, ownerByRow };
+});
 
-  for (let index = 0; index < rows.length; index += 1) {
-    const row = rows[index];
-    if (isUserMessage(row) || !agentWorkPillVisible(row, index)) continue;
-    if (agentWorkExpanded(row, index)) continue;
-
-    let from = index;
-    let cursor = index - 1;
-    while (cursor >= 0) {
-      const candidate = rows[cursor];
-      if (isUserMessage(candidate)) {
-        // An appended message is preceded by a work-only bot row of this
-        // turn; anything else (a finished turn, the start) ends the fold.
-        const before = cursor > 0 ? rows[cursor - 1] : null;
-        const appended =
-          before !== null &&
-          !isUserMessage(before) &&
-          !hasVisibleReply(before) &&
-          !messageContent(before).isLoading &&
-          !isMessageStreaming(before, cursor - 1);
-        if (!appended) break;
-        from = cursor;
-        cursor -= 1;
-        continue;
-      }
-      const workOnly =
-        !hasVisibleReply(candidate) &&
-        !messageContent(candidate).isLoading &&
-        !isMessageStreaming(candidate, cursor);
-      if (!workOnly) break;
-      from = cursor;
-      cursor -= 1;
-    }
-
-    for (let rowIndex = from; rowIndex < index; rowIndex += 1) {
-      hidden.add(rowIndex);
+const foldedRowIndexes = computed(() => {
+  const { emptyRows, ownerByRow } = agentWorkLayout.value;
+  const hidden = new Set(emptyRows);
+  for (const [index, owner] of ownerByRow) {
+    if (index !== owner && !agentWorkExpanded(props.messages[owner], owner)) {
+      hidden.add(index);
     }
   }
-
   return hidden;
 });
 
@@ -1820,15 +1803,8 @@ function visibleBlocks(
     block,
     index,
   }));
-  if (
-    isUserMessage(message) ||
-    !agentWorkPillVisible(message, messageIndex) ||
-    agentWorkExpanded(message, messageIndex)
-  ) {
-    return blocks;
-  }
-  const split = splitAgentWork(messageContent(message));
-  if (!split) return blocks;
+  const split = agentWorkLayout.value.splits.get(messageIndex);
+  if (!split || agentWorkExpanded(message, messageIndex)) return blocks;
   // The collapsed region is the reply block alone, wherever it sits: work
   // behind it folds back, so it is not a suffix of the full list.
   return split.finalBlocks.map((block) => ({
@@ -1917,7 +1893,9 @@ watch(
     const message = props.messages[localIndex];
     if (!message) return;
     adoptedRevealIndex.value = target;
-    const key = agentWorkKey(message, localIndex);
+    const ownerIndex =
+      agentWorkLayout.value.ownerByRow.get(localIndex) ?? localIndex;
+    const key = agentWorkKey(props.messages[ownerIndex], ownerIndex);
     if (!expandedAgentWork.value.has(key)) {
       const next = new Set(expandedAgentWork.value);
       next.add(key);

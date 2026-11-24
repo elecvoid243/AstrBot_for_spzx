@@ -11,26 +11,6 @@ from astrbot.core.subagent_tools import ORCHESTRATE_TASKS_TOOL
 
 @pytest.mark.asyncio
 async def test_legacy_dag_configuration_cannot_enable_or_register_tool(monkeypatch):
-    # configure mutates class-level settings; restore them after the test.
-    for name in (
-        "_dag_enabled",
-        "_max_subagent_count",
-        "_auto_cleanup_per_turn",
-        "_shared_context_enabled",
-        "_history_enabled",
-        "_shared_context_maxlen",
-        "_execution_timeout",
-        "_rule_prompt",
-        "_time_prompt_enabled",
-        "_timezone",
-        "_default_provider_id",
-        "_context_inherit_mode",
-        "_tools_inherent",
-        "_tools_blacklist",
-        "_mcp_inherent",
-        "_mcp_blacklist",
-    ):
-        monkeypatch.setattr(SubAgentManager, name, getattr(SubAgentManager, name))
     monkeypatch.setattr(SubAgentManager, "set_history_enabled", MagicMock())
     monkeypatch.setattr(SubAgentManager, "set_shared_context_enabled", MagicMock())
     monkeypatch.setattr(SubAgentManager, "get_session", MagicMock(return_value=None))

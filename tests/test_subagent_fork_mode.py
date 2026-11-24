@@ -727,15 +727,6 @@ def test_effective_raw_tool_set_property():
     assert runner.effective_raw_tool_set is raw_set
 
 
-def test_configure_validates_inherit_mode():
-    SubAgentManager.configure(context_inherit_mode="fork")
-    assert SubAgentManager.get_context_inherit_mode() == "fork"
-    SubAgentManager.configure(context_inherit_mode="auto")
-    assert SubAgentManager.get_context_inherit_mode() == "auto"
-    SubAgentManager.configure(context_inherit_mode="bogus")
-    assert SubAgentManager.get_context_inherit_mode() == "normal"
-
-
 def test_main_agent_only_tools_set(monkeypatch):
     monkeypatch.setattr(
         SubAgentManager,

@@ -232,65 +232,6 @@ DAG Orchestration automatically delegate subagents. When you have 2+ independent
         return "\n".join(parts) + "\n"
 
     @classmethod
-    def configure(
-        cls,
-        max_subagent_count: int = 10,
-        auto_cleanup_per_turn: bool = True,
-        tools_blacklist: list[str] = None,
-        tools_inherent: list[str] = None,
-        mcp_blacklist: list[str] | None = None,
-        mcp_inherent: list[str] | None = None,
-        execution_timeout: float = 1200.0,
-        rule_prompt: str = "",
-        time_prompt_enabled: bool = True,
-        timezone: str | None = None,
-        dag_enabled: bool = False,
-        default_provider_id: str = "",
-        context_inherit_mode: str = "normal",
-        **kwargs,
-    ) -> None:
-        """Configure SubAgentManager settings"""
-        cls._mcp_blacklist = set(mcp_blacklist or [])
-        cls._mcp_inherent = set(mcp_inherent or [])
-        cls._max_subagent_count = max_subagent_count
-        cls._auto_cleanup_per_turn = auto_cleanup_per_turn
-        # Subagent history memory is a fixed behavior, not a user setting.
-        cls._history_enabled = True
-        # Shared context is retired from configuration and stays permanently off;
-        # the implementation is kept for now but is unreachable.
-        cls._shared_context_enabled = False
-        cls._execution_timeout = execution_timeout
-        cls._rule_prompt = rule_prompt
-        cls._time_prompt_enabled = time_prompt_enabled
-        cls._timezone = timezone
-        # Keep accepting the legacy setting while DAG orchestration is disabled.
-        cls._dag_enabled = False
-        cls._default_provider_id = default_provider_id
-        cls._context_inherit_mode = (
-            context_inherit_mode
-            if context_inherit_mode in ("normal", "fork", "auto")
-            else "normal"
-        )
-        if tools_inherent is None:
-            cls._tools_inherent = {
-                "astrbot_execute_shell",
-                "astrbot_execute_python",
-            }
-        else:
-            cls._tools_inherent = set(tools_inherent)
-        if tools_blacklist is None:
-            cls._tools_blacklist = {
-                "broadcast_shared_context",
-                "create_subagent",
-                "remove_subagent",
-                "list_subagents",
-                "wait_for_subagent",
-                "view_shared_context",
-            }
-        else:
-            cls._tools_blacklist = set(tools_blacklist)
-
-    @classmethod
     def policy_value(cls, name: str):
         """Read a task-local policy field or the legacy default.
 
@@ -308,10 +249,6 @@ DAG Orchestration automatically delegate subagents. When you have 2+ independent
     @classmethod
     def get_execution_timeout(cls) -> float:
         return cls.policy_value("execution_timeout")
-
-    @classmethod
-    def is_auto_cleanup_per_turn(cls) -> bool:
-        return cls.policy_value("auto_cleanup_per_turn")
 
     @classmethod
     def is_shared_context_enabled(cls) -> bool:

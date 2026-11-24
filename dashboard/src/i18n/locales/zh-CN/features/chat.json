@@ -600,8 +600,8 @@
   "conversation": {
     "title": "对话",
     "filter": {
-      "label": "筛选本机会话",
-      "all": "全部",
+      "label": "本机会话类型",
+      "chats": "普通对话",
       "runs": "工作流运行",
       "loading": "正在加载工作流运行…",
       "empty": "暂无工作流运行",

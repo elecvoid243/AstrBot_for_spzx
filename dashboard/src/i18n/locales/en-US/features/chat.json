@@ -600,8 +600,8 @@
   "conversation": {
     "title": "Conversations",
     "filter": {
-      "label": "Filter local conversations",
-      "all": "All",
+      "label": "Local conversation type",
+      "chats": "Chats",
       "runs": "Workflow runs",
       "loading": "Loading workflow runs…",
       "empty": "No workflow runs",

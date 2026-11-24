@@ -182,27 +182,38 @@
           <span class="sidebar-group-title">{{
             tm("remoteConnections.local")
           }}</span>
-        </div>
-        <div
-          v-if="includeRunConversations"
-          class="sidebar-top-actions"
-          role="group"
-          :aria-label="tm('conversation.filter.label')"
-        >
-          <button
-            type="button"
-            class="sidebar-top-action-btn"
-            :class="{ active: !runConversationsOnly }"
-            :aria-pressed="!runConversationsOnly"
-            @click="runConversationsOnly = false"
-          >{{ tm("conversation.filter.all") }}</button>
-          <button
-            type="button"
-            class="sidebar-top-action-btn"
-            :class="{ active: runConversationsOnly }"
-            :aria-pressed="runConversationsOnly"
-            @click="runConversationsOnly = true"
-          >{{ tm("conversation.filter.runs") }}</button>
+          <!-- Two exclusive scopes: ordinary chats or workflow runs. Icons
+               only, so the header row stays one line and the switch does not
+               compete with the section title for width. -->
+          <div
+            v-if="includeRunConversations"
+            class="sidebar-scope-switch"
+            role="group"
+            :aria-label="tm('conversation.filter.label')"
+          >
+            <button
+              type="button"
+              class="sidebar-scope-btn"
+              :class="{ active: !runConversationsOnly }"
+              :aria-pressed="!runConversationsOnly"
+              :title="tm('conversation.filter.chats')"
+              :aria-label="tm('conversation.filter.chats')"
+              @click="runConversationsOnly = false"
+            >
+              <v-icon size="16">mdi-chat-outline</v-icon>
+            </button>
+            <button
+              type="button"
+              class="sidebar-scope-btn"
+              :class="{ active: runConversationsOnly }"
+              :aria-pressed="runConversationsOnly"
+              :title="tm('conversation.filter.runs')"
+              :aria-label="tm('conversation.filter.runs')"
+              @click="runConversationsOnly = true"
+            >
+              <v-icon size="16">mdi-source-branch</v-icon>
+            </button>
+          </div>
         </div>
         <!-- 2026-08-09 sidebar batch delete (elecvoid243): batch action
              bar shown while selection mode is active. -->
@@ -1788,7 +1799,13 @@ const {
   setSessionArchived,
   setSessionStarred,
   updateSessionTitle,
-} = useSessions(props.chatboxMode, includeRunConversations);
+} = useSessions(
+  props.chatboxMode,
+  includeRunConversations,
+  // Deep links straight to a run open the runs scope on the first fetch;
+  // the route watcher below covers navigation after mount.
+  route.name === "ChatRunConversation",
+);
 const showRunConversationsOnly = computed(() => includeRunConversations.value && runConversationsOnly.value);
 const runConversationId = computed(() =>
   route.name === "ChatRunConversation" && typeof route.params.runId === "string"
@@ -3050,6 +3067,10 @@ watch(
   [() => route.params.conversationId, runConversationId],
   async (_, [, previousRunId]) => {
     if (isRunConversation.value) {
+      // Opening a run directly (link, reload, or a workbench jump) must land
+      // on the runs scope: the header title reads the run row from the list,
+      // and the row has to be visible and highlighted.
+      runConversationsOnly.value = true;
       showChatWorkspace();
       currSessionId.value = "";
       pendingViewportSessionId = "";
@@ -7687,6 +7708,38 @@ function toggleTheme() {
   font-weight: var(--sidebar-group-weight);
   letter-spacing: 0.01em;
   color: var(--sidebar-group-color);
+}
+
+/* Exclusive scope switch pinned to the right of the group title. Both
+   buttons are icon-only so the row height matches a plain group header. */
+.sidebar-scope-switch {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
+}
+
+.sidebar-scope-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: rgba(var(--v-theme-on-surface), 0.4);
+  cursor: pointer;
+}
+
+.sidebar-scope-btn:hover {
+  color: rgba(var(--v-theme-on-surface), 0.75);
+  background: rgba(var(--v-theme-on-surface), 0.06);
+}
+
+.sidebar-scope-btn.active {
+  color: rgb(var(--v-theme-on-surface));
+  background: rgba(var(--v-theme-on-surface), 0.1);
 }
 
 .sidebar-section {

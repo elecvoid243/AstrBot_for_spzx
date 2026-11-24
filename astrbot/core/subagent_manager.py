@@ -172,8 +172,8 @@ class SubAgentManager:
         1800  # 会话存活时间。若有会话的subagent闲置时间超过该值，自动清理
     )
 
-    _HEADER_TEMPLATE = f"""# Sub-Agent Orchestration
-You can manage sub-agents with isolated instructions, tools and skills. Maximum {_max_subagent_count} subagents.
+    _HEADER_TEMPLATE = """# Sub-Agent Orchestration
+You can manage sub-agents with isolated instructions, tools and skills.
 
 ## When to Use
 Create sub-agents ONLY when:

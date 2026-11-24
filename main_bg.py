@@ -39,7 +39,7 @@ import threading
 import time
 import webbrowser
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urlencode, urlparse
 
 # -----------------------------------------------------------------------------
 # pythonw 下 stdout/stderr 为 None，loguru / print 写日志时会抛 OSError。
@@ -250,6 +250,34 @@ async def main_async(
     logger.info(logo_tmpl)
 
     core_lifecycle = InitialLoader(db, log_broker)
+    if sys.platform == "win32":
+        toaster = None
+
+        def notify_project_todo(
+            project_id: str, card_id: str, project: str, title: str
+        ):
+            """Show an administrator's due card with its own activation target.
+
+            Args:
+                project_id: Owning project identity.
+                card_id: Card identity.
+                project: Project display name.
+                title: Card display title.
+            """
+            from windows_toasts import InteractableWindowsToaster, Toast
+            from windows_toasts.register_hkey_aumid import register_hkey
+
+            nonlocal toaster
+            if toaster is None:
+                app_id = "AstrBot.ProjectBoard"
+                register_hkey(app_id, "AstrBot")
+                toaster = InteractableWindowsToaster("AstrBot", notifierAUMID=app_id)
+
+            query = urlencode({"boardProject": project_id, "boardCard": card_id})
+            link = f"{_get_default_webui_url()}/#/chat?{query}"
+            toaster.show_toast(Toast([project, title], launch_action=link))
+
+        core_lifecycle.notify_project_todo = notify_project_todo
     core_lifecycle.webui_dir = webui_dir
 
     # 将 InitialLoader.start() 包装到 task，并与 stop_event 共同等待

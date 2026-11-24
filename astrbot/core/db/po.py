@@ -1029,6 +1029,9 @@ class ChatUIProject(TimestampMixin, SQLModel, table=True):
     """
 
     __tablename__: str = "chatui_projects"
+    todo_lane_order: list[str] = Field(
+        default_factory=lambda: ["todo", "doing", "done"], sa_type=JSON
+    )
 
     inner_id: int | None = Field(
         primary_key=True,
@@ -1071,6 +1074,27 @@ class ChatUIProject(TimestampMixin, SQLModel, table=True):
             name="uix_chatui_project_id",
         ),
     )
+
+
+class ProjectTodo(SQLModel, table=True):
+    """A user-managed card on one ChatUI project board."""
+
+    __tablename__: str = "chatui_project_todos"
+    id: str = Field(primary_key=True)
+    project_id: str = Field(index=True, foreign_key="chatui_projects.project_id")
+    title: str
+    description: str = ""
+    checklist: list[dict] = Field(default_factory=list, sa_type=JSON)
+    labels: list[dict] = Field(default_factory=list, sa_type=JSON)
+    status: str = "todo"
+    position: int = 0
+    reminder: dict | None = Field(default=None, sa_type=JSON)
+    next_due: int | None = Field(default=None, index=True)
+    unread_at: int | None = None
+    session_id: str | None = None
+    pending_session_id: str | None = None
+    dispatch_receipt: str | None = None
+    revision: int = 0
 
 
 class SessionProjectRelation(SQLModel, table=True):

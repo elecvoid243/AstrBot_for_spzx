@@ -132,6 +132,8 @@ onMounted(async () => {
 
   // 检查用户是否已登录，如果已登录则重定向
   if (authStore.has_token()) {
+    // Account reset can remount the login page while the card navigation is pending.
+    if (authStore.returnUrl?.startsWith('/chat?') && router.resolve(authStore.returnUrl).query.boardCard) return;
     if (authStore.role === 'admin' && sessionStorage.getItem('astrbot-full-restore')) {
       router.replace('/settings#settings-maintenance');
       return;

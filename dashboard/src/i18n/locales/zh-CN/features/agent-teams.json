@@ -33,13 +33,13 @@
   },
   "runConversation": {
     "reconcileInWorkbench": "请打开运行工作台，核实结果未明的工具效果后再继续。",
-    "type": "运行会话",
+    "type": "工作流运行",
     "asset": "资产",
     "version": "固定版本",
     "status": "状态",
     "openChat": "在 Chat 中打开",
     "openWorkbench": "打开运行工作台",
-    "unavailable": "无法打开此运行会话。",
+    "unavailable": "无法打开此工作流运行。",
     "updateFailed": "无法更新此运行。"
   },
   "trial": {

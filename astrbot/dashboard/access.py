@@ -69,6 +69,26 @@ UNIFIED_SEND_FIELDS = {
 }
 
 PROJECT_THREAD_OPERATIONS = {
+    "project_todo_reminders": (set(), set()),
+    "project_todo_targets": (set(), set()),
+    "list_project_todos": (set(), set()),
+    "reorder_project_todo_lanes": ({"order", "previous"}, set()),
+    "save_project_todo": (
+        {
+            "title",
+            "description",
+            "status",
+            "reminder",
+            "revision",
+            "checklist",
+            "labels",
+        },
+        set(),
+    ),
+    "move_project_todo": ({"status", "before", "revision"}, set()),
+    "delete_project_todo": (set(), {"revision"}),
+    "read_project_todo": (set(), {"at"}),
+    "dispatch_project_todo": ({"session_id", "request_id", "revision"}, set()),
     "list_chat_projects": (set(), set()),
     "list_dashboard_chat_projects": (set(), set()),
     "create_chat_project": (PROJECT_FIELDS, set()),

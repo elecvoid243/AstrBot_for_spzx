@@ -1,4 +1,4 @@
-/* Auto-generated MDI subset – 401 icons */
+/* Auto-generated MDI subset – 402 icons */
 /* Do not edit manually. Run: pnpm run subset-icons */
 
 @font-face {
@@ -138,6 +138,10 @@
 
 .mdi-arrow-right-bold-circle-outline::before {
   content: "\F0057";
+}
+
+.mdi-arrow-top-right::before {
+  content: "\F005C";
 }
 
 .mdi-arrow-top-right-thick::before {

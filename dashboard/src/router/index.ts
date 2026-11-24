@@ -40,7 +40,10 @@ router.beforeEach(async (to, from, next) => {
   const auth: AuthStore = useAuthStore();
 
   if (auth.has_token() && to.path !== '/auth/login') {
-    try { await auth.refreshIdentity(); } catch { return next('/auth/login'); }
+    try { await auth.refreshIdentity(); } catch {
+      if (to.path === '/chat' && to.query.boardProject && to.query.boardCard) auth.returnUrl = to.fullPath;
+      return next('/auth/login');
+    }
     if (auth.role === 'user' && (!/^\/chat(?:box)?(?:\/|$)/.test(to.path) || /^\/chat(?:box)?\/models(?:\/|$)/.test(to.path))) return next('/chat');
   }
 

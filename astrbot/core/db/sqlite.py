@@ -42,6 +42,7 @@ from astrbot.core.db.po import (
     PlatformSession,
     PlatformStat,
     Preference,
+    ProjectTodo,
     ProviderStat,
     SessionBranchRelation,
     SessionProjectRelation,
@@ -220,6 +221,27 @@ class SQLiteDatabase(BaseDatabase):
             await self._ensure_platform_message_history_checkpoint_column(conn)
             await self._ensure_platform_session_columns(conn)
             await self._ensure_chatui_project_workspace_columns(conn)
+            board_columns = {
+                row[1]
+                for row in await conn.execute(
+                    text("PRAGMA table_info(chatui_projects)")
+                )
+            }
+            if "todo_lane_order" not in board_columns:
+                await conn.exec_driver_sql(
+                    """ALTER TABLE chatui_projects ADD COLUMN todo_lane_order JSON NOT NULL DEFAULT '["todo","doing","done"]'"""
+                )
+            card_columns = {
+                row[1]
+                for row in await conn.execute(
+                    text("PRAGMA table_info(chatui_project_todos)")
+                )
+            }
+            for name in ("checklist", "labels"):
+                if name not in card_columns:
+                    await conn.exec_driver_sql(
+                        f"ALTER TABLE chatui_project_todos ADD COLUMN {name} JSON NOT NULL DEFAULT '[]'"
+                    )
             await self._ensure_chatui_project_spcode_columns(conn)
             await self._ensure_session_project_relation_position_column(conn)
             await self._ensure_conversation_indexes(conn)
@@ -3633,6 +3655,9 @@ class SQLiteDatabase(BaseDatabase):
                     ),
                 )
                 # Then delete the project
+                await session.execute(
+                    delete(ProjectTodo).where(col(ProjectTodo.project_id) == project_id)
+                )
                 await session.execute(
                     delete(ChatUIProject).where(
                         col(ChatUIProject.project_id) == project_id,

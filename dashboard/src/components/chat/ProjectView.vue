@@ -27,7 +27,27 @@
       />
     </section>
 
-    <section class="project-sessions-list">
+    <div class="project-tabs">
+      <SpSegmentedControl
+        :model-value="boardActive ? 'board' : 'sessions'"
+        :segments="[
+          { value: 'sessions', label: tm('board.sessions') },
+          { value: 'board', label: tm('board.label') },
+        ]"
+        @update:model-value="$emit('boardTab', $event === 'board')"
+      />
+    </div>
+    <section v-if="boardActive && project" class="project-sessions-list project-board-view">
+      <ProjectTodoBoard
+        :key="project.project_id"
+        :project-id="project.project_id"
+        :focus-card="focusCard"
+        @focused="$emit('focused')"
+        @session="$emit('selectSession', $event)"
+        @sent="$emit('sent')"
+      />
+    </section>
+    <section v-else class="project-sessions-list">
       <div v-if="sessions.length > 0" class="project-session-list">
         <button
           v-for="session in sessions"
@@ -76,7 +96,7 @@
       </div>
     </section>
 
-    <div class="project-create-slot">
+    <div v-if="!boardActive" class="project-create-slot">
       <button
         type="button"
         class="project-create-session-btn"
@@ -91,6 +111,8 @@
 
 <script setup lang="ts">
 import { computed } from "vue";
+import SpSegmentedControl from "./SpSegmentedControl.vue";
+import ProjectTodoBoard from "./ProjectTodoBoard.vue";
 import { FolderCog, MessageSquare, Pencil, Plus, Trash2 } from "@lucide/vue";
 import { useModuleI18n } from "@/i18n/composables";
 import type { Project } from "@/components/chat/ProjectList.vue";
@@ -104,6 +126,8 @@ interface Session {
 }
 
 interface Props {
+  boardActive?: boolean;
+  focusCard?: string;
   project?: Project | null;
   sessions: Session[];
   umo?: string | null;
@@ -114,6 +138,9 @@ const props = withDefaults(defineProps<Props>(), {
 });
 
 const emit = defineEmits<{
+  boardTab: [active: boolean];
+  focused: [];
+  sent: [];
   selectSession: [sessionId: string];
   editSessionTitle: [sessionId: string, title: string];
   deleteSession: [sessionId: string];
@@ -158,6 +185,19 @@ async function handleDeleteSession(session: Session) {
 </script>
 
 <style scoped>
+.project-sessions-list.project-board-view {display:flex;overflow:hidden}
+.project-board-view :deep(.todo-board) {height:100%}
+.project-board-view :deep(.lanes) {flex:1;--lane-cap:100%}
+.project-tabs {
+  width: var(--chat-content-width, 80%);
+  max-width: var(--chat-content-max-width, 960px);
+  margin: 0 auto 18px;
+}
+@media (max-width: 768px) {
+  .project-tabs {
+    width: calc(100% - 20px);
+  }
+}
 .project-sessions-container {
   height: 100%;
   box-sizing: border-box;

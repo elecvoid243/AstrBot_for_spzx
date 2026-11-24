@@ -2,6 +2,22 @@
 
 The AstrBot admin panel features plugin management, log viewing, visual configuration, statistics viewing, and more.
 
+## Project task boards
+
+Select a project in the ChatUI sidebar and switch from **Sessions** to **Task board** under its title. Each project has one board. Create, search, edit, and delete cards there. Drag a card to another column to change its status, or drop it between cards to reorder it. You can also set the status in the card details.
+
+![Project task board in ChatUI](./images/project-todo-board.png)
+
+Drag a list header to change the project’s column order, or focus its grip and use the left and right arrow keys. Each list fits its own cards and scrolls independently when full. Hold a dragged card near the top or bottom edge to scroll through a list, or near a side edge to reach the next list on a narrow screen.
+
+Open a card to add, rename, reorder, check off or delete checklist items. You can also add multiple named labels and edit their colors. Select **Save** to show the labels and checklist progress on the card. Completing the checklist leaves the final decision to move the card to **Done** with you.
+
+While chatting, hover over the project's sidebar row and select the board icon beside **＋**. The board opens in a floating window. Drag its title bar to move it and keep working in the chat underneath. Both views share the same cards.
+
+In a card, choose one of your existing agent sessions, including sessions in other projects, or **Create a session for this task → Create and send**. The new session uses the card title and belongs to its project. Once the session accepts the task, a **To do** card moves to **In progress**. Mark it **Done** after reviewing the result.
+
+Reminders can run once, daily, weekly, or every few hours. Open **Task reminders** in ChatUI to return to a due card. On Windows, the bound Dashboard administrator also receives desktop notifications while `main_bg.py` is running, even with the browser closed. Selecting the notification opens its card. After sleep or restart, missed occurrences produce one reminder per unfinished card. Marking a card done stops further reminders.
+
 ## Expose your sessions to a remote client
 
 Administrators enable **Settings → Security → Remote session access → Allow remote session connections**. The instance switch is off by default. Turning it off blocks new inbound and outbound remote operations, preserves configuration and leaves already started tasks running.
@@ -134,7 +150,7 @@ These paths use the current default sidebar. If you customized it, open `Setting
 | Previous History tab | Agent Teams → Runs → History, showing asset runs only |
 | Legacy autonomous team sidebar / Run Monitor | Versioned autonomous assets: Assets → Teams → New Autonomous Team; Runs → View Run displays dynamic members, task relationships and complete artifacts |
 | Runs → View Run → select task → Continue the same attempt | Compatible remote executors show **Query original remote run**; built-in checkpoint recovery retains **Continue the same attempt**. The action stays in the selected task's details. |
-| Cancel run beneath the Chat run conversation heading | Chat run conversation → Inbox & artifacts → Whole run controls → Cancel run |
+| Cancel run beneath the Chat run conversation heading | Chat workflow run → Inbox & artifacts → Whole run controls → Cancel run |
 | New runs only showed waiting reasons | Agent Teams → Assets → Workflows → Edit Asset configures human questions / version approval; Runs → View Run → Human requests handles answers, previews, approvals or rejection and exact-version exports |
 
 Old log, trace, conversation, and statistics URLs still redirect to the corresponding tabs. Agent runners are now saved in each profile; they are no longer created as model providers. See [Agent Runners](./agent-runner.md) for the setup steps.

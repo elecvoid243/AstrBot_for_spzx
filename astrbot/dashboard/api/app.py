@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from contextlib import asynccontextmanager, suppress
 from types import SimpleNamespace
 
 import jwt
@@ -94,6 +95,8 @@ from .logs import legacy_router as legacy_logs_router
 from .personas import legacy_router as legacy_personas_router
 from .platform import legacy_router as legacy_platform_router
 from .plugins import legacy_router as legacy_plugins_router
+from .project_todos import router as project_todos_router
+from .project_todos import run_reminders
 from .providers import legacy_router as legacy_providers_router
 from .router import API_V1_PREFIX, build_api_router
 from .sessions import legacy_router as legacy_sessions_router
@@ -186,7 +189,18 @@ def create_dashboard_asgi_app(
     jwt_secret: str,
     static_folder: str | None = None,
 ) -> FastAPI:
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        worker = asyncio.create_task(run_reminders(app), name="project-todo-reminders")
+        try:
+            yield
+        finally:
+            worker.cancel()
+            with suppress(asyncio.CancelledError):
+                await worker
+
     app = FastAPI(
+        lifespan=lifespan,
         title="AstrBot OpenAPI",
         version="1.0.0",
         openapi_url=f"{API_V1_PREFIX}/openapi.json",
@@ -197,6 +211,7 @@ def create_dashboard_asgi_app(
     # skips text/event-stream, so SSE endpoints are unaffected.
     app.add_middleware(DashboardGZipMiddleware, minimum_size=1024)
     app.state.core_lifecycle = core_lifecycle
+    app.state.todo_lock = asyncio.Lock()
     app.state.db = db
     app.state.account_requests = {}
     app.state.deleting_accounts = set()
@@ -557,6 +572,7 @@ def create_dashboard_asgi_app(
     app.include_router(legacy_providers_router)
     app.include_router(legacy_chat_router)
     app.include_router(legacy_chat_projects_router)
+    app.include_router(project_todos_router)
     app.include_router(legacy_conversations_router)
     app.include_router(legacy_cron_router)
     app.include_router(legacy_extensions_router)

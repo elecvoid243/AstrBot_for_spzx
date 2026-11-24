@@ -33,13 +33,13 @@
   },
   "runConversation": {
     "reconcileInWorkbench": "Open the run workbench to verify an uncertain tool effect before continuing.",
-    "type": "Run conversation",
+    "type": "Workflow run",
     "asset": "Asset",
     "version": "Fixed version",
     "status": "Status",
     "openChat": "Open in Chat",
     "openWorkbench": "Open run workbench",
-    "unavailable": "This run conversation is unavailable.",
+    "unavailable": "This workflow run is unavailable.",
     "updateFailed": "The run could not be updated."
   },
   "trial": {

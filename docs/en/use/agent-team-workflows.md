@@ -184,9 +184,9 @@ In Chat, the task list expands child workflows, team scopes and loop rounds. The
 
 In **Inbox & artifacts**, answer a specific human request or preview the exact version before approving or returning it with feedback. Bot and Chat show the same requests, including those from nested workflows. If another tab has already decided, the card refreshes to show the saved decision. A conflict from the Bot inbox opens the corresponding run if it is not already open. If the workflow sends revised work for review, open its new request and preview that version before deciding.
 
-If the connection drops, the open conversation will resume from the last applied event. After closing or refreshing Chat or signing in again, choose **Run conversations** under **This instance** in the Chat sidebar. Scroll down or use **Load more** to find older runs. Use the root ID shown beside the name to tell repeated runs apart. Choose **All** to show ordinary chats alongside run conversations.
+If the connection drops, the open conversation will resume from the last applied event. After closing or refreshing Chat or signing in again, choose **Workflow runs** under **This instance** in the Chat sidebar. Scroll down or use **Load more** to find older runs. Use the root ID shown beside the name to tell repeated runs apart. Choose **All** to show ordinary chats alongside workflow runs.
 
-![Chat sidebar filtered to run conversations with the selected root run open](/images/agent-teams-chat-filter-en.png)
+![Chat sidebar filtered to workflow runs with the selected root run open](/images/agent-teams-chat-filter-en.png)
 
 ![Open a run conversation from the Bot workbench](/images/agent-teams-run-bot-en.png)
 

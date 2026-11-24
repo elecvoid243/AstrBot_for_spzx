@@ -56,6 +56,11 @@
             >
               <CirclePlus :size="15" />
             </v-btn>
+            <v-btn icon size="x-small" variant="text" class="project-action-btn"
+              :title="tm('board.label')" :aria-label="tm('board.label')" @keydown.stop
+              @click.stop="$emit('openBoard', project.project_id)">
+              <Columns3 :size="15"/>
+            </v-btn>
             <v-btn
               icon
               size="x-small"
@@ -425,6 +430,7 @@ import {
   ChevronDown,
   ChevronRight,
   CirclePlus,
+  Columns3,
   CornerUpLeft,
   GitBranch,
   Mail,
@@ -515,6 +521,7 @@ const emit = defineEmits<{
   /** 2026-09-15 (elecvoid243): quick-create from a project row — Chat.vue
    * creates a fresh session already linked to this project. */
   createSession: [projectId: string];
+  openBoard: [projectId: string];
   editProject: [project: Project];
   deleteProject: [projectId: string];
   toggleProject: [projectId: string, expanded: boolean];
@@ -851,7 +858,7 @@ function onSessionRowDrop(
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 4px 88px 4px 10px;
+  padding: 4px 114px 4px 10px;
   position: relative;
   box-sizing: border-box;
   cursor: pointer;
@@ -977,6 +984,9 @@ function onSessionRowDrop(
 .project-session-actions {
   right: 6px;
   gap: 4px;
+}
+@media (hover: none) {
+  .project-row .project-actions {opacity:1;pointer-events:auto;visibility:visible}
 }
 
 .project-session-list {

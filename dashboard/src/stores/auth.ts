@@ -18,7 +18,7 @@ export const useAuthStore = defineStore("auth", {
     // @ts-ignore
     username: '',
     role: localStorage.getItem('role') || '',
-    returnUrl: null,
+    returnUrl: null as string | null,
   }),
   actions: {
     async finishAuthenticatedSession(data: any): Promise<void> {
@@ -58,6 +58,14 @@ export const useAuthStore = defineStore("auth", {
         this.returnUrl = null;
         await router.push('/settings#settings-maintenance');
         return;
+      }
+      if (!passwordWarning && this.returnUrl?.startsWith('/chat?')) {
+        const {query} = router.resolve(this.returnUrl);
+        if (typeof query.boardProject === 'string' && typeof query.boardCard === 'string') {
+          await router.push({path: '/chat', query: {boardProject: query.boardProject, boardCard: query.boardCard}});
+          this.returnUrl = null;
+          return;
+        }
       }
       if (this.role === 'user') {
         this.returnUrl = null;

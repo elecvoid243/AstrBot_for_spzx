@@ -19,6 +19,7 @@ from astrbot.core.db.po import (
     PlatformMessageHistory,
     PlatformSession,
     Preference,
+    ProjectTodo,
     ProviderStat,
     RemoteChatAttachment,
     RemoteChatConnection,
@@ -546,6 +547,7 @@ async def delete_account_data(app, account: DashboardAccount) -> None:
             ),
             (WebChatThread, WebChatThread.creator == owner),
             (WebChatSubagentRun, col(WebChatSubagentRun.session_id).in_(ids)),
+            (ProjectTodo, col(ProjectTodo.project_id).in_(project_ids)),
             (ChatUIProject, ChatUIProject.creator == owner),
             (ChatSessionCreation, ChatSessionCreation.owner == owner),
             (

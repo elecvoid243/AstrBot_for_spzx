@@ -267,6 +267,7 @@
           :drag-over-session-id="dragOverSessionId"
           :drag-insert-before="dragInsertBefore"
           @create-project="openCreateProjectDialog"
+          @open-board="raiseBoard"
           @create-session="createProjectSession"
           @edit-project="openEditProjectDialog"
           @delete-project="handleDeleteProject"
@@ -883,6 +884,11 @@
 
       <ProjectView
         v-else-if="selectedProject"
+        :board-active="boardActive"
+        :focus-card="boardFocus"
+        @board-tab="boardActive=$event"
+        @focused="boardFocus=undefined"
+        @sent="refreshBoardSessions(selectedProject.project_id)"
         :project="selectedProject"
         :sessions="projectSessions"
         :umo="currentUmo"
@@ -1363,6 +1369,19 @@
     v-model="importDialogOpen"
     @imported="onSessionsImported"
   />
+  <template v-if="props.active">
+    <ProjectTodoNotices :key="accountSessionRevision" @open="openBoardCard" />
+    <ProjectTodoWindow
+      v-for="(project, index) in floatingBoardProjects"
+      :key="project.project_id"
+      :project="project"
+      :layer="2050 + index"
+      @focus="raiseBoard(project.project_id)"
+      @close="floatingBoards = floatingBoards.filter(id => id !== project.project_id)"
+      @session="selectProjectSession"
+      @sent="refreshBoardSessions(project.project_id)"
+    />
+  </template>
 </template>
 
 <script setup lang="ts">
@@ -1469,6 +1488,8 @@ import ProjectDialog, {
 import ProjectList, { type Project } from "@/components/chat/ProjectList.vue";
 import SessionExportButton from "@/components/chat/SessionExportButton.vue";
 import ProjectView from "@/components/chat/ProjectView.vue";
+import ProjectTodoWindow from "./ProjectTodoWindow.vue";
+import ProjectTodoNotices from "./ProjectTodoNotices.vue";
 import ChatInput from "@/components/chat/ChatInput.vue";
 import LiveMode from "@/components/chat/LiveMode.vue";
 const liveModeOpen = ref(false);
@@ -1882,6 +1903,43 @@ const revealWorkQuery = ref("");
 // smooth scroll, leaving the viewport off the target).
 const suppressHistoryAutoLoad = ref(false);
 const projectSessions = ref<Session[]>([]);
+const floatingBoards = ref<string[]>([]);
+const boardActive = ref(false);
+const boardFocus = ref<string>();
+const floatingBoardProjects = computed(() => floatingBoards.value
+  .map(id => projects.value.find(project => project.project_id === id))
+  .filter((project): project is Project => Boolean(project)));
+
+function raiseBoard(id: string) {
+  if (floatingBoards.value.at(-1) !== id) {
+    floatingBoards.value = [...floatingBoards.value.filter(open => open !== id), id];
+  }
+  closeMobileSidebar();
+}
+
+async function openBoardCard(project: string, card: string) {
+  if (!projects.value.some(item => item.project_id === project)) {
+    toast.error(tm("board.missing"));
+    return;
+  }
+  await selectProject(project);
+  if (selectedProjectId.value === project) {
+    boardActive.value = true;
+    boardFocus.value = card;
+  }
+}
+
+async function refreshBoardSessions(project: string) {
+  await Promise.all([getSessions(), loadProjectSessions(project)]);
+}
+watch(
+  () => [route.query.boardProject, route.query.boardCard],
+  ([project, card]) => {
+    if (!loadingSessions.value && projects.value.length && typeof project === "string" && typeof card === "string") {
+      void openBoardCard(project, card);
+    }
+  },
+);
 const projectSessionsById = ref<Record<string, Session[]>>({});
 const loadingProjectSessionIds = ref<string[]>([]);
 const loadingSessions = ref(false);
@@ -2892,6 +2950,9 @@ watch(
     sideChats.value = [];
     projectSessions.value = [];
     projectSessionsById.value = {};
+    floatingBoards.value = [];
+    boardActive.value = false;
+    boardFocus.value = undefined;
     selectedProjectId.value = null;
     projectDialogOpen.value = false;
     editingProject.value = null;
@@ -2927,6 +2988,10 @@ onMounted(async () => {
       ...(isOrdinaryUser.value ? [] : [loadTokenProviders()]),
     ]);
     const routeSessionId = getRouteSessionId();
+    if (typeof route.query.boardProject === "string" && typeof route.query.boardCard === "string") {
+      await openBoardCard(route.query.boardProject, route.query.boardCard);
+      return;
+    }
     if (routeSessionId === "models") {
       activeWorkspace.value = "providers";
     } else if (routeSessionId) {
@@ -3519,6 +3584,8 @@ function openEditProjectDialog(project: Project) {
 
 async function selectProject(projectId: string) {
   if (!(await confirmFileNavigation())) return;
+  boardActive.value = false;
+  boardFocus.value = undefined;
   showChatWorkspace();
   selectedProjectId.value = projectId;
   currSessionId.value = "";

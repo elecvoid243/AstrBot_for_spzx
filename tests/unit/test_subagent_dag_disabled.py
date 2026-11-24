@@ -54,3 +54,33 @@ async def test_legacy_dag_configuration_cannot_enable_or_register_tool(monkeypat
     assert await ORCHESTRATE_TASKS_TOOL.call(None, tasks=[{}]) == (
         "Error: DAG orchestration is disabled."
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("auto_cleanup_per_turn", "notice_present"),
+    [(True, True), (False, False)],
+)
+async def test_auto_cleanup_notice_follows_effective_policy(
+    auto_cleanup_per_turn: bool, notice_present: bool
+):
+    """The injected prompt must describe the cleanup the policy will actually do."""
+    orchestrator = MagicMock()
+    orchestrator.available_handoffs.return_value = []
+    req = SimpleNamespace(func_tool=ToolSet(), system_prompt="")
+    event = SimpleNamespace(unified_msg_origin="test")
+    config = {
+        "subagent_policy": {
+            "main_enable": True,
+            "dynamic_agents": {
+                "enabled": True,
+                "auto_cleanup_per_turn": auto_cleanup_per_turn,
+            },
+        }
+    }
+
+    await _apply_subagent_manager_tools(config, req, event, orchestrator)
+
+    assert ("auto-removed at the end of each turn" in req.system_prompt) is (
+        notice_present
+    )

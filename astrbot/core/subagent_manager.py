@@ -179,15 +179,13 @@ You can manage sub-agents with isolated instructions, tools and skills.
 Create sub-agents ONLY when:
 - Task has ≥2 independent workstreams with clear inputs/outputs
 - Context exceeds your effective processing window"""
-    _SUBAGENT_AUTOCLEAN_PROMPT = (
+    _AUTOCLEAN_NOTICE = (
         "- Dynamically created sub-agents are auto-removed at the end of each turn; "
         "only user-configured static sub-agents persist across turns. Do not rely on a "
         "dynamic sub-agent surviving into the next turn — finish or collect its output "
         "within the current turn."
-        if _auto_cleanup_per_turn
-        else ""
     )
-    _CREATE_GUIDE_PROMPT = f"""## Workflow: Plan → Create → Delegate → Collect → Cleanup
+    _CREATE_GUIDE_PROMPT = """## Workflow: Plan → Create → Delegate → Collect → Cleanup
 ### 1. Create Sub-agent
 **Name**: 1 to 32 characters (letters, numbers, or underscores), starting with a letter.
 **Required fields:**
@@ -204,18 +202,30 @@ Create sub-agents ONLY when:
 
 ### 3. Collect
 - Merge independent outputs by concatenation
-- Resolve conflicts by preferring explicit data over inference
-{_SUBAGENT_AUTOCLEAN_PROMPT}"""
+- Resolve conflicts by preferring explicit data over inference"""
     _DAG_GUIDE_PROMPT = """## DAG Orchestration
 DAG Orchestration automatically delegate subagents. When you have 2+ independent tasks that can run in parallel, or tasks with clear dependencies, prefer to use `orchestrate_tasks` to declare them all at once.
 """
 
     @classmethod
-    def build_task_router_prompt(cls):
+    def build_task_router_prompt(cls, auto_cleanup_per_turn: bool) -> str:
+        """Build the subagent capability prompt for one dispatch.
+
+        Args:
+            auto_cleanup_per_turn: Whether the effective policy removes dynamic
+                subagents when the main agent turn ends. The notice must match
+                that behaviour, or the model plans across turns for agents that
+                no longer exist.
+
+        Returns:
+            The system prompt section describing subagent usage.
+        """
         parts = [
             cls._HEADER_TEMPLATE,
             cls._CREATE_GUIDE_PROMPT,
         ]
+        if auto_cleanup_per_turn:
+            parts.append(cls._AUTOCLEAN_NOTICE)
         if cls._dag_enabled:
             parts.append(cls._DAG_GUIDE_PROMPT)
 

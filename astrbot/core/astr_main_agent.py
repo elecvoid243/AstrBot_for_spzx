@@ -1535,8 +1535,16 @@ async def _apply_subagent_manager_tools(
                 req.func_tool.add_tool(VIEW_SHARED_CONTEXT_TOOL)
                 req.func_tool.add_tool(BROADCAST_SHARED_CONTEXT_TOOL)
 
-            # Inject subagent capability system prompt for dynamic creation
-            task_router_prompt = SubAgentManager.build_task_router_prompt()
+            # Inject subagent capability system prompt for dynamic creation.
+            # The auto-cleanup notice must follow the effective policy, not the
+            # legacy class default, or the prompt contradicts the real cleanup.
+            task_router_prompt = SubAgentManager.build_task_router_prompt(
+                auto_cleanup_per_turn=(
+                    policy.auto_cleanup_per_turn
+                    if policy
+                    else dynamic_cfg.get("auto_cleanup_per_turn", True)
+                )
+            )
             req.system_prompt = f"{req.system_prompt or ''}\n{task_router_prompt}\n"
 
     except ImportError as e:

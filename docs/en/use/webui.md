@@ -14,9 +14,15 @@ Open a card to add, rename, reorder, check off or delete checklist items. You ca
 
 While chatting, hover over the project's sidebar row and select the board icon beside **＋**. The board opens in a floating window. Drag its title bar to move it and keep working in the chat underneath. Both views share the same cards.
 
-In a card, choose one of your existing agent sessions, including sessions in other projects, or **Create a session for this task → Create and send**. The new session uses the card title and belongs to its project. Once the session accepts the task, a **To do** card moves to **In progress**. Mark it **Done** after reviewing the result.
+Under **Send to agent session** (formerly **Agent session**), choose an existing session or **Create a session for this task**. After selecting a session, you can add instructions for this dispatch, such as “Verify each checklist item and report any failures.” When you send, the agent receives these instructions followed by the card title, description and checklist. You can also leave the instructions blank. A new session uses the card title and belongs to its project. Once the session accepts the task, a **To do** card moves to **In progress**. Mark it **Done** after reviewing the result.
 
-Reminders can run once, daily, weekly, or every few hours. Open **Task reminders** in ChatUI to return to a due card. On Windows, the bound Dashboard administrator also receives desktop notifications while `main_bg.py` is running, even with the browser closed. Selecting the notification opens its card. After sleep or restart, missed occurrences produce one reminder per unfinished card. Marking a card done stops further reminders.
+![Optional instructions after selecting an agent session](./images/project-todo-guidance.png)
+
+Reminders can run once, daily, weekly, or every few hours. A reminder card appears in the lower-right corner with a bell, task title and description. The bell swings and the border pulses for ten seconds, then both settle. Clicking elsewhere or opening **Task details** leaves the reminder visible. Select its **×** button to dismiss this occurrence. Later occurrences follow the original schedule.
+
+![Persistent task reminder in ChatUI](./images/project-reminder-card.png)
+
+On Windows, the bound Dashboard administrator also receives persistent desktop cards while `main_bg.py` is running, even with the browser closed. Select **View task** to open the corresponding card. Dismissing a reminder on either surface also clears it on the other after synchronization. After sleep or restart, missed occurrences produce one reminder per unfinished card.
 
 ## Expose your sessions to a remote client
 

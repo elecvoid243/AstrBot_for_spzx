@@ -1,5 +1,6 @@
 {
   "board": {
+    "dismissFailed": "暂时无法关闭提醒，请重试。",
     "reorderList": "调整列表顺序（左右方向键）",
     "labels": "标签",
     "addLabel": "添加标签",
@@ -48,7 +49,9 @@
     "interval": "间隔小时数",
     "weekdays": "星期",
     "viewSession": "查看会话",
-    "target": "Agent 会话",
+    "target": "传递给Agent会话",
+    "guidance": "引导词（可选）",
+    "guidancePlaceholder": "例如：请逐项完成子任务，并在会话中汇报结果。",
     "newSession": "为此待办新建会话",
     "createSend": "新建并发送",
     "send": "发送给 Agent",

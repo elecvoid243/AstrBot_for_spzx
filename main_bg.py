@@ -39,7 +39,7 @@ import threading
 import time
 import webbrowser
 from pathlib import Path
-from urllib.parse import urlencode, urlparse
+from urllib.parse import urlparse
 
 # -----------------------------------------------------------------------------
 # pythonw 下 stdout/stderr 为 None，loguru / print 写日志时会抛 OSError。
@@ -250,56 +250,28 @@ async def main_async(
     logger.info(logo_tmpl)
 
     core_lifecycle = InitialLoader(db, log_broker)
+    panel = None
     if sys.platform == "win32":
-        toaster = None
+        from astrbot.dashboard.desktop_reminders import DesktopReminders
 
-        def notify_project_todo(
-            project_id: str, card_id: str, project: str, title: str
-        ):
-            """Show an administrator's due card with its own activation target.
-
-            Args:
-                project_id: Owning project identity.
-                card_id: Card identity.
-                project: Project display name.
-                title: Card display title.
-            """
-            from windows_toasts import InteractableWindowsToaster, Toast
-            from windows_toasts.register_hkey_aumid import register_hkey
-
-            nonlocal toaster
-            if toaster is None:
-                app_id = "AstrBot.ProjectBoard"
-                register_hkey(app_id, "AstrBot")
-                toaster = InteractableWindowsToaster("AstrBot", notifierAUMID=app_id)
-
-            query = urlencode({"boardProject": project_id, "boardCard": card_id})
-            link = f"{_get_default_webui_url()}/#/chat?{query}"
-            toaster.show_toast(Toast([project, title], launch_action=link))
-
-        core_lifecycle.notify_project_todo = notify_project_todo
+        panel = DesktopReminders(db, _get_default_webui_url)
+        core_lifecycle.notify_project_todo = panel.sync
     core_lifecycle.webui_dir = webui_dir
 
     # 将 InitialLoader.start() 包装到 task，并与 stop_event 共同等待
     core_task = asyncio.create_task(core_lifecycle.start(), name="astrbot-core")
     stop_task = asyncio.create_task(stop_event.wait(), name="bg-stop-waiter")
 
-    done, pending = await asyncio.wait(
-        {core_task, stop_task},
-        return_when=asyncio.FIRST_COMPLETED,
-    )
-
-    # 若是托盘触发退出，则取消核心任务
-    if stop_task in done and not core_task.done():
-        logger.info("Received tray exit signal, shutting down AstrBot ...")
-        core_task.cancel()
-        try:
-            await core_task
-        except (asyncio.CancelledError, Exception) as e:  # noqa: BLE001
-            logger.info(f"AstrBot stopped: {type(e).__name__}")
-    else:
-        # core 自己结束了
+    try:
+        await asyncio.wait({core_task, stop_task}, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        if not core_task.done():
+            logger.info("Stopping AstrBot background runtime")
+            core_task.cancel()
         stop_task.cancel()
+        await asyncio.gather(core_task, stop_task, return_exceptions=True)
+        if panel is not None:
+            await panel.close()
 
 
 # =============================================================================

@@ -1,5 +1,6 @@
 {
   "board": {
+    "dismissFailed": "Couldn’t dismiss this reminder. Please retry.",
     "reorderList": "Reorder list (left and right arrow keys)",
     "labels": "Labels",
     "addLabel": "Add label",
@@ -48,7 +49,9 @@
     "interval": "Interval in hours",
     "weekdays": "Days of the week",
     "viewSession": "View session",
-    "target": "Agent session",
+    "target": "Send to agent session",
+    "guidance": "Instructions (optional)",
+    "guidancePlaceholder": "For example: Complete each checklist item and report the results in this session.",
     "newSession": "Create a session for this task",
     "createSend": "Create and send",
     "send": "Send to agent",

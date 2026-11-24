@@ -2,7 +2,7 @@ import asyncio
 import time
 from contextlib import suppress
 from datetime import datetime
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
@@ -127,18 +127,23 @@ async def test_project_board_ownership_dispatch_retry_and_reminders(account_dash
         assert (
             await client.get(f"{prefix}/{admin.project_id}", headers=member_headers)
         ).status_code == 404
-        core.notify_project_todo = Mock()
+        delivered = asyncio.Event()
+        core.notify_project_todo = AsyncMock(
+            side_effect=lambda notices: delivered.set()
+        )
         worker = asyncio.create_task(run_reminders(app))
         try:
             async with asyncio.timeout(5):
-                while not core.notify_project_todo.called:
-                    await asyncio.sleep(0.02)
+                await delivered.wait()
         finally:
             worker.cancel()
             with suppress(asyncio.CancelledError):
                 await worker
-        core.notify_project_todo.assert_called_once()
-        assert core.notify_project_todo.call_args.args[0] == admin.project_id
+        core.notify_project_todo.assert_awaited_once()
+        desktop = core.notify_project_todo.await_args.args[0]
+        assert [(n["project_id"], n["description"]) for n in desktop] == [
+            (admin.project_id, body["description"])
+        ]
         listed = (
             await client.get(f"{prefix}/{project.project_id}", headers=member_headers)
         ).json()["data"][0]
@@ -183,12 +188,26 @@ async def test_project_board_ownership_dispatch_retry_and_reminders(account_dash
             await client.get(f"{prefix}/reminders", headers=member_headers)
         ).json()["data"]
         assert [c["id"] for c in notices] == [cid]
+        assert notices[0]["description"] == body["description"]
+        # Opening a card and dismissing an older occurrence must both leave it present.
+        await client.get(board_url, headers=member_headers)
+        await client.post(
+            member_card + "/read",
+            params={"at": listed["unread_at"] - 1},
+            headers=member_headers,
+        )
+        assert (await client.get(f"{prefix}/reminders", headers=member_headers)).json()[
+            "data"
+        ] == notices
         await client.post(
             member_card + "/read",
             params={"at": listed["unread_at"]},
             headers=member_headers,
         )
         send = app.state.services.chat.start_unified_chat_run
+        assert (await client.get(f"{prefix}/reminders", headers=member_headers)).json()[
+            "data"
+        ] == []
 
         async def fail_once_then_send(owner, payload):
             if inject.await_count == 1:
@@ -225,13 +244,38 @@ async def test_project_board_ownership_dispatch_retry_and_reminders(account_dash
             )
         ).json() == sent.json()
         assert inject.await_count == 2
+        other_session = await db.create_platform_session(
+            creator=user.account_id, platform_id="webchat"
+        )
+        guided = {
+            "request_id": str(uuid4()),
+            "session_id": other_session.session_id,
+            "revision": 2,
+            "guidance": "  Check keyboard focus first.\nReport any issues.  ",
+        }
+        response = await client.post(
+            member_card + "/send", json=guided, headers=member_headers
+        )
+        assert response.status_code == 200, response.text
+        assert inject.await_args.args[1]["message"] == (
+            "Check keyboard focus first.\nReport any issues.\n\nReview layout\n\nVerify both themes\n\n- [ ] Mobile"
+        )
+        assert (
+            await client.post(
+                member_card + "/send", json=guided, headers=member_headers
+            )
+        ).json() == response.json()
+        assert inject.await_count == 3
         targets = (
             await client.get(prefix + "/targets", headers=member_headers)
         ).json()["data"]
-        assert [(t["id"], t["project"]) for t in targets] == [(sid, "Member board")]
+        assert {(t["id"], t["project"]) for t in targets} == {
+            (sid, "Member board"),
+            (other_session.session_id, None),
+        }
         move = await client.post(
             member_card + "/move",
-            json={"status": "done", "revision": 2},
+            json={"status": "done", "revision": 3},
             headers=member_headers,
         )
         assert move.status_code == 200, move.text
@@ -243,7 +287,7 @@ async def test_project_board_ownership_dispatch_retry_and_reminders(account_dash
             None,
             None,
         )
-        legacy = {"title": "Renamed", "status": "done", "revision": 3}
+        legacy = {"title": "Renamed", "status": "done", "revision": 4}
         assert (
             await client.put(member_card, json=legacy, headers=member_headers)
         ).status_code == 200
@@ -254,7 +298,7 @@ async def test_project_board_ownership_dispatch_retry_and_reminders(account_dash
         )
         assert (
             await client.delete(
-                member_card, params={"revision": 4}, headers=member_headers
+                member_card, params={"revision": 5}, headers=member_headers
             )
         ).status_code == 200
         assert not (

@@ -7,7 +7,7 @@
 
 import asyncio
 import traceback
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 
 from astrbot.core import LogBroker, logger
 from astrbot.core.core_lifecycle import AstrBotCoreLifecycle
@@ -23,7 +23,7 @@ class InitialLoader:
         self.logger = logger
         self.log_broker = log_broker
         self.webui_dir: str | None = None
-        self.notify_project_todo: Callable[[str, str, str, str], None] | None = None
+        self.notify_project_todo: Callable[[list[dict]], Awaitable[None]] | None = None
 
     async def start(self) -> None:
         core_lifecycle = AstrBotCoreLifecycle(self.log_broker, self.db)

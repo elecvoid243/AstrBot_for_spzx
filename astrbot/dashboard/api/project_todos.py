@@ -143,6 +143,7 @@ class Dispatch(BaseModel):
     session_id: str | None = Field(default=None, min_length=1, max_length=100)
     request_id: UUID
     revision: int
+    guidance: str = Field(default="", max_length=10000)
 
 
 async def owned_project(
@@ -190,32 +191,36 @@ async def owned_card(session, project, card_id):
     return card
 
 
+async def unread_reminders(session, owner: str) -> list[dict]:
+    """Collect the current reminder occurrence and display text for one owner.
+
+    Args:
+        session: Open database session.
+        owner: Stable project owner resolved by Dashboard authentication.
+
+    Returns:
+        Due cards ordered by the latest reminder, with stable ties.
+    """
+    result = await session.execute(
+        select(
+            ProjectTodo.id,
+            ProjectTodo.project_id,
+            ProjectTodo.title,
+            ProjectTodo.description,
+            ChatUIProject.title.label("project"),
+            ProjectTodo.unread_at,
+        )
+        .join(ChatUIProject, ChatUIProject.project_id == ProjectTodo.project_id)
+        .where(ChatUIProject.creator == owner, col(ProjectTodo.unread_at).is_not(None))
+        .order_by(col(ProjectTodo.unread_at).desc(), ProjectTodo.id)
+    )
+    return [dict(row) for row in result.mappings()]
+
+
 @router.get("/reminders")
 async def project_todo_reminders(request: Request, owner: Owner):
     async with request.app.state.db.get_db() as session:
-        rows = (
-            await session.execute(
-                select(ProjectTodo, ChatUIProject.title)
-                .join(ChatUIProject, ChatUIProject.project_id == ProjectTodo.project_id)
-                .where(
-                    ChatUIProject.creator == owner,
-                    col(ProjectTodo.unread_at).is_not(None),
-                )
-                .order_by(col(ProjectTodo.unread_at).desc())
-            )
-        ).all()
-        return ok(
-            [
-                {
-                    "id": c.id,
-                    "project_id": c.project_id,
-                    "title": c.title,
-                    "project": title,
-                    "unread_at": c.unread_at,
-                }
-                for c, title in rows
-            ]
-        )
+        return ok(await unread_reminders(session, owner))
 
 
 @router.get("/targets")
@@ -320,12 +325,11 @@ async def save_project_todo(
             raise ApiError("Card changed. Reopen it to edit the latest version.", 409)
         schedule = body.reminder.model_dump() if body.reminder else None
         if body.status == "done" or not schedule:
-            card.next_due = card.unread_at = None
+            card.next_due = None
         elif schedule != card.reminder or card.status == "done":
             card.next_due = body.reminder.next_after(
                 body.reminder.start - 1 if card.status != "done" else int(time.time())
             )
-            card.unread_at = None
         card.title, card.description, card.status = (
             body.title,
             body.description,
@@ -374,7 +378,7 @@ async def move_project_todo(
         for i, peer in enumerate(peers):
             peer.position = i
         if body.status == "done":
-            card.next_due = card.unread_at = None
+            card.next_due = None
         elif card.status == "done" and card.reminder:
             card.next_due = Reminder(**card.reminder).next_after(int(time.time()))
         card.status = body.status
@@ -469,7 +473,9 @@ async def dispatch_project_todo(
             raise ApiError(
                 "The target session is busy. Retry once its current turn ends.", 409
             )
-        message = "\n\n".join(filter(None, [card.title, card.description]))
+        message = "\n\n".join(
+            filter(None, [body.guidance.strip(), card.title, card.description])
+        )
         if card.checklist:
             message += "\n\n" + "\n".join(
                 f"- [{'x' if item['done'] else ' '}] {item['title']}"
@@ -512,20 +518,18 @@ async def run_reminders(app):
             ):
                 rows = (
                     await session.execute(
-                        select(ProjectTodo, ChatUIProject)
-                        .join(
-                            ChatUIProject,
-                            ChatUIProject.project_id == ProjectTodo.project_id,
-                        )
-                        .where(
+                        select(ProjectTodo).where(
                             col(ProjectTodo.next_due) <= now,
                             ProjectTodo.status != "done",
                         )
                     )
-                ).all()
+                ).scalars()
+                for card in rows:
+                    card.unread_at = now
+                    card.next_due = Reminder(**card.reminder).next_after(now)
                 notify = getattr(app.state.core_lifecycle, "notify_project_todo", None)
-                admin = (
-                    (
+                if notify:
+                    admin = (
                         await session.execute(
                             select(DashboardAccount).where(
                                 DashboardAccount.bootstrap_key == "dashboard",
@@ -534,21 +538,12 @@ async def run_reminders(app):
                             )
                         )
                     ).scalar_one_or_none()
-                    if rows and notify
-                    else None
-                )
-                for card, project in rows:
-                    card.unread_at = now
-                    card.next_due = Reminder(**card.reminder).next_after(now)
-                    if admin and project.creator == admin.resource_owner:
-                        notifications.append(
-                            (project.project_id, card.id, project.title, card.title)
+                    if admin:
+                        notifications = await unread_reminders(
+                            session, admin.resource_owner
                         )
-            for item in notifications:
-                try:
-                    notify(*item)
-                except Exception:
-                    logger.exception("Failed to show project reminder on the desktop")
+            if notify:
+                await notify(notifications)
         except Exception:
             logger.exception("Failed to process project reminders")
         await asyncio.sleep(5)

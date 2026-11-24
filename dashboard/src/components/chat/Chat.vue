@@ -1371,7 +1371,6 @@
     @imported="onSessionsImported"
   />
   <template v-if="props.active">
-    <ProjectTodoNotices :key="accountSessionRevision" @open="openBoardCard" />
     <ProjectTodoWindow
       v-for="(project, index) in floatingBoardProjects"
       :key="project.project_id"
@@ -1490,7 +1489,6 @@ import ProjectList, { type Project } from "@/components/chat/ProjectList.vue";
 import SessionExportButton from "@/components/chat/SessionExportButton.vue";
 import ProjectView from "@/components/chat/ProjectView.vue";
 import ProjectTodoWindow from "./ProjectTodoWindow.vue";
-import ProjectTodoNotices from "./ProjectTodoNotices.vue";
 import ChatInput from "@/components/chat/ChatInput.vue";
 import LiveMode from "@/components/chat/LiveMode.vue";
 const liveModeOpen = ref(false);

@@ -6,6 +6,7 @@ import VerticalHeaderVue from "./vertical-header/VerticalHeader.vue";
 import ReadmeDialog from "@/components/shared/ReadmeDialog.vue";
 import AnnouncementBar from "@/components/shared/AnnouncementBar.vue";
 import StartupUpdateDialogs from "@/components/shared/StartupUpdateDialogs.vue";
+import ProjectTodoNotices from "@/components/chat/ProjectTodoNotices.vue";
 import Chat from "@/components/chat/Chat.vue";
 import { useAuthStore } from "@/stores/auth";
 const auth = useAuthStore();
@@ -191,6 +192,7 @@ onMounted(() => {
         </v-container>
       </v-main>
 
+      <ProjectTodoNotices v-if="auth.role === 'admin' || auth.role === 'user'" />
       <ReadmeDialog
         :show="showFirstNoticeDialog"
         mode="first-notice"

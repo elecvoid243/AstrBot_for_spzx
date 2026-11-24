@@ -88,7 +88,10 @@ PROJECT_THREAD_OPERATIONS = {
     "move_project_todo": ({"status", "before", "revision"}, set()),
     "delete_project_todo": (set(), {"revision"}),
     "read_project_todo": (set(), {"at"}),
-    "dispatch_project_todo": ({"session_id", "request_id", "revision"}, set()),
+    "dispatch_project_todo": (
+        {"session_id", "request_id", "revision", "guidance"},
+        set(),
+    ),
     "list_chat_projects": (set(), set()),
     "list_dashboard_chat_projects": (set(), set()),
     "create_chat_project": (PROJECT_FIELDS, set()),

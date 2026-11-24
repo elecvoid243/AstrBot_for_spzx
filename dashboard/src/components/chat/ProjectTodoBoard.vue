@@ -283,17 +283,31 @@
                 >{{ tm("board.viewSession") }}<ArrowUpRight :size="14"
               /></v-btn>
             </div>
+            <v-autocomplete
+              v-model="target"
+              :items="targetOptions"
+              :aria-label="tm('board.target')"
+              :placeholder="tm('board.chooseSession')"
+              clearable
+              variant="outlined"
+              density="compact"
+              hide-details
+            />
+            <v-textarea
+              v-if="target"
+              v-model="guidance"
+              :label="tm('board.guidance')"
+              :aria-label="tm('board.guidance')"
+              :placeholder="tm('board.guidancePlaceholder')"
+              maxlength="10000"
+              variant="outlined"
+              density="comfortable"
+              rows="2"
+              auto-grow
+              max-rows="5"
+              hide-details
+            />
             <div class="agent-controls">
-              <v-autocomplete
-                v-model="target"
-                :items="targetOptions"
-                :aria-label="tm('board.target')"
-                :placeholder="tm('board.chooseSession')"
-                clearable
-                variant="outlined"
-                density="compact"
-                hide-details
-              />
               <v-btn
                 :disabled="!target || !valid || busy"
                 variant="tonal"
@@ -478,6 +492,7 @@ const dialog = ref(false),
   failure = ref(""),
   editorError = ref(""),
   target = ref<string | null>(null);
+const guidance = ref("");
 const start = ref(""),
   kind = ref<Kind | "none">("none"),
   hours = ref(1),
@@ -662,6 +677,7 @@ function edit(card?: Card, source?: HTMLElement, stage: Stage = "todo") {
   hours.value = r?.hours ?? 1;
   days.value = r?.weekdays?.length ? [...r.weekdays] : [(t.getDay() + 6) % 7];
   target.value = null;
+  guidance.value = "";
   receipt = uuid();
   editorError.value = "";
   dialog.value = true;
@@ -675,15 +691,6 @@ function edit(card?: Card, source?: HTMLElement, stage: Stage = "todo") {
       .catch((e) => {
         editorError.value = message(e);
       });
-    if (card.unread_at)
-      void axios
-        .post(url() + "/" + card.id + "/read", null, {
-          params: { at: card.unread_at },
-        })
-        .then(changed)
-        .catch((e) => {
-          editorError.value = message(e);
-        });
   }
 }
 async function save(send: boolean) {
@@ -705,6 +712,7 @@ async function save(send: boolean) {
         request_id: receipt,
         revision: d.revision,
         session_id: target.value === "new" ? null : target.value,
+        guidance: guidance.value.trim(),
       });
       emit("sent");
       changed();
@@ -1235,9 +1243,8 @@ function shiftLane(stage: Stage, delta: number) {
 .agent-heading span svg {
   color: rgb(var(--v-theme-primary));
 }
-.agent-controls :deep(.v-input) {
-  min-width: 0;
-  flex: 1;
+.agent-controls {
+  justify-content: flex-end;
 }
 .editor-actions {
   border-top: 1px solid var(--sp-chip-border);

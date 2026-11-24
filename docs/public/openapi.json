@@ -2375,6 +2375,44 @@
         }
       }
     },
+    "/api/v1/chat/sessions/{session_id}/creation-relations": {
+      "get": {
+        "tags": [
+          "Chat"
+        ],
+        "summary": "Get the creation source and direct destinations of an owned conversation",
+        "operationId": "getChatSessionCreationRelations",
+        "x-astrbot-scope": "chat",
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/SessionId"
+          },
+          {
+            "name": "refresh_remote",
+            "in": "query",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            },
+            "description": "Resolve confirmed deletions through the original remote bindings."
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/ChatSessionCreationRelations"
+          }
+        },
+        "description": "**Required scope:** `chat`"
+      }
+    },
     "/api/v1/chat/sessions/{session_id}/history": {
       "get": {
         "tags": [
@@ -8612,6 +8650,16 @@
         "summary": "Get subagent orchestrator configuration",
         "operationId": "getSubagentConfig",
         "x-astrbot-scope": "config",
+        "parameters": [
+          {
+            "name": "config_id",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "default": "default"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "$ref": "#/components/responses/Ok"
@@ -8626,6 +8674,16 @@
         "summary": "Update subagent orchestrator configuration",
         "operationId": "updateSubagentConfig",
         "x-astrbot-scope": "config",
+        "parameters": [
+          {
+            "name": "config_id",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "default": "default"
+            }
+          }
+        ],
         "requestBody": {
           "required": true,
           "content": {
@@ -8796,6 +8854,16 @@
           "application/json": {
             "schema": {
               "$ref": "#/components/schemas/WorkflowValidationError"
+            }
+          }
+        }
+      },
+      "ChatSessionCreationRelations": {
+        "description": "Authorized conversation creation relationships.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ChatSessionCreationRelationsResponse"
             }
           }
         }
@@ -9083,7 +9151,8 @@
           "stt",
           "tts",
           "embedding",
-          "rerank"
+          "rerank",
+          "decision"
         ]
       },
       "CreateConfigProfileRequest": {
@@ -11300,6 +11369,127 @@
           },
           "archived": {
             "type": "boolean"
+          }
+        }
+      },
+      "ChatSessionCreationSource": {
+        "type": "object",
+        "required": [
+          "kind"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "local_agent",
+              "remote",
+              "remote_agent"
+            ]
+          },
+          "session_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "display_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "credential_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "ChatCreatedSession": {
+        "type": "object",
+        "required": [
+          "session_id"
+        ],
+        "properties": {
+          "session_id": {
+            "type": "string"
+          },
+          "display_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "connection_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "connection_revision": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "connection_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "ChatSessionCreationRelations": {
+        "type": "object",
+        "required": [
+          "source",
+          "created"
+        ],
+        "properties": {
+          "source": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatSessionCreationSource"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "created": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ChatCreatedSession"
+            }
+          }
+        }
+      },
+      "ChatSessionCreationRelationsResponse": {
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "properties": {
+          "status": {
+            "type": "string"
+          },
+          "message": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatSessionCreationRelations"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       },

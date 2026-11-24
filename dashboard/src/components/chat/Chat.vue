@@ -1386,6 +1386,12 @@ import {
 import { useDisplay } from "vuetify";
 import { useAuthStore } from "@/stores/auth";
 import {
+  getChatSessionCreationRelations,
+  getConnectionSessionCreationRelations,
+  type ChatSessionCreationRelations,
+} from "@/api/generated/openapi-v1";
+import type { ChatCreationRelations, ChatRelationTarget } from "@/stores/chatHeader";
+import {
   accountSessionRevision,
   assertCurrentAccount,
 } from "@/utils/accountSession";
@@ -2373,6 +2379,7 @@ const {
   onSessionsChanged: async (projectId) => {
     // A background run may finish after its source system stream was closed.
     // Refresh cached projects too when no creation notice identified the target.
+    void refreshCreationRelations();
     await Promise.all([
       getSessions(),
       ...(projectId ? [projectId] : Object.keys(projectSessionsById.value)).map(
@@ -5998,6 +6005,137 @@ watch(
   (snap) => chatHeader.SET_TODO_SNAPSHOT(snap),
   { immediate: true },
 );
+
+const creationRelations = ref<ChatSessionCreationRelations | null>(null);
+let creationRelationsRequest = 0;
+onBeforeUnmount(() => {
+  creationRelationsRequest += 1;
+});
+const creationRelationsSessionId = computed(() =>
+  remoteConnectionId.value
+    ? activeRemoteConnection.value && activeRemoteSession.value
+      ? remoteSessionId.value
+      : ""
+    : isProviderWorkspace.value
+      ? ""
+      : ordinaryChatId.value,
+);
+const creationRelationsKey = computed(() =>
+  JSON.stringify([
+    accountSessionRevision.value,
+    creationRelationsSessionId.value,
+    remoteConnectionId.value ? activeRemoteConnection.value?.revision : null,
+    remoteConnectionId.value,
+  ]),
+);
+
+/** Recheck the selected conversation without applying a late response after navigation. */
+async function refreshCreationRelations(refreshRemote = false) {
+  const sessionId = creationRelationsSessionId.value;
+  const connection = remoteConnectionId.value ? activeRemoteConnection.value : null;
+  if (!sessionId || chatAccountRevision !== accountSessionRevision.value) return;
+  const request = ++creationRelationsRequest;
+  const key = creationRelationsKey.value;
+  try {
+    const response = connection
+      ? await getConnectionSessionCreationRelations({
+          path: { connection_id: connection.connection_id, session_id: sessionId },
+          query: { revision: connection.revision },
+        })
+      : await getChatSessionCreationRelations({
+          path: { session_id: sessionId },
+          query: { refresh_remote: refreshRemote },
+        });
+    if (request === creationRelationsRequest && key === creationRelationsKey.value) {
+      creationRelations.value = response.data?.data ?? null;
+    }
+  } catch {
+    // Relationship metadata is optional on older or temporarily unavailable peers.
+  }
+}
+
+/** Resolve the target against the currently authorized binding and session list. */
+function creationRelationTarget(
+  sessionId: string,
+  displayName?: string | null,
+  connectionId?: string | null,
+  revision?: string | null,
+  connectionName?: string | null,
+): ChatRelationTarget {
+  if (!connectionId) return { sessionId, displayName, available: true };
+  const binding = remote.connections.value.find(
+    (item) => item.connection_id === connectionId && item.revision === revision,
+  );
+  const target =
+    binding && remote.enabled.value && remote.status[connectionId] === "ready"
+      ? remote.sessions[connectionId]?.find((item) => item.session_id === sessionId)
+      : undefined;
+  return {
+    sessionId,
+    connectionId,
+    revision: revision ?? undefined,
+    displayName: target?.display_name || displayName,
+    connectionName: binding?.name || connectionName,
+    available: Boolean(target),
+  };
+}
+
+watch(creationRelationsKey, () => {
+  creationRelationsRequest += 1;
+  creationRelations.value = null;
+  chatHeader.creationRelations = null;
+  chatHeader.creationRelationsOpen = false;
+  chatHeader.creationRelationSelection = null;
+  void refreshCreationRelations();
+}, { immediate: true, flush: "sync" });
+
+watch((): ChatCreationRelations | null => {
+  const relations = creationRelations.value;
+  if (!relations || (!relations.source && !relations.created.length)) return null;
+  const connection = remoteConnectionId.value ? activeRemoteConnection.value : null;
+  const source = relations.source;
+  return {
+    source: source && {
+      kind: source.kind,
+      credentialName: source.credential_name,
+      target: source.session_id
+        ? creationRelationTarget(
+            source.session_id, source.display_name,
+            connection?.connection_id, connection?.revision,
+          )
+        : undefined,
+    },
+    created: relations.created.map((entry) => creationRelationTarget(
+      entry.session_id, entry.display_name,
+      connection?.connection_id || entry.connection_id,
+      connection?.revision || entry.connection_revision,
+      entry.connection_name,
+    )),
+  };
+}, (relations) => {
+  chatHeader.creationRelations = relations;
+  if (!relations) chatHeader.creationRelationsOpen = false;
+}, { immediate: true });
+
+watch(() => chatHeader.creationRelationsOpen, (open) => {
+  if (!open) return;
+  if (!remoteConnectionId.value && creationRelations.value?.created.some((entry) => entry.connection_id)) {
+    void remote.refresh();
+  }
+  void refreshCreationRelations(true);
+});
+
+watch(() => chatHeader.creationRelationSelection, (target) => {
+  if (!target) return;
+  chatHeader.creationRelationSelection = null;
+  const current = creationRelationTarget(target.sessionId, target.displayName, target.connectionId, target.revision);
+  if (!current.available) return;
+  if (current.connectionId) {
+    void selectRemoteSession(current.connectionId, current.sessionId);
+  } else {
+    void selectSession(current.sessionId);
+  }
+});
 
 /** 当前会话的“新建清单”成功计数（action=create 才递增，更新类不递增）。 */
 const currentTodoCreateTick = computed(() => {

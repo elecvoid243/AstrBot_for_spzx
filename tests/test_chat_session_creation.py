@@ -202,6 +202,30 @@ async def test_create_only_inherits_effective_settings_and_lists_empty_session(
 
 
 @pytest.mark.asyncio
+async def test_local_creation_relationships_follow_the_owned_sessions(creation):
+    m, _, invoke = creation
+    source_id = m.ids[0]
+    target_id = (await invoke({"title": "Created by Agent"}))["session_id"]
+    source_path = f"/api/v1/chat/sessions/{source_id}/creation-relations"
+    target_path = f"/api/v1/chat/sessions/{target_id}/creation-relations"
+    source = (await m.client.get(source_path, headers=m.headers)).json()["data"]
+    assert source == {
+        "source": None,
+        "created": [{"session_id": target_id, "display_name": "Created by Agent"}],
+    }
+    target = (await m.client.get(target_path, headers=m.headers)).json()["data"]
+    assert target["source"]["kind"] == "local_agent"
+    assert target["source"]["session_id"] == source_id
+    assert target["created"] == []
+    removed = await m.client.delete(
+        f"/api/v1/chat/sessions/{target_id}", headers=m.headers
+    )
+    assert removed.json()["status"] == "ok"
+    source = (await m.client.get(source_path, headers=m.headers)).json()["data"]
+    assert source == {"source": None, "created": []}
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "invalid",
     [

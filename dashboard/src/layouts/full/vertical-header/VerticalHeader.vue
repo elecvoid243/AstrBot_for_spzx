@@ -1377,6 +1377,68 @@ onMounted(async () => {
         </v-card>
       </v-menu>
 
+      <v-menu
+        v-if="isChatPath && chatHeader.creationRelations"
+        v-model="chatHeader.creationRelationsOpen"
+        location="bottom end"
+        offset="8"
+      >
+        <template #activator="{ props: menuProps }">
+          <v-btn
+            v-bind="menuProps"
+            class="chat-action-btn todo-summary-trigger"
+            :class="{ 'todo-summary-trigger--active': chatHeader.creationRelationsOpen }"
+            variant="text"
+            size="small"
+            rounded="sm"
+            :title="tm('creationRelations.title')"
+            :aria-label="tm('creationRelations.title')"
+          >
+            <v-icon size="18" class="todo-trigger-icon">mdi-source-branch</v-icon>
+            <span v-if="chatHeader.creationRelations.created.length" class="todo-trigger-count">
+              {{ chatHeader.creationRelations.created.length }}
+            </span>
+          </v-btn>
+        </template>
+        <v-card class="todo-menu-card" elevation="8">
+          <v-list density="compact" lines="two" class="todo-menu-body creation-relations-list">
+            <template v-if="chatHeader.creationRelations.source">
+              <v-list-subheader>{{ tm("creationRelations.source") }}</v-list-subheader>
+              <v-list-item
+                v-if="chatHeader.creationRelations.source.target"
+                :title="chatHeader.creationRelations.source.target.displayName || tm('creationRelations.untitled')"
+                :subtitle="chatHeader.creationRelations.source.target.available ? tm('creationRelations.local_agent') : tm('creationRelations.unavailable')"
+                :disabled="!chatHeader.creationRelations.source.target.available"
+                :aria-disabled="!chatHeader.creationRelations.source.target.available || undefined"
+                :append-icon="chatHeader.creationRelations.source.target.available ? 'mdi-arrow-top-right' : undefined"
+                @click="chatHeader.creationRelationSelection = chatHeader.creationRelations.source.target"
+              />
+              <v-list-item
+                v-else
+                :title="tm(`creationRelations.${chatHeader.creationRelations.source.kind}`)"
+                :subtitle="chatHeader.creationRelations.source.credentialName || undefined"
+              />
+            </template>
+            <template v-if="chatHeader.creationRelations.created.length">
+              <v-list-subheader>{{ tm("creationRelations.created") }}</v-list-subheader>
+              <v-list-item
+                v-for="target in chatHeader.creationRelations.created"
+                :key="JSON.stringify([target.connectionId, target.revision, target.sessionId])"
+                :title="target.displayName || tm('creationRelations.untitled')"
+                :subtitle="[
+                  target.connectionName,
+                  target.available ? null : tm('creationRelations.unavailable'),
+                ].filter(Boolean).join(' · ') || undefined"
+                :disabled="!target.available"
+                :aria-disabled="!target.available || undefined"
+                :append-icon="target.available ? 'mdi-arrow-top-right' : undefined"
+                @click="chatHeader.creationRelationSelection = target"
+              />
+            </template>
+          </v-list>
+        </v-card>
+      </v-menu>
+
       <!--
         Workspace files panel toggle button - HIDDEN on this branch.
         Reason: GitDiffSidebar (spcode-backed workspace preview) supersedes
@@ -2594,6 +2656,24 @@ onMounted(async () => {
   padding: 10px 12px 4px;
   min-height: 0;
   overflow-y: auto;
+}
+
+.creation-relations-list .v-list-subheader {
+  color: rgba(var(--v-theme-on-surface), 0.72);
+}
+
+.creation-relations-list .v-list-item {
+  color: rgb(var(--v-theme-on-surface));
+  border-radius: 8px;
+}
+
+.creation-relations-list .v-list-item--disabled {
+  color: rgba(var(--v-theme-on-surface), 0.68);
+  opacity: 1;
+}
+
+.creation-relations-list .v-list-item-subtitle {
+  opacity: 0.82;
 }
 
 .todo-menu-footer {

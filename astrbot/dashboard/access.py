@@ -165,6 +165,7 @@ USER_OPERATIONS = (
         "connection_creation_options",
         "create_connection_session",
         "read_connection_history",
+        "connection_session_creation_relations",
         "send_connection_text",
         "upload_connection_attachment",
         "download_connection_attachment",
@@ -186,6 +187,7 @@ USER_OPERATIONS = (
         "chat_sessions",
         "dashboard_get_sessions",
         "get_chat_session",
+        "get_chat_session_creation_relations",
         "get_chat_session_history",
         "dashboard_get_session",
         "chat",
@@ -288,6 +290,10 @@ async def validate_account_request(request: Request, account) -> None:
         ApiError: The caller supplies internal fields or an unavailable resource.
     """
     operation = getattr(request.state, "dashboard_operation", None)
+    if operation == "get_chat_session_creation_relations":
+        if set(request.query_params) - {"refresh_remote"}:
+            raise ApiError("Unsupported chat query", status_code=400)
+        return
     if operation in {
         "list_remote_connections",
         "create_remote_connection",
@@ -297,6 +303,7 @@ async def validate_account_request(request: Request, account) -> None:
         "connection_creation_options",
         "create_connection_session",
         "read_connection_history",
+        "connection_session_creation_relations",
         "send_connection_text",
         "upload_connection_attachment",
         "download_connection_attachment",

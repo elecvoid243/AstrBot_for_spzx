@@ -7,6 +7,16 @@
     "close": "Close comments",
     "stale": "The original source location is unavailable for this file version. The comment is still in the conversation."
   },
+  "creationRelations": {
+    "title": "Session relationships",
+    "source": "Creation source",
+    "created": "Created sessions",
+    "local_agent": "Created by an agent",
+    "remote": "Created remotely",
+    "remote_agent": "Created by a remote agent",
+    "untitled": "Untitled chat",
+    "unavailable": "Unavailable"
+  },
   "agentBrowser": {
     "staleInput": "The page moved. This input was not executed; wait for the new image and try again.",
     "staleWheel": "Page moved · old wheel input rejected. Wait for the new image and scroll again.",

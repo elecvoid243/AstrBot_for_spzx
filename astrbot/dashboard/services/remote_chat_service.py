@@ -15,12 +15,14 @@ from weakref import WeakValueDictionary
 import anyio
 import httpx
 from cryptography.fernet import Fernet, InvalidToken
-from sqlmodel import select
+from sqlmodel import col, delete, select
 
+from astrbot import logger
 from astrbot.builtin_stars.session_messages.tools import SessionMessageChain
 from astrbot.core.config.astrbot_config import AstrBotConfig
 from astrbot.core.db import BaseDatabase
 from astrbot.core.db.po import (
+    ChatSessionCreation,
     DashboardAccount,
     RemoteChatAttachment,
     RemoteChatConnection,
@@ -427,7 +429,7 @@ class RemoteChatService:
                         if key in payload
                     },
                 )
-                current = await self.authenticate(raw_key)
+                current, credential = await self.authenticate_credential(raw_key)
                 async with self.db.get_db() as connection:
                     policy = await connection.get(
                         RemoteChatExposure, current.account_id
@@ -453,6 +455,15 @@ class RemoteChatService:
                     if policy.mode != "all":
                         policy.session_ids = [*policy.session_ids, session_id]
                     connection.add(policy)
+                    connection.add(
+                        ChatSessionCreation(
+                            session_id=session_id,
+                            owner=owner,
+                            kind="remote_agent" if agent else "remote",
+                            credential_id=credential.credential_id,
+                            credential_name=credential.name,
+                        )
+                    )
                     await connection.commit()
                     # A policy/account change may finish during the database commit.
                     self.require_enabled()
@@ -549,6 +560,46 @@ class RemoteChatService:
                 or current.revision != revision
             ):
                 raise ChatServiceError("Connection changed during request")
+            if (
+                path == "sessions"
+                and payload is not None
+                and isinstance(result, dict)
+                and result.get("status") == "created"
+                and isinstance(result.get("session_id"), str)
+                and result["session_id"]
+            ):
+                from astrbot.core.cron.webchat_turn import parse_webchat_turn_session
+
+                source_id, _ = parse_webchat_turn_session(event.unified_msg_origin)
+                async with self.db.get_db() as connection:
+                    await self.chat.require_owned_chat_session(
+                        principal.resource_owner, source_id
+                    )
+                    await connection.merge(
+                        ChatSessionCreation(
+                            session_id=result["session_id"],
+                            connection_id=connection_id,
+                            connection_revision=revision,
+                            connection_name=current.name,
+                            owner=principal.resource_owner,
+                            kind="remote_agent",
+                            source_session_id=source_id,
+                            display_name=payload["title"].strip(),
+                        )
+                    )
+                    await connection.commit()
+                try:
+                    await self.chat.publish_session_event(
+                        source_id,
+                        {
+                            "type": "chat_session_created",
+                            "data": {"session_id": result["session_id"]},
+                        },
+                    )
+                except Exception:
+                    logger.warning(
+                        "Failed to publish remote ChatUI creation", exc_info=True
+                    )
             return result
         except ApiError as exc:
             raise ChatServiceError(
@@ -660,6 +711,23 @@ class RemoteChatService:
         Raises:
             ApiError: Remote access is disabled or the credential/account is invalid.
         """
+        account, _ = await self.authenticate_credential(raw_key)
+        return account
+
+    async def authenticate_credential(
+        self, raw_key: str
+    ) -> tuple[DashboardAccount, RemoteChatCredential]:
+        """Resolve the authenticated account and credential for creation attribution.
+
+        Args:
+            raw_key: Dedicated remote connection secret.
+
+        Returns:
+            The authorized account and matching credential record.
+
+        Raises:
+            ApiError: The instance, account or credential is unavailable.
+        """
         self.require_enabled()
         key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
         async with self.db.get_db() as connection:
@@ -683,7 +751,55 @@ class RemoteChatService:
             or account.token_version != credential.account_token_version
         ):
             raise ApiError("Invalid remote credential", status_code=401)
-        return account
+        return account, credential
+
+    async def reconcile_created_sessions(
+        self, account: DashboardAccount, source_id: str, entries: list[dict]
+    ) -> None:
+        """Remove destinations whose original remote binding confirms deletion.
+
+        Args:
+            account: Dashboard account that owns the source conversation.
+            source_id: Already authorized local source conversation.
+            entries: Creation records loaded under that same account.
+        """
+        targets: dict[tuple[str, str], set[str]] = {}
+        for entry in entries:
+            if entry.get("connection_id"):
+                key = (entry["connection_id"], entry["connection_revision"])
+                targets.setdefault(key, set()).add(entry["session_id"])
+        for (connection_id, revision), session_ids in targets.items():
+            ids = sorted(session_ids)
+            for offset in range(0, len(ids), 100):
+                batch = ids[offset : offset + 100]
+                try:
+                    deleted = await self.read_connection(
+                        account,
+                        connection_id,
+                        "agent/deleted-created-sessions",
+                        {"session_id": batch},
+                        revision=revision,
+                    )
+                except ApiError:
+                    # Offline peers, revoked grants and older peers all leave the record intact.
+                    break
+                if not isinstance(deleted, list) or any(
+                    not isinstance(sid, str) or sid not in batch for sid in deleted
+                ):
+                    break
+                if not deleted:
+                    continue
+                async with self.db.get_db() as connection:
+                    await connection.execute(
+                        delete(ChatSessionCreation).where(
+                            ChatSessionCreation.owner == account.resource_owner,
+                            ChatSessionCreation.source_session_id == source_id,
+                            ChatSessionCreation.connection_id == connection_id,
+                            ChatSessionCreation.connection_revision == revision,
+                            col(ChatSessionCreation.session_id).in_(deleted),
+                        )
+                    )
+                    await connection.commit()
 
     async def sessions(
         self, account: DashboardAccount, *, exposed_only: bool = True

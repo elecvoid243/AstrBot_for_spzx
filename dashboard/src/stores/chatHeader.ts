@@ -1,6 +1,25 @@
 import { defineStore } from "pinia";
 import type { ShellSessionListItem } from "@/components/chat/message_list_comps/shell_session_tools/format";
 import type { TodoSnapshot } from "@/composables/useMessages";
+import type { ChatSessionCreationSource } from "@/api/generated/openapi-v1";
+
+export interface ChatRelationTarget {
+  sessionId: string;
+  connectionId?: string;
+  revision?: string;
+  displayName?: string | null;
+  connectionName?: string | null;
+  available: boolean;
+}
+
+export interface ChatCreationRelations {
+  source: {
+    kind: ChatSessionCreationSource["kind"];
+    credentialName?: string | null;
+    target?: ChatRelationTarget;
+  } | null;
+  created: ChatRelationTarget[];
+}
 
 /** Summary shown on the app-bar goal entry button; null = no goal record. */
 export interface GoalBadge {
@@ -39,6 +58,9 @@ export const useChatHeaderStore = defineStore("chatHeader", {
     // it from the todo tools) and mirrors the active session's copy here.
     todoSnapshot: null as TodoSnapshot | null,
     todoMenuOpen: false,
+    creationRelations: null as ChatCreationRelations | null,
+    creationRelationsOpen: false,
+    creationRelationSelection: null as ChatRelationTarget | null,
     // 2026-10-05: managed shell session indicator. Same push pattern as the
     // goal badge: Chat.vue owns the per-session cache (useShellSessions) and
     // mirrors the active session's list here so the VerticalHeader button
@@ -138,6 +160,9 @@ export const useChatHeaderStore = defineStore("chatHeader", {
       this.goalEditOpen = false;
       this.todoSnapshot = null;
       this.todoMenuOpen = false;
+      this.creationRelations = null;
+      this.creationRelationsOpen = false;
+      this.creationRelationSelection = null;
       this.shellSessions = null;
       this.openShellWindows = [];
     },

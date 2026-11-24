@@ -187,6 +187,7 @@ Use chat capabilities and manage ChatUI sessions and projects.
 | `POST` | `/api/v1/chat/sessions/{session_id}/archive` | — |
 | `GET` | `/api/v1/chat/sessions/{session_id}/config` | — |
 | `PUT` | `/api/v1/chat/sessions/{session_id}/config` | — |
+| `GET` | `/api/v1/chat/sessions/{session_id}/creation-relations` | — |
 | `GET` | `/api/v1/chat/sessions/{session_id}/export` | — |
 | `GET` | `/api/v1/chat/sessions/{session_id}/goal` | — |
 | `POST` | `/api/v1/chat/sessions/{session_id}/goal` | — |

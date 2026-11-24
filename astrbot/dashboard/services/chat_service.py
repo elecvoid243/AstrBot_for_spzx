@@ -15,7 +15,7 @@ from types import SimpleNamespace
 from typing import Any
 from weakref import WeakSet
 
-from sqlmodel import select
+from sqlmodel import col, or_, select
 
 from astrbot.builtin_stars.session_messages.tools import (
     AgentMessageSource,
@@ -31,6 +31,7 @@ from astrbot.core.core_lifecycle import AstrBotCoreLifecycle
 from astrbot.core.db import BaseDatabase
 from astrbot.core.db.po import (
     RUN_CONVERSATION_PREFIX,
+    ChatSessionCreation,
     DashboardAccount,
     PlatformMessageHistory,
     PlatformSession,
@@ -3726,6 +3727,16 @@ class ChatService:
                 await projects.add_session_to_project(
                     owner, {"session_id": session_id, "project_id": project_id}
                 )
+            async with self.db.get_db() as connection:
+                connection.add(
+                    ChatSessionCreation(
+                        session_id=session_id,
+                        owner=owner,
+                        kind="local_agent",
+                        source_session_id=source_id,
+                    )
+                )
+                await connection.commit()
         except BaseException as exc:
             session = await self.db.get_platform_session_by_id(session_id)
             if session is not None:
@@ -3766,6 +3777,103 @@ class ChatService:
                 result["status"] = "created_send_failed"
                 result["send_error"] = str(exc)
         return result
+
+    async def session_creation_relations(
+        self,
+        owner: str,
+        session_id: str,
+        *,
+        remote_credential_id: str | None = None,
+        exposed_session_ids: set[str] | None = None,
+    ) -> dict:
+        """Return the creation source and destinations visible to the caller.
+
+        Args:
+            owner: Authenticated stable session owner.
+            session_id: Current ordinary session.
+            remote_credential_id: Credential used for a direct remote view, if any.
+            exposed_session_ids: Allowlist for a selected-sessions remote grant.
+
+        Returns:
+            Authorized origin and direct destinations, with current local titles.
+
+        Raises:
+            ChatServiceError: The current session is unavailable to the owner.
+        """
+        await self.require_owned_chat_session(owner, session_id)
+        async with self.db.get_db() as connection:
+            records = (
+                (
+                    await connection.execute(
+                        select(ChatSessionCreation)
+                        .where(
+                            ChatSessionCreation.owner == owner,
+                            or_(
+                                ChatSessionCreation.source_session_id == session_id,
+                                (ChatSessionCreation.session_id == session_id)
+                                & (ChatSessionCreation.connection_id == ""),
+                            ),
+                        )
+                        .order_by(col(ChatSessionCreation.created_at).desc())
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        local_ids = {
+            related_id
+            for record in records
+            if not record.connection_id
+            for related_id in (record.source_session_id, record.session_id)
+            if related_id
+            and related_id != session_id
+            and (exposed_session_ids is None or related_id in exposed_session_ids)
+        }
+        names = {}
+        ids = list(local_ids)
+        for offset in range(0, len(ids), MAX_SESSION_PAGE_SIZE):
+            sessions = await self.db.get_platform_sessions_by_ids(
+                ids[offset : offset + MAX_SESSION_PAGE_SIZE]
+            )
+            names.update(
+                (session.session_id, session.display_name)
+                for session in sessions
+                if session.creator == owner and session.platform_id == "webchat"
+            )
+        source = None
+        created = []
+        for record in records:
+            if record.source_session_id == session_id:
+                if record.connection_id and remote_credential_id is None:
+                    created.append(
+                        {
+                            "session_id": record.session_id,
+                            "display_name": record.display_name,
+                            "connection_id": record.connection_id,
+                            "connection_revision": record.connection_revision,
+                            "connection_name": record.connection_name,
+                        }
+                    )
+                elif not record.connection_id and record.session_id in names:
+                    created.append(
+                        {
+                            "session_id": record.session_id,
+                            "display_name": names[record.session_id],
+                        }
+                    )
+            elif record.source_session_id in names:
+                source = {
+                    "kind": record.kind,
+                    "session_id": record.source_session_id,
+                    "display_name": names[record.source_session_id],
+                }
+            elif record.credential_id:
+                source = {"kind": record.kind}
+                if remote_credential_id in (None, record.credential_id):
+                    source["credential_name"] = record.credential_name
+            elif remote_credential_id is not None:
+                source = {"kind": record.kind}
+        return {"source": source, "created": created}
 
     async def send_session_message(self, event, session_id: str, text: str) -> dict:
         """Accept Agent text through the ordinary chat admission and collector.

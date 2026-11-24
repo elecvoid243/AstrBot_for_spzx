@@ -144,6 +144,13 @@ async def test_human_creation_permissions_selected_visibility_and_first_message(
     created = await client.post(path + "/sessions", headers=headers, json=body)
     assert created.status_code == 200, created.text
     sid = created.json()["data"]["session_id"]
+    origin = await remote.get(
+        f"/api/v1/chat/sessions/{sid}/creation-relations", headers=remote_headers
+    )
+    assert origin.json()["data"]["source"] == {
+        "kind": "remote",
+        "credential_name": "Local binding",
+    }
     assert (
         remote_server.asgi_app.state.services.remote_chat.grant_revisions[
             remote_admin["account_id"]
@@ -398,6 +405,89 @@ async def test_agent_discovery_read_budget_creation_and_switches(remote_tools):
         source_account, "Desktop", "http://remote", None, binding["connection_id"]
     )
     assert (await read.call(context, session_id=sid, **selector)).startswith("error:")
+
+
+@pytest.mark.asyncio
+async def test_remote_creation_relationships_only_remove_confirmed_deletions(
+    remote_tools,
+):
+    instances, context, bindings, headers = remote_tools
+    local, target, _ = instances
+    client = local[0]
+    remote, _, remote_core, _, admin, credential = target
+    remote_headers = {"Authorization": "Bearer " + admin["token"]}
+    credential_headers = {"Authorization": "RemoteSession " + credential["key"]}
+    config = remote_core.astrbot_config["chatui"]
+    config["remote_session_creation_enabled"] = True
+    binding = bindings[0]
+    invocation = current_tool_invocation.set(("test", "create-relationship"))
+    try:
+        result = await CreateChatSessionTool().call(
+            context,
+            connection_id=binding["connection_id"],
+            connection_revision=binding["revision"],
+            title="Remote destination",
+            project_id=None,
+        )
+    finally:
+        current_tool_invocation.reset(invocation)
+    target_id = json.loads(result)["session_id"]
+    source_id = context.context.event.get_session_id().rsplit("!", 1)[1]
+    path = f"/api/v1/chat/sessions/{source_id}/creation-relations"
+    remote_path = (
+        f"/api/v1/chat/remote-connections/{binding['connection_id']}/sessions/"
+        f"{target_id}/creation-relations"
+    )
+    remote_source = await client.get(
+        remote_path, headers=headers, params={"revision": binding["revision"]}
+    )
+    assert remote_source.json()["data"]["source"] == {
+        "kind": "remote_agent",
+        "credential_name": "Local binding",
+    }
+    before = (await client.get(path, headers=headers)).json()["data"]["created"]
+    assert before == [
+        {
+            "session_id": target_id,
+            "display_name": "Remote destination",
+            "connection_id": binding["connection_id"],
+            "connection_revision": binding["revision"],
+            "connection_name": "Desktop",
+        }
+    ]
+    await remote.put(
+        "/api/v1/chat/remote-access/exposure",
+        headers=remote_headers,
+        json={"mode": "selected", "session_ids": []},
+    )
+    for enabled in (False, True):
+        config["remote_sessions_enabled"] = enabled
+        pending = await client.get(
+            path, headers=headers, params={"refresh_remote": True}
+        )
+        assert pending.json()["data"]["created"] == before
+    removed = await remote.delete(
+        f"/api/v1/chat/sessions/{target_id}", headers=remote_headers
+    )
+    assert removed.json()["status"] == "ok"
+    other = await remote.post(
+        "/api/v1/chat/remote-access/credentials",
+        headers=remote_headers,
+        json={"name": "Other credential"},
+    )
+    status_path = "/api/v1/remote-chat/agent/deleted-created-sessions"
+    params = {"session_id": target_id}
+    denied = await remote.get(
+        status_path,
+        headers={"Authorization": "RemoteSession " + other.json()["data"]["key"]},
+        params=params,
+    )
+    assert denied.json()["data"] == []
+    confirmed = await remote.get(status_path, headers=credential_headers, params=params)
+    assert confirmed.json()["data"] == [target_id]
+    after = await client.get(path, headers=headers, params={"refresh_remote": True})
+    assert after.json()["data"]["created"] == []
+    assert (await client.get(path, headers=headers)).json()["data"]["created"] == []
 
 
 @pytest.mark.asyncio

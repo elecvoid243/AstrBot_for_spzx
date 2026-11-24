@@ -462,6 +462,10 @@ read_chat_session(session_id="<session_id>", include_tool_results=True,
 
 在 A 中要求“另开一个标题为资料整理的会话”，Agent 可调用 `create_chat_session(title)` 创建独立空会话 B。省略项目时继承 A 当前项目；传入本人已有的 `project_name` 或 `project_id` 可选择其他项目，传入 `project_id: null` 明确不放入项目。省略模型与思考参数时，继承 A 执行当时有效的模型和思考设置（包括临时单轮选择），并继承来源配置档，不改写 A 的持久偏好。也可指定可用的 `selected_provider`、该提供商允许的 `selected_model` 和 `thinking_effort`。
 
+顶部工具栏的 **会话关系** 按钮仅在当前会话有创建来源或已创建会话时出现。打开 A 的 **已创建会话** 可以查看并跳转到其 Agent 创建的本机和远端会话。打开 B 的 **创建来源** 可以跳回 A。通过远端创建的会话显示接收端配置的凭据名称，并标明是远端用户还是远端 Agent 创建。远端暂时不可访问时，条目保留并显示 **不可用**。确认删除后，列表会移除相应条目。创建关系从新会话开始记录。
+
+![会话关系菜单显示创建来源、本机和远端目标，以及暂时不可用的目标](./images/chat-session-relationships.png)
+
 项目名是 ChatUI 左侧项目文件夹的标题，不是磁盘路径。例如 `create_chat_session(title="资料整理", project_name="研究项目")` 可直接选择已有的“研究项目”文件夹，即使其中还没有会话。名称按保存的标题原样精确匹配、区分大小写，空格也属于标题；可原样复制 `list_chat_sessions` 返回的 `project_name`。不会自动创建文件夹。`project_name` 与 `project_id` 互斥（包括 `project_id: null`），两者都省略才继承 A 的项目。名称不存在、为空或类型错误会在创建会话前拒绝；本人有多个同名项目时返回候选 `project_id`，请改用其中一个 ID，其他账户的同名项目不参与匹配。
 
 不传 `text` 时只创建，不启动模型；传入首条非空 `text` 时，沿用上述同一发送入口和来源标记。B 不复制 A 的历史，也不创建侧聊或隐藏成员。创建完成后会刷新原有普通/项目会话列表；点击 B 即可打开，查看记录或手动继续。之后 A 和 B 可继续使用 `send_chat_message` 双向交流。

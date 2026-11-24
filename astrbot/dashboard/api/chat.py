@@ -49,6 +49,7 @@ from astrbot.dashboard.schemas import (
     ChatSessionBatchArchiveRequest,
     ChatSessionBatchDeleteRequest,
     ChatSessionConfigRequest,
+    ChatSessionCreationRelationsResponse,
     ChatSessionPatchRequest,
     ChatSessionSelectionRequest,
     ChatSubagentFollowUpRequest,
@@ -809,6 +810,46 @@ async def get_chat_session(
     return await _run(
         lambda: service.get_session(auth.username, session_id, limit=limit)
     )
+
+
+@router.get(
+    "/chat/sessions/{session_id}/creation-relations",
+    response_model=ChatSessionCreationRelationsResponse,
+    response_model_exclude_unset=True,
+)
+async def get_chat_session_creation_relations(
+    session_id: str,
+    request: Request,
+    refresh_remote: bool = False,
+    auth: AuthContext = Depends(require_chat_scope),
+    service: ChatService = Depends(get_service),
+):
+    """Read the current account's creation relationships for one conversation.
+
+    Args:
+        session_id: Owned conversation identifier.
+        request: Authenticated Dashboard request.
+        refresh_remote: Ask original bindings to confirm any target deletions.
+        auth: Scoped caller with a stable owner identity.
+        service: Ordinary ChatUI service.
+
+    Returns:
+        The origin and remaining created sessions, or an unavailable response.
+    """
+    try:
+        relations = await service.session_creation_relations(auth.username, session_id)
+        account = getattr(request.state, "dashboard_account", None)
+        remote = getattr(service, "remote_chat", None)
+        if refresh_remote and account is not None and remote is not None:
+            await remote.reconcile_created_sessions(
+                account, session_id, relations["created"]
+            )
+            relations = await service.session_creation_relations(
+                auth.username, session_id
+            )
+        return ok(relations)
+    except ChatServiceError as exc:
+        return error(str(exc))
 
 
 @router.get(

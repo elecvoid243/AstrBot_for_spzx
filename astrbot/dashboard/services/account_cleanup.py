@@ -11,6 +11,7 @@ from starlette.responses import JSONResponse
 from astrbot.core import file_token_service, sp
 from astrbot.core.db.po import (
     Attachment,
+    ChatSessionCreation,
     ChatUIProject,
     ConversationV2,
     CronJob,
@@ -546,6 +547,7 @@ async def delete_account_data(app, account: DashboardAccount) -> None:
             (WebChatThread, WebChatThread.creator == owner),
             (WebChatSubagentRun, col(WebChatSubagentRun.session_id).in_(ids)),
             (ChatUIProject, ChatUIProject.creator == owner),
+            (ChatSessionCreation, ChatSessionCreation.owner == owner),
             (
                 PlatformSession,
                 (PlatformSession.creator == owner)

@@ -102,6 +102,23 @@ class RemoteChatAttachment(TimestampMixin, SQLModel, table=True):
     filename: str
 
 
+class ChatSessionCreation(TimestampMixin, SQLModel, table=True):
+    """Server-recorded origin of a local or directly bound remote ChatUI session."""
+
+    __tablename__: str = "chat_session_creations"
+
+    session_id: str = Field(primary_key=True)
+    connection_id: str = Field(default="", primary_key=True)
+    connection_revision: str = Field(default="", primary_key=True)
+    owner: str = Field(index=True, nullable=False)
+    kind: str = Field(nullable=False)
+    source_session_id: str | None = Field(default=None, index=True)
+    display_name: str | None = Field(default=None)
+    connection_name: str | None = Field(default=None)
+    credential_id: str | None = Field(default=None)
+    credential_name: str | None = Field(default=None)
+
+
 class PlatformStat(SQLModel, table=True):
     """This class represents the statistics of bot usage across different platforms.
 

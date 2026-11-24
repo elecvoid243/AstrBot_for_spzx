@@ -374,6 +374,32 @@ class ChatHistoryResponse(BaseModel):
     data: ChatHistoryPage | None = None
 
 
+class ChatSessionCreationSource(BaseModel):
+    kind: Literal["local_agent", "remote", "remote_agent"]
+    session_id: str | None = None
+    display_name: str | None = None
+    credential_name: str | None = None
+
+
+class ChatCreatedSession(BaseModel):
+    session_id: str
+    display_name: str | None = None
+    connection_id: str | None = None
+    connection_revision: str | None = None
+    connection_name: str | None = None
+
+
+class ChatSessionCreationRelations(BaseModel):
+    source: ChatSessionCreationSource | None
+    created: list[ChatCreatedSession]
+
+
+class ChatSessionCreationRelationsResponse(BaseModel):
+    status: str
+    message: str | None = None
+    data: ChatSessionCreationRelations | None = None
+
+
 class ChatFlags(BaseModel):
     enable_inline_genui: bool = True
     enable_default_system_prompt: bool = True

@@ -13,8 +13,8 @@ from uuid import UUID, uuid4
 import anyio
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
-from pydantic import BaseModel, ConfigDict, Field, SecretStr
-from sqlmodel import select
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError
+from sqlmodel import col, select
 
 from astrbot.builtin_stars.session_messages.tools import (
     MAX_ACTIVE_RUN_IDS,
@@ -22,9 +22,12 @@ from astrbot.builtin_stars.session_messages.tools import (
     SessionMessageChain,
 )
 from astrbot.core.db.po import (
+    ChatSessionCreation,
     DashboardAccount,
+    PlatformSession,
     RemoteChatAttachment,
     RemoteChatCredential,
+    RemoteChatExposure,
 )
 from astrbot.core.platform.sources.webchat.webchat_queue_mgr import webchat_queue_mgr
 from astrbot.core.subagent_progress import subagent_progress
@@ -36,6 +39,10 @@ from astrbot.core.utils.webchat_access import (
     webchat_resource_owner,
 )
 from astrbot.dashboard.responses import ApiError, ok
+from astrbot.dashboard.schemas import (
+    ChatSessionCreationRelations,
+    ChatSessionCreationRelationsResponse,
+)
 from astrbot.dashboard.services.chat_service import (
     ChatServiceError,
     build_webchat_unified_msg_origin,
@@ -758,6 +765,98 @@ async def read_remote_chat_history(
             "next_before_id": history[0]["id"] if history else None,
         }
     )
+
+
+@router.get("/remote-chat/agent/deleted-created-sessions")
+async def deleted_remote_created_sessions(
+    request: Request,
+    session_id: list[str] = Query(min_length=1, max_length=100),
+    account: DashboardAccount = Depends(require_remote_account),
+):
+    """Confirm deletions for targets created through the calling credential.
+
+    Args:
+        request: Dedicated remote request.
+        session_id: Candidate targets previously returned by remote creation.
+        account: Credential-bound session owner.
+
+    Returns:
+        Matching creation receipts whose sessions no longer exist.
+    """
+    service = request.app.state.services.remote_chat
+    _, credential = await service.authenticate_credential(
+        request.headers["Authorization"].partition(" ")[2].strip()
+    )
+    async with service.db.get_db() as connection:
+        deleted = (
+            (
+                await connection.execute(
+                    select(ChatSessionCreation.session_id)
+                    .outerjoin(
+                        PlatformSession,
+                        PlatformSession.session_id == ChatSessionCreation.session_id,
+                    )
+                    .where(
+                        ChatSessionCreation.owner == account.resource_owner,
+                        ChatSessionCreation.connection_id == "",
+                        ChatSessionCreation.kind == "remote_agent",
+                        ChatSessionCreation.credential_id == credential.credential_id,
+                        col(ChatSessionCreation.session_id).in_(session_id),
+                        col(PlatformSession.session_id).is_(None),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    return JSONResponse(ok(list(deleted)), headers={"Cache-Control": "no-store"})
+
+
+@router.get(
+    "/remote-chat/sessions/{session_id}/creation-relations",
+    response_model=ChatSessionCreationRelationsResponse,
+    response_model_exclude_unset=True,
+)
+async def remote_session_creation_relations(
+    session_id: str,
+    request: Request,
+    account: DashboardAccount = Depends(require_remote_account),
+):
+    """Read creation relationships scoped to the direct remote grant.
+
+    Args:
+        session_id: Exposed conversation on this instance.
+        request: Authenticated remote request with a dedicated credential.
+        account: Account authorized by the credential.
+
+    Returns:
+        Related conversations within the grant and the visible source label.
+    """
+    service = request.app.state.services.remote_chat
+    revision = service.grant_revisions.get(account.account_id, 0)
+    await service.require_session(account, session_id)
+    _, credential = await service.authenticate_credential(
+        request.headers["Authorization"].partition(" ")[2].strip()
+    )
+    async with service.db.get_db() as connection:
+        exposure = await connection.get(RemoteChatExposure, account.account_id)
+    try:
+        relations = await service.chat.session_creation_relations(
+            account.resource_owner,
+            session_id,
+            remote_credential_id=credential.credential_id,
+            exposed_session_ids=(
+                None
+                if exposure and exposure.mode == "all"
+                else set(exposure.session_ids if exposure else ())
+            ),
+        )
+    except ChatServiceError as exc:
+        raise ApiError("Session is unavailable", status_code=404) from exc
+    await service.require_session(account, session_id)
+    if service.grant_revisions.get(account.account_id, 0) != revision:
+        raise ApiError("Remote grant changed during request", status_code=403)
+    return ok(relations)
 
 
 class RemoteConnectionRequest(BaseModel):
@@ -1896,6 +1995,54 @@ async def list_connection_sessions(
         ),
         headers={"Cache-Control": "no-store"},
     )
+
+
+@router.get(
+    "/chat/remote-connections/{connection_id}/sessions/{session_id}/creation-relations",
+    response_model=ChatSessionCreationRelationsResponse,
+    response_model_exclude_unset=True,
+)
+async def connection_session_creation_relations(
+    connection_id: str,
+    session_id: str,
+    revision: str,
+    request: Request,
+    _owner: str = Depends(require_dashboard_user),
+):
+    """Read relationship metadata from the currently selected direct binding.
+
+    Args:
+        connection_id: Owned outbound connection identifier.
+        session_id: Remote conversation identifier.
+        revision: Exact revision of the selected binding.
+        request: Authenticated Dashboard request.
+        _owner: Dashboard login guard.
+
+    Returns:
+        Remote source and directly reachable related sessions.
+
+    Raises:
+        ApiError: The binding, session or response is unavailable.
+    """
+    if session_id in {".", ".."} or "/" in session_id or "\\" in session_id:
+        raise ApiError("Session is unavailable", status_code=404)
+    data = await request.app.state.services.remote_chat.read_connection(
+        request.state.dashboard_account,
+        connection_id,
+        "sessions/" + quote(session_id, safe="") + "/creation-relations",
+        revision=revision,
+    )
+    try:
+        relations = ChatSessionCreationRelations.model_validate(data)
+    except ValidationError as exc:
+        raise ApiError(
+            "Remote relationship data is unavailable", status_code=502
+        ) from exc
+    for target in relations.created:
+        target.connection_id = None
+        target.connection_revision = None
+        target.connection_name = None
+    return ok(relations)
 
 
 @router.get("/chat/remote-connections/{connection_id}/sessions/{session_id}/history")

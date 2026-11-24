@@ -22,6 +22,16 @@
       }
     }
   },
+  "creationRelations": {
+    "title": "チャットの関連",
+    "source": "作成元",
+    "created": "作成したチャット",
+    "local_agent": "エージェントが作成",
+    "remote": "リモートから作成",
+    "remote_agent": "リモートエージェントが作成",
+    "untitled": "無題のチャット",
+    "unavailable": "利用不可"
+  },
   "agentBrowser": {
     "switchMode": "ブラウザーモードを切り替える",
     "waitingUrl": "Agent がページを開くのを待っています",

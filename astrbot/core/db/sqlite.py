@@ -29,6 +29,7 @@ from astrbot.core.db.po import (
     AgentWorkflowRunArchive,
     ApiKey,
     Attachment,
+    ChatSessionCreation,
     ChatUIProject,
     CommandConfig,
     CommandConflict,
@@ -3351,6 +3352,18 @@ class SQLiteDatabase(BaseDatabase):
                         | (col(SessionBranchRelation.source_session_id) == session_id)
                     ),
                 )
+                await session.execute(
+                    delete(ChatSessionCreation).where(
+                        (ChatSessionCreation.source_session_id == session_id)
+                        | (
+                            (ChatSessionCreation.connection_id == "")
+                            & (ChatSessionCreation.session_id == session_id)
+                            & (ChatSessionCreation.kind != "remote_agent")
+                        )
+                    ),
+                )
+                # Inbound Agent creation receipts let the original credential
+                # verify a deletion without revealing arbitrary session existence.
                 await session.execute(
                     delete(PlatformSession).where(
                         col(PlatformSession.session_id) == session_id,

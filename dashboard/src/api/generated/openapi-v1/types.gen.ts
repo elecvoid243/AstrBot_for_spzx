@@ -330,6 +330,14 @@ export type ChatChunkUploadRequest = {
     chunk: (Blob | File);
 };
 
+export type ChatCreatedSession = {
+    session_id: string;
+    display_name?: (string) | null;
+    connection_id?: (string) | null;
+    connection_revision?: (string) | null;
+    connection_name?: (string) | null;
+};
+
 export type ChatFileChangeDiffRequest = {
     /**
      * Owned WebChat conversation identifier, required for account sessions.
@@ -589,6 +597,26 @@ export type ChatSessionBatchDeleteRequest = {
 export type ChatSessionConfigRequest = {
     config_id: string;
 };
+
+export type ChatSessionCreationRelations = {
+    source: (ChatSessionCreationSource | null);
+    created: Array<ChatCreatedSession>;
+};
+
+export type ChatSessionCreationRelationsResponse = {
+    status: string;
+    message?: (string) | null;
+    data?: (ChatSessionCreationRelations | null);
+};
+
+export type ChatSessionCreationSource = {
+    kind: 'local_agent' | 'remote' | 'remote_agent';
+    session_id?: (string) | null;
+    display_name?: (string) | null;
+    credential_name?: (string) | null;
+};
+
+export type kind = 'local_agent' | 'remote' | 'remote_agent';
 
 export type ChatSessionImportConfirmRequest = {
     import_id: string;
@@ -864,7 +892,7 @@ export type DecisionTask = {
     threshold?: number;
 };
 
-export type kind = 'boolean' | 'choice' | 'score';
+export type kind2 = 'boolean' | 'choice' | 'score';
 
 export type DeveloperModeRequest = {
     enabled: boolean;
@@ -1080,7 +1108,7 @@ export type HumanTask = {
     recommendation_reason_field?: (string | null);
 };
 
-export type kind2 = 'question' | 'approval';
+export type kind3 = 'question' | 'approval';
 
 /**
  * Automatic recommendation use requires an explicit deadline.
@@ -1317,7 +1345,7 @@ export type PackageDependency = {
 } | null);
 };
 
-export type kind3 = 'profiles' | 'models' | 'personas' | 'tools' | 'skills' | 'knowledge_bases' | 'decision_providers';
+export type kind4 = 'profiles' | 'models' | 'personas' | 'tools' | 'skills' | 'knowledge_bases' | 'decision_providers';
 
 /**
  * An exact role version and its source profile identity.
@@ -1843,7 +1871,7 @@ export type TrialRunRequest = {
     };
 };
 
-export type kind4 = 'workflow' | 'autonomous';
+export type kind5 = 'workflow' | 'autonomous';
 
 export type mode4 = 'full' | 'single' | 'partial';
 
@@ -2284,6 +2312,43 @@ export type ReadRemoteAgentHistoryApiV1RemoteChatAgentSessionsSessionIdHistoryGe
 export type ReadRemoteAgentHistoryApiV1RemoteChatAgentSessionsSessionIdHistoryGetResponse = (unknown);
 
 export type ReadRemoteAgentHistoryApiV1RemoteChatAgentSessionsSessionIdHistoryGetError = (HTTPValidationError);
+
+export type GetDeletedRemoteCreatedSessionsData = {
+    query: {
+        session_id: Array<(string)>;
+    };
+};
+
+export type GetDeletedRemoteCreatedSessionsResponse = ({
+    status: string;
+    data: Array<(string)>;
+});
+
+export type GetDeletedRemoteCreatedSessionsError = unknown;
+
+export type GetRemoteSessionCreationRelationsData = {
+    path: {
+        session_id: string;
+    };
+};
+
+export type GetRemoteSessionCreationRelationsResponse = (ChatSessionCreationRelationsResponse);
+
+export type GetRemoteSessionCreationRelationsError = unknown;
+
+export type GetConnectionSessionCreationRelationsData = {
+    path: {
+        connection_id: string;
+        session_id: string;
+    };
+    query: {
+        revision: string;
+    };
+};
+
+export type GetConnectionSessionCreationRelationsResponse = (ChatSessionCreationRelationsResponse);
+
+export type GetConnectionSessionCreationRelationsError = unknown;
 
 export type DiscoverRemoteAgentSessionsApiV1RemoteChatAgentSessionsGetResponse = (unknown);
 
@@ -3497,6 +3562,22 @@ export type DeleteChatSessionData = {
 export type DeleteChatSessionResponse = (SuccessEnvelope);
 
 export type DeleteChatSessionError = unknown;
+
+export type GetChatSessionCreationRelationsData = {
+    path: {
+        session_id: string;
+    };
+    query?: {
+        /**
+         * Resolve confirmed deletions through the original remote bindings.
+         */
+        refresh_remote?: boolean;
+    };
+};
+
+export type GetChatSessionCreationRelationsResponse = (ChatSessionCreationRelationsResponse);
+
+export type GetChatSessionCreationRelationsError = unknown;
 
 export type GetChatSessionHistoryData = {
     path: {

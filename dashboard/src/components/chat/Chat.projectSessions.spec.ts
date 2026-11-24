@@ -109,6 +109,7 @@ describe.each(["end", "created", "created_send_failed"])(
           chatAccountRevision: accountSessionRevision.value,
           assertCurrentAccount,
           getSessions: vi.fn().mockResolvedValue(undefined),
+          refreshCreationRelations: vi.fn(),
           getProjectSessions: vi.fn(async (id: string) => [
             ...serverProjects[id],
           ]),

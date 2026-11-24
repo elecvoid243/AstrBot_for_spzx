@@ -7,6 +7,16 @@
     "close": "收起评论",
     "stale": "当前文件版本无法定位到评论原位置。仍可在会话中查看评论。"
   },
+  "creationRelations": {
+    "title": "会话关系",
+    "source": "创建来源",
+    "created": "已创建会话",
+    "local_agent": "Agent 创建",
+    "remote": "远端创建",
+    "remote_agent": "远端 Agent 创建",
+    "untitled": "未命名会话",
+    "unavailable": "不可用"
+  },
   "agentBrowser": {
     "staleInput": "页面位置已变化，本次操作未执行；请等待新画面后重试。",
     "staleWheel": "页面位置已变化，旧滚轮操作已拒绝。请等待新画面后继续滚动。",

@@ -8,10 +8,17 @@
         </div>
 
         <div class="dashboard-header-actions">
-          <v-btn variant="text" color="primary" prepend-icon="mdi-refresh" :loading="loading" @click="reload">
+          <v-btn
+            :to="{ name: 'Configs', query: { config_id: selectedProfile } }"
+            variant="text"
+            prepend-icon="mdi-arrow-left"
+          >
+            {{ tm('actions.backToProfile') }}
+          </v-btn>
+          <v-btn variant="text" color="primary" prepend-icon="mdi-refresh" :loading="loading" :disabled="saving" @click="reload">
             {{ tm('actions.refresh') }}
           </v-btn>
-          <v-btn variant="tonal" color="primary" prepend-icon="mdi-content-save" :loading="saving" @click="save">
+          <v-btn variant="tonal" color="primary" prepend-icon="mdi-content-save" :loading="saving" :disabled="loading || !hasLoaded" @click="save">
             {{ tm('actions.save') }}
           </v-btn>
         </div>
@@ -658,8 +665,8 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { onBeforeRouteLeave } from 'vue-router'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { onBeforeRouteLeave, onBeforeRouteUpdate, useRoute, useRouter } from 'vue-router'
 import { useTheme } from 'vuetify'
 import { configProfileApi, mcpApi, subagentApi } from '@/api/v1'
 import PersonaQuickPreview from '@/components/shared/PersonaQuickPreview.vue'
@@ -719,9 +726,12 @@ type AvailableTool = {
 const { tm } = useModuleI18n('features/subagent')
 const theme = useTheme()
 const confirmDialog = useConfirmDialog()
+const route = useRoute()
+const router = useRouter()
 
 const loading = ref(false)
-const selectedProfile = ref('default')
+const selectedProfile = computed(() => (typeof route.query.config_id === 'string' && route.query.config_id) || 'default')
+let configRequest = 0
 const profiles = ref([{ id: 'default', name: tm('profile.default') }])
 const catalogue = ref<{ id: string; name: string; status: string }[]>([])
 const catalogueChoices = computed(() => {
@@ -986,9 +996,12 @@ async function loadAvailableTools() {
 }
 
 async function loadConfig() {
+  const request = ++configRequest
   loading.value = true
+  hasLoaded.value = false
   try {
     const res = await subagentApi.getConfig(selectedProfile.value)
+    if (request !== configRequest) return
     if (res.data.status === 'ok') {
       const data = res.data.data
       catalogue.value = Array.isArray(data.available_agents) ? data.available_agents : []
@@ -1003,9 +1016,9 @@ async function loadConfig() {
       toast(res.data.message || tm('messages.loadConfigFailed'), 'error')
     }
   } catch (e: any) {
-    toast(e?.response?.data?.message || tm('messages.loadConfigFailed'), 'error')
+    if (request === configRequest) toast(e?.response?.data?.message || tm('messages.loadConfigFailed'), 'error')
   } finally {
-    loading.value = false
+    if (request === configRequest) loading.value = false
   }
 }
 
@@ -1066,7 +1079,7 @@ function validateBeforeSave(): boolean {
 }
 
 async function save() {
-  if (!validateBeforeSave()) return
+  if (!hasLoaded.value || loading.value || saving.value || !validateBeforeSave()) return
   saving.value = true
   try {
     const payload = {
@@ -1195,11 +1208,12 @@ function isToolInTargetList(toolName: string): boolean {
   }
 }
 
-async function selectProfile(id: string) {
-  if (id === selectedProfile.value || !await confirmLeaveIfNeeded()) return
-  selectedProfile.value = id
-  await loadConfig()
+function selectProfile(id: string) {
+  if (id === selectedProfile.value) return
+  return router.replace({ query: { ...route.query, config_id: id }, hash: route.hash })
 }
+
+watch(selectedProfile, loadConfig)
 
 onMounted(() => {
   configProfileApi.list().then(({ data }) => {
@@ -1221,7 +1235,13 @@ onBeforeUnmount(() => {
 })
 
 onBeforeRouteLeave(async () => {
-  return await confirmLeaveIfNeeded()
+  return !saving.value && await confirmLeaveIfNeeded()
+})
+
+onBeforeRouteUpdate(async (to, from) => {
+  if (to.query.config_id !== from.query.config_id) {
+    return !saving.value && await confirmLeaveIfNeeded()
+  }
 })
 </script>
 

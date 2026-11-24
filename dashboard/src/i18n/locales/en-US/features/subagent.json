@@ -19,6 +19,7 @@
     "subtitle": "The main agent can use its own tools directly, or delegate tasks to subagents to complete more complex tasks and avoid excessive context length."
   },
   "actions": {
+    "backToProfile": "Back to Configuration",
     "refresh": "Refresh",
     "save": "Save",
     "add": "Add Subagent",

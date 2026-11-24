@@ -98,6 +98,9 @@
         }
       } } },
       "provider_settings": {
+        "decision_provider_id": {
+          "description": "Default Decision Provider for Plugins"
+        },
         "default_image_caption_provider_id": {
           "description": "Image Caption Model",
           "hint": "Leave empty to disable; useful for non-multimodal models"

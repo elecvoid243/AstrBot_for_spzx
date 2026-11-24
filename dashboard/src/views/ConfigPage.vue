@@ -25,6 +25,16 @@
           </div>
 
           <div class="config-toolbar-actions">
+            <v-btn
+              v-if="!isSystemConfig && initialConfigId === null && !configSearchExpanded"
+              :to="{ name: 'SubAgent', query: { config_id: selectedConfigID } }"
+              :disabled="!fetched"
+              variant="text"
+              size="small"
+              append-icon="mdi-arrow-right"
+            >
+              {{ tmSubagent('page.title') }}
+            </v-btn>
             <div
               class="config-search-control"
               :class="{ 'config-search-control--expanded': configSearchExpanded }"
@@ -321,12 +331,14 @@ export default {
     const { t } = useI18n();
     const { tm } = useModuleI18n('features/config');
     const { tm: tmMeta } = useModuleI18n('features/config-metadata');
+    const { tm: tmSubagent } = useModuleI18n('features/subagent');
     const confirmDialog = useConfirmDialog();
 
     return {
       t,
       tm,
       tmMeta,
+      tmSubagent,
       confirmDialog
     };
   },
@@ -362,6 +374,15 @@ export default {
       }
     } else {
       next();
+    }
+  },
+
+  async beforeRouteUpdate(to, from) {
+    if (this.initialConfigId !== null || to.query.config_id === from.query.config_id) return;
+    const requestedId = to.query.config_id;
+    const profile = this.configInfoList.find(info => info.id === (requestedId || 'default')) || this.configInfoList[0];
+    if (profile && profile.id !== this.selectedConfigID) {
+      return this.onConfigSelect(profile.id, false);
     }
   },
 
@@ -449,6 +470,7 @@ export default {
         config: {}
       },
       fetched: false,
+      configRequest: 0,
       metadata: {},
       save_message_snack: false,
       save_message: "",
@@ -500,7 +522,8 @@ export default {
     this.configType = hashConfigType || 'normal';
     this.isSystemConfig = this.configType === 'system';
 
-    const targetConfigId = this.initialConfigId || 'default';
+    const requestedId = this.$route?.query?.config_id;
+    const targetConfigId = this.initialConfigId || (typeof requestedId === 'string' && requestedId) || 'default';
     this.getConfigInfoList(targetConfigId);
     // 初始化配置类型状态
     this.configType = this.isSystemConfig ? 'system' : 'normal';
@@ -592,13 +615,25 @@ export default {
         this.save_message_success = "error";
       });
     },
-    getConfig(abconf_id) {
+    getConfig(abconf_id, syncRoute = true) {
+      const requestId = ++this.configRequest;
+      if (syncRoute && this.initialConfigId === null && this.$route?.name === 'Configs' && !this.isSystemConfig) {
+        const configId = abconf_id || this.selectedConfigID;
+        const routeId = this.$route.query.config_id;
+        if (configId !== (routeId ?? 'default')) {
+          this.$router.replace({
+            query: { ...this.$route.query, config_id: configId === 'default' ? undefined : configId },
+            hash: this.$route.hash
+          });
+        }
+      }
       this.fetched = false
       const request = this.isSystemConfig
         ? systemConfigApi.get()
         : configProfileApi.get(abconf_id || this.selectedConfigID);
 
       request.then((res) => {
+        if (requestId !== this.configRequest) return;
         this.config_data = res.data.data.config;
         this.lastSavedConfigSnapshot = this.getConfigSnapshot(this.config_data);
         this.fetched = true
@@ -612,7 +647,8 @@ export default {
               this.currentConfigId = abconf_id || this.selectedConfigID;
             }
           });
-      }).catch((err) => {
+      }).catch(() => {
+        if (requestId !== this.configRequest) return;
         this.save_message = this.messages.loadError;
         this.save_message_snack = true;
         this.save_message_success = "error";
@@ -794,50 +830,30 @@ export default {
         return this.normalizeConfigName(config.name) === normalizedName;
       });
     },
-    async onConfigSelect(value) {
+    async onConfigSelect(value, syncRoute = true) {
       if (value === '_%manage%_') {
         this.configManageDialog = true;
         return;
-      } else {
-        // 检查是否有未保存的更改
-        if (this.hasUnsavedChanges) {
-          // 获取之前正在编辑的配置id
-          const prevConfigId = this.isSystemConfig ? 'default' : (this.currentConfigId || this.selectedConfigID || 'default');
-          const message = this.tm('unsavedChangesWarning.switchConfig');
-          const saveAndSwitch = await this.$refs.unsavedChangesDialog?.open({
-            title: this.tm('unsavedChangesWarning.dialogTitle'),
-            message: message,
-            confirmHint: `${this.tm('unsavedChangesWarning.options.saveAndSwitch')}:${this.tm('unsavedChangesWarning.options.confirm')}`,
-            cancelHint: `${this.tm('unsavedChangesWarning.options.discardAndSwitch')}:${this.tm('unsavedChangesWarning.options.cancel')}`,
-            closeHint: `${this.tm('unsavedChangesWarning.options.closeCard')}:"x"`
-          });
-          // 关闭弹窗不切换
-          if (saveAndSwitch === 'close') {
-            return;
-          }
-          if (saveAndSwitch) {
-            // 设置临时变量保存切换后的id
-            const currentSelectedId = this.selectedConfigID;
-            // 把id设置回切换前的用于保存上一次的配置，保存完后恢复id为切换后的
-            this.selectedConfigID = prevConfigId;
-            const result = await this.updateConfig();
-            this.selectedConfigID = currentSelectedId;
-            if (result?.success) {
-              this.selectedConfigID = value;
-              this.getConfig(value);
-            }
-            return;
-          } else {
-            // 取消保存并切换配置
-            this.selectedConfigID = value;
-            this.getConfig(value);
-          }
-        } else {
-          // 无未保存更改直接切换
-          this.selectedConfigID = value;
-          this.getConfig(value);
+      }
+      if (this.hasUnsavedChanges) {
+        const saveAndSwitch = await this.$refs.unsavedChangesDialog?.open({
+          title: this.tm('unsavedChangesWarning.dialogTitle'),
+          message: this.tm('unsavedChangesWarning.switchConfig'),
+          confirmHint: `${this.tm('unsavedChangesWarning.options.saveAndSwitch')}:${this.tm('unsavedChangesWarning.options.confirm')}`,
+          cancelHint: `${this.tm('unsavedChangesWarning.options.discardAndSwitch')}:${this.tm('unsavedChangesWarning.options.cancel')}`,
+          closeHint: `${this.tm('unsavedChangesWarning.options.closeCard')}:"x"`
+        });
+        if (saveAndSwitch === 'close') return false;
+        if (saveAndSwitch) {
+          const selectedId = this.selectedConfigID;
+          this.selectedConfigID = this.isSystemConfig ? 'default' : (this.currentConfigId || selectedId || 'default');
+          const result = await this.updateConfig();
+          this.selectedConfigID = selectedId;
+          if (!result?.success) return false;
         }
       }
+      this.selectedConfigID = value;
+      this.getConfig(value, syncRoute);
     },
     setConfigFormState({ mode = 'create', config = null, visible = true } = {}) {
       this.showConfigForm = visible;

@@ -110,6 +110,9 @@
         }
       },
       "provider_settings": {
+        "decision_provider_id": {
+          "description": "插件默认判断模型"
+        },
         "default_image_caption_provider_id": {
           "description": "图片转述模型",
           "hint": "留空代表不使用,可用于非多模态模型"

@@ -3,6 +3,7 @@ import { flushPromises, shallowMount } from '@vue/test-utils'
 import SubAgentPage from './SubAgentPage.vue'
 
 const { getConfig, updateConfig, listMcp } = vi.hoisted(() => ({ getConfig: vi.fn(), updateConfig: vi.fn(), listMcp: vi.fn() }))
+const route = vi.hoisted(() => ({ query: {} as Record<string, string> }))
 
 vi.mock('@/api/v1', () => ({
   configProfileApi: { list: vi.fn().mockResolvedValue({ data: { status: 'ok', data: { info_list: [{ id: 'default', name: 'default' }] } } }) },
@@ -10,7 +11,12 @@ vi.mock('@/api/v1', () => ({
   mcpApi: { list: listMcp }
 }))
 vi.mock('vuetify', () => ({ useTheme: () => ({ global: { current: { value: { dark: false } } } }) }))
-vi.mock('vue-router', () => ({ onBeforeRouteLeave: vi.fn() }))
+vi.mock('vue-router', () => ({
+  onBeforeRouteLeave: vi.fn(),
+  onBeforeRouteUpdate: vi.fn(),
+  useRoute: () => route,
+  useRouter: () => ({ replace: vi.fn() })
+}))
 vi.mock('@/i18n/composables', () => ({ useModuleI18n: () => ({ tm: (key: string) => key }) }))
 vi.mock('@/utils/confirmDialog', () => ({ useConfirmDialog: () => ({}), askForConfirmation: vi.fn() }))
 vi.mock('@/components/shared/PersonaQuickPreview.vue', () => ({ default: { template: '<div />' } }))
@@ -107,5 +113,23 @@ describe('SubAgentPage', () => {
     expect(vm.availableMcpServers.every((option: any) => !option.props?.disabled)).toBe(true)
     expect(vm.dynamicCfg.mcp_inherent).toEqual(['runtime:plugin'])
     wrapper.unmount()
+  })
+
+  it('loads and saves the profile linked from the configuration page', async () => {
+    route.query.config_id = 'research'
+    getConfig.mockClear().mockResolvedValue({ data: { status: 'ok', data: {} } })
+    updateConfig.mockClear().mockResolvedValue({ data: { status: 'ok' } })
+    const wrapper = shallowMount(SubAgentPage, { global: { config: { warnHandler: () => {} } } })
+
+    try {
+      await flushPromises()
+      expect(getConfig).toHaveBeenCalledTimes(1)
+      expect(getConfig).toHaveBeenCalledWith('research')
+      await (wrapper.vm as any).save()
+      expect(updateConfig).toHaveBeenCalledWith(expect.any(Object), 'research')
+    } finally {
+      wrapper.unmount()
+      delete route.query.config_id
+    }
   })
 })

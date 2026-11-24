@@ -180,6 +180,9 @@
         }
       },
       "provider_settings": {
+        "decision_provider_id": {
+          "description": "プラグインのデフォルト判断モデル"
+        },
         "default_image_caption_provider_id": {
           "description": "デフォルト画像説明モデル",
           "hint": "空欄の場合は使用しません。非マルチモーダルモデルで利用できます。"

@@ -202,6 +202,9 @@
                 }
             },
             "provider_settings": {
+                "decision_provider_id": {
+                    "description": "Провайдер оценки по умолчанию для плагинов"
+                },
                 "default_image_caption_provider_id": {
                     "description": "Модель описания изображений",
                     "hint": "Оставьте пустым для отключения; полезно для моделей без поддержки мультимодальности"

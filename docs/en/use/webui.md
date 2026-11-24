@@ -651,6 +651,8 @@ This is an embedded page, with no back/forward controls. Its address bar keeps t
 
 Select `Config` in the sidebar, then choose the profile to edit from the selector at the top. Sections appear in this order: `AI`, `Platforms & Messages`, `Access Control`, `Plugin`, and `Ext.`. Use the search control at the top to find a setting.
 
+**Subagent Orchestration** at the top of the page opens the selected profile's subagent policy. **Back to Configuration** returns to that profile. See [Subagent configuration](./subagent.md#configuration).
+
 - In `AI`, built-in AI settings have `Model`, `Persona`, `Capabilities`, and `Advanced` tabs. Use `… → Change execution mode` beside the AI heading to connect a third-party agent.
 - `Access Control` contains administrator IDs and the session whitelist, including whitelist logs and administrator exemptions.
 - `Platforms & Messages` contains message-trigger, session-isolation, and delivery settings.

@@ -28,6 +28,10 @@ With SubAgent Orchestration, the Main Agent can interact with users, use its own
 
 In the AstrBot WebUI, expand **More Features** in the left navigation bar and click **SubAgents** (`/subagent`).
 
+You can also open **Config**, select a profile, and click **Subagent Orchestration** at the top of the page. The orchestration page opens with that profile selected. Click **Back to Configuration** to open the currently selected profile.
+
+![Subagent Orchestration shortcut in the profile toolbar](/images/config-subagent-link-en.jpg)
+
 ### 1. Enable SubAgent Mode
 
 Select a configuration profile at the top of the page and enable SubAgent Orchestration for it. Maintain the shared static catalogue under **Default profile** and use **Static subagents for this profile** to select available entries for each profile. Unavailable selections show a reason and can be removed. Dynamic creation, limits, timeouts, the default model, and tool policies are saved with the selected profile.

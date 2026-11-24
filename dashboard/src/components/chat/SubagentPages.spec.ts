@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { flushPromises, mount } from "@vue/test-utils";
 import { defineComponent, h, ref } from "vue";
 import { remoteConnectionsApi } from "@/api/remoteConnections";
+import { chatApi } from "@/api/v1";
 import { fetchWithAuth } from "@/api/http";
 import SubagentPages from "./SubagentPages.vue";
 import ChatMessageList from "./ChatMessageList.vue";
@@ -24,6 +25,7 @@ vi.mock("@/api/v1", () => ({
   chatApi: {
     subagentRunsStreamUrl: (session: string, run?: string) =>
       `/runs/${session}${run ? `/${run}` : ""}`,
+    updateSubagentConversation: vi.fn(),
   },
 }));
 vi.mock("@/i18n/composables", () => ({
@@ -137,6 +139,30 @@ afterEach(async () => {
 });
 
 describe("Subagent conversation pages", () => {
+  it("pins a live instance from the picker and hides the control after cleanup", async () => {
+    const wrapper = await page();
+    const list = "/runs/session-1";
+    push(list, { type: "changed", data: { ...run, can_retain: true } });
+    await wrapper.find(".subagent-picker-trigger").trigger("click");
+    await flushPromises();
+    vi.mocked(chatApi.updateSubagentConversation).mockResolvedValue({ data: { data: { accepted: true, retained: true } } } as any);
+    const pin = wrapper.get(".subagent-retention-button");
+    await pin.trigger("click");
+    expect(chatApi.updateSubagentConversation).toHaveBeenCalledWith({
+      session_id: "session-1", subagent_run_id: "run-1", keep_alive: true,
+    });
+    expect(controllers.has("/runs/session-1/run-1")).toBe(false);
+    push(list, { type: "retention", run_id: "run-1", can_retain: true, retained: true });
+    await flushPromises();
+    expect(pin.attributes("aria-pressed")).toBe("true");
+
+    push(list, { type: "changed", data: { ...run, cleaned: true, revision: 2, can_retain: false } });
+    await flushPromises();
+    await wrapper.get(".cleaned-toggle").trigger("click");
+    expect(wrapper.find(".subagent-picker-item").exists()).toBe(true);
+    expect(wrapper.find(".subagent-retention-button").exists()).toBe(false);
+  });
+
   it("places navigation in the existing toolbar without rendering a duplicate title", async () => {
     const host = document.createElement("div");
     host.id = "test-session-toolbar";

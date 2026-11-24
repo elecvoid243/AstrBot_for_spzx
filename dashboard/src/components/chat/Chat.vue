@@ -851,7 +851,7 @@
     >
       <transition name="drop-fade">
         <div
-          v-if="isDragging && !isProviderWorkspace && !remoteConnectionId && !isRunConversation"
+          v-if="isDragging && !subagentPageOpen && !isProviderWorkspace && !remoteConnectionId && !isRunConversation"
           class="chat-drop-overlay"
         >
           <div class="chat-drop-overlay-content">
@@ -910,6 +910,7 @@
           :toolbar-target="props.active ? '#chat-session-navigation' : undefined"
           :before-navigate="confirmFileNavigation"
           :is-dark="isDark"
+          :send-shortcut="sendShortcut"
           @view-change="onSubagentViewChange"
         />
         <!-- Persistent side chats, started empty or from a selected excerpt.
@@ -1844,7 +1845,7 @@ const {
 } = useMediaHandling();
 
 const { isDragging, dragEvents } = useDragUpload((files) => {
-  if (isProviderWorkspace.value) return;
+  if (isProviderWorkspace.value || subagentPageOpen.value) return;
   handleFilesSelected(files);
 });
 

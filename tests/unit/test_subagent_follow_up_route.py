@@ -169,7 +169,7 @@ async def test_retained_subagent_waits_for_current_turn_and_survives_cleanup(ser
         assert response["data"]["reason"] == "busy"
         conversation.ready.set()
         await asyncio.wait_for(task, 5)
-        conversation.resume.assert_awaited_once_with("steer it", principal)
+        conversation.resume.assert_awaited_once_with("steer it", principal, [])
         await chat_api.post_subagent_follow_up(
             _payload(chat_api, keep_alive=False), _auth(), service
         )
@@ -177,5 +177,41 @@ async def test_retained_subagent_waits_for_current_turn_and_survives_cleanup(ser
             "coder"
         ]
         assert runtime.conversations == {}
+    finally:
+        dashboard_account_context.reset(token)
+
+
+@pytest.mark.asyncio
+async def test_retained_subagent_accepts_an_attachment_only_follow_up(
+    service, tmp_path
+):
+    from astrbot.dashboard.api import chat as chat_api
+
+    runtime = SubAgentManager._get_or_create_session(UMO)
+    conversation = SubAgentConversation("instance", asyncio.Event(), AsyncMock())
+    runtime.conversations["sa_1"] = conversation
+    runtime.retained_instances.add("instance")
+    conversation.ready.set()
+    principal = DashboardPrincipal("tester", "tester", "user", "tester")
+    token = dashboard_account_context.set(principal)
+    attachment = {
+        "type": "image",
+        "attachment_id": "image-1",
+        "filename": "image.png",
+    }
+    resolved = {**attachment, "path": str(tmp_path / "image.png")}
+    service.build_user_message_parts = AsyncMock(return_value=[resolved])
+    try:
+        response = await chat_api.post_subagent_follow_up(
+            _payload(
+                chat_api, text="", attachments=[attachment], continue_conversation=True
+            ),
+            _auth(),
+            service,
+        )
+        assert response["data"]["accepted"] is True
+        await asyncio.wait_for(conversation.pending, 5)
+        service.build_user_message_parts.assert_awaited_once_with([attachment])
+        conversation.resume.assert_awaited_once_with("", principal, [resolved])
     finally:
         dashboard_account_context.reset(token)

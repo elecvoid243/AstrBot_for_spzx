@@ -19,7 +19,7 @@ export type SubAgentActivity =
   | { kind: "think"; text: string }
   | { kind: "text"; text: string }
   | { kind: "tool_call"; call: SubAgentToolCall }
-  | { kind: "user_message"; text: string; seq: number; relayed?: boolean };
+  | { kind: "user_message"; text: string; seq: number; relayed?: boolean; attachments?: MessagePart[] };
 
 export interface SubAgentRunPart {
   type: "subagent_run";
@@ -155,6 +155,7 @@ export function applySubAgentEvent(parts: MessagePart[], data: unknown): void {
     part.activity.push({
       kind: "user_message",
       text: String(payload.text || ""),
+      ...(Array.isArray(payload.attachments) ? { attachments: payload.attachments } : {}),
       seq: Number(payload.seq ?? -1),
       relayed: false,
     });

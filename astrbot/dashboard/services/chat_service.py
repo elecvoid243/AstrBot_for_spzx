@@ -773,6 +773,11 @@ class BotMessageAccumulator:
                 {
                     "kind": "user_message",
                     "text": str(payload.get("text") or ""),
+                    **(
+                        {"attachments": payload["attachments"]}
+                        if payload.get("attachments")
+                        else {}
+                    ),
                     "seq": payload.get("seq"),
                     "relayed": False,
                 }

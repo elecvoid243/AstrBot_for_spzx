@@ -9,7 +9,7 @@ import pytest_asyncio
 
 from astrbot.core.agent.response import AgentResponse
 from astrbot.core.astr_agent_tool_exec import FunctionToolExecutor
-from astrbot.core.db.po import PlatformMessageHistory
+from astrbot.core.db.po import PlatformMessageHistory, PlatformSession
 from astrbot.core.db.sqlite import SQLiteDatabase
 from astrbot.core.message.message_event_result import MessageChain
 from astrbot.core.platform.sources.webchat.webchat_queue_mgr import WebChatQueueMgr
@@ -21,6 +21,7 @@ from astrbot.core.subagent_manager import (
     SubAgentStatus,
 )
 from astrbot.core.subagent_progress import SubagentProgress
+from astrbot.core.utils.webchat_access import webchat_resource_owner
 
 UMO = "webchat:FriendMessage:webchat!owner!parent"
 
@@ -132,7 +133,7 @@ async def test_background_trace_survives_parent_queue_completion(progress, monke
 
 @pytest.mark.asyncio
 async def test_continuation_reopens_the_same_trace_without_posting_to_parent(
-    progress, monkeypatch
+    progress, monkeypatch, tmp_path
 ):
     registry, config = progress
     put_back = AsyncMock()
@@ -148,10 +149,27 @@ async def test_continuation_reopens_the_same_trace_without_posting_to_parent(
     assert put_back.await_count == 2
     stream = registry.stream("parent", sink.subagent_run_id)
     original = (await anext(stream))["data"]
-    await sink.continue_turn(-1, "next question")
+    db = registry.database()
+    async with db.get_db() as connection:
+        connection.add(PlatformSession(session_id="parent", creator="owner"))
+        await connection.commit()
+    token = webchat_resource_owner.set("owner")
+    try:
+        image = await db.insert_attachment(
+            str(tmp_path / "chart.png"), "image", "image/png"
+        )
+        attachment = {
+            "type": "image",
+            "attachment_id": image.attachment_id,
+            "filename": "chart.png",
+        }
+    finally:
+        webchat_resource_owner.reset(token)
+    await sink.continue_turn(-1, "next question", [attachment])
     event = await anext(stream)
     assert event["revision"] > original["revision"]
     assert event["data"]["kind"] == "continued"
+    assert event["data"]["payload"]["attachments"] == [attachment]
     await sink.complete("next answer", 1)
     reloaded = await registry.get_run("parent", sink.subagent_run_id)
     assert reloaded["status"] == "completed"
@@ -162,6 +180,14 @@ async def test_continuation_reopens_the_same_trace_without_posting_to_parent(
     ]
     assert put_back.await_count == 2
     await stream.aclose()
+    assert reloaded["activity"][-1]["attachments"] == [attachment]
+    assert (
+        await db.get_attachments(
+            [image.attachment_id], owner="owner", unreferenced_only=True
+        )
+        == []
+    )
+    assert await registry.delete_session("parent") == [image.attachment_id]
 
 
 @pytest.mark.asyncio

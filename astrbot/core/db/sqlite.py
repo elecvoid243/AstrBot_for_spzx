@@ -48,6 +48,7 @@ from astrbot.core.db.po import (
     SessionProjectRelation,
     SQLModel,
     UmoAlias,
+    WebChatSubagentRun,
     WebChatThread,
     is_run_conversation_id,
 )
@@ -1905,6 +1906,21 @@ class SQLiteDatabase(BaseDatabase):
                     .correlate(parts, Attachment)
                     .exists()
                 )
+                history_follow_up = func.json_tree(part, "$.activity").table_valued(
+                    "value", "fullkey", joins_implicitly=True
+                )
+                retained_history_follow_up = (
+                    select(1)
+                    .select_from(history_follow_up)
+                    .where(
+                        func.replace(history_follow_up.c.fullkey, '"', "").like(
+                            "$.activity[%].attachments[%].attachment_id"
+                        ),
+                        history_follow_up.c.value == Attachment.attachment_id,
+                    )
+                    .correlate(parts, Attachment)
+                    .exists()
+                )
                 retained = (
                     select(1)
                     .select_from(PlatformMessageHistory)
@@ -1914,6 +1930,7 @@ class SQLiteDatabase(BaseDatabase):
                             func.json_extract(part, "$.attachment_id")
                             == Attachment.attachment_id,
                             retained_tool_image,
+                            retained_history_follow_up,
                         ),
                         or_(
                             (PlatformMessageHistory.platform_id == "webchat_thread")
@@ -1925,7 +1942,34 @@ class SQLiteDatabase(BaseDatabase):
                     .correlate(Attachment)
                     .exists()
                 )
-                query = query.where(~retained)
+                trace_follow_up = func.json_tree(
+                    WebChatSubagentRun.data, "$.activity"
+                ).table_valued("value", "fullkey", joins_implicitly=True)
+                webchat_sessions = select(PlatformSession.session_id).where(
+                    PlatformSession.platform_id == "webchat"
+                )
+                if owner is not None:
+                    webchat_sessions = webchat_sessions.where(
+                        PlatformSession.creator == owner
+                    )
+                retained_trace_follow_up = (
+                    select(1)
+                    .select_from(WebChatSubagentRun)
+                    .select_from(trace_follow_up)
+                    .where(
+                        or_(
+                            col(WebChatSubagentRun.session_id).in_(webchat_sessions),
+                            col(WebChatSubagentRun.session_id).in_(threads),
+                        ),
+                        func.replace(trace_follow_up.c.fullkey, '"', "").like(
+                            "$.activity[%].attachments[%].attachment_id"
+                        ),
+                        trace_follow_up.c.value == Attachment.attachment_id,
+                    )
+                    .correlate(Attachment)
+                    .exists()
+                )
+                query = query.where(~retained, ~retained_trace_follow_up)
             result = await session.execute(query)
             return list(result.scalars().all())
 

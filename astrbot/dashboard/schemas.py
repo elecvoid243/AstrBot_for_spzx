@@ -263,6 +263,7 @@ class ChatSubagentFollowUpRequest(OpenModel):
     session_id: str
     subagent_run_id: str
     text: str = ""
+    attachments: list[dict[str, str]] = Field(default_factory=list)
     keep_alive: bool | None = None
     continue_conversation: bool = False
 

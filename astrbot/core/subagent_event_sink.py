@@ -187,16 +187,22 @@ class SubAgentEventSink:
         """
         await self._emit("user_message", {"seq": seq, "text": text})
 
-    async def continue_turn(self, seq: int, text: str) -> None:
+    async def continue_turn(
+        self, seq: int, text: str, attachments: list[dict] | None = None
+    ) -> None:
         """Open a new turn on the same invocation's independent stream.
 
         Args:
             seq: A unique message sequence for this invocation.
             text: The user message starting the turn.
+            attachments: Display metadata for the user message's attachments.
         """
         self._closed = False
         self._continuing = True
-        await self._emit("continued", {"seq": seq, "text": text})
+        payload = {"seq": seq, "text": text}
+        if attachments:
+            payload["attachments"] = attachments
+        await self._emit("continued", payload)
 
     async def user_message_relayed(self, seq: int) -> None:
         """Emit a ``user_message_relayed`` event: the run ended before the

@@ -563,7 +563,6 @@
     "keepAlive": "Keep subagent for follow-ups",
     "updateFailed": "The action did not complete. Check that the subagent is available, or wait for its current message to finish and try again.",
     "placeholder": "Follow up with {name}…",
-    "send": "Send follow-up",
     "notDelivered": "The run has finished; the message was not delivered."
   },
   "subagentCollapse": {

@@ -62,6 +62,7 @@
             </button>
           </template>
           <div class="subagent-picker-menu">
+            <div v-if="retentionError" class="retention-error" role="alert">{{ retentionError }}</div>
             <div v-if="!runs.length" class="picker-empty">
               {{ tm("subagentPages.empty") }}
             </div>
@@ -150,6 +151,18 @@
                           }`,
                         )
                       }}</span>
+                    </button>
+                    <button
+                      v-if="!remoteScope && !agent.cleaned && agent.retainableRun"
+                      type="button"
+                      class="subagent-retention-button"
+                      :aria-pressed="Boolean(agent.retainableRun.retained)"
+                      :aria-label="`${tm('subagentFollowUp.keepAlive')} · ${agent.name}${agent.marker ? ` ${agent.marker}` : ''}`"
+                      :title="tm('subagentFollowUp.keepAlive')"
+                      :disabled="retentionUpdating[agent.id] || agent.continuationPending"
+                      @click="toggleRetention(agent)"
+                    >
+                      <v-icon size="17">{{ agent.retainableRun.retained ? 'mdi-pin' : 'mdi-pin-outline' }}</v-icon>
                     </button>
                     <button
                       type="button"
@@ -303,42 +316,16 @@
         @update:model-value="!$event && (reasoningTarget = null)"
       />
     </div>
-    <form
-      v-if="selectedRunId && !remoteScope && canRetain"
-      class="subagent-composer"
-      @submit.prevent="updateConversation()"
-    >
-      <label class="subagent-retention">
-        <input
-          type="checkbox"
-          role="switch"
-          :checked="retained"
-          :disabled="conversationUpdating || continuationPending"
-          @click.prevent="updateConversation(!retained)"
-        />
-        {{ tm('subagentFollowUp.keepAlive') }}
-      </label>
-      <div v-if="retained" class="subagent-composer-input">
-        <v-textarea
-          v-model="followUpDraft"
-          :placeholder="tm('subagentFollowUp.placeholder', { name: selectedPart?.agent_name || '' })"
-          :aria-label="tm('subagentFollowUp.placeholder', { name: selectedPart?.agent_name || '' })"
-          density="compact"
-          variant="outlined"
-          rows="1"
-          max-rows="5"
-          auto-grow
-          hide-details
-        />
-        <v-btn
-          type="submit"
-          variant="tonal"
-          color="primary"
-          :disabled="!followUpDraft.trim() || conversationUpdating || continuationPending"
-        >{{ tm('subagentFollowUp.send') }}</v-btn>
-      </div>
-      <div v-if="conversationError" role="alert">{{ conversationError }}</div>
-    </form>
+    <SubagentFollowUpInput
+      v-if="selectedRunId && !remoteScope && canRetain && !selectedPart?.cleaned"
+      v-show="retained"
+      :key="`${detailSessionId}:${selectedRunId}`"
+      :session-id="detailSessionId"
+      :run-id="selectedRunId"
+      :agent-name="selectedPart?.agent_name || ''"
+      :send-shortcut="sendShortcut"
+      :disabled="!retained || continuationPending || Boolean(selectedAgent && retentionUpdating[selectedAgent.id])"
+    />
     <SubagentConfigurationDialog
       v-if="configurationRun"
       :session-id="sessionId"
@@ -382,6 +369,7 @@ import ChatScrollMarkers, {
 } from "./ChatScrollMarkers.vue";
 import ReasoningSidebar from "./ReasoningSidebar.vue";
 import SubagentConfigurationDialog from "./SubagentConfigurationDialog.vue";
+import SubagentFollowUpInput from "./SubagentFollowUpInput.vue";
 
 type RunEntry = Pick<
   SubAgentRunPart,
@@ -392,6 +380,9 @@ type RunEntry = Pick<
   revision?: number;
   agent_instance_id?: string;
   input_preview?: string;
+  can_retain?: boolean;
+  retained?: boolean;
+  continuation_pending?: boolean;
 };
 type AgentEntry = {
   id: string;
@@ -401,6 +392,8 @@ type AgentEntry = {
   cleaned: boolean;
   running: boolean;
   background: boolean;
+  retainableRun?: RunEntry;
+  continuationPending?: boolean;
 };
 const props = defineProps<{
   sessionId: string;
@@ -409,6 +402,7 @@ const props = defineProps<{
   toolbarTarget?: string;
   beforeNavigate?: () => Promise<boolean>;
   isDark?: boolean;
+  sendShortcut?: "enter" | "shift_enter";
 }>();
 const emit = defineEmits<{ viewChange: [open: boolean] }>();
 const { tm } = useModuleI18n("features/chat");
@@ -437,9 +431,8 @@ const error = ref("");
 const canRetain = ref(false);
 const retained = ref(false);
 const continuationPending = ref(false);
-const conversationUpdating = ref(false);
-const conversationError = ref("");
-const followUpDraft = ref("");
+const retentionUpdating = ref<Record<string, boolean>>({});
+const retentionError = ref("");
 const panel = ref<HTMLElement | null>(null);
 const content = ref<HTMLElement | null>(null);
 const scrollMarkers = ref<ChatScrollMarker[]>([]);
@@ -492,6 +485,8 @@ const agents = computed(() => {
     agent.cleaned &&= Boolean(run.cleaned);
     agent.running ||= run.status === "running";
     agent.background ||= run.status === "running" && Boolean(run.background);
+    if (!run.cleaned && run.can_retain) agent.retainableRun ??= run;
+    agent.continuationPending ||= Boolean(run.continuation_pending);
   }
   for (const sameName of names.values()) {
     if (sameName.length < 2) continue;
@@ -576,7 +571,10 @@ const messages = computed<ChatRecord[]>(() => {
         id: `${part.subagent_run_id}-user-${entry.seq}`,
         content: {
           type: "user",
-          message: [{ type: "plain", text: entry.text }],
+          message: [
+            ...(entry.text ? [{ type: "plain", text: entry.text }] : []),
+            ...(entry.attachments || []),
+          ],
         },
       });
       bot = null;
@@ -639,9 +637,6 @@ async function openRun(
   canRetain.value = false;
   retained.value = false;
   continuationPending.value = false;
-  conversationUpdating.value = false;
-  conversationError.value = "";
-  followUpDraft.value = "";
   detailRevision = 0;
   reasoningTarget.value = null;
   // The previous run's ticks describe rows that are about to be replaced.
@@ -667,28 +662,23 @@ function showMain() {
   emit("viewChange", false);
 }
 
-async function updateConversation(keepAlive?: boolean) {
-  const view = detailAbort;
-  const text = followUpDraft.value.trim();
-  if (!view || !canRetain.value || conversationUpdating.value || continuationPending.value) return;
-  if (keepAlive === undefined && (!retained.value || !text)) return;
-  conversationUpdating.value = true;
-  conversationError.value = "";
+async function toggleRetention(agent: AgentEntry) {
+  const run = agent.retainableRun;
+  const view = listAbort;
+  if (props.remoteScope || agent.cleaned || !run || !view || retentionUpdating.value[agent.id] || agent.continuationPending) return;
+  retentionUpdating.value[agent.id] = true;
+  retentionError.value = "";
   try {
     const response = await chatApi.updateSubagentConversation({
-      session_id: detailSessionId.value,
-      subagent_run_id: selectedRunId.value,
-      ...(keepAlive === undefined ? { text, continue_conversation: true } : { keep_alive: keepAlive }),
+      session_id: props.sessionId,
+      subagent_run_id: run.subagent_run_id,
+      keep_alive: !run.retained,
     });
-    if (detailAbort !== view) return;
-    const result = response.data.data;
-    if (!result?.accepted) throw new Error("Subagent rejected the request");
-    if (keepAlive === undefined && followUpDraft.value.trim() === text) followUpDraft.value = "";
-    if (keepAlive !== undefined) retained.value = Boolean(result.retained);
+    if (!response.data.data?.accepted) throw new Error("Subagent rejected retention");
   } catch {
-    if (detailAbort === view) conversationError.value = tm("subagentFollowUp.updateFailed");
+    if (listAbort === view) retentionError.value = tm("subagentFollowUp.updateFailed");
   } finally {
-    if (detailAbort === view) conversationUpdating.value = false;
+    if (listAbort === view) delete retentionUpdating.value[agent.id];
   }
 }
 
@@ -748,6 +738,12 @@ async function listen(
             entries.value = Object.fromEntries(
               payload.data.map((run: RunEntry) => [run.subagent_run_id, run]),
             );
+          } else if (payload.type === "retention" && entries.value[payload.run_id]) {
+            Object.assign(entries.value[payload.run_id], {
+              can_retain: payload.can_retain,
+              retained: payload.retained,
+              continuation_pending: payload.continuation_pending,
+            });
           } else if (
             payload.type === "changed" &&
             payload.data?.subagent_run_id
@@ -1040,6 +1036,8 @@ watch(
     listAbort?.abort();
     showMain();
     entries.value = {};
+    retentionUpdating.value = {};
+    retentionError.value = "";
     configurationRun.value = null;
     cleanedOpen.value = false;
     expandedAgents.value = {};
@@ -1280,7 +1278,8 @@ defineExpose({ openRun, getRun: (runId: string) => entries.value[runId] });
 .subagent-picker-row.is-selected {
   background: rgba(var(--v-theme-primary), 0.08);
 }
-.subagent-info-button {
+.subagent-info-button,
+.subagent-retention-button {
   display: grid;
   place-items: center;
   flex: 0 0 30px;
@@ -1289,9 +1288,20 @@ defineExpose({ openRun, getRun: (runId: string) => entries.value[runId] });
   border-radius: 7px;
   color: rgba(var(--v-theme-on-surface), 0.5);
 }
-.subagent-info-button:hover {
+.subagent-info-button:hover,
+.subagent-retention-button:hover,
+.subagent-retention-button[aria-pressed="true"] {
   color: rgb(var(--v-theme-primary));
   background: rgba(var(--v-theme-primary), 0.1);
+}
+.subagent-retention-button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.retention-error {
+  padding: 6px 10px;
+  color: rgb(var(--v-theme-error));
+  font-size: 12px;
 }
 .run-name {
   flex: 1;
@@ -1369,48 +1379,6 @@ defineExpose({ openRun, getRun: (runId: string) => entries.value[runId] });
   max-width: var(--chat-content-max-width, 960px);
   margin: 0 auto;
   padding-bottom: 24px;
-}
-.subagent-composer {
-  width: var(--chat-content-width, 80%);
-  max-width: var(--chat-content-max-width, 960px);
-  margin: 0 auto;
-  padding: 8px 0 12px;
-}
-.subagent-retention,
-.subagent-composer-input {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.subagent-retention input {
-  appearance: none;
-  width: 30px;
-  height: 17px;
-  border-radius: 20px;
-  background-color: rgba(var(--v-theme-on-surface), 0.32);
-  cursor: pointer;
-}
-.subagent-retention input::before {
-  content: "";
-  display: block;
-  width: 13px;
-  height: 13px;
-  margin: 2px;
-  border-radius: 50%;
-  background-color: white;
-}
-.subagent-retention input:checked {
-  background-color: rgb(var(--v-theme-primary));
-}
-.subagent-retention input:checked::before {
-  transform: translateX(13px);
-}
-.subagent-retention input:disabled {
-  opacity: 0.6;
-  cursor: default;
-}
-.subagent-composer-input {
-  margin-top: 8px;
 }
 @media (max-width: 760px) {
   .session-main-trigger {

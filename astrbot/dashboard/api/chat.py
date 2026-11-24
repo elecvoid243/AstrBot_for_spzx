@@ -17,6 +17,7 @@ from astrbot import logger
 from astrbot.core.computer.computer_client import (
     shutdown_local_execution_for_owner,
 )
+from astrbot.core.platform.sources.webchat.message_parts_helper import MEDIA_PART_TYPES
 from astrbot.core.subagent_manager import SubAgentManager
 from astrbot.core.subagent_progress import subagent_progress
 from astrbot.core.tools import fs_access
@@ -1095,8 +1096,12 @@ async def post_subagent_follow_up(
         An acceptance result and optional rejection reason.
     """
     text = payload.text.strip()
-    if not text and payload.keep_alive is None:
+    if not text and not payload.attachments and payload.keep_alive is None:
         return ok({"accepted": False, "reason": "empty_text"})
+    if payload.attachments and not (
+        payload.continue_conversation and payload.keep_alive is None
+    ):
+        return ok({"accepted": False, "reason": "unsupported_attachments"})
     try:
         session = await service.require_owned_chat_session(
             auth.username, payload.session_id, allow_thread=True
@@ -1115,6 +1120,21 @@ async def post_subagent_follow_up(
             or principal.resource_owner != auth.username
         ):
             raise ApiError("Dashboard session required", status_code=403)
+        attachments = []
+        if payload.attachments:
+            try:
+                if any(
+                    part.get("type") not in MEDIA_PART_TYPES
+                    for part in payload.attachments
+                ):
+                    raise ChatServiceError("Attachment is unavailable")
+                attachments = await service.build_user_message_parts(
+                    payload.attachments
+                )
+                if len(attachments) != len(payload.attachments):
+                    raise ChatServiceError("Attachment is unavailable")
+            except ChatServiceError as exc:
+                raise ApiError("Attachment is unavailable", status_code=400) from exc
         runtime = SubAgentManager.get_session(umo)
         conversation = (
             runtime.conversations.get(payload.subagent_run_id) if runtime else None
@@ -1122,6 +1142,20 @@ async def post_subagent_follow_up(
         if runtime is None or conversation is None:
             return ok({"accepted": False, "reason": "not_found"})
         instance_id = conversation.instance_id
+
+        def publish_retention(run_id: str) -> None:
+            """Refresh retention in the invocation and the session picker.
+
+            Args:
+                run_id: Invocation whose retention or pending state changed.
+            """
+            subagent_progress.publish(
+                f"run:{payload.session_id}:{run_id}", {"type": "retention"}
+            )
+            subagent_progress.publish(
+                f"session:{payload.session_id}", {"type": "retention", "run_id": run_id}
+            )
+
         if payload.keep_alive is not None:
             siblings = [
                 (run_id, entry)
@@ -1138,9 +1172,7 @@ async def post_subagent_follow_up(
             else:
                 runtime.retained_instances.discard(instance_id)
             for run_id, _ in siblings:
-                subagent_progress.publish(
-                    f"run:{payload.session_id}:{run_id}", {"type": "retention"}
-                )
+                publish_retention(run_id)
             return ok({"accepted": True, "retained": payload.keep_alive})
         if instance_id not in runtime.retained_instances:
             return ok({"accepted": False, "reason": "not_retained"})
@@ -1150,20 +1182,15 @@ async def post_subagent_follow_up(
         async def continue_after_current_turn() -> None:
             try:
                 await conversation.ready.wait()
-                await conversation.resume(text, principal)
+                await conversation.resume(text, principal, attachments)
             except Exception:
                 logger.exception("Subagent continuation failed")
             finally:
                 conversation.pending = None
-                subagent_progress.publish(
-                    f"run:{payload.session_id}:{payload.subagent_run_id}",
-                    {"type": "retention"},
-                )
+                publish_retention(payload.subagent_run_id)
 
         conversation.pending = asyncio.create_task(continue_after_current_turn())
-        subagent_progress.publish(
-            f"run:{payload.session_id}:{payload.subagent_run_id}", {"type": "retention"}
-        )
+        publish_retention(payload.subagent_run_id)
         return ok({"accepted": True})
 
     handle = SubAgentManager.get_subagent_run_handle(umo, payload.subagent_run_id)
@@ -1585,30 +1612,65 @@ async def stream_chat_subagent_runs(
         "GroupMessage" if getattr(owned_session, "is_group", False) else "FriendMessage"
     )
     umo = f"webchat:{message_type}:webchat!{auth.username}!{session_id}"
+    principal = dashboard_account_context.get()
+    can_manage = (
+        auth.via == "jwt"
+        and principal is not None
+        and principal.resource_owner == auth.username
+    )
 
     async def events():
         async for payload in subagent_progress.stream(session_id, run_id):
-            if (
-                run_id
-                and auth.via == "jwt"
-                and payload["type"] in {"snapshot", "retention", "metadata"}
-            ):
+            if can_manage:
                 runtime = SubAgentManager.get_session(umo)
-                conversation = runtime.conversations.get(run_id) if runtime else None
-                payload = {
-                    **payload,
-                    "can_retain": conversation is not None,
-                    "retained": bool(
-                        runtime
-                        and conversation
-                        and conversation.instance_id in runtime.retained_instances
-                    ),
-                    "continuation_pending": bool(
-                        conversation
-                        and conversation.pending
-                        and not conversation.pending.done()
-                    ),
-                }
+
+                def retention(invocation_id: str) -> dict:
+                    """Read the live retention state of an owned invocation.
+
+                    Args:
+                        invocation_id: Invocation represented in the stream event.
+
+                    Returns:
+                        The retention availability, setting and pending state.
+                    """
+                    conversation = (
+                        runtime.conversations.get(invocation_id) if runtime else None
+                    )
+                    return {
+                        "can_retain": conversation is not None,
+                        "retained": bool(
+                            runtime
+                            and conversation
+                            and conversation.instance_id in runtime.retained_instances
+                        ),
+                        "continuation_pending": bool(
+                            conversation
+                            and conversation.pending
+                            and not conversation.pending.done()
+                        ),
+                    }
+
+                kind = payload["type"]
+                if run_id and kind in {"snapshot", "retention", "metadata"}:
+                    payload = {**payload, **retention(run_id)}
+                elif not run_id and kind == "snapshot":
+                    payload = {
+                        **payload,
+                        "data": [
+                            {**entry, **retention(entry["subagent_run_id"])}
+                            for entry in payload["data"]
+                        ],
+                    }
+                elif not run_id and kind == "changed":
+                    entry = payload["data"]
+                    payload = {
+                        **payload,
+                        "data": {**entry, **retention(entry["subagent_run_id"])},
+                    }
+                elif not run_id and kind == "retention":
+                    payload = {**payload, **retention(payload["run_id"])}
+            elif payload["type"] == "retention":
+                continue
             yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(

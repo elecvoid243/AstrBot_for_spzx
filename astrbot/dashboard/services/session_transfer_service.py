@@ -26,6 +26,9 @@ from astrbot import logger
 from astrbot.core.config.default import VERSION
 from astrbot.core.db import po as db_po
 from astrbot.core.platform.message_type import MessageType
+from astrbot.core.platform.sources.webchat.message_parts_helper import (
+    message_part_attachment_ids,
+)
 from astrbot.core.utils.astrbot_path import (
     get_astrbot_data_path,
     get_astrbot_temp_path,
@@ -339,41 +342,6 @@ class SessionTransferService:
         # no bytes) and leave them permanently broken after a migration.
         all_attachment_ids = extract_attachment_ids(history) + thread_attachment_ids
 
-        attachments: list[dict] = []
-        attachment_sources: dict[str, str] = {}
-        seen_ids: set[str] = set()
-        owned_attachments = {
-            row.attachment_id: row
-            # The database applies the authenticated Dashboard owner context.
-            # Independent API keys retain their existing file-scope semantics.
-            for row in await self.db.get_attachments(all_attachment_ids)
-        }
-        for attachment_id in all_attachment_ids:
-            if attachment_id in seen_ids:
-                continue
-            seen_ids.add(attachment_id)
-            attachment = owned_attachments.get(attachment_id)
-            if attachment is None:
-                warnings.append(f"Attachment {attachment_id} metadata missing")
-                continue
-            source = Path(attachment.path)
-            ext = source.suffix if is_safe_attachment_ext(source.suffix) else ""
-            # The entry dicts ARE the documented data contract, so they must
-            # not carry anything the importer does not consume: the absolute
-            # source path names this host's install directory and OS user.
-            # It is handed to the writer out of band instead.
-            attachment_sources[attachment_id] = str(source)
-            attachments.append(
-                {
-                    "attachment_id": attachment_id,
-                    "type": attachment.type,
-                    "mime_type": attachment.mime_type,
-                    "ext": ext,
-                    "size": 0,
-                    "zip_path": f"{ATTACHMENTS_PREFIX}{attachment_id}{ext}",
-                }
-            )
-
         serialized_history = [self._serialize_row(row) for row in history]
         # Inline independent snapshots in the existing archive format. Imported
         # invocations can then be indexed as cleaned without losing their trace.
@@ -418,6 +386,35 @@ class SessionTransferService:
                         agent_instance_id=trace.agent_instance_id,
                     )
                     part.pop("detached", None)
+                    all_attachment_ids.extend(message_part_attachment_ids(part))
+
+        attachments: list[dict] = []
+        attachment_sources: dict[str, str] = {}
+        owned_attachments = {
+            row.attachment_id: row
+            # The database applies the authenticated Dashboard owner context.
+            # Independent API keys retain their existing file-scope semantics.
+            for row in await self.db.get_attachments(all_attachment_ids)
+        }
+        for attachment_id in dict.fromkeys(all_attachment_ids):
+            attachment = owned_attachments.get(attachment_id)
+            if attachment is None:
+                warnings.append(f"Attachment {attachment_id} metadata missing")
+                continue
+            source = Path(attachment.path)
+            ext = source.suffix if is_safe_attachment_ext(source.suffix) else ""
+            # Pass the source path to the archive writer out of band.
+            attachment_sources[attachment_id] = str(source)
+            attachments.append(
+                {
+                    "attachment_id": attachment_id,
+                    "type": attachment.type,
+                    "mime_type": attachment.mime_type,
+                    "ext": ext,
+                    "size": 0,
+                    "zip_path": f"{ATTACHMENTS_PREFIX}{attachment_id}{ext}",
+                }
+            )
 
         data_payload = {
             "sessions": [
@@ -1197,6 +1194,26 @@ class SessionTransferService:
                     if part.get("type") in ("tool_call", "subagent_run"):
                         calls = part.get("tool_calls")
                         activity = part.get("activity")
+                        for item in activity if isinstance(activity, list) else []:
+                            if (
+                                not isinstance(item, dict)
+                                or item.get("kind") != "user_message"
+                                or not isinstance(item.get("attachments"), list)
+                            ):
+                                continue
+                            item["attachments"] = [
+                                {
+                                    "type": attachment.get("type"),
+                                    "filename": attachment.get("filename"),
+                                    "attachment_id": attachment_map[old_id],
+                                }
+                                for attachment in item["attachments"]
+                                if isinstance(attachment, dict)
+                                and isinstance(
+                                    old_id := attachment.get("attachment_id"), str
+                                )
+                                and old_id in attachment_map
+                            ]
                         for call in [
                             *(calls if isinstance(calls, list) else []),
                             *(

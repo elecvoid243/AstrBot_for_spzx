@@ -567,7 +567,7 @@ Under `Settings → Maintenance`, backup imports also show upload progress and o
 
 The top toolbar contains **Main conversation** and the **Subagents** menu. Click a subagent card in the main reply or select a call in the menu to open a page with its task, streamed thoughts, tool calls and replies.
 
-In a local conversation, turn on **Keep subagent for follow-ups** at the bottom of an invocation page before the subagent is cleaned up. This retains the instance and shows a text composer for the selected invocation. A message sent during an active turn starts a new turn when the current one ends. Replies appear in order on the same page. Turning the switch off restores normal cleanup. Retention lasts for the current server process, and saved transcripts remain available after a restart.
+In a local conversation, open the **Subagents** menu and click the **Keep subagent for follow-ups** pin beside an available subagent. Cleaned-up entries show saved history. Open an invocation of the retained subagent to type a message, attach images or files with the paperclip, paste an image, or drop a file onto the composer. A message sent during an active turn starts a new turn when the current one ends. Replies appear in order on the same page. Click the pin again to restore automatic cleanup. Retention lasts for the current server process, and saved transcripts remain available after a restart.
 
 ![The subagent page with retention enabled and the follow-up composer open](./images/subagent-follow-up.png)
 
@@ -590,7 +590,7 @@ New calls update the menu without switching your page. Use **Main conversation**
 | Main conversation / Subagents below a repeated message-area title | Main conversation / Subagents in the existing top toolbar |
 | Every repeated invocation shown at the top level | Group by instance → expand IDs, times and message previews → select a call |
 | Expand a subagent card inside a main reply | Click the card → that invocation's page |
-| Follow-up input inside the expanded card | Open the invocation → turn on **Keep subagent for follow-ups** → send a message |
+| **Keep subagent for follow-ups** at the bottom of the invocation page | Open **Subagents** in the top toolbar → pin an entry → open the invocation to send a message |
 | Old subagent execution cards | Subagents → Cleaned up → the saved invocation |
 
 ### Side Chats and Branch Threads

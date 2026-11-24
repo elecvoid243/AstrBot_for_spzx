@@ -104,7 +104,7 @@ class SubAgentConversation:
 
     instance_id: str
     ready: asyncio.Event
-    resume: Callable[[str, DashboardPrincipal], Awaitable[None]]
+    resume: Callable[[str, DashboardPrincipal, list[dict]], Awaitable[None]]
     pending: asyncio.Task[None] | None = None
 
 

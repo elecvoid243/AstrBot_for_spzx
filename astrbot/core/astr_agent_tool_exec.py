@@ -16,7 +16,7 @@ from astrbot import logger
 from astrbot.core.agent.context.token_counter import EstimateTokenCounter
 from astrbot.core.agent.handoff import HandoffTool
 from astrbot.core.agent.mcp_client import MCPTool
-from astrbot.core.agent.message import Message
+from astrbot.core.agent.message import Message, TextPart
 from astrbot.core.agent.run_context import ContextWrapper
 from astrbot.core.agent.tool import FunctionTool, ToolSet
 from astrbot.core.agent.tool_executor import BaseFunctionToolExecutor
@@ -26,13 +26,17 @@ from astrbot.core.astr_main_agent_resources import (
 )
 from astrbot.core.config.agent_runner import resolve_context_compression_config
 from astrbot.core.cron.events import CronMessageEvent
-from astrbot.core.message.components import Image, Plain
+from astrbot.core.message.components import Image
 from astrbot.core.message.message_event_result import (
     CommandResult,
     MessageChain,
     MessageEventResult,
 )
 from astrbot.core.platform.message_session import MessageSession
+from astrbot.core.platform.sources.webchat.message_parts_helper import (
+    strip_message_parts_path_fields,
+    webchat_message_parts_to_message_chain,
+)
 from astrbot.core.platform.sources.webchat.webchat_event import WebChatMessageEvent
 from astrbot.core.provider.entites import ProviderRequest
 from astrbot.core.provider.provider import Provider
@@ -1290,12 +1294,14 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
             next_event=None,
             next_history=None,
             next_provider_id=None,
+            next_images=None,
+            next_content=None,
         ):
             return await ctx.tool_loop_agent(
                 event=next_event or event,
                 chat_provider_id=next_provider_id or prov_id,
                 prompt=next_prompt,
-                image_urls=[] if next_event else image_urls,
+                image_urls=next_images if next_event else image_urls,
                 system_prompt=""
                 if next_history and next_history[0].get("role") == "system"
                 else system_prompt,
@@ -1305,7 +1311,9 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
                 tool_call_timeout=tool_call_timeout,
                 stream=stream,
                 runner_messages=runner_messages,
-                extra_user_content_parts=[] if next_event else extra_content_parts,
+                extra_user_content_parts=next_content
+                if next_event
+                else extra_content_parts,
                 trace_span=subagent_trace,
                 response_sink=sink,
                 on_runner_ready=None if next_event else _on_runner_ready,
@@ -1333,20 +1341,21 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
             sequence = 0
 
             async def _resume_subagent(
-                text: str, principal: DashboardPrincipal
+                text: str, principal: DashboardPrincipal, attachments: list[dict]
             ) -> None:
                 """Run another user turn without reopening the parent handoff.
 
                 Args:
                     text: The authenticated user's next message.
                     principal: Current dashboard identity of the session owner.
+                    attachments: Resolved WebChat attachment parts owned by the sender.
                 """
                 nonlocal sequence
                 sequence -= 1
                 message = copy(event.message_obj)
                 message.message_id = uuid.uuid4().hex
                 message.message_str = text
-                message.message = [Plain(text)]
+                message.message = []
                 message.raw_message = None
                 follow_up = WebChatMessageEvent(
                     text, message, event.platform_meta, event.session_id
@@ -1363,8 +1372,16 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
                 active_event_registry.register(follow_up)
                 opened = False
                 try:
-                    await sink.continue_turn(sequence, text)
+                    await sink.continue_turn(
+                        sequence, text, strip_message_parts_path_fields(attachments)
+                    )
                     opened = True
+                    parts = (
+                        [{"type": "plain", "text": text}] if text else []
+                    ) + attachments
+                    message.message = webchat_message_parts_to_message_chain(
+                        parts, strict=True
+                    ).chain
                     config_manager = getattr(ctx, "astrbot_config_mgr", None)
                     profile = (
                         config_manager.get_conf(umo, live=True)
@@ -1424,6 +1441,18 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
                         next_event=follow_up,
                         next_history=previous,
                         next_provider_id=next_provider_id,
+                        next_images=[
+                            part["path"]
+                            for part in attachments
+                            if part["type"] == "image"
+                        ],
+                        next_content=[
+                            TextPart(
+                                text=f"[File Attachment: name {part['filename']}, path {part['path']}]"
+                            )
+                            for part in attachments
+                            if part["type"] != "image"
+                        ],
                     )
                     result = (
                         await asyncio.wait_for(run, timeout)

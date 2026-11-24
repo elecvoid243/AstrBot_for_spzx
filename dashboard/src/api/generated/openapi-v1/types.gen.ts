@@ -659,6 +659,12 @@ export type ChatSubagentFollowUpRequest = {
     subagent_run_id: string;
     text?: string;
     /**
+     * Owned WebChat attachments included in a continuation.
+     */
+    attachments?: Array<{
+        [key: string]: (string);
+    }>;
+    /**
      * Set instance retention for the current server lifetime.
      */
     keep_alive?: boolean;

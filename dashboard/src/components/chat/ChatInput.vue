@@ -17,7 +17,7 @@
       capsule. The workspace entry was briefly folded into the mode menu and
       is independent again so the menu stays purely about permissions.
     -->
-    <div class="input-area__status-row">
+    <div v-if="!isSubagent" class="input-area__status-row">
       <div v-if="showSpcodeIndicator" class="input-area__status-row__left">
         <SpcodeProjectIndicator
           :consumer-only="isOrdinaryUser"
@@ -125,7 +125,7 @@
          sit under each action, and the queue is entered one message at a time
          with Enter (see handleKeyDown). -->
     <transition
-      v-if="props.sessionId && pendingFollowUpItems.length"
+      v-if="!isSubagent && props.sessionId && pendingFollowUpItems.length"
       name="followup"
     >
       <section
@@ -256,13 +256,16 @@
         transition: 'min-height 0.2s ease, padding 0.2s ease',
       }"
     >
-      <!-- 拖拽遮罩：仅 sidebar 拖入时显示引用遮罩；原生文件拖入由
-           Chat.vue 的全区域拖拽热区（useDragUpload）统一处理。 -->
+      <!-- The main chat handles native drops on its full pane. Subagent uploads stay in their composer. -->
       <transition name="fade">
-        <div v-if="isDragging && dragKind === 'reference'" class="drop-overlay">
+        <div
+          v-if="isDragging && (dragKind === 'reference' || isSubagent)"
+          class="drop-overlay"
+          :class="{ 'subagent-drop-overlay': isSubagent }"
+        >
           <div class="drop-overlay-content">
-            <v-icon size="48" color="primary">mdi-file-link-outline</v-icon>
-            <span class="drop-text">{{ tm("input.dropToReference") }}</span>
+            <v-icon size="48" color="primary">{{ isSubagent ? 'mdi-cloud-upload' : 'mdi-file-link-outline' }}</v-icon>
+            <span class="drop-text">{{ tm(isSubagent ? 'input.dropToUpload' : 'input.dropToReference') }}</span>
           </div>
         </div>
       </transition>
@@ -291,7 +294,7 @@
            message at send time and cleared on success (spec D3). -->
       <transition name="attachments">
         <div
-          v-if="!isOrdinaryUser && fileReferences.totalCount.value > 0"
+          v-if="!isSubagent && !isOrdinaryUser && fileReferences.totalCount.value > 0"
           class="references-preview"
         >
           <div
@@ -456,7 +459,7 @@
       -->
       <transition name="attachments">
         <div
-          v-if="skillGuide.queued.value.length > 0"
+          v-if="!isSubagent && skillGuide.queued.value.length > 0"
           class="skill-guide-preview"
         >
           <span class="skill-guide-preview__label">
@@ -517,6 +520,7 @@
             @paste="handlePaste"
             :disabled="disabled"
             :placeholder="props.placeholder || tm('input.placeholder')"
+            :aria-label="isSubagent ? props.placeholder : undefined"
             class="chat-text-input"
             autocomplete="off"
             autocorrect="off"
@@ -537,6 +541,7 @@
             @paste="handlePaste"
             :disabled="disabled"
             :placeholder="props.placeholder || tm('input.placeholder')"
+            :aria-label="isSubagent ? props.placeholder : undefined"
             class="chat-textarea"
             autocomplete="off"
             autocorrect="off"
@@ -546,7 +551,7 @@
         </div>
         <div class="composer-toolbar">
           <div class="composer-toolbar__left" :class="{ 'composer-toolbar__left--user': isOrdinaryUser }">
-            <StyledMenu v-if="isOrdinaryUser" offset="8" location="top start" :close-on-content-click="false">
+            <StyledMenu v-if="isOrdinaryUser && !isSubagent" offset="8" location="top start" :close-on-content-click="false">
               <template #activator="{ props: activatorProps }">
                 <v-btn v-bind="activatorProps" icon="mdi-plus" variant="text" class="composer-ghost-btn" />
               </template>
@@ -562,14 +567,16 @@
               multiple
             />
             <v-btn
-              v-if="isOrdinaryUser"
+              v-if="isOrdinaryUser || isSubagent"
               icon="mdi-paperclip"
               variant="text"
+              :class="{ 'composer-ghost-btn': isSubagent }"
+              :disabled="isSubagent && disabled"
               :aria-label="tm('input.upload')"
               @click="triggerImageInput"
             />
             <!-- "+" ghost button: upload / skill / project / config / streaming -->
-            <StyledMenu v-if="!isOrdinaryUser"
+            <StyledMenu v-if="!isOrdinaryUser && !isSubagent"
               offset="8"
               location="top start"
               :close-on-content-click="false"
@@ -659,14 +666,15 @@
                 </v-list-item-title>
               </v-list-item>
             </StyledMenu>
-            <span class="composer-toolbar__divider" aria-hidden="true"></span>
+            <span v-if="!isSubagent" class="composer-toolbar__divider" aria-hidden="true"></span>
             <!-- Config profile quick-switch capsule: its label is the live
                  current config profile; switching is one click. -->
-            <ConfigSelector variant="chip" />
+            <ConfigSelector v-if="!isSubagent" variant="chip" />
             <!-- Thinking effort capsule: renders the active preset (a level
                  list or a free numeric track). Presets live in
                  cmd_config.json; only config editors may rewrite them. -->
             <ThinkingEffortChip
+              v-if="!isSubagent"
               v-model="thinkingEffort"
               :levels="userEffortLevels"
               :mode="effortMode"
@@ -680,6 +688,7 @@
             />
             <!-- Click-to-send phrases are editable by their account owner. -->
             <QuickMessagesChip
+              v-if="!isSubagent"
               :items="quickMessageItems"
               :can-edit="true"
               @send="handleQuickMessageSend"
@@ -700,8 +709,9 @@
                  activator; the readout itself is transitioned in and out.
                  2026-10-18: borderless text readout — in this toolbar only
                  actionable things may look like chips. -->
-            <ChatContextUsage :token-usage="tokenUsage" :compression-notice="compressionNotice" :is-dark="isDark" />
+            <ChatContextUsage v-if="!isSubagent" :token-usage="tokenUsage" :compression-notice="compressionNotice" :is-dark="isDark" />
             <v-btn
+              v-if="!isSubagent"
               @click="handleRecordClick"
               icon
               variant="text"
@@ -730,7 +740,7 @@
                 {{ tm("input.stopGenerating") }}
               </v-tooltip>
             </v-btn>
-            <v-tooltip location="top" :disabled="!sendLocked">
+            <v-tooltip location="top" :disabled="isSubagent || !sendLocked">
               <template #activator="{ props: tipProps }">
                 <span v-bind="tipProps" class="send-btn-wrap">
                   <v-btn
@@ -759,39 +769,41 @@
       show the same UI. `v-dialog` teleports its content to <body>,
       so the DOM placement here is purely for component lifetime.
     -->
-    <ProjectLoadDialog v-if="!isOrdinaryUser"
-      ref="projectLoadDialogRef"
-      :wake-prefixes="wakePrefixes"
-      @submit="handleProjectLoadSubmit"
-    />
+    <template v-if="!isSubagent">
+      <ProjectLoadDialog v-if="!isOrdinaryUser"
+        ref="projectLoadDialogRef"
+        :wake-prefixes="wakePrefixes"
+        @submit="handleProjectLoadSubmit"
+      />
 
-    <ProjectLoadDialog
-      ref="codegraphLoadDialogRef"
-      :wake-prefixes="wakePrefixes"
-      command-mode="codegraph"
-      @submit="handleProjectLoadSubmit"
-    />
+      <ProjectLoadDialog
+        ref="codegraphLoadDialogRef"
+        :wake-prefixes="wakePrefixes"
+        command-mode="codegraph"
+        @submit="handleProjectLoadSubmit"
+      />
 
-    <CommentsPreviewDialog
-      v-model="previewDialogOpen"
-      :groups="previewGroups"
-      @delete-comment="onDeleteComment"
-      @request-clear-all="onRequestClearAll"
-    />
+      <CommentsPreviewDialog
+        v-model="previewDialogOpen"
+        :groups="previewGroups"
+        @delete-comment="onDeleteComment"
+        @request-clear-all="onRequestClearAll"
+      />
 
-    <ThinkingEffortLevelsDialog
-      v-model="effortLevelsDialogOpen"
-      :presets="effortSettings.presets"
-      :active-preset="effortSettings.active_preset"
-      :value="thinkingEffort"
-      @save="handleEffortEditorSave"
-    />
+      <ThinkingEffortLevelsDialog
+        v-model="effortLevelsDialogOpen"
+        :presets="effortSettings.presets"
+        :active-preset="effortSettings.active_preset"
+        :value="thinkingEffort"
+        @save="handleEffortEditorSave"
+      />
 
-    <QuickMessagesDialog
-      v-model="quickMessagesDialogOpen"
-      :items="quickMessageItems"
-      @save="handleQuickMessagesSave"
-    />
+      <QuickMessagesDialog
+        v-model="quickMessagesDialogOpen"
+        :items="quickMessageItems"
+        @save="handleQuickMessagesSave"
+      />
+    </template>
 
     <v-overlay
       v-model="imagePreview.visible"
@@ -918,6 +930,8 @@ interface TokenUsageInfo {
 }
 
 interface Props {
+  mode?: "chat" | "subagent";
+  sendDisabled?: boolean;
   prompt: string;
   stagedImagesUrl: string[];
   stagedAudioUrl: string;
@@ -1030,6 +1044,7 @@ const emit = defineEmits<{
 
 const { tm } = useModuleI18n("features/chat");
 const isOrdinaryUser = computed(() => useAuthStore().role === "user");
+const isSubagent = computed(() => props.mode === "subagent");
 
 // ZCode-style pending follow-up queue (singleton store shared with
 // Chat.vue, which owns the flush triggers and dispatch path).
@@ -1511,6 +1526,7 @@ const skillCommands = computed<SuggestionCommand[]>(() => {
 watch(
   () => [props.sessionId, sessionIsGroup.value] as const,
   async ([sessionId, isGroup]) => {
+    if (isSubagent.value) return;
     if (!sessionId) {
       await skillGuide.setSession(null);
       return;
@@ -1523,7 +1539,7 @@ watch(
 
 const canSend = computed(() => {
   return (
-    skillGuide.queued.value.length > 0 ||
+    (!isSubagent.value && skillGuide.queued.value.length > 0) ||
     (props.prompt && props.prompt.trim()) ||
     props.stagedImagesUrl.length > 0 ||
     props.stagedAudioUrl ||
@@ -1679,7 +1695,7 @@ function handleKeyDown(e: KeyboardEvent) {
   const isEnter = e.key === "Enter";
   if (!isEnter) {
     // Ctrl+B 录音
-    if (e.ctrlKey && e.keyCode === 66) {
+    if (!isSubagent.value && e.ctrlKey && e.keyCode === 66) {
       e.preventDefault();
       if (ctrlKeyDown.value) return;
 
@@ -1730,13 +1746,13 @@ function handleKeyDown(e: KeyboardEvent) {
 
   if (isSendHotkey) {
     e.preventDefault();
-    if (localPrompt.value.trim() === "/astr_live_dev") {
+    if (!isSubagent.value && localPrompt.value.trim() === "/astr_live_dev") {
       emit("openLiveMode");
       localPrompt.value = "";
       return;
     }
     if (canSend.value && !sendLocked.value) {
-      if (!isOrdinaryUser.value) applyOptimisticCodegraphStatus(localPrompt.value);
+      if (!isSubagent.value && !isOrdinaryUser.value) applyOptimisticCodegraphStatus(localPrompt.value);
       sendMessage();
     }
     return;
@@ -1828,6 +1844,7 @@ async function applySkillCommand(displayCommand: string): Promise<void> {
 
 /** 处理输入变化，控制命令提示显示；skill 名后跟空格时自动加载 */
 function handleInput() {
+  if (isSubagent.value) return;
   const text = currentInputText();
   if (text && hasWakePrefix(text) && !isComposing.value) {
     const autoSkill = matchExactSkillToken(text);
@@ -1943,7 +1960,7 @@ function applyOptimisticProjectStatus(text: string): void {
  */
 function handleSendClick(): void {
   if (sendLocked.value) return; // project load/unload in flight
-  applyOptimisticCodegraphStatus(localPrompt.value);
+  if (!isSubagent.value) applyOptimisticCodegraphStatus(localPrompt.value);
   sendMessage();
 }
 
@@ -1958,6 +1975,10 @@ function handleSendClick(): void {
  * "[Requested skills]" block into the message text (visible in history).
  */
 function sendMessage(): void {
+  if (isSubagent.value) {
+    if (canSend.value && !sendLocked.value) emit("send", []);
+    return;
+  }
   if (isOrdinaryUser.value) {
     if (canSend.value) {
       const skills = [...skillGuide.queued.value];
@@ -2242,6 +2263,7 @@ function handlePaste(e: ClipboardEvent) {
 const SIDEBAR_FILE_MIME = "application/x-astrbot-file-path";
 
 function handleDragOver(e: DragEvent) {
+  if (isSubagent.value && props.disabled) return;
   // 清除之前的 leave timeout
   if (dragLeaveTimeout) {
     clearTimeout(dragLeaveTimeout);
@@ -2255,7 +2277,7 @@ function handleDragOver(e: DragEvent) {
   if (types?.includes("Files")) {
     dragKind.value = "upload";
     isDragging.value = true;
-  } else if (!isOrdinaryUser.value && types?.includes(SIDEBAR_FILE_MIME)) {
+  } else if (!isSubagent.value && !isOrdinaryUser.value && types?.includes(SIDEBAR_FILE_MIME)) {
     dragKind.value = "reference";
     isDragging.value = true;
   }
@@ -2269,6 +2291,12 @@ function handleDragLeave(e: DragEvent) {
 }
 
 function handleDrop(e: DragEvent) {
+  if (isSubagent.value) {
+    e.stopPropagation();
+    isDragging.value = false;
+    if (!props.disabled && e.dataTransfer?.files.length) emit("fileSelect", e.dataTransfer.files);
+    return;
+  }
   if (isOrdinaryUser.value) return;
   isDragging.value = false;
 
@@ -2335,17 +2363,19 @@ function handleConfigChange(payload: {
 // the single context binding — the "+" menu item and the composer chip are
 // pure renderers of the shared singleton; selection changes (including the
 // runner-type gate for the provider selector) arrive via this listener.
-const chatConfigSelection = provideChatConfigSelection();
-chatConfigSelection.bindContext(
-  computed(() => ({
-    sessionId: props.configSessionId ?? props.sessionId ?? null,
-    platformId: sessionPlatformId.value,
-    isGroup: sessionIsGroup.value,
-    initialConfigId: props.configId ?? null,
-    persistGlobal: props.persistConfigSelection !== false,
-  })),
-);
-onBeforeUnmount(chatConfigSelection.onConfigChanged(handleConfigChange));
+const chatConfigSelection = isSubagent.value ? null : provideChatConfigSelection();
+if (chatConfigSelection) {
+  chatConfigSelection.bindContext(
+    computed(() => ({
+      sessionId: props.configSessionId ?? props.sessionId ?? null,
+      platformId: sessionPlatformId.value,
+      isGroup: sessionIsGroup.value,
+      initialConfigId: props.configId ?? null,
+      persistGlobal: props.persistConfigSelection !== false,
+    })),
+  );
+  onBeforeUnmount(chatConfigSelection.onConfigChanged(handleConfigChange));
+}
 
 function getCurrentSelection() {
   if ((!isOrdinaryUser.value && !props.showProviderSelector) || !providerSelectorAvailable.value) {
@@ -2422,9 +2452,9 @@ const operationProgress = useSpcodeOperationProgress();
 // (project load is a single fast AGENTS.md read).
 const projectOpBusy = ref(false);
 const sendLocked = computed(
-  () =>
-    !isOrdinaryUser.value &&
-    (projectOpBusy.value || operationProgress.isProjectOpRunning.value),
+  () => isSubagent.value
+    ? props.disabled || props.sendDisabled || props.activeUploads.length > 0
+    : !isOrdinaryUser.value && (projectOpBusy.value || operationProgress.isProjectOpRunning.value),
 );
 const silentOps = useSpcodeSilentOps();
 const toastStore = useToastStore();
@@ -2506,7 +2536,7 @@ watch(
 watch(
   () => props.currentSession?.session_id ?? null,
   async (sid) => {
-    if (isOrdinaryUser.value) return;
+    if (isSubagent.value || isOrdinaryUser.value) return;
     if (!sid || !props.currentSession) {
       fileAccessMode.reset();
       return;
@@ -2524,6 +2554,7 @@ onMounted(() => {
   document.addEventListener("keyup", handleKeyUp);
   document.addEventListener("visibilitychange", onVisibilityChange);
   nextTick(autoResize);
+  if (isSubagent.value) return;
   void loadChatUiSettings();
   if (isOrdinaryUser.value) return;
   // Preload commands only for adapted accounts.
@@ -2572,6 +2603,7 @@ defineExpose({
   getCurrentSelection,
   getThinkingEffort,
   prepareConfig: async () => {
+    if (!chatConfigSelection) return undefined;
     const configId = await chatConfigSelection.prepareSend();
     if (sessionEffortEnabled.value) await providerModelSelection.prepareSend();
     return configId;
@@ -2590,6 +2622,23 @@ defineExpose({
   position: relative;
   border-top: 1px solid var(--v-theme-border);
   flex-shrink: 0;
+}
+.subagent-drop-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  border: 1px dashed rgb(var(--v-theme-primary));
+  border-radius: inherit;
+  background: rgb(var(--v-theme-surface));
+  color: rgb(var(--v-theme-primary));
+  pointer-events: none;
+}
+.subagent-drop-overlay .drop-overlay-content {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 .input-area__status-row {
   align-items: center;

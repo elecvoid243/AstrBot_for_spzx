@@ -383,6 +383,16 @@ def message_part_attachment_ids(part: object) -> list[str]:
             )
             if isinstance(images, list):
                 ids.extend(image_id for image_id in images if isinstance(image_id, str))
+    if part.get("type") == "subagent_run" and isinstance(part.get("activity"), list):
+        for entry in part["activity"]:
+            if not isinstance(entry, dict) or entry.get("kind") != "user_message":
+                continue
+            attachments = entry.get("attachments")
+            for attachment in attachments if isinstance(attachments, list) else []:
+                if isinstance(attachment, dict) and isinstance(
+                    attachment.get("attachment_id"), str
+                ):
+                    ids.append(attachment["attachment_id"])
     return ids
 
 

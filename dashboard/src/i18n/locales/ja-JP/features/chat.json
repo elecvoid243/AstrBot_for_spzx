@@ -211,7 +211,6 @@
   "subagentFollowUp": {
     "keepAlive": "サブエージェントを保持して会話を続ける",
     "placeholder": "{name} にメッセージを送る…",
-    "send": "送信",
     "updateFailed": "操作を完了できませんでした。サブエージェントが利用可能か確認するか、現在の応答が終わってから再試行してください。"
   },
   "subagentPages": {

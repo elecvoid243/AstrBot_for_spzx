@@ -12034,6 +12034,12 @@ components:
           type: string
         text:
           type: string
+        attachments:
+          type: array
+          description: Owned WebChat attachments included in a continuation.
+          items:
+            type: object
+            additionalProperties: { type: string }
         keep_alive:
           type: boolean
           description: Set instance retention for the current server lifetime.

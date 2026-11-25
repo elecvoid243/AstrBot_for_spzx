@@ -3762,6 +3762,113 @@ class WorkflowService:
             raise RoleAssetError("Attempt not found", status=404)
         return scope, task, attempt.data
 
+    async def failed_child_debug_attempts(
+        self, username: str, run_id: str, request: DebugForkAttempt
+    ) -> list[dict]:
+        """Find failed attempts recorded inside one fixed child call.
+
+        Args:
+            username: Authenticated Dashboard owner.
+            run_id: Root run containing the call.
+            request: Exact parent scope, call task and attempt.
+
+        Returns:
+            Failed attempts in the child scope, with replayable attempts first.
+
+        Raises:
+            RoleAssetError: The call is inaccessible or has no failed child scope.
+        """
+        async with self.db.get_db() as session:
+            if self.db.engine.dialect.name == "sqlite":
+                await session.execute(text("BEGIN"))
+            _, caller, attempt = await self._inspection_attempt(
+                session,
+                username,
+                run_id,
+                request.scope_run_id,
+                request.task_run_id,
+                request.attempt_id,
+            )
+            child_id = (attempt.get("state") or {}).get("child_scope_run_id")
+            if (
+                caller.snapshot.get("engine") != "workflow_call_v2"
+                or attempt["status"] not in {"blocked", "failed"}
+                or not child_id
+            ):
+                raise RoleAssetError("Select a failed fixed workflow call", status=409)
+            child = await session.get(AgentWorkflowRun, child_id)
+            if (
+                child is None
+                or child.owner_username != username
+                or child.snapshot.get("root_run_id") != run_id
+                or child.snapshot.get("parent_run_id") != caller.run_id
+                or child.snapshot.get("engine") != "graph_v2"
+            ):
+                raise RoleAssetError("Child workflow run not found", status=404)
+
+            tasks = {
+                task.run_id: task
+                for task in (
+                    await session.execute(
+                        select(AgentWorkflowRun)
+                        .where(
+                            AgentWorkflowRun.owner_username == username,
+                            AgentWorkflowRun.snapshot["root_run_id"].as_string()
+                            == run_id,
+                            AgentWorkflowRun.snapshot["parent_run_id"].as_string()
+                            == child_id,
+                        )
+                        .order_by(
+                            AgentWorkflowRun.snapshot["iteration"].as_integer(),
+                            AgentWorkflowRun.snapshot["node_id"].as_string(),
+                        )
+                    )
+                ).scalars()
+            }
+            archived = (
+                await session.execute(
+                    select(
+                        AgentWorkflowAttempt.run_id,
+                        AgentWorkflowAttempt.attempt_id,
+                        AgentWorkflowAttempt.data["snapshot"],
+                    )
+                    .where(
+                        col(AgentWorkflowAttempt.run_id).in_(tasks),
+                        AgentWorkflowAttempt.data["status"].as_string() == "failed",
+                    )
+                    .order_by(col(AgentWorkflowAttempt.attempt_id))
+                )
+            ).all()
+            nodes = {node["id"]: node for node in child.snapshot["definition"]["tasks"]}
+            replayable, other = [], []
+            for task_id, attempt_id, snapshot in [
+                *(
+                    (task.run_id, task.state["attempt_id"], task.snapshot)
+                    for task in tasks.values()
+                    if task.status == "failed"
+                ),
+                *archived,
+            ]:
+                task_snapshot = tasks[task_id].snapshot
+                node = nodes.get(task_snapshot["node_id"], {})
+                destination = (
+                    replayable
+                    if task_snapshot.get("engine") == "transform_task_v2"
+                    and node.get("transform") in DEBUG_FORK_TRANSFORMS
+                    and _debug_fork_reads(node, snapshot or {}) is not None
+                    else other
+                )
+                destination.append(
+                    {
+                        "scope_run_id": child_id,
+                        "task_run_id": task_id,
+                        "attempt_id": attempt_id,
+                        "node_name": task_snapshot["definition"]["name"],
+                        "iteration": task_snapshot.get("iteration"),
+                    }
+                )
+            return [*replayable, *other]
+
     async def _debug_fork_plan(
         self,
         session: AsyncSession,
@@ -3840,6 +3947,29 @@ class WorkflowService:
                 if schema.get("type") == "string"
                 else "json"
             )
+            evidence = (
+                {
+                    **(reads[name] or {}),
+                    **(snapshot.get("port_sources") or {}).get(name, {}),
+                }
+                if recorded
+                else {}
+            )
+            if ref := evidence.get("artifact"):
+                await self._artifact_source(session, username, ref)
+            ref_value = value.get("value")
+            if (
+                kind == "reference"
+                and isinstance(ref_value, dict)
+                and isinstance(ref_value.get("artifact_id"), str)
+                and type(ref_value.get("version")) is int
+                and (
+                    "file_id" not in ref_value or isinstance(ref_value["file_id"], str)
+                )
+            ):
+                await self._require_port_reference(
+                    session, username, ref_value, f"inputs.{name}"
+                )
             inputs.append(
                 {
                     "name": name,
@@ -3851,18 +3981,51 @@ class WorkflowService:
                     else "absent",
                     "changed": False,
                     **value,
-                    **(
-                        {
-                            "evidence": {
-                                **(reads[name] or {}),
-                                **(snapshot.get("port_sources") or {}).get(name, {}),
-                            }
-                        }
-                        if recorded
-                        else {}
-                    ),
+                    **({"evidence": evidence} if recorded else {}),
                 }
             )
+
+        parent_call = None
+        if attempt["status"] == "failed" and (
+            caller_id := scope.snapshot.get("parent_run_id")
+        ):
+            caller = await session.get(AgentWorkflowRun, caller_id)
+            if (
+                caller is None
+                or caller.owner_username != username
+                or caller.snapshot.get("root_run_id") != run_id
+            ):
+                raise RoleAssetError("Parent call not found", status=404)
+            if caller.snapshot.get("engine") == "workflow_call_v2":
+                # A retry can replace the caller's current child. Resolve the
+                # attempt that actually created the selected historical scope.
+                caller_attempt = caller.state["attempt_id"]
+                if caller.state.get("child_scope_run_id") != scope.run_id:
+                    caller_attempt = await session.scalar(
+                        select(AgentWorkflowAttempt.attempt_id).where(
+                            AgentWorkflowAttempt.run_id == caller_id,
+                            AgentWorkflowAttempt.data["state"][
+                                "child_scope_run_id"
+                            ].as_string()
+                            == scope.run_id,
+                        )
+                    )
+                if caller_attempt:
+                    await self._inspection_attempt(
+                        session,
+                        username,
+                        run_id,
+                        caller.snapshot["parent_run_id"],
+                        caller_id,
+                        caller_attempt,
+                    )
+                    parent_call = {
+                        "scope_run_id": caller.snapshot["parent_run_id"],
+                        "task_run_id": caller_id,
+                        "attempt_id": caller_attempt,
+                        "node_name": caller.snapshot["definition"]["name"],
+                        "iteration": caller.snapshot.get("iteration"),
+                    }
 
         state = attempt.get("state") or {}
         plan = {
@@ -3882,6 +4045,7 @@ class WorkflowService:
                 "node_id": node["id"],
                 "node_name": node["name"],
                 "iteration": snapshot.get("iteration"),
+                **({"parent_call": parent_call} if parent_call else {}),
             },
             "original": {
                 "status": attempt["status"],

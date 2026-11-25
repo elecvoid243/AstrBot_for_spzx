@@ -1,5 +1,11 @@
 {
   "debugFork": {
+    "openFailedChild": "调试失败的子调用",
+    "viewTask": "查看任务详情",
+    "failedAttempt": "本次调用中的失败尝试",
+    "noChildFailures": "本次调用中没有已记录的内部失败尝试。",
+    "parentCall": "父调用 {name}",
+    "openParent": "打开父调用",
     "title": "调试分支",
     "open": "用这次输入调试",
     "preview": "预览调试分支",

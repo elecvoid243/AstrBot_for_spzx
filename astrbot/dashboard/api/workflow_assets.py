@@ -1156,6 +1156,49 @@ async def inspect_workflow_data_line(
         )
 
 
+@router.get("/workflow_runs/{run_id}/debug_forks/failed_child")
+async def list_failed_child_debug_attempts(
+    run_id: str,
+    scope_run_id: str = Query(min_length=1, max_length=128),
+    task_run_id: str = Query(min_length=1, max_length=128),
+    attempt_id: str = Query(min_length=1, max_length=128),
+    username: str = Depends(require_dashboard_user),
+    service: WorkflowService = Depends(get_workflow_service),
+):
+    """List the recorded failures inside one owned fixed child invocation.
+
+    Args:
+        run_id: Source root run.
+        scope_run_id: Scope containing the parent call.
+        task_run_id: Exact call task in its parent round.
+        attempt_id: Attempt whose saved state identifies the child.
+        username: Authenticated Dashboard owner.
+        service: Shared workflow service.
+
+    Returns:
+        Candidate task and attempt identities inside that child scope.
+    """
+    try:
+        return JSONResponse(
+            ok(
+                await service.failed_child_debug_attempts(
+                    username,
+                    run_id,
+                    DebugForkAttempt(
+                        scope_run_id=scope_run_id,
+                        task_run_id=task_run_id,
+                        attempt_id=attempt_id,
+                    ),
+                )
+            ),
+            headers={"Cache-Control": "no-store"},
+        )
+    except RoleAssetError as exc:
+        return JSONResponse(
+            error(str(exc), {"fields": exc.fields}), status_code=exc.status
+        )
+
+
 @router.post("/workflow_runs/{run_id}/debug_forks/preview")
 async def preview_workflow_debug_fork(
     run_id: str,

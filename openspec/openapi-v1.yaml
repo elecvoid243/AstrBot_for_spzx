@@ -9541,6 +9541,55 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/workflow_runs/{run_id}/debug_forks/failed_child:
+    get:
+      tags: [Agent Teams workflows]
+      summary: List failed attempts in a fixed child call
+      operationId: list_failed_child_debug_attempts_api_v1_workflow_runs__run_id__debug_forks_failed_child_get
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema: {type: string}
+      - name: scope_run_id
+        in: query
+        required: true
+        schema: {type: string, minLength: 1, maxLength: 128}
+      - name: task_run_id
+        in: query
+        required: true
+        schema: {type: string, minLength: 1, maxLength: 128}
+      - name: attempt_id
+        in: query
+        required: true
+        schema: {type: string, minLength: 1, maxLength: 128}
+      responses:
+        '200':
+          description: Current and archived failures inside the selected call.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, data]
+                properties:
+                  status: {const: ok}
+                  message: {type: 'null'}
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/WorkflowDebugForkLocation'
+        '401':
+          description: Dashboard session required.
+        '404':
+          description: Owned call attempt or child scope unavailable.
+        '409':
+          description: The selected attempt is not a failed fixed workflow call.
+        '422':
+          description: Invalid request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/workflow_runs/{run_id}/debug_forks/preview:
     post:
       tags: [Agent Teams workflows]
@@ -14458,6 +14507,15 @@ components:
         scope_run_id: {type: string, minLength: 1, maxLength: 128}
         task_run_id: {type: string, minLength: 1, maxLength: 128}
         attempt_id: {type: string, minLength: 1, maxLength: 128}
+    WorkflowDebugForkLocation:
+      type: object
+      required: [scope_run_id, task_run_id, attempt_id, node_name, iteration]
+      properties:
+        scope_run_id: {type: string}
+        task_run_id: {type: string}
+        attempt_id: {type: string}
+        node_name: {type: string}
+        iteration: {type: [integer, 'null']}
     WorkflowDebugForkRequest:
       type: object
       additionalProperties: false
@@ -14496,6 +14554,8 @@ components:
             node_id: {type: string}
             node_name: {type: string}
             iteration: {type: [integer, 'null']}
+            parent_call:
+              $ref: '#/components/schemas/WorkflowDebugForkLocation'
         original:
           type: object
           required: [status, reason, result]

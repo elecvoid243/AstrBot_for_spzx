@@ -3,15 +3,38 @@
     <v-card data-testid="debug-fork-preview">
       <v-card-title class="text-h3 pa-4 pb-0 pl-6">{{ tm("debugFork.preview") }}</v-card-title>
       <v-card-text>
+        <label v-if="candidates && candidates.length > 1" class="d-block text-body-2 mb-3">
+          {{ tm("debugFork.failedAttempt") }}
+          <select
+            class="debug-candidate d-block w-100 mt-1"
+            :value="attempt.attempt_id"
+            :disabled="starting"
+            data-testid="debug-fork-candidate"
+            @change="chooseCandidate(($event.target as HTMLSelectElement).value)"
+          >
+            <option v-for="item in candidates" :key="item.attempt_id" :value="item.attempt_id">
+              {{ item.node_name }} ·
+              <template v-if="item.iteration != null">{{ tm("loops.iteration") }} {{ item.iteration }} · </template>
+              {{ tm("v2.attempt") }} {{ item.attempt_id }}
+            </option>
+          </select>
+        </label>
         <v-progress-linear v-if="loading" indeterminate />
         <v-alert v-if="error" type="error" variant="tonal" class="mb-3">{{ error }}</v-alert>
         <template v-if="plan">
+          <p v-if="plan.source.parent_call" class="text-body-2 mb-2" data-testid="debug-fork-parent-context">
+            {{ tm("debugFork.parentCall", { name: plan.source.parent_call.node_name }) }}
+            <span v-if="plan.source.parent_call.iteration != null">
+              · {{ tm("loops.iteration") }} {{ plan.source.parent_call.iteration }}
+            </span>
+          </p>
           <p class="font-weight-medium">{{ plan.source.workflow_name }} · {{ version }} · {{ plan.source.node_name }}</p>
           <p class="text-body-2 mb-2" data-testid="debug-fork-scope">{{ tm("debugFork.singleNode") }}</p>
           <p class="text-caption text-medium-emphasis mb-3 debug-attempt">
             <span v-if="plan.source.iteration != null">{{ tm("loops.iteration") }} {{ plan.source.iteration }} · </span>
             {{ tm("v2.attempt") }} {{ plan.source.attempt_id }}
           </p>
+          <p v-if="candidates && plan.original.reason" class="text-body-2 mb-3">{{ plan.original.reason }}</p>
           <v-select
             v-if="editablePorts.length"
             v-model="field"
@@ -54,14 +77,18 @@
 <script setup lang="ts">
 import { computed, onScopeDispose, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import type { WorkflowDebugForkAttempt, WorkflowDebugForkPreview, WorkflowDebugForkRequest } from "@/api/generated/openapi-v1";
+import type { WorkflowDebugForkAttempt, WorkflowDebugForkLocation, WorkflowDebugForkPreview, WorkflowDebugForkRequest } from "@/api/generated/openapi-v1";
 import { workflowAssetsApi } from "@/api/workflowAssets";
 import { useModuleI18n } from "@/i18n/composables";
 import { extractApiError } from "@/utils/extractApiError";
 import WorkflowDebugForkInputs from "./WorkflowDebugForkInputs.vue";
 
-const props = defineProps<{ rootId: string; attempt: WorkflowDebugForkAttempt }>();
-const emit = defineEmits<{ close: [] }>();
+const props = defineProps<{
+  rootId: string;
+  attempt: WorkflowDebugForkAttempt;
+  candidates?: WorkflowDebugForkLocation[];
+}>();
+const emit = defineEmits<{ close: []; selectCandidate: [candidate: WorkflowDebugForkLocation] }>();
 const { tm } = useModuleI18n("features/agent-teams");
 const router = useRouter();
 const route = useRoute();
@@ -109,12 +136,30 @@ const previewInputs = computed(() => (plan.value?.inputs ?? []).map(port =>
     : port,
 ));
 
-void workflowAssetsApi.previewDebugFork(props.rootId, props.attempt, controller.signal)
-  .then(result => { if (!controller.signal.aborted) plan.value = result; })
-  .catch(err => {
-    if (!controller.signal.aborted) error.value = extractApiError(err, tm("errors.operationFailed")).message;
-  })
-  .finally(() => { loading.value = false; });
+function chooseCandidate(attemptId: string) {
+  const selected = props.candidates?.find(item => item.attempt_id === attemptId);
+  if (selected) emit("selectCandidate", selected);
+}
+
+watch(
+  [() => props.rootId, () => props.attempt.scope_run_id, () => props.attempt.task_run_id, () => props.attempt.attempt_id],
+  ([rootId, scope_run_id, task_run_id, attempt_id], _, onCleanup) => {
+    const read = new AbortController();
+    onCleanup(() => read.abort());
+    plan.value = undefined;
+    field.value = null;
+    requestId = undefined;
+    error.value = "";
+    loading.value = true;
+    void workflowAssetsApi.previewDebugFork(rootId, { scope_run_id, task_run_id, attempt_id }, read.signal)
+      .then(result => { if (!read.signal.aborted) plan.value = result; })
+      .catch(err => {
+        if (!read.signal.aborted) error.value = extractApiError(err, tm("errors.operationFailed")).message;
+      })
+      .finally(() => { if (!read.signal.aborted) loading.value = false; });
+  },
+  { immediate: true },
+);
 
 async function start() {
   if (!plan.value || invalidJson.value || starting.value) return;
@@ -143,4 +188,11 @@ async function start() {
 
 <style scoped>
 .debug-attempt { overflow-wrap: anywhere; }
+.debug-candidate {
+  appearance: auto;
+  color-scheme: light dark;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.3);
+  border-radius: 6px;
+  padding: 4px 8px;
+}
 </style>

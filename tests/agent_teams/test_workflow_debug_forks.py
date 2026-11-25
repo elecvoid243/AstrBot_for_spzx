@@ -374,3 +374,278 @@ async def test_debug_fork_replays_a_recorded_input_contract_failure(publication_
     (task,) = fork["tasks"]
     assert task["status"] == "failed"
     assert task["state"]["reason"] == failed["state"]["reason"] == "Invalid port values"
+
+
+def failed_child_definitions(child_id=None):
+    """Return the child graph, or the parent that runs it in two rounds.
+
+    Args:
+        child_id: Published child to pin in the parent, if supplied.
+
+    Returns:
+        Workflow definition for the requested asset.
+    """
+    payload = {
+        "type": "object",
+        "properties": {"text": {"type": "string"}, "approved": {"type": "boolean"}},
+        "required": ["text", "approved"],
+    }
+    if child_id is None:
+        return {
+            "name": "Citation review",
+            "port_contract_version": 2,
+            "input_contract": payload,
+            "entry_task_ids": ["prepare", "check", "cross-check"],
+            "result_task_id": "check",
+            "tasks": [
+                {
+                    "id": "prepare",
+                    "name": "Prepare citations",
+                    "transform": "map_fields",
+                    "input_contract": payload,
+                    "output_contract": payload,
+                    "inputs": {
+                        "text": {"input": "text"},
+                        "approved": {"input": "approved"},
+                    },
+                },
+                *[
+                    {
+                        "id": node_id,
+                        "name": name,
+                        "transform": "parse_json",
+                        "output_contract": payload,
+                        "inputs": {"text": {"task_id": "prepare", "field": "text"}},
+                    }
+                    for node_id, name in (
+                        ("check", "Check citations"),
+                        ("cross-check", "Check bibliography"),
+                    )
+                ],
+            ],
+        }
+    return {
+        "name": "Document report",
+        "port_contract_version": 2,
+        "input_contract": payload,
+        "entry_task_ids": ["review"],
+        "result_task_id": "review",
+        "tasks": [
+            {
+                "id": "review",
+                "name": "Review citations",
+                "workflow": {"asset_id": child_id, "version": 1},
+                "input_contract": payload,
+                "output_contract": payload,
+                "inputs": {
+                    "text": {"input": "text"},
+                    "approved": {"input": "approved"},
+                },
+            }
+        ],
+        "loops": [
+            {
+                "id": "review-rounds",
+                "name": "Review rounds",
+                "body": ["review"],
+                "exit_task_id": "review",
+                "exit_condition": {"field": "approved", "value": True},
+                "max_iterations": 2,
+                "feedback": [
+                    {
+                        "source": "review",
+                        "field": "text",
+                        "target": "review",
+                        "input": "text",
+                    }
+                ],
+            }
+        ],
+    }
+
+
+@pytest.mark.asyncio
+async def test_debug_fork_selects_failures_from_the_exact_fixed_call(
+    publication_client,
+    workflow_env,
+):
+    """Follow the failed second call and replay only the selected internal node.
+
+    Args:
+        publication_client: Dashboard API backed by a disposable database.
+        workflow_env: Storage for simulating an incomplete historical read.
+    """
+    client = publication_client
+    create_path = "/api/v1/workflow_assets"
+    definitions = failed_child_definitions()
+    child = await client.post(create_path, json={"definition": definitions})
+    assert child.status_code == 200, child.text
+    child_id = child.json()["data"]["asset_id"]
+    parent = await client.post(
+        create_path, json={"definition": failed_child_definitions(child_id)}
+    )
+    assert parent.status_code == 200, parent.text
+    parent_id = parent.json()["data"]["asset_id"]
+    started = await client.post(
+        f"{create_path}/{parent_id}/runs",
+        json={
+            "version": 1,
+            "inputs": {
+                "text": '{"text":"bad citations","approved":false}',
+                "approved": False,
+            },
+        },
+    )
+    assert started.status_code == 200, started.text
+    root_id = started.json()["data"]["run_id"]
+    path = f"/api/v1/workflow_runs/{root_id}"
+    run = (await client.get(path)).json()["data"]
+    first, second = [round_["tasks"][0] for round_ in run["loops"][0]["iterations"]]
+    assert (first["status"], second["status"]) == ("completed", "blocked")
+    child_scopes = {scope["run_id"]: scope for scope in run["scopes"]}
+    first_scope = child_scopes[first["state"]["child_scope_run_id"]]
+    failed_scope = child_scopes[second["state"]["child_scope_run_id"]]
+    tasks = {task["node_id"]: task for task in failed_scope["tasks"]}
+    failed = tasks["check"]
+    retried = await client.post(
+        f"/api/v1/workflow_runs/{failed['run_id']}/retry",
+        json={
+            "request_id": "retry-inner",
+            "attempt_id": failed["state"]["attempt_id"],
+            "input_policy": "original",
+        },
+    )
+    assert retried.status_code == 200, retried.text
+    async with workflow_env.db.get_db() as session:
+        current = await session.get(AgentWorkflowRun, failed["run_id"])
+        current.snapshot = {
+            key: value
+            for key, value in current.snapshot.items()
+            if key not in {"input_reads", "port_sources"}
+        }
+        await session.commit()
+    baseline = (await client.get(path)).json()["data"]
+    call = {
+        "scope_run_id": root_id,
+        "task_run_id": second["run_id"],
+        "attempt_id": second["state"]["attempt_id"],
+    }
+    failures_path = f"{path}/debug_forks/failed_child"
+    unauthorized = client._transport.app.dependency_overrides
+    unauthorized[require_dashboard_user] = lambda: "bob"
+    assert (await client.get(failures_path, params=call)).status_code == 404
+    unauthorized[require_dashboard_user] = lambda: "alice"
+    wrong_round = await client.get(
+        failures_path, params={**call, "task_run_id": first["run_id"]}
+    )
+    assert wrong_round.status_code == 404, wrong_round.text
+    success = await client.get(
+        failures_path,
+        params={
+            **call,
+            "task_run_id": first["run_id"],
+            "attempt_id": first["state"]["attempt_id"],
+        },
+    )
+    assert success.status_code == 409, success.text
+    response = await client.get(failures_path, params=call)
+    assert response.status_code == 200, response.text
+    candidates = response.json()["data"]
+    assert len(candidates) == 3
+    assert {item["scope_run_id"] for item in candidates} == {failed_scope["run_id"]}
+    assert {item["node_name"] for item in candidates} == {
+        "Check citations",
+        "Check bibliography",
+    }
+    assert candidates[0]["node_name"] == "Check bibliography"
+    assert candidates[1]["attempt_id"] == failed["state"]["attempt_id"]
+    assert not {task["run_id"] for task in first_scope["tasks"]} & {
+        item["task_run_id"] for item in candidates
+    }
+    selected = next(
+        item
+        for item in candidates
+        if item["attempt_id"] == failed["state"]["attempt_id"]
+    )
+    attempt = {
+        key: selected[key] for key in ("scope_run_id", "task_run_id", "attempt_id")
+    }
+    artifact = tasks["prepare"]["result_ref"]
+    artifact_path = f"/api/v1/workflow_artifacts/{artifact['artifact_id']}/versions/{artifact['version']}"
+    unauthorized[require_dashboard_user] = lambda: "bob"
+    assert (
+        await client.get(f"/api/v1/workflow_runs/{failed_scope['run_id']}")
+    ).status_code == 404
+    assert (await client.get(artifact_path)).status_code == 404
+    assert (
+        await client.post(f"{path}/debug_forks/preview", json=attempt)
+    ).status_code == 404
+    unauthorized[require_dashboard_user] = lambda: "alice"
+    exact_artifact = await client.get(artifact_path)
+    assert exact_artifact.status_code == 200, exact_artifact.text
+    assert exact_artifact.json()["data"]["content"]["text"] == "bad citations"
+    preview = await client.post(f"{path}/debug_forks/preview", json=attempt)
+    assert preview.status_code == 200, preview.text
+    plan = preview.json()["data"]
+    assert plan["source"]["asset_version"] == 1
+    assert plan["source"]["node_name"] == "Check citations"
+    assert plan["source"]["parent_call"] == {
+        **call,
+        "node_name": "Review citations",
+        "iteration": 2,
+    }
+    assert plan["inputs"][0]["original"] == "bad citations"
+    assert plan["inputs"][0]["evidence"]["artifact"] == artifact
+    assert (await client.get(path)).json()["data"]["cursor"] == baseline["cursor"]
+    definitions["tasks"][1]["name"] = "Published replacement"
+    revised = await client.put(
+        f"{create_path}/{child_id}",
+        json={"definition": definitions, "expected_version": 1},
+    )
+    assert revised.status_code == 200, revised.text
+    assert revised.json()["data"]["version"] == 2
+
+    original = await client.post(
+        f"{path}/debug_forks",
+        json={
+            **attempt,
+            "request_id": "repeat-recorded-failure",
+            "preview_token": plan["preview_token"],
+        },
+    )
+    assert original.status_code == 200, original.text
+    original_fork_id = original.json()["data"]["run_id"]
+    original_fork = (
+        await client.get(f"/api/v1/workflow_runs/{original_fork_id}")
+    ).json()["data"]
+    (replayed_failure,) = original_fork["tasks"]
+    assert (replayed_failure["node_id"], replayed_failure["status"]) == (
+        "check",
+        "failed",
+    )
+    assert replayed_failure["state"]["reason"] == failed["state"]["reason"]
+    assert original_fork["snapshot"]["debug_fork"]["source"] == plan["source"]
+
+    forked = await client.post(
+        f"{path}/debug_forks",
+        json={
+            **attempt,
+            "request_id": "fork-second-round",
+            "preview_token": plan["preview_token"],
+            "replacement": {
+                "name": "text",
+                "value": '{"text":"verified","approved":true}',
+            },
+        },
+    )
+    assert forked.status_code == 200, forked.text
+    fork_id = forked.json()["data"]["run_id"]
+    reopened = (await client.get(f"/api/v1/workflow_runs/{fork_id}")).json()["data"]
+    assert reopened["snapshot"]["debug_fork"]["source"] == plan["source"]
+    (node,) = reopened["tasks"]
+    assert node["node_id"] == "check"
+    assert node["result"] == {"text": "verified", "approved": True}
+    assert reopened["scopes"] == []
+    after = (await client.get(path)).json()["data"]
+    assert after["cursor"] == baseline["cursor"]
+    assert after["scopes"] == baseline["scopes"]

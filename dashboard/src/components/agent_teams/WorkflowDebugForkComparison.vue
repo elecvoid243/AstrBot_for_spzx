@@ -2,8 +2,15 @@
   <section class="fork-comparison mb-4 pa-4" data-testid="debug-fork-comparison">
     <div class="d-flex flex-wrap align-center justify-space-between ga-2 mb-2">
       <h3 class="text-h6">{{ tm("debugFork.title") }}</h3>
-      <v-btn variant="text" :to="sourceLink" data-testid="debug-fork-source">{{ tm("debugFork.openSource") }}</v-btn>
+      <div class="d-flex flex-wrap ga-2">
+        <v-btn v-if="links.parent" variant="text" :to="links.parent" data-testid="debug-fork-parent">{{ tm("debugFork.openParent") }}</v-btn>
+        <v-btn variant="text" :to="links.source" data-testid="debug-fork-source">{{ tm("debugFork.openSource") }}</v-btn>
+      </div>
     </div>
+    <p v-if="source.parent_call" class="text-body-2 mb-1" data-testid="debug-fork-parent-context">
+      {{ tm("debugFork.parentCall", { name: source.parent_call.node_name }) }}
+      <span v-if="source.parent_call.iteration != null">· {{ tm("loops.iteration") }} {{ source.parent_call.iteration }}</span>
+    </p>
     <p class="font-weight-medium">
       {{ source.workflow_name }} · {{ version }} · {{ source.node_name }}
     </p>
@@ -41,13 +48,23 @@ const version = computed(() => source.value.draft_revision == null
   ? tm("debugFork.version", { version: source.value.asset_version ?? '' })
   : tm("debugFork.revision", { revision: source.value.draft_revision }),
 );
-const sourceLink = computed(() => {
-  const { root_run_id, task_run_id, attempt_id } = source.value;
-  const query = { debug_task: task_run_id, debug_attempt: attempt_id };
-  return route.name === "ChatRunConversation"
-    ? { name: "ChatRunConversation", params: { runId: root_run_id }, query }
-    : { name: "AgentTeams", query: { ...query, workflow_run: root_run_id } };
-});
+const links = computed(() => Object.fromEntries(
+  Object.entries({ source: source.value, parent: source.value.parent_call }).map(([kind, location]) => {
+    if (!location) return [kind, undefined];
+    const rootId = source.value.root_run_id;
+    const query = {
+      debug_task: location.task_run_id,
+      debug_attempt: location.attempt_id,
+      ...(kind === "parent" ? { debug_call: "1" } : {}),
+    };
+    return [
+      kind,
+      route.name === "ChatRunConversation"
+        ? { name: "ChatRunConversation", params: { runId: rootId }, query }
+        : { name: "AgentTeams", query: { ...query, workflow_run: rootId } },
+    ];
+  }),
+));
 const results = computed(() => [
   { title: "debugFork.originalResult", data: props.comparison.original },
   { title: "debugFork.forkResult", data: {

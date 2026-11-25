@@ -2102,6 +2102,7 @@ export type WorkflowDebugForkComparison = {
         node_id: string;
         node_name: string;
         iteration: (number) | null;
+        parent_call?: WorkflowDebugForkLocation;
     };
     original: {
         status: string;
@@ -2121,6 +2122,14 @@ export type WorkflowDebugForkComparison = {
             [key: string]: unknown | string;
         };
     }>;
+};
+
+export type WorkflowDebugForkLocation = {
+    scope_run_id: string;
+    task_run_id: string;
+    attempt_id: string;
+    node_name: string;
+    iteration: (number) | null;
 };
 
 export type WorkflowDebugForkPreview = WorkflowDebugForkComparison & {
@@ -7122,6 +7131,25 @@ export type InspectWorkflowDataLineApiV1WorkflowRunsRunIdDataLineGetResponse = (
 });
 
 export type InspectWorkflowDataLineApiV1WorkflowRunsRunIdDataLineGetError = (unknown | HTTPValidationError);
+
+export type ListFailedChildDebugAttemptsApiV1WorkflowRunsRunIdDebugForksFailedChildGetData = {
+    path: {
+        run_id: string;
+    };
+    query: {
+        attempt_id: string;
+        scope_run_id: string;
+        task_run_id: string;
+    };
+};
+
+export type ListFailedChildDebugAttemptsApiV1WorkflowRunsRunIdDebugForksFailedChildGetResponse = ({
+    status: "ok";
+    message?: null;
+    data: Array<WorkflowDebugForkLocation>;
+});
+
+export type ListFailedChildDebugAttemptsApiV1WorkflowRunsRunIdDebugForksFailedChildGetError = (unknown | HTTPValidationError);
 
 export type PreviewWorkflowDebugForkApiV1WorkflowRunsRunIdDebugForksPreviewPostData = {
     body: WorkflowDebugForkAttempt;

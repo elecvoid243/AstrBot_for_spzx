@@ -230,6 +230,16 @@ This path supports the built-in Parse JSON, Map Fields and JSON Text nodes with 
 
 ![Debug fork comparing original and replacement citation inputs and results](/images/agent-workflow-debug-fork-en.jpg)
 
+### Debug a failed fixed child call
+
+In the parent run graph, select the iteration that failed, select the child workflow call, and choose **Debug failed child call**. The graph opens the child scope for that invocation and previews a recorded failed attempt. If several attempts failed, select the node, iteration (when applicable), and attempt in the preview. The preview shows the original fixed version and the inputs and artifact versions recorded for that attempt.
+
+**Start debug fork** runs only the selected internal node. In the comparison, **Open parent call** returns to the parent node and iteration, and **Open source attempt** returns to the child scope and selected attempt.
+
+![Failed child-call preview showing the parent iteration, child version and recorded input](/images/agent-workflow-debug-child-en.jpg)
+
+![Debug fork comparison with links to the exact parent call and child attempt](/images/agent-workflow-debug-child-comparison-en.jpg)
+
 ### Open the same run in Dashboard Chat
 
 In the Bot run workbench, choose **Open in Chat**. Dashboard Chat shows one conversation per root run, even when the same asset runs several times. Open a conversation from the Chat sidebar or its direct link (`#/chat/runs/<root-run-id>`) to see the asset, fixed version, root ID and current state. For draft tests, Chat shows the draft revision. Choose **Open run workbench** to return to that exact run.

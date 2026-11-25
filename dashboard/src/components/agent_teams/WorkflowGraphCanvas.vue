@@ -1406,6 +1406,7 @@ const props = withDefaults(
       signal?: AbortSignal;
       taskId?: string;
       attemptId?: string;
+      focusNode?: boolean;
       loopStatuses: Record<string, string>;
     };
   }>(),
@@ -2412,10 +2413,12 @@ const upstreamState = computed(() => {
 const inspectionNodeNames = computed(() =>
   Object.fromEntries(draft.value.tasks.map((task) => [task.id, task.name])),
 );
-watch([() => props.inspection?.taskId, () => props.inspection?.attemptId], ([taskId]) => {
+watch([() => props.inspection?.taskId, () => props.inspection?.attemptId, () => props.inspection?.focusNode], ([taskId, , focusNode]) => {
   if (!taskId) return;
   const target = props.tasks.find((task) => task.run_id === taskId);
-  selectedEdgeKey.value = dataEdges.value.find((edge) => edge.target === target?.node_id && edge.inspectable)?.id ?? null;
+  selectedEdgeKey.value = focusNode ? null
+    : dataEdges.value.find((edge) => edge.target === target?.node_id && edge.inspectable)?.id ?? null;
+  selectedNode.value = selectedEdgeKey.value ? null : target?.node_id ?? null;
 }, { immediate: true });
 const edges = computed<FlowEdgePayload[]>(() => [
   ...(

@@ -1,5 +1,11 @@
 {
   "debugFork": {
+    "openFailedChild": "Debug failed child call",
+    "viewTask": "View task details",
+    "failedAttempt": "Failed attempt inside this call",
+    "noChildFailures": "This call has no recorded internal failed attempts.",
+    "parentCall": "Parent call {name}",
+    "openParent": "Open parent call",
     "title": "Debug fork",
     "open": "Debug with this input",
     "preview": "Preview debug fork",

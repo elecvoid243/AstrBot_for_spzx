@@ -1078,14 +1078,16 @@ watch(observedStatus, (status) => {
   if (props.conversationRunId && status) emit("run-status", status);
 });
 const runDisplay = ref<'workbench' | 'graph'>('workbench');
-const inspectionFocus = ref<{ taskId: string; attemptId: string } | null>(null);
+const inspectionFocus = ref<{ taskId: string; attemptId: string; call?: boolean } | null>(null);
 watch(
-  [() => selectedRun.value?.run_id, () => route.query.debug_task, () => route.query.debug_attempt],
-  ([runId, taskId, attemptId]) => {
+  [() => selectedRun.value?.run_id, () => route.query.debug_task, () => route.query.debug_attempt, () => route.query.debug_call],
+  ([runId, taskId, attemptId, call]) => {
     if (runId && runId === (props.conversationRunId ?? route.query.workflow_run)
       && typeof taskId === "string" && typeof attemptId === "string") {
-      inspectionFocus.value = { taskId, attemptId };
+      inspectionFocus.value = { taskId, attemptId, call: call === "1" };
       runDisplay.value = "graph";
+    } else {
+      inspectionFocus.value = null;
     }
   },
 );
@@ -1957,7 +1959,7 @@ async function openRun(runId: string) {
     selectedTaskNode.value = snapshot.tasks?.[0]?.run_id ?? null;
     const query = { ...route.query, workflow_run: runId };
     if (route.query.workflow_run !== runId && !props.conversationRunId) {
-      await router.replace({ query: { ...query, debug_task: undefined, debug_attempt: undefined } });
+      await router.replace({ query: { ...query, debug_task: undefined, debug_attempt: undefined, debug_call: undefined } });
     } else {
       await router.replace({ query });
     }

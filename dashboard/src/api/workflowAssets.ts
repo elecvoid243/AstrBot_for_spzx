@@ -10,6 +10,7 @@ import type {
   WorkflowControlRequest,
   WorkflowDataLine,
   WorkflowDebugForkAttempt,
+  WorkflowDebugForkLocation,
   WorkflowDebugForkPreview,
   WorkflowDebugForkRequest,
   WorkflowDebugForkStarted,
@@ -160,6 +161,16 @@ export const workflowAssetsApi = {
   ): Promise<WorkflowDataLine> {
     return (await httpClient.get(
       `/api/v1/workflow_runs/${encodeURIComponent(runId)}/data_line`,
+      { params, signal },
+    )).data.data;
+  },
+  async failedChildDebugAttempts(
+    runId: string,
+    params: WorkflowDebugForkAttempt,
+    signal: AbortSignal,
+  ): Promise<WorkflowDebugForkLocation[]> {
+    return (await httpClient.get(
+      `/api/v1/workflow_runs/${encodeURIComponent(runId)}/debug_forks/failed_child`,
       { params, signal },
     )).data.data;
   },

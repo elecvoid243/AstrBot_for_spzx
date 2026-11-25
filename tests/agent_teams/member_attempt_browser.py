@@ -317,6 +317,17 @@ class MemberAttemptAcceptance(Acceptance):
             root, lambda entry: entry["status"] == "completed"
         )
 
+        # Even the owner can only inspect an individual dynamic member attempt.
+        fork = await self.context.request.post(
+            self.origin + API + f"/workflow_runs/{root}/debug_forks/preview",
+            data={
+                "scope_run_id": root,
+                "task_run_id": a["run_id"],
+                "attempt_id": a["state"]["attempt_id"],
+            },
+        )
+        assert fork.status == 409, await fork.text()
+
         path = f"/workflow_runs/{root}/member_attempt"
         for task, attempt_id, text, ref in (
             (a, previous, "Original instruction for A", None),

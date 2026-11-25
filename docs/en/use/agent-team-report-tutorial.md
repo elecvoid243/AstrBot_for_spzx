@@ -43,6 +43,29 @@ Download the <a href="/examples/multi-document-report/multi-document-report.json
 
 ![The approved report and download action in the narrow Chat view](/images/agent-team-report-chat-narrow-en.png)
 
+## Debug a report that failed citation review
+
+The screenshots use a controlled extension of the report example. Its historical run used **v3** of the report and citation review workflows. Round 1 checked the initial draft and received approval. Round 2 reused the draft and received a superseded but readable PDF through loop feedback. The frozen citation node rejected that exact reference. The original package above covers report preparation and approval. The delivery steps below assume your workflow has an external connector and an archive path.
+
+1. In **Bot → Agent Teams → Runs → Needs attention**, open the failed root run. You can also open its run conversation from **Dashboard Chat**. Expand the execution graph. On the parent graph, choose round 2, select **Review report citations · v3**, and choose **Debug failed child call**. Check that the preview names the round-2 parent call, the child version, and the failed **Check citations** attempt.
+2. In the child scope, select the `pdf` data line into **Check citations** to see the consumed file ID, artifact version, and attempt. Switch to the round-1 child scope to compare the successful read. On the line to **Export an optional appendix**, the inspector shows **Skipped · not read**. Expand **View upstream output** to inspect the draft that was available in that scope.
+3. Start with **Original run** and the default single-node scope. In **Choose an input to edit**, select `pdf`, enter the authorized artifact ID and exact version, then select `citations.pdf`. Check that `draft` is **Reused**, `pdf` is **Replaced**, and the version is still v3. Start the fork and compare the original failure with the successful result.
+4. Reopen the comparison after reloading. **Open parent call** returns to round 2 and **Open source attempt** returns to its child attempt. For a separate check of an edited workflow, open the preview again, choose **Current draft**, and verify the displayed revision before starting a single-node fork. The example's current draft explicitly accepts both known references under its revised output contract.
+
+![The skipped appendix data line and the draft available upstream](/images/report-debug-skipped-en.png)
+
+![The frozen v3 fork preview with the selected PDF and first draft](/images/report-debug-preview-en.png)
+
+### Verify approval and delivery
+
+1. Open the original failed attempt again and choose **Run downstream from this node**. Review the frozen scope and its inputs, then select the corrected PDF. Start the fork and open **Run workspace → Inbox & artifacts**. Review and approve the new exact artifact. The first-round approval is still recorded against its own artifact.
+2. Open **External write preview** and verify the destination and parameters. To test the actual connector, choose **Execute real write** once and check the execution ID and receipt after reopening the branch. The example's isolated connector recorded one delivery and the archive record read its returned count of `78`.
+3. For a rehearsal, start another downstream fork, approve that branch's artifact, and choose **Continue with test value** at the delivery preview. In the example, enter `{"record":{"count":192}}`, then choose **Submit simulated receipt**. Confirm from the archive record's input line that it read `192` with simulated provenance. The next archive write has its own preview and remains paused. The delivery ledger has no additional entry from the rehearsal.
+
+![External write preview with the report destination and parameters](/images/report-debug-delivery-en.png)
+
+The [run workbench guide](./agent-team-workflows.md#debug-a-historical-node-or-its-downstream-path) covers additional scopes, recovery, and read-only inspection of autonomous member attempts. To reproduce the controlled scenario from a checkout with the built Dashboard and Playwright Chromium, run `python -m tests.agent_teams.report_debug_browser --evidence data/report-debug-local` with an unused evidence directory.
+
 ## Previous entry points
 
 | Previous entry | Current entry |

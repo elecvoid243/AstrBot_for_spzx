@@ -5128,7 +5128,7 @@ export const getRunApiV1WorkflowRunsRunIdGet = <ThrowOnError extends boolean = f
 
 /**
  * Inspect a workflow data line
- * Read the frozen value and provenance for one consumer attempt using an authorized Dashboard session.
+ * Read one consumer attempt using an authorized Dashboard session. Skipped or unread inputs may include a separate upstream output. That output does not establish a consumer read.
  */
 export const inspectWorkflowDataLineApiV1WorkflowRunsRunIdDataLineGet = <ThrowOnError extends boolean = false>(options: OptionsLegacyParser<InspectWorkflowDataLineApiV1WorkflowRunsRunIdDataLineGetData, ThrowOnError>) => {
     return (options?.client ?? client).get<InspectWorkflowDataLineApiV1WorkflowRunsRunIdDataLineGetResponse, InspectWorkflowDataLineApiV1WorkflowRunsRunIdDataLineGetError, ThrowOnError>({
@@ -5148,7 +5148,8 @@ export const listFailedChildDebugAttemptsApiV1WorkflowRunsRunIdDebugForksFailedC
 };
 
 /**
- * Preview a single-node debug fork
+ * Preview a historical workflow debug fork
+ * Resolve a recorded attempt and its frozen definition. The default scope is the selected node. Downstream and whole-child scopes use the frozen graph. Current draft selection is available for the single-node scope.
  */
 export const previewWorkflowDebugForkApiV1WorkflowRunsRunIdDebugForksPreviewPost = <ThrowOnError extends boolean = false>(options: OptionsLegacyParser<PreviewWorkflowDebugForkApiV1WorkflowRunsRunIdDebugForksPreviewPostData, ThrowOnError>) => {
     return (options?.client ?? client).post<PreviewWorkflowDebugForkApiV1WorkflowRunsRunIdDebugForksPreviewPostResponse, PreviewWorkflowDebugForkApiV1WorkflowRunsRunIdDebugForksPreviewPostError, ThrowOnError>({
@@ -5158,7 +5159,8 @@ export const previewWorkflowDebugForkApiV1WorkflowRunsRunIdDebugForksPreviewPost
 };
 
 /**
- * Start a single-node debug fork
+ * Start a historical workflow debug fork
+ * Create an independent run from the confirmed attempt, definition, scope and inputs. Managed file replacements must specify the exact artifact version and attachment, and are checked against the current user's access.
  */
 export const startWorkflowDebugForkApiV1WorkflowRunsRunIdDebugForksPost = <ThrowOnError extends boolean = false>(options: OptionsLegacyParser<StartWorkflowDebugForkApiV1WorkflowRunsRunIdDebugForksPostData, ThrowOnError>) => {
     return (options?.client ?? client).post<StartWorkflowDebugForkApiV1WorkflowRunsRunIdDebugForksPostResponse, StartWorkflowDebugForkApiV1WorkflowRunsRunIdDebugForksPostError, ThrowOnError>({
@@ -5180,7 +5182,7 @@ export const inspectWorkflowMemberAttemptApiV1WorkflowRunsRunIdMemberAttemptGet 
 
 /**
  * Confirm Workflow Debug Write
- * Authorize the exact previewed connector call in an owned debug fork.
+ * Authorize the exact previewed connector call in an owned debug fork. The saved authorization can precede execution. Inspect the durable call outcome and receipt before reporting successful delivery.
  */
 export const confirmWorkflowDebugWriteApiV1WorkflowRunsRunIdToolCallsRecordIdExecutePost = <ThrowOnError extends boolean = false>(options: OptionsLegacyParser<ConfirmWorkflowDebugWriteApiV1WorkflowRunsRunIdToolCallsRecordIdExecutePostData, ThrowOnError>) => {
     return (options?.client ?? client).post<ConfirmWorkflowDebugWriteApiV1WorkflowRunsRunIdToolCallsRecordIdExecutePostResponse, ConfirmWorkflowDebugWriteApiV1WorkflowRunsRunIdToolCallsRecordIdExecutePostError, ThrowOnError>({
@@ -5191,7 +5193,7 @@ export const confirmWorkflowDebugWriteApiV1WorkflowRunsRunIdToolCallsRecordIdExe
 
 /**
  * Simulate Workflow Debug Write
- * Supply a test result for the exact previewed call and continue the owned debug fork.
+ * Supply a contract-checked test result for the exact previewed call in an owned debug fork. This records simulated provenance and can resume downstream tasks without invoking that connector call. A subsequent external write requires its own decision.
  */
 export const simulateWorkflowDebugWriteApiV1WorkflowRunsRunIdToolCallsRecordIdSimulatePost = <ThrowOnError extends boolean = false>(options: OptionsLegacyParser<SimulateWorkflowDebugWriteApiV1WorkflowRunsRunIdToolCallsRecordIdSimulatePostData, ThrowOnError>) => {
     return (options?.client ?? client).post<SimulateWorkflowDebugWriteApiV1WorkflowRunsRunIdToolCallsRecordIdSimulatePostResponse, SimulateWorkflowDebugWriteApiV1WorkflowRunsRunIdToolCallsRecordIdSimulatePostError, ThrowOnError>({

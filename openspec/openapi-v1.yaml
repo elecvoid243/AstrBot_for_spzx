@@ -9508,7 +9508,10 @@ paths:
       tags:
       - Agent Teams workflows
       summary: Inspect a workflow data line
-      description: Read the frozen value and provenance for one consumer attempt using an authorized Dashboard session.
+      description: >-
+        Read one consumer attempt using an authorized Dashboard session. Skipped
+        or unread inputs may include a separate upstream output. That output
+        does not establish a consumer read.
       operationId: inspect_workflow_data_line_api_v1_workflow_runs__run_id__data_line_get
       parameters:
       - name: run_id
@@ -9612,7 +9615,11 @@ paths:
   /api/v1/workflow_runs/{run_id}/debug_forks/preview:
     post:
       tags: [Agent Teams workflows]
-      summary: Preview a single-node debug fork
+      summary: Preview a historical workflow debug fork
+      description: >-
+        Resolve a recorded attempt and its frozen definition. The default scope
+        is the selected node. Downstream and whole-child scopes use the frozen
+        graph. Current draft selection is available for the single-node scope.
       operationId: preview_workflow_debug_fork_api_v1_workflow_runs__run_id__debug_forks_preview_post
       parameters:
       - name: run_id
@@ -9655,7 +9662,11 @@ paths:
   /api/v1/workflow_runs/{run_id}/debug_forks:
     post:
       tags: [Agent Teams workflows]
-      summary: Start a single-node debug fork
+      summary: Start a historical workflow debug fork
+      description: >-
+        Create an independent run from the confirmed attempt, definition, scope
+        and inputs. Managed file replacements must specify the exact artifact
+        version and attachment, and are checked against the current user's access.
       operationId: start_workflow_debug_fork_api_v1_workflow_runs__run_id__debug_forks_post
       parameters:
       - name: run_id
@@ -9750,7 +9761,10 @@ paths:
       tags:
       - Agent Teams workflows
       summary: Confirm Workflow Debug Write
-      description: Authorize the exact previewed connector call in an owned debug fork.
+      description: >-
+        Authorize the exact previewed connector call in an owned debug fork.
+        The saved authorization can precede execution. Inspect the durable call
+        outcome and receipt before reporting successful delivery.
       operationId: confirm_workflow_debug_write_api_v1_workflow_runs__run_id__tool_calls__record_id__execute_post
       parameters:
       - {name: run_id, in: path, required: true, schema: {type: string}}
@@ -9763,12 +9777,11 @@ paths:
               $ref: '#/components/schemas/DebugWriteConfirmation'
       responses:
         '200':
-          description: Current task detail after persisting the confirmation
-          content:
-            application/json:
-              schema: {}
+          $ref: '#/components/responses/WorkflowDebugWriteDecision'
         '400':
           description: Frozen connector definition is unavailable or incompatible
+        '401':
+          description: Dashboard session required
         '403':
           description: Connector access has been revoked
         '404':
@@ -9786,7 +9799,11 @@ paths:
       tags:
       - Agent Teams workflows
       summary: Simulate Workflow Debug Write
-      description: Supply a test result for the exact previewed call and continue the owned debug fork.
+      description: >-
+        Supply a contract-checked test result for the exact previewed call in an
+        owned debug fork. This records simulated provenance and can resume
+        downstream tasks without invoking that connector call. A subsequent
+        external write requires its own decision.
       operationId: simulate_workflow_debug_write_api_v1_workflow_runs__run_id__tool_calls__record_id__simulate_post
       parameters:
       - {name: run_id, in: path, required: true, schema: {type: string}}
@@ -9799,12 +9816,11 @@ paths:
               $ref: '#/components/schemas/DebugWriteSimulation'
       responses:
         '200':
-          description: Current task detail after persisting the simulated receipt
-          content:
-            application/json:
-              schema: {}
+          $ref: '#/components/responses/WorkflowDebugWriteDecision'
         '400':
           description: Frozen connector definition is unavailable or incompatible
+        '401':
+          description: Dashboard session required
         '403':
           description: Connector access has been revoked
         '404':
@@ -11024,6 +11040,25 @@ components:
       bearerFormat: JWT
 
   responses:
+    WorkflowDebugWriteDecision:
+      description: Current task detail after saving the exact write decision.
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [status, message, data]
+            properties:
+              status: {const: ok}
+              message: {type: 'null'}
+              data:
+                type: object
+                additionalProperties: true
+                required: [run_id, status, state]
+                properties:
+                  run_id: {type: string}
+                  status: {type: string}
+                  state:
+                    $ref: '#/components/schemas/WorkflowObservedTaskState'
     WorkflowValidationFailure:
       description: Workflow validation failed
       content:

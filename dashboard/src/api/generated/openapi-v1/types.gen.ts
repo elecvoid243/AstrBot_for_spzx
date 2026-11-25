@@ -7384,7 +7384,16 @@ export type ConfirmWorkflowDebugWriteApiV1WorkflowRunsRunIdToolCallsRecordIdExec
     };
 };
 
-export type ConfirmWorkflowDebugWriteApiV1WorkflowRunsRunIdToolCallsRecordIdExecutePostResponse = (unknown);
+export type ConfirmWorkflowDebugWriteApiV1WorkflowRunsRunIdToolCallsRecordIdExecutePostResponse = ({
+    status: "ok";
+    message: null;
+    data: {
+        run_id: string;
+        status: string;
+        state: WorkflowObservedTaskState;
+        [key: string]: unknown | string | WorkflowObservedTaskState;
+    };
+});
 
 export type ConfirmWorkflowDebugWriteApiV1WorkflowRunsRunIdToolCallsRecordIdExecutePostError = (unknown | HTTPValidationError);
 
@@ -7396,7 +7405,16 @@ export type SimulateWorkflowDebugWriteApiV1WorkflowRunsRunIdToolCallsRecordIdSim
     };
 };
 
-export type SimulateWorkflowDebugWriteApiV1WorkflowRunsRunIdToolCallsRecordIdSimulatePostResponse = (unknown);
+export type SimulateWorkflowDebugWriteApiV1WorkflowRunsRunIdToolCallsRecordIdSimulatePostResponse = ({
+    status: "ok";
+    message: null;
+    data: {
+        run_id: string;
+        status: string;
+        state: WorkflowObservedTaskState;
+        [key: string]: unknown | string | WorkflowObservedTaskState;
+    };
+});
 
 export type SimulateWorkflowDebugWriteApiV1WorkflowRunsRunIdToolCallsRecordIdSimulatePostError = (unknown);
 

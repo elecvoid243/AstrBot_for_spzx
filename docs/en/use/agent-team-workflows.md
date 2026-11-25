@@ -212,6 +212,14 @@ Waits for predecessors, capacity or people show their reasons; a human wait bloc
 
 Closing or refreshing the page does not cancel execution. Reopen the run to read saved process and results. Permission to answer a todo does not grant the run owner's process permissions.
 
+### Inspect data on the run canvas
+
+In the Bot run workbench or its Dashboard Chat run conversation, choose **Expand execution graph (read-only)** and select a named dashed data line. The inspector shows the source and target ports, the declared input type, the value read by that consumer attempt and any recorded exact source. Use the scope and iteration selectors above the graph or the attempt selector in the inspector to compare records.
+
+In the process panel, expand **Attempts** and select **Inspect data lines for this attempt** on the failed attempt to open its scope and round directly. **Read an explicit null**, **Not read**, **Skipped · not read**, and **Read record unavailable** describe different cases. If the upstream node produced an output for the selected line, expand **View upstream output** to check it separately.
+
+![Data line inspector showing the failed second-round read and its artifact version](/images/agent-workflow-data-line-en.jpg)
+
 ### Open the same run in Dashboard Chat
 
 In the Bot run workbench, choose **Open in Chat**. Dashboard Chat shows one conversation per root run, even when the same asset runs several times. Open a conversation from the Chat sidebar or its direct link (`#/chat/runs/<root-run-id>`) to see the asset, fixed version, root ID and current state. For draft tests, Chat shows the draft revision. Choose **Open run workbench** to return to that exact run.

@@ -3648,6 +3648,327 @@ class WorkflowService:
             ],
         }
 
+    async def inspect_data_line(
+        self,
+        username: str,
+        run_id: str,
+        scope_run_id: str,
+        task_run_id: str,
+        input_name: str,
+        attempt_id: str | None,
+    ) -> dict:
+        """Read one bound input from a persisted consumer attempt.
+
+        Args:
+            username: Authenticated Dashboard owner.
+            run_id: Root run containing the selected scope.
+            scope_run_id: Exact workflow invocation shown on the canvas.
+            task_run_id: Exact consumer instance, including its round.
+            input_name: Named input from the frozen workflow definition.
+            attempt_id: Selected attempt, or the current attempt if omitted.
+
+        Returns:
+            The observed read, its sources and a separately identified upstream value.
+
+        Raises:
+            RoleAssetError: An identity, scope, attempt or binding is unavailable.
+        """
+        async with self.db.get_db() as session:
+            if self.db.engine.dialect.name == "sqlite":
+                await session.execute(text("BEGIN"))
+            root = await session.get(AgentWorkflowRun, run_id)
+            scope = await session.get(AgentWorkflowRun, scope_run_id)
+            task = await session.get(AgentWorkflowRun, task_run_id)
+            if (
+                root is None
+                or scope is None
+                or task is None
+                or any(row.owner_username != username for row in (root, scope, task))
+                or root.snapshot.get("root_run_id") != run_id
+                or scope.snapshot.get("root_run_id") != run_id
+                or task.snapshot.get("parent_run_id") != scope_run_id
+                or task.snapshot.get("root_run_id") != run_id
+                or scope.snapshot.get("engine") != "graph_v2"
+            ):
+                raise RoleAssetError("Data line not found", status=404)
+
+            current_id = task.state["attempt_id"]
+            attempt_data = col(AgentWorkflowAttempt.data)
+            archived = {
+                identity: (status, previous)
+                for identity, status, previous in (
+                    await session.execute(
+                        select(
+                            AgentWorkflowAttempt.attempt_id,
+                            attempt_data["status"].as_string(),
+                            attempt_data["state"]["previous_attempt_id"].as_string(),
+                        ).where(AgentWorkflowAttempt.run_id == task_run_id)
+                    )
+                ).all()
+            }
+            attempts = [{"attempt_id": current_id, "status": task.status}]
+            previous_id = task.state.get("previous_attempt_id")
+            seen = {current_id}
+            while previous_id in archived and previous_id not in seen:
+                saved_status, older_id = archived[previous_id]
+                attempts.append({"attempt_id": previous_id, "status": saved_status})
+                seen.add(previous_id)
+                previous_id = older_id
+            attempt_id = attempt_id or current_id
+            if attempt_id == current_id:
+                snapshot, state, status = task.snapshot, task.state, task.status
+            else:
+                attempt = await session.get(AgentWorkflowAttempt, attempt_id)
+                if attempt is None or attempt.run_id != task_run_id:
+                    raise RoleAssetError("Attempt not found", status=404)
+                snapshot = attempt.data.get("snapshot") or {}
+                state = attempt.data.get("state") or {}
+                status = attempt.data["status"]
+
+            definition = _run_definition(scope)
+            node_id = task.snapshot.get("node_id")
+            node = next(
+                (item for item in definition["tasks"] if item["id"] == node_id), None
+            )
+            if node is None:
+                raise RoleAssetError("Data line not found", status=404)
+            loop_id = task.snapshot.get("loop_id")
+            iteration = task.snapshot.get("iteration")
+            loop = next(
+                (item for item in definition.get("loops", []) if item["id"] == loop_id),
+                None,
+            )
+            feedback = (
+                next(
+                    (
+                        item
+                        for item in (loop or {}).get("feedback", [])
+                        if item["target"] == node_id and item["input"] == input_name
+                    ),
+                    None,
+                )
+                if iteration and iteration > 1
+                else None
+            )
+            binding = node.get("inputs", {}).get(input_name) or {}
+            source_id = feedback["source"] if feedback else binding.get("task_id")
+            scope_input = None if feedback else binding.get("input")
+            trial_source = (snapshot.get("trial_input_sources") or {}).get(input_name)
+            if trial_source:
+                source_id = trial_source["task_id"]
+                scope_input = None
+            if source_id is None and scope_input is None:
+                raise RoleAssetError("Data line not found", status=404)
+            field = (
+                trial_source["field"]
+                if trial_source
+                else feedback["field"]
+                if feedback
+                else scope_input
+                if scope_input is not None
+                else binding.get("field", "text")
+            )
+            contract = task_input_contract(
+                node.get("input_contract"),
+                node.get("transform"),
+                dispatch=bool(node.get("dispatch")),
+            )
+            port_field = input_name
+            if (node.get("control") or {}).get("kind") == "condition":
+                source_node = next(
+                    (item for item in definition["tasks"] if item["id"] == source_id),
+                    None,
+                )
+                contract = (
+                    source_node.get("output_contract")
+                    if source_node
+                    else definition.get("input_contract")
+                )
+                port_field = (
+                    "text" if scope_input is not None and contract is None else field
+                )
+            port = {"type": "string"}
+            if contract is not None or port_field != input_name:
+                try:
+                    port = field_schema(contract, port_field, structured=True)
+                except ValueError:
+                    port = {}
+            data = {
+                "scope_run_id": scope_run_id,
+                "task_run_id": task_run_id,
+                "iteration": iteration,
+                "attempt_id": attempt_id,
+                "task_status": status,
+                "attempts": attempts,
+                "source": {"node_id": source_id or "__input", "port": field},
+                "target": {
+                    "node_id": node_id,
+                    "port": input_name,
+                    "type": port.get("type"),
+                    **({"format": port["format"]} if "format" in port else {}),
+                },
+                "read_status": "missing",
+            }
+            upstream_ref = None
+            if source_id and not trial_source:
+                upstream = await self._inspect_upstream_port(
+                    session,
+                    scope,
+                    task,
+                    source_id,
+                    field,
+                    previous_round=bool(feedback),
+                )
+                if upstream is not None:
+                    data["upstream"] = upstream
+                    upstream_ref = upstream.get("artifact")
+
+            if status == "skipped":
+                data["read_status"] = "skipped"
+            elif status in {"pending", "dependency_failed"} or (
+                not state.get("execution_id")
+                and (
+                    status == "cancelled"
+                    and not snapshot.get("input_reads")
+                    or status in {"running", "interrupted", "cancelled"}
+                    and state.get("retry_pending")
+                )
+            ):
+                data["read_status"] = "not_read"
+            else:
+                inputs = snapshot.get("inputs") or {}
+                reads = snapshot.get("input_reads")
+                evidence = (snapshot.get("port_sources") or {}).get(input_name, {})
+                recorded = (
+                    input_name in reads
+                    if reads is not None
+                    else (
+                        bool(evidence.get("artifact") or trial_source)
+                        or (
+                            "selected_fields" in snapshot
+                            and (
+                                scope_input in scope.snapshot.get("inputs", {})
+                                or (
+                                    upstream_ref is not None
+                                    and field
+                                    in snapshot["selected_fields"].get(
+                                        upstream_ref["artifact_id"], []
+                                    )
+                                )
+                            )
+                        )
+                    )
+                )
+                if recorded and input_name in inputs:
+                    data["read_status"] = (
+                        "null" if inputs[input_name] is None else "read"
+                    )
+                    data["value"] = inputs[input_name]
+                    exact = {
+                        **((reads or {}).get(input_name) or {}),
+                        **(trial_source or {}),
+                        **evidence,
+                    }
+                    if (
+                        reads is None
+                        and upstream_ref is not None
+                        and "artifact" not in exact
+                    ):
+                        exact["artifact"] = upstream_ref
+                    if exact:
+                        data["evidence"] = exact
+                elif reads is not None and not recorded:
+                    data["read_status"] = "not_read"
+            return data
+
+    async def _inspect_upstream_port(
+        self,
+        session: AsyncSession,
+        scope: AgentWorkflowRun,
+        consumer: AgentWorkflowRun,
+        source_id: str,
+        field: str,
+        *,
+        previous_round: bool,
+    ) -> dict | None:
+        """Read a completed producer separately from the consumer's attempt.
+
+        Args:
+            session: Transaction holding the authorized run snapshot.
+            scope: Frozen workflow invocation shared by the producer and consumer.
+            consumer: Consumer instance that determines the relevant round.
+            source_id: Producer node ID from the selected data binding.
+            field: Bound output field or intrinsic reference port.
+            previous_round: Select the preceding round for a feedback binding.
+
+        Returns:
+            The available upstream value and exact artifact reference, if saved.
+        """
+        source_loop = next(
+            (
+                loop["id"]
+                for loop in scope.snapshot["definition"].get("loops", [])
+                if source_id in loop["body"]
+            ),
+            None,
+        )
+        loop = scope.state.get("loops", {}).get(source_loop, {})
+        if source_loop and source_loop == consumer.snapshot.get("loop_id"):
+            iteration = consumer.snapshot.get("iteration")
+            if iteration is None:
+                return None
+            if previous_round:
+                iteration -= 1
+            source_identity = next(
+                (
+                    entry["task_runs"].get(source_id)
+                    for entry in loop.get("iterations", [])
+                    if entry["iteration"] == iteration
+                ),
+                None,
+            )
+        elif not source_loop or loop.get("status") in {"passed", "exhausted"}:
+            # A separate upstream loop has a stable final round at this point.
+            source_identity = _current_task_runs(scope).get(source_id)
+        else:
+            return None
+        if not source_identity:
+            return None
+        source = await session.get(AgentWorkflowRun, source_identity)
+        if (
+            source is None
+            or source.owner_username != scope.owner_username
+            or source.snapshot.get("parent_run_id") != scope.run_id
+            or source.status != "completed"
+            or source.result is None
+        ):
+            return None
+
+        child_reference = source.state.get("child_result_ref")
+        reference = child_reference or {"artifact_id": source.run_id, "version": 1}
+        upstream_ref = None
+        try:
+            origin, _ = await self._artifact_source(
+                session, scope.owner_username, reference
+            )
+        except RoleAssetError:
+            pass
+        else:
+            # A fixed call may directly publish its child's exact reference.
+            if origin.run_id == source.run_id or (
+                child_reference
+                and origin.snapshot.get("root_run_id") == scope.snapshot["root_run_id"]
+            ):
+                upstream_ref = reference
+        upstream = port_value(source.result, field, upstream_ref)
+        if upstream is MISSING_PORT_VALUE:
+            return None
+        return {
+            "value": upstream,
+            "source_run_id": source.run_id,
+            **({"artifact": upstream_ref} if upstream_ref is not None else {}),
+        }
+
     async def get_run(
         self,
         username: str,
@@ -8434,6 +8755,13 @@ class WorkflowService:
                     "task": task["task"],
                     "iteration_inputs": feedback_inputs.get(node_id, {}),
                 }
+                for key in (
+                    "input_reads",
+                    "port_sources",
+                    "selected_fields",
+                    "trial_input_sources",
+                ):
+                    snapshot.pop(key, None)
                 if snapshot.get("graph_task") and snapshot.get("member"):
                     session_id = uuid.uuid4().hex
                     snapshot["member"].update(
@@ -9915,11 +10243,15 @@ class WorkflowService:
                                 control = task["control"]
                                 if control["kind"] == "condition":
                                     ref = task["inputs"]["value"]
+                                    evidence = {}
                                     iteration_input = row.snapshot.get(
                                         "iteration_inputs", {}
                                     ).get("value")
                                     if iteration_input is not None:
                                         value = iteration_input["raw_value"]
+                                        evidence["artifact"] = iteration_input[
+                                            "reference"
+                                        ]
                                     elif task["id"] == root.snapshot.get(
                                         "trial", {}
                                     ).get("node_id") and "value" in root.snapshot.get(
@@ -9931,6 +10263,9 @@ class WorkflowService:
                                         value = root.snapshot["trial"]["sources"][
                                             fixed["task_id"]
                                         ]["content"]
+                                        evidence["artifact"] = root.snapshot["trial"][
+                                            "sources"
+                                        ][fixed["task_id"]]["artifact"]
                                         for name in fixed["field"].split("."):
                                             value = value[name]
                                     elif ref.get("input") is not None:
@@ -9945,6 +10280,9 @@ class WorkflowService:
                                         value = root.snapshot["trial"]["sources"][
                                             ref["task_id"]
                                         ]["content"]
+                                        evidence["artifact"] = root.snapshot["trial"][
+                                            "sources"
+                                        ][ref["task_id"]]["artifact"]
                                         for name in ref["field"].split("."):
                                             value = value[name]
                                     else:
@@ -9973,8 +10311,23 @@ class WorkflowService:
                                             progress = True
                                             continue
                                         value = source.result
+                                        evidence = {
+                                            "source_run_id": source.run_id,
+                                            "artifact": source.state.get(
+                                                "child_result_ref"
+                                            )
+                                            or {
+                                                "artifact_id": source.run_id,
+                                                "version": 1,
+                                            },
+                                        }
                                         for name in ref["field"].split("."):
                                             value = value[name]
+                                    row.snapshot = {
+                                        **row.snapshot,
+                                        "inputs": {"value": value},
+                                        "input_reads": {"value": evidence},
+                                    }
                                     row.result = {
                                         "matched": matches_condition(value, control)
                                     }
@@ -10260,6 +10613,9 @@ class WorkflowService:
                                 if retrying
                                 else {}
                             )
+                            input_reads = (
+                                row.snapshot.get("input_reads") if retrying else {}
+                            )
                             trial_input_sources = (
                                 dict(row.snapshot.get("trial_input_sources", {}))
                                 if retrying
@@ -10288,6 +10644,7 @@ class WorkflowService:
                                             "artifact": fixed["reference"],
                                             "field": fixed["field"],
                                         }
+                                    input_reads[key] = {"artifact": fixed["reference"]}
                                     if fixed["reference"] not in refs:
                                         refs.append(fixed["reference"])
                                     if row.snapshot.get("graph_task"):
@@ -10333,6 +10690,9 @@ class WorkflowService:
                                             if node_contract or isinstance(value, str)
                                             else json.dumps(value, ensure_ascii=False)
                                         )
+                                        input_reads[key] = {
+                                            "artifact": boundary["artifact"]
+                                        }
                                         if (
                                             node_contract
                                             and boundary.get("projected")
@@ -10350,6 +10710,9 @@ class WorkflowService:
                                     supplied = root.snapshot["inputs"]
                                     if not node_contract or ref["input"] in supplied:
                                         inputs[key] = supplied[ref["input"]]
+                                        input_reads[key] = {
+                                            "source_run_id": root.run_id
+                                        }
                                     inherited = root.snapshot.get(
                                         "trial_inputs", {}
                                     ).get(ref["input"])
@@ -10377,6 +10740,10 @@ class WorkflowService:
                                         )
                                         if value is not MISSING_PORT_VALUE:
                                             inputs[key] = value
+                                            input_reads[key] = {
+                                                "artifact": pinned,
+                                                "source_run_id": source.run_id,
+                                            }
                                             port_sources[key] = {
                                                 "artifact": pinned,
                                                 "field": ref["field"],
@@ -10390,6 +10757,10 @@ class WorkflowService:
                                             if isinstance(value, str)
                                             else json.dumps(value, ensure_ascii=False)
                                         )
+                                        input_reads[key] = {
+                                            "artifact": pinned,
+                                            "source_run_id": source.run_id,
+                                        }
                                     if pinned not in refs:
                                         refs.append(pinned)
                                     if row.snapshot.get("graph_task"):
@@ -10404,6 +10775,15 @@ class WorkflowService:
                                 }
                             elif dispatch := task.get("dispatch"):
                                 path = f"definition.tasks.{task_indexes[task['id']]}.inputs"
+                                row.snapshot = {
+                                    **row.snapshot,
+                                    "inputs": inputs,
+                                    "input_artifacts": refs,
+                                    "selected_fields": selected_fields,
+                                    "trial_input_sources": trial_input_sources,
+                                    "port_sources": port_sources,
+                                    "input_reads": input_reads,
+                                }
                                 try:
                                     items = normalize_port_inputs(
                                         DISPATCH_INPUT, inputs, path
@@ -10434,14 +10814,6 @@ class WorkflowService:
                                         "issues": exc.fields,
                                     }
                                 else:
-                                    row.snapshot = {
-                                        **row.snapshot,
-                                        "inputs": inputs,
-                                        "input_artifacts": refs,
-                                        "selected_fields": selected_fields,
-                                        "trial_input_sources": trial_input_sources,
-                                        "port_sources": port_sources,
-                                    }
                                     if child_id:
                                         row.status = "waiting_child"
                                         row.state = {
@@ -10563,8 +10935,17 @@ class WorkflowService:
                                     "selected_fields": selected_fields,
                                     "trial_input_sources": trial_input_sources,
                                     "port_sources": port_sources,
+                                    "input_reads": input_reads,
                                 }
                             elif child_call:
+                                row.snapshot = {
+                                    **row.snapshot,
+                                    "inputs": inputs,
+                                    "input_artifacts": refs,
+                                    "trial_input_sources": trial_input_sources,
+                                    "port_sources": port_sources,
+                                    "input_reads": input_reads,
+                                }
                                 frozen = copy.deepcopy(
                                     root.snapshot["allowed_workflows"][
                                         f"{child_call['asset_id']}:{child_call['version']}"
@@ -10639,6 +11020,7 @@ class WorkflowService:
                                         "input_artifacts": refs,
                                         "trial_input_sources": trial_input_sources,
                                         "port_sources": port_sources,
+                                        "input_reads": input_reads,
                                         **(
                                             {"typed_child_call": True}
                                             if node_contract
@@ -10717,6 +11099,7 @@ class WorkflowService:
                                     "input_artifacts": refs,
                                     "selected_fields": selected_fields,
                                     "trial_input_sources": trial_input_sources,
+                                    "input_reads": input_reads,
                                 }
                                 row.status = "running"
                                 occupied.add(member_id)

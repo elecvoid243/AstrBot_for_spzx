@@ -8,6 +8,7 @@ import type {
   ArtifactRevisionRequest,
   ToolResolutionRequest,
   WorkflowControlRequest,
+  WorkflowDataLine,
   WorkflowRerunRequest,
   WorkflowRetryRequest,
   HumanAnswerRequest,
@@ -147,6 +148,16 @@ export const workflowAssetsApi = {
     return (
       await httpClient.get(`/api/v1/workflow_runs/${encodeURIComponent(runId)}`, { signal })
     ).data.data;
+  },
+  async dataLine(
+    runId: string,
+    params: { scope_run_id: string; task_run_id: string; input_name: string; attempt_id?: string },
+    signal: AbortSignal,
+  ): Promise<WorkflowDataLine> {
+    return (await httpClient.get(
+      `/api/v1/workflow_runs/${encodeURIComponent(runId)}/data_line`,
+      { params, signal },
+    )).data.data;
   },
   async runHistoryPage(runId: string, taskRunId: string, kind: "events" | "messages" | "usage" | "attempts", before?: string | null, signal?: AbortSignal) {
     return (await httpClient.get(

@@ -1,4 +1,23 @@
 {
+  "inspection": {
+    "title": "数据线检查器",
+    "hint": "选择具名数据线，查看消费节点实际读取的值。",
+    "close": "关闭数据线检查器",
+    "openAttempt": "检查这次尝试的数据线",
+    "currentRounds": "当前轮次",
+    "loading": "正在读取所选尝试…",
+    "sourceRun": "来源任务运行",
+    "sourceArtifact": "来源产物",
+    "reference": "精确引用",
+    "upstream": "查看上游产物",
+    "states": {
+      "read": "已读取",
+      "null": "已读取显式 null",
+      "not_read": "未读取",
+      "skipped": "已跳过 · 未读取",
+      "missing": "缺少读取记录"
+    }
+  },
   "starterTeam": {
     "title": "发布说明编辑部",
     "description": "主编把写作任务派给编辑，核对稿件后交付面向用户的发布说明。",

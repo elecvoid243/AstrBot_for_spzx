@@ -268,9 +268,13 @@
       <p class="process-text px-4 py-2" data-testid="current-attempt">
         {{ tm("v2.attempt") }} · {{ run.state.attempt_id ?? tm("progress.sourceAbsent") }}
       </p>
+      <v-btn v-if="inspectable && run.state.attempt_id" data-testid="inspect-current-attempt" size="small" variant="text"
+        @click="emit('inspect-attempt', run.state.attempt_id)">{{ tm("inspection.openAttempt") }}</v-btn>
       <details v-for="attempt in run.attempts ?? []" :key="attempt.attempt_id" class="px-4 py-2" data-testid="saved-attempt">
         <summary>{{ attempt.attempt_id }} · {{ getRaw(`v2.states.${attempt.status}`) ?? attempt.status }}</summary>
         <p v-if="attempt.state?.reason" class="process-text">{{ attempt.state.reason }}</p>
+        <v-btn v-if="inspectable" data-testid="inspect-saved-attempt" size="small" variant="text"
+          @click="emit('inspect-attempt', attempt.attempt_id)">{{ tm("inspection.openAttempt") }}</v-btn>
         <p class="text-caption">{{ tm("graph.inputs") }}</p>
         <pre v-if="attempt.snapshot?.inputs != null" class="process-text">{{ JSON.stringify(attempt.snapshot.inputs, null, 2) }}</pre>
         <p v-else class="text-caption">{{ tm("progress.sourceAbsent") }}</p>
@@ -321,7 +325,7 @@ import { extractApiError } from "@/utils/extractApiError";
 import { useModuleI18n } from "@/i18n/composables";
 import WorkflowToolResolution from "./WorkflowToolResolution.vue";
 import type { ToolResolutionRequest } from "@/api/generated/openapi-v1";
-const props = defineProps<{ run: any; busy?: boolean; readonly?: boolean; signal?: AbortSignal }>();
+const props = defineProps<{ run: any; busy?: boolean; readonly?: boolean; signal?: AbortSignal; inspectable?: boolean }>();
 const customizer = useCustomizerStore();
 const isDark = computed(() => customizer.isDark);
 const selectedFields = computed<Record<string, string[]>>(() => props.run.snapshot?.selected_fields ?? {});
@@ -459,6 +463,7 @@ const otherRecords = computed(() =>
 );
 const emit = defineEmits<{
   (event: "resolve", recordId: string, payload: ToolResolutionRequest): void;
+  (event: "inspect-attempt", attemptId: string): void;
 }>();
 const { tm, getRaw } = useModuleI18n("features/agent-teams");
 const artifactReads = reactive<

@@ -1,5 +1,5 @@
 <template>
-  <div class="teams-flow-canvas" @dragover.prevent @drop="onDrop">
+  <div class="teams-flow-canvas" @dragover.prevent @drop="onDrop" @keydown.enter="onEdgeEnter">
     <VueFlow
       :nodes="displayNodes"
       :edges="displayEdges"
@@ -283,6 +283,9 @@ const displayEdges = computed(() => {
     if (!isEdit.value && statusByNodeId.get(edge.source) === 'running') {
       next.animated = true;
     }
+    if (!isEdit.value && edge.inspectable && props.selectedEdgeId === edge.id) {
+      next.style = { ...edge.style, strokeWidth: 3.5 };
+    }
     return next;
   });
 });
@@ -355,9 +358,16 @@ function onNodeClick(event: { node: { id: string } }) {
  * Replace the node selection with the edge selection in edit mode.
  */
 function onEdgeClick(event: EdgeMouseEvent) {
-  if (!isEdit.value) return;
-  emit('selectNode', null);
-  emit('selectEdge', event.edge.id);
+  if (isEdit.value) emit('selectNode', null);
+  if (isEdit.value || props.edges.some((edge) => edge.id === event.edge.id && edge.inspectable))
+    emit('selectEdge', event.edge.id);
+}
+
+function onEdgeEnter(event: KeyboardEvent) {
+  if (isEdit.value || !(event.target instanceof Element)) return;
+  const id = event.target.getAttribute('data-id');
+  if (id && props.edges.some((edge) => edge.id === id && edge.inspectable))
+    emit('selectEdge', id);
 }
 
 /** Confirm and delete an edge on double-click (edit mode). */

@@ -9484,6 +9484,63 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/workflow_runs/{run_id}/data_line:
+    get:
+      tags:
+      - Agent Teams workflows
+      summary: Inspect a workflow data line
+      description: Read the frozen value and provenance for one consumer attempt using an authorized Dashboard session.
+      operationId: inspect_workflow_data_line_api_v1_workflow_runs__run_id__data_line_get
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: scope_run_id
+        in: query
+        required: true
+        schema:
+          type: string
+      - name: task_run_id
+        in: query
+        required: true
+        schema:
+          type: string
+      - name: input_name
+        in: query
+        required: true
+        schema:
+          type: string
+      - name: attempt_id
+        in: query
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Attempt read and available upstream value.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, data]
+                properties:
+                  status:
+                    const: ok
+                  message:
+                    type: 'null'
+                  data:
+                    $ref: '#/components/schemas/WorkflowDataLine'
+        '401':
+          description: Dashboard session required.
+        '404':
+          description: Owned run, scope, task, attempt or data line unavailable.
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/workflow_runs/{run_id}/tool_calls/{record_id}/resolve:
     post:
       tags:
@@ -14232,6 +14289,80 @@ components:
           description: Port diagnostics include REQUIRED, REFERENCE, INCOMPATIBLE, UNREACHABLE_DATA, and CYCLE.
         message:
           type: string
+    WorkflowDataLine:
+      type: object
+      required: [scope_run_id, task_run_id, iteration, attempt_id, task_status, attempts, source, target, read_status]
+      properties:
+        scope_run_id:
+          type: string
+        task_run_id:
+          type: string
+        iteration:
+          type: [integer, 'null']
+        attempt_id:
+          type: string
+        task_status:
+          type: string
+        attempts:
+          type: array
+          items:
+            type: object
+            required: [attempt_id, status]
+            properties:
+              attempt_id:
+                type: string
+              status:
+                type: string
+        source:
+          type: object
+          required: [node_id, port]
+          properties:
+            node_id:
+              type: string
+            port:
+              type: string
+        target:
+          type: object
+          required: [node_id, port]
+          properties:
+            node_id:
+              type: string
+            port:
+              type: string
+            type:
+              anyOf:
+              - type: string
+              - type: array
+                items:
+                  type: string
+              - type: 'null'
+            format:
+              type: string
+        read_status:
+          type: string
+          enum: [read, 'null', not_read, skipped, missing]
+        value: {}
+        evidence:
+          type: object
+          properties:
+            artifact:
+              anyOf:
+              - $ref: '#/components/schemas/ArtifactReference'
+              - type: 'null'
+            reference:
+              type: object
+              additionalProperties: true
+            source_run_id:
+              type: string
+        upstream:
+          type: object
+          required: [source_run_id, value]
+          properties:
+            source_run_id:
+              type: string
+            artifact:
+              $ref: '#/components/schemas/ArtifactReference'
+            value: {}
     WorkflowRunCard:
       type: object
       required: [run_id, status, snapshot, control, state, progress, artifact_count]

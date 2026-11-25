@@ -284,7 +284,15 @@
           <nav v-show="runDisplay === 'workbench'" class="workbench-panel-nav mb-4" :aria-label="tm('workbench.panels')">
             <v-btn v-for="panel in ['tasks', 'process', 'results'] as const" :key="panel" :variant="activeRunPanel === panel ? 'tonal' : 'text'" :aria-pressed="activeRunPanel === panel" @click="activeRunPanel = panel">{{ tm(`workbench.panel${panel}`) }}</v-btn>
           </nav>
-          <WorkflowGraphCanvas v-if="runDisplay === 'graph'" :definition="selectedRun.runtime_definition ?? selectedRun.snapshot.definition" :tasks="selectedRun.tasks" :child-assets="selectedRun.snapshot.child_assets ?? {}" readonly @select-task="selectRunTask" />
+          <WorkflowRunCanvas
+            v-if="runDisplay === 'graph' && !openingRunId"
+            :key="selectedRun.run_id"
+            :run="selectedRun"
+            :selected-task-id="selectedTaskNode"
+            :focus="inspectionFocus"
+            :signal="observation.signal"
+            @select="selectRunTask"
+          />
           <div v-show="runDisplay === 'workbench'" class="workbench-columns" :data-active-panel="activeRunPanel">
             <div class="workbench-column workbench-tasks">
               <WorkflowRunProgress
@@ -312,7 +320,16 @@
                 v-if="conversationRunId && detailRun.tool_calls?.some((call: any) => ['started', 'unknown'].includes(call.status))"
                 class="text-caption mb-2"
               >{{ tm("runConversation.reconcileInWorkbench") }}</p>
-              <WorkflowRunProcess :key="detailRun.run_id" :run="detailRun" :readonly="!!conversationRunId" :signal="observation.signal" :busy="!!currentOperation" @resolve="resolveTool" />
+              <WorkflowRunProcess
+                :key="detailRun.run_id"
+                :run="detailRun"
+                :readonly="!!conversationRunId"
+                :signal="observation.signal"
+                :busy="!!currentOperation"
+                :inspectable="!!detailRun.snapshot.graph_task"
+                @resolve="resolveTool"
+                @inspect-attempt="attemptId => { inspectionFocus = { taskId: detailRun.run_id, attemptId }; runDisplay = 'graph'; }"
+              />
             </div>
             <div class="workbench-column workbench-results">
           <section
@@ -815,7 +832,7 @@ import { workflowAssetsApi } from "@/api/workflowAssets";
 import StructuredWorkflowInputs, { parseWorkflowInputs } from "./StructuredWorkflowInputs.vue";
 import { useModuleI18n } from "@/i18n/composables";
 import { extractApiError } from "@/utils/extractApiError";
-import WorkflowGraphCanvas from "./WorkflowGraphCanvas.vue";
+import WorkflowRunCanvas from "./WorkflowRunCanvas.vue";
 import WorkflowExampleGuide from "./WorkflowExampleGuide.vue";
 import WorkflowPackageDialog from "./WorkflowPackageDialog.vue";
 import WorkflowChatAccessDialog from "./WorkflowChatAccessDialog.vue";
@@ -965,7 +982,7 @@ async function answerInbox(
       updated = await workflowAssetsApi.answer(rootId, todoId, payload);
     } catch (err) {
       if (!isAxiosError(err) || err.response?.status !== 409) throw err;
-      if (signal.aborted || openingRunId || runView.value !== "pending") return;
+      if (signal.aborted || openingRunId.value || runView.value !== "pending") return;
       if (selectedRun.value?.run_id === rootId) {
         updated = await workflowAssetsApi.run(rootId, signal);
       } else {
@@ -973,7 +990,7 @@ async function answerInbox(
       }
     }
     if (disposed) return;
-    if (updated && !signal.aborted && !openingRunId && selectedRun.value?.run_id === rootId) {
+    if (updated && !signal.aborted && !openingRunId.value && selectedRun.value?.run_id === rootId) {
       applyOperationSnapshot(updated);
     }
     const inbox = await workflowAssetsApi.humanRequests();
@@ -1055,6 +1072,7 @@ watch(observedStatus, (status) => {
   if (props.conversationRunId && status) emit("run-status", status);
 });
 const runDisplay = ref<'workbench' | 'graph'>('workbench');
+const inspectionFocus = ref<{ taskId: string; attemptId: string } | null>(null);
 const activeRunPanel = ref<'tasks' | 'process' | 'results'>('process');
 const runOperations = ref(
   new Map<
@@ -1218,7 +1236,7 @@ function mergeHistoryWindow(target: any, kind: "process" | "events" | "messages"
 }
 
 async function loadOlderProcess() {
-  if (openingRunId || historyBusy.value || !selectedRun.value || !detailRun.value) return;
+  if (openingRunId.value || historyBusy.value || !selectedRun.value || !detailRun.value) return;
   const signal = observation.value.signal;
   if (signal.aborted) return;
   const rootId = selectedRun.value.run_id;
@@ -1251,7 +1269,7 @@ async function loadOlderProcess() {
   }
 }
 async function loadOlderHistory(kind: "events" | "messages" | "attempts") {
-  if (openingRunId || historyBusy.value || !selectedRun.value || !detailRun.value) return;
+  if (openingRunId.value || historyBusy.value || !selectedRun.value || !detailRun.value) return;
   const signal = observation.value.signal;
   if (signal.aborted) return;
   const rootId = selectedRun.value.run_id;
@@ -1463,7 +1481,7 @@ let artifactRead = 0;
 let pendingArtifact: { key: string; signal: AbortSignal; result: Promise<boolean> } | undefined;
 let runRead = 0;
 let refreshingRead: number | null = null;
-let openingRunId: string | undefined;
+const openingRunId = ref<string>();
 
 const assetSections = ["assets", "roles", "runs", "resources", "workflowDrafts", "teamDrafts"] as const;
 type AssetSection = typeof assetSections[number];
@@ -1530,7 +1548,7 @@ async function refresh(background = false) {
     loading.value ||
     refreshingRead === runRead ||
     currentOperation.value ||
-    openingRunId ||
+    openingRunId.value ||
     (background && runView.value === "history")
   )
     return;
@@ -1669,6 +1687,7 @@ function editTeam(asset: any) {
 
 function selectRunTask(nodeId: string | null) {
   historicalArtifact.value = null;
+  inspectionFocus.value = null;
   runDisplay.value = 'workbench';
   activeRunPanel.value = 'process';
   if (nodeId)
@@ -1895,6 +1914,7 @@ function applyOperationSnapshot(next: any) {
 }
 
 async function openRun(runId: string) {
+  inspectionFocus.value = null;
   observation.value.abort();
   observation.value = new AbortController();
   const signal = observation.value.signal;
@@ -1902,7 +1922,7 @@ async function openRun(runId: string) {
   selectedArtifact.value = null;
   clearFilePreview();
   const read = ++runRead;
-  openingRunId = runId;
+  openingRunId.value = runId;
   loading.value = true;
   try {
     error.value = "";
@@ -1928,7 +1948,7 @@ async function openRun(runId: string) {
       error.value = extractApiError(err, tm("errors.operationFailed")).message;
   } finally {
     if (read === runRead) {
-      openingRunId = undefined;
+      openingRunId.value = undefined;
       loading.value = false;
     }
   }
@@ -1937,7 +1957,7 @@ async function openRun(runId: string) {
 watch(() => route.query.workflow_run, (runId) => {
   if (
     props.mode === "runs" && !props.conversationRunId && typeof runId === "string" &&
-    runId && runId !== (openingRunId ?? selectedRun.value?.run_id)
+    runId && runId !== (openingRunId.value ?? selectedRun.value?.run_id)
   ) {
     void openRun(runId);
   }
@@ -1946,7 +1966,7 @@ watch(() => route.query.workflow_run, (runId) => {
 async function recoverAttempt() {
   if (
     currentOperation.value ||
-    openingRunId ||
+    openingRunId.value ||
     !detailRun.value?.recovery?.available
   )
     return;
@@ -1973,7 +1993,7 @@ async function recoverAttempt() {
 
 async function resolveTool(recordId: string, payload: ToolResolutionRequest) {
   const taskId = detailRun.value?.run_id;
-  if (!taskId || openingRunId || currentOperation.value) return;
+  if (!taskId || openingRunId.value || currentOperation.value) return;
   const rootId = selectedRun.value.run_id;
   const read = ++runRead;
   runOperations.value.set(rootId, { kind: "resolve", taskId });
@@ -2000,7 +2020,7 @@ async function resolveTool(recordId: string, payload: ToolResolutionRequest) {
 
 async function answerTodo(todoId: string, payload: HumanAnswerRequest) {
   const rootId = selectedRun.value?.run_id;
-  if (!rootId || openingRunId || currentOperation.value) return;
+  if (!rootId || openingRunId.value || currentOperation.value) return;
   const read = ++runRead;
   runOperations.value.set(rootId, { kind: "answer", taskId: todoId });
   loading.value = true;
@@ -2009,7 +2029,7 @@ async function answerTodo(todoId: string, payload: HumanAnswerRequest) {
     const updated = await workflowAssetsApi.answer(rootId, todoId, payload);
     if (!disposed && read === runRead) applyOperationSnapshot(updated);
   } catch (err) {
-    if (disposed || openingRunId || selectedRun.value?.run_id !== rootId) return;
+    if (disposed || openingRunId.value || selectedRun.value?.run_id !== rootId) return;
     error.value = extractApiError(err, tm("errors.operationFailed")).message;
     if (isAxiosError(err) && err.response?.status === 409) {
       const signal = observation.value.signal;
@@ -2038,7 +2058,7 @@ async function applyRunControl(
 ) {
   const rootId = selectedRun.value?.run_id;
   const signal = observation.value.signal;
-  if (!rootId || signal.aborted || openingRunId || currentOperation.value) return;
+  if (!rootId || signal.aborted || openingRunId.value || currentOperation.value) return;
   const taskId = detailRun.value.run_id;
   const retry = "attempt_id" in payload;
   const rerun = !retry && !("action" in payload);
@@ -2198,7 +2218,7 @@ async function readFile(
   const artifact = source?.ref ?? selectedArtifact.value;
   const read = artifactRead;
   const observedRun = detailRun.value?.run_id;
-  if (signal.aborted || !artifact || openingRunId) return;
+  if (signal.aborted || !artifact || openingRunId.value) return;
   const preview = download ? null : ++previewRead;
   if (!download) boundPreview = !!source;
   const isCurrent = () => !signal.aborted && (preview === null || preview === previewRead) &&

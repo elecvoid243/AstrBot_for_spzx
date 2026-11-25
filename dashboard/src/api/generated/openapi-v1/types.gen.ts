@@ -2044,6 +2044,44 @@ export type WorkflowControlRequest = {
 
 export type action4 = 'pause' | 'continue' | 'cancel';
 
+export type WorkflowDataLine = {
+    scope_run_id: string;
+    task_run_id: string;
+    iteration: (number) | null;
+    attempt_id: string;
+    task_status: string;
+    attempts: Array<{
+        attempt_id: string;
+        status: string;
+    }>;
+    source: {
+        node_id: string;
+        port: string;
+    };
+    target: {
+        node_id: string;
+        port: string;
+        type?: (string | Array<(string)> | null);
+        format?: string;
+    };
+    read_status: 'read' | 'null' | 'not_read' | 'skipped' | 'missing';
+    value?: unknown;
+    evidence?: {
+        artifact?: (ArtifactReference | null);
+        reference?: {
+            [key: string]: unknown;
+        };
+        source_run_id?: string;
+    };
+    upstream?: {
+        source_run_id: string;
+        artifact?: ArtifactReference;
+        value: unknown;
+    };
+};
+
+export type read_status = 'read' | 'null' | 'not_read' | 'skipped' | 'missing';
+
 export type WorkflowDraftGenerationRequest = {
     description: string;
     provider_id: string;
@@ -7001,6 +7039,26 @@ export type GetRunApiV1WorkflowRunsRunIdGetData = {
 export type GetRunApiV1WorkflowRunsRunIdGetResponse = (unknown);
 
 export type GetRunApiV1WorkflowRunsRunIdGetError = (HTTPValidationError);
+
+export type InspectWorkflowDataLineApiV1WorkflowRunsRunIdDataLineGetData = {
+    path: {
+        run_id: string;
+    };
+    query: {
+        attempt_id?: string;
+        input_name: string;
+        scope_run_id: string;
+        task_run_id: string;
+    };
+};
+
+export type InspectWorkflowDataLineApiV1WorkflowRunsRunIdDataLineGetResponse = ({
+    status: "ok";
+    message?: null;
+    data: WorkflowDataLine;
+});
+
+export type InspectWorkflowDataLineApiV1WorkflowRunsRunIdDataLineGetError = (unknown | HTTPValidationError);
 
 export type ResolveToolCallApiV1WorkflowRunsRunIdToolCallsRecordIdResolvePostData = {
     body: ToolResolutionRequest;

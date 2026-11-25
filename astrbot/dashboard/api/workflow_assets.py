@@ -1115,6 +1115,45 @@ async def get_run(
         )
 
 
+@router.get("/workflow_runs/{run_id}/data_line")
+async def inspect_workflow_data_line(
+    run_id: str,
+    scope_run_id: str,
+    task_run_id: str,
+    input_name: str,
+    attempt_id: str | None = None,
+    username: str = Depends(require_dashboard_user),
+    service: WorkflowService = Depends(get_workflow_service),
+):
+    """Inspect the recorded read on a data line in an owned root run.
+
+    Args:
+        run_id: Root run containing the selected scope.
+        scope_run_id: Invocation containing the consumer.
+        task_run_id: Consumer instance in the selected round.
+        input_name: Named input port on that consumer.
+        attempt_id: Exact attempt to inspect, or the current attempt by default.
+        username: Authenticated Dashboard owner.
+        service: Shared workflow service.
+
+    Returns:
+        The read status, evidence and any separately available upstream value.
+    """
+    try:
+        return JSONResponse(
+            ok(
+                await service.inspect_data_line(
+                    username, run_id, scope_run_id, task_run_id, input_name, attempt_id
+                )
+            ),
+            headers={"Cache-Control": "no-store"},
+        )
+    except RoleAssetError as exc:
+        return JSONResponse(
+            error(str(exc), {"fields": exc.fields}), status_code=exc.status
+        )
+
+
 @router.get("/workflow_runs/{run_id}/result")
 async def get_result(
     run_id: str,

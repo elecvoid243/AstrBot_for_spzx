@@ -10,7 +10,6 @@ from astrbot.core.agent_team_tools import AgentTeamToolRegistry
 from astrbot.core.agent_teams.workflows import WorkflowService
 from astrbot.dashboard.services.agent_team_ports import TeamPorts
 from tests.agent_teams.test_workflow_assets import completed_run
-
 from tests.agent_teams.test_workflow_assets_api import (
     publication_client as publication_client,
 )
@@ -302,6 +301,26 @@ async def test_list_dispatch_preserves_order_capacity_and_item_retry(
         f"/api/v1/agent_drafts/workflow/{asset_id}/publish", json={"revision": 1}
     )
     assert publish.status_code == 200, publish.text
+    if not restart:
+        oversize = ["same", "same", {"id": 3}, {"id": 4}]
+        declined = await publication_client.post(
+            f"{asset}/runs", json={"version": 1, "inputs": {"items": oversize}}
+        )
+        assert declined.status_code == 200, declined.text
+        rejected = declined.json()["data"]
+        dispatch = rejected["tasks"][0]
+        assert dispatch["status"] == "failed"
+        line = await publication_client.get(
+            f"/api/v1/workflow_runs/{rejected['run_id']}/data_line",
+            params={
+                "scope_run_id": rejected["run_id"],
+                "task_run_id": dispatch["run_id"],
+                "input_name": "items",
+            },
+        )
+        assert line.status_code == 200, line.text
+        assert line.json()["data"]["value"] == oversize
+        assert line.json()["data"]["read_status"] == "read"
     args = {"items": ["same", "same", {"id": 3}]}
     trial = await publication_client.post(
         f"{asset}/trials",

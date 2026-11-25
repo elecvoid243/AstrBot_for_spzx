@@ -346,6 +346,21 @@
           {{ tm("graph.empty") }}
         </div>
       </div>
+      <WorkflowDataLineInspector
+        v-if="inspection && selectedDataEdge?.alias && inspectedTask"
+        :root-id="inspection.rootId"
+        :scope-id="inspection.scopeId"
+        :task-id="inspectedTask.run_id"
+        :input-name="selectedDataEdge.alias"
+        :current-attempt="inspectedTask.state?.attempt_id"
+        :initial-attempt="inspection.taskId === inspectedTask.run_id ? inspection.attemptId : undefined"
+        :task-status="inspectedTask.status"
+        :execution-id="inspectedTask.state?.execution_id"
+        :upstream-state="upstreamState"
+        :node-names="inspectionNodeNames"
+        :signal="inspection.signal"
+        @close="selectEdge(null)"
+      />
       <details
         v-if="!readonly"
         class="graph-inspector"
@@ -1350,6 +1365,7 @@
     </div>
     <div class="graph-footer text-caption">
       {{ tm(readonly ? "graph.runHint" : "graph.footer") }}
+      <span v-if="inspection && dataEdges.some((edge) => edge.alias)"> {{ tm("inspection.hint") }}</span>
     </div>
   </section>
 </template>
@@ -1361,6 +1377,7 @@ import { incompatiblePortShapes, inlinePortTypes } from "./workflowPortContracts
 import TeamsFlowCanvas from "./TeamsFlowCanvas.vue";
 import { parseWorkflowInputs } from "./StructuredWorkflowInputs.vue";
 import WorkflowLoopPanel from "./WorkflowLoopPanel.vue";
+import WorkflowDataLineInspector from "./WorkflowDataLineInspector.vue";
 import RoleResourcesEditor from "./RoleResourcesEditor.vue";
 import HumanWaitPolicyEditor from "./HumanWaitPolicyEditor.vue";
 import type { FlowEdgePayload, FlowNode } from "./TeamsFlowCanvas.vue";
@@ -1383,6 +1400,14 @@ const props = withDefaults(
     readonly?: boolean;
     tasks?: any[];
     dispatchTasks?: string[];
+    inspection?: {
+      rootId: string;
+      scopeId: string;
+      signal?: AbortSignal;
+      taskId?: string;
+      attemptId?: string;
+      loopStatuses: Record<string, string>;
+    };
   }>(),
   {
     roles: () => [],
@@ -2327,21 +2352,36 @@ const nodes = computed<FlowNode[]>(() => [
   })),
 ]);
 const dataEdges = computed(() => {
-  if (!typedPorts.value) return [];
+  if (!typedPorts.value && !props.inspection) return [];
   const bindings: (FlowEdgePayload & { alias?: string })[] = [];
   for (const task of taskNodes.value) {
     const definition = draft.value.tasks.find((item) => item.id === task.id);
-    for (const port of task.data.inputPorts ?? []) {
-      const alias = port.id.slice("data-in:".length);
-      const binding = definition?.inputs?.[alias];
+    const inputs = { ...definition?.inputs };
+    const taskRun = props.inspection && props.tasks.find((item) => item.node_id === task.id);
+    if (taskRun && taskRun.snapshot.iteration > 1) {
+      for (const feedback of draft.value.loops?.find((loop) => loop.id === taskRun.snapshot.loop_id)?.feedback ?? []) {
+        if (feedback.target === task.id) inputs[feedback.input] = { task_id: feedback.source, field: feedback.field };
+      }
+    }
+    for (const [alias, binding] of Object.entries(inputs)) {
       const source = binding?.input ? "__input" : binding?.task_id;
       const field = binding?.input ?? binding?.field ?? "text";
       const sourceHandle = `data-out:${field}`;
-      if (source && nodes.value.find((node) => node.id === source)?.data.outputPorts
-        ?.some((candidate) => candidate.id === sourceHandle)) {
+      const sourceNode = nodes.value.find((node) => node.id === source);
+      const targetPort = task.data.inputPorts?.find((candidate) => candidate.id === `data-in:${alias}`);
+      const sourcePort = sourceNode?.data.outputPorts?.find((candidate) => candidate.id === sourceHandle);
+      const inspectable = !!taskRun && nodes.value.some((node) => node.id === task.id);
+      if (source && sourceNode && ((sourcePort && targetPort) || inspectable)) {
         bindings.push({
           id: `data:input:${task.id}:${alias}`, source, target: task.id,
-          sourceHandle, targetHandle: port.id, alias,
+          sourceHandle: sourcePort?.id, targetHandle: targetPort?.id, alias,
+          inspectable,
+          ...(inspectable ? {
+            zIndex: 1,
+            ariaLabel: `${sourceNode.data.label}.${field} → ${task.data.label}.${alias}`,
+            // SVG focus uses the lowercase attribute.
+            domAttributes: { tabindex: 0 },
+          } : {}),
         });
       }
     }
@@ -2349,7 +2389,7 @@ const dataEdges = computed(() => {
   const result = draft.value.result_task_id;
   const sourceHandle = structuredPorts.value ? "data-out-result" : "data-out:text";
   const targetHandle = structuredPorts.value ? "data-in-result" : "data-in:text";
-  if (result && nodes.value.find((node) => node.id === result)?.data.outputPorts
+  if (typedPorts.value && result && nodes.value.find((node) => node.id === result)?.data.outputPorts
     ?.some((port) => port.id === sourceHandle)) {
     bindings.push({
       id: structuredPorts.value ? "data:output:result" : "data:output:text",
@@ -2361,6 +2401,22 @@ const dataEdges = computed(() => {
 const selectedDataEdge = computed(() =>
   dataEdges.value.find((edge) => edge.id === selectedEdgeKey.value),
 );
+const inspectedTask = computed(() =>
+  props.tasks.find((task) => task.node_id === selectedDataEdge.value?.target),
+);
+const upstreamState = computed(() => {
+  const source = props.tasks.find((task) => task.node_id === selectedDataEdge.value?.source);
+  if (!source) return undefined;
+  return [source.run_id, source.status, props.inspection?.loopStatuses[source.snapshot?.loop_id]].join(":");
+});
+const inspectionNodeNames = computed(() =>
+  Object.fromEntries(draft.value.tasks.map((task) => [task.id, task.name])),
+);
+watch([() => props.inspection?.taskId, () => props.inspection?.attemptId], ([taskId]) => {
+  if (!taskId) return;
+  const target = props.tasks.find((task) => task.run_id === taskId);
+  selectedEdgeKey.value = dataEdges.value.find((edge) => edge.target === target?.node_id && edge.inspectable)?.id ?? null;
+}, { immediate: true });
 const edges = computed<FlowEdgePayload[]>(() => [
   ...(
     [
@@ -2449,7 +2505,8 @@ const edges = computed<FlowEdgePayload[]>(() => [
     .filter((edge) => nodes.value.some((node) => node.id === edge.target))
     .map((edge) => ({
       ...edge,
-      label: tm("graph.dataLink"),
+      label: edge.inspectable ? edge.alias : tm("graph.dataLink"),
+      class: edge.inspectable ? "inspection-edge" : undefined,
       style: { stroke: "#087d74", strokeDasharray: "5 4" },
     })),
 ]);
@@ -3572,6 +3629,11 @@ function layout() {
 .graph-columns.is-readonly {
   grid-template-columns: minmax(0, 1fr);
 }
+@media (min-width: 1001px) {
+  .graph-columns.is-readonly:has(> .data-line) {
+    grid-template-columns: minmax(0, 1fr) minmax(240px, 32%);
+  }
+}
 .graph-columns:has(> .graph-toolbox:not([open])) { --toolbox-width: 48px; }
 .graph-columns:has(> .graph-inspector:not([open])) { --inspector-width: 48px; }
 .graph-toolbox:not([open]), .graph-inspector:not([open]) {
@@ -3658,6 +3720,10 @@ summary {
 .graph-stage :deep(.teams-flow-canvas) {
   height: 100%;
   min-height: 0;
+}
+.graph-stage :deep(.inspection-edge) {
+  cursor: pointer;
+  pointer-events: visibleStroke;
 }
 .graph-empty {
   position: absolute;

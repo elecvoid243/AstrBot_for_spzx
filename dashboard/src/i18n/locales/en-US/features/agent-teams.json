@@ -1,4 +1,23 @@
 {
+  "inspection": {
+    "title": "Data line inspector",
+    "hint": "Select a named data line to see what the consumer read.",
+    "close": "Close data line inspector",
+    "openAttempt": "Inspect data lines for this attempt",
+    "currentRounds": "Current rounds",
+    "loading": "Reading the selected attempt…",
+    "sourceRun": "Source task run",
+    "sourceArtifact": "Source artifact",
+    "reference": "Exact reference",
+    "upstream": "View upstream output",
+    "states": {
+      "read": "Read",
+      "null": "Read an explicit null",
+      "not_read": "Not read",
+      "skipped": "Skipped · not read",
+      "missing": "Read record unavailable"
+    }
+  },
   "starterTeam": {
     "title": "Release notes desk",
     "description": "A managing editor delegates a draft, checks it against the brief, and delivers a release note.",

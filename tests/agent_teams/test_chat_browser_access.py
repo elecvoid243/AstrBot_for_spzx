@@ -225,6 +225,19 @@ async def test_initiator_connects_through_returned_entry_and_answers_original_to
     assert data["todos"][0]["question"] == "Which region?"
     assert data["todos"][0]["constraints"]["choices"] == ["Asia", "Europe"]
     assert "snapshot" not in detail.text and "owner_username" not in detail.text
+    inspection_query = {
+        "scope_run_id": run["run_id"],
+        "task_run_id": owner_run["tasks"][0]["run_id"],
+        "input_name": "region",
+    }
+    assert (
+        await client.get(
+            old_path + "/data_line", params=inspection_query, headers=headers
+        )
+    ).status_code == 401
+    assert (
+        await client.get(path + "/data_line", params=inspection_query, headers=headers)
+    ).status_code == 404
     assert (
         await client.get(
             path,

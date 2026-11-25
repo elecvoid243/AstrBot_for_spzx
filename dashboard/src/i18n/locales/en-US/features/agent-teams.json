@@ -1,4 +1,14 @@
 {
+  "assetLoading": {
+    "assets": "Workflow assets",
+    "roles": "Roles",
+    "runs": "Run list",
+    "resources": "Local resources",
+    "workflowDrafts": "Workflow drafts",
+    "teamDrafts": "Team drafts",
+    "retry": "Retry",
+    "unsupported": "Asset {id} v{version} uses an unsupported format. Other assets remain available."
+  },
   "releaseBrief": {
     "title": "Release brief",
     "pinned": "Pinned example",
@@ -23,7 +33,7 @@
       "steps": {
         "canvas": {
           "title": "Read the canvas",
-          "body": "Choose “{canvas}” on the example card. Follow the three tasks from left to right. The data link from Prepare brief to Deliver brief carries the project name and summary."
+          "body": "Choose “{canvas}” on the example card. Follow the three tasks from left to right. The data link from Prepare brief to Deliver brief carries the project name and summary. Drag a green data port to see compatible inputs highlighted. The blue execution input receives a control line from the previous task."
         },
         "start": {
           "title": "Start with two inputs",
@@ -575,6 +585,14 @@
     }
   },
   "graph": {
+    "duplicateConnection": "This connection already exists.",
+    "controlIn": "Execution input",
+    "controlOut": "Execution output",
+    "dataToControl": "This port controls execution order. Connect your value to a data input below: {ports}.",
+    "controlOnly": "This port accepts a control connection only.",
+    "controlToData": "This port receives data. Connect the execution output to an execution input.",
+    "resultConnection": "Connect the result task’s designated output to the workflow output.",
+    "controlCycle": "This connection would create an unbounded control cycle.",
     "plugin_component_v1": "Plugin component",
     "pluginComponentLoadFailed": "The installed component catalog could not be loaded.",
     "pluginComponentUnavailable": "Install and enable this exact component version.",

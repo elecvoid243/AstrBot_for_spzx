@@ -1981,6 +1981,24 @@ export type WorkflowApiStartRequest = {
     };
 };
 
+export type WorkflowAssetCard = {
+    asset_id: string;
+    version: number;
+    is_builtin_example: boolean;
+    deleted: boolean;
+    summary: {
+        name: string;
+        kind: 'workflow' | 'autonomous';
+        max_parallel: number;
+        count: number;
+        preview: Array<(string)>;
+        /**
+         * Pinned role references for the corresponding autonomous member previews.
+         */
+        preview_role_ids?: Array<((string) | null)>;
+    };
+};
+
 /**
  * An exact workflow version invoked in an independent scope.
  */
@@ -2102,6 +2120,39 @@ export type WorkflowRetryRequest = {
     request_id: string;
     attempt_id: string;
     input_policy: "original";
+};
+
+export type WorkflowRunCard = {
+    run_id: string;
+    status: string;
+    snapshot: {
+        definition: {
+            name: string;
+        };
+        task: string;
+        trial?: {
+            mode?: string;
+            draft_revision?: number;
+        };
+    };
+    control: {
+        status?: string;
+    };
+    state: {
+        reason?: string;
+    };
+    progress: {
+        total: number;
+        completed: number;
+        running: number;
+        waiting: number;
+    };
+    artifact_count: number;
+    artifacts?: Array<{
+        artifact_id: string;
+        version: number;
+        summary: string;
+    }>;
 };
 
 /**
@@ -6674,13 +6725,22 @@ export type ListAssetsApiV1WorkflowAssetsGetData = {
          * Provision the owner's starter workflow on first workbench access. A deleted example stays deleted.
          */
         include_example?: boolean;
+        /**
+         * Return workbench card summaries without full definitions or version history.
+         */
+        summary_only?: boolean;
     };
 };
 
 export type ListAssetsApiV1WorkflowAssetsGetResponse = ({
     status: "ok";
     data: {
-        assets: Array<SavedWorkflowAsset>;
+        assets: Array<(SavedWorkflowAsset | WorkflowAssetCard)>;
+        unavailable_assets?: Array<{
+            asset_id: string;
+            version: number;
+            code: "UNSUPPORTED_FORMAT";
+        }>;
     };
 });
 
@@ -6871,11 +6931,33 @@ export type ListHumanRequestsApiV1WorkflowHumanRequestsGetError = unknown;
 
 export type ListRunsApiV1WorkflowRunsGetData = {
     query?: {
+        /**
+         * Include exact artifact choices and readable previews for a compact-list input picker.
+         */
+        include_artifacts?: boolean;
         limit?: number;
+        /**
+         * Return compact run progress and artifact references without task detail or execution history.
+         */
+        summary_only?: boolean;
     };
 };
 
-export type ListRunsApiV1WorkflowRunsGetResponse = (unknown);
+export type ListRunsApiV1WorkflowRunsGetResponse = ({
+    status: "ok";
+    data: {
+        runs: Array<(WorkflowRunCard | {
+    run_id: string;
+    status: string;
+    snapshot: {
+        [key: string]: unknown;
+    };
+    usage: {
+        [key: string]: unknown;
+    };
+})>;
+    };
+});
 
 export type ListRunsApiV1WorkflowRunsGetError = (HTTPValidationError);
 

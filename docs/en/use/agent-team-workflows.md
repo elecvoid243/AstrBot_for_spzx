@@ -24,6 +24,14 @@ Open **Agent Teams → Assets → Workflows** to find **Release brief** pinned a
 
 To remove the example, select the delete button on the card and confirm. Deletion is remembered for your account across reloads and server restarts.
 
+### Connect execution and data ports
+
+Hover over a blue handle to see **Execution input** or **Execution output**. Drag a named green port to highlight compatible data inputs. The default single-Agent text workflow has two data lines: workflow `input` to Agent `input`, then Agent `text` to the workflow output. The Agent has no predecessor and can start directly. To chain two Agents, connect A’s execution output to B’s execution input, then connect A’s `text` to B’s `input`.
+
+![Dragging a workflow input highlights the compatible Agent data port](/images/agent-teams-port-targets-en.png)
+
+Publication and full-graph trials identify required data bindings that depend on opposite outcomes of the same decision. They also reject enum or constant ports with no common value. The asset list identifies unsupported versions by asset ID. If one section fails to load, use its **Retry** button to reload that section.
+
 ## Create and configure
 
 Choose **Assets → Workflows → New Workflow** to open a dedicated workflow editor. Enter a name at the top and select a default model in **Workflow settings**. Add Agents directly on the canvas without first creating a role template. Select an Agent to configure its task, responsibilities, profile, persona, model and resources; nearby hints explain their purpose and inheritance rules. An unselected persona means no persona; an Agent without its own model uses the workflow default. Before launch, every local Agent must resolve to an allowed model.

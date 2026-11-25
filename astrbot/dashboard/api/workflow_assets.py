@@ -463,6 +463,7 @@ async def list_workflow_components(
 @router.get("/workflow_assets")
 async def list_assets(
     include_example: bool = False,
+    summary_only: bool = False,
     username: str = Depends(require_dashboard_user),
     service: WorkflowService = Depends(get_workflow_service),
 ):
@@ -470,13 +471,18 @@ async def list_assets(
 
     Args:
         include_example: Provision the editable starter workflow on first access.
+        summary_only: Return card summaries without full graph definitions.
         username: Stable resource owner of the authorized Dashboard account.
         service: Core-owned workflow service.
 
     Returns:
         Active assets with their latest versions and example identity.
     """
-    return ok(await service.list_assets(username, include_example=include_example))
+    return ok(
+        await service.list_assets(
+            username, include_example=include_example, summary_only=summary_only
+        )
+    )
 
 
 class WorkflowDraftGenerationRequest(BaseModel):
@@ -1061,6 +1067,8 @@ async def list_human_requests(
 @router.get("/workflow_runs")
 async def list_runs(
     limit: int = Query(default=50, ge=1, le=100),
+    summary_only: bool = False,
+    include_artifacts: bool = False,
     username: str = Depends(require_dashboard_user),
     service: WorkflowService = Depends(get_workflow_service),
 ):
@@ -1068,6 +1076,8 @@ async def list_runs(
 
     Args:
         limit: Maximum number of recent root runs.
+        summary_only: Select the compact workbench listing.
+        include_artifacts: Include artifact choices on demand in the compact listing.
         username: Authenticated owner.
         service: Shared public run service.
 
@@ -1076,7 +1086,14 @@ async def list_runs(
         reasons, attempts and artifact entries. Complete input values are omitted.
         Read a selected run's detail for complete frozen inputs and saved records.
     """
-    return ok(await service.list_runs(username, limit))
+    return ok(
+        await service.list_runs(
+            username,
+            limit,
+            summary_only=summary_only,
+            include_artifacts=include_artifacts,
+        )
+    )
 
 
 @router.get("/workflow_runs/{run_id}")

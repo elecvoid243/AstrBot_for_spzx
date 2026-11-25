@@ -9,6 +9,7 @@ import WorkflowWorkspacePanel from "./WorkflowWorkspacePanel.vue";
 
 const api = vi.hoisted(() => ({
   list: vi.fn(),
+  get: vi.fn(),
   save: vi.fn(),
   start: vi.fn(),
   readiness: vi.fn(),
@@ -1021,6 +1022,57 @@ describe("workflow workspace", () => {
     },
   );
 
+  it("shows healthy summaries before other sections resolve and retries just the failed section", async () => {
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: "/agent-teams", component: slotStub }] });
+    await router.push("/agent-teams");
+    api.list.mockResolvedValue({ assets: [{ asset_id: asset.asset_id, version: asset.version,
+      summary: { name: "Healthy card", kind: "workflow", count: 1, max_parallel: 4, preview: ["Write"] } }],
+      unavailable_assets: [{ asset_id: "old-asset", version: 2, code: "UNSUPPORTED_FORMAT" }] });
+    let reject!: (reason: Error) => void;
+    roles.resources.mockReturnValueOnce(new Promise((_, fail) => { reject = fail; }));
+    const wrapper = mount(WorkflowWorkspacePanel, { props: { mode: "assets", assetKind: "workflows" }, global: { plugins: [router], stubs } });
+    try {
+      await flushPromises();
+      expect(wrapper.text()).toContain("Healthy card");
+      expect(wrapper.text()).toContain("assetLoading.unsupported");
+      reject(new Error("catalog offline"));
+      await flushPromises();
+      expect(wrapper.text()).toContain("catalog offline");
+      const reads = api.list.mock.calls.length;
+      await wrapper.findAll("button").find((button) => button.text().includes("assetLoading.retry"))!.trigger("click");
+      await flushPromises();
+      expect(api.list).toHaveBeenCalledTimes(reads);
+      expect(wrapper.text()).not.toContain("catalog offline");
+      api.get.mockResolvedValueOnce(asset);
+      await wrapper.get('[data-testid="start-workflow-asset"]').trigger("click");
+      await flushPromises();
+      expect(api.get).toHaveBeenCalledWith(asset.asset_id, asset.version);
+      expect(api.readiness).toHaveBeenCalledWith(asset.asset_id, asset.version);
+    } finally { wrapper.unmount(); }
+  });
+
+  it("does not overwrite a newly opened team draft with late card details", async () => {
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: "/agent-teams", component: slotStub }] });
+    await router.push("/agent-teams");
+    api.list.mockResolvedValue({ assets: [{ asset_id: "old", version: 1,
+      summary: { name: "Old team", kind: "autonomous", count: 1, max_parallel: 1, preview: ["Writer"] } }] });
+    let finish!: (value: any) => void;
+    api.get.mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+    const teamDialog = { name: "AutonomousTeamDialog", props: ["modelValue", "asset"], template: "<div />" };
+    const wrapper = mount(WorkflowWorkspacePanel, { props: { mode: "assets", assetKind: "teams" },
+      global: { plugins: [router], stubs: { ...stubs, AutonomousTeamDialog: teamDialog } } });
+    try {
+      await flushPromises();
+      await wrapper.get('[data-testid="edit-workflow-asset"]').trigger("click");
+      await wrapper.get('[data-testid="create-autonomous-team"]').trigger("click");
+      finish({ asset_id: "old", version: 1, definition: { name: "Old team" } });
+      await flushPromises();
+      const editor = wrapper.getComponent(teamDialog);
+      expect(editor.props("modelValue")).toBe(true);
+      expect(editor.props("asset")).toBeNull();
+    } finally { wrapper.unmount(); }
+  });
+
   it("pins only the marked example ahead of drafts and opens its real canvas and run", async () => {
     const router = createRouter({
       history: createMemoryHistory(),
@@ -1042,7 +1094,7 @@ describe("workflow workspace", () => {
     });
     try {
       await flushPromises();
-      expect(api.list).toHaveBeenCalledWith(true);
+      expect(api.list).toHaveBeenCalledWith(true, true);
       const cards = wrapper.findAll(".at-asset-card");
       expect(cards).toHaveLength(3);
       const pinned = cards[0];
@@ -1123,7 +1175,7 @@ describe("workflow workspace", () => {
     api.delete.mockResolvedValue({});
     const wrapper = mount(WorkflowWorkspacePanel, { props: { mode: "assets", assetKind: kind }, global: { plugins: [router], stubs } });
     await flushPromises();
-    expect(api.list).toHaveBeenCalledWith(kind === "workflows");
+    expect(api.list).toHaveBeenCalledWith(kind === "workflows", true);
     await wrapper.get('[data-testid="delete-asset"]').trigger("click");
     expect(wrapper.text()).toContain("deletion.impact");
     expect(api.delete).not.toHaveBeenCalled();

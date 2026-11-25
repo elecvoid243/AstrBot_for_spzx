@@ -16,7 +16,12 @@
     </div>
 
     <div class="guide-illustration" data-testid="release-guide-graph" aria-hidden="true">
-      <div class="guide-track">
+      <div v-if="current.id === 'canvas'" class="guide-ports">
+        <div>{{ tm("graph.workflowInput") }}<span class="guide-data-source">project · string ●</span></div>
+        <i class="guide-port-wire"><i class="guide-packet" /></i>
+        <div>{{ tm("releaseBrief.guide.nodes.prepare") }}<span class="guide-control-target">○ {{ tm("graph.controlIn") }}</span><span class="guide-data-target">● project · string</span></div>
+      </div>
+      <div v-else class="guide-track">
         <div v-for="(node, index) in nodes" :key="node.id" class="guide-node"
           :class="{ 'is-current': current.node === index, 'is-review': node.id === 'review' }">
           <span class="guide-node-icon"><v-icon :icon="node.icon" size="21" /></span>
@@ -149,6 +154,13 @@ onBeforeUnmount(() => {
   background-image: radial-gradient(var(--at-line) 1px, transparent 1px);
   background-size: 12px 12px;
 }
+.guide-ports { display: grid; grid-template-columns: auto minmax(24px,100px) auto; justify-content: center; align-items: end; padding: 4px; font-size: 12px; }
+.guide-ports > div { display: grid; gap: 4px; border: 1px solid var(--at-line); background: var(--at-surface); padding: 8px; border-radius: 6px; }
+.guide-ports span { font-size: 11px; }
+.guide-control-target { color: var(--at-accent); }
+.guide-data-target, .guide-data-source { color: var(--at-ink); }
+.guide-data-target { outline: 2px solid var(--at-accent); outline-offset: 1px; border-radius: 2px; }
+.guide-port-wire { position: relative; margin-bottom: 16px; color: var(--at-accent); border-top: 1px dashed currentColor; }
 .guide-track {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));

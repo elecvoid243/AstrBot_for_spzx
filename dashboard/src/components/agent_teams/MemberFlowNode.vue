@@ -8,13 +8,15 @@
       :position="Position.Left"
       class="at-node-handle at-control-handle"
       role="button"
-      :aria-label="tm('editor.handleTarget')"
+      :aria-label="tm('graph.controlIn')"
+      :title="tm('graph.controlIn')"
+      :class="{ 'port-eligible': data.highlightSide === 'target' && data.eligible?.includes('control') }"
     />
     <template v-if="(data.controlKind === 'condition' || data.approval) && data.interactive !== false">
       <span class="control-exit control-exit-true">{{ data.trueLabel }}</span>
-      <Handle id="matched-true" type="source" :position="Position.Right" class="at-node-handle control-handle-true" :aria-label="data.trueLabel" />
+      <Handle id="matched-true" type="source" :position="Position.Right" class="at-node-handle control-handle-true" :title="data.trueLabel" :class="{ 'port-eligible': data.highlightSide === 'source' && data.eligible?.includes('matched-true') }" :aria-label="data.trueLabel" />
       <span class="control-exit control-exit-false">{{ data.falseLabel }}</span>
-      <Handle id="matched-false" type="source" :position="Position.Right" class="at-node-handle control-handle-false" :aria-label="data.falseLabel" />
+      <Handle id="matched-false" type="source" :position="Position.Right" class="at-node-handle control-handle-false" :title="data.falseLabel" :class="{ 'port-eligible': data.highlightSide === 'source' && data.eligible?.includes('matched-false') }" :aria-label="data.falseLabel" />
     </template>
     <Handle
       v-else-if="data.interactive !== false && (!data.interfaceNode || data.controlEntry)"
@@ -23,7 +25,9 @@
       :position="Position.Right"
       class="at-node-handle at-control-handle"
       role="button"
-      :aria-label="tm('editor.handleSource')"
+      :aria-label="tm('graph.controlOut')"
+      :title="tm('graph.controlOut')"
+      :class="{ 'port-eligible': data.highlightSide === 'source' && data.eligible?.includes(data.controlEntry ? 'control-entry' : 'control') }"
     />
 
     <div class="at-node-type-icon" :class="'kind-' + (data.nodeKind || 'agent')" aria-hidden="true">
@@ -81,6 +85,8 @@
             :type="column.type"
             :position="column.position"
             :aria-label="port.accessibleLabel"
+            :title="port.accessibleLabel"
+            :class="{ 'port-eligible': data.highlightSide === column.type && data.eligible?.includes(port.id) }"
             :aria-invalid="port.invalid || undefined"
             class="at-node-handle at-data-handle"
           />
@@ -142,6 +148,8 @@ export interface MemberFlowNodeData {
   inDegree?: number;
   interfaceNode?: boolean;
   controlEntry?: boolean;
+  highlightSide?: 'source' | 'target';
+  eligible?: string[];
   inputPorts?: FlowPort[];
   outputPorts?: FlowPort[];
   /**
@@ -207,6 +215,7 @@ const cardClasses = computed(() => ({
 
 <style scoped>
 .member-flow-node:has(.at-data-ports) > .at-control-handle { top: 22px; }
+.at-node-handle.port-eligible { outline: 3px solid var(--at-accent); outline-offset: 2px; }
 .at-data-ports {
   display: grid;
   grid-auto-flow: column;

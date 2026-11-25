@@ -232,7 +232,7 @@ watch(
       ? props.initialNode!
       : props.nodes[0]?.id ?? null;
     try {
-      const data = await workflowAssetsApi.runs();
+      const data = await workflowAssetsApi.runs(true);
       artifacts.value = data.runs.flatMap((run: any) =>
         (run.artifacts ?? []).map((item: any) => ({
           title: `${run.snapshot.definition.name} · ${item.artifact_id} v${item.version} · ${item.summary}`,

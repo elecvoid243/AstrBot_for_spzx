@@ -8866,6 +8866,10 @@ paths:
       security:
       - BearerAuth: []
       parameters:
+      - name: summary_only
+        in: query
+        description: Return workbench card summaries without full definitions or version history.
+        schema: {type: boolean, default: false}
       - name: include_example
         in: query
         description: Provision the owner's starter workflow on first workbench access. A deleted example stays deleted.
@@ -8887,7 +8891,18 @@ paths:
                       assets:
                         type: array
                         items:
-                          $ref: '#/components/schemas/SavedWorkflowAsset'
+                          oneOf:
+                          - $ref: '#/components/schemas/SavedWorkflowAsset'
+                          - $ref: '#/components/schemas/WorkflowAssetCard'
+                      unavailable_assets:
+                        type: array
+                        items:
+                          type: object
+                          required: [asset_id, version, code]
+                          properties:
+                            asset_id: {type: string}
+                            version: {type: integer}
+                            code: {type: string, const: UNSUPPORTED_FORMAT}
     post:
       tags:
       - Agent Teams workflows
@@ -9349,7 +9364,17 @@ paths:
             reasons, attempts and artifact entries. Complete input values are omitted.
             Read a selected run's detail for complete frozen inputs and saved records.
       operationId: list_runs_api_v1_workflow_runs_get
+      security:
+      - BearerAuth: []
       parameters:
+      - name: summary_only
+        in: query
+        description: Return compact run progress and artifact references without task detail or execution history.
+        schema: {type: boolean, default: false}
+      - name: include_artifacts
+        in: query
+        description: Include exact artifact choices and readable previews for a compact-list input picker.
+        schema: {type: boolean, default: false}
       - name: limit
         in: query
         required: false
@@ -9364,7 +9389,28 @@ paths:
           description: Successful Response
           content:
             application/json:
-              schema: {}
+              schema:
+                type: object
+                required: [status, data]
+                properties:
+                  status: {type: string, const: ok}
+                  data:
+                    type: object
+                    required: [runs]
+                    properties:
+                      runs:
+                        type: array
+                        items:
+                          oneOf:
+                          - $ref: '#/components/schemas/WorkflowRunCard'
+                          - type: object
+                            description: Legacy overview with per-attempt usage and artifacts.
+                            required: [run_id, status, snapshot, usage]
+                            properties:
+                              run_id: {type: string}
+                              status: {type: string}
+                              snapshot: {type: object}
+                              usage: {type: object}
         '422':
           description: Validation Error
           content:
@@ -14139,6 +14185,74 @@ components:
           description: Port diagnostics include REQUIRED, REFERENCE, INCOMPATIBLE, UNREACHABLE_DATA, and CYCLE.
         message:
           type: string
+    WorkflowRunCard:
+      type: object
+      required: [run_id, status, snapshot, control, state, progress, artifact_count]
+      properties:
+        run_id: {type: string}
+        status: {type: string}
+        snapshot:
+          type: object
+          required: [definition, task]
+          properties:
+            definition:
+              type: object
+              required: [name]
+              properties:
+                name: {type: string}
+            task: {type: string}
+            trial:
+              type: object
+              properties:
+                mode: {type: string}
+                draft_revision: {type: integer}
+        control:
+          type: object
+          properties:
+            status: {type: string}
+        state:
+          type: object
+          properties:
+            reason: {type: string}
+        progress:
+          type: object
+          required: [total, completed, running, waiting]
+          properties:
+            total: {type: integer}
+            completed: {type: integer}
+            running: {type: integer}
+            waiting: {type: integer}
+        artifact_count: {type: integer}
+        artifacts:
+          type: array
+          items:
+            type: object
+            required: [artifact_id, version, summary]
+            properties:
+              artifact_id: {type: string}
+              version: {type: integer}
+              summary: {type: string}
+    WorkflowAssetCard:
+      type: object
+      required: [asset_id, version, is_builtin_example, deleted, summary]
+      properties:
+        asset_id: {type: string}
+        version: {type: integer}
+        is_builtin_example: {type: boolean}
+        deleted: {type: boolean}
+        summary:
+          type: object
+          required: [name, kind, max_parallel, count, preview]
+          properties:
+            name: {type: string}
+            kind: {type: string, enum: [workflow, autonomous]}
+            max_parallel: {type: integer}
+            count: {type: integer}
+            preview: {type: array, items: {type: string}}
+            preview_role_ids:
+              type: array
+              items: {type: [string, 'null']}
+              description: Pinned role references for the corresponding autonomous member previews.
     SavedWorkflowAsset:
       type: object
       required: [asset_id, version, definition, versions, deleted, is_builtin_example]

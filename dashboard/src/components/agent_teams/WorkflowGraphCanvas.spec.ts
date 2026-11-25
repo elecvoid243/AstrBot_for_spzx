@@ -210,15 +210,15 @@ describe("canvas asset editing", () => {
     const stubs = {
       TeamsFlowCanvas: {
         name: "TeamsFlowCanvas",
-        props: ["edges"],
-        emits: ["connect", "delete-edge", "select-node"],
+        props: ["edges", "nodes"],
+        emits: ["connect", "connectionDrag", "delete-edge", "select-node"],
         template: "<div />",
       },
       WorkflowLoopPanel: true,
       RoleResourcesEditor: true,
       "v-btn": { template: "<button><slot /></button>" },
       "v-icon": true, "v-chip": true, "v-select": true, "v-text-field": true,
-      "v-textarea": true, "v-spacer": true, "v-alert": true, "v-switch": true,
+      "v-textarea": true, "v-spacer": true, "v-alert": { template: "<div role='alert'><slot /></div>" }, "v-switch": true,
       "v-expansion-panels": true,
     };
     const definition = {
@@ -233,6 +233,14 @@ describe("canvas asset editing", () => {
       const canvas = wrapper.getComponent({ name: "TeamsFlowCanvas" });
       const saved = () => wrapper.emitted("update:definition")!.at(-1)![0];
       expect(canvas.props("edges")).toEqual([]);
+      canvas.vm.$emit("connectionDrag", { nodeId: "__input", handleId: "data-out:topic", handleType: "source" });
+      await wrapper.vm.$nextTick();
+      expect(canvas.props("nodes").find((node: FlowNode) => node.id === "agent").data.eligible).toEqual(["data-in:subject"]);
+      canvas.vm.$emit("connect", { from: "__input", to: "agent", sourceHandle: "data-out:topic" });
+      await wrapper.vm.$nextTick();
+      expect(wrapper.emitted("update:definition")).toBeUndefined();
+      expect(wrapper.text()).toContain("graph.dataToControl");
+      canvas.vm.$emit("connectionDrag", null);
       canvas.vm.$emit("connect", {
         from: "__input", to: "agent", sourceHandle: "data-out:topic", targetHandle: "data-in:subject",
       });
@@ -292,6 +300,25 @@ describe("canvas asset editing", () => {
     } finally {
       wrapper.unmount();
     }
+  });
+
+  it("excludes a back edge through a data dependency from the drag targets", async () => {
+    const schema = { type: "object" as const, properties: { value: { type: "string" } }, required: ["value"] };
+    const wrapper = mount(WorkflowGraphCanvas, { props: { definition: {
+      name: "Cycle", port_contract_version: 2, entry_task_ids: ["a"], input_contract: schema,
+      tasks: ["a", "b"].map((id) => ({ id, name: id, transform: "map_fields" as const, input_contract: schema, output_contract: schema })),
+      edges: [{ source: "a", target: "b" }],
+    } }, global: { stubs: { TeamsFlowCanvas: { name: "TeamsFlowCanvas", props: ["nodes"], emits: ["connect", "connectionDrag"], template: "<div />" }, WorkflowLoopPanel: true } } });
+    try {
+      const canvas = wrapper.getComponent({ name: "TeamsFlowCanvas" });
+      canvas.vm.$emit("connectionDrag", { nodeId: "b", handleId: "data-out:value", handleType: "source" });
+      await wrapper.vm.$nextTick();
+      expect(canvas.props("nodes").find((n: FlowNode) => n.id === "a").data.eligible).not.toContain("data-in:value");
+      canvas.vm.$emit("connect", { from: "b", to: "a", sourceHandle: "data-out:value", targetHandle: "data-in:value" });
+      await wrapper.vm.$nextTick();
+      expect(wrapper.text()).toContain("graph.controlCycle");
+      expect(wrapper.emitted("update:definition")).toBeUndefined();
+    } finally { wrapper.unmount(); }
   });
 
   it("connects managed references and messages only to ports of the same format", async () => {

@@ -398,9 +398,6 @@ const members = computed(() =>
   border-bottom: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
   color: rgb(var(--v-theme-on-surface));
 }
-.run-task:last-child {
-  border-bottom: 0;
-}
 .run-task-selected {
   background: rgba(var(--v-theme-primary), 0.07);
 }

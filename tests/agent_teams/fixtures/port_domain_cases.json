@@ -1,0 +1,12 @@
+[
+  {"name": "split-enum", "source": {"type": "string", "enum": ["draft"]}, "target": {"type": "string", "enum": ["approved"]}, "compatible": false},
+  {"name": "partial-overlap", "source": {"type": "string", "enum": ["draft", "approved"]}, "target": {"type": "string", "const": "approved"}, "compatible": true},
+  {"name": "null-versus-false", "source": {"type": ["boolean", "null"], "const": null}, "target": {"type": ["boolean", "null"], "enum": [false]}, "compatible": false},
+  {"name": "json-bool-is-not-number", "source": {"type": ["boolean", "integer"], "const": true}, "target": {"type": ["boolean", "integer"], "enum": [1]}, "compatible": false},
+  {"name": "object-member-order", "source": {"type": "object", "const": {"x": 1, "y": 2}}, "target": {"type": "object", "enum": [{"y": 2, "x": 1}]}, "compatible": true},
+  {"name": "nested-allof", "source": {"type": "object", "allOf": [{"properties": {"tag": {"type": "string", "enum": ["a", "b"]}}, "required": ["tag"]}]}, "target": {"type": "object", "properties": {"tag": {"type": "string", "allOf": [{"const": "c"}]}}, "required": ["tag"]}, "compatible": false},
+  {"name": "array-items", "source": {"type": "array", "items": {"type": "string", "enum": ["x"]}}, "target": {"type": "array", "items": {"type": "string", "const": "y"}}, "compatible": false},
+  {"name": "absent-optional", "source": {"type": "object", "properties": {"tag": {"type": "string", "const": "x"}}}, "target": {"type": "object", "properties": {"tag": {"type": "string", "const": "y"}}}, "compatible": true},
+  {"name": "overlap-outside-type", "source": {"type": "string", "enum": ["a", 1]}, "target": {"type": "string", "enum": ["b", 1]}, "compatible": false},
+  {"name": "false-allof", "source": {"type": "string", "allOf": [false]}, "target": {"type": "string"}, "compatible": false}
+]

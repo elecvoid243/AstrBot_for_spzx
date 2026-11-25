@@ -1,4 +1,14 @@
 {
+  "assetLoading": {
+    "assets": "工作流资产",
+    "roles": "角色",
+    "runs": "运行记录",
+    "resources": "本地资源",
+    "workflowDrafts": "工作流草稿",
+    "teamDrafts": "团队草稿",
+    "retry": "重试",
+    "unsupported": "资产 {id} 的 v{version} 格式不受支持。其他资产仍可使用。"
+  },
   "releaseBrief": {
     "title": "发布简报",
     "pinned": "置顶示例",
@@ -23,7 +33,7 @@
       "steps": {
         "canvas": {
           "title": "在画布上读懂流程",
-          "body": "点击示例卡片上的「{canvas}」，依次查看 Prepare brief、Review brief 和 Deliver brief。准备节点还有一条数据线，直接把项目名称和摘要传给交付节点。"
+          "body": "点击示例卡片上的「{canvas}」，依次查看 Prepare brief、Review brief 和 Deliver brief。准备节点还有一条数据线，直接把项目名称和摘要传给交付节点。 拖动绿色数据端口时，画布会突出显示可接收数据的位置。蓝色执行入口接收上一步的控制线。"
         },
         "start": {
           "title": "用两个字段启动运行",
@@ -575,6 +585,14 @@
     }
   },
   "graph": {
+    "duplicateConnection": "这条连接已经存在。",
+    "controlIn": "执行入口",
+    "controlOut": "执行出口",
+    "dataToControl": "这里接执行顺序。要传入数据，请连接下方的数据端口：{ports}。",
+    "controlOnly": "这个端口只接受控制线。",
+    "controlToData": "这里接数据。请将执行出口连接到节点的执行入口。",
+    "resultConnection": "工作流输出只能连接结果任务专用的输出端口。",
+    "controlCycle": "这条控制线会形成无界循环。",
     "plugin_component_v1": "插件组件",
     "pluginComponentLoadFailed": "无法加载已安装组件目录。",
     "pluginComponentUnavailable": "请安装并启用对应的固定组件版本。",

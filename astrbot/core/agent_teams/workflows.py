@@ -31,7 +31,7 @@ from pydantic import (
 from referencing import Registry, Resource
 from referencing.exceptions import Unresolvable
 from referencing.jsonschema import DRAFT202012, Schema
-from sqlalchemy import and_, case, func, literal, or_, true
+from sqlalchemy import Text, and_, case, func, literal, or_, true
 from sqlalchemy import select as sa_select
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.exc import IntegrityError
@@ -1461,72 +1461,95 @@ class WorkflowService:
             RoleAssetError: Asset version is inaccessible.
         """
         async with self.db.get_db() as session:
-            rows = (
-                await session.execute(
-                    select(
-                        AgentWorkflowVersion,
-                        col(AgentWorkflowExample.asset_id).is_not(None),
-                    )
-                    .outerjoin(
-                        AgentWorkflowExample,
-                        and_(
-                            AgentWorkflowExample.owner_username
-                            == AgentWorkflowVersion.owner_username,
-                            AgentWorkflowExample.asset_id
-                            == AgentWorkflowVersion.asset_id,
-                        ),
-                    )
-                    .where(
-                        AgentWorkflowVersion.asset_id == asset_id,
-                        AgentWorkflowVersion.owner_username == username,
-                    )
-                    .order_by(col(AgentWorkflowVersion.version).desc())
+            await session.execute(text("BEGIN"))
+            asset = AgentWorkflowVersion
+            owned = (asset.asset_id == asset_id, asset.owner_username == username)
+            query = sa_select(
+                asset.version,
+                col(asset.definition).cast(Text).label("body"),
+                sa_select(AgentWorkflowExample.asset_id)
+                .where(
+                    AgentWorkflowExample.asset_id == asset_id,
+                    AgentWorkflowExample.owner_username == username,
                 )
-            ).all()
-            row, is_example = next(
-                (
-                    (r, marker)
-                    for r, marker in rows
-                    if version is None or r.version == version
-                ),
-                (None, False),
-            )
+                .exists()
+                .label("is_example"),
+                sa_select(AgentAssetTombstone.asset_id)
+                .where(
+                    AgentAssetTombstone.kind == "workflow",
+                    AgentAssetTombstone.asset_id == asset_id,
+                )
+                .exists()
+                .label("deleted"),
+            ).where(*owned)
+            if version is not None:
+                query = query.where(asset.version == version)
+            row = (
+                await session.execute(
+                    query.order_by(col(asset.version).desc()).limit(1)
+                )
+            ).one_or_none()
             if row is None:
                 raise RoleAssetError("Workflow version not found", status=404)
             try:
-                WorkflowSaveRequest.model_validate({"definition": row.definition})
-            except ValidationError as exc:
-                raise RoleAssetError(
-                    "Stored workflow format is unsupported; recreate it in the current editor",
+                definition = json.loads(row.body)
+                WorkflowSaveRequest.model_validate({"definition": definition})
+            except (ValidationError, ValueError) as exc:
+                fields = (
                     [
                         {
                             "path": ".".join(map(str, error["loc"])),
                             "code": "UNSUPPORTED_FORMAT",
                             "message": error["msg"],
                         }
-                        for error in exc.errors()
-                    ],
+                        for error in exc.errors(include_input=False)
+                    ]
+                    if isinstance(exc, ValidationError)
+                    else [
+                        {
+                            "path": "definition",
+                            "code": "UNSUPPORTED_FORMAT",
+                            "message": "Invalid stored JSON",
+                        }
+                    ]
+                )
+                raise RoleAssetError(
+                    "Stored workflow format is unsupported; recreate it in the current editor",
+                    fields,
                     status=409,
                 ) from exc
+            versions = (
+                (
+                    await session.execute(
+                        sa_select(asset.version)
+                        .where(*owned)
+                        .order_by(col(asset.version).desc())
+                    )
+                )
+                .scalars()
+                .all()
+            )
             return {
                 "asset_id": asset_id,
                 "version": row.version,
-                "definition": row.definition,
-                "versions": [r.version for r, _ in rows],
-                "is_builtin_example": is_example,
-                "deleted": await session.get(
-                    AgentAssetTombstone, ("workflow", asset_id)
-                )
-                is not None,
+                "definition": definition,
+                "versions": list(versions),
+                "is_builtin_example": row.is_example,
+                "deleted": row.deleted,
             }
 
     async def list_assets(
-        self, username: str, *, include_example: bool = False
+        self,
+        username: str,
+        *,
+        include_example: bool = False,
+        summary_only: bool = False,
     ) -> dict:
         """List the owner's latest asset versions.
 
         Args:
             username: Authenticated owner.
+            summary_only: Return compact fields for workbench cards.
             include_example: Provision this owner's sample on first workbench access.
 
         Returns:
@@ -1539,30 +1562,121 @@ class WorkflowService:
                 await self.save_asset(
                     username, {"definition": RELEASE_BRIEF}, provision_example=True
                 )
+        assets = []
+        unavailable = []
         async with self.db.get_db() as session:
-            identities = (
-                (
-                    await session.execute(
-                        select(AgentWorkflowVersion.asset_id)
-                        .where(
-                            AgentWorkflowVersion.owner_username == username,
-                            ~sa_select(AgentAssetTombstone.asset_id)
-                            .where(
-                                AgentAssetTombstone.kind == "workflow",
-                                AgentAssetTombstone.asset_id
-                                == AgentWorkflowVersion.asset_id,
-                            )
-                            .exists(),
-                        )
-                        .distinct()
-                        .order_by(AgentWorkflowVersion.asset_id)
-                    )
+            await session.execute(text("BEGIN"))
+            latest = (
+                sa_select(
+                    AgentWorkflowVersion.asset_id,
+                    func.max(AgentWorkflowVersion.version).label("version"),
                 )
-                .scalars()
-                .all()
+                .where(AgentWorkflowVersion.owner_username == username)
+                .group_by(AgentWorkflowVersion.asset_id)
+                .subquery()
             )
-        assets = [await self.get_asset(username, identity) for identity in identities]
-        return {"assets": [asset for asset in assets if not asset["deleted"]]}
+            rows = (
+                await session.execute(
+                    sa_select(
+                        AgentWorkflowVersion.asset_id,
+                        AgentWorkflowVersion.version,
+                        col(AgentWorkflowVersion.definition).cast(Text).label("body"),
+                        col(AgentWorkflowExample.asset_id)
+                        .is_not(None)
+                        .label("is_example"),
+                    )
+                    .join(
+                        latest,
+                        and_(
+                            AgentWorkflowVersion.asset_id == latest.c.asset_id,
+                            AgentWorkflowVersion.version == latest.c.version,
+                        ),
+                    )
+                    .outerjoin(
+                        AgentWorkflowExample,
+                        and_(
+                            AgentWorkflowExample.asset_id
+                            == AgentWorkflowVersion.asset_id,
+                            AgentWorkflowExample.owner_username == username,
+                        ),
+                    )
+                    .where(
+                        AgentWorkflowVersion.owner_username == username,
+                        ~sa_select(AgentAssetTombstone.asset_id)
+                        .where(
+                            AgentAssetTombstone.kind == "workflow",
+                            AgentAssetTombstone.asset_id
+                            == AgentWorkflowVersion.asset_id,
+                        )
+                        .exists(),
+                    )
+                    .order_by(AgentWorkflowVersion.asset_id)
+                )
+            ).all()
+            versions: dict[str, list[int]] = {}
+            if rows and not summary_only:
+                for identity, version in (
+                    await session.execute(
+                        select(
+                            AgentWorkflowVersion.asset_id, AgentWorkflowVersion.version
+                        )
+                        .where(AgentWorkflowVersion.owner_username == username)
+                        .order_by(col(AgentWorkflowVersion.version).desc())
+                    )
+                ).all():
+                    versions.setdefault(identity, []).append(version)
+            for row in rows:
+                try:
+                    definition = json.loads(row.body)
+                    parsed = WorkflowSaveRequest.model_validate(
+                        {"definition": definition}
+                    ).definition
+                except (ValidationError, ValueError):
+                    unavailable.append(
+                        {
+                            "asset_id": row.asset_id,
+                            "version": row.version,
+                            "code": "UNSUPPORTED_FORMAT",
+                        }
+                    )
+                    continue
+                item = {
+                    "asset_id": row.asset_id,
+                    "version": row.version,
+                    "is_builtin_example": row.is_example,
+                    "deleted": False,
+                }
+                if summary_only:
+                    team = isinstance(parsed, AutonomousDefinition)
+                    item["summary"] = {
+                        "name": parsed.name,
+                        "kind": "autonomous" if team else "workflow",
+                        "max_parallel": parsed.max_parallel,
+                        "count": len(parsed.allowed_roles if team else parsed.tasks),
+                        "preview": [
+                            member.role.name if member.role else member.id
+                            for member in parsed.allowed_roles[:4]
+                        ]
+                        if team
+                        else [task.name for task in parsed.tasks[:4]],
+                        **(
+                            {
+                                "preview_role_ids": [
+                                    member.role_id
+                                    for member in parsed.allowed_roles[:4]
+                                ]
+                            }
+                            if team
+                            else {}
+                        ),
+                    }
+                else:
+                    item.update(definition=definition, versions=versions[row.asset_id])
+                assets.append(item)
+        return {
+            "assets": assets,
+            **({"unavailable_assets": unavailable} if unavailable else {}),
+        }
 
     async def _asset_closure(
         self,
@@ -6343,16 +6457,27 @@ class WorkflowService:
                 )
             return {"requests": requests}
 
-    async def list_runs(self, username: str, limit: int = 50) -> dict:
+    async def list_runs(
+        self,
+        username: str,
+        limit: int = 50,
+        *,
+        summary_only: bool = False,
+        include_artifacts: bool = False,
+    ) -> dict:
         """List persisted runs, including inactive and interrupted executions.
 
         Args:
             username: Authenticated owner.
             limit: Maximum number of recent records, capped at 100.
+            summary_only: Read card progress and artifact counts in batches.
+            include_artifacts: Include selectable artifact versions and readable previews in compact results.
 
         Returns:
             Recent run overviews, without full configuration, results or history.
         """
+        if summary_only:
+            return await self._list_run_cards(username, limit, include_artifacts)
         async with self.db.get_db() as session:
             identities = (
                 (
@@ -6380,6 +6505,155 @@ class WorkflowService:
                 for identity in identities
             ]
         }
+
+    async def _list_run_cards(
+        self, username: str, limit: int, include_artifacts: bool
+    ) -> dict:
+        """Read one consistent page without loading frozen prompts, results or process history.
+
+        Args:
+            username: Owner of the root runs and their descendants.
+            limit: Maximum number of recent roots.
+            include_artifacts: Fetch versions and previews when an input picker opens.
+
+        Returns:
+            Workbench summaries including current task progress and exact artifact choices.
+        """
+        run = AgentWorkflowRun
+        root = run.snapshot["root_run_id"].as_string()
+        async with self.db.get_db() as session:
+            await session.execute(text("BEGIN"))
+            roots = (
+                await session.execute(
+                    sa_select(
+                        run.run_id,
+                        run.status,
+                        run.snapshot["definition"]["name"].as_string().label("name"),
+                        func.substr(run.snapshot["task"].as_string(), 1, 200).label(
+                            "goal"
+                        ),
+                        run.snapshot["trial"]["mode"].as_string().label("trial_mode"),
+                        run.snapshot["trial"]["draft_revision"]
+                        .as_integer()
+                        .label("revision"),
+                        run.state["reason"].as_string().label("reason"),
+                        AgentWorkflowControl.status.label("control"),
+                    )
+                    .outerjoin(
+                        AgentWorkflowControl, AgentWorkflowControl.run_id == run.run_id
+                    )
+                    .where(
+                        run.owner_username == username,
+                        root.is_not(None),
+                        run.snapshot["parent_run_id"].as_string().is_(None),
+                    )
+                    .order_by(col(run.created_at).desc(), run.run_id)
+                    .limit(max(1, min(limit, 100)))
+                )
+            ).all()
+            cards = {
+                r.run_id: {
+                    "run_id": r.run_id,
+                    "status": r.status,
+                    "snapshot": {
+                        "definition": {"name": r.name},
+                        "task": r.goal if r.goal is not None else r.name,
+                        **(
+                            {
+                                "trial": {
+                                    "mode": r.trial_mode,
+                                    "draft_revision": r.revision,
+                                }
+                            }
+                            if r.trial_mode
+                            else {}
+                        ),
+                    },
+                    "state": {"reason": r.reason} if r.reason else {},
+                    "control": {"status": r.control or "active"},
+                    "artifact_count": 0,
+                    **({"artifacts": []} if include_artifacts else {}),
+                    "progress": {
+                        "total": 0,
+                        "completed": 0,
+                        "running": 0,
+                        "waiting": 0,
+                    },
+                }
+                for r in roots
+            }
+            if not cards:
+                return {"runs": []}
+            family = (
+                await session.execute(
+                    sa_select(
+                        run.run_id,
+                        root.label("root"),
+                        run.status,
+                        run.snapshot["engine"].as_string().label("engine"),
+                        run.state["task_runs"].label("current_tasks"),
+                        run.snapshot["task_runs"].label("initial_tasks"),
+                        run.state["capacity_released"].as_boolean().label("released"),
+                    ).where(run.owner_username == username, root.in_(list(cards)))
+                )
+            ).all()
+            by_id = {r.run_id: r for r in family}
+            for r in family:
+                if r.engine == "graph_v2":
+                    ids = (
+                        r.current_tasks
+                        if r.current_tasks is not None
+                        else r.initial_tasks
+                    ) or {}
+                    tasks = (
+                        by_id[i]
+                        for i in ids.values()
+                        if i in by_id and by_id[i].root == r.root
+                    )
+                elif r.run_id == r.root:
+                    tasks = (r,)
+                else:
+                    continue
+                progress = cards[r.root]["progress"]
+                for task in tasks:
+                    progress["total"] += 1
+                    if task.status in {"completed", "skipped"}:
+                        progress["completed"] += 1
+                    elif task.status == "running" and not task.released:
+                        progress["running"] += 1
+                    elif task.status != "pending":
+                        progress["waiting"] += 1
+            artifact = AgentWorkflowArtifact
+            if include_artifacts:
+                records = await session.execute(
+                    sa_select(
+                        root, artifact.artifact_id, artifact.version, artifact.content
+                    )
+                    .select_from(artifact)
+                    .join(run, run.run_id == artifact.run_id)
+                    .where(run.owner_username == username, root.in_(list(cards)))
+                    .order_by(artifact.artifact_id, artifact.version)
+                )
+                for root_id, identity, version, content in records:
+                    cards[root_id]["artifacts"].append(
+                        {
+                            "artifact_id": identity,
+                            "version": version,
+                            "summary": json.dumps(content, ensure_ascii=False)[:200],
+                        }
+                    )
+                    cards[root_id]["artifact_count"] += 1
+            else:
+                counts = await session.execute(
+                    sa_select(root, func.count())
+                    .select_from(artifact)
+                    .join(run, run.run_id == artifact.run_id)
+                    .where(run.owner_username == username, root.in_(list(cards)))
+                    .group_by(root)
+                )
+                for root_id, count in counts:
+                    cards[root_id]["artifact_count"] = count
+        return {"runs": list(cards.values())}
 
     async def _compile_trial(
         self, username: str, asset_id: str, request: TrialRunRequest

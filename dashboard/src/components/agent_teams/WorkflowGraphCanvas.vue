@@ -326,7 +326,7 @@
       <div class="graph-stage" tabindex="0" :aria-label="tm('graph.canvas')">
         <TeamsFlowCanvas
           ref="canvas"
-          :nodes="nodes"
+          :nodes="dragNodes"
           :edges="edges"
           :mode="readonly ? 'monitor' : 'edit'"
           :minimap-visible="minimap"
@@ -334,6 +334,7 @@
           :selected-edge-id="selectedEdgeKey"
           @drop-at="addTask"
           @connect="connect"
+          @connection-drag="dragOrigin = $event"
           @position-change="move"
           @dimensions-change="measureNodes"
           @select-node="selectNode"
@@ -1356,6 +1357,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import type { WorkflowComponent } from "@/api/generated/openapi-v1";
+import { incompatiblePortShapes, inlinePortTypes } from "./workflowPortContracts";
 import TeamsFlowCanvas from "./TeamsFlowCanvas.vue";
 import { parseWorkflowInputs } from "./StructuredWorkflowInputs.vue";
 import WorkflowLoopPanel from "./WorkflowLoopPanel.vue";
@@ -1831,25 +1833,6 @@ const boundOutputFields = computed(() => {
   }
   return fields;
 });
-
-/** Resolve declared JSON types through inline allOf fragments. */
-function inlinePortTypes(schema: unknown): string[] {
-  const fragments: unknown[] = [schema];
-  let types: string[] | undefined;
-  for (const fragment of fragments) {
-    if (!fragment || typeof fragment !== "object" || Array.isArray(fragment)) continue;
-    const { type, allOf } = fragment as PortSchema;
-    if (Array.isArray(allOf)) fragments.push(...allOf);
-    const declared = (Array.isArray(type) ? type : [type]).filter(
-      (kind): kind is string => typeof kind === "string" && jsonTypes.includes(kind),
-    );
-    if (!declared.length) continue;
-    if (declared.includes("number") && !declared.includes("integer")) declared.push("integer");
-    types = types ? types.filter((kind) => declared.includes(kind)) : declared;
-  }
-  const resolved = types ?? [];
-  return resolved.includes("number") ? resolved.filter((kind) => kind !== "integer") : resolved;
-}
 
 function resetDecisionCriteria(task: GraphTask) {
   if (!task.decision) return;
@@ -3099,44 +3082,99 @@ async function saveInlineRole() {
     savingRole.value = false;
   }
 }
-/** Check simple inline shapes before dropping a link. The server resolves full JSON Schemas. */
-function incompatiblePortShapes(source: unknown, target: unknown): boolean {
-  if (!source || !target || typeof source !== "object" || typeof target !== "object" ||
-    Array.isArray(source) || Array.isArray(target)) return false;
+type PortDrag = { nodeId: string; handleId?: string | null; handleType: "source" | "target" };
+const dragOrigin = ref<PortDrag | null>(null);
 
-  const sourceSchema = source as PortSchema;
-  const targetSchema = target as PortSchema;
-  const sourceTypes = inlinePortTypes(sourceSchema);
-  const targetTypes = inlinePortTypes(targetSchema);
-  if (!sourceTypes.length || !targetTypes.length) return false;
-
-  const commonTypes = sourceTypes.filter((type) => targetTypes.includes(type) ||
-    (type === "integer" && targetTypes.includes("number")) || (type === "number" && targetTypes.includes("integer")));
-  if (!commonTypes.length) return true;
-
-  if (commonTypes.every((type) => type === "object")) {
-    const sourceFields = (sourceSchema.properties ?? {}) as Record<string, unknown>;
-    const targetFields = (targetSchema.properties ?? {}) as Record<string, unknown>;
-    const required = new Set([
-      ...(Array.isArray(sourceSchema.required) ? sourceSchema.required : []),
-      ...(Array.isArray(targetSchema.required) ? targetSchema.required : []),
-    ]);
-    return [...required].some((name) => {
-      const sourceField = Object.prototype.hasOwnProperty.call(sourceFields, name) ? sourceFields[name] : undefined;
-      const targetField = Object.prototype.hasOwnProperty.call(targetFields, name) ? targetFields[name] : undefined;
-      return (sourceField === undefined && sourceSchema.additionalProperties === false && !sourceSchema.patternProperties) ||
-        (targetField === undefined && targetSchema.additionalProperties === false && !targetSchema.patternProperties) ||
-        incompatiblePortShapes(sourceField, targetField);
-    });
-  }
-
-  if (commonTypes.every((type) => type === "array") && [sourceSchema, targetSchema].every(
-    (schema) => !schema.prefixItems && schema.maxItems !== 0 && schema.items !== false,
-  )) {
-    return incompatiblePortShapes(sourceSchema.items, targetSchema.items);
+/** A V2 link can close a cycle through a control, data, or loop-exit dependency. */
+function closesDependencyCycle(from: string, to: string) {
+  const loopOf = (id: string) => draft.value.loops?.find((loop) => loop.body.includes(id));
+  const visited = new Set<string>();
+  const pending = [from];
+  const exit = loopOf(from);
+  if (explicitControl.value && exit && !exit.body.includes(to)) pending.push(exit.exit_task_id);
+  while (pending.length) {
+    const id = pending.pop()!;
+    if (id === to) return true;
+    if (visited.has(id)) continue;
+    visited.add(id);
+    const dependencies = (draft.value.edges ?? []).filter((edge) => edge.target === id).map((edge) => edge.source);
+    if (explicitControl.value) {
+      const node = draft.value.tasks.find((task) => task.id === id);
+      for (const ref of Object.values(node?.inputs ?? {})) if (ref.task_id) dependencies.push(ref.task_id);
+      for (const source of [...dependencies]) {
+        const loop = loopOf(source);
+        if (loop && !loop.body.includes(id)) dependencies.push(loop.exit_task_id);
+      }
+    }
+    pending.push(...dependencies);
   }
   return false;
 }
+
+/** Match the drop diagnostic and the drag-time highlighting to the same connection rules. */
+function connectionProblem(from: string, to: string, outputId?: string | null, inputId?: string | null): string {
+  const sourceNode = nodes.value.find((node) => node.id === from);
+  const targetNode = nodes.value.find((node) => node.id === to);
+  if (!sourceNode || !targetNode || from === to || from.startsWith("loop:") || to.startsWith("loop:")) {
+    return tm("graph.invalidPortConnection");
+  }
+  const dataOutput = outputId?.startsWith("data-");
+  const dataInput = inputId?.startsWith("data-");
+  if (dataOutput || dataInput) {
+    if (!dataInput) {
+      const aliases = targetNode.data.inputPorts
+        ?.filter((port) => !connectionProblem(from, to, outputId, port.id))
+        .map((port) => port.label);
+      return aliases?.length ? tm("graph.dataToControl", { ports: aliases.join(", ") }) : tm("graph.controlOnly");
+    }
+    if (!dataOutput) return tm("graph.controlToData");
+    const resultHandle = structuredPorts.value ? "data-out-result" : "data-out:text";
+    if (to === "__output" ? from === "__input" || outputId !== resultHandle : outputId === "data-out-result") {
+      return tm("graph.resultConnection");
+    }
+    const output = sourceNode.data.outputPorts?.find((port) => port.id === outputId);
+    const input = targetNode.data.inputPorts?.find((port) => port.id === inputId);
+    const compatible = output?.types?.length && input && output.types.every((type) =>
+      input.types?.includes(type) || (type === "integer" && input.types?.includes("number")));
+    if (!compatible || (structuredPorts.value && incompatiblePortShapes(output.schema, input.schema))) {
+      return [output?.label, input?.label, tm("graph.invalidPortConnection")].filter(Boolean).join(" · ");
+    }
+    if (from !== "__input" && to !== "__output") {
+      if (!explicitControl.value && !controlAncestors(to).has(from)) return tm("graph.dataSourceUpstream");
+      if (explicitControl.value && closesDependencyCycle(from, to)) return tm("graph.controlCycle");
+    }
+    return "";
+  }
+  if (outputId === "control-entry") {
+    if (draft.value.entry_task_ids?.includes(to)) return tm("graph.duplicateConnection");
+    const hasPredecessor = draft.value.edges?.some((edge) => edge.target === to);
+    return targetNode.data.controlKind === "join" || hasPredecessor ? tm("graph.entryHasDependency") : "";
+  }
+  if (from.startsWith("__") || to.startsWith("__") || draft.value.entry_task_ids?.includes(to)) {
+    return tm("graph.entryHasDependency");
+  }
+  if (draft.value.edges?.some((edge) => edge.source === from && edge.target === to)) return tm("graph.duplicateConnection");
+  return closesDependencyCycle(from, to) ? tm("graph.controlCycle") : "";
+}
+
+const dragNodes = computed(() => {
+  const origin = dragOrigin.value;
+  if (!origin || !typedPorts.value) return nodes.value;
+  const receiving = origin.handleType === "source";
+  return nodes.value.map((node) => {
+    const ports = receiving ? node.data.inputPorts : node.data.outputPorts;
+    const handles = (ports ?? []).map((port) => port.id);
+    if (!receiving && (node.data.controlKind === "condition" || node.data.approval)) {
+      handles.push("matched-true", "matched-false");
+    } else if (!node.data.interfaceNode || (!receiving && node.data.controlEntry)) {
+      handles.push(!receiving && node.data.controlEntry ? "control-entry" : "control");
+    }
+    const eligible = handles.filter((id) => receiving
+      ? !connectionProblem(origin.nodeId, node.id, origin.handleId, id)
+      : !connectionProblem(node.id, origin.nodeId, id, origin.handleId));
+    return { ...node, data: { ...node.data, eligible, highlightSide: receiving ? "target" : "source" } };
+  });
+});
 
 function connect({
   from,
@@ -3150,35 +3188,23 @@ function connect({
   targetHandle?: string | null;
 }) {
   if (props.readonly || from === to) return;
-  if (typedPorts.value && (sourceHandle?.startsWith("data-") || targetHandle?.startsWith("data-"))) {
-    const source = nodes.value.find((node) => node.id === from)?.data.outputPorts
-      ?.find((port) => port.id === sourceHandle);
-    const target = nodes.value.find((node) => node.id === to)?.data.inputPorts
-      ?.find((port) => port.id === targetHandle);
-    const field = source?.id.slice("data-out:".length);
-    const alias = target?.id.slice("data-in:".length);
-    const taskIndex = draft.value.tasks.findIndex((task) => task.id === to);
-    invalidPortPath.value = to === "__output" ? "definition.result_task_id" :
-      alias ? `definition.tasks.${taskIndex}.inputs.${alias}` : "";
-    const resultHandle = structuredPorts.value ? "data-out-result" : "data-out:text";
-    if (!source || !target || !field || !source.types?.length || !source.types.every(
-      (type) => target.types?.includes(type) || (type === "integer" && target.types?.includes("number")),
-    ) || (to === "__output" ? (from === "__input" || source.id !== resultHandle) : source.id === "data-out-result") ||
-      (structuredPorts.value && incompatiblePortShapes(source.schema, target.schema))) {
-      localError.value = [source?.label, target?.label, tm("graph.invalidPortConnection")]
-        .filter(Boolean).join(" · ");
+  if (typedPorts.value) {
+    const problem = connectionProblem(from, to, sourceHandle, targetHandle);
+    if (problem) {
+      const index = draft.value.tasks.findIndex((task) => task.id === to);
+      invalidPortPath.value = to === "__output" ? "definition.result_task_id" : targetHandle?.startsWith("data-in:") ? `definition.tasks.${index}.inputs.${targetHandle.slice(8)}` : "";
+      localError.value = problem;
       return;
     }
+  }
+  if (typedPorts.value && (sourceHandle?.startsWith("data-") || targetHandle?.startsWith("data-"))) {
+    const field = sourceHandle!.slice("data-out:".length);
+    const alias = targetHandle!.slice("data-in:".length);
     if (to === "__output") {
       draft.value.result_task_id = from;
     } else {
       const task = draft.value.tasks.find((item) => item.id === to);
       if (!task) return;
-      if (from !== "__input" && !explicitControl.value && !controlAncestors(to).has(from)) {
-        localError.value = tm("graph.dataSourceUpstream");
-        return;
-      }
-      if (!alias) return;
       task.inputs = {
         ...task.inputs,
         [alias]: from === "__input" ? { input: field } : { task_id: from, field },

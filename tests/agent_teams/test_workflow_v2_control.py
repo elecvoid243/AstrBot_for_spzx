@@ -101,7 +101,7 @@ async def test_control_paths_gate_structured_dependencies(
             {"source": "right", "target": "collect"},
             {"source": "collect", "target": "output"},
             {
-                "source": "left",
+                "source": "independent",
                 "target": "needs_right",
                 "condition": {"field": "text", "value": "missing"},
             },

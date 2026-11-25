@@ -72,7 +72,14 @@
     </p>
 
     <template v-if="mode === 'assets'">
-      <v-alert v-if="!assetCards.length && !loading" type="info" variant="tonal" class="at-empty-state">{{ tm("v2.emptyAssets") }}</v-alert>
+      <v-alert v-for="(reason, section) in sectionErrors" :key="section" type="warning" variant="tonal" class="mb-3">
+        {{ tm('assetLoading.' + section) }} · {{ reason }}
+        <v-btn variant="text" @click="loadAssetSection(section, runRead)">{{ tm("assetLoading.retry") }}</v-btn>
+      </v-alert>
+      <v-alert v-for="item in unavailableAssets" :key="item.asset_id" type="warning" variant="tonal" class="mb-3">
+        {{ tm("assetLoading.unsupported", { id: item.asset_id, version: item.version }) }}
+      </v-alert>
+      <v-alert v-if="!assetCards.length && !unavailableAssets.length && !Object.keys(sectionErrors).length && !loading" type="info" variant="tonal" class="at-empty-state">{{ tm("v2.emptyAssets") }}</v-alert>
       <div class="at-asset-grid">
         <template v-for="{ asset, draft } in assetCards" :key="asset.asset_id">
           <v-card v-if="draft" class="at-asset-card at-draft-card" variant="outlined">
@@ -100,10 +107,11 @@
               </div>
               <v-card-title>{{ assetDisplayName(asset) }}</v-card-title>
               <p v-if="asset.is_builtin_example && asset.version === 1" class="at-card-description">{{ tm("releaseBrief.description") }}</p>
+              <p v-else-if="asset.summary" class="at-card-description">{{ asset.summary.preview.map((name: string, i: number) => roleNames.get(asset.summary.preview_role_ids?.[i]) ?? name).join(' · ') }}</p>
               <p v-else class="at-card-description">{{ asset.definition.kind === 'autonomous' ? asset.definition.allowed_roles.map((member: any) => member.role?.name || roles.find((role: any) => role.role_id === member.role_id)?.definition.name || member.id).filter(Boolean).join(' · ') : asset.definition.tasks.map((task: any) => task.name).slice(0, 4).join(' · ') }}</p>
               <div class="at-card-metadata">
-                <span v-if="asset.definition.kind === 'autonomous'"><v-icon icon="mdi-account-multiple-outline" size="15" /> {{ tm("autonomous.allowedRoles") }} · {{ asset.definition.allowed_roles.length }}</span>
-                <span v-else><v-icon icon="mdi-transit-connection-variant" size="15" /> {{ tm("graph.count", { count: asset.definition.tasks.length }) }} <span class="at-meta-divider">·</span> {{ tm("graph.parallel") }} {{ asset.definition.max_parallel }}</span>
+                <span v-if="asset.definition.kind === 'autonomous'"><v-icon icon="mdi-account-multiple-outline" size="15" /> {{ tm("autonomous.allowedRoles") }} · {{ asset.summary?.count ?? asset.definition.allowed_roles.length }}</span>
+                <span v-else><v-icon icon="mdi-transit-connection-variant" size="15" /> {{ tm("graph.count", { count: asset.summary?.count ?? asset.definition.tasks.length }) }} <span class="at-meta-divider">·</span> {{ tm("graph.parallel") }} {{ asset.definition.max_parallel }}</span>
                 <span v-if="drafts.some((item) => item.asset_id === asset.asset_id && item.published_revision !== item.revision)" class="at-draft-indicator" data-testid="editing-draft"><i />{{ tm("draft.editing") }}</span>
               </div>
             </v-card-text>
@@ -119,8 +127,8 @@
                 <v-btn data-testid="delete-asset" variant="text" class="at-card-icon-action" :aria-label="tm('deletion.delete')" :title="tm('deletion.delete')" @click="deleteTarget = asset"><v-icon icon="mdi-trash-can-outline" size="18" /><span class="at-sr-only">{{ tm('deletion.delete') }}</span></v-btn>
               </div>
               <v-spacer />
-              <v-btn variant="text" data-testid="edit-workflow-asset" @click="asset.definition.kind === 'autonomous' ? editTeam(asset) : editGraph(asset)">{{ tm(asset.is_builtin_example ? "releaseBrief.canvas" : "v2.edit") }}</v-btn>
-              <v-btn variant="tonal" color="primary" prepend-icon="mdi-play-outline" data-testid="start-workflow-asset" @click="prepareRun(asset)">{{ tm("v2.start") }}</v-btn>
+              <v-btn variant="text" data-testid="edit-workflow-asset" @click="asset.definition.kind === 'autonomous' ? openCard(asset, 'edit') : editGraph(asset)">{{ tm(asset.is_builtin_example ? "releaseBrief.canvas" : "v2.edit") }}</v-btn>
+              <v-btn variant="tonal" color="primary" prepend-icon="mdi-play-outline" data-testid="start-workflow-asset" @click="openCard(asset, 'start')">{{ tm("v2.start") }}</v-btn>
             </v-card-actions>
             <div v-if="asset.is_builtin_example" v-show="guideOpen" id="workflow-example-guide" class="at-guide-body">
               <WorkflowExampleGuide v-if="guideOpen" />
@@ -237,8 +245,8 @@
               <p v-if="run.state.reason" class="workflow-text mt-2">
                 {{ run.state.reason }}
               </p>
-              <p v-if="run.artifacts?.length" class="text-caption mt-1">
-                {{ tm("progress.artifacts") }}: {{ run.artifacts.length }}
+              <p v-if="run.artifact_count ?? run.artifacts?.length" class="text-caption mt-1">
+                {{ tm("progress.artifacts") }}: {{ run.artifact_count ?? run.artifacts.length }}
               </p>
             </div>
             <v-btn variant="text" @click="openRun(run.run_id)">{{
@@ -919,6 +927,7 @@ async function exportWorkflow(asset: any) {
   }
 }
 const roles = ref<any[]>([]);
+const roleNames = computed(() => new Map(roles.value.map((role) => [role.role_id, role.definition?.name])));
 const catalog = ref<Record<string, any[]>>({
   profiles: [],
   models: [],
@@ -1408,8 +1417,9 @@ function clearFilePreview() {
   previewText.value = "";
   previewBlob.value = null;
 }
+const inputSourceRuns = ref<any[]>([]);
 const availableInputs = computed(() =>
-  runs.value.flatMap((run) =>
+  inputSourceRuns.value.flatMap((run) =>
     (run.artifacts ?? []).map((artifact: any) => ({
       title: `${run.snapshot.definition.name} · ${artifact.artifact_id} v${artifact.version}`,
       value: JSON.stringify({
@@ -1434,6 +1444,9 @@ watch(accountSessionRevision, () => {
   disposed = true;
   observation.value.abort();
   assets.value = [];
+  inputSourceRuns.value = [];
+  unavailableAssets.value = [];
+  sectionErrors.value = {};
   drafts.value = [];
   guideOpen.value = false;
   deleteTarget.value = null;
@@ -1450,6 +1463,56 @@ let pendingArtifact: { key: string; signal: AbortSignal; result: Promise<boolean
 let runRead = 0;
 let refreshingRead: number | null = null;
 let openingRunId: string | undefined;
+
+const assetSections = ["assets", "roles", "runs", "resources", "workflowDrafts", "teamDrafts"] as const;
+type AssetSection = typeof assetSections[number];
+const sectionErrors = ref<Partial<Record<AssetSection, string>>>({});
+const unavailableAssets = ref<{asset_id: string; version: number}[]>([]);
+const sectionRequests = new Map<AssetSection, number>();
+
+async function loadAssetSection(section: AssetSection, read: number) {
+  const request = (sectionRequests.get(section) ?? 0) + 1;
+  sectionRequests.set(section, request);
+  const current = () => !disposed && read === runRead && sectionRequests.get(section) === request;
+  try {
+    if (section === "assets") {
+      const data = await workflowAssetsApi.list(props.assetKind === "workflows", true);
+      if (!current()) return;
+      assets.value = data.assets.map((row: any) => row.summary ? { ...row, definition: row.summary } : row);
+      unavailableAssets.value = data.unavailable_assets ?? [];
+    } else if (section === "roles") {
+      const data = await roleAssetsApi.list();
+      if (current()) roles.value = data.roles;
+    } else if (section === "runs") {
+      const data = await workflowAssetsApi.runs();
+      if (current()) runs.value = data.runs;
+    } else if (section === "resources") {
+      const data = await roleAssetsApi.resources();
+      if (current() && data) catalog.value = data;
+    } else {
+      const kind = section === "workflowDrafts" ? "workflow" : "autonomous";
+      const items = await draftApi.list(kind);
+      if (current()) drafts.value = [...drafts.value.filter((item) => item.kind !== kind), ...items.map((item) => ({ ...item, kind }))];
+    }
+    if (current()) delete sectionErrors.value[section];
+  } catch (cause) {
+    if (current()) sectionErrors.value[section] = extractApiError(cause, tm("errors.operationFailed")).message;
+  }
+}
+
+let openingCard = 0;
+async function openCard(asset: any, action: "edit" | "start") {
+  const request = ++openingCard;
+  try {
+    const detail = asset.summary ? await workflowAssetsApi.get(asset.asset_id, asset.version) : asset;
+    if (disposed || request !== openingCard || !assets.value.some((item) => item.asset_id === asset.asset_id)) return;
+    if (detail.deleted) { await refresh(); return; }
+    if (action === "edit") editTeam(detail);
+    else prepareRun(detail);
+  } catch (cause) {
+    if (!disposed && request === openingCard) error.value = extractApiError(cause, tm("errors.operationFailed")).message;
+  }
+}
 
 /**
  * Refresh visible data while keeping timer-driven observations quiet.
@@ -1476,20 +1539,7 @@ async function refresh(background = false) {
   if (!background) loading.value = true;
   try {
     if (props.mode === "assets") {
-      const [assetData, roleData, runData, resources, workflowDrafts, teamDrafts] = await Promise.all([
-        workflowAssetsApi.list(props.assetKind === "workflows"),
-        roleAssetsApi.list(),
-        workflowAssetsApi.runs(),
-        roleAssetsApi.resources(),
-        draftApi.list("workflow"),
-        draftApi.list("autonomous"),
-      ]);
-      if (disposed || read !== runRead) return;
-      assets.value = assetData.assets;
-      drafts.value = [...workflowDrafts.map((item) => ({ ...item, kind: "workflow" })), ...teamDrafts.map((item) => ({ ...item, kind: "autonomous" }))];
-      roles.value = roleData.roles;
-      runs.value = runData.runs;
-      if (resources) catalog.value = resources;
+      await Promise.all(assetSections.map((section) => loadAssetSection(section, read)));
     } else {
       if (!props.conversationRunId) {
         const [runData, inboxData] = await Promise.all([
@@ -1604,12 +1654,14 @@ async function refresh(background = false) {
 }
 
 function editGraph(asset: any) {
+  openingCard++;
   void router.push({ name: 'AgentWorkflowEditor', params: { assetId: asset?.asset_id ?? 'new' } });
 }
 
 watch(teamEditing, (open, previous) => { if (!open && previous) void refresh(); });
 
 function editTeam(asset: any) {
+  openingCard++;
   editingAsset.value = asset;
   teamEditing.value = true;
 }
@@ -1697,6 +1749,16 @@ function prepareRun(asset: any) {
   starting.value = true;
   inputArtifacts.value = [];
   void checkReadiness();
+  inputSourceRuns.value = runs.value;
+  const target = asset.asset_id;
+  const request = openingCard;
+  void workflowAssetsApi.runs(true).then((data) => {
+    if (!disposed && starting.value && request === openingCard && runAsset.value?.asset_id === target)
+      inputSourceRuns.value = data.runs;
+  }).catch((cause) => {
+    if (!disposed && starting.value && request === openingCard && runAsset.value?.asset_id === target)
+      formError.value = extractApiError(cause, tm("errors.operationFailed")).message;
+  });
 }
 
 async function start() {

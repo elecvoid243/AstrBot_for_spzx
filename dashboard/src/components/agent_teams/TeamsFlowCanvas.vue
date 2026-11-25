@@ -15,6 +15,8 @@
       :min-zoom="0.2"
       :max-zoom="1.5"
       @connect="onConnect"
+      @connect-start="onDragStart"
+      @connect-end="emit('connectionDrag', null)"
       @nodes-change="onNodesChange"
       @node-drag-stop="onNodeDragStop"
       @node-click="onNodeClick"
@@ -138,7 +140,7 @@ export default {};
 //   out of running nodes.
 import { computed, watch } from 'vue';
 import { VueFlow, MarkerType, useVueFlow, SelectionMode } from '@vue-flow/core';
-import type { Connection, EdgeMouseEvent, NodeChange } from '@vue-flow/core';
+import type { Connection, EdgeMouseEvent, NodeChange, OnConnectStartParams } from '@vue-flow/core';
 import { useModuleI18n } from '@/i18n/composables';
 import { Background } from '@vue-flow/background';
 import { MiniMap } from '@vue-flow/minimap';
@@ -185,6 +187,7 @@ const props = withDefaults(
 
 const emit = defineEmits<{
   (e: 'connect', params: { from: string; to: string; sourceHandle?: string | null; targetHandle?: string | null }): void;
+  (e: 'connectionDrag', origin: {nodeId: string; handleId: string | null; handleType: 'source' | 'target'} | null): void;
   (e: 'positionChange', positions: Record<string, { x: number; y: number }>): void;
   (e: 'dimensionsChange', dimensions: Record<string, { width: number; height: number }>): void;
   (e: 'selectNode', nodeId: string | null): void;
@@ -283,6 +286,10 @@ const displayEdges = computed(() => {
     return next;
   });
 });
+
+function onDragStart({ nodeId, handleId, handleType }: OnConnectStartParams) {
+  if (nodeId && handleType) emit('connectionDrag', { nodeId, handleId, handleType });
+}
 
 /** Normalize a raw VueFlow connection and drop self-loops. */
 function onConnect(connection: Connection) {

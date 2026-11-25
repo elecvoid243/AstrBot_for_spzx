@@ -3,7 +3,7 @@
 import copy
 import json
 from graphlib import CycleError, TopologicalSorter
-from operator import ge, gt, le, lt
+from operator import eq, ge, gt, le, lt, ne
 from string import Formatter
 from typing import Literal, cast
 
@@ -759,6 +759,23 @@ def _structured_shape_conflict(source: dict, target: dict, port: str) -> str | N
             shapes.append(shape)
         if not allowed:
             return path
+        # A finite domain on either side lets us prove disjointness without
+        # enumerating arbitrary JSON values. JSON Schema distinguishes true and 1.
+        domains = []
+        for shape in shapes:
+            for schema in shape:
+                if "enum" in schema:
+                    domains.append(schema["enum"])
+                if "const" in schema:
+                    domains.append([schema["const"]])
+        if domains:
+            checks = [Draft202012Validator({"enum": domain}) for domain in domains]
+            checks.append(Draft202012Validator({"type": sorted(allowed)}))
+            if not any(
+                all(check.is_valid(value) for check in checks)
+                for value in min(domains, key=len)
+            ):
+                return path
         if allowed == {"object"}:
             required = {
                 name
@@ -968,6 +985,178 @@ def execute_port_transform(task: dict, inputs: dict, path: str) -> tuple[dict, d
             ],
         )
     return inputs, result
+
+
+def _branch_alternatives(
+    task: GraphTask, field: str, rules: list[FieldCondition]
+) -> list[set[int]]:
+    """Partition one output field into the distinguishable outcomes of its edges.
+
+    Args:
+        task: Producer of the already validated scalar field.
+        field: Output field used in comparisons.
+        rules: Conditions on the field, in edge order.
+
+    Returns:
+        Set of possible outcome indexes for each edge. One field is treated
+        independently of others to avoid enumerating combinations of paths.
+    """
+    schema = (
+        {"type": ["boolean"]}
+        if task.control
+        else field_schema(task.output_contract, field, structured=True)
+    )
+    kinds = set(schema["type"])
+    fragments = list(schema.get("constraints", []))
+    finite = None
+    for part in fragments:
+        if not isinstance(part, dict):
+            continue
+        fragments.extend(part.get("allOf", []))
+        if "const" in part:
+            finite = [part["const"]]
+            break
+        if "enum" in part:
+            finite = part["enum"]
+            break
+    if finite is not None:
+        validator = Draft202012Validator({"allOf": schema["constraints"]})
+        choices = [v for v in finite if validator.is_valid(v)]
+    elif kinds <= {"integer", "number"}:
+        # Odd ranks represent exact comparison values. Even ranks represent
+        # the intervening intervals, so even adjacent floats need no midpoint.
+        thresholds = sorted({cast(int | float, rule.value) for rule in rules})
+        positions = {value: 2 * i + 1 for i, value in enumerate(thresholds)}
+        ranks = set(range(2 * len(thresholds) + 1))
+        if kinds == {"integer"}:
+            for i, (low, high) in enumerate(zip(thresholds, thresholds[1:])):
+                if high - low <= 1:
+                    ranks.discard(2 * i + 2)
+        compare = {"eq": eq, "ne": ne, "lt": lt, "le": le, "gt": gt, "ge": ge}
+        return [
+            {
+                r
+                for r in ranks
+                if compare[rule.operator](r, positions[cast(int | float, rule.value)])
+            }
+            for rule in rules
+        ]
+    else:
+        choices = [r.value for r in rules]
+        if "boolean" in kinds:
+            choices.extend([False, True])
+        if "null" in kinds:
+            choices.append(None)
+        # Only equality tests are allowed for non-numeric or mixed kinds.
+        # Include an unmentioned value when the scalar domain is open.
+        if "string" in kinds:
+            other = ""
+            while other in choices:
+                other += "_"
+            choices.append(other)
+        elif kinds & {"integer", "number"}:
+            number = 0
+            while number in choices:
+                number += 1
+            choices.append(number)
+    return [
+        {i for i, value in enumerate(choices) if matches_condition(value, comparison)}
+        for comparison in (rule.model_dump() for rule in rules)
+    ]
+
+
+def _exclusive_binding_issues(
+    definition: GraphDefinition, order: tuple[str, ...]
+) -> list[dict]:
+    """Find required data produced on a mutually exclusive control path.
+
+    Args:
+        definition: Structurally validated graph with explicit control entries.
+        order: Topological order of its control and data dependencies.
+
+    Returns:
+        Diagnostics for bindings whose producer cannot run with the consumer.
+    """
+    tasks = {task.id: (i, task) for i, task in enumerate(definition.tasks)}
+    loops = {name: loop.id for loop in definition.loops for name in loop.body}
+    feedback = {(f.target, f.input) for loop in definition.loops for f in loop.feedback}
+    incoming: dict[str, list[GraphEdge]] = {name: [] for name in tasks}
+    for edge in definition.edges:
+        incoming[edge.target].append(edge)
+    by_field: dict[tuple[str, str], list[GraphEdge]] = {}
+    for edge in definition.edges:
+        if edge.condition:
+            by_field.setdefault((edge.source, edge.condition.field), []).append(edge)
+    alternatives = {}
+    for (source, field), edges in by_field.items():
+        regions = _branch_alternatives(
+            tasks[source][1],
+            field,
+            [edge.condition for edge in edges if edge.condition],
+        )
+        alternatives.update(
+            {
+                (edge.source, edge.target): values
+                for edge, values in zip(edges, regions, strict=True)
+            }
+        )
+    guards: dict[str, dict[tuple[str, str], set[int]]] = {}
+    issues = []
+    for name in order:
+        required = {}
+        for i, edge in enumerate(incoming[name]):
+            # Values tested inside a loop are comparable within that iteration.
+            # Outside the loop later iterations may have taken a different path.
+            path = {
+                key: value
+                for key, value in guards[edge.source].items()
+                if key[0] not in loops or loops[key[0]] == loops.get(name)
+            }
+            rule = edge.condition
+            if rule and (
+                edge.source not in loops or loops[edge.source] == loops.get(name)
+            ):
+                key = (edge.source, rule.field)
+                path[key] = alternatives[edge.source, edge.target]
+            # A field absent from any alternative has no mandatory constraint.
+            required = (
+                path
+                if i == 0
+                else {
+                    key: required[key] | path[key]
+                    for key in required.keys() & path.keys()
+                }
+            )
+        index, task = tasks[name]
+        contract = task_input_contract(
+            task.input_contract, task.transform, dispatch=bool(task.dispatch)
+        )
+        bindings = [
+            (f"inputs.{alias}", ref.task_id)
+            for alias, ref in task.inputs.items()
+            if ref.task_id
+            and port_requires_value(contract, alias)
+            and (name, alias) not in feedback
+        ]
+        if task.human and task.human.kind == "approval" and task.human.artifact_task_id:
+            bindings.append(("human.artifact_task_id", task.human.artifact_task_id))
+        for location, source in bindings:
+            for key, value in guards.get(source, {}).items():
+                if key[0] in loops and loops[key[0]] != loops.get(name):
+                    continue
+                combined = required[key] & value if key in required else value
+                if not combined:
+                    issues.append(
+                        {
+                            "path": f"definition.tasks.{index}.{location}",
+                            "code": "UNREACHABLE_DATA",
+                            "message": f"{source} and {name} require different outcomes of {key[0]}.{key[1]}.",
+                        }
+                    )
+                    break
+                required[key] = combined
+        guards[name] = required
+    return issues
 
 
 def validate_graph(
@@ -1878,6 +2067,8 @@ def validate_graph(
                     "message": "Connect a task with a required text output",
                 }
             )
+    if check_structured_shapes and entries is not None and not fields:
+        fields.extend(_exclusive_binding_issues(definition, execution_order))
     if result_requirement == "reachable" and result is not None and not fields:
         reachable: set[str] = set()
         task_indexes = {task.id: index for index, task in enumerate(definition.tasks)}

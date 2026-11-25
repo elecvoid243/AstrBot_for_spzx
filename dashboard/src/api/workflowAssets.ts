@@ -82,9 +82,9 @@ export const workflowAssetsApi = {
     return (await httpClient.post("/api/v1/workflow_assets/import", payload))
       .data.data;
   },
-  async list(includeExample = false) {
+  async list(includeExample = false, summaryOnly = false) {
     return (await httpClient.get("/api/v1/workflow_assets", {
-      params: { include_example: includeExample || undefined },
+      params: { include_example: includeExample || undefined, summary_only: summaryOnly || undefined },
     })).data.data;
   },
   async get(assetId: string, version?: number) {
@@ -132,8 +132,8 @@ export const workflowAssetsApi = {
   async humanRequests() {
     return (await httpClient.get("/api/v1/workflow_human_requests")).data.data;
   },
-  async runs() {
-    return (await httpClient.get("/api/v1/workflow_runs")).data.data;
+  async runs(includeArtifacts = false) {
+    return (await httpClient.get("/api/v1/workflow_runs", { params: { summary_only: true, include_artifacts: includeArtifacts || undefined } })).data.data;
   },
   async readiness(assetId: string, version: number) {
     return (

@@ -109,8 +109,13 @@ async def test_run_conversations_share_paging_and_enforce_dashboard_ownership(tm
                             {"parent_run_id": first} if run_id in (child, retry) else {}
                         ),
                         "asset_id": "research",
-                        "asset_version": 2,
+                        "asset_version": None if run_id == second else 2,
                         "definition": {"name": "Research"},
+                        **(
+                            {"debug_fork": {"definition": {"draft_revision": 7}}}
+                            if run_id == second
+                            else {}
+                        ),
                     },
                     updated_at=when + timedelta(days=index),
                 )
@@ -145,6 +150,15 @@ async def test_run_conversations_share_paging_and_enforce_dashboard_ownership(tm
         assert {entry["session_id"] for entry in page["items"]} == {
             legacy,
             f"workflow-run-{second}",
+        }
+        draft = await client.get(f"/api/v1/chat/run-conversations/{second}")
+        assert draft.status_code == 200, draft.text
+        assert draft.json()["data"]["session"]["run_conversation"] == {
+            "run_id": second,
+            "asset_id": "research",
+            "asset_version": None,
+            "status": "running",
+            "draft_revision": 7,
         }
         link = f"/api/v1/chat/run-conversations/{first}"
         for _ in range(2):

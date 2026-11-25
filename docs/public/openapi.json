@@ -11312,7 +11312,10 @@
             "type": "string"
           },
           "asset_version": {
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "status": {
             "type": "string"

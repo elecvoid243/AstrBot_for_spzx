@@ -486,6 +486,20 @@ class TrialRunRequest(BaseModel):
     sources: dict[str, TrialSource] = Field(default_factory=dict)
 
 
+class DebugForkSourceBinding(BaseModel):
+    """Select an exact recorded source port."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    source_port: str = Field(min_length=1, max_length=128)
+
+
+class DebugForkTestBinding(BaseModel):
+    """Supply an ordinary test value for a draft port."""
+
+    model_config = ConfigDict(extra="forbid", strict=True, allow_inf_nan=False)
+    value: JsonValue
+
+
 class DebugForkAttempt(BaseModel):
     """Identify the exact consumer attempt to preview."""
 
@@ -493,6 +507,11 @@ class DebugForkAttempt(BaseModel):
     scope_run_id: str = Field(min_length=1, max_length=128)
     task_run_id: str = Field(min_length=1, max_length=128)
     attempt_id: str = Field(min_length=1, max_length=128)
+    definition_mode: Literal["source", "draft"] = "source"
+    draft_revision: int | None = Field(default=None, ge=1)
+    bindings: dict[str, DebugForkSourceBinding | DebugForkTestBinding] = Field(
+        default_factory=dict, max_length=30
+    )
 
 
 class DebugForkReplacement(BaseModel):
@@ -3768,7 +3787,7 @@ class WorkflowService:
         username: str,
         run_id: str,
         request: DebugForkAttempt,
-    ) -> tuple[dict, dict]:
+    ) -> tuple[dict, dict | None]:
         """Project a frozen transform and its exact recorded input boundary.
 
         Args:
@@ -3778,7 +3797,7 @@ class WorkflowService:
             request: Scope, task and attempt selected in the inspector.
 
         Returns:
-            Persistable comparison data and the isolated single-node definition.
+            Comparison data and the isolated definition, if the node is available.
 
         Raises:
             RoleAssetError: The node cannot safely run or lacks replayable evidence.
@@ -3865,6 +3884,12 @@ class WorkflowService:
             )
 
         state = attempt.get("state") or {}
+        prior_fork = scope.snapshot.get("debug_fork") or {}
+        source_revision = (
+            (scope.snapshot.get("trial") or {}).get("draft_revision")
+            or (prior_fork.get("definition") or {}).get("draft_revision")
+            or (prior_fork.get("source") or {}).get("draft_revision")
+        )
         plan = {
             "source": {
                 "root_run_id": run_id,
@@ -3874,8 +3899,8 @@ class WorkflowService:
                 "asset_id": scope.snapshot["asset_id"],
                 "asset_version": scope.snapshot["asset_version"],
                 **(
-                    {"draft_revision": scope.snapshot["trial"]["draft_revision"]}
-                    if scope.snapshot.get("trial")
+                    {"draft_revision": source_revision}
+                    if source_revision is not None
                     else {}
                 ),
                 "workflow_name": definition["name"],
@@ -3890,27 +3915,374 @@ class WorkflowService:
             },
             "inputs": inputs,
         }
+        source_node, source_contract = node, contract
+        if request.definition_mode == "draft":
+            definition, node, contract = await self._apply_debug_fork_draft(
+                session, username, request, plan, node, contract
+            )
+        elif request.draft_revision is not None or request.bindings:
+            raise RoleAssetError("Draft bindings require the current draft definition")
+
         # Boundary bindings read the saved consumer values without scheduling producers.
-        isolated = {
-            "name": definition["name"],
-            "port_contract_version": definition["port_contract_version"],
-            "input_contract": contract,
-            "limits": definition.get("limits"),
-            "entry_task_ids": [node["id"]],
-            "result_task_id": node["id"],
-            "tasks": [
-                {
-                    **node,
-                    "inputs": {
-                        name: {"input": name} for name in contract["properties"]
-                    },
-                }
-            ],
-        }
+        properties = contract.get("properties")
+        isolated = (
+            {
+                "name": definition.get("name"),
+                "port_contract_version": definition["port_contract_version"],
+                "input_contract": contract,
+                "limits": definition.get("limits"),
+                "entry_task_ids": [node["id"]],
+                "result_task_id": node["id"],
+                "tasks": [
+                    {
+                        **node,
+                        "inputs": {
+                            name: {"input": name}
+                            for name in (
+                                properties if isinstance(properties, dict) else {}
+                            )
+                        },
+                    }
+                ],
+            }
+            if node is not None
+            else None
+        )
+        if request.definition_mode == "draft" and isolated is not None:
+            try:
+                projected = GraphDefinition.model_validate(isolated)
+                validate_graph(projected, result_requirement="reachable")
+            except (RoleAssetError, ValidationError) as exc:
+                plan["issues"].extend(
+                    exc.fields
+                    if isinstance(exc, RoleAssetError) and exc.fields
+                    else [{"path": "node", "code": "INVALID", "message": str(exc)}]
+                )
+            else:
+                plan["definition"]["workflow_name"] = projected.name
+                plan["definition"]["node_name"] = projected.tasks[0].name
+                self._bind_debug_fork_draft_inputs(
+                    plan, request, source_node, source_contract, node, contract
+                )
+            plan["ready"] = not plan["issues"]
+
         plan["preview_token"] = hashlib.sha256(
             json.dumps([plan, isolated], ensure_ascii=True).encode()
         ).hexdigest()
         return plan, isolated
+
+    async def _apply_debug_fork_draft(
+        self,
+        session: AsyncSession,
+        username: str,
+        request: DebugForkAttempt,
+        plan: dict,
+        source_node: dict,
+        source_contract: dict,
+    ) -> tuple[dict, dict | None, dict]:
+        """Project the selected node from the current draft of the source scope.
+
+        Args:
+            session: Transaction shared with source inspection and fork admission.
+            username: Owner of the source attempt and editable draft.
+            request: Draft revision and explicit input bindings, when supplied.
+            plan: Historical comparison to extend with draft changes and inputs.
+            source_node: Node used by the original attempt.
+            source_contract: Effective input contract used by the original attempt.
+
+        Returns:
+            Draft definition, eligible node if present, and its input contract.
+
+        Raises:
+            RoleAssetError: The draft is unavailable or its revision changed.
+        """
+        asset_id = plan["source"]["asset_id"]
+        draft = await session.get(AgentAssetDraft, ("workflow", asset_id))
+        if (
+            draft is None
+            or draft.owner_username != username
+            or await session.get(AgentAssetTombstone, ("workflow", asset_id))
+        ):
+            raise RoleAssetError("Current workflow draft is unavailable", status=404)
+        if (
+            request.draft_revision is not None
+            and request.draft_revision != draft.revision
+        ):
+            raise RoleAssetError("Draft revision changed", status=409)
+
+        definition = draft.body.get("definition", {})
+        tasks = definition.get("tasks")
+        matches = (
+            [
+                item
+                for item in tasks
+                if isinstance(item, dict) and item.get("id") == source_node["id"]
+            ]
+            if isinstance(tasks, list)
+            else []
+        )
+        node = matches[0] if matches else None
+        changes = []
+        plan["definition"] = {
+            "draft_revision": draft.revision,
+            "workflow_name": definition.get("name")
+            if isinstance(definition.get("name"), str)
+            else plan["source"]["workflow_name"],
+            "node_name": node["name"]
+            if node and isinstance(node.get("name"), str)
+            else source_node["name"],
+            "changes": changes,
+        }
+        plan["ready"] = False
+        plan["issues"] = []
+        transform = node.get("transform") if node else None
+        if (
+            node is None
+            or len(matches) != 1
+            or not isinstance(transform, str)
+            or transform not in DEBUG_FORK_TRANSFORMS
+            or definition.get("port_contract_version") != 2
+        ):
+            changes.append(
+                {
+                    "kind": "node_removed" if node is None else "node_unsupported",
+                    "name": source_node["name"],
+                }
+            )
+            return definition, None, source_contract
+
+        try:
+            draft_task = GraphTask.model_validate(node)
+        except ValidationError as exc:
+            plan["issues"] = [
+                {
+                    "path": ".".join(["node", *map(str, issue["loc"])]),
+                    "code": "INVALID",
+                    "message": issue["msg"],
+                }
+                for issue in exc.errors()
+            ]
+            return definition, None, source_contract
+
+        node = draft_task.model_dump()
+        historical_task = GraphTask.model_validate(source_node)
+        for key, kind in (
+            ("name", "node_renamed"),
+            ("transform", "node_type_changed"),
+            ("inputs", "node_bindings_changed"),
+        ):
+            if getattr(historical_task, key) == getattr(draft_task, key):
+                continue
+            change = {"kind": kind, "name": node["name"]}
+            if key in {"name", "transform"}:
+                change.update(before=source_node.get(key), after=node.get(key))
+            changes.append(change)
+
+        contract = task_input_contract(node.get("input_contract"), transform)
+        if contract is None:
+            changes.append({"kind": "node_unsupported", "name": node["name"]})
+            return definition, None, source_contract
+        return definition, node, contract
+
+    def _bind_debug_fork_draft_inputs(
+        self,
+        plan: dict,
+        request: DebugForkAttempt,
+        source_node: dict,
+        source_contract: dict,
+        node: dict,
+        contract: dict,
+    ) -> None:
+        """Compare ports and validate the projection against the selected draft.
+
+        Args:
+            plan: Preview to update with projected inputs and diagnostics.
+            request: Explicit source mappings or ordinary test values.
+            source_node: Node used by the original attempt.
+            source_contract: Original consumer's effective input contract.
+            node: Draft node in the validated single-node graph.
+            contract: Draft consumer's effective input contract.
+        """
+        changes = plan["definition"]["changes"]
+        text_output = {
+            "type": "object",
+            "properties": {"text": {"type": "string"}},
+            "required": ["text"],
+        }
+        for direction, before, after in (
+            ("input", source_contract, contract),
+            (
+                "output",
+                source_node.get("output_contract") or text_output,
+                node.get("output_contract") or text_output,
+            ),
+        ):
+            old_settings = {
+                key: value
+                for key, value in before.items()
+                if key not in {"properties", "required"}
+            }
+            new_settings = {
+                key: value
+                for key, value in after.items()
+                if key not in {"properties", "required"}
+            }
+            if json.dumps(old_settings, sort_keys=True) != json.dumps(
+                new_settings, sort_keys=True
+            ):
+                changes.append(
+                    {"kind": f"{direction}_contract_changed", "name": node["name"]}
+                )
+            old_properties = before.get("properties", {})
+            new_properties = after.get("properties", {})
+            for name in dict.fromkeys([*old_properties, *new_properties]):
+                old = old_properties.get(name)
+                new = new_properties.get(name)
+                old_required = name in before.get("required", [])
+                new_required = name in after.get("required", [])
+                if old_required == new_required and json.dumps(
+                    old, sort_keys=True
+                ) == json.dumps(new, sort_keys=True):
+                    continue
+                change = {
+                    "kind": f"{direction}_added"
+                    if old is None
+                    else f"{direction}_removed"
+                    if new is None
+                    else f"{direction}_changed",
+                    "name": name,
+                }
+                for key, schema in (("before", old), ("after", new)):
+                    if schema is not None:
+                        schema = schema if isinstance(schema, dict) else {}
+                        types = schema.get("type", [])
+                        change[key] = (
+                            schema.get("format")
+                            or (types if isinstance(types, str) else " / ".join(types))
+                            or "JSON"
+                        )
+                if old_required != new_required:
+                    change["required"] = old_required if new is None else new_required
+                changes.append(change)
+
+        historical = {item["name"]: item for item in plan["inputs"]}
+        properties = contract["properties"]
+        issues = plan["issues"]
+        resolved = {}
+        inputs = []
+        for name in request.bindings.keys() - properties.keys():
+            issues.append(
+                {
+                    "path": f"inputs.{name}",
+                    "code": "REFERENCE",
+                    "message": "Input port is unavailable in this draft",
+                }
+            )
+        for name, schema in properties.items():
+            original = historical.get(name, {})
+            reference = schema.get("format") in REFERENCE_OUTPUTS.values()
+            kind = (
+                "reference"
+                if reference
+                else "text"
+                if schema.get("type") == "string"
+                else "json"
+            )
+            # Values may be narrower than their source type, but managed references
+            # must retain their semantic format and come from recorded evidence.
+            candidates = []
+            for old_name, port in historical.items():
+                if port["source"] != "recorded":
+                    continue
+                old_schema = source_contract["properties"][old_name]
+                if (reference or port["kind"] == "reference") and (
+                    schema.get("format") != old_schema.get("format")
+                ):
+                    continue
+                if not validate_result(
+                    {"type": "object", "properties": {name: schema}},
+                    {name: port["original"]},
+                    validate_files=False,
+                    port_formats=True,
+                ):
+                    candidates.append(old_name)
+
+            port = {
+                "name": name,
+                "kind": kind,
+                "source": "absent",
+                "changed": False,
+                "available_sources": candidates,
+                **(
+                    {"original": original["original"]} if "original" in original else {}
+                ),
+                **(
+                    {"evidence": original["evidence"]} if "evidence" in original else {}
+                ),
+            }
+            binding = request.bindings.get(name)
+            if isinstance(binding, DebugForkTestBinding):
+                if reference:
+                    issues.append(
+                        {
+                            "path": f"inputs.{name}",
+                            "code": "REFERENCE",
+                            "message": "Select a compatible recorded reference for this port",
+                        }
+                    )
+                else:
+                    port.update(source="test_value", value=binding.value, changed=True)
+            elif isinstance(binding, DebugForkSourceBinding):
+                if binding.source_port in candidates:
+                    recorded = historical[binding.source_port]
+                    port.update(
+                        source="mapped",
+                        source_port=binding.source_port,
+                        value=recorded["original"],
+                        evidence=recorded["evidence"],
+                        changed=True,
+                    )
+                else:
+                    issues.append(
+                        {
+                            "path": f"inputs.{name}",
+                            "code": "INCOMPATIBLE",
+                            "message": f"Recorded port {binding.source_port} cannot supply this input",
+                        }
+                    )
+            elif name in candidates and all(
+                source_contract["properties"][name].get(key) == schema.get(key)
+                for key in ("type", "format")
+            ):
+                port.update(source="recorded", value=original["original"])
+            elif "default" in schema:
+                port.update(
+                    source="default",
+                    value=schema["default"],
+                    changed="original" not in port
+                    or json.dumps(port["original"], sort_keys=True)
+                    != json.dumps(schema["default"], sort_keys=True),
+                )
+            if port["source"] != "recorded" and "evidence" in original:
+                port["original_evidence"] = original["evidence"]
+                if port["source"] != "mapped":
+                    port.pop("evidence", None)
+            if port["source"] in {"recorded", "mapped", "test_value"}:
+                resolved[name] = port["value"]
+            inputs.append(port)
+        inputs.extend(
+            {**port, "source": "removed", "changed": False}
+            for name, port in historical.items()
+            if name not in properties
+        )
+        for port in inputs:
+            if port["source"] == "removed":
+                port.pop("value", None)
+        try:
+            normalize_port_inputs(contract, resolved, "inputs")
+        except RoleAssetError as exc:
+            issues.extend(exc.fields)
+        plan["inputs"] = inputs
 
     async def preview_debug_fork(
         self, username: str, run_id: str, request: DebugForkAttempt
@@ -3923,7 +4295,7 @@ class WorkflowService:
             request: Exact scope, task and attempt.
 
         Returns:
-            The original definition's identity, recorded inputs and result.
+            Chosen definition, historical values, binding diagnostics and result.
 
         Raises:
             RoleAssetError: The attempt is inaccessible or cannot be replayed.
@@ -3951,8 +4323,21 @@ class WorkflowService:
             RoleAssetError: The confirmation, evidence, or replacement is invalid.
         """
         key = (f"debug-fork:{run_id}", request.request_id)
+        # Retried original-definition requests keep their pre-draft receipt identity.
+        draft = request.definition_mode == "draft"
+        if draft and (
+            request.draft_revision is None or request.replacement is not None
+        ):
+            raise RoleAssetError(
+                "Confirm the draft revision and its previewed bindings"
+            )
+        payload = request.model_dump(
+            exclude={"definition_mode", "draft_revision", "bindings"}
+            if not draft and request.draft_revision is None and not request.bindings
+            else None
+        )
         fingerprint = hashlib.sha256(
-            json.dumps(request.model_dump(), ensure_ascii=True).encode()
+            json.dumps(payload, ensure_ascii=True, sort_keys=draft).encode()
         ).hexdigest()
         async with self.db.get_db() as session:
             await session.execute(text("BEGIN IMMEDIATE"))
@@ -3970,6 +4355,13 @@ class WorkflowService:
                 )
                 if plan.pop("preview_token") != request.preview_token:
                     raise RoleAssetError("Debug fork preview has changed", status=409)
+                if definition is None or not plan.pop("ready", True):
+                    raise RoleAssetError(
+                        "Resolve the draft diagnostics before starting",
+                        plan.get("issues", []),
+                        status=409,
+                    )
+                plan.pop("issues", None)
                 if replacement := request.replacement:
                     port = next(
                         (
@@ -3996,11 +4388,11 @@ class WorkflowService:
                 inputs = {
                     item["name"]: item["value"]
                     for item in plan["inputs"]
-                    if item["source"] == "recorded"
+                    if item["source"] in {"recorded", "mapped", "test_value"}
                 }
                 if request.replacement is not None:
                     normalize_port_inputs(contract, inputs, "inputs")
-                else:
+                elif not draft:
                     # The scheduler must reproduce any failures of the original
                     # values. Managed references need shape checks before lookup.
                     reference_properties = {
@@ -4019,7 +4411,7 @@ class WorkflowService:
                     username,
                     {
                         "asset_id": source["asset_id"],
-                        "version": source["asset_version"],
+                        "version": None if draft else source["asset_version"],
                         "definition": definition,
                     },
                     WorkflowStartRequest(

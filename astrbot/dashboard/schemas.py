@@ -345,7 +345,7 @@ class RunConversationSummary(BaseModel):
 
     run_id: str
     asset_id: str
-    asset_version: int
+    asset_version: int | None
     status: str
     draft_revision: int | None = None
 

@@ -11,16 +11,25 @@
       <tr v-for="port in inputs" :key="port.name">
         <th scope="row">
           <div>{{ port.name }}</div>
-          <div class="text-caption text-medium-emphasis">{{ tm(`debugFork.sources.${port.source}`) }}</div>
-          <div v-if="port.evidence?.artifact" class="text-caption font-weight-regular">
+          <div class="text-caption text-medium-emphasis">{{ tm(`debugFork.sources.${port.source}`, { name: port.source_port ?? "" }) }}</div>
+          <div v-if="port.source !== 'mapped' && port.evidence?.artifact" class="text-caption font-weight-regular">
             {{ port.evidence.artifact.artifact_id }} / v{{ port.evidence.artifact.version }}
           </div>
         </th>
-        <td><pre v-if="'original' in port">{{ JSON.stringify(port.original, null, 2) }}</pre><span v-else>—</span></td>
         <td>
-          <pre v-if="port.changed" data-testid="debug-fork-changed-value">{{ JSON.stringify(port.value, null, 2) }}</pre>
+          <pre v-if="'original' in port">{{ JSON.stringify(port.original, null, 2) }}</pre>
+          <span v-else>—</span>
+          <div v-if="port.original_evidence?.artifact" class="text-caption">
+            {{ port.original_evidence.artifact.artifact_id }} / v{{ port.original_evidence.artifact.version }}
+          </div>
+        </td>
+        <td>
+          <pre v-if="port.changed || ('value' in port && !('original' in port))" data-testid="debug-fork-changed-value">{{ JSON.stringify(port.value, null, 2) }}</pre>
           <span v-else-if="'value' in port" class="text-medium-emphasis">{{ tm("debugFork.reused") }}</span>
           <span v-else>—</span>
+          <div v-if="port.source === 'mapped' && port.evidence?.artifact" class="text-caption">
+            {{ port.evidence.artifact.artifact_id }} / v{{ port.evidence.artifact.version }}
+          </div>
         </td>
       </tr>
     </tbody>

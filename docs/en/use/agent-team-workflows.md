@@ -224,7 +224,13 @@ In the process panel, expand **Attempts** and select **Inspect data lines for th
 
 On an eligible data line, choose **Debug with this input**. The preview shows the workflow version (or draft revision) that the selected attempt used, its recorded inputs and the single node that will run. Keep the original values or select one recorded input to replace with text or JSON. The preview shows the proposed value alongside the original.
 
-Choose **Start debug fork** to open the new run. Its comparison shows the original failure or output, any input difference and the fork result. Reopen the fork from run history or its Dashboard Chat run conversation. **Open source attempt** returns to the original task's scope, iteration and attempt.
+To verify a fix, select **Current draft**. The preview shows the saved revision of the workflow that owns the selected node, including when that node is inside a fixed sub-workflow. It lists changes to the selected node and its ports. Choose **Original run** to switch back to the recorded definition.
+
+An added or changed required port can use a compatible recorded input or an explicit text or JSON test value. Managed reference ports can reuse compatible recorded references. Removed ports keep their historical values in the comparison. Choose **Check input bindings** to validate any changes before starting. If another save changes the draft revision, choose **Refresh draft** and review the new preview. A removed or unsupported node blocks startup in the current draft.
+
+![Current draft preview showing a removed input and a new required input that needs a binding](/images/agent-workflow-debug-draft-en.jpg)
+
+Choose **Start debug fork** to open the new run. Its comparison shows the original failure or output, the executed draft revision when selected, any input difference and the fork result. Reopen the fork from run history or its Dashboard Chat run conversation. **Open source attempt** returns to the original task's scope, iteration and attempt.
 
 This path supports the built-in Parse JSON, Map Fields and JSON Text nodes with recorded inputs. External writes require a write preview before they can run in a debug fork.
 

@@ -1167,12 +1167,12 @@ async def preview_workflow_debug_fork(
 
     Args:
         run_id: Source root run.
-        payload: Exact scope, task, and attempt to preview.
+        payload: Source attempt, definition choice and optional draft bindings.
         username: Authenticated Dashboard owner.
         service: Shared workflow service.
 
     Returns:
-        The original definition, input evidence and result.
+        The selected definition, input evidence, diagnostics and original result.
     """
     try:
         return JSONResponse(

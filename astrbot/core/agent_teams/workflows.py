@@ -496,6 +496,12 @@ class DebugForkAttempt(BaseModel):
     attempt_id: str = Field(min_length=1, max_length=128)
 
 
+class DebugForkPreviewRequest(DebugForkAttempt):
+    """Select the scope of a historical workflow execution."""
+
+    scope: Literal["single", "downstream", "child_workflow"] = "single"
+
+
 class DebugForkReplacement(BaseModel):
     """Replace one recorded ordinary value with a contract-checked test value."""
 
@@ -504,8 +510,8 @@ class DebugForkReplacement(BaseModel):
     value: JsonValue
 
 
-class DebugForkRequest(DebugForkAttempt):
-    """Confirm a preview and persist an independent single-node run."""
+class DebugForkRequest(DebugForkPreviewRequest):
+    """Confirm a preview and persist an independent debug fork."""
 
     preview_token: str = Field(pattern=r"^[a-f0-9]{64}$")
     request_id: str = Field(min_length=1, max_length=128)
@@ -3870,23 +3876,255 @@ class WorkflowService:
                 )
             return [*replayable, *other]
 
+    async def _debug_downstream(
+        self,
+        session: AsyncSession,
+        scope: AgentWorkflowRun,
+        start_node: str,
+        attempt_snapshot: dict,
+        username: str,
+    ) -> tuple[dict, dict, dict]:
+        """Compile a downstream graph with read-only historical predecessors.
+
+        Args:
+            session: Transaction reading the original scope and artifacts.
+            scope: Exact original workflow invocation.
+            start_node: Selected node, whose own inputs come from its attempt.
+            attempt_snapshot: Recorded inputs and loop identity of that attempt.
+            username: Owner authorized for the historical boundary artifacts.
+
+        Returns:
+            The execution graph, historical predecessors and recorded loop inputs.
+
+        Raises:
+            RoleAssetError: A required boundary is unavailable or would reuse approval.
+        """
+        definition = scope.snapshot["definition"]
+        dependencies = {node["id"]: set() for node in definition["tasks"]}
+        for edge in definition["edges"]:
+            dependencies[edge["target"]].add(edge["source"])
+        for node in definition["tasks"]:
+            dependencies[node["id"]].update(
+                ref["task_id"] for ref in node["inputs"].values() if ref.get("task_id")
+            )
+            human = node.get("human") or {}
+            dependencies[node["id"]].update(
+                human[key]
+                for key in ("artifact_task_id", "recommendation_task_id")
+                if human.get(key)
+            )
+        selected = {start_node}
+        while True:
+            expanded = selected | {
+                target for target, sources in dependencies.items() if sources & selected
+            }
+            if expanded == selected:
+                break
+            selected = expanded
+
+        # Inside a loop, start at the recorded round with its saved feedback.
+        # A complete later loop can still run with its original repeat rules.
+        source_loop = attempt_snapshot.get("loop_id")
+        loops = []
+        historical_tasks = dict(_current_task_runs(scope))
+        replay_inputs = {}
+        if source_loop:
+            round_ = scope.state["loops"][source_loop]["iterations"][
+                attempt_snapshot["iteration"] - 1
+            ]
+            historical_tasks.update(round_["task_runs"])
+            for node_id in sorted(
+                (selected & round_["task_runs"].keys()) - {start_node}
+            ):
+                historical = await session.get(
+                    AgentWorkflowRun, round_["task_runs"][node_id]
+                )
+                if (
+                    historical is None
+                    or historical.owner_username != username
+                    or historical.snapshot.get("parent_run_id") != scope.run_id
+                ):
+                    raise RoleAssetError(
+                        "Recorded loop inputs are unavailable", status=409
+                    )
+                if feedback := historical.snapshot.get("iteration_inputs"):
+                    for value in feedback.values():
+                        if reference := value.get("reference"):
+                            await self._artifact_source(session, username, reference)
+                    replay_inputs[node_id] = feedback
+        for loop in definition.get("loops", []):
+            body = set(loop["body"])
+            if not body & selected:
+                continue
+            if loop["id"] == source_loop:
+                if loop["exit_task_id"] in selected:
+                    # Gate the path out of the replayed round with its real exit.
+                    loops.append(
+                        {
+                            **loop,
+                            "body": [node for node in loop["body"] if node in selected],
+                            "max_iterations": 1,
+                            "feedback": [],
+                        }
+                    )
+                elif selected - body:
+                    raise RoleAssetError(
+                        "Select a scope that includes the recorded round's exit",
+                        status=409,
+                    )
+            elif body <= selected:
+                loops.append(loop)
+            else:
+                raise RoleAssetError(
+                    "Select a node that includes the complete downstream loop",
+                    status=409,
+                )
+
+        edges = [
+            edge
+            for edge in definition["edges"]
+            if edge["target"] in selected and edge["target"] != start_node
+        ]
+        chosen = [node for node in definition["tasks"] if node["id"] in selected]
+        data_sources = set()
+        for node in chosen:
+            if node["id"] == start_node:
+                continue
+            data_sources.update(
+                ref["task_id"]
+                for name, ref in node["inputs"].items()
+                if ref.get("task_id") and name not in replay_inputs.get(node["id"], {})
+            )
+            human = node.get("human") or {}
+            if (
+                human.get("kind") == "approval"
+                and human["artifact_task_id"] not in selected
+            ):
+                raise RoleAssetError(
+                    f"Select a scope that includes the artifact producer for {node['name']}",
+                    status=409,
+                )
+            if recommendation := human.get("recommendation_task_id"):
+                data_sources.add(recommendation)
+        boundary_ids = (data_sources | {edge["source"] for edge in edges}) - selected
+        boundary = {}
+        for node_id in sorted(boundary_ids):
+            if previous := scope.snapshot.get("debug_boundary", {}).get(node_id):
+                if node_id in data_sources and previous["status"] == "completed":
+                    if not previous.get("artifact"):
+                        raise RoleAssetError(
+                            "Artifact source is unavailable", status=409
+                        )
+                    await self._artifact_source(session, username, previous["artifact"])
+                    boundary[node_id] = previous
+                else:
+                    boundary[node_id] = {**previous, "artifact": None}
+                continue
+            identity = historical_tasks.get(node_id)
+            if not identity and node_id in scope.snapshot.get("trial", {}).get(
+                "sources", {}
+            ):
+                # Existing bounded trial values retain their original exact bindings.
+                continue
+            source = await session.get(AgentWorkflowRun, identity) if identity else None
+            if (
+                source is None
+                or source.owner_username != username
+                or source.snapshot.get("parent_run_id") != scope.run_id
+                or source.status
+                not in {
+                    "completed",
+                    "skipped",
+                    "failed",
+                    "blocked",
+                    "dependency_failed",
+                    "rejected",
+                    "cancelled",
+                }
+            ):
+                raise RoleAssetError(
+                    f"Historical boundary for {node_id} is unavailable", status=409
+                )
+            source_node = next(
+                node for node in definition["tasks"] if node["id"] == node_id
+            )
+            if (
+                source.status == "completed"
+                and (source_node.get("human") or {}).get("kind") == "approval"
+            ):
+                raise RoleAssetError(
+                    "Select a scope that includes the upstream approval", status=409
+                )
+            status = source.status
+            if (loop_id := source.snapshot.get("loop_id")) and loop_id != source_loop:
+                loop_status = scope.state["loops"][loop_id]["status"]
+                if loop_status != "passed":
+                    status = "skipped" if loop_status == "skipped" else "blocked"
+            artifact = None
+            result = None
+            if status == "completed":
+                result = source.result
+                if node_id in data_sources:
+                    artifact = source.state.get("child_result_ref") or {
+                        "artifact_id": source.run_id,
+                        "version": 1,
+                    }
+                    await self._artifact_source(session, username, artifact)
+            boundary[node_id] = {
+                "run_id": source.run_id,
+                "name": source.snapshot["definition"]["name"],
+                "status": status,
+                "artifact": artifact,
+                "child_result_ref": source.state.get("child_result_ref"),
+                "result": result,
+            }
+
+        entries = definition.get("entry_task_ids")
+        return (
+            {
+                **definition,
+                "tasks": chosen,
+                "edges": edges,
+                "loops": loops,
+                "entry_task_ids": (
+                    list(
+                        dict.fromkeys(
+                            [
+                                start_node,
+                                *(node for node in entries if node in selected),
+                            ]
+                        )
+                    )
+                    if entries is not None
+                    else None
+                ),
+                "result_task_id": (
+                    definition["result_task_id"]
+                    if definition.get("result_task_id") in selected
+                    else None
+                ),
+            },
+            boundary,
+            replay_inputs,
+        )
+
     async def _debug_fork_plan(
         self,
         session: AsyncSession,
         username: str,
         run_id: str,
-        request: DebugForkAttempt,
-    ) -> tuple[dict, dict]:
-        """Project a frozen node and its exact recorded input boundary.
+        request: DebugForkPreviewRequest,
+    ) -> tuple[dict, dict, dict | None]:
+        """Project an execution scope and its recorded input boundary.
 
         Args:
             session: Transaction containing the frozen source attempt.
             username: Authenticated Dashboard owner.
             run_id: Root run containing the source.
-            request: Scope, task and attempt selected in the inspector.
+            request: Exact task attempt and requested debug execution scope.
 
         Returns:
-            Persistable comparison data and the isolated single-node definition.
+            Comparison, execution definition and optional frozen launch template.
 
         Raises:
             RoleAssetError: The node cannot safely run or lacks replayable evidence.
@@ -3908,29 +4146,69 @@ class WorkflowService:
             ),
             None,
         )
-        if node is None or not (
-            node.get("transform") in DEBUG_FORK_TRANSFORMS
-            or task.snapshot.get("engine") in {"plugin_task_v2", "single_task_v2"}
-            and task.snapshot.get("graph_task")
-            and definition.get("port_contract_version") == 2
-        ):
-            raise RoleAssetError(
-                "This node has no supported debug execution boundary",
-                status=409,
-            )
-        if attempt["status"] not in {"completed", "failed"}:
-            raise RoleAssetError("Select a completed or failed attempt", status=409)
         snapshot = attempt.get("snapshot") or {}
-        reads = _debug_fork_reads(node, snapshot)
         values = snapshot.get("inputs") or {}
-        if reads is None:
-            raise RoleAssetError(
-                "Recorded inputs are incomplete for this attempt", status=409
+        execution_scope = scope
+        if request.scope == "child_workflow":
+            child_id = (attempt.get("state") or {}).get("child_scope_run_id")
+            if (
+                not child_id
+                or node is None
+                or not node.get("workflow")
+                or attempt["status"] not in {"completed", "blocked", "failed"}
+            ):
+                raise RoleAssetError(
+                    "Select a recorded fixed workflow call", status=409
+                )
+            child = await session.get(AgentWorkflowRun, child_id)
+            if (
+                child is None
+                or child.owner_username != username
+                or child.snapshot.get("engine") != "graph_v2"
+                or child.snapshot.get("root_run_id") != run_id
+                or child.snapshot.get("parent_run_id") != task.run_id
+                or child.snapshot.get("asset_id") != node["workflow"]["asset_id"]
+                or child.snapshot.get("asset_version") != node["workflow"]["version"]
+            ):
+                raise RoleAssetError("Child workflow run not found", status=404)
+            execution_scope = child
+            definition = child.snapshot["definition"]
+            if child.snapshot["inputs"] != values:
+                raise RoleAssetError("Recorded child inputs are incomplete", status=409)
+            reads = snapshot.get("input_reads") or {}
+            contract = definition.get("input_contract") or {
+                "type": "object",
+                "properties": {name: {"type": "string"} for name in values},
+            }
+            if any(
+                name not in reads
+                and contract["properties"]
+                .get(name, {})
+                .get("default", MISSING_PORT_VALUE)
+                != value
+                for name, value in values.items()
+            ):
+                raise RoleAssetError("Recorded child inputs are incomplete", status=409)
+        else:
+            if node is None or not (
+                node.get("transform") in DEBUG_FORK_TRANSFORMS
+                or task.snapshot.get("engine") in {"plugin_task_v2", "single_task_v2"}
+                and task.snapshot.get("graph_task")
+                and definition.get("port_contract_version") == 2
+            ):
+                raise RoleAssetError(
+                    "This node has no supported debug execution boundary", status=409
+                )
+            if attempt["status"] not in {"completed", "failed"}:
+                raise RoleAssetError("Select a completed or failed attempt", status=409)
+            reads = _debug_fork_reads(node, snapshot)
+            if reads is None:
+                raise RoleAssetError(
+                    "Recorded inputs are incomplete for this attempt", status=409
+                )
+            contract = task_input_contract(
+                node.get("input_contract"), node.get("transform")
             )
-
-        contract = task_input_contract(
-            node.get("input_contract"), node.get("transform")
-        )
         if contract is None:
             # Agent bindings without a declared contract consume text values.
             contract = {
@@ -4007,8 +4285,10 @@ class WorkflowService:
             )
 
         parent_call = None
-        if attempt["status"] == "failed" and (
-            caller_id := scope.snapshot.get("parent_run_id")
+        if (
+            request.scope != "child_workflow"
+            and attempt["status"] == "failed"
+            and (caller_id := scope.snapshot.get("parent_run_id"))
         ):
             caller = await session.get(AgentWorkflowRun, caller_id)
             if (
@@ -4050,16 +4330,21 @@ class WorkflowService:
 
         state = attempt.get("state") or {}
         plan = {
+            "scope": request.scope,
             "source": {
                 "root_run_id": run_id,
                 "scope_run_id": request.scope_run_id,
                 "task_run_id": request.task_run_id,
                 "attempt_id": request.attempt_id,
-                "asset_id": scope.snapshot["asset_id"],
-                "asset_version": scope.snapshot["asset_version"],
+                "asset_id": execution_scope.snapshot["asset_id"],
+                "asset_version": execution_scope.snapshot["asset_version"],
                 **(
-                    {"draft_revision": scope.snapshot["trial"]["draft_revision"]}
-                    if scope.snapshot.get("trial")
+                    {
+                        "draft_revision": execution_scope.snapshot["trial"][
+                            "draft_revision"
+                        ]
+                    }
+                    if execution_scope.snapshot.get("trial")
                     else {}
                 ),
                 "workflow_name": definition["name"],
@@ -4075,33 +4360,92 @@ class WorkflowService:
             },
             "inputs": inputs,
         }
-        # Boundary bindings read the saved consumer values without scheduling producers.
-        isolated = {
-            "name": definition["name"],
-            "port_contract_version": definition["port_contract_version"],
-            "default_provider_id": definition.get("default_provider_id"),
-            "input_contract": contract,
-            "limits": definition.get("limits"),
-            "entry_task_ids": [node["id"]],
-            "result_task_id": node["id"],
-            "tasks": [
-                {
-                    **node,
-                    "inputs": {
-                        name: {"input": name} for name in contract["properties"]
-                    },
-                }
-            ],
-        }
+        frozen = None
+        if request.scope == "single":
+            # Read the saved consumer values without scheduling their producers.
+            isolated = {
+                "name": definition["name"],
+                "port_contract_version": definition["port_contract_version"],
+                "default_provider_id": definition.get("default_provider_id"),
+                "input_contract": contract,
+                "limits": definition.get("limits"),
+                "entry_task_ids": [node["id"]],
+                "result_task_id": node["id"],
+                "tasks": [
+                    {
+                        **node,
+                        "inputs": {
+                            name: {"input": name} for name in contract["properties"]
+                        },
+                    }
+                ],
+            }
+        else:
+            frozen = {
+                key: execution_scope.snapshot[key]
+                for key in (
+                    "engine",
+                    "usage_protocol",
+                    "asset_id",
+                    "asset_version",
+                    "inputs",
+                    "input_artifacts",
+                    "members",
+                    "child_assets",
+                    "trial",
+                    "trial_inputs",
+                    "depth_limit",
+                )
+                if key in execution_scope.snapshot
+            }
+            frozen.update(source="dashboard", initiator=username)
+            if request.scope == "downstream":
+                isolated, boundary, replay_inputs = await self._debug_downstream(
+                    session, scope, node["id"], snapshot, username
+                )
+                frozen["debug_boundary"] = boundary
+                if replay_inputs:
+                    frozen["debug_iteration_inputs"] = replay_inputs
+                plan["boundary"] = [
+                    {
+                        "id": node_id,
+                        "name": item["name"],
+                        "status": item["status"],
+                        **(
+                            {"artifact": item["artifact"]}
+                            if item.get("artifact")
+                            else {}
+                        ),
+                    }
+                    for node_id, item in boundary.items()
+                ]
+            else:
+                isolated = definition
+            selected = {item["id"] for item in isolated["tasks"]}
+            members = {item.get("member") for item in isolated["tasks"]}
+            frozen["members"] = {
+                name: member
+                for name, member in frozen["members"].items()
+                if name in members
+            }
+            frozen["child_assets"] = {
+                node_id: child
+                for node_id, child in frozen["child_assets"].items()
+                if node_id in selected
+            }
+            frozen["definition"] = isolated
+        plan["nodes"] = [
+            {"id": item["id"], "name": item["name"]} for item in isolated["tasks"]
+        ]
         plan["preview_token"] = hashlib.sha256(
-            json.dumps([plan, isolated], ensure_ascii=True).encode()
+            json.dumps([plan, isolated, frozen], ensure_ascii=True).encode()
         ).hexdigest()
-        return plan, isolated
+        return plan, isolated, frozen
 
     async def preview_debug_fork(
-        self, username: str, run_id: str, request: DebugForkAttempt
+        self, username: str, run_id: str, request: DebugForkPreviewRequest
     ) -> dict:
-        """Read a single-node plan without starting or modifying a run.
+        """Read a debug plan without starting or modifying a run.
 
         Args:
             username: Authenticated Dashboard owner.
@@ -4117,13 +4461,13 @@ class WorkflowService:
         async with self.db.get_db() as session:
             if self.db.engine.dialect.name == "sqlite":
                 await session.execute(text("BEGIN"))
-            plan, _ = await self._debug_fork_plan(session, username, run_id, request)
+            plan, _, _ = await self._debug_fork_plan(session, username, run_id, request)
             return plan
 
     async def start_debug_fork(
         self, username: str, run_id: str, request: DebugForkRequest
     ) -> dict:
-        """Commit a single-node debug fork through the ordinary scheduler.
+        """Commit a debug fork through the ordinary scheduler.
 
         Args:
             username: Authenticated Dashboard owner.
@@ -4138,7 +4482,12 @@ class WorkflowService:
         """
         key = (f"debug-fork:{run_id}", request.request_id)
         fingerprint = hashlib.sha256(
-            json.dumps(request.model_dump(), ensure_ascii=True).encode()
+            json.dumps(
+                request.model_dump(
+                    exclude={"scope"} if request.scope == "single" else None
+                ),
+                ensure_ascii=True,
+            ).encode()
         ).hexdigest()
         async with self.db.get_db() as session:
             await session.execute(text("BEGIN IMMEDIATE"))
@@ -4151,7 +4500,7 @@ class WorkflowService:
                     raise WorkflowLaunchConflict()
                 fork_id = receipt.run_id
             else:
-                plan, definition = await self._debug_fork_plan(
+                plan, definition, frozen = await self._debug_fork_plan(
                     session, username, run_id, request
                 )
                 if plan.pop("preview_token") != request.preview_token:
@@ -4178,21 +4527,37 @@ class WorkflowService:
                         replacement.value
                     )
 
-                contract = definition["input_contract"]
+                contract = definition.get("input_contract")
                 inputs = {
                     item["name"]: item["value"]
                     for item in plan["inputs"]
                     if item["source"] == "recorded"
                 }
                 if request.replacement is not None:
-                    normalize_port_inputs(contract, inputs, "inputs")
+                    if request.scope == "downstream":
+                        start_node = next(
+                            item
+                            for item in definition["tasks"]
+                            if item["id"] == plan["source"]["node_id"]
+                        )
+                        contract = task_input_contract(
+                            start_node.get("input_contract"),
+                            start_node.get("transform"),
+                        )
+                    if contract is not None:
+                        normalize_port_inputs(contract, inputs, "inputs")
+                    elif not isinstance(request.replacement.value, str):
+                        raise RoleAssetError("Provide a text replacement")
                 else:
                     # The scheduler must reproduce any failures of the original
                     # values. Managed references need shape checks before lookup.
                     reference_properties = {
                         item["name"]: contract["properties"][item["name"]]
                         for item in plan["inputs"]
-                        if item["kind"] == "reference" and item["name"] in inputs
+                        if contract is not None
+                        and request.scope != "downstream"
+                        and item["kind"] == "reference"
+                        and item["name"] in inputs
                     }
                     if reference_properties:
                         normalize_port_inputs(
@@ -4201,18 +4566,35 @@ class WorkflowService:
                             "inputs",
                         )
                 source = plan["source"]
-                frozen = await self._freeze_graph(
-                    username,
-                    {
-                        "asset_id": source["asset_id"],
-                        "version": source["asset_version"],
-                        "definition": definition,
-                    },
-                    WorkflowStartRequest(
-                        version=source["asset_version"] or 1, inputs=inputs
-                    ),
-                )
-                if frozen["members"]:
+                if frozen is not None:
+                    if request.scope == "child_workflow":
+                        frozen["inputs"] = {**frozen["inputs"], **inputs}
+                        if contract is not None:
+                            frozen["inputs"] = normalize_port_inputs(
+                                contract, frozen["inputs"], "inputs"
+                            )
+                        elif any(
+                            not frozen["inputs"].get(name, "").strip()
+                            for name in definition["required_inputs"]
+                        ):
+                            raise RoleAssetError("Provide non-empty workflow inputs")
+                    for member in frozen["members"].values():
+                        await self.roles.validate_frozen_role(
+                            member["role"], member.get("profile")
+                        )
+                else:
+                    frozen = await self._freeze_graph(
+                        username,
+                        {
+                            "asset_id": source["asset_id"],
+                            "version": source["asset_version"],
+                            "definition": definition,
+                        },
+                        WorkflowStartRequest(
+                            version=source["asset_version"] or 1, inputs=inputs
+                        ),
+                    )
+                if request.scope == "single" and frozen["members"]:
                     scope = await session.get(AgentWorkflowRun, source["scope_run_id"])
                     assert scope is not None
                     (member_name,) = frozen["members"]
@@ -9099,6 +9481,15 @@ class WorkflowService:
                         "scope_limits": snapshot["scope_limits"],
                         "node_id": task.id,
                         **(
+                            {
+                                "iteration_inputs": frozen["debug_iteration_inputs"][
+                                    task.id
+                                ]
+                            }
+                            if task.id in frozen.get("debug_iteration_inputs", {})
+                            else {}
+                        ),
+                        **(
                             {"port_contract_version": 2}
                             if definition.port_contract_version == 2
                             else {}
@@ -10577,6 +10968,20 @@ class WorkflowService:
                         )
                     )
                 await self._advance_loops(session, root, rows)
+                debug_fork = root.snapshot.get("debug_fork", {})
+                # Historical predecessors satisfy reads and control edges without
+                # being admitted, mutated, or counted as tasks in the fork.
+                boundary_rows = {
+                    node_id: AgentWorkflowRun(
+                        run_id=item["run_id"],
+                        owner_username=username,
+                        snapshot={"node_id": node_id},
+                        status=item["status"],
+                        result=item["result"],
+                        state={"child_result_ref": item.get("child_result_ref")},
+                    )
+                    for node_id, item in root.snapshot.get("debug_boundary", {}).items()
+                }
                 active = [
                     row
                     for row in family
@@ -10604,11 +11009,16 @@ class WorkflowService:
                 progress = True
                 while progress:
                     progress = False
+                    sources = {**boundary_rows, **rows}
                     for task in definition["tasks"]:
                         row = rows[task["id"]]
                         assert row is not None
                         if row.status != "pending":
                             continue
+                        debug_start = (
+                            debug_fork.get("scope") == "downstream"
+                            and task["id"] == debug_fork["source"]["node_id"]
+                        )
                         child_call = task.get("team") or task.get("workflow")
                         incoming = [
                             edge
@@ -10619,7 +11029,7 @@ class WorkflowService:
                         waiting_on = []
                         failed_on = []
                         for edge in incoming:
-                            source = rows[edge["source"]]
+                            source = sources[edge["source"]]
                             assert source is not None
                             source_loop = source.snapshot.get("loop_id")
                             if source_loop and source_loop != row.snapshot.get(
@@ -10726,8 +11136,10 @@ class WorkflowService:
                                 task.get("transform"),
                                 dispatch=bool(task.get("dispatch")),
                             )
-                            if entries is not None and not row.state.get(
-                                "retry_pending"
+                            if (
+                                entries is not None
+                                and not debug_start
+                                and not row.state.get("retry_pending")
                             ):
                                 data_wait = []
                                 data_issues = []
@@ -10736,10 +11148,10 @@ class WorkflowService:
                                     if (
                                         name in row.snapshot.get("iteration_inputs", {})
                                         or source_id is None
-                                        or source_id not in rows
+                                        or source_id not in sources
                                     ):
                                         continue
-                                    source = rows[source_id]
+                                    source = sources[source_id]
                                     assert source is not None
                                     if source.status in {
                                         "pending",
@@ -10881,7 +11293,7 @@ class WorkflowService:
                                         in root.snapshot.get("trial", {}).get(
                                             "sources", {}
                                         )
-                                        and ref["task_id"] not in rows
+                                        and ref["task_id"] not in sources
                                     ):
                                         value = root.snapshot["trial"]["sources"][
                                             ref["task_id"]
@@ -10892,7 +11304,7 @@ class WorkflowService:
                                         for name in ref["field"].split("."):
                                             value = value[name]
                                     else:
-                                        source = rows[ref["task_id"]]
+                                        source = sources[ref["task_id"]]
                                         assert source is not None
                                         if source.status != "completed":
                                             row.status = "skipped"
@@ -10977,12 +11389,12 @@ class WorkflowService:
                                 ref = None
                                 if human["kind"] == "approval":
                                     source_id = human["artifact_task_id"]
-                                    if source_id not in rows:
+                                    if source_id not in sources:
                                         ref = root.snapshot["trial"]["sources"][
                                             source_id
                                         ]["artifact"]
                                     else:
-                                        source = rows[source_id]
+                                        source = sources[source_id]
                                         assert source is not None
                                         ref = source.state.get("child_result_ref") or {
                                             "artifact_id": source.run_id,
@@ -10996,12 +11408,12 @@ class WorkflowService:
                                 recommendation_ref = None
                                 source_id = human.get("recommendation_task_id")
                                 if source_id:
-                                    if source_id not in rows:
+                                    if source_id not in sources:
                                         recommendation_ref = root.snapshot["trial"][
                                             "sources"
                                         ][source_id]["artifact"]
                                     else:
-                                        source = rows[source_id]
+                                        source = sources[source_id]
                                         assert source is not None
                                         recommendation_ref = {
                                             "artifact_id": source.run_id,
@@ -11235,7 +11647,16 @@ class WorkflowService:
                             trial_feedback = root.snapshot.get("trial", {})
                             if task["id"] == trial_feedback.get("node_id"):
                                 bindings.update(trial_feedback.get("feedback", {}))
-                            debug_fork = root.snapshot.get("debug_fork", {})
+                            debug_values = {}
+                            if debug_start:
+                                debug_values = {
+                                    port["name"]: port["value"]
+                                    for port in debug_fork["inputs"]
+                                    if port["source"] == "recorded"
+                                }
+                                bindings = {
+                                    name: {"input": name} for name in debug_values
+                                }
                             debug_ports = (
                                 {
                                     port["name"]: port["evidence"]
@@ -11243,7 +11664,12 @@ class WorkflowService:
                                     if not port["changed"] and "evidence" in port
                                 }
                                 if (
-                                    row.snapshot.get("engine") == "single_task_v2"
+                                    (
+                                        debug_start
+                                        or row.snapshot.get("engine")
+                                        == "single_task_v2"
+                                    )
+                                    and debug_fork.get("scope") != "child_workflow"
                                     and task["id"]
                                     == debug_fork.get("source", {}).get("node_id")
                                 )
@@ -11280,13 +11706,13 @@ class WorkflowService:
                                     "feedback", {}
                                 )
                                 trial_source = None
-                                if (
+                                if not debug_start and (
                                     task["id"]
                                     == root.snapshot.get("trial", {}).get("node_id")
                                     and key in feedback
                                 ):
                                     trial_source = feedback[key]
-                                elif ref.get("task_id") not in rows and ref.get(
+                                elif ref.get("task_id") not in sources and ref.get(
                                     "task_id"
                                 ) in root.snapshot.get("trial", {}).get("sources", {}):
                                     trial_source = ref
@@ -11327,7 +11753,11 @@ class WorkflowService:
                                     continue
                                 if ref.get("input") is not None:
                                     # Earlier task aliases must not change the source.
-                                    supplied = root.snapshot["inputs"]
+                                    supplied = (
+                                        debug_values
+                                        if debug_start
+                                        else root.snapshot["inputs"]
+                                    )
                                     if not node_contract or ref["input"] in supplied:
                                         inputs[key] = supplied[ref["input"]]
                                         input_reads[key] = {
@@ -11335,9 +11765,7 @@ class WorkflowService:
                                         }
                                         # Preserve the exact field grant for an unchanged historical input.
                                         evidence = debug_ports.get(key, {})
-                                        if (pinned := evidence.get("artifact")) and (
-                                            field := evidence.get("field")
-                                        ):
+                                        if evidence:
                                             input_reads[key] = {
                                                 name: evidence[name]
                                                 for name in (
@@ -11346,6 +11774,9 @@ class WorkflowService:
                                                 )
                                                 if name in evidence
                                             }
+                                        if (pinned := evidence.get("artifact")) and (
+                                            field := evidence.get("field")
+                                        ):
                                             port_sources[key] = {
                                                 "artifact": pinned,
                                                 "field": field,
@@ -11355,13 +11786,17 @@ class WorkflowService:
                                             selected_fields.setdefault(
                                                 pinned["artifact_id"], []
                                             ).append(field)
-                                    inherited = root.snapshot.get(
-                                        "trial_inputs", {}
-                                    ).get(ref["input"])
+                                    inherited = (
+                                        None
+                                        if debug_start
+                                        else root.snapshot.get("trial_inputs", {}).get(
+                                            ref["input"]
+                                        )
+                                    )
                                     if inherited is not None:
                                         trial_input_sources[key] = inherited
                                 else:
-                                    source = rows[ref["task_id"]]
+                                    source = sources[ref["task_id"]]
                                     assert source is not None
                                     if source.status != "completed":
                                         if (
@@ -11779,8 +12214,9 @@ class WorkflowService:
                     result_id = root.snapshot["definition"].get("result_task_id")
                     if not root.snapshot.get("team_definition"):
                         selected = rows.get(result_id)
-                        no_trial_result = (
-                            bool(root.snapshot.get("trial")) and result_id is None
+                        no_trial_result = result_id is None and (
+                            root.snapshot.get("trial")
+                            or debug_fork.get("scope") == "downstream"
                         )
                         success = success and (
                             no_trial_result
@@ -15206,21 +15642,28 @@ class WorkflowService:
             ):
                 raise CheckpointRecoveryError("Debug write preview is no longer active")
             source = root.snapshot["debug_fork"]["source"]
-            historical = (
-                await session.execute(
-                    select(AgentWorkflowToolCall)
-                    .where(
-                        col(AgentWorkflowToolCall.run_id) == source["task_run_id"],
-                        col(AgentWorkflowToolCall.attempt_id) == source["attempt_id"],
-                        col(AgentWorkflowToolCall.name) == operation,
-                        col(AgentWorkflowToolCall.status) != "intent",
+            historical = []
+            if (
+                root.snapshot["debug_fork"].get("scope") != "child_workflow"
+                and row.snapshot.get("parent_run_id") == root.run_id
+                and row.snapshot.get("node_id") == source["node_id"]
+            ):
+                historical = (
+                    await session.scalars(
+                        select(AgentWorkflowToolCall)
+                        .where(
+                            col(AgentWorkflowToolCall.run_id) == source["task_run_id"],
+                            col(AgentWorkflowToolCall.attempt_id)
+                            == source["attempt_id"],
+                            col(AgentWorkflowToolCall.name) == operation,
+                            col(AgentWorkflowToolCall.status) != "intent",
+                        )
+                        .order_by(
+                            col(AgentWorkflowToolCall.created_at),
+                            col(AgentWorkflowToolCall.record_id),
+                        )
                     )
-                    .order_by(
-                        col(AgentWorkflowToolCall.created_at),
-                        col(AgentWorkflowToolCall.record_id),
-                    )
-                )
-            ).scalars()
+                ).all()
             destination = target if isinstance(target, str) and target.strip() else None
             ready = bool(destination and parameters_complete)
             reason = (

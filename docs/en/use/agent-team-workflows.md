@@ -220,9 +220,15 @@ In the process panel, expand **Attempts** and select **Inspect data lines for th
 
 ![Data line inspector showing the failed second-round read and its artifact version](/images/agent-workflow-data-line-en.jpg)
 
-### Debug one historical node
+### Debug a historical node or its downstream path
 
-On an eligible data line, choose **Debug with this input**. The preview shows the workflow version (or draft revision) that the selected attempt used, its recorded inputs and the single node that will run. Keep the original values or select one recorded input to replace with text or JSON. The preview shows the proposed value alongside the original.
+On an eligible data line, choose **Debug with this input**. The preview shows the workflow version (or draft revision) and inputs recorded for the selected attempt. **Execution scope** defaults to **Only the selected node will run.** Keep the original values or select one recorded input to replace with text or JSON. The preview shows the proposed value alongside the original.
+
+Choose **Run downstream from this node** to see the selected nodes and any historical boundary inputs before starting. Earlier work outside the scope supplies its recorded results. The frozen graph still evaluates conditions and joins, and inactive branches are skipped. If you start inside a loop, the fork uses the selected round's inputs and runs that round's downstream steps. The exit condition must pass before execution can continue outside the loop.
+
+If the preview asks you to include the artifact producer for an approval, choose a start node that also runs that producer.
+
+![Downstream debug preview with the selected nodes and historical boundary inputs](/images/agent-workflow-debug-scope-en.jpg)
 
 Choose **Start debug fork** to open the new run. Its comparison shows the original failure or output, any input difference and the fork result. Reopen the fork from run history or its Dashboard Chat run conversation. **Open source attempt** returns to the original task's scope, iteration and attempt.
 
@@ -238,7 +244,9 @@ Close the preview with **Close** and reopen it at any time from the fork. Refres
 
 In the parent run graph, select the iteration that failed, select the child workflow call, and choose **Debug failed child call**. The graph opens the child scope for that invocation and previews a recorded failed attempt. If several attempts failed, select the node, iteration (when applicable), and attempt in the preview. The preview shows the original fixed version and the inputs and artifact versions recorded for that attempt.
 
-**Start debug fork** runs only the selected internal node. In the comparison, **Open parent call** returns to the parent node and iteration, and **Open source attempt** returns to the child scope and selected attempt.
+**Start debug fork** defaults to the selected internal node. In the comparison, **Open parent call** returns to the parent node and iteration, and **Open source attempt** returns to the child scope and selected attempt.
+
+To test the parent-to-child inputs and all internal steps together, select the call on the parent graph and choose **Trial the entire fixed child workflow**. Review the mapped inputs, fixed version, and list of child nodes before starting. A reachable approval opens a new human request for the exact artifact version produced in the debug fork. Preview and approve the new artifact in Bot or Chat. The fork stops at **External write preview** before a reachable delivery.
 
 ![Failed child-call preview showing the parent iteration, child version and recorded input](/images/agent-workflow-debug-child-en.jpg)
 

@@ -24,6 +24,10 @@
       size="small" variant="tonal" :loading="loading" data-testid="debug-failed-child" @click="openFailures">
       {{ tm("debugFork.openFailedChild") }}
     </v-btn>
+    <v-btn v-if="callTask.state.child_scope_run_id || callTask.state.attempt_id !== selectedCall.attemptId"
+      size="small" variant="text" data-testid="debug-whole-child" @click="openWholeChild">
+      {{ tm("debugFork.childWorkflow") }}
+    </v-btn>
     <v-btn size="small" variant="text" @click="emit('select', callTask.run_id)">{{ tm("debugFork.viewTask") }}</v-btn>
   </div>
   <v-alert v-if="callError" type="error" variant="tonal" class="mb-2">{{ callError }}</v-alert>
@@ -38,18 +42,19 @@
     @select-task="selectCanvasTask"
   />
   <WorkflowDebugForkDialog
-    v-if="candidate"
+    v-if="wholeChildAttempt || candidate"
     :root-id="rootId"
-    :attempt="{ scope_run_id: candidate.scope_run_id, task_run_id: candidate.task_run_id, attempt_id: candidate.attempt_id }"
-    :candidates="candidates"
+    :attempt="(wholeChildAttempt ?? candidate)!"
+    :candidates="wholeChildAttempt ? undefined : candidates"
+    :whole-child="!!wholeChildAttempt"
     @select-candidate="selectFailure"
-    @close="candidate = undefined"
+    @close="candidate = undefined; wholeChildAttempt = undefined"
   />
 </template>
 
 <script setup lang="ts">
 import { computed, onScopeDispose, ref, watch } from "vue";
-import type { WorkflowDebugForkLocation } from "@/api/generated/openapi-v1";
+import type { WorkflowDebugForkLocation, WorkflowDebugForkAttempt } from "@/api/generated/openapi-v1";
 import { workflowAssetsApi } from "@/api/workflowAssets";
 import { useModuleI18n } from "@/i18n/composables";
 import { extractApiError } from "@/utils/extractApiError";
@@ -74,6 +79,7 @@ const callError = ref("");
 const loading = ref(false);
 const candidates = ref<WorkflowDebugForkLocation[]>([]);
 const candidate = ref<WorkflowDebugForkLocation>();
+const wholeChildAttempt = ref<WorkflowDebugForkAttempt>();
 let callRead: AbortController | undefined;
 onScopeDispose(() => callRead?.abort());
 
@@ -117,6 +123,7 @@ function clearCall() {
   callRead?.abort();
   loading.value = false;
   selectedCall.value = undefined;
+  wholeChildAttempt.value = undefined;
   callError.value = "";
   displayFocus.value = undefined;
 }
@@ -135,7 +142,7 @@ function selectCanvasTask(nodeId: string | null) {
   if (!nodeId) return;
   const task = tasks.value.find((item: any) => item.node_id === nodeId);
   if (task?.snapshot.engine === "workflow_call_v2" &&
-      ["blocked", "failed"].includes(task.status) && task.state?.child_scope_run_id) {
+      ["blocked", "failed", "completed"].includes(task.status) && task.state?.child_scope_run_id) {
     selectedCall.value = { taskId: task.run_id, attemptId: task.state.attempt_id };
   } else {
     emit("select", task?.run_id ?? nodeId);
@@ -146,6 +153,16 @@ function selectFailure(failure: WorkflowDebugForkLocation) {
   candidate.value = failure;
   focusTask(failure.task_run_id);
   displayFocus.value = { taskId: failure.task_run_id, attemptId: failure.attempt_id };
+}
+
+function openWholeChild() {
+  const call = selectedCall.value;
+  if (!call) return;
+  wholeChildAttempt.value = {
+    scope_run_id: scope.value.run_id,
+    task_run_id: call.taskId,
+    attempt_id: call.attemptId,
+  };
 }
 
 async function openFailures() {

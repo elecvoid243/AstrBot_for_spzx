@@ -19,6 +19,13 @@
             </option>
           </select>
         </label>
+        <label v-if="!wholeChild" class="d-block text-body-2 mb-3">
+          {{ tm("debugFork.scopeLabel") }}
+          <select v-model="scope" class="debug-candidate d-block w-100 mt-1" :disabled="starting" data-testid="debug-fork-scope-select">
+            <option value="single">{{ tm("debugFork.singleNode") }}</option>
+            <option value="downstream">{{ tm("debugFork.downstream") }}</option>
+          </select>
+        </label>
         <v-progress-linear v-if="loading" indeterminate />
         <v-alert v-if="error" type="error" variant="tonal" class="mb-3">{{ error }}</v-alert>
         <template v-if="plan">
@@ -29,7 +36,22 @@
             </span>
           </p>
           <p class="font-weight-medium">{{ plan.source.workflow_name }} · {{ version }} · {{ plan.source.node_name }}</p>
-          <p class="text-body-2 mb-2" data-testid="debug-fork-scope">{{ tm("debugFork.singleNode") }}</p>
+          <p v-if="wholeChild" class="text-body-2 mb-2" data-testid="debug-fork-scope">
+            {{ tm("debugFork.childWorkflow") }}
+          </p>
+          <template v-if="scope !== 'single'">
+            <p class="text-caption text-medium-emphasis">{{ tm("debugFork.selectedNodes") }}</p>
+            <p class="text-body-2 mb-2" data-testid="debug-fork-nodes">{{ plan.nodes?.map(node => node.name).join(" · ") }}</p>
+          </template>
+          <div v-if="plan.boundary?.length" class="mb-3" data-testid="debug-fork-boundary">
+            <p class="text-caption text-medium-emphasis">{{ tm("debugFork.boundary") }}</p>
+            <ul class="text-body-2 ps-5">
+              <li v-for="node in plan.boundary" :key="node.id" :title="node.artifact?.artifact_id">
+                {{ node.name }} · {{ getRaw(`v2.states.${node.status}`) ?? node.status }}
+                <template v-if="node.artifact"> · {{ tm("debugFork.boundaryVersion", { version: node.artifact.version }) }}</template>
+              </li>
+            </ul>
+          </div>
           <p class="text-caption text-medium-emphasis mb-3 debug-attempt">
             <span v-if="plan.source.iteration != null">{{ tm("loops.iteration") }} {{ plan.source.iteration }} · </span>
             {{ tm("v2.attempt") }} {{ plan.source.attempt_id }}
@@ -77,7 +99,7 @@
 <script setup lang="ts">
 import { computed, onScopeDispose, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import type { WorkflowDebugForkAttempt, WorkflowDebugForkLocation, WorkflowDebugForkPreview, WorkflowDebugForkRequest } from "@/api/generated/openapi-v1";
+import type { WorkflowDebugForkLocation, WorkflowDebugForkPreview, WorkflowDebugForkAttempt, WorkflowDebugForkRequest, WorkflowDebugForkScope } from "@/api/generated/openapi-v1";
 import { workflowAssetsApi } from "@/api/workflowAssets";
 import { useModuleI18n } from "@/i18n/composables";
 import { extractApiError } from "@/utils/extractApiError";
@@ -85,11 +107,12 @@ import WorkflowDebugForkInputs from "./WorkflowDebugForkInputs.vue";
 
 const props = defineProps<{
   rootId: string;
-  attempt: WorkflowDebugForkAttempt;
+  attempt: Omit<WorkflowDebugForkAttempt, "scope">;
   candidates?: WorkflowDebugForkLocation[];
+  wholeChild?: boolean;
 }>();
 const emit = defineEmits<{ close: []; selectCandidate: [candidate: WorkflowDebugForkLocation] }>();
-const { tm } = useModuleI18n("features/agent-teams");
+const { tm, getRaw } = useModuleI18n("features/agent-teams");
 const router = useRouter();
 const route = useRoute();
 const controller = new AbortController();
@@ -99,6 +122,7 @@ const plan = ref<WorkflowDebugForkPreview>();
 const loading = ref(true);
 const starting = ref(false);
 const error = ref("");
+const scope = ref<WorkflowDebugForkScope>(props.wholeChild ? "child_workflow" : "single");
 const field = ref<string | null>(null);
 const replacementText = ref("");
 let requestId: string | undefined;
@@ -142,8 +166,8 @@ function chooseCandidate(attemptId: string) {
 }
 
 watch(
-  [() => props.rootId, () => props.attempt.scope_run_id, () => props.attempt.task_run_id, () => props.attempt.attempt_id],
-  ([rootId, scope_run_id, task_run_id, attempt_id], _, onCleanup) => {
+  [() => props.rootId, () => props.attempt.scope_run_id, () => props.attempt.task_run_id, () => props.attempt.attempt_id, scope],
+  ([rootId, scope_run_id, task_run_id, attempt_id, selectedScope], _, onCleanup) => {
     const read = new AbortController();
     onCleanup(() => read.abort());
     plan.value = undefined;
@@ -151,7 +175,7 @@ watch(
     requestId = undefined;
     error.value = "";
     loading.value = true;
-    void workflowAssetsApi.previewDebugFork(rootId, { scope_run_id, task_run_id, attempt_id }, read.signal)
+    void workflowAssetsApi.previewDebugFork(rootId, { scope_run_id, task_run_id, attempt_id, scope: selectedScope }, read.signal)
       .then(result => { if (!read.signal.aborted) plan.value = result; })
       .catch(err => {
         if (!read.signal.aborted) error.value = extractApiError(err, tm("errors.operationFailed")).message;
@@ -168,7 +192,10 @@ async function start() {
   requestId ??= globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   try {
     const { run_id } = await workflowAssetsApi.startDebugFork(props.rootId, {
-      ...props.attempt,
+      scope_run_id: props.attempt.scope_run_id,
+      task_run_id: props.attempt.task_run_id,
+      attempt_id: props.attempt.attempt_id,
+      scope: scope.value,
       preview_token: plan.value.preview_token,
       request_id: requestId,
       replacement: replacement.value,

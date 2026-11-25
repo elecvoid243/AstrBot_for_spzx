@@ -9627,7 +9627,7 @@ paths:
               $ref: '#/components/schemas/WorkflowDebugForkAttempt'
       responses:
         '200':
-          description: Original definition, recorded inputs and result.
+          description: Original definition, input availability and recorded result.
           content:
             application/json:
               schema:
@@ -9638,14 +9638,12 @@ paths:
                   message: {type: 'null'}
                   data:
                     $ref: '#/components/schemas/WorkflowDebugForkPreview'
-        '400':
-          description: Replacement violates the input contract.
         '401':
           description: Dashboard session required.
         '404':
           description: Owned run, scope, task or attempt unavailable.
         '409':
-          description: Attempt unsupported, evidence incomplete, or confirmation conflicts.
+          description: Attempt is skipped or unsupported, or the confirmation conflicts.
         '422':
           description: Invalid request.
           content:
@@ -9682,13 +9680,13 @@ paths:
                   data:
                     $ref: '#/components/schemas/WorkflowDebugForkStarted'
         '400':
-          description: Replacement violates the input contract.
+          description: Some inputs are unresolved or a replacement violates the input contract.
         '401':
           description: Dashboard session required.
         '404':
-          description: Owned run, scope, task or attempt unavailable.
+          description: Owned run, scope, task, attempt or exact input reference unavailable.
         '409':
-          description: Attempt unsupported, evidence incomplete, or confirmation conflicts.
+          description: Attempt is skipped or unsupported, or the confirmation conflicts.
         '422':
           description: Invalid request.
           content:
@@ -14629,7 +14627,7 @@ components:
         debug_fork_supported: {type: boolean}
         read_status:
           type: string
-          enum: [read, 'null', not_read, skipped, missing]
+          enum: [read, 'null', not_read, skipped, missing, unavailable]
         value: {}
         evidence:
           type: object
@@ -14710,12 +14708,19 @@ components:
         replacement:
           anyOf:
           - type: 'null'
-          - type: object
-            additionalProperties: false
-            required: [name, value]
-            properties:
-              name: {type: string, minLength: 1, maxLength: 128}
-              value: {}
+          - $ref: '#/components/schemas/WorkflowDebugForkReplacement'
+        replacements:
+          type: array
+          items:
+            $ref: '#/components/schemas/WorkflowDebugForkReplacement'
+    WorkflowDebugForkReplacement:
+      type: object
+      additionalProperties: false
+      required: [name, value]
+      properties:
+        name: {type: string, minLength: 1, maxLength: 128}
+        value:
+          description: JSON matching the consumer's input contract. A managed reference requires an exact artifact_id and version, plus file_id for a file.
     WorkflowDebugForkComparison:
       type: object
       required: [source, original, inputs]
@@ -14752,7 +14757,9 @@ components:
             properties:
               name: {type: string}
               kind: {type: string, enum: [reference, text, json]}
-              source: {type: string, enum: [recorded, default, absent]}
+              format: {type: string, enum: [astrbot-artifact, astrbot-file]}
+              source: {type: string, enum: [recorded, default, absent, missing, unavailable]}
+              selection: {type: string, enum: [reused, filled, replaced]}
               original: {}
               value: {}
               changed: {type: boolean}

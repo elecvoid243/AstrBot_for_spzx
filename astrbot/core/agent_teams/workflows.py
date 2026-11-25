@@ -96,6 +96,7 @@ from astrbot.core.agent_teams.graph import (
 )
 from astrbot.core.agent_teams.release_brief import RELEASE_BRIEF
 from astrbot.core.agent_teams.result_tool import (
+    PORT_FORMATS,
     ArtifactReference,
     ReadArtifactTool,
     StoreTaskFileTool,
@@ -497,9 +498,9 @@ class DebugForkAttempt(BaseModel):
 
 
 class DebugForkReplacement(BaseModel):
-    """Replace one recorded ordinary value with a contract-checked test value."""
+    """Supply one contract-checked test value or exact managed reference."""
 
-    model_config = ConfigDict(extra="forbid", strict=True, allow_inf_nan=False)
+    model_config = ConfigDict(extra="forbid", strict=True)
     name: str = Field(min_length=1, max_length=128)
     value: JsonValue
 
@@ -510,6 +511,7 @@ class DebugForkRequest(DebugForkAttempt):
     preview_token: str = Field(pattern=r"^[a-f0-9]{64}$")
     request_id: str = Field(min_length=1, max_length=128)
     replacement: DebugForkReplacement | None = None
+    replacements: list[DebugForkReplacement] = Field(default_factory=list)
 
 
 class ToolResolutionRequest(BaseModel):
@@ -3870,6 +3872,39 @@ class WorkflowService:
                 )
             return [*replayable, *other]
 
+    async def _historical_reference_status(
+        self,
+        session: AsyncSession,
+        username: str,
+        value: JsonValue,
+        reference_format: str,
+        path: str,
+    ) -> Literal["missing", "unavailable"] | None:
+        """Check whether a historical port has an exact, accessible reference.
+
+        Args:
+            session: Current inspection transaction.
+            username: Owner requesting the history.
+            value: Recorded or upstream candidate.
+            reference_format: Managed reference format of the port.
+            path: Diagnostic path of the input.
+
+        Returns:
+            A status for incomplete or inaccessible evidence, or None if usable.
+        """
+        try:
+            reference = PORT_FORMATS[reference_format].model_validate(value)
+        except ValidationError:
+            return "missing"
+        try:
+            await self._require_port_reference(
+                session, username, reference.model_dump(), path
+            )
+        except RoleAssetError:
+            # Ownership failures and nonexistent versions have the same public response.
+            return "unavailable"
+        return None
+
     async def _debug_fork_plan(
         self,
         session: AsyncSession,
@@ -3918,15 +3953,28 @@ class WorkflowService:
                 "This node has no supported debug execution boundary",
                 status=409,
             )
+        if attempt["status"] == "skipped":
+            raise RoleAssetError(
+                "This attempt was skipped and did not read its inputs. Select a completed or failed attempt.",
+                status=409,
+            )
         if attempt["status"] not in {"completed", "failed"}:
             raise RoleAssetError("Select a completed or failed attempt", status=409)
         snapshot = attempt.get("snapshot") or {}
-        reads = _debug_fork_reads(node, snapshot)
         values = snapshot.get("inputs") or {}
-        if reads is None:
-            raise RoleAssetError(
-                "Recorded inputs are incomplete for this attempt", status=409
-            )
+        sources = snapshot.get("port_sources") or {}
+        recorded_reads = snapshot.get("input_reads")
+        legacy = recorded_reads is None
+        # An exact producer and field can establish an individual read when its marker is missing.
+        reads = {
+            name: evidence
+            for name, evidence in sources.items()
+            if evidence.get("artifact") and evidence.get("field")
+        }
+        reads.update(recorded_reads or {})
+        bound = (
+            node.get("inputs", {}).keys() | snapshot.get("iteration_inputs", {}).keys()
+        )
 
         contract = task_input_contract(
             node.get("input_contract"), node.get("transform")
@@ -3939,72 +3987,69 @@ class WorkflowService:
             }
         inputs = []
         for name, schema in contract["properties"].items():
-            recorded = name in reads
-            defaulted = not recorded and "default" in schema
-            value = (
-                {"original": values[name], "value": values[name]}
-                if recorded
-                else {"original": schema["default"], "value": schema["default"]}
-                if defaulted
-                else {}
-            )
-            kind = (
-                "reference"
-                if schema.get("format") in REFERENCE_OUTPUTS.values()
+            reference_format = schema.get("format")
+            managed = reference_format in REFERENCE_OUTPUTS.values()
+            port = {
+                "name": name,
+                "kind": "reference"
+                if managed
                 else "text"
                 if schema.get("type") == "string"
-                else "json"
-            )
-            evidence = (
-                {
-                    **(reads[name] or {}),
-                    **(snapshot.get("port_sources") or {}).get(name, {}),
-                }
-                if recorded
-                else {}
-            )
-            if (
-                recorded
-                and "port_sources" not in snapshot
-                and (artifact := evidence.get("artifact"))
-                and artifact["version"] == 1
-            ):
-                binding = snapshot.get("iteration_inputs", {}).get(name) or node.get(
-                    "inputs", {}
-                ).get(name, {})
-                if binding.get("field") in snapshot.get("selected_fields", {}).get(
-                    artifact["artifact_id"], []
+                else "json",
+                "source": "absent",
+                "changed": False,
+            }
+            if managed:
+                port["format"] = reference_format
+            if name in reads and name in values:
+                value = values[name]
+                if managed:
+                    port["source"] = (
+                        await self._historical_reference_status(
+                            session, username, value, reference_format, f"inputs.{name}"
+                        )
+                        or "absent"
+                    )
+                evidence = {**(reads[name] or {}), **sources.get(name, {})}
+                if (
+                    "port_sources" not in snapshot
+                    and (artifact := evidence.get("artifact"))
+                    and artifact["version"] == 1
                 ):
-                    evidence["field"] = binding["field"]
-            if ref := evidence.get("artifact"):
-                await self._artifact_source(session, username, ref)
-            ref_value = value.get("value")
-            if (
-                kind == "reference"
-                and isinstance(ref_value, dict)
-                and isinstance(ref_value.get("artifact_id"), str)
-                and type(ref_value.get("version")) is int
-                and (
-                    "file_id" not in ref_value or isinstance(ref_value["file_id"], str)
-                )
+                    binding = snapshot.get("iteration_inputs", {}).get(
+                        name
+                    ) or node.get("inputs", {}).get(name, {})
+                    if binding.get("field") in snapshot.get("selected_fields", {}).get(
+                        artifact["artifact_id"], []
+                    ):
+                        evidence["field"] = binding["field"]
+                if port["source"] == "absent" and (ref := evidence.get("artifact")):
+                    try:
+                        await self._artifact_source(session, username, ref)
+                    except RoleAssetError:
+                        port["source"] = "unavailable"
+                if port["source"] == "absent":
+                    port.update(
+                        source="recorded",
+                        original=value,
+                        value=value,
+                        selection="reused",
+                        evidence=evidence,
+                    )
+            elif name in reads or (legacy and name in bound):
+                port["source"] = "missing"
+            elif "default" in schema and (
+                name not in values or values[name] == schema["default"]
             ):
-                await self._require_port_reference(
-                    session, username, ref_value, f"inputs.{name}"
+                port.update(
+                    source="default",
+                    original=schema["default"],
+                    value=schema["default"],
+                    selection="reused",
                 )
-            inputs.append(
-                {
-                    "name": name,
-                    "kind": kind,
-                    "source": "recorded"
-                    if recorded
-                    else "default"
-                    if defaulted
-                    else "absent",
-                    "changed": False,
-                    **value,
-                    **({"evidence": evidence} if recorded else {}),
-                }
-            )
+            elif name in values or port_requires_value(contract, name):
+                port["source"] = "missing"
+            inputs.append(port)
 
         parent_call = None
         if attempt["status"] == "failed" and (
@@ -4137,9 +4182,19 @@ class WorkflowService:
             RoleAssetError: The confirmation, evidence, or replacement is invalid.
         """
         key = (f"debug-fork:{run_id}", request.request_id)
-        fingerprint = hashlib.sha256(
-            json.dumps(request.model_dump(), ensure_ascii=True).encode()
-        ).hexdigest()
+        try:
+            serialized = json.dumps(
+                request.model_dump(
+                    exclude={"replacements"} if not request.replacements else None
+                ),
+                ensure_ascii=True,
+                allow_nan=False,
+            )
+        except ValueError as exc:
+            raise RoleAssetError(
+                "Use finite JSON numbers in replacement values"
+            ) from exc
+        fingerprint = hashlib.sha256(serialized.encode()).hexdigest()
         async with self.db.get_db() as session:
             await session.execute(text("BEGIN IMMEDIATE"))
             root = await session.get(AgentWorkflowRun, run_id)
@@ -4155,51 +4210,79 @@ class WorkflowService:
                     session, username, run_id, request
                 )
                 if plan.pop("preview_token") != request.preview_token:
-                    raise RoleAssetError("Debug fork preview has changed", status=409)
-                if replacement := request.replacement:
-                    port = next(
-                        (
-                            item
-                            for item in plan["inputs"]
-                            if item["name"] == replacement.name
-                        ),
-                        None,
+                    raise RoleAssetError(
+                        "Debug fork preview has changed. Reopen the preview to check the current input sources.",
+                        status=409,
                     )
-                    if (
-                        port is None
-                        or port["source"] != "recorded"
-                        or port["kind"] == "reference"
-                    ):
-                        raise RoleAssetError(
-                            "Select a recorded text or JSON input to replace"
+                contract = definition["input_contract"]
+                ports = {port["name"]: port for port in plan["inputs"]}
+                replacements = list(request.replacements)
+                if request.replacement is not None:
+                    replacements.append(request.replacement)
+                selected = set()
+                for replacement in replacements:
+                    name = replacement.name
+                    port = ports.get(name)
+                    if port is None or name in selected:
+                        raise RoleAssetError("Choose each declared input at most once")
+                    selected.add(name)
+                    normalize_port_inputs(
+                        {
+                            "type": "object",
+                            "properties": {name: contract["properties"][name]},
+                        },
+                        {name: replacement.value},
+                        "inputs",
+                    )
+                    if port["kind"] == "reference":
+                        await self._require_port_reference(
+                            session, username, replacement.value, f"inputs.{name}"
                         )
-                    port["value"] = replacement.value
-                    port["changed"] = json.dumps(port["original"]) != json.dumps(
-                        replacement.value
+                    port["changed"] = (
+                        "original" not in port
+                        or not Draft202012Validator(
+                            {"const": port["original"]}
+                        ).is_valid(replacement.value)
+                    )
+                    # Reuse the recorded representation as well as its JSON value.
+                    port["value"] = (
+                        replacement.value if port["changed"] else port["original"]
+                    )
+                    port["selection"] = (
+                        "filled"
+                        if "original" not in port
+                        else "replaced"
+                        if port["changed"]
+                        else "reused"
                     )
 
-                contract = definition["input_contract"]
-                inputs = {
-                    item["name"]: item["value"]
-                    for item in plan["inputs"]
-                    if item["source"] == "recorded"
-                }
-                if request.replacement is not None:
-                    normalize_port_inputs(contract, inputs, "inputs")
-                else:
-                    # The scheduler must reproduce any failures of the original
-                    # values. Managed references need shape checks before lookup.
-                    reference_properties = {
-                        item["name"]: contract["properties"][item["name"]]
-                        for item in plan["inputs"]
-                        if item["kind"] == "reference" and item["name"] in inputs
+                issues = [
+                    {
+                        "path": f"inputs.{name}",
+                        "code": "REFERENCE"
+                        if port["source"] == "unavailable"
+                        else "REQUIRED",
+                        "message": (
+                            "The recorded reference is unavailable or you no longer have access. Select an accessible exact version."
+                            if port["source"] == "unavailable"
+                            else "The historical value is missing. Supply a test value or select an exact reference for this input."
+                        ),
                     }
-                    if reference_properties:
-                        normalize_port_inputs(
-                            {"type": "object", "properties": reference_properties},
-                            {name: inputs[name] for name in reference_properties},
-                            "inputs",
-                        )
+                    for name, port in ports.items()
+                    if port["source"] in {"missing", "unavailable"}
+                    and name not in selected
+                ]
+                if issues:
+                    raise RoleAssetError(issues[0]["message"], issues)
+                inputs = {
+                    name: port["value"]
+                    for name, port in ports.items()
+                    if "value" in port
+                    and (port["source"] != "default" or name in selected)
+                }
+                # With no edits, let the scheduler reproduce the original contract failure.
+                if replacements:
+                    normalize_port_inputs(contract, inputs, "inputs")
                 source = plan["source"]
                 frozen = await self._freeze_graph(
                     username,
@@ -4401,10 +4484,12 @@ class WorkflowService:
                         and definition.get("port_contract_version") == 2
                     )
                     and status in {"completed", "failed"}
-                    and _debug_fork_reads(node, snapshot) is not None
                 ),
                 "read_status": "missing",
             }
+            reference_format = port.get("format")
+            managed = reference_format in REFERENCE_OUTPUTS.values()
+            path = f"inputs.{input_name}"
             upstream_ref = None
             if source_id and not trial_source:
                 upstream = await self._inspect_upstream_port(
@@ -4415,7 +4500,12 @@ class WorkflowService:
                     field,
                     previous_round=bool(feedback),
                 )
-                if upstream is not None:
+                if upstream is not None and (
+                    not managed
+                    or not await self._historical_reference_status(
+                        session, username, upstream["value"], reference_format, path
+                    )
+                ):
                     data["upstream"] = upstream
                     upstream_ref = upstream.get("artifact")
 
@@ -4436,7 +4526,10 @@ class WorkflowService:
                 reads = snapshot.get("input_reads")
                 evidence = (snapshot.get("port_sources") or {}).get(input_name, {})
                 recorded = (
-                    input_name in reads
+                    (
+                        input_name in reads
+                        or bool(evidence.get("artifact") and evidence.get("field"))
+                    )
                     if reads is not None
                     else (
                         bool(evidence.get("artifact") or trial_source)
@@ -4456,6 +4549,14 @@ class WorkflowService:
                     )
                 )
                 if recorded and input_name in inputs:
+                    value = inputs[input_name]
+                    if managed and (
+                        reference_status := await self._historical_reference_status(
+                            session, username, value, reference_format, path
+                        )
+                    ):
+                        data["read_status"] = reference_status
+                        return data
                     data["read_status"] = (
                         "null" if inputs[input_name] is None else "read"
                     )

@@ -12,14 +12,13 @@
     "version": "Original version v{version}",
     "revision": "Original draft r{revision}",
     "singleNode": "Only the selected node will run.",
-    "replace": "Replace one recorded input",
-    "replacementText": "Replacement text",
-    "replacementJson": "Replacement JSON",
+    "replace": "Choose an input to edit",
+    "replacementText": "Test text",
+    "replacementJson": "Test JSON",
     "invalidJson": "Enter valid JSON.",
     "input": "Input",
     "originalInput": "Original value",
     "forkInput": "Fork value",
-    "reused": "Reused",
     "close": "Cancel",
     "start": "Start debug fork",
     "openSource": "Open source attempt",
@@ -28,7 +27,19 @@
     "sources": {
       "recorded": "Recorded input",
       "default": "Frozen default",
-      "absent": "No value read"
+      "absent": "No value read",
+      "missing": "Historical value missing",
+      "unavailable": "Recorded reference unavailable or inaccessible"
+    },
+    "clearEdit": "Clear edit",
+    "resolveInputs": "Supply values for {names} before starting.",
+    "attachment": "Attachment from this exact version",
+    "noAttachments": "This version has no managed attachments. Choose another exact version.",
+    "referenceUnavailable": "This exact version is unavailable or you do not have access. Choose an accessible version.",
+    "selections": {
+      "reused": "Reused",
+      "filled": "Filled",
+      "replaced": "Replaced"
     }
   },
   "debugWrite": {
@@ -73,6 +84,7 @@
     "hint": "Select a named data line to see what the consumer read.",
     "close": "Close data line inspector",
     "openAttempt": "Inspect data lines for this attempt",
+    "skippedDebugHint": "Select a completed or failed attempt to start a debug fork.",
     "currentRounds": "Current rounds",
     "loading": "Reading the selected attempt…",
     "sourceRun": "Source task run",
@@ -84,7 +96,8 @@
       "null": "Read an explicit null",
       "not_read": "Not read",
       "skipped": "Skipped · not read",
-      "missing": "Read record unavailable"
+      "missing": "Read record unavailable",
+      "unavailable": "Recorded reference unavailable or inaccessible"
     }
   },
   "starterTeam": {

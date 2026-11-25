@@ -29,6 +29,9 @@
       <p class="text-body-2 font-weight-medium mt-2" data-testid="inspection-read-status" role="status">
         {{ tm(`inspection.states.${data.read_status}`) }}
       </p>
+      <p v-if="data.read_status === 'skipped'" class="text-caption text-medium-emphasis">
+        {{ tm("inspection.skippedDebugHint") }}
+      </p>
       <pre v-if="data.read_status === 'read' || data.read_status === 'null'" class="data-line-value" data-testid="inspection-value">{{ JSON.stringify(data.value, null, 2) }}</pre>
       <ul v-if="data.evidence?.artifact || data.evidence?.source_run_id || data.evidence?.reference" class="data-line-evidence text-caption" data-testid="inspection-evidence">
         <li v-if="data.evidence.artifact">

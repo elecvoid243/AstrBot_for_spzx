@@ -139,8 +139,8 @@ export const workflowAssetsApi = {
   async humanRequests() {
     return (await httpClient.get("/api/v1/workflow_human_requests")).data.data;
   },
-  async runs(includeArtifacts = false) {
-    return (await httpClient.get("/api/v1/workflow_runs", { params: { summary_only: true, include_artifacts: includeArtifacts || undefined } })).data.data;
+  async runs(includeArtifacts = false, signal?: AbortSignal) {
+    return (await httpClient.get("/api/v1/workflow_runs", { params: { summary_only: true, include_artifacts: includeArtifacts || undefined }, signal })).data.data;
   },
   async readiness(assetId: string, version: number) {
     return (

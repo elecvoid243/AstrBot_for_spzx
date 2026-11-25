@@ -18,9 +18,11 @@
         </th>
         <td><pre v-if="'original' in port">{{ JSON.stringify(port.original, null, 2) }}</pre><span v-else>—</span></td>
         <td>
-          <pre v-if="port.changed" data-testid="debug-fork-changed-value">{{ JSON.stringify(port.value, null, 2) }}</pre>
-          <span v-else-if="'value' in port" class="text-medium-emphasis">{{ tm("debugFork.reused") }}</span>
+          <span v-if="'value' in port" class="text-caption text-medium-emphasis">
+            {{ tm(`debugFork.selections.${port.selection ?? (port.changed ? "replaced" : "reused")}`) }}
+          </span>
           <span v-else>—</span>
+          <pre v-if="port.changed" data-testid="debug-fork-changed-value">{{ JSON.stringify(port.value, null, 2) }}</pre>
         </td>
       </tr>
     </tbody>

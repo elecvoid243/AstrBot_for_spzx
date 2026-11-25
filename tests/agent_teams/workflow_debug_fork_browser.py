@@ -2,12 +2,18 @@
 
 import argparse
 import asyncio
+import json
+import sqlite3
+from contextlib import closing
+from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 
 from playwright.async_api import expect
+from pypdf import PdfWriter
 
-from tests.agent_teams.report_release_browser import ROOT, Acceptance
+from tests.agent_teams.report_release_browser import ROOT, SOURCE_MODEL, Acceptance
+from tests.agent_teams.report_release_fixture import REPORT_FIELDS, TEXT, contract
 from tests.agent_teams.test_workflow_debug_forks import failed_child_definitions
 
 
@@ -140,7 +146,11 @@ class DebugForkAcceptance(Acceptance):
                 quality=88,
             )
 
-            await preview.locator(".v-select").get_by_role("combobox").click()
+            await (
+                preview.get_by_test_id("debug-fork-input-picker")
+                .get_by_role("combobox")
+                .click()
+            )
             await page.get_by_role("option", name="text", exact=True).click()
             await (
                 page.get_by_test_id("debug-fork-replacement")
@@ -188,6 +198,259 @@ class DebugForkAcceptance(Acceptance):
         assert saved["cursor"] == source["cursor"]
         assert saved["scopes"] == source["scopes"]
         assert not self.requests
+
+        await self.exercise_missing_pdf(bot, chat)
+
+    async def exercise_missing_pdf(self, bot, chat):
+        """Fill a missing attachment and compare exact versions after reloading.
+
+        Args:
+            bot: English Dashboard workbench page.
+            chat: Chinese Dashboard Chat page.
+        """
+        draft_schema = contract({"text": TEXT, "confidence": {"type": "number"}})
+        inputs = contract(
+            {
+                "draft": draft_schema,
+                "pdf": {"type": "object", "format": "astrbot-file"},
+                "report": {"type": "object", "format": "astrbot-artifact"},
+            }
+        )
+        source_draft = await self.open_draft(
+            {
+                "name": "Report draft",
+                "default_provider_id": SOURCE_MODEL,
+                "result_task_id": "source",
+                "tasks": [
+                    {
+                        "id": "source",
+                        "name": "Prepare draft",
+                        "member": "source",
+                        "role": {
+                            "name": "Prepare the draft",
+                            "prompt": "Call submit_task_result, then reply Done.",
+                            "tools": [],
+                            "skills": [],
+                        },
+                        "installation": {"profile_id": "default"},
+                        "task": "ATN180 SOURCE. Submit a draft without attachments.",
+                        "output_contract": contract(
+                            {"text": TEXT, "files": REPORT_FIELDS["files"]}
+                        ),
+                    },
+                ],
+            }
+        )
+        await self.publish(source_draft)
+        started = await self.api(
+            "POST",
+            f"/workflow_assets/{source_draft['asset_id']}/runs",
+            data={"version": 1},
+        )
+        source_run = await self.wait_run(
+            started["run_id"], lambda run: run["status"] == "completed"
+        )
+        (source,) = source_run["tasks"]
+        original = source["result_ref"]
+        artifact_id = original["artifact_id"]
+        writer = PdfWriter()
+        writer.add_blank_page(width=200, height=200)
+        pdf = BytesIO()
+        writer.write(pdf)
+        stored = await self.api(
+            "POST",
+            f"/workflow_runs/{source['run_id']}/files",
+            params={"filename": "citations.pdf"},
+            data=pdf.getvalue(),
+        )
+        revisions = f"/workflow_artifacts/{artifact_id}/versions"
+        pinned = await self.api(
+            "POST",
+            revisions,
+            data={
+                "expected_version": original["version"],
+                "request_id": "add-citation-pdf",
+                "content": {
+                    "text": "Updated draft",
+                    "files": [{"file_id": stored["file_id"]}],
+                },
+            },
+        )
+        workflow = await self.open_draft(
+            {
+                "name": "Review citation evidence",
+                "port_contract_version": 2,
+                "input_contract": inputs,
+                "entry_task_ids": ["check"],
+                "result_task_id": "check",
+                "tasks": [
+                    {
+                        "id": "check",
+                        "name": "Check citations",
+                        "transform": "map_fields",
+                        "input_contract": inputs,
+                        "output_contract": contract({"draft": draft_schema}),
+                        "inputs": {
+                            name: {"input": name} for name in inputs["properties"]
+                        },
+                    },
+                ],
+            }
+        )
+        await self.publish(workflow)
+        original_draft = {"text": source["result"]["text"], "confidence": 1.0}
+        launched = await self.api(
+            "POST",
+            f"/workflow_assets/{workflow['asset_id']}/runs",
+            data={
+                "version": 1,
+                "inputs": {
+                    "draft": original_draft,
+                    "pdf": {**pinned, "file_id": stored["file_id"]},
+                    "report": {
+                        "version": original["version"],
+                        "artifact_id": artifact_id,
+                    },
+                },
+            },
+        )
+        root = launched["run_id"]
+        run = await self.wait_run(root, lambda run: run["status"] == "completed")
+        (check,) = run["tasks"]
+        # Reproduce a historical snapshot that retained the read marker but lost the PDF reference.
+        with closing(sqlite3.connect(self.runtime / "data/data_v4.db")) as db, db:
+            (payload,) = db.execute(
+                "SELECT snapshot FROM agent_workflow_runs WHERE run_id = ?",
+                (check["run_id"],),
+            ).fetchone()
+            snapshot = json.loads(payload)
+            del snapshot["inputs"]["pdf"]
+            db.execute(
+                "UPDATE agent_workflow_runs SET snapshot = ? WHERE run_id = ?",
+                (json.dumps(snapshot), check["run_id"]),
+            )
+
+        for locale, page, route in (
+            ("en", bot, f"/#/agent-teams?workflow_run={root}"),
+            ("zh", chat, f"/#/chat/runs/{root}"),
+        ):
+            await page.goto(self.origin + route)
+            await page.get_by_role(
+                "button",
+                name="Expand execution graph (read-only)"
+                if locale == "en"
+                else "展开执行图（只读）",
+                exact=True,
+            ).click()
+            edge = page.locator(
+                '.vue-flow__edge.inspection-edge[data-id="data:input:check:pdf"]'
+            )
+            await edge.focus()
+            await page.keyboard.press("Enter")
+            await page.get_by_test_id("open-debug-fork").click()
+            preview = page.get_by_test_id("debug-fork-preview")
+            start = preview.get_by_test_id("start-debug-fork")
+            field = preview.get_by_test_id("debug-fork-input-picker").get_by_role(
+                "combobox"
+            )
+            missing = "Historical value missing" if locale == "en" else "历史值缺失"
+            await expect(preview).to_contain_text(missing)
+            await expect(preview).to_contain_text("Fixed input documents")
+            await expect(start).to_be_disabled()
+            for name in ("pdf", "report"):
+                await field.click()
+                await page.get_by_role("option", name=name, exact=True).click()
+                await (
+                    preview.get_by_test_id("debug-fork-artifact-id")
+                    .locator("input")
+                    .first.fill(artifact_id)
+                )
+                version = (
+                    preview.get_by_test_id("debug-fork-artifact-version")
+                    .locator("input")
+                    .first
+                )
+                if name == "pdf":
+                    await version.fill(str(original["version"]))
+                    await expect(preview).to_contain_text(
+                        "This version has no managed attachments"
+                        if locale == "en"
+                        else "此版本没有受管附件"
+                    )
+                    await expect(start).to_be_disabled()
+                if name == "report":
+                    await version.fill(str(original["version"]))
+                    await expect(start).to_be_enabled()
+                    await expect(
+                        preview.get_by_role("row", name="report", exact=False)
+                    ).to_contain_text("Reused" if locale == "en" else "沿用")
+                await version.fill(str(pinned["version"]))
+                if name == "pdf":
+                    await (
+                        preview.get_by_test_id("debug-fork-attachment")
+                        .get_by_role("combobox")
+                        .click()
+                    )
+                    await page.get_by_role(
+                        "option", name="citations.pdf", exact=False
+                    ).click()
+            await expect(preview).to_contain_text(
+                "Filled" if locale == "en" else "补入"
+            )
+            await expect(preview).to_contain_text(
+                "Replaced" if locale == "en" else "替换"
+            )
+            await expect(start).to_be_enabled()
+            await field.click()
+            await page.get_by_role("option", name="draft", exact=True).click()
+            editor = (
+                preview.get_by_test_id("debug-fork-replacement")
+                .locator("textarea")
+                .first
+            )
+            await editor.fill(
+                json.dumps({**original_draft, "confidence": "1e400"}).replace(
+                    '"1e400"', "1e400"
+                )
+            )
+            await expect(start).to_be_disabled()
+            await editor.fill(json.dumps({**original_draft, "confidence": 0.5}))
+            await expect(start).to_be_enabled()
+            await expect(
+                preview.get_by_role("row", name="draft", exact=False).get_by_test_id(
+                    "debug-fork-changed-value"
+                )
+            ).to_contain_text('"confidence": 0.5')
+            await field.click()
+            await page.get_by_role("option", name="pdf", exact=True).click()
+            await expect(
+                preview.get_by_test_id("debug-fork-attachment")
+            ).to_contain_text("citations.pdf")
+            await preview.screenshot(
+                path=self.evidence / f"agent-workflow-debug-fork-inputs-{locale}.jpg",
+                quality=88,
+            )
+            await start.click()
+            comparison = page.get_by_test_id("debug-fork-comparison")
+            await expect(comparison).to_contain_text(
+                "Filled" if locale == "en" else "补入"
+            )
+            if locale == "en":
+                await self.api(
+                    "POST",
+                    revisions,
+                    data={
+                        "expected_version": pinned["version"],
+                        "request_id": "upload-after-fork",
+                        "content": {"text": "Newest draft", "files": []},
+                    },
+                )
+            await page.reload()
+            await expect(comparison).to_contain_text(stored["file_id"])
+            await expect(comparison).to_contain_text("Fixed input documents")
+            await expect(comparison).to_contain_text(
+                "Replaced" if locale == "en" else "替换"
+            )
 
 
 if __name__ == "__main__":

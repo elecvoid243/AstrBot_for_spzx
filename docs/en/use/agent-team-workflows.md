@@ -222,17 +222,21 @@ In the process panel, expand **Attempts** and select **Inspect data lines for th
 
 ### Debug one historical node
 
-On an eligible data line, choose **Debug with this input**. The preview shows the workflow version (or draft revision) that the selected attempt used, its recorded inputs and the single node that will run. Keep the original values or select one recorded input to replace with text or JSON. The preview shows the proposed value alongside the original.
+On an eligible data line, choose **Debug with this input**. The preview identifies the workflow version or draft revision, the selected attempt, and the single node that will run. The input table shows the values recorded for that attempt and flags missing or inaccessible inputs. A skipped attempt shows **Skipped · not read** in the inspector. Select a completed or failed attempt to start a fork.
 
-Choose **Start debug fork** to open the new run. Its comparison shows the original failure or output, any input difference and the fork result. Reopen the fork from run history or its Dashboard Chat run conversation. **Open source attempt** returns to the original task's scope, iteration and attempt.
+Use **Choose an input to edit** to supply missing test values or replace individual inputs. Text and JSON must match the node's input contract. For an artifact, select a version you can read or enter its exact ID and version. For a file, also select an attachment from that version. A filename alone carries no version information. Reopen the preview if access to a recorded reference changes before starting.
 
-This path supports recorded inputs for the built-in Parse JSON, Map Fields and JSON Text nodes, installed workflow components, and workflow Agent nodes. A debug fork stops before an external component runs or a local Agent invokes a tool whose external effect must be checked. Open **External write preview** in the fork to see the operation, destination, and parameters from the current call. Expand **Historical receipts from the source attempt** to inspect any recorded results from the original call.
+![Debug fork preview with a missing historical PDF, its selected attachment, and the retained draft](/images/agent-workflow-debug-fork-inputs-en.jpg)
+
+Choose **Start debug fork** to open the new run. The comparison labels each value as reused, filled, or replaced, and shows the original and fork results. The selected versions stay pinned when newer versions are published or the page reloads. Reopen the fork from run history or Dashboard Chat. **Open source attempt** returns to the original scope, iteration and attempt.
+
+![Debug fork comparing original and replacement citation inputs and results](/images/agent-workflow-debug-fork-en.jpg)
+
+You can debug built-in Parse JSON, Map Fields and JSON Text nodes, installed workflow components, and workflow Agent nodes. A debug fork stops before an external component runs or a local Agent invokes a tool whose external effect must be checked. Open **External write preview** in the fork to see the operation, destination, and parameters from the current call. Expand **Historical receipts from the source attempt** to inspect any recorded results from the original call.
 
 Close the preview with **Close** and reopen it at any time from the fork. Refreshing or reconnecting preserves the stopped call. If the target is unknown or required parameters are missing or invalid, the preview shows the available details and explains why the run stopped. Use **Cancel run** in run controls to end the fork.
 
 ![External write preview with the current report destination and historical ledger receipt](/images/agent-workflow-debug-write-en.jpg)
-
-![Debug fork comparing original and replacement citation inputs and results](/images/agent-workflow-debug-fork-en.jpg)
 
 ### Debug a failed fixed child call
 

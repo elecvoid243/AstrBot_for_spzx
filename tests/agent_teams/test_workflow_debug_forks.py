@@ -1029,3 +1029,332 @@ async def test_debug_fork_fills_missing_history_with_exact_file(
     skipped = await client.post(f"{url}/preview", json=identity)
     assert skipped.status_code == 409, skipped.text
     assert "skipped" in skipped.json()["message"]
+
+
+@pytest.mark.asyncio
+async def test_debug_fork_requires_confirmation_of_the_current_draft(
+    publication_client,
+):
+    """Run a saved node configuration against the same historical input.
+
+    Args:
+        publication_client: Authenticated Dashboard routes with isolated storage.
+    """
+    client = publication_client
+    text = {
+        "type": "object",
+        "properties": {"text": {"type": "string"}},
+        "required": ["text"],
+    }
+    definition = {
+        "name": "Citation workflow",
+        "port_contract_version": 2,
+        "input_contract": text,
+        "entry_task_ids": ["check"],
+        "result_task_id": "check",
+        "tasks": [
+            {
+                "id": "check",
+                "name": "Check citations",
+                "transform": "parse_json",
+                "inputs": {"text": {"input": "text"}},
+                "output_contract": {
+                    "type": "object",
+                    "properties": {"count": {"type": "integer"}},
+                    "minProperties": 2,
+                    "required": ["count"],
+                },
+            }
+        ],
+    }
+    created = await client.post(
+        "/api/v1/agent_drafts/workflow", json={"body": {"definition": definition}}
+    )
+    assert created.status_code == 200, created.text
+    draft = created.json()["data"]
+    asset_id = draft["asset_id"]
+    draft_path = f"/api/v1/agent_drafts/workflow/{asset_id}"
+    published = await client.post(
+        f"{draft_path}/publish", json={"revision": draft["revision"]}
+    )
+    assert published.status_code == 200, published.text
+    launched = await client.post(
+        f"/api/v1/workflow_assets/{asset_id}/runs",
+        json={"version": 1, "inputs": {"text": '{"count":2}'}},
+    )
+    assert launched.status_code == 200, launched.text
+    source = launched.json()["data"]
+    (attempt,) = source["tasks"]
+    assert attempt["status"] == "failed"
+    fork_path = f"/api/v1/workflow_runs/{source['run_id']}/debug_forks"
+    identity = {
+        "scope_run_id": source["run_id"],
+        "task_run_id": attempt["run_id"],
+        "attempt_id": attempt["state"]["attempt_id"],
+    }
+    original = await client.post(f"{fork_path}/preview", json=identity)
+    assert original.status_code == 200, original.text
+    assert original.json()["data"]["source"]["asset_version"] == 1
+    assert "definition" not in original.json()["data"]
+
+    checker = definition["tasks"][0]
+    checker["output_contract"]["minProperties"] = 1
+    current = draft["revision"]
+    saved = await client.put(
+        draft_path,
+        json={"body": {"definition": definition}, "expected_revision": current},
+    )
+    assert saved.status_code == 200, saved.text
+    current = saved.json()["data"]["revision"]
+    draft_request = {**identity, "definition_mode": "draft"}
+    preview = await client.post(f"{fork_path}/preview", json=draft_request)
+    assert preview.status_code == 200, preview.text
+    plan = preview.json()["data"]
+    assert plan["definition"]["draft_revision"] == current
+    assert plan["definition"]["changes"] == [
+        {"kind": "output_contract_changed", "name": "Check citations"}
+    ]
+    assert plan["ready"]
+    assert plan["inputs"][0]["value"] == '{"count":2}'
+
+    checker["name"] = "Latest checker"
+    saved = await client.put(
+        draft_path,
+        json={"body": {"definition": definition}, "expected_revision": current},
+    )
+    assert saved.status_code == 200, saved.text
+    new_revision = saved.json()["data"]["revision"]
+    confirm = {
+        **draft_request,
+        "draft_revision": current,
+        "preview_token": plan["preview_token"],
+        "request_id": "draft",
+    }
+    stale = await client.post(fork_path, json=confirm)
+    assert stale.status_code == 409, stale.text
+
+    preview = await client.post(f"{fork_path}/preview", json=draft_request)
+    assert preview.status_code == 200, preview.text
+    plan = preview.json()["data"]
+    confirm.update(draft_revision=new_revision, preview_token=plan["preview_token"])
+    fork = await client.post(fork_path, json=confirm)
+    assert fork.status_code == 200, fork.text
+    fork_id = fork.json()["data"]["run_id"]
+    reopened = (await client.get(f"/api/v1/workflow_runs/{fork_id}")).json()["data"]
+    assert reopened["snapshot"]["debug_fork"]["definition"] == plan["definition"]
+    assert reopened["snapshot"]["definition"]["tasks"][0]["name"] == "Latest checker"
+    (result,) = reopened["tasks"]
+    assert result["result"] == {"count": 2}
+
+    # A new required port can explicitly reuse the former port. A type-changed
+    # port must use a value that matches its draft contract.
+    checker.update(
+        transform="map_fields",
+        input_contract={
+            "type": "object",
+            "properties": {"body": {"type": "string"}, "text": {"type": "integer"}},
+            "required": ["body", "text"],
+        },
+        inputs={},
+        output_contract={
+            "type": "object",
+            "properties": {"body": {"type": "string"}, "text": {"type": "integer"}},
+            "required": ["body", "text"],
+        },
+    )
+    saved = await client.put(
+        draft_path,
+        json={"body": {"definition": definition}, "expected_revision": new_revision},
+    )
+    assert saved.status_code == 200, saved.text
+    latest = saved.json()["data"]["revision"]
+    # Idempotent retries still reopen the originally admitted, frozen revision.
+    repeated = await client.post(fork_path, json=confirm)
+    assert repeated.json()["data"]["run_id"] == fork_id
+    preview = await client.post(f"{fork_path}/preview", json=draft_request)
+    assert preview.status_code == 200, preview.text
+    plan = preview.json()["data"]
+    assert not plan["ready"]
+    assert {
+        "kind": "input_added",
+        "name": "body",
+        "after": "string",
+        "required": True,
+    } in plan["definition"]["changes"]
+    assert {
+        "kind": "input_changed",
+        "name": "text",
+        "before": "string",
+        "after": "integer",
+    } in plan["definition"]["changes"]
+    ports = {port["name"]: port for port in plan["inputs"]}
+    assert ports["body"]["available_sources"] == ["text"]
+    assert ports["text"]["available_sources"] == []
+    assert ports["text"]["original"] == '{"count":2}'
+    assert "value" not in ports["text"]
+    assert {issue["path"] for issue in plan["issues"]} == {"inputs.body", "inputs.text"}
+    blocked = await client.post(
+        fork_path,
+        json={
+            **draft_request,
+            "draft_revision": latest,
+            "preview_token": plan["preview_token"],
+            "request_id": "blocked",
+        },
+    )
+    assert blocked.status_code == 409, blocked.text
+
+    repaired = {
+        **draft_request,
+        "draft_revision": latest,
+        "bindings": {"body": {"source_port": "text"}, "text": {"value": 7}},
+    }
+    preview = await client.post(f"{fork_path}/preview", json=repaired)
+    assert preview.status_code == 200, preview.text
+    plan = preview.json()["data"]
+    assert plan["ready"], plan["issues"]
+    planned = {port["name"]: port for port in plan["inputs"]}
+    assert "evidence" in planned["body"]
+    assert "original_evidence" not in planned["body"]
+    assert "original_evidence" in planned["text"]
+    assert "evidence" not in planned["text"]
+    wrong_binding = {
+        **repaired,
+        "bindings": {**repaired["bindings"], "text": {"value": 8}},
+    }
+    changed = await client.post(
+        fork_path,
+        json={
+            **wrong_binding,
+            "preview_token": plan["preview_token"],
+            "request_id": "repaired",
+        },
+    )
+    assert changed.status_code == 409, changed.text
+    fork = await client.post(
+        fork_path,
+        json={
+            **repaired,
+            "preview_token": plan["preview_token"],
+            "request_id": "repaired",
+        },
+    )
+    assert fork.status_code == 200, fork.text
+    reopened = (
+        await client.get(f"/api/v1/workflow_runs/{fork.json()['data']['run_id']}")
+    ).json()["data"]
+    (result,) = reopened["tasks"]
+    assert result["result"] == {"body": '{"count":2}', "text": 7}
+    mapped, provided = reopened["snapshot"]["debug_fork"]["inputs"]
+    assert (mapped["source"], mapped["source_port"], mapped["value"]) == (
+        "mapped",
+        "text",
+        '{"count":2}',
+    )
+    assert (provided["source"], provided["original"], provided["value"]) == (
+        "test_value",
+        '{"count":2}',
+        7,
+    )
+
+    definition["tasks"] = []
+    saved = await client.put(
+        draft_path,
+        json={"body": {"definition": definition}, "expected_revision": latest},
+    )
+    assert saved.status_code == 200, saved.text
+    preview = await client.post(f"{fork_path}/preview", json=draft_request)
+    plan = preview.json()["data"]
+    assert not plan["ready"]
+    assert plan["definition"]["changes"] == [
+        {"kind": "node_removed", "name": "Check citations"}
+    ]
+    original_again = await client.post(f"{fork_path}/preview", json=identity)
+    assert original_again.json()["data"] == original.json()["data"]
+
+
+@pytest.mark.asyncio
+async def test_debug_fork_draft_compares_json_defaults_by_type(publication_client):
+    """Keep boolean and integer defaults distinct in the draft comparison.
+
+    Args:
+        publication_client: Authenticated workflow, draft, and fork routes.
+    """
+    client = publication_client
+    inputs = {
+        "type": "object",
+        "properties": {
+            "value": {"type": "boolean"},
+            "setting": {"type": ["integer", "boolean"], "default": 0},
+        },
+        "required": ["value"],
+    }
+    node = {
+        "id": "check",
+        "name": "Check",
+        "transform": "map_fields",
+        "input_contract": inputs,
+        "inputs": {"value": {"input": "value"}},
+        "output_contract": inputs,
+    }
+    graph = {
+        "name": "Typed defaults",
+        "port_contract_version": 2,
+        "input_contract": inputs,
+        "entry_task_ids": ["check"],
+        "result_task_id": "check",
+        "tasks": [node],
+    }
+    created = await client.post(
+        "/api/v1/agent_drafts/workflow", json={"body": {"definition": graph}}
+    )
+    assert created.status_code == 200, created.text
+    draft = created.json()["data"]
+    asset_id = draft["asset_id"]
+    draft_path = f"/api/v1/agent_drafts/workflow/{asset_id}"
+    published = await client.post(
+        f"{draft_path}/publish", json={"revision": draft["revision"]}
+    )
+    assert published.status_code == 200, published.text
+    launched = await client.post(
+        f"/api/v1/workflow_assets/{asset_id}/runs",
+        json={"version": 1, "inputs": {"value": True}},
+    )
+    assert launched.status_code == 200, launched.text
+    run = launched.json()["data"]
+    (attempt,) = run["tasks"]
+    assert attempt["status"] == "completed"
+    contracts = {
+        **inputs,
+        "properties": {
+            "value": {"type": "integer", "default": 1},
+            "setting": {"type": ["integer", "boolean"], "default": False},
+        },
+    }
+    node.update(input_contract=contracts, output_contract=contracts, inputs={})
+    saved = await client.put(
+        draft_path,
+        json={"body": {"definition": graph}, "expected_revision": draft["revision"]},
+    )
+    assert saved.status_code == 200, saved.text
+    preview = await client.post(
+        f"/api/v1/workflow_runs/{run['run_id']}/debug_forks/preview",
+        json={
+            "scope_run_id": run["run_id"],
+            "task_run_id": attempt["run_id"],
+            "attempt_id": attempt["state"]["attempt_id"],
+            "definition_mode": "draft",
+        },
+    )
+    assert preview.status_code == 200, preview.text
+    plan = preview.json()["data"]
+    assert plan["ready"], plan["issues"]
+    defaulted = next(port for port in plan["inputs"] if port["name"] == "value")
+    assert defaulted["source"] == "default"
+    assert defaulted["original"] is True
+    assert type(defaulted["value"]) is int and defaulted["value"] == 1
+    assert defaulted["changed"] is True
+    assert any(
+        change["name"] == "setting" and change["kind"] == "input_changed"
+        for change in plan["definition"]["changes"]
+    )

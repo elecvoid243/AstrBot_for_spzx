@@ -222,13 +222,19 @@ In the process panel, expand **Attempts** and select **Inspect data lines for th
 
 ### Debug one historical node
 
-On an eligible data line, choose **Debug with this input**. The preview identifies the workflow version or draft revision, the selected attempt, and the single node that will run. The input table shows the values recorded for that attempt and flags missing or inaccessible inputs. A skipped attempt shows **Skipped · not read** in the inspector. Select a completed or failed attempt to start a fork.
+On an eligible data line, choose **Debug with this input**. The default **Original run** preview identifies the workflow version or draft revision, the selected attempt, and the single node that will run. The input table shows the values recorded for that attempt and flags missing or inaccessible inputs. A skipped attempt shows **Skipped · not read** in the inspector. Select a completed or failed attempt to start a fork.
 
 Use **Choose an input to edit** to supply missing test values or replace individual inputs. Text and JSON must match the node's input contract. For an artifact, select a version you can read or enter its exact ID and version. For a file, also select an attachment from that version. A filename alone carries no version information. Reopen the preview if access to a recorded reference changes before starting.
 
 ![Debug fork preview with a missing historical PDF, its selected attachment, and the retained draft](/images/agent-workflow-debug-fork-inputs-en.jpg)
 
-Choose **Start debug fork** to open the new run. The comparison labels each value as reused, filled, or replaced, and shows the original and fork results. The selected versions stay pinned when newer versions are published or the page reloads. Reopen the fork from run history or Dashboard Chat. **Open source attempt** returns to the original scope, iteration and attempt.
+To verify a fix, select **Current draft**. The preview shows the saved revision of the workflow that owns the selected node, including when that node is inside a fixed sub-workflow. It lists changes to the selected node and its ports. Choose **Original run** to switch back to the recorded definition.
+
+An added or changed required port can use a compatible recorded input or an explicit text or JSON test value. Managed reference ports can reuse compatible recorded references. Removed ports keep their historical values in the comparison. Choose **Check input bindings** to validate any changes before starting. If another save changes the draft revision, choose **Refresh draft** and review the new preview. A removed or unsupported node blocks startup in the current draft.
+
+![Current draft preview showing a removed input and a new required input that needs a binding](/images/agent-workflow-debug-draft-en.jpg)
+
+Choose **Start debug fork** to open the new run. The comparison labels each value as reused, filled, or replaced, and shows the original failure or output, the fork result, and the executed draft revision if you selected **Current draft**. The selected versions stay pinned when newer versions are published or the page reloads. Reopen the fork from run history or Dashboard Chat. **Open source attempt** returns to the original scope, iteration and attempt.
 
 ![Debug fork comparing original and replacement citation inputs and results](/images/agent-workflow-debug-fork-en.jpg)
 

@@ -24,6 +24,7 @@
       :preview="task.state.debug_write_preview"
       :cancelled="task.status === 'cancelled'"
     />
+    <WorkflowDebugForkDraftDetails v-if="comparison.definition" :definition="comparison.definition" />
     <div class="fork-results mb-4">
       <div v-for="{ title, data } in results" :key="title" class="fork-result pa-3">
         <h4 class="text-subtitle-1 font-weight-bold">{{ tm(title) }}</h4>
@@ -41,6 +42,7 @@ import { computed } from "vue";
 import { useRoute } from "vue-router";
 import type { WorkflowDebugForkComparison, WorkflowDebugWritePreview as DebugWritePreview } from "@/api/generated/openapi-v1";
 import { useModuleI18n } from "@/i18n/composables";
+import WorkflowDebugForkDraftDetails from "./WorkflowDebugForkDraftDetails.vue";
 import WorkflowDebugForkInputs from "./WorkflowDebugForkInputs.vue";
 import WorkflowDebugWritePreview from "./WorkflowDebugWritePreview.vue";
 

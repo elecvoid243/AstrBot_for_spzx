@@ -19,6 +19,19 @@
             </option>
           </select>
         </label>
+        <v-btn-toggle
+          :model-value="mode"
+          :disabled="loading || starting"
+          mandatory
+          density="compact"
+          variant="outlined"
+          class="mb-4"
+          :aria-label="tm('debugFork.definitionChoice')"
+          @update:model-value="value => loadPreview(value)"
+        >
+          <v-btn value="source" variant="text" data-testid="debug-fork-use-source">{{ tm("debugFork.sourceDefinition") }}</v-btn>
+          <v-btn value="draft" variant="text" data-testid="debug-fork-use-draft">{{ tm("debugFork.currentDraft") }}</v-btn>
+        </v-btn-toggle>
         <v-progress-linear v-if="loading" indeterminate />
         <v-alert v-if="error" type="error" variant="tonal" class="mb-3 debug-error">{{ error }}</v-alert>
         <template v-if="plan">
@@ -35,8 +48,31 @@
             {{ tm("v2.attempt") }} {{ plan.source.attempt_id }}
           </p>
           <p v-if="candidates && plan.original.reason" class="text-body-2 mb-3">{{ plan.original.reason }}</p>
+          <WorkflowDebugForkDraftDetails v-if="plan.definition" :definition="plan.definition" />
+          <v-alert v-if="plan.issues?.length" type="warning" variant="tonal" class="mb-3" data-testid="debug-fork-diagnostics">
+            <ul class="pl-4 debug-diagnostics">
+              <li v-for="(issue, index) in plan.issues" :key="index">
+                {{ issue.path }} · {{ bindingIssue(issue) }}
+              </li>
+            </ul>
+          </v-alert>
+          <WorkflowDebugForkDraftBindings
+            v-if="plan.definition && plan.inputs.some(port => port.available_sources)"
+            :key="editorRevision"
+            :inputs="plan.inputs"
+            :disabled="starting || loading"
+            @update="draftBindings = $event"
+          />
+          <v-btn
+            v-if="mode === 'draft' && dirtyBindings"
+            variant="tonal"
+            class="mb-3"
+            :disabled="!draftBindings || starting || loading || draftStale"
+            data-testid="debug-fork-check-bindings"
+            @click="loadPreview('draft', true)"
+          >{{ tm("debugFork.checkBindings") }}</v-btn>
           <v-select
-            v-if="plan.inputs.length"
+            v-if="mode === 'source' && plan.inputs.length"
             v-model="field"
             :items="plan.inputs.map(port => port.name)"
             :label="tm('debugFork.replace')"
@@ -46,7 +82,7 @@
             :disabled="starting"
             data-testid="debug-fork-input-picker"
           />
-          <template v-if="selectedPort">
+          <template v-if="mode === 'source' && selectedPort">
             <WorkflowDebugForkReference
               v-if="selectedPort.kind === 'reference'"
               :key="`${selectedPort.name}:${editorRevision}`"
@@ -70,13 +106,16 @@
               {{ tm("debugFork.clearEdit") }}
             </v-btn>
           </template>
-          <v-alert v-if="unresolved.length" type="warning" variant="tonal" class="mb-3">
+          <v-alert v-if="mode === 'source' && unresolved.length" type="warning" variant="tonal" class="mb-3">
             {{ tm("debugFork.resolveInputs", { names: unresolved.join(", ") }) }}
           </v-alert>
           <WorkflowDebugForkInputs :inputs="previewInputs" />
         </template>
       </v-card-text>
       <v-card-actions class="px-6 pb-4">
+        <v-btn v-if="mode === 'draft'" variant="text" :disabled="starting || loading" @click="loadPreview('draft')">
+          {{ tm("debugFork.refreshDraft") }}
+        </v-btn>
         <v-spacer />
         <v-btn variant="text" :disabled="starting" @click="emit('close')">{{ tm("debugFork.close") }}</v-btn>
         <v-btn
@@ -93,13 +132,15 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onScopeDispose, ref, watch } from "vue";
+import { computed, onScopeDispose, ref, shallowRef, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import type { ArtifactReference, WorkflowDebugForkAttempt, WorkflowDebugForkLocation, WorkflowDebugForkPreview, WorkflowDebugForkReplacement } from "@/api/generated/openapi-v1";
+import type { ArtifactReference, WorkflowDebugForkAttempt, WorkflowDebugForkBindings, WorkflowDebugForkLocation, WorkflowDebugForkPreview, WorkflowDebugForkReplacement } from "@/api/generated/openapi-v1";
 import { workflowAssetsApi } from "@/api/workflowAssets";
 import { useModuleI18n } from "@/i18n/composables";
 import { extractApiError } from "@/utils/extractApiError";
 import WorkflowDebugForkInputs from "./WorkflowDebugForkInputs.vue";
+import WorkflowDebugForkDraftBindings from "./WorkflowDebugForkDraftBindings.vue";
+import WorkflowDebugForkDraftDetails from "./WorkflowDebugForkDraftDetails.vue";
 import WorkflowDebugForkReference from "./WorkflowDebugForkReference.vue";
 
 const props = defineProps<{
@@ -111,10 +152,15 @@ const emit = defineEmits<{ close: []; selectCandidate: [candidate: WorkflowDebug
 const { tm } = useModuleI18n("features/agent-teams");
 const router = useRouter();
 const route = useRoute();
-const controller = new AbortController();
-onScopeDispose(() => controller.abort());
+let previewRead: AbortController | undefined;
+onScopeDispose(() => previewRead?.abort());
 
-const plan = ref<WorkflowDebugForkPreview>();
+type DefinitionMode = NonNullable<WorkflowDebugForkAttempt["definition_mode"]>;
+const plan = shallowRef<WorkflowDebugForkPreview>();
+const mode = ref<DefinitionMode>("source");
+const draftBindings = shallowRef<WorkflowDebugForkBindings>();
+const checkedBindings = shallowRef<WorkflowDebugForkBindings>({});
+const draftStale = ref(false);
 const loading = ref(true);
 const starting = ref(false);
 const error = ref("");
@@ -159,9 +205,14 @@ const unresolved = computed(() => (plan.value?.inputs ?? [])
   .filter(port => (port.source === "missing" || port.source === "unavailable") && edits.value.get(port.name) === undefined)
   .map(port => port.name),
 );
-const canStart = computed(() => !!plan.value && !unresolved.value.length &&
-  Array.from(edits.value.values()).every(value => value !== undefined));
+const dirtyBindings = computed(() => JSON.stringify(draftBindings.value) !== JSON.stringify(checkedBindings.value));
+const canStart = computed(() => !!plan.value && !loading.value && !starting.value && (
+  mode.value === "draft"
+    ? !!plan.value.definition && !!plan.value.ready && !dirtyBindings.value && !draftStale.value
+    : !unresolved.value.length && Array.from(edits.value.values()).every(value => value !== undefined)
+));
 const previewInputs = computed(() => (plan.value?.inputs ?? []).map(port => {
+  if (mode.value === "draft") return port;
   const value = edits.value.get(port.name);
   if (value === undefined) return port;
   const [original, proposed] = [port.original, value].map(input => JSON.stringify(input, (_key, part) =>
@@ -186,54 +237,99 @@ function chooseCandidate(attemptId: string) {
   if (selected) emit("selectCandidate", selected);
 }
 
-watch(
-  [() => props.rootId, () => props.attempt.scope_run_id, () => props.attempt.task_run_id, () => props.attempt.attempt_id],
-  ([rootId, scope_run_id, task_run_id, attempt_id], _, onCleanup) => {
-    const read = new AbortController();
-    onCleanup(() => read.abort());
+function bindingIssue(issue: { path: string; code: string; message: string }) {
+  const port = plan.value?.inputs.find(input => issue.path === `inputs.${input.name}`);
+  if (!port || issue.code !== "required") return issue.message;
+  return tm(port.kind !== "reference" ? "debugFork.requiredBinding"
+    : port.available_sources?.length ? "debugFork.requiredReference" : "debugFork.unavailableReference");
+}
+
+async function loadPreview(selection: DefinitionMode, checkBindings = false) {
+  previewRead?.abort();
+  const read = new AbortController();
+  previewRead = read;
+  mode.value = selection;
+  loading.value = true;
+  error.value = "";
+  requestId = undefined;
+  if (!checkBindings) {
     plan.value = undefined;
     field.value = null;
     textEdits.value.clear();
     referenceEdits.value.clear();
     editorRevision.value++;
-    requestId = undefined;
-    error.value = "";
-    loading.value = true;
-    void workflowAssetsApi.previewDebugFork(rootId, { scope_run_id, task_run_id, attempt_id }, read.signal)
-      .then(result => { if (!read.signal.aborted) plan.value = result; })
-      .catch(err => {
-        if (!read.signal.aborted) error.value = extractApiError(err, tm("errors.operationFailed")).message;
-      })
-      .finally(() => { if (!read.signal.aborted) loading.value = false; });
+    draftBindings.value = {};
+    checkedBindings.value = {};
+    draftStale.value = false;
+  }
+  const bindings = draftBindings.value ?? {};
+  const { scope_run_id, task_run_id, attempt_id } = props.attempt;
+  try {
+    const result = await workflowAssetsApi.previewDebugFork(props.rootId, {
+      scope_run_id, task_run_id, attempt_id,
+      ...(selection === "draft" ? {
+        definition_mode: selection,
+        draft_revision: checkBindings ? plan.value?.definition?.draft_revision : undefined,
+        bindings,
+      } : {}),
+    }, read.signal);
+    if (read.signal.aborted) return;
+    plan.value = result;
+    checkedBindings.value = bindings;
+  } catch (err) {
+    if (!read.signal.aborted) {
+      error.value = extractApiError(err, tm("errors.operationFailed")).message;
+      draftStale.value = (err as { response?: { status?: number } })?.response?.status === 409;
+    }
+  } finally {
+    if (!read.signal.aborted) loading.value = false;
+  }
+}
+
+watch(
+  [() => props.rootId, () => props.attempt.scope_run_id, () => props.attempt.task_run_id, () => props.attempt.attempt_id],
+  () => {
+    starting.value = false;
+    void loadPreview("source");
   },
   { immediate: true },
 );
 
 async function start() {
-  if (!plan.value || !canStart.value || starting.value) return;
+  const read = previewRead;
+  if (!read || !plan.value || !canStart.value) return;
   starting.value = true;
   error.value = "";
   requestId ??= globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   try {
     const replacements: WorkflowDebugForkReplacement[] = Array.from(edits.value, ([name, value]) => ({ name, value }));
     const { run_id } = await workflowAssetsApi.startDebugFork(props.rootId, {
-      ...props.attempt,
+      scope_run_id: props.attempt.scope_run_id,
+      task_run_id: props.attempt.task_run_id,
+      attempt_id: props.attempt.attempt_id,
       preview_token: plan.value.preview_token,
       request_id: requestId,
-      replacements,
+      ...(mode.value === "draft" ? {
+        definition_mode: mode.value,
+        draft_revision: plan.value.definition!.draft_revision,
+        bindings: checkedBindings.value,
+      } : { replacements }),
     });
-    if (controller.signal.aborted) return;
+    if (read.signal.aborted) return;
     await router.push(route.name === "ChatRunConversation"
       ? { name: "ChatRunConversation", params: { runId: run_id } }
       : { name: "AgentTeams", query: { workflow_run: run_id } });
     emit("close");
   } catch (err) {
-    if (!controller.signal.aborted) {
+    if (!read.signal.aborted) {
+      if (mode.value === "draft") {
+        draftStale.value = (err as { response?: { status?: number } })?.response?.status === 409;
+      }
       const info = extractApiError(err, tm("errors.operationFailed"));
       error.value = info.fields.length ? info.fields.map(field => `${field.path} · ${field.message}`).join("\n") : info.message;
     }
   } finally {
-    starting.value = false;
+    if (!read.signal.aborted) starting.value = false;
   }
 }
 </script>
@@ -247,5 +343,6 @@ async function start() {
   border-radius: 6px;
   padding: 4px 8px;
 }
+.debug-diagnostics { color: rgb(var(--v-theme-on-surface)); }
 .debug-error { white-space: pre-line; }
 </style>

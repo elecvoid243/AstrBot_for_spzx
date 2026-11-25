@@ -11,18 +11,29 @@
       <tr v-for="port in inputs" :key="port.name">
         <th scope="row">
           <div>{{ port.name }}</div>
-          <div class="text-caption text-medium-emphasis">{{ tm(`debugFork.sources.${port.source}`) }}</div>
-          <div v-if="port.evidence?.artifact" class="text-caption font-weight-regular">
+          <div class="text-caption text-medium-emphasis">{{ tm(`debugFork.sources.${port.source}`, { name: port.source_port ?? "" }) }}</div>
+          <div v-if="port.source !== 'mapped' && port.evidence?.artifact" class="text-caption font-weight-regular">
             {{ port.evidence.artifact.artifact_id }} / v{{ port.evidence.artifact.version }}
           </div>
         </th>
-        <td><pre v-if="'original' in port">{{ JSON.stringify(port.original, null, 2) }}</pre><span v-else>—</span></td>
         <td>
-          <span v-if="'value' in port" class="text-caption text-medium-emphasis">
-            {{ tm(`debugFork.selections.${port.selection ?? (port.changed ? "replaced" : "reused")}`) }}
-          </span>
+          <pre v-if="'original' in port">{{ JSON.stringify(port.original, null, 2) }}</pre>
           <span v-else>—</span>
-          <pre v-if="port.changed" data-testid="debug-fork-changed-value">{{ JSON.stringify(port.value, null, 2) }}</pre>
+          <div v-if="port.original_evidence?.artifact" class="text-caption">
+            {{ port.original_evidence.artifact.artifact_id }} / v{{ port.original_evidence.artifact.version }}
+          </div>
+        </td>
+        <td>
+          <template v-if="'value' in port">
+            <span class="text-caption text-medium-emphasis">
+              {{ tm(`debugFork.selections.${port.selection ?? (!('original' in port) ? "filled" : port.changed ? "replaced" : "reused")}`) }}
+            </span>
+            <pre v-if="port.changed || !('original' in port)" data-testid="debug-fork-changed-value">{{ JSON.stringify(port.value, null, 2) }}</pre>
+          </template>
+          <span v-else>—</span>
+          <div v-if="port.source === 'mapped' && port.evidence?.artifact" class="text-caption">
+            {{ port.evidence.artifact.artifact_id }} / v{{ port.evidence.artifact.version }}
+          </div>
         </td>
       </tr>
     </tbody>

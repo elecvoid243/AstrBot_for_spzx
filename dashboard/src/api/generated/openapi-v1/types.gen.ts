@@ -1686,7 +1686,7 @@ export type RunConversationArchiveRequest = {
 export type RunConversationSummary = {
     run_id: string;
     asset_id: string;
-    asset_version: number;
+    asset_version: (number) | null;
     status: string;
     draft_revision?: number;
 };
@@ -2087,6 +2087,19 @@ export type WorkflowDebugForkAttempt = {
     scope_run_id: string;
     task_run_id: string;
     attempt_id: string;
+    definition_mode?: 'source' | 'draft';
+    draft_revision?: (number) | null;
+    bindings?: WorkflowDebugForkBindings;
+};
+
+export type definition_mode = 'source' | 'draft';
+
+export type WorkflowDebugForkBindings = {
+    [key: string]: ({
+    source_port: string;
+} | {
+    value: unknown;
+});
 };
 
 export type WorkflowDebugForkComparison = {
@@ -2104,6 +2117,7 @@ export type WorkflowDebugForkComparison = {
         iteration: (number) | null;
         parent_call?: WorkflowDebugForkLocation;
     };
+    definition?: WorkflowDebugForkDraft;
     original: {
         status: string;
         reason: (string) | null;
@@ -2113,17 +2127,35 @@ export type WorkflowDebugForkComparison = {
         name: string;
         kind: 'reference' | 'text' | 'json';
         format?: 'astrbot-artifact' | 'astrbot-file';
-        source: 'recorded' | 'default' | 'absent' | 'missing' | 'unavailable';
+        source: 'recorded' | 'default' | 'absent' | 'missing' | 'unavailable' | 'mapped' | 'test_value' | 'removed';
         selection?: 'reused' | 'filled' | 'replaced';
+        source_port?: string;
+        available_sources?: Array<(string)>;
         original?: unknown;
         value?: unknown;
         changed: boolean;
-        evidence?: {
-            artifact?: (ArtifactReference | null);
-            source_run_id?: string;
-            [key: string]: unknown | string;
-        };
+        evidence?: WorkflowDebugForkInputEvidence;
+        original_evidence?: WorkflowDebugForkInputEvidence;
     }>;
+};
+
+export type WorkflowDebugForkDraft = {
+    draft_revision: number;
+    workflow_name: string;
+    node_name: string;
+    changes: Array<{
+        kind: 'node_removed' | 'node_unsupported' | 'node_renamed' | 'node_type_changed' | 'node_bindings_changed' | 'input_contract_changed' | 'output_contract_changed' | 'input_added' | 'input_removed' | 'input_changed' | 'output_added' | 'output_removed' | 'output_changed';
+        name: string;
+        before?: string;
+        after?: string;
+        required?: boolean;
+    }>;
+};
+
+export type WorkflowDebugForkInputEvidence = {
+    artifact?: (ArtifactReference | null);
+    source_run_id?: string;
+    [key: string]: unknown | string;
 };
 
 export type WorkflowDebugForkLocation = {
@@ -2136,6 +2168,12 @@ export type WorkflowDebugForkLocation = {
 
 export type WorkflowDebugForkPreview = WorkflowDebugForkComparison & {
     preview_token: string;
+    ready?: boolean;
+    issues?: Array<{
+        path: string;
+        code: string;
+        message: string;
+    }>;
 };
 
 export type WorkflowDebugForkReplacement = {
@@ -2150,6 +2188,9 @@ export type WorkflowDebugForkRequest = {
     scope_run_id: string;
     task_run_id: string;
     attempt_id: string;
+    definition_mode?: 'source' | 'draft';
+    draft_revision?: (number) | null;
+    bindings?: WorkflowDebugForkBindings;
     preview_token: string;
     request_id: string;
     replacement?: (null | WorkflowDebugForkReplacement);

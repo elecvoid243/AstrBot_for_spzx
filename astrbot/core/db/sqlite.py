@@ -3287,9 +3287,11 @@ class SQLiteDatabase(BaseDatabase):
                 snapshot["asset_id"].as_string().label("asset_id"),
                 snapshot["asset_version"].as_integer().label("asset_version"),
                 snapshot["definition"]["name"].as_string().label("display_name"),
-                snapshot["trial"]["draft_revision"]
-                .as_integer()
-                .label("draft_revision"),
+                func.coalesce(
+                    snapshot["debug_fork"]["definition"]["draft_revision"].as_integer(),
+                    snapshot["trial"]["draft_revision"].as_integer(),
+                    snapshot["debug_fork"]["source"]["draft_revision"].as_integer(),
+                ).label("draft_revision"),
                 case(
                     (control_status == "paused", "paused"),
                     else_=col(AgentWorkflowRun.status),

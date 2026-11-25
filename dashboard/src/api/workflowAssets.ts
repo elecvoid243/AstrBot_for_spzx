@@ -176,13 +176,16 @@ export const workflowAssetsApi = {
     )).data.data;
   },
   async previewDebugFork(runId: string, attempt: WorkflowDebugForkAttempt, signal: AbortSignal): Promise<WorkflowDebugForkPreview> {
+    // Serialize draft bindings before Axios merges the config so JSON keys are preserved.
     return (await httpClient.post(
-      `/api/v1/workflow_runs/${encodeURIComponent(runId)}/debug_forks/preview`, attempt, { signal },
+      `/api/v1/workflow_runs/${encodeURIComponent(runId)}/debug_forks/preview`,
+      JSON.stringify(attempt), { signal, headers: { "Content-Type": "application/json" } },
     )).data.data;
   },
   async startDebugFork(runId: string, request: WorkflowDebugForkRequest): Promise<WorkflowDebugForkStarted> {
     return (await httpClient.post(
-      `/api/v1/workflow_runs/${encodeURIComponent(runId)}/debug_forks`, request,
+      `/api/v1/workflow_runs/${encodeURIComponent(runId)}/debug_forks`,
+      JSON.stringify(request), { headers: { "Content-Type": "application/json" } },
     )).data.data;
   },
   async memberAttempt(runId: string, taskId: string, attemptId: string, signal: AbortSignal): Promise<WorkflowMemberAttempt> {

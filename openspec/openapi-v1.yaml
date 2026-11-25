@@ -9627,7 +9627,7 @@ paths:
               $ref: '#/components/schemas/WorkflowDebugForkAttempt'
       responses:
         '200':
-          description: Original definition, input availability and recorded result.
+          description: Selected definition, input evidence, original result and any draft diagnostics.
           content:
             application/json:
               schema:
@@ -9638,12 +9638,14 @@ paths:
                   message: {type: 'null'}
                   data:
                     $ref: '#/components/schemas/WorkflowDebugForkPreview'
+        '400':
+          description: Invalid definition choice or input replacement.
         '401':
           description: Dashboard session required.
         '404':
-          description: Owned run, scope, task or attempt unavailable.
+          description: Source attempt or selected draft unavailable to the Dashboard user.
         '409':
-          description: Attempt is skipped or unsupported, or the confirmation conflicts.
+          description: Unsupported attempt, incomplete evidence, or changed draft revision.
         '422':
           description: Invalid request.
           content:
@@ -9680,13 +9682,13 @@ paths:
                   data:
                     $ref: '#/components/schemas/WorkflowDebugForkStarted'
         '400':
-          description: Some inputs are unresolved or a replacement violates the input contract.
+          description: Invalid definition choice, unresolved inputs, or a replacement violates the input contract.
         '401':
           description: Dashboard session required.
         '404':
-          description: Owned run, scope, task, attempt or exact input reference unavailable.
+          description: Owned run, scope, task, attempt, draft or exact input reference unavailable.
         '409':
-          description: Attempt is skipped or unsupported, or the confirmation conflicts.
+          description: Unsupported attempt, incomplete evidence, unresolved draft diagnostics, or confirmation conflict.
         '422':
           description: Invalid request.
           content:
@@ -14678,6 +14680,41 @@ components:
               results:
                 type: array
                 items: {type: object, additionalProperties: true}
+    WorkflowDebugForkBindings:
+      type: object
+      maxProperties: 30
+      additionalProperties:
+        oneOf:
+        - type: object
+          additionalProperties: false
+          required: [source_port]
+          properties:
+            source_port: {type: string, minLength: 1, maxLength: 128}
+        - type: object
+          additionalProperties: false
+          required: [value]
+          properties:
+            value: {}
+    WorkflowDebugForkDraft:
+      type: object
+      required: [draft_revision, workflow_name, node_name, changes]
+      properties:
+        draft_revision: {type: integer, minimum: 1}
+        workflow_name: {type: string}
+        node_name: {type: string}
+        changes:
+          type: array
+          items:
+            type: object
+            required: [kind, name]
+            properties:
+              kind:
+                type: string
+                enum: [node_removed, node_unsupported, node_renamed, node_type_changed, node_bindings_changed, input_contract_changed, output_contract_changed, input_added, input_removed, input_changed, output_added, output_removed, output_changed]
+              name: {type: string}
+              before: {type: string}
+              after: {type: string}
+              required: {type: boolean}
     WorkflowDebugForkAttempt:
       type: object
       additionalProperties: false
@@ -14686,6 +14723,10 @@ components:
         scope_run_id: {type: string, minLength: 1, maxLength: 128}
         task_run_id: {type: string, minLength: 1, maxLength: 128}
         attempt_id: {type: string, minLength: 1, maxLength: 128}
+        definition_mode: {type: string, enum: [source, draft], default: source}
+        draft_revision: {type: [integer, 'null'], minimum: 1}
+        bindings:
+          $ref: '#/components/schemas/WorkflowDebugForkBindings'
     WorkflowDebugForkLocation:
       type: object
       required: [scope_run_id, task_run_id, attempt_id, node_name, iteration]
@@ -14703,6 +14744,10 @@ components:
         scope_run_id: {type: string, minLength: 1, maxLength: 128}
         task_run_id: {type: string, minLength: 1, maxLength: 128}
         attempt_id: {type: string, minLength: 1, maxLength: 128}
+        definition_mode: {type: string, enum: [source, draft], default: source}
+        draft_revision: {type: [integer, 'null'], minimum: 1}
+        bindings:
+          $ref: '#/components/schemas/WorkflowDebugForkBindings'
         preview_token: {type: string, pattern: '^[a-f0-9]{64}$'}
         request_id: {type: string, minLength: 1, maxLength: 128}
         replacement:
@@ -14721,6 +14766,15 @@ components:
         name: {type: string, minLength: 1, maxLength: 128}
         value:
           description: JSON matching the consumer's input contract. A managed reference requires an exact artifact_id and version, plus file_id for a file.
+    WorkflowDebugForkInputEvidence:
+      type: object
+      properties:
+        artifact:
+          anyOf:
+          - $ref: '#/components/schemas/ArtifactReference'
+          - type: 'null'
+        source_run_id: {type: string}
+      additionalProperties: true
     WorkflowDebugForkComparison:
       type: object
       required: [source, original, inputs]
@@ -14742,6 +14796,8 @@ components:
             iteration: {type: [integer, 'null']}
             parent_call:
               $ref: '#/components/schemas/WorkflowDebugForkLocation'
+        definition:
+          $ref: '#/components/schemas/WorkflowDebugForkDraft'
         original:
           type: object
           required: [status, reason, result]
@@ -14758,20 +14814,19 @@ components:
               name: {type: string}
               kind: {type: string, enum: [reference, text, json]}
               format: {type: string, enum: [astrbot-artifact, astrbot-file]}
-              source: {type: string, enum: [recorded, default, absent, missing, unavailable]}
+              source: {type: string, enum: [recorded, default, absent, missing, unavailable, mapped, test_value, removed]}
               selection: {type: string, enum: [reused, filled, replaced]}
+              source_port: {type: string}
+              available_sources:
+                type: array
+                items: {type: string}
               original: {}
               value: {}
               changed: {type: boolean}
               evidence:
-                type: object
-                properties:
-                  artifact:
-                    anyOf:
-                    - $ref: '#/components/schemas/ArtifactReference'
-                    - type: 'null'
-                  source_run_id: {type: string}
-                additionalProperties: true
+                $ref: '#/components/schemas/WorkflowDebugForkInputEvidence'
+              original_evidence:
+                $ref: '#/components/schemas/WorkflowDebugForkInputEvidence'
     WorkflowDebugForkPreview:
       allOf:
       - $ref: '#/components/schemas/WorkflowDebugForkComparison'
@@ -14779,6 +14834,16 @@ components:
         required: [preview_token]
         properties:
           preview_token: {type: string}
+          ready: {type: boolean, default: true}
+          issues:
+            type: array
+            items:
+              type: object
+              required: [path, code, message]
+              properties:
+                path: {type: string}
+                code: {type: string}
+                message: {type: string}
     WorkflowDebugForkStarted:
       type: object
       required: [run_id, status]
@@ -15823,7 +15888,7 @@ components:
       properties:
         run_id: { type: string }
         asset_id: { type: string }
-        asset_version: { type: integer }
+        asset_version: { type: [integer, "null"] }
         status: { type: string }
         draft_revision: { type: integer }
     ChatSessionMetadata:

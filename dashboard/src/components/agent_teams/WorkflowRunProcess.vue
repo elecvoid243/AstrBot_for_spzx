@@ -86,15 +86,20 @@
       <summary>
         <span class="font-weight-medium"
           >{{ call.name }} ·
-          {{ tm(`recovery.toolStates.${call.status}`) }}</span
+          {{ tm(call.recovery?.debug_write_simulation
+            ? "debugWrite.simulated"
+            : `recovery.toolStates.${call.status}`) }}</span
         >
         <span class="text-caption text-medium-emphasis process-id"
-          >{{ call.call_id }} · {{ tm("v2.attempt") }}
-          {{ call.attempt_id }}</span
+          ><template v-if="call.recovery?.debug_write_simulation">
+            {{ tm("debugWrite.call") }} {{ call.record_id }}
+          </template>
+          <template v-else>{{ call.call_id }}</template>
+          · {{ tm("v2.attempt") }} {{ call.attempt_id }}</span
         >
       </summary>
       <div class="pa-4">
-        <p class="process-text">
+        <p v-if="!call.recovery?.debug_write_simulation" class="process-text">
           {{ tm("recovery.owner") }}: {{ call.execution_id }}
         </p>
         <p v-if="call.started_execution_id" class="process-text">
@@ -124,7 +129,9 @@
         <pre
           v-if="Object.keys(call.recovery ?? {}).length"
           class="process-text mt-3"
-          >{{ JSON.stringify(call.recovery, null, 2) }}</pre
+          >{{ JSON.stringify(call.recovery.debug_write_simulation
+            ? { submitted_by: call.recovery.debug_write_simulation.submitted_by }
+            : call.recovery, null, 2) }}</pre
         >
         <WorkflowToolResolution
           v-if="!readonly && call.available_actions?.length"
@@ -185,7 +192,11 @@
         <MarkdownMessagePart v-if="item.text" :content="item.text" :refs="null" :is-dark="isDark" :custom-html-tags="CHAT_MARKDOWN_CUSTOM_TAGS" :is-streaming="item.status === 'started'" />
       </article>
       <div v-else class="process-record process-tool pa-2" data-testid="observed-tool">
-        <p class="text-caption text-medium-emphasis">{{ tm(`progress.toolStates.${item.status}`) }} · {{ tm("v2.attempt") }} {{ item.attempt }}</p>
+        <p class="text-caption text-medium-emphasis">
+          {{ tm(item.simulated ? "debugWrite.simulated" : `progress.toolStates.${item.status}`) }}
+          <span v-if="item.simulated"> · {{ tm("debugWrite.call") }} {{ item.recordId }}</span>
+          · {{ tm("v2.attempt") }} {{ item.attempt }}
+        </p>
         <p v-if="item.missingParts" class="text-warning" data-testid="missing-tool-parts">{{ tm("progress.missingChunks") }}</p>
         <ToolCallCard :tool-call="item" :is-dark="isDark" :is-active="item.status === 'running' && run.status === 'running'" />
       </div>
@@ -392,6 +403,9 @@ const deliveries = computed(() => {
 });
 const observedTools = computed(() => {
   const groups = new Map<string, any>();
+  const simulatedCalls = new Set((props.run.tool_calls ?? [])
+    .filter((call: any) => call.recovery?.debug_write_simulation)
+    .map((call: any) => call.record_id));
   for (const [order, record] of (props.run.process ?? []).entries()) {
     if (!["tool_start", "tool_progress", "tool_status"].includes(record.kind)) continue;
     const data = record.data;
@@ -405,6 +419,8 @@ const observedTools = computed(() => {
         id: data.id,
         name: data.name,
         args: data.args ?? {},
+        simulated: simulatedCalls.has(data.tool_record_id),
+        recordId: data.tool_record_id,
         parts: [],
         status: "running",
       });

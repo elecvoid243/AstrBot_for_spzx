@@ -40,13 +40,35 @@ class DebugWriteAcceptance(Acceptance):
         results = [
             message["content"] for message in messages if message["role"] == "tool"
         ]
+        simulated = next(
+            (
+                json.loads(result.removeprefix("Simulated receipt (no external write): "))["receipt"]
+                for result in results
+                if result.startswith("Simulated receipt (no external write): ")
+            ),
+            None,
+        )
+        item = next(
+            (
+                name for name in ("test-message-en", "test-message-zh")
+                if f"Archive simulated item {name}." in prompt
+            ),
+            None,
+        )
         finished = any(result.startswith("Result accepted.") for result in results)
         if finished:
             message = {"role": "assistant", "content": "Done."}
         else:
-            name = "submit_task_result" if results else "record_report_delivery"
+            name = "submit_task_result" if results or item else "record_report_delivery"
             arguments = (
-                {"result_json": '{"report":"Historical report complete"}'}
+                {"text": item}
+                if item
+                else {
+                    "result_json": json.dumps({
+                        "report": simulated or "Historical report complete",
+                        "items": [simulated] if simulated else [],
+                    })
+                }
                 if results
                 else {"target": "team/reviewers"}
                 if "missing count" in prompt
@@ -56,7 +78,7 @@ class DebugWriteAcceptance(Acceptance):
                 if "final citations" in prompt
                 else {"target": "team/publishers", "count": 7}
             )
-            if not results:
+            if not results and not item:
                 assert name in [tool["function"]["name"] for tool in payload["tools"]]
             message = {
                 "role": "assistant",
@@ -197,6 +219,7 @@ class DebugWriteAcceptance(Acceptance):
                 "input_contract": notes,
                 "entry_task_ids": ["deliver"],
                 "result_task_id": "deliver",
+                "edges": [{"source": "deliver", "target": "dispatch"}],
                 "tasks": [
                     {
                         "id": "deliver",
@@ -214,10 +237,23 @@ class DebugWriteAcceptance(Acceptance):
                         "input_contract": notes,
                         "output_contract": {
                             "type": "object",
-                            "properties": {"report": {"type": "string"}},
-                            "required": ["report"],
+                            "properties": {
+                                "report": {"type": "string"},
+                                "items": {"type": "array", "items": {"type": "string"}},
+                            },
+                            "required": ["report", "items"],
                         },
-                    }
+                    },
+                    {
+                        "id": "dispatch",
+                        "name": "Dispatch archive items",
+                        "member": "archive",
+                        "role": {"name": "Archive", "prompt": "Submit the supplied item.", "tools": [], "skills": []},
+                        "installation": {"profile_id": "default"},
+                        "task": "ATN187 REPORT. Archive simulated item {item}.",
+                        "inputs": {"items": {"task_id": "deliver", "field": "items"}},
+                        "dispatch": {"max_items": 2, "max_parallel": 1},
+                    },
                 ],
             }
         )
@@ -269,7 +305,7 @@ class DebugWriteAcceptance(Acceptance):
             )
             await page.get_by_test_id("open-debug-fork").click()
             await (
-                page.get_by_test_id("debug-fork-preview")
+                page.get_by_test_id("debug-fork-input-picker")
                 .get_by_role("combobox")
                 .click()
             )
@@ -391,7 +427,7 @@ class DebugWriteAcceptance(Acceptance):
             expected_ledger = list(self.deliveries)
             prior_token = write["preview_token"]
         assert len(execution_ids) == 2
-        (source_task,) = source["tasks"]
+        source_task = next(task for task in source["tasks"] if task["node_id"] == "deliver")
         path = f"/workflow_runs/{root}/debug_forks"
         attempt = {
             "scope_run_id": root,
@@ -426,6 +462,94 @@ class DebugWriteAcceptance(Acceptance):
         print(
             "Verified exact authorized writes from Bot and Chat, response loss and reopen, "
             "stale approval rejection, and the unchanged source run.",
+            flush=True,
+        )
+
+        before = list(self.deliveries)
+        selection = {**attempt, "scope": "downstream"}
+        for locale, page in (("en", bot), ("zh", chat)):
+            plan = await self.api(
+                "POST", f"/workflow_runs/{root}/debug_forks/preview", data=selection
+            )
+            started = await self.api(
+                "POST",
+                f"/workflow_runs/{root}/debug_forks",
+                data={
+                    **selection,
+                    "preview_token": plan["preview_token"],
+                    "request_id": f"simulate-{locale}",
+                },
+            )
+            fork_id = started["run_id"]
+            await self.wait_run(fork_id, lambda run: run["status"] == "blocked")
+            route = (
+                f"/#/agent-teams?workflow_run={fork_id}"
+                if locale == "en"
+                else f"/#/chat/runs/{fork_id}"
+            )
+            await page.goto(self.origin + route)
+            open_write = page.get_by_test_id("open-debug-write-preview")
+            await open_write.click()
+            panel = page.get_by_test_id("debug-write-preview")
+            simulation = panel.get_by_test_id("simulate-debug-write")
+            await simulation.click()
+            json_field = panel.get_by_test_id("debug-write-test-value").locator("textarea").first
+            message_id = f"test-message-{locale}"
+            value = json.dumps({"receipt": message_id})
+            await json_field.fill(value)
+            await json_field.press("Tab")
+            await expect(json_field).to_have_value(value)
+            await page.screenshot(
+                path=self.evidence / f"agent-workflow-simulated-receipt-{locale}.jpg",
+                quality=88,
+                animations="disabled",
+            )
+            await json_field.fill('{"receipt": 23}')
+            async with page.expect_response(
+                lambda response: response.url.endswith("/simulate")
+            ) as invalid:
+                await simulation.click()
+            response = await invalid.value
+            assert response.status == 422, await response.text()
+            await expect(panel.get_by_text("result.receipt", exact=True)).to_be_visible()
+            assert self.deliveries == before
+            await json_field.fill(json.dumps({"receipt": message_id}))
+            async with page.expect_response(
+                lambda response: response.url.endswith("/simulate")
+            ) as submitted:
+                await simulation.click()
+            response = await submitted.value
+            assert response.status == 200, await response.text()
+            finished = await self.wait_run(fork_id, lambda run: run["status"] == "completed")
+            assert finished["result"] == {"report": message_id, "items": [message_id]}
+            delivery, dispatch = sorted(finished["tasks"], key=lambda task: task["node_id"])
+            (origin,) = delivery["state"]["simulated_sources"]
+            assert dispatch["state"]["simulated_sources"] == [origin]
+            (item_scope,) = finished["scopes"]
+            for task in item_scope["tasks"]:
+                assert task["state"]["simulated_sources"] == [origin]
+            item = next(task for task in item_scope["tasks"] if task["node_id"] == "item-0")
+            assert item["result"]["text"] == message_id
+            assert self.deliveries == before
+            await page.reload()
+            await expect(page.get_by_test_id("debug-fork-comparison").get_by_test_id(
+                "workflow-simulated-sources"
+            )).to_be_visible()
+            timeline = page.get_by_test_id("durable-tool-call").filter(
+                has_text="record_report_delivery"
+            )
+            await expect(timeline).to_contain_text(
+                "Simulated receipt recorded" if locale == "en" else "已记录模拟回执"
+            )
+            await expect(timeline).to_contain_text(origin["record_id"])
+            await open_write.click()
+            await expect(panel.get_by_test_id("debug-write-simulated")).to_contain_text(message_id)
+            await expect(panel.get_by_test_id("debug-write-current")).to_have_count(0)
+            await expect(panel.get_by_test_id("simulate-debug-write")).to_have_count(0)
+
+        print(
+            "Verified contract-checked simulated receipts, Agent results, reopening, "
+            "and zero additional ledger writes in Bot and Chat.",
             flush=True,
         )
 
@@ -485,6 +609,7 @@ class DebugWriteAcceptance(Acceptance):
         await page.get_by_test_id("open-debug-write-preview").click()
         await expect(preview).to_contain_text("External outcome needs verification")
         await expect(preview.get_by_test_id("confirm-debug-write")).to_have_count(0)
+
 
 
 if __name__ == "__main__":

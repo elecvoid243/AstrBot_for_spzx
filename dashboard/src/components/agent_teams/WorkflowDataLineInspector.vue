@@ -45,11 +45,13 @@
           <span v-if="data.evidence.reference.file_id"> · {{ data.evidence.reference.file_id }}</span>
         </li>
       </ul>
+      <WorkflowSimulatedSources :sources="data.evidence?.simulated_sources" />
       <details v-if="data.upstream && !['read', 'null'].includes(data.read_status)" class="mt-3" data-testid="inspection-upstream">
         <summary>{{ tm("inspection.upstream") }}</summary>
         <p v-if="data.upstream.artifact" class="text-caption mt-1 data-line-text">
           {{ data.upstream.artifact.artifact_id }} / v{{ data.upstream.artifact.version }}
         </p>
+        <WorkflowSimulatedSources :sources="data.upstream.simulated_sources" />
         <pre class="data-line-value">{{ JSON.stringify(data.upstream.value, null, 2) }}</pre>
       </details>
       <v-btn
@@ -76,6 +78,7 @@ import type { WorkflowDataLine, WorkflowDebugForkAttempt } from "@/api/generated
 import { workflowAssetsApi } from "@/api/workflowAssets";
 import { useModuleI18n } from "@/i18n/composables";
 import { extractApiError } from "@/utils/extractApiError";
+import WorkflowSimulatedSources from "./WorkflowSimulatedSources.vue";
 import WorkflowDebugForkDialog from "./WorkflowDebugForkDialog.vue";
 
 const props = defineProps<{

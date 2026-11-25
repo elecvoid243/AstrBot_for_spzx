@@ -168,6 +168,9 @@ class FunctionTool(ToolSchema, Generic[TContext]):
     write_target: str | None = None
     """Name of the argument identifying the external destination in debug previews."""
 
+    debug_output_contract: dict | None = None
+    """Optional inline JSON object schema for simulated results in workflow debug forks."""
+
     def __repr__(self) -> str:
         return f"FuncTool(name={self.name}, parameters={self.parameters}, description={self.description})"
 

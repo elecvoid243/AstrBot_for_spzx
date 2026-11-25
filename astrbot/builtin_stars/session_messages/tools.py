@@ -614,6 +614,23 @@ class ReadChatSessionTool(FunctionTool[AstrAgentContext]):
 class SendChatMessageTool(FunctionTool[AstrAgentContext]):
     name: str = "send_chat_message"
     write_target: str | None = "session_id"
+    debug_output_contract: dict = field(
+        default_factory=lambda: {
+            "type": "object",
+            "properties": {
+                "status": {"enum": ["accepted", "accepted_follow_up", "rejected"]},
+                "session_id": {"type": "string", "minLength": 1},
+                "input_message_id": {"type": ["integer", "null"], "minimum": 1},
+                "message_id": {"type": "string"},
+                "run_id": {"type": "string"},
+                "detail_path": {"type": "string"},
+                "connection_id": {"type": "string"},
+                "connection_revision": {"type": "string"},
+                "error": {"type": "string"},
+            },
+            "required": ["status", "session_id"],
+        }
+    )
     description: str = (
         "Send text to an existing ordinary ChatUI session by ID. Returns after input "
         "acceptance, without waiting for the recipient's execution. The recipient "

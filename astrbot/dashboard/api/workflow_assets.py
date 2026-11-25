@@ -23,6 +23,7 @@ from astrbot.core.agent_teams.workflows import (
     DebugForkPreviewRequest,
     DebugForkRequest,
     DebugWriteConfirmation,
+    DebugWriteSimulation,
     HumanAnswerRequest,
     ToolResolutionRequest,
     TrialRunRequest,
@@ -1467,7 +1468,46 @@ async def confirm_workflow_debug_write(
     """
     try:
         return JSONResponse(
-            ok(await service.confirm_debug_write(username, run_id, record_id, payload)),
+            ok(
+                await service.decide_debug_write_preview(
+                    username, run_id, record_id, payload
+                )
+            ),
+            headers={"Cache-Control": "no-store"},
+        )
+    except RoleAssetError as exc:
+        return JSONResponse(
+            error(str(exc), {"fields": exc.fields}), status_code=exc.status
+        )
+
+
+@router.post("/workflow_runs/{run_id}/tool_calls/{record_id}/simulate")
+async def simulate_workflow_debug_write(
+    run_id: str,
+    record_id: str,
+    payload: DebugWriteSimulation,
+    username: str = Depends(require_dashboard_user),
+    service: WorkflowService = Depends(get_workflow_service),
+):
+    """Continue an exact debug write preview using a contract-checked test result.
+
+    Args:
+        run_id: Debug fork task holding the preview.
+        record_id: Durable connector call identity.
+        payload: Exact preview token and simulated result.
+        username: Authenticated Dashboard owner.
+        service: Shared workflow service.
+
+    Returns:
+        Current task detail after recording the simulation.
+    """
+    try:
+        return JSONResponse(
+            ok(
+                await service.decide_debug_write_preview(
+                    username, run_id, record_id, payload
+                )
+            ),
             headers={"Cache-Control": "no-store"},
         )
     except RoleAssetError as exc:

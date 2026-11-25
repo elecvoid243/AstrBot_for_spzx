@@ -9781,6 +9781,38 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/workflow_runs/{run_id}/tool_calls/{record_id}/simulate:
+    post:
+      tags:
+      - Agent Teams workflows
+      summary: Simulate Workflow Debug Write
+      description: Supply a test result for the exact previewed call and continue the owned debug fork.
+      operationId: simulate_workflow_debug_write_api_v1_workflow_runs__run_id__tool_calls__record_id__simulate_post
+      parameters:
+      - {name: run_id, in: path, required: true, schema: {type: string}}
+      - {name: record_id, in: path, required: true, schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DebugWriteSimulation'
+      responses:
+        '200':
+          description: Current task detail after persisting the simulated receipt
+          content:
+            application/json:
+              schema: {}
+        '400':
+          description: Frozen connector definition is unavailable or incompatible
+        '403':
+          description: Connector access has been revoked
+        '404':
+          description: Run is inaccessible
+        '409':
+          description: Preview is stale, unavailable, cancelled or already resolved differently
+        '422':
+          description: Invalid simulated receipt or request
   /api/v1/workflow_runs/{run_id}/tool_calls/{record_id}/resolve:
     post:
       tags:
@@ -14679,6 +14711,10 @@ components:
               additionalProperties: true
             source_run_id:
               type: string
+            simulated_sources:
+              type: array
+              items:
+                $ref: '#/components/schemas/WorkflowSimulatedSource'
         upstream:
           type: object
           required: [source_run_id, value]
@@ -14688,18 +14724,40 @@ components:
             artifact:
               $ref: '#/components/schemas/ArtifactReference'
             value: {}
+            simulated_sources:
+              type: array
+              items:
+                $ref: '#/components/schemas/WorkflowSimulatedSource'
     WorkflowObservedTaskState:
       type: object
       additionalProperties: true
       properties:
         debug_write_preview:
           $ref: '#/components/schemas/WorkflowDebugWritePreview'
+        simulated_sources:
+          type: array
+          items:
+            $ref: '#/components/schemas/WorkflowSimulatedSource'
+    WorkflowSimulatedSource:
+      type: object
+      required: [record_id, task_run_id, attempt_id]
+      properties:
+        record_id: {type: string}
+        task_run_id: {type: string}
+        attempt_id: {type: string}
     DebugWriteConfirmation:
       type: object
       additionalProperties: false
       required: [preview_token]
       properties:
         preview_token: {type: string, pattern: '^[a-f0-9]{32}$'}
+    DebugWriteSimulation:
+      type: object
+      additionalProperties: false
+      required: [preview_token, result]
+      properties:
+        preview_token: {type: string, pattern: '^[a-f0-9]{32}$'}
+        result: {}
     WorkflowDebugWritePreview:
       type: object
       description: A debug fork's captured write intent. The task status records cancellation.
@@ -14709,6 +14767,13 @@ components:
         status: {type: string, enum: [pending, unavailable]}
         preview_token: {type: [string, 'null'], pattern: '^[a-f0-9]{32}$'}
         authorized_by: {type: string}
+        output_contract: {type: [object, 'null'], additionalProperties: true}
+        simulated_receipt:
+          type: object
+          required: [result, submitted_by]
+          properties:
+            result: {}
+            submitted_by: {type: string}
         operation: {type: string}
         target: {type: [string, 'null']}
         parameters: {type: object, additionalProperties: true}
@@ -14825,6 +14890,10 @@ components:
           - $ref: '#/components/schemas/ArtifactReference'
           - type: 'null'
         source_run_id: {type: string}
+        simulated_sources:
+          type: array
+          items:
+            $ref: '#/components/schemas/WorkflowSimulatedSource'
       additionalProperties: true
     WorkflowDebugForkComparison:
       type: object
@@ -14877,6 +14946,10 @@ components:
             status: {type: string}
             reason: {type: [string, 'null']}
             result: {}
+            simulated_sources:
+              type: array
+              items:
+                $ref: '#/components/schemas/WorkflowSimulatedSource'
         inputs:
           type: array
           items:

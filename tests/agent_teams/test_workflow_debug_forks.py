@@ -7,7 +7,7 @@ from dataclasses import replace
 import pytest
 
 from astrbot.core.agent_team_tools import AgentTeamToolRegistry
-from astrbot.core.db.po import AgentWorkflowRun
+from astrbot.core.db.po import AgentWorkflowRun, AgentWorkflowToolCall
 from astrbot.dashboard.api.auth import require_dashboard_user
 from tests.agent_teams.test_workflow_assets import completed_run
 from tests.agent_teams.test_workflow_assets import workflow_env as workflow_env
@@ -394,6 +394,343 @@ async def test_downstream_debug_uses_boundary_and_requires_its_own_approval(
 
 
 @pytest.mark.asyncio
+async def test_simulated_receipt_continues_only_the_previewed_write(
+    tmp_path, publication_client, external_ledger, monkeypatch
+):
+    """Follow the simulated value through the Dashboard API and the independent ledger.
+
+    Args:
+        tmp_path: Disposable database and plugin installation.
+        publication_client: Authenticated Dashboard API client.
+        external_ledger: Independent recorder at the connector's delivery boundary.
+        monkeypatch: Point the installed connector at the local recorder.
+    """
+    monkeypatch.setenv("ATN178_LEDGER_URL", external_ledger.url)
+    monkeypatch.setenv("ATN178_LEDGER_KEY", "local-ledger-secret")
+    service, _ = await fixture_service(tmp_path / "simulation", "debug-simulation")
+    await configure_owner(service)
+    client = publication_client
+    client._transport.app.state.services.workflow_assets = service
+    client._transport.app.state.services.role_assets = service.roles
+    try:
+        component = next(
+            item
+            for item in await service.list_components("alice")
+            if item["reference"]["id"].endswith("/previewable")
+        )
+        assets = "/api/v1/workflow_assets"
+        record_contract = component["output_contract"]
+        capture_contract = {
+            **record_contract,
+            "properties": {
+                **record_contract["properties"],
+                "done": {"type": "boolean"},
+            },
+            "required": ["record", "done"],
+        }
+        round_contract = {
+            **capture_contract,
+            "properties": {**capture_contract["properties"], "next_done": {"type": "boolean"}},
+            "required": ["record", "done", "next_done"],
+        }
+        child_inputs = {
+            **record_contract,
+            "properties": {
+                **record_contract["properties"],
+                "done": {"type": "boolean", "default": False},
+                "finish": {"type": "boolean", "default": True},
+            },
+        }
+        child = {
+            "name": "Archive preparation",
+            "port_contract_version": 2,
+            "input_contract": child_inputs,
+            "entry_task_ids": ["capture"],
+            "result_task_id": "final",
+            "edges": [
+                {"source": "capture", "target": "round"},
+                {"source": "round", "target": "final"},
+                {
+                    "source": "final",
+                    "target": "unused",
+                    "condition": {"field": "record.count", "value": 999},
+                },
+            ],
+            "loops": [{
+                "id": "archive-rounds",
+                "name": "Archive rounds",
+                "body": ["capture", "round"],
+                "exit_task_id": "round",
+                "exit_condition": {"field": "done", "value": True},
+                "max_iterations": 2,
+                "feedback": [
+                    {"source": "round", "field": "record", "target": "capture", "input": "record"},
+                    {"source": "round", "field": "next_done", "target": "capture", "input": "done"},
+                ],
+            }],
+            "tasks": [
+                {
+                    "id": "capture",
+                    "name": "Capture receipt",
+                    "transform": "map_fields",
+                    "input_contract": capture_contract,
+                    "output_contract": capture_contract,
+                    "inputs": {name: {"input": name} for name in ("record", "done")},
+                },
+                {
+                    "id": "round",
+                    "name": "Review receipt in this round",
+                    "transform": "map_fields",
+                    "input_contract": round_contract,
+                    "output_contract": round_contract,
+                    "inputs": {
+                        **{name: {"task_id": "capture", "field": name} for name in ("record", "done")},
+                        "next_done": {"input": "finish"},
+                    },
+                },
+                {
+                    "id": "final",
+                    "name": "Return selected receipt",
+                    "transform": "map_fields",
+                    "input_contract": record_contract,
+                    "output_contract": record_contract,
+                    "inputs": {"record": {"task_id": "round", "field": "record"}},
+                },
+                {
+                    "id": "unused",
+                    "name": "Skip the unrelated archive condition",
+                    "transform": "map_fields",
+                    "input_contract": record_contract,
+                    "output_contract": record_contract,
+                    "inputs": {"record": {"task_id": "final", "field": "record"}},
+                },
+            ],
+        }
+        created_child = await client.post(assets, json={"definition": child})
+        assert created_child.status_code == 200, created_child.text
+        child_id = created_child.json()["data"]["asset_id"]
+        graph = ledger_graph(component, "debug-simulation")
+        graph["edges"] += [
+            {"source": "result", "target": "prepare-archive"},
+            {"source": "prepare-archive", "target": "archive"},
+            {"source": "ledger", "target": "independent"},
+            {"source": "independent", "target": "result"},
+        ]
+        delivery, result = graph["tasks"]
+        graph["tasks"] += [
+            {
+                **delivery,
+                "id": "archive",
+                "name": "Archive the delivery receipt",
+                "inputs": {"record": {"task_id": "prepare-archive", "field": "record"}},
+            },
+            {
+                "id": "prepare-archive",
+                "name": "Prepare archive in its fixed workflow",
+                "workflow": {"asset_id": child_id, "version": 1},
+                "input_contract": child_inputs,
+                "output_contract": record_contract,
+                "inputs": {"record": {"task_id": "ledger", "field": "record"}},
+            },
+            {
+                **result,
+                "id": "independent",
+                "name": "Keep the original input",
+                "inputs": {"count": {"input": "original_count"}},
+            },
+        ]
+        graph["input_contract"] = {
+            **graph["input_contract"],
+            "properties": {
+                **graph["input_contract"]["properties"],
+                "original_count": {"type": "integer"},
+            },
+        }
+        created = await client.post(
+            "/api/v1/agent_drafts/workflow", json={"body": {"definition": graph}}
+        )
+        assert created.status_code == 200, created.text
+        draft = created.json()["data"]
+        asset = draft["asset_id"]
+        published = await client.post(
+            f"/api/v1/agent_drafts/workflow/{asset}/publish",
+            json={"revision": draft["revision"]},
+        )
+        assert published.status_code == 200, published.text
+        started = await client.post(
+            f"{assets}/{asset}/runs",
+            json={"version": 1, "inputs": {"record": {"count": 7}, "original_count": 3}},
+        )
+        assert started.status_code == 200, started.text
+        source_id = started.json()["data"]["run_id"]
+        source = await completed_run(service, source_id)
+        assert source["status"] == "completed"
+        original_deliveries = list(external_ledger.deliveries)
+        assert len(original_deliveries) == 2
+        source_task = next(task for task in source["tasks"] if task["node_id"] == "ledger")
+        # An older real receipt can have no recorded executor ID.
+        async with service.db.get_db() as session:
+            stored = await session.get(
+                AgentWorkflowToolCall, source_task["tool_calls"][0]["record_id"]
+            )
+            stored.started_execution_id = None
+            await session.commit()
+        source_url = f"/api/v1/workflow_runs/{source_id}"
+        selection = {
+            "scope_run_id": source_id,
+            "task_run_id": source_task["run_id"],
+            "attempt_id": source_task["state"]["attempt_id"],
+            "scope": "downstream",
+        }
+        planned = await client.post(f"{source_url}/debug_forks/preview", json=selection)
+        assert planned.status_code == 200, planned.text
+        started = await client.post(
+            f"{source_url}/debug_forks",
+            json={
+                **selection,
+                "preview_token": planned.json()["data"]["preview_token"],
+                "request_id": "simulated-delivery",
+            },
+        )
+        assert started.status_code == 200, started.text
+        fork_id = started.json()["data"]["run_id"]
+        fork_url = f"/api/v1/workflow_runs/{fork_id}"
+        fork = await completed_run(service, fork_id)
+        task = next(item for item in fork["tasks"] if item["node_id"] == "ledger")
+        preview = task["state"]["debug_write_preview"]
+        assert preview["historical_receipts"][0]["record_id"] == source_task["tool_calls"][0]["record_id"]
+        assert not source_task["state"].get("simulated_sources")
+        record = preview["record_id"]
+        token = preview["preview_token"]
+        base = f"/api/v1/workflow_runs/{task['run_id']}/tool_calls/{record}"
+        invalid = await client.post(
+            f"{base}/simulate", json={"preview_token": token, "result": {"record": {"count": "bad"}}},
+        )
+        assert invalid.status_code == 422, invalid.text
+        assert invalid.json()["data"]["fields"][0]["path"] == "result.record.count"
+        forged = await client.post(
+            f"{base}/simulate",
+            json={
+                "preview_token": token,
+                "result": {"record": {"count": 81}, "files": [{"file_id": "fake"}]},
+            },
+        )
+        assert forged.status_code == 422, forged.text
+        assert forged.json()["data"]["fields"][0]["path"] == "result.files"
+        receipt = {"preview_token": token, "result": {"record": {"count": 81}}}
+        stale = await client.post(f"{base}/simulate", json={**receipt, "preview_token": "0" * 32})
+        assert stale.status_code == 409, stale.text
+        replies = await asyncio.gather(*(client.post(f"{base}/simulate", json=receipt) for _ in range(2)))
+        assert [reply.status_code for reply in replies] == [200, 200], [reply.text for reply in replies]
+        assert (await client.post(f"{base}/execute", json={"preview_token": token})).status_code == 409
+        assert (await client.post(f"{base}/simulate", json={**receipt, "result": {"record": {"count": 82}}})).status_code == 409
+
+        fork = await completed_run(service, fork_id)
+        reopened = (await client.get(fork_url)).json()["data"]
+        tasks = {task["node_id"]: task for task in reopened["tasks"]}
+        delivery = tasks["ledger"]
+        (call,) = delivery["tool_calls"]
+        assert call["status"] == "applied"
+        assert call["started_execution_id"] is None
+        simulation = {
+            "record_id": record,
+            "task_run_id": delivery["run_id"],
+            "attempt_id": delivery["state"]["attempt_id"],
+        }
+        assert delivery["state"]["simulated_sources"] == [simulation]
+        assert any(event["kind"] == "tool.simulated" for event in delivery["events"])
+        mapping = tasks["result"]
+        assert mapping["result"] == {"count": 81}
+        assert mapping["state"]["simulated_sources"] == [simulation]
+        assert tasks["independent"]["result"] == {"count": 3}
+        assert not tasks["independent"]["state"].get("simulated_sources")
+        line = await client.get(
+            f"{fork_url}/data_line",
+            params={
+                "scope_run_id": fork_id, "task_run_id": mapping["run_id"],
+                "attempt_id": mapping["state"]["attempt_id"], "input_name": "count",
+            },
+        )
+        assert line.status_code == 200, line.text
+        assert line.json()["data"]["evidence"]["simulated_sources"] == [simulation]
+        (child_scope,) = reopened["scopes"]
+        _, second_round = child_scope["loops"][0]["iterations"]
+        round_capture = next(task for task in second_round["tasks"] if task["node_id"] == "capture")
+        for name, sources in (("record", [simulation]), ("done", None)):
+            assert round_capture["snapshot"]["input_reads"][name].get("simulated_sources") == sources
+            feedback_line = await client.get(
+                f"{fork_url}/data_line",
+                params={
+                    "scope_run_id": child_scope["run_id"],
+                    "task_run_id": round_capture["run_id"],
+                    "input_name": name,
+                },
+            )
+            assert feedback_line.status_code == 200, feedback_line.text
+            assert feedback_line.json()["data"]["evidence"].get("simulated_sources") == sources
+        unused = next(task for task in child_scope["tasks"] if task["node_id"] == "unused")
+        assert unused["status"] == "skipped"
+        assert not unused["state"].get("simulated_sources")
+        unread = await client.get(
+            f"{fork_url}/data_line",
+            params={
+                "scope_run_id": child_scope["run_id"],
+                "task_run_id": unused["run_id"],
+                "input_name": "record",
+            },
+        )
+        assert unread.status_code == 200, unread.text
+        assert unread.json()["data"]["read_status"] == "skipped"
+        assert "evidence" not in unread.json()["data"]
+        assert unread.json()["data"]["upstream"]["simulated_sources"] == [simulation]
+        assert unread.json()["data"]["upstream"]["value"] == {"count": 81}
+        assert tasks["prepare-archive"]["state"]["simulated_sources"] == [simulation]
+        archive = tasks["archive"]
+        second = archive["state"]["debug_write_preview"]
+        assert second["parameters"]["record"] == {"count": 81}
+        assert second["record_id"] != record
+        assert not second.get("authorized_by")
+        assert (await client.post(
+            f"/api/v1/workflow_runs/{archive['run_id']}/tool_calls/{second['record_id']}/execute",
+            json={"preview_token": token},
+        )).status_code == 409
+        replay = {
+            "scope_run_id": fork_id,
+            "task_run_id": mapping["run_id"],
+            "attempt_id": mapping["state"]["attempt_id"],
+        }
+        for choice, mode, bindings, replacement in (
+            ("same", "source", {}, None),
+            ("mapped", "draft", {"count": {"source_port": "count"}}, None),
+            ("replaced", "source", {}, {"name": "count", "value": 9}),
+        ):
+            replay_plan = {**replay, "definition_mode": mode, "bindings": bindings}
+            if mode == "draft":
+                replay_plan["draft_revision"] = draft["revision"]
+            replay_preview = await client.post(f"{fork_url}/debug_forks/preview", json=replay_plan)
+            assert replay_preview.status_code == 200, replay_preview.text
+            replay_body = {
+                **replay_plan,
+                "preview_token": replay_preview.json()["data"]["preview_token"],
+                "request_id": choice,
+            }
+            if replacement:
+                replay_body["replacement"] = replacement
+            replayed = await client.post(f"{fork_url}/debug_forks", json=replay_body)
+            assert replayed.status_code == 200, replayed.text
+            copied_root = replayed.json()["data"]["run_id"]
+            (copied,) = (await client.get(f"/api/v1/workflow_runs/{copied_root}")).json()["data"]["tasks"]
+            assert copied["result"] == {"count": 9 if replacement else 81}
+            assert copied["state"].get("simulated_sources") == (None if replacement else [simulation])
+        assert external_ledger.deliveries == original_deliveries
+        assert not external_ledger.queries
+        assert (await client.get(source_url)).json()["data"]["cursor"] == source["cursor"]
+    finally:
+        await service.shutdown()
+        await service.db.engine.dispose()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "legacy", [False, True], ids=["native-read", "legacy-port-evidence"]
 )
@@ -767,6 +1104,14 @@ async def test_debug_fork_requires_exact_approval_for_installed_external_write(
                 assert call["status"] == "unknown"
                 assert not call["raw_results"]
                 assert call["available_actions"] == ["reconcile"]
+                simulated = await client.post(
+                    f"{task_url}/tool_calls/{write['record_id']}/simulate",
+                    json={**approval, "result": {"record": {"count": 8}}},
+                )
+                assert simulated.status_code == 409, simulated.text
+                still_unknown = (await client.get(task_url)).json()["data"]["tool_calls"][0]
+                assert still_unknown["status"] == "unknown"
+                assert still_unknown["available_actions"] == ["reconcile"]
                 resolve = f"{task_url}/tool_calls/{write['record_id']}/resolve"
                 for action in ("retry", "confirm_result"):
                     fabricated = await client.post(

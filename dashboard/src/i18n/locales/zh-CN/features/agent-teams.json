@@ -83,6 +83,17 @@
     }
   },
   "debugWrite": {
+    "simulate": "用测试值继续",
+    "submitTestValue": "提交模拟回执",
+    "testValue": "测试结果（JSON）",
+    "testValueHint": "此次调用会被跳过。测试值不能提供受管引用。",
+    "textValueHint": "此次调用会被跳过。Agent 会以纯文本收到这段 JSON。",
+    "outputContract": "输出契约",
+    "invalidJson": "请输入有效的 JSON 值。",
+    "simulated": "已记录模拟回执",
+    "submittedBy": "测试值由 {name} 提交",
+    "derived": "使用了模拟值",
+    "backToPreview": "返回写入选项",
     "call": "调用 ID",
     "execute": "执行真实写入",
     "authorized": "真实写入已授权",

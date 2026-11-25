@@ -103,6 +103,7 @@ from astrbot.core.agent_teams.result_tool import (
     StoreTaskFileTool,
     SubmitTaskResultTool,
     validate_component_result,
+    validate_inline_port_contract,
     validate_result,
 )
 from astrbot.core.agent_teams.starter_team import RELEASE_TEAM
@@ -547,6 +548,12 @@ class DebugWriteConfirmation(BaseModel):
     preview_token: str = Field(pattern=r"^[a-f0-9]{32}$")
 
 
+class DebugWriteSimulation(DebugWriteConfirmation):
+    """Supply a test result for one persisted debug write preview."""
+
+    result: JsonValue
+
+
 class ToolResolutionRequest(BaseModel):
     """An explicit, evidenced decision about an uncertain external effect."""
 
@@ -615,6 +622,60 @@ def _debug_fork_reads(node: dict, snapshot: dict) -> dict | None:
         if not bound <= reads.keys():
             return None
     return reads if reads.keys() <= (snapshot.get("inputs") or {}).keys() else None
+
+
+def _result_simulation(run: AgentWorkflowRun) -> dict[str, list[dict]]:
+    """Resolve provenance from this result's actual reads and simulated invocations.
+
+    Args:
+        run: Exact producing task, call, or workflow scope.
+
+    Returns:
+        Simulated invocation identities indexed by the returned top-level field.
+    """
+    if run.result is None:
+        return {}
+    if "result_simulation" in run.state:
+        return run.state["result_simulation"]
+
+    reads = run.snapshot.get("input_reads") or {}
+    if run.snapshot.get("transform") == "map_fields":
+        return {
+            name: reads[name]["simulated_sources"]
+            for name in run.result
+            if reads.get(name, {}).get("simulated_sources")
+        }
+
+    sources = {
+        source["record_id"]: source for source in run.state.get("simulated_calls", [])
+    }
+    for evidence in reads.values():
+        for source in evidence.get("simulated_sources", []):
+            sources[source["record_id"]] = source
+    return {name: list(sources.values()) for name in run.result} if sources else {}
+
+
+def _simulation_sources(
+    provenance: dict[str, list[dict]], field: str | None = None
+) -> list[dict]:
+    """Select the simulated calls that contributed to a result or a specific field.
+
+    Args:
+        provenance: Simulation sources by output field.
+        field: Dotted port path, or None for the whole result.
+
+    Returns:
+        Exact simulated call identities with duplicates removed.
+    """
+    if field is not None and field not in REFERENCE_OUTPUTS:
+        return provenance.get(field.split(".", 1)[0], [])
+    return list(
+        {
+            source["record_id"]: source
+            for sources in provenance.values()
+            for source in sources
+        }.values()
+    )
 
 
 def _current_task_runs(run: AgentWorkflowRun) -> dict[str, str]:
@@ -4138,6 +4199,9 @@ class WorkflowService:
                 "status": status,
                 "artifact": artifact,
                 "child_result_ref": source.state.get("child_result_ref"),
+                "result_simulation": _result_simulation(source)
+                if result is not None
+                else {},
                 "result": result,
             }
 
@@ -4423,6 +4487,12 @@ class WorkflowService:
                 "status": attempt["status"],
                 "reason": state.get("reason"),
                 "result": attempt.get("result"),
+                **(
+                    {"simulated_sources": simulated}
+                    if attempt.get("result") is not None
+                    and (simulated := _simulation_sources(_result_simulation(task)))
+                    else {}
+                ),
             },
             "inputs": inputs,
         }
@@ -4480,6 +4550,7 @@ class WorkflowService:
                     "child_assets",
                     "trial",
                     "trial_inputs",
+                    "input_simulation",
                     "depth_limit",
                 )
                 if key in execution_scope.snapshot
@@ -4989,6 +5060,8 @@ class WorkflowService:
                             {"const": port["original"]}
                         ).is_valid(replacement.value)
                     )
+                    if port["changed"] and "evidence" in port:
+                        port.setdefault("original_evidence", port.pop("evidence"))
                     # Reuse the recorded representation as well as its JSON value.
                     port["value"] = (
                         replacement.value if port["changed"] else port["original"]
@@ -5034,6 +5107,12 @@ class WorkflowService:
                         frozen["debug_inputs"] = inputs
                     else:
                         frozen["inputs"] = {**frozen["inputs"], **inputs}
+                        frozen["input_simulation"] = {
+                            name: port["evidence"]["simulated_sources"]
+                            for name, port in ports.items()
+                            if not port["changed"]
+                            and port.get("evidence", {}).get("simulated_sources")
+                        }
                         if definition.get("input_contract") is not None:
                             frozen["inputs"] = normalize_port_inputs(
                                 contract, frozen["inputs"], "inputs"
@@ -5059,6 +5138,14 @@ class WorkflowService:
                             version=source["asset_version"] or 1, inputs=inputs
                         ),
                     )
+                if request.scope == "single":
+                    frozen["input_simulation"] = {
+                        name: port["evidence"]["simulated_sources"]
+                        for name, port in ports.items()
+                        if name in inputs
+                        and (not port["changed"] or port["source"] == "mapped")
+                        and port.get("evidence", {}).get("simulated_sources")
+                    }
                 if request.scope == "single" and frozen["members"]:
                     scope = await session.get(AgentWorkflowRun, source["scope_run_id"])
                     assert scope is not None
@@ -5424,10 +5511,12 @@ class WorkflowService:
         upstream = port_value(source.result, field, upstream_ref)
         if upstream is MISSING_PORT_VALUE:
             return None
+        simulated = _simulation_sources(_result_simulation(source), field)
         return {
             "value": upstream,
             "source_run_id": source.run_id,
             **({"artifact": upstream_ref} if upstream_ref is not None else {}),
+            **({"simulated_sources": simulated} if simulated else {}),
         }
 
     async def inspect_member_attempt(
@@ -6313,6 +6402,8 @@ class WorkflowService:
                                     or current.state["debug_write_preview"].get(
                                         "authorized_by"
                                     )
+                                    or "simulated_receipt"
+                                    in current.state["debug_write_preview"]
                                 )
                                 and boundary is not None
                                 and (
@@ -6419,7 +6510,18 @@ class WorkflowService:
                                     or a.attempt_id in attempt_positions
                                 )
                             ],
-                            "state": current.state,
+                            "state": {
+                                **current.state,
+                                **(
+                                    {"simulated_sources": simulated}
+                                    if (
+                                        simulated := _simulation_sources(
+                                            _result_simulation(current)
+                                        )
+                                    )
+                                    else {}
+                                ),
+                            },
                             "result": current.result,
                             "pending_result": current.pending_result,
                             "cursor": current_events[-1].id if current_events else 0,
@@ -6464,6 +6566,9 @@ class WorkflowService:
                                 if history_limit is None
                                 or recovery_data.get(call.record_id, {}).get(
                                     "debug_write_approval"
+                                )
+                                or recovery_data.get(call.record_id, {}).get(
+                                    "debug_write_simulation"
                                 )
                                 or call.record_id
                                 == current.state.get("debug_write_preview", {}).get(
@@ -9912,6 +10017,9 @@ class WorkflowService:
             else json.dumps(value, ensure_ascii=False)
             for name, value in zip(input_names, items, strict=True)
         }
+        simulated = (
+            row.snapshot["input_reads"].get("items", {}).get("simulated_sources")
+        )
         frozen = {
             "engine": "graph_v2",
             "usage_protocol": 1,
@@ -9961,6 +10069,9 @@ class WorkflowService:
                 ],
             },
             "inputs": item_inputs,
+            "input_simulation": dict.fromkeys(input_names, simulated)
+            if simulated
+            else {},
             "input_artifacts": [],
             "source": root.snapshot["source"],
             "initiator": root.snapshot["initiator"],
@@ -10383,6 +10494,15 @@ class WorkflowService:
                         "status": loop["status"],
                         "exit_reference": iteration["exit_reference"],
                         "exit_value": value,
+                        **(
+                            {"simulated_sources": simulated}
+                            if (
+                                simulated := _simulation_sources(
+                                    _result_simulation(source), rule["field"]
+                                )
+                            )
+                            else {}
+                        ),
                     },
                 )
             )
@@ -10428,6 +10548,9 @@ class WorkflowService:
                     else json.dumps(value, ensure_ascii=False),
                     "reference": reference,
                     "field": feedback["field"],
+                    "simulated_sources": _simulation_sources(
+                        _result_simulation(previous), feedback["field"]
+                    ),
                 }
             if missing_feedback:
                 loop["status"] = iteration["status"] = "blocked"
@@ -11551,7 +11674,17 @@ class WorkflowService:
                             }
                             row.result = copy.deepcopy(result)
                             row.status = "completed"
-                            row.state = {**row.state, "reason": None}
+                            row.state = {
+                                **row.state,
+                                "reason": None,
+                                "result_simulation": {
+                                    name: sources
+                                    for name, sources in _result_simulation(
+                                        returned_task
+                                    ).items()
+                                    if name in result
+                                },
+                            }
                             separately_reviewed = typed and any(
                                 task.get("human", {}).get("kind") == "approval"
                                 and task["human"]["artifact_task_id"]
@@ -11682,7 +11815,10 @@ class WorkflowService:
                         snapshot={"node_id": node_id},
                         status=item["status"],
                         result=item["result"],
-                        state={"child_result_ref": item.get("child_result_ref")},
+                        state={
+                            "child_result_ref": item.get("child_result_ref"),
+                            "result_simulation": item.get("result_simulation", {}),
+                        },
                     )
                     for node_id, item in root.snapshot.get("debug_boundary", {}).items()
                 }
@@ -11974,6 +12110,10 @@ class WorkflowService:
                                         evidence["artifact"] = iteration_input[
                                             "reference"
                                         ]
+                                        if simulated := iteration_input.get(
+                                            "simulated_sources"
+                                        ):
+                                            evidence["simulated_sources"] = simulated
                                     elif task["id"] == root.snapshot.get(
                                         "trial", {}
                                     ).get("node_id") and "value" in root.snapshot.get(
@@ -11992,6 +12132,10 @@ class WorkflowService:
                                             value = value[name]
                                     elif ref.get("input") is not None:
                                         value = root.snapshot["inputs"][ref["input"]]
+                                        if simulated := root.snapshot.get(
+                                            "input_simulation", {}
+                                        ).get(ref["input"]):
+                                            evidence["simulated_sources"] = simulated
                                     elif (
                                         ref["task_id"]
                                         in root.snapshot.get("trial", {}).get(
@@ -12045,6 +12189,10 @@ class WorkflowService:
                                         }
                                         for name in ref["field"].split("."):
                                             value = value[name]
+                                        if simulated := _simulation_sources(
+                                            _result_simulation(source), ref["field"]
+                                        ):
+                                            evidence["simulated_sources"] = simulated
                                     row.snapshot = {
                                         **row.snapshot,
                                         "inputs": {"value": value},
@@ -12064,6 +12212,17 @@ class WorkflowService:
                                             if source.result is not None
                                         ]
                                     }
+                                    provenance = {
+                                        item["record_id"]: item
+                                        for source in matched
+                                        for item in _simulation_sources(
+                                            _result_simulation(source)
+                                        )
+                                    }
+                                    if provenance:
+                                        row.state["result_simulation"] = {
+                                            "results": list(provenance.values())
+                                        }
                                     session.add(
                                         AgentWorkflowArtifact(
                                             artifact_id=row.run_id,
@@ -12397,6 +12556,10 @@ class WorkflowService:
                                             "field": fixed["field"],
                                         }
                                     input_reads[key] = {"artifact": fixed["reference"]}
+                                    if simulated := fixed.get("simulated_sources"):
+                                        input_reads[key]["simulated_sources"] = (
+                                            simulated
+                                        )
                                     if fixed["reference"] not in refs:
                                         refs.append(fixed["reference"])
                                     if row.snapshot.get("graph_task"):
@@ -12477,9 +12640,18 @@ class WorkflowService:
                                                 for name in (
                                                     "artifact",
                                                     "source_run_id",
+                                                    "simulated_sources",
                                                 )
                                                 if name in evidence
                                             }
+                                        if not debug_start and (
+                                            simulated := root.snapshot.get(
+                                                "input_simulation", {}
+                                            ).get(ref["input"])
+                                        ):
+                                            input_reads[key]["simulated_sources"] = (
+                                                simulated
+                                            )
                                         if (pinned := evidence.get("artifact")) and (
                                             field := evidence.get("field")
                                         ):
@@ -12544,6 +12716,14 @@ class WorkflowService:
                                             "artifact": pinned,
                                             "source_run_id": source.run_id,
                                         }
+                                    if key in input_reads and (
+                                        simulated := _simulation_sources(
+                                            _result_simulation(source), ref["field"]
+                                        )
+                                    ):
+                                        input_reads[key]["simulated_sources"] = (
+                                            simulated
+                                        )
                                     if pinned not in refs:
                                         refs.append(pinned)
                                     if row.snapshot.get("graph_task"):
@@ -12793,6 +12973,14 @@ class WorkflowService:
                                         )
                                     if trial_input_sources:
                                         frozen["trial_inputs"] = trial_input_sources
+                                    frozen["input_simulation"] = {
+                                        name: evidence["simulated_sources"]
+                                        for name, evidence in (
+                                            input_reads or {}
+                                        ).items()
+                                        if name in frozen["inputs"]
+                                        and evidence.get("simulated_sources")
+                                    }
                                     # Only declared values enter a static child scope.
                                     frozen["input_artifacts"] = (
                                         [] if row.snapshot.get("graph_task") else refs
@@ -12998,11 +13186,13 @@ class WorkflowService:
                     if success and (
                         root.snapshot.get("team_definition") or result_id is not None
                     ):
-                        root.result = rows[
+                        producer = rows[
                             "coordinator"
                             if root.snapshot.get("team_definition")
                             else result_id
-                        ].result
+                        ]
+                        root.result = producer.result
+                        root.state["result_simulation"] = _result_simulation(producer)
                     session.add(root)
                     if (root.status, root.state["reason"]) != previous_outcome:
                         session.add(
@@ -14706,7 +14896,9 @@ class WorkflowService:
                     "Only interrupted execution can be recovered", status=409
                 )
             preview = row.state.get("debug_write_preview")
-            if preview and not preview.get("authorized_by"):
+            if preview and not (
+                preview.get("authorized_by") or "simulated_receipt" in preview
+            ):
                 raise RoleAssetError(
                     "This call is held at the debug write preview", status=409
                 )
@@ -15144,23 +15336,23 @@ class WorkflowService:
             task.add_done_callback(self._tasks.discard)
         return await self.get_run(username, run_id)
 
-    async def confirm_debug_write(
+    async def decide_debug_write_preview(
         self,
         username: str,
         run_id: str,
         record_id: str,
-        request: DebugWriteConfirmation,
+        request: DebugWriteConfirmation | DebugWriteSimulation,
     ) -> dict:
-        """Authorize one durable write intent and continue its existing attempt.
+        """Resolve one durable debug preview and continue its existing attempt.
 
         Args:
             username: Authenticated Dashboard owner.
             run_id: Debug fork task holding the preview.
             record_id: Durable identity of the previewed call.
-            request: Token of the exact preview seen by the operator.
+            request: Token of the exact preview, with a test result for simulation.
 
         Returns:
-            Current task detail after saving the approval.
+            Current task detail after saving the decision.
 
         Raises:
             RoleAssetError: The preview is stale, unavailable or inaccessible.
@@ -15177,6 +15369,7 @@ class WorkflowService:
             await self.roles.validate_frozen_role(
                 snapshot["role"], snapshot.get("profile")
             )
+        simulating = isinstance(request, DebugWriteSimulation)
         async with self.db.get_db() as session:
             row = await session.get(AgentWorkflowRun, run_id)
             assert row is not None
@@ -15185,10 +15378,26 @@ class WorkflowService:
             if control.status != "active":
                 raise RoleAssetError("Debug fork is no longer active", status=409)
             recovery = await session.get(AgentWorkflowToolRecovery, record_id)
-            approval = recovery.data.get("debug_write_approval") if recovery else None
-            if approval and recovery.run_id == run_id:
-                if approval["preview_token"] != request.preview_token:
-                    raise RoleAssetError("Debug write preview changed", status=409)
+            decision_kind = (
+                "debug_write_simulation" if simulating else "debug_write_approval"
+            )
+            if (
+                recovery
+                and recovery.run_id == run_id
+                and (
+                    "debug_write_approval" in recovery.data
+                    or "debug_write_simulation" in recovery.data
+                )
+            ):
+                previous = recovery.data.get(decision_kind) or {}
+                if previous.get("preview_token") != request.preview_token or (
+                    simulating
+                    and json.dumps(previous["result"], sort_keys=True)
+                    != json.dumps(request.result, sort_keys=True)
+                ):
+                    raise RoleAssetError(
+                        "Debug write preview has already been resolved", status=409
+                    )
             else:
                 preview = row.state.get("debug_write_preview") or {}
                 stored = await session.get(AgentWorkflowToolCall, record_id)
@@ -15216,12 +15425,83 @@ class WorkflowService:
                     for item in data["tool_calls"]
                     if item["record_id"] == record_id
                 )
-                approval = {
-                    "preview_token": request.preview_token,
-                    "authorized_by": username,
-                }
                 metadata = call.setdefault("recovery", {})
-                metadata["debug_write_approval"] = approval
+                decision = {"preview_token": request.preview_token}
+                preview = dict(preview)
+                if simulating:
+                    result = request.result
+                    contract = (
+                        snapshot["definition"]["output_contract"]
+                        if snapshot["engine"] == "plugin_task_v2"
+                        else preview.get("output_contract")
+                    )
+                    if contract is not None:
+                        try:
+                            validate_inline_port_contract(contract)
+                        except (ValueError, SchemaError) as exc:
+                            raise RoleAssetError(
+                                "The tool's simulated output contract is invalid",
+                                [
+                                    {
+                                        "path": "result",
+                                        "code": "CONTRACT",
+                                        "message": str(exc),
+                                    }
+                                ],
+                                status=422,
+                            ) from exc
+                        # A supplied test value carries no grants to managed references.
+                        fields = (
+                            validate_component_result(contract, result, {})
+                            if isinstance(result, dict)
+                            else [
+                                {
+                                    "path": "result",
+                                    "code": "TYPE",
+                                    "message": "Expected a JSON object",
+                                }
+                            ]
+                        )
+                    else:
+                        # Tools without a declared output schema accept finite JSON
+                        # serialized as plain text in the Agent tool protocol.
+                        fields = validate_result(
+                            {}, {"value": result}, validate_files=False
+                        )
+                    if fields:
+                        raise RoleAssetError(
+                            "Invalid simulated receipt", fields, status=422
+                        )
+                    source = {
+                        "record_id": record_id,
+                        "task_run_id": run_id,
+                        "attempt_id": stored.attempt_id,
+                    }
+                    decision.update(result=result, submitted_by=username, source=source)
+                    preview["simulated_receipt"] = {
+                        "result": result,
+                        "submitted_by": username,
+                    }
+                    plugin_call = snapshot["engine"] == "plugin_task_v2"
+                    raw = CallToolResult(
+                        content=[]
+                        if plugin_call
+                        else [
+                            TextContent(
+                                type="text",
+                                text="Simulated receipt (no external write): "
+                                + json.dumps(result, ensure_ascii=False),
+                            )
+                        ],
+                        structuredContent=result if plugin_call else None,
+                    ).model_dump(mode="json")
+                    call["status"] = stored.status = "result_saved"
+                    call["raw_results"] = stored.raw_results = [raw]
+                    checkpoint.phase = data["phase"] = "tool_result"
+                    session.add(stored)
+                else:
+                    decision["authorized_by"] = preview["authorized_by"] = username
+                metadata[decision_kind] = decision
                 if recovery is None:
                     recovery = AgentWorkflowToolRecovery(
                         record_id=record_id, run_id=run_id
@@ -15230,15 +15510,25 @@ class WorkflowService:
                 checkpoint.data = data
                 row.state = {
                     **row.state,
-                    "debug_write_preview": {**preview, "authorized_by": username},
+                    "debug_write_preview": preview,
                     "resolution_pending": True,
                 }
+                if simulating:
+                    row.state["simulated_calls"] = [
+                        *row.state.get("simulated_calls", []),
+                        source,
+                    ]
                 session.add_all([recovery, checkpoint, row])
                 session.add(
                     AgentWorkflowEvent(
                         run_id=run_id,
-                        kind="tool.resolved",
+                        kind="tool.simulated" if simulating else "tool.resolved",
                         data={
+                            **source,
+                            "submitted_by": username,
+                        }
+                        if simulating
+                        else {
                             "record_id": record_id,
                             "action": "execute_preview",
                             "authorized_by": username,
@@ -15250,7 +15540,7 @@ class WorkflowService:
             try:
                 return await self.recover_run(username, run_id)
             except RoleAssetError:
-                # The approval stays saved if admission changed before dispatch.
+                # The decision stays saved if admission changed before dispatch.
                 pass
         return await self.get_run(username, run_id)
 
@@ -15667,7 +15957,11 @@ class WorkflowService:
                     )
                 previous.status = call["status"]
                 previous.execution_id = execution_id
-                if call["status"] != "intent" and previous.started_execution_id is None:
+                if (
+                    call["status"] != "intent"
+                    and previous.started_execution_id is None
+                    and not call.get("recovery", {}).get("debug_write_simulation")
+                ):
                     previous.started_execution_id = execution_id
                 previous.raw_results = call["raw_results"]
                 previous.context_position = call["context_position"]
@@ -16439,6 +16733,7 @@ class WorkflowService:
         target: object,
         *,
         parameters_complete: bool = True,
+        output_contract: dict | None = None,
     ) -> None:
         """Permit the exact authorized call or persist its preview and stop.
 
@@ -16451,6 +16746,7 @@ class WorkflowService:
             parameters: Actual supplied arguments at the execution boundary.
             target: Destination identified by the installed implementation, if available.
             parameters_complete: Whether the arguments meet the installed tool schema.
+            output_contract: Schema for test results when the resolved tool declares one.
 
         Raises:
             DebugWritePending: Stop dependent execution at the saved boundary.
@@ -16498,12 +16794,22 @@ class WorkflowService:
                 historical = (
                     await session.scalars(
                         select(AgentWorkflowToolCall)
+                        .outerjoin(
+                            AgentWorkflowToolRecovery,
+                            col(AgentWorkflowToolRecovery.record_id)
+                            == AgentWorkflowToolCall.record_id,
+                        )
                         .where(
                             col(AgentWorkflowToolCall.run_id) == source["task_run_id"],
                             col(AgentWorkflowToolCall.attempt_id)
                             == source["attempt_id"],
                             col(AgentWorkflowToolCall.name) == operation,
                             col(AgentWorkflowToolCall.status) != "intent",
+                            AgentWorkflowToolRecovery.data["debug_write_simulation"][
+                                "preview_token"
+                            ]
+                            .as_string()
+                            .is_(None),
                         )
                         .order_by(
                             col(AgentWorkflowToolCall.created_at),
@@ -16529,6 +16835,7 @@ class WorkflowService:
                     "operation": operation,
                     "target": destination,
                     "parameters": parameters,
+                    "output_contract": output_contract,
                     "historical_receipts": [
                         {
                             "record_id": call.record_id,
@@ -16627,6 +16934,7 @@ class WorkflowService:
                 parameters.get(component.write_target)
                 if component.write_target
                 else None,
+                output_contract=node["output_contract"],
             )
         recovery = call.setdefault("recovery", {})
         context = ContextWrapper(
@@ -17173,6 +17481,7 @@ class WorkflowService:
                         arguments,
                         arguments.get(tool.write_target) if tool.write_target else None,
                         parameters_complete=parameters_complete,
+                        output_contract=tool.debug_output_contract,
                     )
 
             async def admit_work() -> None:

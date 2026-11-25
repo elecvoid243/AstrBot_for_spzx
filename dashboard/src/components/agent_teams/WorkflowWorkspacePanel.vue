@@ -551,6 +551,10 @@
             @update:model-value="historicalArtifact = null; loadArtifact()"
           />
           <p v-if="fileError" role="alert" class="text-error">{{ fileError }}</p>
+          <WorkflowSimulatedSources
+            v-if="!selectedArtifact || selectedArtifact.version === detailRun.result_ref?.version"
+            :sources="detailRun.state.simulated_sources"
+          />
           <pre
             v-if="
               selectedArtifact || (!detailRun.result_ref && detailRun.result)
@@ -858,6 +862,7 @@ import RunLimitsForm from "./RunLimitsForm.vue";
 import RunUsagePanel from "./RunUsagePanel.vue";
 import AutonomousTeamDialog from "./AutonomousTeamDialog.vue";
 import WorkflowRunProgress from "./WorkflowRunProgress.vue";
+import WorkflowSimulatedSources from "./WorkflowSimulatedSources.vue";
 import WorkflowRunProcess from "./WorkflowRunProcess.vue";
 import WorkflowMemberAttemptInspector from "./WorkflowMemberAttemptInspector.vue";
 import WorkflowRunControls from "./WorkflowRunControls.vue";

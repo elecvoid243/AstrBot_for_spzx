@@ -243,6 +243,7 @@ class _PermissionGuardedTool(FunctionTool):
             description=tool.description,
             parameters=getattr(tool, "parameters", {}),
             write_target=tool.write_target,
+            debug_output_contract=tool.debug_output_contract,
         )
         self._wrapped = tool
         self._mgr = manager

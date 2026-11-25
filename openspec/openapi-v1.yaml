@@ -14715,6 +14715,9 @@ components:
               before: {type: string}
               after: {type: string}
               required: {type: boolean}
+    WorkflowDebugForkScope:
+      type: string
+      enum: [single, downstream, child_workflow]
     WorkflowDebugForkAttempt:
       type: object
       additionalProperties: false
@@ -14727,6 +14730,8 @@ components:
         draft_revision: {type: [integer, 'null'], minimum: 1}
         bindings:
           $ref: '#/components/schemas/WorkflowDebugForkBindings'
+        scope:
+          $ref: '#/components/schemas/WorkflowDebugForkScope'
     WorkflowDebugForkLocation:
       type: object
       required: [scope_run_id, task_run_id, attempt_id, node_name, iteration]
@@ -14748,6 +14753,8 @@ components:
         draft_revision: {type: [integer, 'null'], minimum: 1}
         bindings:
           $ref: '#/components/schemas/WorkflowDebugForkBindings'
+        scope:
+          $ref: '#/components/schemas/WorkflowDebugForkScope'
         preview_token: {type: string, pattern: '^[a-f0-9]{64}$'}
         request_id: {type: string, minLength: 1, maxLength: 128}
         replacement:
@@ -14779,6 +14786,27 @@ components:
       type: object
       required: [source, original, inputs]
       properties:
+        scope:
+          $ref: '#/components/schemas/WorkflowDebugForkScope'
+        nodes:
+          type: array
+          items:
+            type: object
+            required: [id, name]
+            properties:
+              id: {type: string}
+              name: {type: string}
+        boundary:
+          type: array
+          items:
+            type: object
+            required: [id, name, status]
+            properties:
+              id: {type: string}
+              name: {type: string}
+              status: {type: string}
+              artifact:
+                $ref: '#/components/schemas/ArtifactReference'
         source:
           type: object
           required: [root_run_id, scope_run_id, task_run_id, attempt_id, asset_id, asset_version, workflow_name, node_id, node_name, iteration]

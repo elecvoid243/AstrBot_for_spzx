@@ -9,9 +9,9 @@ import type {
   ToolResolutionRequest,
   WorkflowControlRequest,
   WorkflowDataLine,
-  WorkflowDebugForkAttempt,
   WorkflowDebugForkLocation,
   WorkflowDebugForkPreview,
+  WorkflowDebugForkAttempt,
   WorkflowDebugForkRequest,
   WorkflowDebugForkStarted,
   WorkflowMemberAttempt,
@@ -167,7 +167,7 @@ export const workflowAssetsApi = {
   },
   async failedChildDebugAttempts(
     runId: string,
-    params: WorkflowDebugForkAttempt,
+    params: Omit<WorkflowDebugForkAttempt, "scope">,
     signal: AbortSignal,
   ): Promise<WorkflowDebugForkLocation[]> {
     return (await httpClient.get(

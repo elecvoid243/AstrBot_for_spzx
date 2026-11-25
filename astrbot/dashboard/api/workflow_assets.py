@@ -20,6 +20,7 @@ from astrbot.core.agent_teams.history import RunHistoryService
 from astrbot.core.agent_teams.workflows import (
     ArtifactRevisionRequest,
     DebugForkAttempt,
+    DebugForkPreviewRequest,
     DebugForkRequest,
     HumanAnswerRequest,
     ToolResolutionRequest,
@@ -1202,7 +1203,7 @@ async def list_failed_child_debug_attempts(
 @router.post("/workflow_runs/{run_id}/debug_forks/preview")
 async def preview_workflow_debug_fork(
     run_id: str,
-    payload: DebugForkAttempt,
+    payload: DebugForkPreviewRequest,
     username: str = Depends(require_dashboard_user),
     service: WorkflowService = Depends(get_workflow_service),
 ):

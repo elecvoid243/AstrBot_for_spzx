@@ -220,19 +220,25 @@ In the process panel, expand **Attempts** and select **Inspect data lines for th
 
 ![Data line inspector showing the failed second-round read and its artifact version](/images/agent-workflow-data-line-en.jpg)
 
-### Debug one historical node
+### Debug a historical node or its downstream path
 
-On an eligible data line, choose **Debug with this input**. The default **Original run** preview identifies the workflow version or draft revision, the selected attempt, and the single node that will run. The input table shows the values recorded for that attempt and flags missing or inaccessible inputs. A skipped attempt shows **Skipped · not read** in the inspector. Select a completed or failed attempt to start a fork.
+On an eligible data line, choose **Debug with this input**. **Execution scope** defaults to **Only the selected node will run.** The **Original run** preview identifies the selected attempt and the workflow version or draft revision it used. The input table shows the values recorded for that attempt and flags missing or inaccessible inputs. A skipped attempt shows **Skipped · not read** in the inspector. Select a completed or failed attempt to start a fork.
 
 Use **Choose an input to edit** to supply missing test values or replace individual inputs. Text and JSON must match the node's input contract. For an artifact, select a version you can read or enter its exact ID and version. For a file, also select an attachment from that version. A filename alone carries no version information. Reopen the preview if access to a recorded reference changes before starting.
 
 ![Debug fork preview with a missing historical PDF, its selected attachment, and the retained draft](/images/agent-workflow-debug-fork-inputs-en.jpg)
 
-To verify a fix, select **Current draft**. The preview shows the saved revision of the workflow that owns the selected node, including when that node is inside a fixed sub-workflow. It lists changes to the selected node and its ports. Choose **Original run** to switch back to the recorded definition.
+To verify a fix to a single node, keep the default execution scope and select **Current draft**. The preview shows the saved revision of the workflow that owns the selected node, including when that node is inside a fixed sub-workflow. It lists changes to the selected node and its ports. Choose **Original run** to switch back to the recorded definition.
 
 An added or changed required port can use a compatible recorded input or an explicit text or JSON test value. Managed reference ports can reuse compatible recorded references. Removed ports keep their historical values in the comparison. Choose **Check input bindings** to validate any changes before starting. If another save changes the draft revision, choose **Refresh draft** and review the new preview. A removed or unsupported node blocks startup in the current draft.
 
 ![Current draft preview showing a removed input and a new required input that needs a binding](/images/agent-workflow-debug-draft-en.jpg)
+
+The downstream and whole-child scopes use the frozen workflow graph from the original run. Choose **Run downstream from this node** to see the selected nodes and any historical boundary inputs before starting. Earlier work outside the scope supplies its recorded results. The frozen graph still evaluates conditions and joins, and inactive branches are skipped. If you start inside a loop, the fork uses the selected round's inputs and runs that round's downstream steps. The exit condition must pass before execution can continue outside the loop.
+
+If the preview asks you to include the artifact producer for an approval, choose a start node that also runs that producer.
+
+![Downstream debug preview with the selected nodes and historical boundary inputs](/images/agent-workflow-debug-scope-en.jpg)
 
 Choose **Start debug fork** to open the new run. The comparison labels each value as reused, filled, or replaced, and shows the original failure or output, the fork result, and the executed draft revision if you selected **Current draft**. The selected versions stay pinned when newer versions are published or the page reloads. Reopen the fork from run history or Dashboard Chat. **Open source attempt** returns to the original scope, iteration and attempt.
 
@@ -248,7 +254,9 @@ Close the preview with **Close** and reopen it at any time from the fork. Refres
 
 In the parent run graph, select the iteration that failed, select the child workflow call, and choose **Debug failed child call**. The graph opens the child scope for that invocation and previews a recorded failed attempt. If several attempts failed, select the node, iteration (when applicable), and attempt in the preview. The preview shows the original fixed version and the inputs and artifact versions recorded for that attempt.
 
-**Start debug fork** runs only the selected internal node. In the comparison, **Open parent call** returns to the parent node and iteration, and **Open source attempt** returns to the child scope and selected attempt.
+**Start debug fork** defaults to the selected internal node. In the comparison, **Open parent call** returns to the parent node and iteration, and **Open source attempt** returns to the child scope and selected attempt.
+
+To test the parent-to-child inputs and all internal steps together, select the call on the parent graph and choose **Trial the entire fixed child workflow**. Review the mapped inputs, fixed version, and list of child nodes before starting. A reachable approval opens a new human request for the exact artifact version produced in the debug fork. Preview and approve the new artifact in Bot or Chat. The fork stops at **External write preview** before a reachable delivery.
 
 ![Failed child-call preview showing the parent iteration, child version and recorded input](/images/agent-workflow-debug-child-en.jpg)
 

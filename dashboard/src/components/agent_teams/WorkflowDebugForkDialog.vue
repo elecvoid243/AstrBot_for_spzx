@@ -19,7 +19,15 @@
             </option>
           </select>
         </label>
+        <label v-if="!wholeChild" class="d-block text-body-2 mb-3">
+          {{ tm("debugFork.scopeLabel") }}
+          <select v-model="nodeScope" class="debug-candidate d-block w-100 mt-1" :disabled="starting" data-testid="debug-fork-scope-select">
+            <option value="single">{{ tm("debugFork.singleNode") }}</option>
+            <option value="downstream">{{ tm("debugFork.downstream") }}</option>
+          </select>
+        </label>
         <v-btn-toggle
+          v-if="scope === 'single'"
           :model-value="mode"
           :disabled="loading || starting"
           mandatory
@@ -42,7 +50,22 @@
             </span>
           </p>
           <p class="font-weight-medium">{{ plan.source.workflow_name }} · {{ version }} · {{ plan.source.node_name }}</p>
-          <p class="text-body-2 mb-2" data-testid="debug-fork-scope">{{ tm("debugFork.singleNode") }}</p>
+          <p v-if="wholeChild" class="text-body-2 mb-2" data-testid="debug-fork-scope">
+            {{ tm("debugFork.childWorkflow") }}
+          </p>
+          <template v-if="scope !== 'single'">
+            <p class="text-caption text-medium-emphasis">{{ tm("debugFork.selectedNodes") }}</p>
+            <p class="text-body-2 mb-2" data-testid="debug-fork-nodes">{{ plan.nodes?.map(node => node.name).join(" · ") }}</p>
+          </template>
+          <div v-if="plan.boundary?.length" class="mb-3" data-testid="debug-fork-boundary">
+            <p class="text-caption text-medium-emphasis">{{ tm("debugFork.boundary") }}</p>
+            <ul class="text-body-2 ps-5">
+              <li v-for="node in plan.boundary" :key="node.id" :title="node.artifact?.artifact_id">
+                {{ node.name }} · {{ getRaw(`v2.states.${node.status}`) ?? node.status }}
+                <template v-if="node.artifact"> · {{ tm("debugFork.boundaryVersion", { version: node.artifact.version }) }}</template>
+              </li>
+            </ul>
+          </div>
           <p class="text-caption text-medium-emphasis mb-3 debug-attempt">
             <span v-if="plan.source.iteration != null">{{ tm("loops.iteration") }} {{ plan.source.iteration }} · </span>
             {{ tm("v2.attempt") }} {{ plan.source.attempt_id }}
@@ -134,7 +157,7 @@
 <script setup lang="ts">
 import { computed, onScopeDispose, ref, shallowRef, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import type { ArtifactReference, WorkflowDebugForkAttempt, WorkflowDebugForkBindings, WorkflowDebugForkLocation, WorkflowDebugForkPreview, WorkflowDebugForkReplacement } from "@/api/generated/openapi-v1";
+import type { ArtifactReference, WorkflowDebugForkAttempt, WorkflowDebugForkBindings, WorkflowDebugForkLocation, WorkflowDebugForkPreview, WorkflowDebugForkReplacement, WorkflowDebugForkScope } from "@/api/generated/openapi-v1";
 import { workflowAssetsApi } from "@/api/workflowAssets";
 import { useModuleI18n } from "@/i18n/composables";
 import { extractApiError } from "@/utils/extractApiError";
@@ -145,11 +168,12 @@ import WorkflowDebugForkReference from "./WorkflowDebugForkReference.vue";
 
 const props = defineProps<{
   rootId: string;
-  attempt: WorkflowDebugForkAttempt;
+  attempt: Pick<WorkflowDebugForkAttempt, "scope_run_id" | "task_run_id" | "attempt_id">;
   candidates?: WorkflowDebugForkLocation[];
+  wholeChild?: boolean;
 }>();
 const emit = defineEmits<{ close: []; selectCandidate: [candidate: WorkflowDebugForkLocation] }>();
-const { tm } = useModuleI18n("features/agent-teams");
+const { tm, getRaw } = useModuleI18n("features/agent-teams");
 const router = useRouter();
 const route = useRoute();
 let previewRead: AbortController | undefined;
@@ -157,6 +181,8 @@ onScopeDispose(() => previewRead?.abort());
 
 type DefinitionMode = NonNullable<WorkflowDebugForkAttempt["definition_mode"]>;
 const plan = shallowRef<WorkflowDebugForkPreview>();
+const nodeScope = ref<"single" | "downstream">("single");
+const scope = computed<WorkflowDebugForkScope>(() => props.wholeChild ? "child_workflow" : nodeScope.value);
 const mode = ref<DefinitionMode>("source");
 const draftBindings = shallowRef<WorkflowDebugForkBindings>();
 const checkedBindings = shallowRef<WorkflowDebugForkBindings>({});
@@ -206,9 +232,10 @@ const unresolved = computed(() => (plan.value?.inputs ?? [])
   .map(port => port.name),
 );
 const dirtyBindings = computed(() => JSON.stringify(draftBindings.value) !== JSON.stringify(checkedBindings.value));
-const canStart = computed(() => !!plan.value && !loading.value && !starting.value && (
+const canStart = computed(() => !!plan.value && (plan.value.scope ?? "single") === scope.value &&
+  !loading.value && !starting.value && (
   mode.value === "draft"
-    ? !!plan.value.definition && !!plan.value.ready && !dirtyBindings.value && !draftStale.value
+    ? scope.value === "single" && !!plan.value.definition && !!plan.value.ready && !dirtyBindings.value && !draftStale.value
     : !unresolved.value.length && Array.from(edits.value.values()).every(value => value !== undefined)
 ));
 const previewInputs = computed(() => (plan.value?.inputs ?? []).map(port => {
@@ -245,6 +272,7 @@ function bindingIssue(issue: { path: string; code: string; message: string }) {
 }
 
 async function loadPreview(selection: DefinitionMode, checkBindings = false) {
+  if (selection === "draft" && scope.value !== "single") return;
   previewRead?.abort();
   const read = new AbortController();
   previewRead = read;
@@ -266,7 +294,7 @@ async function loadPreview(selection: DefinitionMode, checkBindings = false) {
   const { scope_run_id, task_run_id, attempt_id } = props.attempt;
   try {
     const result = await workflowAssetsApi.previewDebugFork(props.rootId, {
-      scope_run_id, task_run_id, attempt_id,
+      scope_run_id, task_run_id, attempt_id, scope: scope.value,
       ...(selection === "draft" ? {
         definition_mode: selection,
         draft_revision: checkBindings ? plan.value?.definition?.draft_revision : undefined,
@@ -287,7 +315,7 @@ async function loadPreview(selection: DefinitionMode, checkBindings = false) {
 }
 
 watch(
-  [() => props.rootId, () => props.attempt.scope_run_id, () => props.attempt.task_run_id, () => props.attempt.attempt_id],
+  [() => props.rootId, () => props.attempt.scope_run_id, () => props.attempt.task_run_id, () => props.attempt.attempt_id, scope],
   () => {
     starting.value = false;
     void loadPreview("source");
@@ -307,6 +335,7 @@ async function start() {
       scope_run_id: props.attempt.scope_run_id,
       task_run_id: props.attempt.task_run_id,
       attempt_id: props.attempt.attempt_id,
+      scope: scope.value,
       preview_token: plan.value.preview_token,
       request_id: requestId,
       ...(mode.value === "draft" ? {

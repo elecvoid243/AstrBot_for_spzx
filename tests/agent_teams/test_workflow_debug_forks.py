@@ -23,6 +23,344 @@ from tests.agent_teams.test_workflow_plugin_restart import (
 )
 
 
+def debug_delivery_definitions(component, binding, child_id=None):
+    """Build the fixed report workflow and its caller for the scope acceptance.
+
+    Args:
+        component: Installed controlled delivery connector descriptor.
+        binding: Knowledge base selected for the connector.
+        child_id: When supplied, build the parent with this pinned child.
+
+    Returns:
+        Portable workflow definition for the child or its parent.
+    """
+    input_names = {"text": "packet", "supplement": "source_notes"}
+    child_inputs = {
+        "type": "object",
+        "properties": {name: {"type": "string"} for name in input_names},
+        "required": list(input_names),
+    }
+    report = {
+        "type": "object",
+        "properties": {
+            "report": {"type": "string"},
+            "appendix": {"type": "string"},
+        },
+        "required": ["report", "appendix"],
+    }
+    if child_id:
+        return {
+            "name": "Multi-document report",
+            "port_contract_version": 2,
+            "input_contract": {
+                "type": "object",
+                "properties": {
+                    name: {"type": "string"} for name in input_names.values()
+                },
+                "required": list(input_names.values()),
+            },
+            "entry_task_ids": ["review-report"],
+            "result_task_id": "review-report",
+            "tasks": [
+                {
+                    "id": "review-report",
+                    "name": "Review the report",
+                    "workflow": {"asset_id": child_id, "version": 1},
+                    "input_contract": child_inputs,
+                    "output_contract": report,
+                    "inputs": {
+                        port: {"input": source} for port, source in input_names.items()
+                    },
+                }
+            ],
+        }
+    payload = {
+        "type": "object",
+        "properties": {
+            "report": {"type": "string"},
+            "send": {"type": "boolean"},
+            **component["input_contract"]["properties"],
+        },
+        "required": ["report", "send", "record"],
+    }
+    supplement = {
+        "type": "object",
+        "properties": {"appendix": {"type": "string"}},
+        "required": ["appendix"],
+    }
+    return {
+        "name": "Citation report review",
+        "port_contract_version": 2,
+        "input_contract": child_inputs,
+        "entry_task_ids": ["decode", "evidence"],
+        "result_task_id": "compose",
+        "edges": [
+            {"source": "decode", "target": "join"},
+            {"source": "evidence", "target": "join"},
+            {"source": "join", "target": "compose"},
+            {"source": "compose", "target": "review"},
+            {
+                "source": "review",
+                "target": "send-check",
+                "condition": {"field": "approved", "value": True},
+            },
+            {
+                "source": "send-check",
+                "target": "deliver",
+                "condition": {"field": "matched", "value": True},
+            },
+            {
+                "source": "send-check",
+                "target": "archive",
+                "condition": {"field": "matched", "value": False},
+            },
+        ],
+        "tasks": [
+            {
+                "id": "decode",
+                "name": "Decode citation packet",
+                "transform": "parse_json",
+                "output_contract": payload,
+                "inputs": {"text": {"input": "text"}},
+            },
+            {
+                "id": "evidence",
+                "name": "Prepare source notes",
+                "transform": "map_fields",
+                "input_contract": supplement,
+                "output_contract": supplement,
+                "inputs": {"appendix": {"input": "supplement"}},
+            },
+            {
+                "id": "join",
+                "name": "Join citation sources",
+                "control": {"kind": "join"},
+            },
+            {
+                "id": "compose",
+                "name": "Prepare reviewed report",
+                "transform": "map_fields",
+                "input_contract": report,
+                "output_contract": report,
+                "inputs": {
+                    "report": {"task_id": "decode", "field": "report"},
+                    "appendix": {"task_id": "evidence", "field": "appendix"},
+                },
+            },
+            {
+                "id": "review",
+                "name": "Approve the exact report",
+                "human": {
+                    "kind": "approval",
+                    "question": "Approve the report for delivery?",
+                    "artifact_task_id": "compose",
+                    "artifact_version": 1,
+                },
+            },
+            {
+                "id": "send-check",
+                "name": "Check delivery choice",
+                "control": {"kind": "condition", "value": True},
+                "inputs": {"value": {"task_id": "decode", "field": "send"}},
+            },
+            {
+                "id": "deliver",
+                "name": "Deliver approved report",
+                "transform": "plugin_component_v1",
+                "component": component["reference"],
+                "knowledge_base_id": binding,
+                "input_contract": component["input_contract"],
+                "output_contract": component["output_contract"],
+                "inputs": {"record": {"task_id": "decode", "field": "record"}},
+            },
+            {
+                "id": "archive",
+                "name": "Keep report internal",
+                "transform": "json_text",
+                "inputs": {"value": {"task_id": "compose", "field": "report"}},
+            },
+        ],
+    }
+
+
+@pytest.mark.asyncio
+async def test_downstream_debug_uses_boundary_and_requires_its_own_approval(
+    tmp_path, publication_client, external_ledger, monkeypatch
+):
+    """Run the original and the fork via the Dashboard API and verify the ledger.
+
+    Args:
+        tmp_path: Disposable database and plugin installation.
+        publication_client: Authenticated Dashboard API client.
+        external_ledger: Independent recorder at the delivery boundary.
+        monkeypatch: Point the fixture connector at the local recorder.
+    """
+    monkeypatch.setenv("ATN178_LEDGER_URL", external_ledger.url)
+    monkeypatch.setenv("ATN178_LEDGER_KEY", "local-ledger-secret")
+    service, _ = await fixture_service(tmp_path / "scope", "debug-scope")
+    await configure_owner(service)
+    client = publication_client
+    client._transport.app.state.services.workflow_assets = service
+    try:
+        component = next(
+            item
+            for item in await service.list_components("alice")
+            if item["reference"]["id"].endswith("/previewable")
+        )
+        graph = debug_delivery_definitions(component, "debug-scope")
+        create = "/api/v1/workflow_assets"
+        created = await client.post(create, json={"definition": graph})
+        assert created.status_code == 200, created.text
+        child_id = created.json()["data"]["asset_id"]
+        created = await client.post(
+            create,
+            json={
+                "definition": debug_delivery_definitions(
+                    component, "debug-scope", child_id
+                )
+            },
+        )
+        assert created.status_code == 200, created.text
+        parent_id = created.json()["data"]["asset_id"]
+        launched = await client.post(
+            f"{create}/{parent_id}/runs",
+            json={
+                "version": 1,
+                "inputs": {
+                    "packet": json.dumps(
+                        {
+                            "report": "Original report",
+                            "send": False,
+                            "record": {"count": 7},
+                        }
+                    ),
+                    "source_notes": "Pinned source notes",
+                },
+            },
+        )
+        assert launched.status_code == 200, launched.text
+        root = launched.json()["data"]["run_id"]
+        url = f"/api/v1/workflow_runs/{root}"
+        original = (await client.get(url)).json()["data"]
+        (old_todo,) = original["todos"]
+        old_answer = {
+            "request_id": "original-approval",
+            "action": "approve",
+            "artifact_ref": old_todo["artifact_ref"],
+        }
+        answered = await client.post(
+            f"{url}/todos/{old_todo['todo_id']}/answer", json=old_answer
+        )
+        assert answered.status_code == 200, answered.text
+        original = answered.json()["data"]
+        assert original["status"] == "completed"
+        (child,) = original["scopes"]
+        old_tasks = {task["node_id"]: task for task in child["tasks"]}
+        assert old_tasks["deliver"]["status"] == "skipped"
+        assert not external_ledger.deliveries
+        decode = old_tasks["decode"]
+        body = {
+            "scope_run_id": child["run_id"],
+            "task_run_id": decode["run_id"],
+            "attempt_id": decode["state"]["attempt_id"],
+        }
+        single = await client.post(f"{url}/debug_forks/preview", json=body)
+        assert single.status_code == 200, single.text
+        assert single.json()["data"]["scope"] == "single"
+        assert [node["id"] for node in single.json()["data"]["nodes"]] == ["decode"]
+        # Simulate a historical read marker whose value was not retained.
+        async with service.db.get_db() as session:
+            saved_decode = await session.get(AgentWorkflowRun, decode["run_id"])
+            saved_decode.snapshot = {**saved_decode.snapshot, "inputs": {}}
+            await session.commit()
+        body["scope"] = "downstream"
+        preview = await client.post(f"{url}/debug_forks/preview", json=body)
+        assert preview.status_code == 200, preview.text
+        plan = preview.json()["data"]
+        assert plan["scope"] == "downstream"
+        (input_port,) = plan["inputs"]
+        assert input_port["name"] == "text"
+        assert input_port["source"] == "missing"
+        assert "value" not in input_port
+        assert {node["id"] for node in plan["nodes"]} == {
+            "decode",
+            "join",
+            "compose",
+            "review",
+            "send-check",
+            "deliver",
+            "archive",
+        }
+        (boundary,) = plan["boundary"]
+        assert boundary["id"] == "evidence"
+        assert boundary["artifact"] == old_tasks["evidence"]["result_ref"]
+        assert not external_ledger.deliveries
+        wrong_scope = await client.post(
+            f"{url}/debug_forks",
+            json={
+                **body,
+                "scope": "single",
+                "preview_token": plan["preview_token"],
+                "request_id": "wrong-scope",
+            },
+        )
+        assert wrong_scope.status_code == 409, wrong_scope.text
+        replacement = json.dumps(
+            {"report": "Edited report", "send": True, "record": {"count": 12}}
+        )
+        launched = await client.post(
+            f"{url}/debug_forks",
+            json={
+                **body,
+                "preview_token": plan["preview_token"],
+                "request_id": "downstream-report",
+                "replacement": {"name": "text", "value": replacement},
+            },
+        )
+        assert launched.status_code == 200, launched.text
+        fork_id = launched.json()["data"]["run_id"]
+        fork_url = f"/api/v1/workflow_runs/{fork_id}"
+        fork = (await client.get(fork_url)).json()["data"]
+        (todo,) = fork["todos"]
+        assert todo["status"] == "pending"
+        assert todo["todo_id"] != old_todo["todo_id"]
+        assert todo["artifact_ref"] != old_todo["artifact_ref"]
+        tasks = {task["node_id"]: task for task in fork["tasks"]}
+        assert "evidence" not in tasks
+        assert tasks["decode"]["snapshot"]["inputs"]["text"] == replacement
+        assert tasks["join"]["state"]["entered_from"] == ["decode", "evidence"]
+        assert tasks["compose"]["result"] == {
+            "report": "Edited report",
+            "appendix": "Pinned source notes",
+        }
+        assert todo["artifact_ref"] == tasks["compose"]["result_ref"]
+        answer_url = f"{fork_url}/todos/{todo['todo_id']}/answer"
+        assert (await client.post(answer_url, json=old_answer)).status_code == 409
+        assert not external_ledger.deliveries
+        accepted = await client.post(
+            answer_url,
+            json={
+                **old_answer,
+                "request_id": "fork-approval",
+                "artifact_ref": todo["artifact_ref"],
+            },
+        )
+        assert accepted.status_code == 200, accepted.text
+        fork = await completed_run(service, fork_id)
+        tasks = {task["node_id"]: task for task in fork["tasks"]}
+        assert tasks["archive"]["status"] == "skipped"
+        write = tasks["deliver"]["state"]["debug_write_preview"]
+        assert write["status"] == "pending"
+        assert write["target"] == "team/reports"
+        assert write["parameters"]["record"] == {"count": 12}
+        assert write["historical_receipts"] == []
+        assert not external_ledger.deliveries
+        assert (await client.get(url)).json()["data"]["cursor"] == original["cursor"]
+    finally:
+        await service.shutdown()
+        await service.db.engine.dispose()
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "legacy", [False, True], ids=["native-read", "legacy-port-evidence"]
@@ -525,6 +863,428 @@ def failed_child_definitions(child_id=None):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("active", "status"), [(True, "completed"), (False, "skipped")]
+)
+async def test_downstream_debug_reads_control_boundary_without_an_artifact(
+    publication_client, active, status
+):
+    """Replay an omitted condition's recorded decision without inventing an artifact.
+
+    Args:
+        publication_client: Dashboard API backed by a disposable database.
+        active: Whether the boundary condition activates its edge.
+        status: Expected status of the downstream result node.
+    """
+    client = publication_client
+    definition = failed_child_definitions()
+    definition["tasks"] = [
+        {
+            **definition["tasks"][1],
+            "inputs": {"text": {"input": "text"}},
+        },
+        {
+            "id": "gate",
+            "name": "Historical gate",
+            "control": {"kind": "condition", "value": True},
+            "inputs": {"value": {"input": "approved"}},
+        },
+        {
+            "id": "format",
+            "name": "Format result",
+            "transform": "json_text",
+            "inputs": {"value": {"task_id": "check", "field": "text"}},
+        },
+    ]
+    definition["entry_task_ids"] = ["check", "gate"]
+    definition["result_task_id"] = "format"
+    definition["edges"] = [
+        {
+            "source": "gate",
+            "target": "format",
+            "condition": {"field": "matched", "value": True},
+        }
+    ]
+    path = "/api/v1/workflow_assets"
+    created = await client.post(path, json={"definition": definition})
+    assert created.status_code == 200, created.text
+    asset_id = created.json()["data"]["asset_id"]
+    launched = await client.post(
+        f"{path}/{asset_id}/runs",
+        json={
+            "version": 1,
+            "inputs": {
+                "text": '{"text":"Original","approved":true}',
+                "approved": active,
+            },
+        },
+    )
+    assert launched.status_code == 200, launched.text
+    source = launched.json()["data"]
+    by_node = {item["node_id"]: item for item in source["tasks"]}
+    assert by_node["gate"]["result"] == {"matched": active}
+    assert by_node["format"]["status"] == status
+    task = by_node["check"]
+    path = f"/api/v1/workflow_runs/{source['run_id']}/debug_forks"
+    request = {
+        "scope_run_id": source["run_id"],
+        "task_run_id": task["run_id"],
+        "attempt_id": task["state"]["attempt_id"],
+        "scope": "downstream",
+    }
+    preview = await client.post(f"{path}/preview", json=request)
+    assert preview.status_code == 200, preview.text
+    plan = preview.json()["data"]
+    assert plan["boundary"] == [
+        {"id": "gate", "name": "Historical gate", "status": "completed"}
+    ]
+    launched = await client.post(
+        path,
+        json={
+            **request,
+            "request_id": "control-boundary",
+            "preview_token": plan["preview_token"],
+        },
+    )
+    assert launched.status_code == 200, launched.text
+    fork = launched.json()["data"]
+    reopened = (await client.get(f"/api/v1/workflow_runs/{fork['run_id']}")).json()[
+        "data"
+    ]
+    tasks = {item["node_id"]: item for item in reopened["tasks"]}
+    assert "gate" not in tasks
+    assert tasks["format"]["status"] == status
+
+
+@pytest.mark.asyncio
+async def test_downstream_debug_requires_the_approved_artifact_producer_in_scope(
+    publication_client,
+):
+    """A fork cannot open an approval for a rejected original artifact.
+
+    Args:
+        publication_client: Dashboard API backed by a disposable database.
+    """
+    client = publication_client
+    definition = failed_child_definitions()
+    definition["tasks"] = [
+        definition["tasks"][0],
+        {**definition["tasks"][1], "inputs": {"text": {"input": "text"}}},
+        {
+            "id": "review",
+            "name": "Approve prepared report",
+            "human": {
+                "kind": "approval",
+                "question": "Approve original report?",
+                "artifact_task_id": "prepare",
+                "artifact_version": 1,
+            },
+        },
+    ]
+    definition["entry_task_ids"] = ["prepare", "check"]
+    definition["result_task_id"] = "prepare"
+    definition["edges"] = [
+        {"source": "prepare", "target": "review"},
+        {"source": "check", "target": "review"},
+    ]
+    path = "/api/v1/workflow_assets"
+    created = await client.post(path, json={"definition": definition})
+    assert created.status_code == 200, created.text
+    asset_id = created.json()["data"]["asset_id"]
+    launched = await client.post(
+        f"{path}/{asset_id}/runs",
+        json={
+            "version": 1,
+            "inputs": {
+                "text": '{"text":"Original","approved":true}',
+                "approved": False,
+            },
+        },
+    )
+    assert launched.status_code == 200, launched.text
+    source = launched.json()["data"]
+    root_path = f"/api/v1/workflow_runs/{source['run_id']}"
+    (todo,) = source["todos"]
+    rejected = await client.post(
+        f"{root_path}/todos/{todo['todo_id']}/answer",
+        json={
+            "request_id": "reject-original",
+            "action": "reject",
+            "artifact_ref": todo["artifact_ref"],
+            "feedback": "Fix the report.",
+        },
+    )
+    assert rejected.status_code == 200, rejected.text
+    source = rejected.json()["data"]
+    task = next(item for item in source["tasks"] if item["node_id"] == "check")
+    request = {
+        "scope_run_id": source["run_id"],
+        "task_run_id": task["run_id"],
+        "attempt_id": task["state"]["attempt_id"],
+        "scope": "downstream",
+    }
+    preview = await client.post(f"{root_path}/debug_forks/preview", json=request)
+    assert preview.status_code == 409, preview.text
+    assert "artifact producer" in preview.json()["message"]
+    assert "Approve prepared report" in preview.json()["message"]
+    admission = await client.post(
+        f"{root_path}/debug_forks",
+        json={
+            **request,
+            "request_id": "try-reviewing-original",
+            "preview_token": "0" * 64,
+        },
+    )
+    assert admission.status_code == 409, admission.text
+    assert "artifact producer" in admission.json()["message"]
+    reopened = (await client.get(root_path)).json()["data"]
+    assert reopened["todos"][0]["status"] == "rejected"
+    assert reopened["cursor"] == source["cursor"]
+    old_ref = todo["artifact_ref"]
+    old_export = f"/api/v1/workflow_artifacts/{old_ref['artifact_id']}/versions/{old_ref['version']}/export"
+    assert (await client.get(old_export)).status_code == 409
+
+    producer = next(item for item in source["tasks"] if item["node_id"] == "prepare")
+    request.update(
+        task_run_id=producer["run_id"], attempt_id=producer["state"]["attempt_id"]
+    )
+    preview = await client.post(f"{root_path}/debug_forks/preview", json=request)
+    assert preview.status_code == 200, preview.text
+    new_run = await client.post(
+        f"{root_path}/debug_forks",
+        json={
+            **request,
+            "request_id": "review-new-artifact",
+            "preview_token": preview.json()["data"]["preview_token"],
+        },
+    )
+    assert new_run.status_code == 200, new_run.text
+    fork_path = f"/api/v1/workflow_runs/{new_run.json()['data']['run_id']}"
+    (fork_todo,) = (await client.get(fork_path)).json()["data"]["todos"]
+    new_ref = fork_todo["artifact_ref"]
+    assert new_ref != old_ref
+    approved = await client.post(
+        f"{fork_path}/todos/{fork_todo['todo_id']}/answer",
+        json={
+            "request_id": "approve-new",
+            "action": "approve",
+            "artifact_ref": new_ref,
+        },
+    )
+    assert approved.status_code == 200, approved.text
+    new_export = f"/api/v1/workflow_artifacts/{new_ref['artifact_id']}/versions/{new_ref['version']}/export"
+    assert (await client.get(new_export)).status_code == 200
+    assert (await client.get(old_export)).status_code == 409
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("approved", [True, False])
+async def test_downstream_debug_preserves_the_selected_round_exit(
+    publication_client, approved
+):
+    """Use recorded feedback and require the exit before releasing downstream work.
+
+    Args:
+        publication_client: Dashboard API backed by a disposable database.
+        approved: Replacement decision for the replayed round's exit.
+    """
+    client = publication_client
+    definition = failed_child_definitions()
+    definition["tasks"] = [
+        definition["tasks"][1],
+        {
+            **definition["tasks"][0],
+            "id": "capture",
+            "inputs": {
+                "text": {"task_id": "check", "field": "text"},
+                "approved": {"task_id": "check", "field": "approved"},
+            },
+        },
+        {
+            "id": "format",
+            "name": "Format passed result",
+            "transform": "json_text",
+            "inputs": {"value": {"task_id": "capture", "field": "text"}},
+        },
+    ]
+    definition["tasks"][0]["inputs"] = {"text": {"input": "text"}}
+    definition["entry_task_ids"] = ["check"]
+    definition["result_task_id"] = "format"
+    definition["edges"] = [
+        {"source": "check", "target": "capture"},
+        {"source": "capture", "target": "format"},
+    ]
+    definition["loops"] = [
+        {
+            "id": "review-rounds",
+            "name": "Review rounds",
+            "body": ["check", "capture"],
+            "exit_task_id": "capture",
+            "exit_condition": {"field": "approved", "value": True},
+            "max_iterations": 2,
+            "feedback": [
+                {"source": "capture", "field": "text", "target": node, "input": "text"}
+                for node in ("check", "capture")
+            ],
+        }
+    ]
+    created = await client.post(
+        "/api/v1/workflow_assets", json={"definition": definition}
+    )
+    assert created.status_code == 200, created.text
+    asset_id = created.json()["data"]["asset_id"]
+    second_packet = '{"text":"Verified","approved":true}'
+    launched = await client.post(
+        f"/api/v1/workflow_assets/{asset_id}/runs",
+        json={
+            "version": 1,
+            "inputs": {
+                "text": json.dumps({"text": second_packet, "approved": False}),
+                "approved": True,
+            },
+        },
+    )
+    assert launched.status_code == 200, launched.text
+    source = launched.json()["data"]
+    assert source["status"] == "completed"
+    _, second = source["loops"][0]["iterations"]
+    task = next(item for item in second["tasks"] if item["node_id"] == "check")
+    path = f"/api/v1/workflow_runs/{source['run_id']}/debug_forks"
+    request = {
+        "scope_run_id": source["run_id"],
+        "task_run_id": task["run_id"],
+        "attempt_id": task["state"]["attempt_id"],
+        "scope": "downstream",
+    }
+    preview = await client.post(f"{path}/preview", json=request)
+    assert preview.status_code == 200, preview.text
+    launched = await client.post(
+        path,
+        json={
+            **request,
+            "request_id": "loop-exit-fork",
+            "preview_token": preview.json()["data"]["preview_token"],
+            "replacement": {
+                "name": "text",
+                "value": json.dumps({"text": "Edited packet", "approved": approved}),
+            },
+        },
+    )
+    assert launched.status_code == 200, launched.text
+    fork = launched.json()["data"]
+    assert fork["status"] == ("completed" if approved else "blocked")
+    reopened = (await client.get(f"/api/v1/workflow_runs/{fork['run_id']}")).json()[
+        "data"
+    ]
+    assert reopened["loops"][0]["status"] == ("passed" if approved else "exhausted")
+    tasks = {item["node_id"]: item for item in reopened["tasks"]}
+    assert tasks["check"]["status"] == "completed"
+    assert tasks["capture"]["result"] == {"text": second_packet, "approved": approved}
+    assert tasks["format"]["status"] == (
+        "completed" if approved else "dependency_failed"
+    )
+
+
+@pytest.mark.asyncio
+async def test_debug_runs_entire_legacy_fixed_child(publication_client):
+    """Use the exact parent mapping when the original child has text ports.
+
+    Args:
+        publication_client: Dashboard API backed by a disposable database.
+    """
+    client = publication_client
+    path = "/api/v1/workflow_assets"
+    child = await client.post(
+        path,
+        json={
+            "definition": {
+                "name": "Legacy child",
+                "required_inputs": ["value"],
+                "result_task_id": "answer",
+                "tasks": [
+                    {
+                        "id": "answer",
+                        "name": "Collect source notes",
+                        "human": {
+                            "kind": "question",
+                            "question": "What are the source notes?",
+                        },
+                    }
+                ],
+            }
+        },
+    )
+    assert child.status_code == 200, child.text
+    child_id = child.json()["data"]["asset_id"]
+    parent = await client.post(
+        path,
+        json={
+            "definition": {
+                "name": "Legacy parent",
+                "required_inputs": ["packet"],
+                "result_task_id": "child",
+                "tasks": [
+                    {
+                        "id": "child",
+                        "name": "Call legacy child",
+                        "workflow": {"asset_id": child_id, "version": 1},
+                        "inputs": {"value": {"input": "packet"}},
+                    }
+                ],
+            }
+        },
+    )
+    assert parent.status_code == 200, parent.text
+    parent_id = parent.json()["data"]["asset_id"]
+    launched = await client.post(
+        f"{path}/{parent_id}/runs",
+        json={"version": 1, "inputs": {"packet": "Parent input"}},
+    )
+    assert launched.status_code == 200, launched.text
+    source = launched.json()["data"]
+    root_path = f"/api/v1/workflow_runs/{source['run_id']}"
+    (original,) = source["todos"]
+    answered = await client.post(
+        f"{root_path}/todos/{original['todo_id']}/answer",
+        json={
+            "request_id": "original-notes",
+            "action": "answer",
+            "answer": "Source notes",
+        },
+    )
+    assert answered.status_code == 200, answered.text
+    source = answered.json()["data"]
+    assert source["status"] == "completed"
+    (task,) = source["tasks"]
+    request = {
+        "scope_run_id": source["run_id"],
+        "task_run_id": task["run_id"],
+        "attempt_id": task["state"]["attempt_id"],
+        "scope": "child_workflow",
+    }
+    preview = await client.post(f"{root_path}/debug_forks/preview", json=request)
+    assert preview.status_code == 200, preview.text
+    plan = preview.json()["data"]
+    assert plan["source"]["asset_version"] == 1
+    assert plan["inputs"][0]["name"] == "value"
+    assert plan["inputs"][0]["original"] == "Parent input"
+    forked = await client.post(
+        f"{root_path}/debug_forks",
+        json={
+            **request,
+            "preview_token": plan["preview_token"],
+            "request_id": "run-legacy-child",
+        },
+    )
+    assert forked.status_code == 200, forked.text
+    fork_id = forked.json()["data"]["run_id"]
+    fork = (await client.get(f"/api/v1/workflow_runs/{fork_id}")).json()["data"]
+    (todo,) = fork["todos"]
+    assert todo["status"] == "pending"
+    assert todo["todo_id"] != original["todo_id"]
+
+
+@pytest.mark.asyncio
 async def test_debug_fork_selects_failures_from_the_exact_fixed_call(
     publication_client,
     workflow_env,
@@ -706,6 +1466,45 @@ async def test_debug_fork_selects_failures_from_the_exact_fixed_call(
     assert node["node_id"] == "check"
     assert node["result"] == {"text": "verified", "approved": True}
     assert reopened["scopes"] == []
+    whole = {**call, "scope": "child_workflow"}
+    child_preview = await client.post(f"{path}/debug_forks/preview", json=whole)
+    assert child_preview.status_code == 200, child_preview.text
+    child_plan = child_preview.json()["data"]
+    assert child_plan["scope"] == "child_workflow"
+    assert child_plan["source"]["asset_version"] == 1
+    assert child_plan["source"]["iteration"] == 2
+    assert {node["id"] for node in child_plan["nodes"]} == {
+        "prepare",
+        "check",
+        "cross-check",
+    }
+    assert {port["name"]: port["original"] for port in child_plan["inputs"]} == {
+        "text": "bad citations",
+        "approved": False,
+    }
+    child_fork = await client.post(
+        f"{path}/debug_forks",
+        json={
+            **whole,
+            "request_id": "fork-entire-second-call",
+            "preview_token": child_plan["preview_token"],
+            "replacement": {
+                "name": "text",
+                "value": '{"text":"mapped and verified","approved":true}',
+            },
+        },
+    )
+    assert child_fork.status_code == 200, child_fork.text
+    fork = (
+        await client.get(f"/api/v1/workflow_runs/{child_fork.json()['data']['run_id']}")
+    ).json()["data"]
+    assert fork["status"] == "completed"
+    assert fork["result"] == {"text": "mapped and verified", "approved": True}
+    assert {task["snapshot"]["definition"]["name"] for task in fork["tasks"]} == {
+        "Prepare citations",
+        "Check citations",
+        "Check bibliography",
+    }
     after = (await client.get(path)).json()["data"]
     assert after["cursor"] == baseline["cursor"]
     assert after["scopes"] == baseline["scopes"]

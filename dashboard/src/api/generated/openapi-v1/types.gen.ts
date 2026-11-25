@@ -2090,6 +2090,7 @@ export type WorkflowDebugForkAttempt = {
     definition_mode?: 'source' | 'draft';
     draft_revision?: (number) | null;
     bindings?: WorkflowDebugForkBindings;
+    scope?: WorkflowDebugForkScope;
 };
 
 export type definition_mode = 'source' | 'draft';
@@ -2103,6 +2104,17 @@ export type WorkflowDebugForkBindings = {
 };
 
 export type WorkflowDebugForkComparison = {
+    scope?: WorkflowDebugForkScope;
+    nodes?: Array<{
+        id: string;
+        name: string;
+    }>;
+    boundary?: Array<{
+        id: string;
+        name: string;
+        status: string;
+        artifact?: ArtifactReference;
+    }>;
     source: {
         root_run_id: string;
         scope_run_id: string;
@@ -2191,11 +2203,14 @@ export type WorkflowDebugForkRequest = {
     definition_mode?: 'source' | 'draft';
     draft_revision?: (number) | null;
     bindings?: WorkflowDebugForkBindings;
+    scope?: WorkflowDebugForkScope;
     preview_token: string;
     request_id: string;
     replacement?: (null | WorkflowDebugForkReplacement);
     replacements?: Array<WorkflowDebugForkReplacement>;
 };
+
+export type WorkflowDebugForkScope = 'single' | 'downstream' | 'child_workflow';
 
 export type WorkflowDebugForkStarted = {
     run_id: string;

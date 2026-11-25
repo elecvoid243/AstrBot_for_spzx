@@ -14,15 +14,16 @@
     <p class="font-weight-medium">
       {{ source.workflow_name }} · {{ version }} · {{ source.node_name }}
     </p>
+    <p v-if="scopeLabel" class="text-body-2">{{ tm(scopeLabel) }}</p>
     <p class="text-caption text-medium-emphasis mb-3">
       <span v-if="source.iteration != null">{{ tm("loops.iteration") }} {{ source.iteration }} · </span>
       {{ tm("v2.attempt") }} {{ source.attempt_id }}
     </p>
     <WorkflowDebugWritePreview
-      v-if="task?.state?.debug_write_preview"
-      :key="task.state.debug_write_preview.record_id"
-      :preview="task.state.debug_write_preview"
-      :cancelled="task.status === 'cancelled'"
+      v-for="{ preview, cancelled } in writes"
+      :key="preview.record_id"
+      :preview="preview"
+      :cancelled="cancelled"
     />
     <WorkflowDebugForkDraftDetails v-if="comparison.definition" :definition="comparison.definition" />
     <div class="fork-results mb-4">
@@ -48,11 +49,27 @@ import WorkflowDebugWritePreview from "./WorkflowDebugWritePreview.vue";
 
 const props = defineProps<{
   comparison: WorkflowDebugForkComparison;
-  task?: { status: string; state?: { reason?: string; debug_write_preview?: DebugWritePreview }; result?: unknown };
+  run: {
+    status: string;
+    state?: { reason?: string };
+    result?: unknown;
+    tasks?: RunTask[];
+    loops?: RunLoop[];
+    scopes?: { tasks?: RunTask[]; loops?: RunLoop[] }[];
+  };
 }>();
+type RunTask = {
+  status: string;
+  state?: { reason?: string; debug_write_preview?: DebugWritePreview };
+  result?: unknown;
+};
+type RunLoop = { iterations: { tasks: RunTask[] }[] };
 const { tm, getRaw } = useModuleI18n("features/agent-teams");
 const route = useRoute();
 const source = computed(() => props.comparison.source);
+const scopeLabel = computed(() => props.comparison.scope === "child_workflow"
+  ? "debugFork.childWorkflow"
+  : props.comparison.scope === "downstream" ? "debugFork.downstream" : undefined);
 const version = computed(() => source.value.draft_revision == null
   ? tm("debugFork.version", { version: source.value.asset_version ?? '' })
   : tm("debugFork.revision", { revision: source.value.draft_revision }),
@@ -64,7 +81,7 @@ const links = computed(() => Object.fromEntries(
     const query = {
       debug_task: location.task_run_id,
       debug_attempt: location.attempt_id,
-      ...(kind === "parent" ? { debug_call: "1" } : {}),
+      ...(kind === "parent" || props.comparison.scope === "child_workflow" ? { debug_call: "1" } : {}),
     };
     return [
       kind,
@@ -74,12 +91,26 @@ const links = computed(() => Object.fromEntries(
     ];
   }),
 ));
+const writes = computed(() => {
+  const records = new Map<string, { preview: DebugWritePreview; cancelled: boolean }>();
+  for (const scope of [props.run, ...(props.run.scopes ?? [])]) {
+    for (const task of [
+      ...(scope.tasks ?? []),
+      ...(scope.loops ?? []).flatMap(loop => loop.iterations.flatMap(round => round.tasks)),
+    ]) {
+      const preview = task.state?.debug_write_preview;
+      if (preview) records.set(preview.record_id, { preview, cancelled: task.status === "cancelled" });
+    }
+  }
+  return [...records.values()];
+});
+const resultRun = computed(() => scopeLabel.value ? props.run : props.run.tasks?.[0]);
 const results = computed(() => [
   { title: "debugFork.originalResult", data: props.comparison.original },
   { title: "debugFork.forkResult", data: {
-    status: props.task?.status ?? "pending",
-    reason: props.task?.state?.reason,
-    result: props.task?.result,
+    status: resultRun.value?.status ?? "pending",
+    reason: resultRun.value?.state?.reason,
+    result: resultRun.value?.result,
   } },
 ]);
 </script>

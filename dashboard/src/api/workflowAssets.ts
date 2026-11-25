@@ -9,6 +9,7 @@ import type {
   ToolResolutionRequest,
   WorkflowControlRequest,
   WorkflowDataLine,
+  WorkflowMemberAttempt,
   WorkflowRerunRequest,
   WorkflowRetryRequest,
   HumanAnswerRequest,
@@ -157,6 +158,12 @@ export const workflowAssetsApi = {
     return (await httpClient.get(
       `/api/v1/workflow_runs/${encodeURIComponent(runId)}/data_line`,
       { params, signal },
+    )).data.data;
+  },
+  async memberAttempt(runId: string, taskId: string, attemptId: string, signal: AbortSignal): Promise<WorkflowMemberAttempt> {
+    return (await httpClient.get(
+      `/api/v1/workflow_runs/${encodeURIComponent(runId)}/member_attempt`,
+      { params: { task_run_id: taskId, attempt_id: attemptId }, signal },
     )).data.data;
   },
   async runHistoryPage(runId: string, taskRunId: string, kind: "events" | "messages" | "usage" | "attempts", before?: string | null, signal?: AbortSignal) {

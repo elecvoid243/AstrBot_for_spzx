@@ -1,4 +1,22 @@
 {
+  "memberInspection": {
+    "open": "Inspect member attempt",
+    "title": "Member attempt inspector",
+    "dispatch": "Recorded dispatch",
+    "messages": "Confirmed incoming messages",
+    "sourceVersion": "Source run used version {version}",
+    "sourceDraft": "Source run used draft revision {revision}",
+    "missingMessages": "No incoming message is recorded as consumed in this attempt.",
+    "unconfirmed": "Unconfirmed deliveries to this member · {count}",
+    "sender": "From member {id}",
+    "missingResult": "No result artifact is recorded for this attempt.",
+    "outputArtifact": "Attempt result",
+    "inputArtifact": "Dispatch input",
+    "messageArtifact": "Message attachment",
+    "recordedRead": "Recorded read",
+    "readArtifact": "Read exact version",
+    "wholeTrial": "Test whole team"
+  },
   "inspection": {
     "title": "Data line inspector",
     "hint": "Select a named data line to see what the consumer read.",

@@ -31,7 +31,7 @@ from pydantic import (
 from referencing import Registry, Resource
 from referencing.exceptions import Unresolvable
 from referencing.jsonschema import DRAFT202012, Schema
-from sqlalchemy import Text, and_, case, func, literal, or_, true
+from sqlalchemy import Text, and_, case, func, literal, or_, true, tuple_
 from sqlalchemy import select as sa_select
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.exc import IntegrityError
@@ -3969,6 +3969,211 @@ class WorkflowService:
             **({"artifact": upstream_ref} if upstream_ref is not None else {}),
         }
 
+    async def inspect_member_attempt(
+        self, username: str, run_id: str, task_run_id: str, attempt_id: str
+    ) -> dict:
+        """Read a dynamic member's dispatch and evidence for one exact attempt.
+
+        Args:
+            username: Authenticated Dashboard owner.
+            run_id: Root run containing the autonomous team.
+            task_run_id: Exact dynamic dispatch within that root.
+            attempt_id: Current or archived attempt of that dispatch.
+
+        Returns:
+            Frozen dispatch, confirmed incoming messages and readable artifact versions.
+
+        Raises:
+            RoleAssetError: The root, member task or attempt is unavailable.
+        """
+        async with self.db.get_db() as session:
+            if self.db.engine.dialect.name == "sqlite":
+                await session.execute(text("BEGIN"))
+            root = await session.get(AgentWorkflowRun, run_id)
+            task = await session.get(AgentWorkflowRun, task_run_id)
+            if (
+                root is None
+                or task is None
+                or root.owner_username != username
+                or task.owner_username != username
+                or root.snapshot.get("root_run_id") != run_id
+                or task.snapshot.get("root_run_id") != run_id
+                or task.snapshot.get("engine") != "single_task_v2"
+                or not task.snapshot.get("created_by_task_id")
+            ):
+                raise RoleAssetError("Member attempt not found", status=404)
+            scope = await session.get(
+                AgentWorkflowRun, task.snapshot.get("parent_run_id")
+            )
+            if (
+                scope is None
+                or scope.owner_username != username
+                or scope.snapshot.get("root_run_id") != run_id
+                or not scope.snapshot.get("team_definition")
+            ):
+                raise RoleAssetError("Member attempt not found", status=404)
+
+            snapshot, status = task.snapshot, task.status
+            if attempt_id != task.state.get("attempt_id"):
+                saved = await session.get(AgentWorkflowAttempt, attempt_id)
+                if saved is None or saved.run_id != task_run_id:
+                    raise RoleAssetError("Member attempt not found", status=404)
+                snapshot = saved.data.get("snapshot") or {}
+                status = saved.data["status"]
+            member = snapshot.get("member") or {}
+            if not member.get("member_id"):
+                raise RoleAssetError("Member attempt not found", status=404)
+
+            receipt = col(AgentWorkflowMessage.consumption)
+            incoming = (
+                await session.execute(
+                    select(AgentWorkflowMessage)
+                    .where(
+                        AgentWorkflowMessage.root_run_id == run_id,
+                        AgentWorkflowMessage.scope_id == scope.state["scope_id"],
+                        AgentWorkflowMessage.recipient_member_id == member["member_id"],
+                        or_(
+                            receipt.is_(None),
+                            receipt["task_run_id"].as_string().is_(None),
+                            receipt["attempt_id"].as_string().is_(None),
+                            and_(
+                                receipt["task_run_id"].as_string() == task_run_id,
+                                receipt["attempt_id"].as_string() == attempt_id,
+                            ),
+                        ),
+                    )
+                    .order_by(
+                        col(AgentWorkflowMessage.created_at),
+                        col(AgentWorkflowMessage.message_id),
+                    )
+                )
+            ).scalars()
+            messages = []
+            unconfirmed = 0
+            for message in incoming:
+                evidence = message.consumption or {}
+                if (
+                    evidence.get("task_run_id") != task_run_id
+                    or evidence.get("attempt_id") != attempt_id
+                    or not evidence.get("invocation_id")
+                    or not isinstance(evidence.get("context_position"), int)
+                    or evidence["context_position"] < 0
+                ):
+                    unconfirmed += 1
+                    continue
+                messages.append(
+                    {
+                        "message_id": message.message_id,
+                        "sender_member_id": message.sender_member_id,
+                        "text": message.payload["text"],
+                        "consumption": evidence,
+                        "artifact_refs": message.payload.get("artifact_refs") or [],
+                    }
+                )
+
+            input_refs = snapshot.get("input_artifacts") or []
+            event_data = col(AgentWorkflowEvent.data)
+            read_refs = (
+                (
+                    await session.execute(
+                        select(event_data["reference"])
+                        .where(
+                            AgentWorkflowEvent.run_id == task_run_id,
+                            AgentWorkflowEvent.kind == "artifact.read",
+                            event_data["attempt_id"].as_string() == attempt_id,
+                        )
+                        .order_by(col(AgentWorkflowEvent.id))
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            refs = {
+                (ref["artifact_id"], ref["version"])
+                for ref in [
+                    *input_refs,
+                    *read_refs,
+                    *(ref for msg in messages for ref in msg["artifact_refs"]),
+                ]
+            }
+            # References in old snapshots and messages do not grant access.
+            readable = (
+                set(
+                    (
+                        await session.execute(
+                            select(
+                                AgentWorkflowArtifact.artifact_id,
+                                AgentWorkflowArtifact.version,
+                            )
+                            .join(
+                                AgentWorkflowRun,
+                                AgentWorkflowRun.run_id == AgentWorkflowArtifact.run_id,
+                            )
+                            .where(
+                                AgentWorkflowRun.owner_username == username,
+                                tuple_(
+                                    AgentWorkflowArtifact.artifact_id,
+                                    AgentWorkflowArtifact.version,
+                                ).in_(refs),
+                            )
+                        )
+                    ).all()
+                )
+                if refs
+                else set()
+            )
+            input_refs = [
+                ref
+                for ref in input_refs
+                if (ref["artifact_id"], ref["version"]) in readable
+            ]
+            for message in messages:
+                message["artifact_refs"] = [
+                    ref
+                    for ref in message["artifact_refs"]
+                    if (ref["artifact_id"], ref["version"]) in readable
+                ]
+            result = await session.get(AgentWorkflowArtifact, (task_run_id, 1))
+            dispatch_text = snapshot["definition"].get("task")
+            return {
+                "task_run_id": task_run_id,
+                "attempt_id": attempt_id,
+                "status": status,
+                "member": {"member_id": member["member_id"], "name": member["name"]},
+                "dispatch": {
+                    "name": snapshot["definition"]["name"],
+                    # Dynamic dispatch escapes braces for the graph template renderer.
+                    "task": dispatch_text.replace("{{", "{").replace("}}", "}")
+                    if dispatch_text is not None
+                    else None,
+                    "dispatcher_task_id": snapshot["created_by_task_id"],
+                },
+                "team": {
+                    "asset_id": scope.snapshot["asset_id"],
+                    "name": scope.snapshot["definition"]["name"],
+                    "version": scope.snapshot["asset_version"],
+                    "draft_revision": (scope.snapshot.get("trial") or {}).get(
+                        "draft_revision"
+                    ),
+                },
+                "messages": messages,
+                "unconfirmed_deliveries": unconfirmed,
+                "input_artifacts": input_refs,
+                "read_artifacts": [
+                    ref
+                    for ref in read_refs
+                    if (ref["artifact_id"], ref["version"]) in readable
+                ],
+                "result_artifact": {
+                    "artifact_id": result.artifact_id,
+                    "version": result.version,
+                }
+                if result is not None
+                and result.run_id == task_run_id
+                and result.submission_id == attempt_id
+                else None,
+            }
+
     async def get_run(
         self,
         username: str,
@@ -7609,19 +7814,22 @@ class WorkflowService:
             if compiled["feedback"]
             else {}
         )
-        for index, node in enumerate(compiled["draft"]["body"]["definition"]["tasks"]):
-            if node["id"] not in compiled["selected_nodes"]:
-                continue
-            if node.get("component"):
-                await self._resolve_component(
-                    username, node, f"definition.tasks.{index}"
-                )
-            elif node.get("knowledge_base_id"):
-                await self._require_native_knowledge_base(
-                    username,
-                    node["knowledge_base_id"],
-                    f"definition.tasks.{index}.knowledge_base_id",
-                )
+        if request.kind == "workflow":
+            for index, node in enumerate(
+                compiled["draft"]["body"]["definition"]["tasks"]
+            ):
+                if node["id"] not in compiled["selected_nodes"]:
+                    continue
+                if node.get("component"):
+                    await self._resolve_component(
+                        username, node, f"definition.tasks.{index}"
+                    )
+                elif node.get("knowledge_base_id"):
+                    await self._require_native_knowledge_base(
+                        username,
+                        node["knowledge_base_id"],
+                        f"definition.tasks.{index}.knowledge_base_id",
+                    )
         frozen = await self._freeze_graph(
             username,
             asset,

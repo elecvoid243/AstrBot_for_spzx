@@ -1,4 +1,22 @@
 {
+  "memberInspection": {
+    "open": "检查成员尝试",
+    "title": "成员尝试检查器",
+    "dispatch": "已记录的派单",
+    "messages": "已确认消费的来信",
+    "sourceVersion": "来源运行使用固定版本 {version}",
+    "sourceDraft": "来源运行使用草稿修订 {revision}",
+    "missingMessages": "没有消息被记录为已在本次尝试消费。",
+    "unconfirmed": "发给此成员的未确认投递 · {count} 条",
+    "sender": "发送成员 {id}",
+    "missingResult": "本次尝试没有已记录的结果产物。",
+    "outputArtifact": "尝试结果",
+    "inputArtifact": "派单输入",
+    "messageArtifact": "消息附件",
+    "recordedRead": "已记录的读取",
+    "readArtifact": "读取精确版本",
+    "wholeTrial": "试跑整个团队"
+  },
   "inspection": {
     "title": "数据线检查器",
     "hint": "选择具名数据线，查看消费节点实际读取的值。",

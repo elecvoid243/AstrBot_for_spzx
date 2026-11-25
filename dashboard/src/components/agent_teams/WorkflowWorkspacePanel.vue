@@ -326,9 +326,17 @@
                 :readonly="!!conversationRunId"
                 :signal="observation.signal"
                 :busy="!!currentOperation"
-                :inspectable="!!detailRun.snapshot.graph_task"
+                :inspectable="!!detailRun.snapshot.graph_task || isDynamicMember"
+                :inspect-label="isDynamicMember ? tm('memberInspection.open') : undefined"
                 @resolve="resolveTool"
-                @inspect-attempt="attemptId => { inspectionFocus = { taskId: detailRun.run_id, attemptId }; runDisplay = 'graph'; }"
+                @inspect-attempt="inspectRunAttempt"
+              />
+              <WorkflowMemberAttemptInspector
+                v-if="memberAttemptFocus && memberAttemptFocus.rootId === selectedRun.run_id && memberAttemptFocus.taskId === detailRun.run_id"
+                :key="`${memberAttemptFocus.rootId}:${memberAttemptFocus.taskId}:${memberAttemptFocus.attemptId}`"
+                v-bind="memberAttemptFocus"
+                @close="memberAttemptFocus = null"
+                @trial-started="memberTrialStarted"
               />
             </div>
             <div class="workbench-column workbench-results">
@@ -841,6 +849,7 @@ import RunUsagePanel from "./RunUsagePanel.vue";
 import AutonomousTeamDialog from "./AutonomousTeamDialog.vue";
 import WorkflowRunProgress from "./WorkflowRunProgress.vue";
 import WorkflowRunProcess from "./WorkflowRunProcess.vue";
+import WorkflowMemberAttemptInspector from "./WorkflowMemberAttemptInspector.vue";
 import WorkflowRunControls from "./WorkflowRunControls.vue";
 import WorkflowHumanTodo from "./WorkflowHumanTodo.vue";
 import RunnerCapabilities from "./RunnerCapabilities.vue";
@@ -1135,6 +1144,9 @@ const detailRun = computed(
     selectedRun.value?.tasks?.[0] ??
     selectedRun.value,
 );
+const isDynamicMember = computed(() => detailRun.value?.snapshot.engine === "single_task_v2" && !!detailRun.value.snapshot.created_by_task_id);
+const memberAttemptFocus = ref<{ rootId: string; taskId: string; attemptId: string } | null>(null);
+watch([() => selectedRun.value?.run_id, () => detailRun.value?.run_id], () => { memberAttemptFocus.value = null; });
 const showRecovery = computed(() => {
   const task = detailRun.value;
   return task?.recovery && (
@@ -1697,6 +1709,24 @@ function selectRunTask(nodeId: string | null) {
         ?.run_id ??
       nodeId;
 }
+function inspectRunAttempt(attemptId: string) {
+  const taskId = detailRun.value.run_id;
+  if (isDynamicMember.value) {
+    memberAttemptFocus.value = { rootId: selectedRun.value.run_id, taskId, attemptId };
+    return;
+  }
+  inspectionFocus.value = { taskId, attemptId };
+  runDisplay.value = "graph";
+}
+async function memberTrialStarted(runId: string) {
+  memberAttemptFocus.value = null;
+  if (props.conversationRunId) {
+    await router.push({ name: "ChatRunConversation", params: { runId } });
+  } else {
+    await trialStarted(runId);
+  }
+}
+
 function openIterationArtifact(taskId: string, ref: PortArtifactReference) {
   selectRunTask(taskId);
   historicalArtifact.value = { taskId, ref };

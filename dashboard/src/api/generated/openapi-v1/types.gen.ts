@@ -2117,6 +2117,49 @@ export type WorkflowImportRequest = {
     selections?: Array<ResourceSelection>;
 };
 
+export type WorkflowMemberAttempt = {
+    task_run_id: string;
+    attempt_id: string;
+    status: string;
+    member: {
+        member_id: string;
+        name: string;
+    };
+    dispatch: {
+        name: string;
+        task: (string) | null;
+        dispatcher_task_id: string;
+    };
+    team: {
+        asset_id: string;
+        name: string;
+        version: (number) | null;
+        draft_revision: (number) | null;
+    };
+    messages: Array<{
+        message_id: string;
+        sender_member_id: string;
+        text: string;
+        consumption: {
+            task_run_id: string;
+            attempt_id: string;
+            invocation_id: string;
+            context_position: number;
+        };
+        artifact_refs: Array<ArtifactReference>;
+    }>;
+    /**
+     * Deliveries to the selected member without usable consumption evidence.
+     */
+    unconfirmed_deliveries: number;
+    input_artifacts: Array<ArtifactReference>;
+    /**
+     * Exact versions with a recorded read by the selected attempt.
+     */
+    read_artifacts: Array<ArtifactReference>;
+    result_artifact: (ArtifactReference | null);
+};
+
 export type WorkflowNode = {
     id: string;
     member_id: string;
@@ -7059,6 +7102,24 @@ export type InspectWorkflowDataLineApiV1WorkflowRunsRunIdDataLineGetResponse = (
 });
 
 export type InspectWorkflowDataLineApiV1WorkflowRunsRunIdDataLineGetError = (unknown | HTTPValidationError);
+
+export type InspectWorkflowMemberAttemptApiV1WorkflowRunsRunIdMemberAttemptGetData = {
+    path: {
+        run_id: string;
+    };
+    query: {
+        attempt_id: string;
+        task_run_id: string;
+    };
+};
+
+export type InspectWorkflowMemberAttemptApiV1WorkflowRunsRunIdMemberAttemptGetResponse = ({
+    status: "ok";
+    message?: null;
+    data: WorkflowMemberAttempt;
+});
+
+export type InspectWorkflowMemberAttemptApiV1WorkflowRunsRunIdMemberAttemptGetError = (unknown | HTTPValidationError);
 
 export type ResolveToolCallApiV1WorkflowRunsRunIdToolCallsRecordIdResolvePostData = {
     body: ToolResolutionRequest;

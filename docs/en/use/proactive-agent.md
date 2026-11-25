@@ -32,6 +32,11 @@ You can view and manage all future tasks by expanding **More Features** in the l
 
 ![](https://files.astrbot.app/docs/source/images/proactive-agent/image-1.png)
 
+When configuring a scheduled task, select a WebChat conversation as the destination to choose a delivery mode.
+
+- **Run in background**. The agent runs the task in the background and sends only the final result to the selected conversation. The run is excluded from chat history.
+- **Run in conversation**. At the scheduled time, the task is sent to the selected conversation as a user message. You can follow the run in the conversation, and the exchange is saved in chat history. WebChat only.
+
 ### Supported Platforms
 
 Scheduling tasks is supported on all platforms. However, due to some platforms not providing APIs for proactive message pushing, only the following platforms support AstrBot proactively pushing results to users:

@@ -32,6 +32,11 @@ AstrBot 引入了主动 Agent（Proactive Agent）系统，使 AstrBot 不仅能
 
 ![](https://files.astrbot.app/docs/source/images/proactive-agent/image-1.png)
 
+在定时任务的配置窗口中，选择一个 WebChat 会话作为投递目标后，可选择两种投递方式。
+
+- **后台执行**。Agent 在后台执行，所选会话只收到最终结果。执行过程不写入聊天记录。
+- **会话内执行**。任务在预定时间以用户消息的形式发到所选会话。可以在会话中查看执行过程，任务对话会保存到聊天记录。仅支持 WebChat。
+
 ### 支持的平台
 
 “定时任务”的设置支持所有平台，然而，由于部分平台没有开放主动消息推送的 API，因此只有以下平台支持 AstrBot 主动向用户推送结果：

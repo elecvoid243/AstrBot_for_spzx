@@ -149,12 +149,11 @@
     "noUmos": "暂无可用会话",
     "timezone": "时区（可选，如 Asia/Shanghai）",
     "deliveryMode": "投递方式",
-    "deliveryModeProactive": "主动消息（机器人主动发送）",
-    "deliveryModeUserTurn": "伪装成用户消息",
-    "deliveryModeUserTurnShort": "用户消息",
+    "deliveryModeProactive": "后台执行",
+    "deliveryModeUserTurn": "会话内执行",
     "deliveryModeHints": {
-      "proactive": "机器人主动发送结果，不写入聊天记录。",
-      "webchat_user_turn": "以你的身份写入该会话，聊天记录与执行轨迹都会保留。"
+      "proactive": "Agent 在后台执行任务，所选会话只收到最终结果。执行过程不写入聊天记录。",
+      "webchat_user_turn": "任务到点后会作为一条用户消息发到所选会话。你可以在会话中查看执行过程，任务对话会保存到聊天记录。仅支持 WebChat。"
     },
     "enabled": "启用"
   },

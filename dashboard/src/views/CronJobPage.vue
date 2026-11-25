@@ -112,7 +112,7 @@
                     color="info"
                     variant="tonal"
                   >
-                    {{ tm("form.deliveryModeUserTurnShort") }}
+                    {{ tm("form.deliveryModeUserTurn") }}
                   </v-chip>
                 </template>
 

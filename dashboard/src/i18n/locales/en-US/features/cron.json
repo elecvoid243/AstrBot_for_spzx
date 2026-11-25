@@ -149,12 +149,11 @@
     "noUmos": "No sessions available",
     "timezone": "Timezone (optional, e.g. Asia/Shanghai)",
     "deliveryMode": "Delivery",
-    "deliveryModeProactive": "Proactive message",
-    "deliveryModeUserTurn": "Send as a user message",
-    "deliveryModeUserTurnShort": "User message",
+    "deliveryModeProactive": "Run in background",
+    "deliveryModeUserTurn": "Run in conversation",
     "deliveryModeHints": {
-      "proactive": "The bot delivers the result on its own; nothing is written to the chat transcript.",
-      "webchat_user_turn": "Written into the conversation as your message; the transcript and the run trace are kept."
+      "proactive": "The agent runs the task in the background. The selected conversation receives only the final result. The run is excluded from chat history.",
+      "webchat_user_turn": "At the scheduled time, the task is sent to the selected conversation as a user message. You can follow the run in the conversation, and the exchange is saved in chat history. WebChat only."
     },
     "enabled": "Enabled"
   },

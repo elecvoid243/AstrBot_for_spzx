@@ -269,7 +269,7 @@ class DebugWriteAcceptance(Acceptance):
             )
             await page.get_by_test_id("open-debug-fork").click()
             await (
-                page.get_by_test_id("debug-fork-preview")
+                page.get_by_test_id("debug-fork-input-picker")
                 .get_by_role("combobox")
                 .click()
             )

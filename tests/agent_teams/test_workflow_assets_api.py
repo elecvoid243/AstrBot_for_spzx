@@ -1,5 +1,6 @@
 """Ownership, input diagnostics and pinned workflow versions over HTTP."""
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -42,6 +43,136 @@ async def publication_client(workflow_env):
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
         yield client
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["approve", "reject"])
+async def test_workbench_example_runs_without_models(
+    workflow_env, publication_client, action
+):
+    """Start the example via ordinary HTTP routes and review its exact result.
+
+    Args:
+        workflow_env: SQLite services with a recording model port.
+        publication_client: Authorized Dashboard asset and run routes.
+        action: Human decision on the prepared brief.
+    """
+    workflow_env.inventory["models"].clear()
+    workflow_env.inventory["profiles"].clear()
+    client = publication_client
+    response = await client.get("/api/v1/workflow_assets?include_example=true")
+    assert response.status_code == 200, response.text
+    (example,) = [
+        a for a in response.json()["data"]["assets"] if a["is_builtin_example"]
+    ]
+    asset_path = f"/api/v1/workflow_assets/{example['asset_id']}"
+    readiness = (
+        await client.get(f"{asset_path}/readiness", params={"version": 1})
+    ).json()["data"]
+    assert readiness["ready"], readiness
+    start = await client.post(f"{asset_path}/runs", json={"version": 1})
+    assert start.status_code == 200, start.text
+    root = f"/api/v1/workflow_runs/{start.json()['data']['run_id']}"
+    run = (await client.get(root)).json()["data"]
+    (todo,) = run["todos"]
+    assert todo["question"] == "Approve this release brief?"
+    ref = todo["artifact_ref"]
+    assert (
+        ref == next(t for t in run["tasks"] if t["node_id"] == "prepare")["result_ref"]
+    )
+    preview = await client.get(
+        f"/api/v1/workflow_artifacts/{ref['artifact_id']}/versions/{ref['version']}"
+    )
+    expected = {"project": "Agent Teams", "summary": "Ready for release."}
+    assert preview.json()["data"]["content"] == expected
+    answer = {"request_id": "review-brief", "action": action, "artifact_ref": ref}
+    if action == "reject":
+        answer["feedback"] = "Please revise the release summary."
+    saved = await client.post(f"{root}/todos/{todo['todo_id']}/answer", json=answer)
+    assert saved.status_code == 200, saved.text
+    final = saved.json()["data"]
+    if action == "approve":
+        assert final["status"] == "completed"
+        assert (await client.get(f"{root}/result")).json()["data"] == expected
+    else:
+        assert final["status"] == "blocked"
+        assert (
+            next(t for t in final["tasks"] if t["node_id"] == "deliver")["status"]
+            == "skipped"
+        )
+        assert final["result_ref"] is None
+    assert workflow_env.observations == []
+
+
+@pytest.mark.asyncio
+async def test_workbench_example_identity_survives_edits_deletion_and_restart(
+    workflow_env, tmp_path
+):
+    """Provision once per owner, including on existing installations.
+
+    Args:
+        workflow_env: Existing assets on the original SQLite service.
+        tmp_path: Directory containing the persisted fixture database.
+    """
+    service = workflow_env.service
+    assert not (await service.list_assets("bob"))["assets"]
+    concurrent = await asyncio.gather(
+        *(service.list_assets("alice", include_example=True) for _ in range(4))
+    )
+    examples = []
+    for inventory in concurrent:
+        assert len(inventory["assets"]) == 2
+        (example,) = [a for a in inventory["assets"] if a["is_builtin_example"]]
+        examples.append(example)
+    assert examples == [examples[0]] * len(examples)
+    sample = examples[0]
+    identity = sample["asset_id"]
+    (other,) = (await service.list_assets("bob", include_example=True))["assets"]
+    assert other["is_builtin_example"] and other["asset_id"] != identity
+    copy = await service.save_asset("alice", {"definition": sample["definition"]})
+    assert not copy["is_builtin_example"]
+    renamed = await service.save_asset(
+        "alice",
+        {
+            "definition": {**sample["definition"], "name": "Team checklist"},
+            "expected_version": 1,
+        },
+        identity,
+    )
+    draft = await workflow_env.roles.create_draft(
+        "alice", "workflow", {"definition": renamed["definition"]}, identity
+    )
+    draft["body"]["definition"]["name"] = "Unpublished changes"
+    await workflow_env.roles.update_draft(
+        "alice", "workflow", identity, draft["revision"], draft["body"]
+    )
+    (updated,) = [
+        a
+        for a in (await service.list_assets("alice", include_example=True))["assets"]
+        if a["is_builtin_example"]
+    ]
+    assert updated["definition"]["name"] == "Team checklist"
+    assert updated["versions"] == [2, 1]
+    assert (await workflow_env.roles.get_draft("alice", "workflow", identity))["body"][
+        "definition"
+    ]["name"] == "Unpublished changes"
+    await workflow_env.roles.delete_asset("alice", "workflow", identity)
+    reopened_db = SQLiteDatabase(str(tmp_path / "workflows.db"))
+    reopened = WorkflowService(reopened_db, RoleAssetService(reopened_db))
+    try:
+        available = (await reopened.list_assets("alice", include_example=True))[
+            "assets"
+        ]
+        assert {a["asset_id"] for a in available} == {
+            copy["asset_id"],
+            workflow_env.asset["asset_id"],
+        }
+        assert (await reopened.get_asset("alice", identity))["deleted"]
+        assert (await reopened.list_assets("bob", include_example=True))["assets"] == [
+            other
+        ]
+    finally:
+        await reopened_db.engine.dispose()
 
 
 @pytest.mark.asyncio

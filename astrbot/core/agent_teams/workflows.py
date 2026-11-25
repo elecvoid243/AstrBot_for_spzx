@@ -93,6 +93,7 @@ from astrbot.core.agent_teams.graph import (
     task_input_contract,
     validate_graph,
 )
+from astrbot.core.agent_teams.release_brief import RELEASE_BRIEF
 from astrbot.core.agent_teams.result_tool import (
     ArtifactReference,
     ReadArtifactTool,
@@ -125,6 +126,7 @@ from astrbot.core.db.po import (
     AgentWorkflowCheckpoint,
     AgentWorkflowControl,
     AgentWorkflowEvent,
+    AgentWorkflowExample,
     AgentWorkflowFile,
     AgentWorkflowLaunchReceipt,
     AgentWorkflowMessage,
@@ -927,6 +929,8 @@ class WorkflowService:
         asset_id: str | None = None,
         draft_revision: int | None = None,
         draft_kind: str | None = None,
+        *,
+        provision_example: bool = False,
     ) -> dict:
         """Save a version without creating any execution context.
 
@@ -936,6 +940,7 @@ class WorkflowService:
             asset_id: Existing asset identity, or None for a new asset.
             draft_revision: Trusted draft revision to publish, when supplied.
             draft_kind: Workflow or autonomous draft category.
+            provision_example: Register the built-in example on first workbench access.
 
         Returns:
             Persisted asset version.
@@ -1239,6 +1244,16 @@ class WorkflowService:
             asset_id = uuid.uuid4().hex
         async with self.db.get_db() as session:
             await session.execute(text("BEGIN IMMEDIATE"))
+            if provision_example:
+                existing = await session.get(AgentWorkflowExample, username)
+                if existing is not None:
+                    # A concurrent workbench request already published the example.
+                    existing_id = existing.asset_id
+                    await session.rollback()
+                    return await self.get_asset(username, existing_id)
+                session.add(
+                    AgentWorkflowExample(owner_username=username, asset_id=asset_id)
+                )
             if await session.get(AgentAssetTombstone, ("workflow", asset_id)):
                 raise RoleAssetError("Asset has been deleted", status=409)
             base = None
@@ -1447,21 +1462,34 @@ class WorkflowService:
         """
         async with self.db.get_db() as session:
             rows = (
-                (
-                    await session.execute(
-                        select(AgentWorkflowVersion)
-                        .where(
-                            AgentWorkflowVersion.asset_id == asset_id,
-                            AgentWorkflowVersion.owner_username == username,
-                        )
-                        .order_by(col(AgentWorkflowVersion.version).desc())
+                await session.execute(
+                    select(
+                        AgentWorkflowVersion,
+                        col(AgentWorkflowExample.asset_id).is_not(None),
                     )
+                    .outerjoin(
+                        AgentWorkflowExample,
+                        and_(
+                            AgentWorkflowExample.owner_username
+                            == AgentWorkflowVersion.owner_username,
+                            AgentWorkflowExample.asset_id
+                            == AgentWorkflowVersion.asset_id,
+                        ),
+                    )
+                    .where(
+                        AgentWorkflowVersion.asset_id == asset_id,
+                        AgentWorkflowVersion.owner_username == username,
+                    )
+                    .order_by(col(AgentWorkflowVersion.version).desc())
                 )
-                .scalars()
-                .all()
-            )
-            row = next(
-                (r for r in rows if version is None or r.version == version), None
+            ).all()
+            row, is_example = next(
+                (
+                    (r, marker)
+                    for r, marker in rows
+                    if version is None or r.version == version
+                ),
+                (None, False),
             )
             if row is None:
                 raise RoleAssetError("Workflow version not found", status=404)
@@ -1484,22 +1512,33 @@ class WorkflowService:
                 "asset_id": asset_id,
                 "version": row.version,
                 "definition": row.definition,
-                "versions": [r.version for r in rows],
+                "versions": [r.version for r, _ in rows],
+                "is_builtin_example": is_example,
                 "deleted": await session.get(
                     AgentAssetTombstone, ("workflow", asset_id)
                 )
                 is not None,
             }
 
-    async def list_assets(self, username: str) -> dict:
+    async def list_assets(
+        self, username: str, *, include_example: bool = False
+    ) -> dict:
         """List the owner's latest asset versions.
 
         Args:
             username: Authenticated owner.
+            include_example: Provision this owner's sample on first workbench access.
 
         Returns:
             Latest definitions, without runtime state.
         """
+        if include_example:
+            async with self.db.get_db() as session:
+                example = await session.get(AgentWorkflowExample, username)
+            if example is None:
+                await self.save_asset(
+                    username, {"definition": RELEASE_BRIEF}, provision_example=True
+                )
         async with self.db.get_db() as session:
             identities = (
                 (

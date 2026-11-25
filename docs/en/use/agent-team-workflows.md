@@ -12,6 +12,18 @@ Open **More Features → Agent Teams → Assets**:
 
 Asset cards show the fixed version, a task or member summary, and draft status, with edit and run actions below. The lower-left icons on team and workflow cards open chat access, export, and deletion respectively; hover to read their names or use the keyboard to activate them. Light and dark themes are supported.
 
+## First run with the release brief
+
+Open **Agent Teams → Assets → Workflows** to find **Release brief** pinned at the top. Select **View walkthrough** on the card to follow the original v1 brief from preparation through approval and delivery. The example runs on a fresh deployment using built-in nodes and a human approval.
+
+1. Select **Open canvas** to inspect the three nodes. The preparation node supplies the project and summary to the delivery node. The approval node controls when delivery starts. Return to the workflow list.
+2. Select **Start Run**, leave the input as `{}`, and confirm. The project defaults to `Agent Teams` and the summary to `Ready for release.`. To try your own values, enter an object such as `{"project":"Website update","summary":"The new help page is ready."}`.
+3. Select **Open in Chat** in the workbench. Under **Inbox & artifacts**, preview the brief and approve it. The delivery node returns the approved project and summary. You can also handle the same request in the Bot workbench.
+
+![The animated release brief walkthrough at the human approval step](/images/agent-teams-release-guide-en.png)
+
+To remove the example, select the delete button on the card and confirm. Deletion is remembered for your account across reloads and server restarts.
+
 ## Create and configure
 
 Choose **Assets → Workflows → New Workflow** to open a dedicated workflow editor. Enter a name at the top and select a default model in **Workflow settings**. Add Agents directly on the canvas without first creating a role template. Select an Agent to configure its task, responsibilities, profile, persona, model and resources; nearby hints explain their purpose and inheritance rules. An unselected persona means no persona; an Agent without its own model uses the workflow default. Before launch, every local Agent must resolve to an allowed model.

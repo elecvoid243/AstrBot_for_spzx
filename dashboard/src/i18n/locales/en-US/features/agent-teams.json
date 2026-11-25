@@ -1,4 +1,49 @@
 {
+  "releaseBrief": {
+    "title": "Release brief",
+    "pinned": "Pinned example",
+    "description": "Prepare a brief from a project name and summary, review the draft, and deliver the approved version.",
+    "canvas": "Open canvas",
+    "guide": {
+      "open": "View walkthrough",
+      "close": "Hide walkthrough",
+      "title": "Walkthrough of the v1 example",
+      "play": "Play walkthrough",
+      "pause": "Pause walkthrough",
+      "replay": "Replay walkthrough",
+      "progress": "Step {step} of {total}",
+      "previous": "Previous",
+      "next": "Next",
+      "nodes": {
+        "inputs": "Inputs",
+        "prepare": "Prepare brief",
+        "review": "Human review",
+        "deliver": "Deliver brief"
+      },
+      "steps": {
+        "canvas": {
+          "title": "Read the canvas",
+          "body": "Choose “{canvas}” on the example card. Follow the three tasks from left to right. The data link from Prepare brief to Deliver brief carries the project name and summary."
+        },
+        "start": {
+          "title": "Start with two inputs",
+          "body": "Return to the example card and choose “{start}”. Keep the sample values below or enter your own, then confirm to start a run. Prepare brief collects both fields."
+        },
+        "chat": {
+          "title": "Follow this run in Chat",
+          "body": "Choose “{chat}” in the run workbench. The conversation shows the same run, including the prepared brief and its pending review."
+        },
+        "review": {
+          "title": "Review the exact version",
+          "body": "Find the approval request. On a narrow screen, open “{inbox}” first. Choose “{preview}” to check both fields, then “{approve}” to allow delivery. Returning the brief skips delivery. Choose Next here to see the approved path."
+        },
+        "result": {
+          "title": "Read the delivered brief",
+          "body": "Select Deliver brief in the completed run to read its result. On a narrow screen, open “{inbox}” to see it. Here are the approved project name and summary for the sample inputs."
+        }
+      }
+    }
+  },
   "reuse": {
     "detachedGate": "{task} needs its control link from {source}",
     "removeDetachedGate": "Remove missing control link",

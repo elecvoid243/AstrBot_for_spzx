@@ -889,6 +889,10 @@ export type CronJobRequest = {
     [key: string]: unknown | string | boolean;
 };
 
+export type DebugWriteConfirmation = {
+    preview_token: string;
+};
+
 export type DecisionTask = {
     kind?: 'boolean' | 'choice' | 'score';
     instructions: string;
@@ -2223,6 +2227,8 @@ export type WorkflowDebugForkStarted = {
 export type WorkflowDebugWritePreview = {
     record_id: string;
     status: 'pending' | 'unavailable';
+    preview_token?: (string) | null;
+    authorized_by?: string;
     operation: string;
     target: (string) | null;
     parameters: {
@@ -7346,6 +7352,18 @@ export type InspectWorkflowMemberAttemptApiV1WorkflowRunsRunIdMemberAttemptGetRe
 });
 
 export type InspectWorkflowMemberAttemptApiV1WorkflowRunsRunIdMemberAttemptGetError = (unknown | HTTPValidationError);
+
+export type ConfirmWorkflowDebugWriteApiV1WorkflowRunsRunIdToolCallsRecordIdExecutePostData = {
+    body: DebugWriteConfirmation;
+    path: {
+        record_id: string;
+        run_id: string;
+    };
+};
+
+export type ConfirmWorkflowDebugWriteApiV1WorkflowRunsRunIdToolCallsRecordIdExecutePostResponse = (unknown);
+
+export type ConfirmWorkflowDebugWriteApiV1WorkflowRunsRunIdToolCallsRecordIdExecutePostError = (unknown | HTTPValidationError);
 
 export type ResolveToolCallApiV1WorkflowRunsRunIdToolCallsRecordIdResolvePostData = {
     body: ToolResolutionRequest;

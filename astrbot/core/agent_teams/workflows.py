@@ -37,6 +37,7 @@ from sqlalchemy.engine import CursorResult
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
+from sqlalchemy.orm.attributes import flag_modified
 from sqlmodel import col, select, text, update
 
 from astrbot.core import logger
@@ -537,6 +538,13 @@ class DebugForkRequest(DebugForkPreviewRequest):
     request_id: str = Field(min_length=1, max_length=128)
     replacement: DebugForkReplacement | None = None
     replacements: list[DebugForkReplacement] = Field(default_factory=list)
+
+
+class DebugWriteConfirmation(BaseModel):
+    """Explicit approval of one persisted debug write preview."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    preview_token: str = Field(pattern=r"^[a-f0-9]{32}$")
 
 
 class ToolResolutionRequest(BaseModel):
@@ -6241,6 +6249,24 @@ class WorkflowService:
                     },
                 }
                 if include_details:
+                    resolution_actions = {}
+                    if current.status in {"interrupted", "failed", "blocked"}:
+                        for call in unknown_calls:
+                            metadata = recovery_data.get(call.record_id, {})
+                            if any(
+                                item.get("execution_id") is None
+                                for item in metadata.get("decisions", [])
+                            ):
+                                continue
+                            declaration = metadata.get("declaration") or {}
+                            if metadata.get("debug_write_approval"):
+                                if declaration.get("query"):
+                                    resolution_actions[call.record_id] = ["reconcile"]
+                                continue
+                            actions = ["retry", "confirm_result", "confirm_failure"]
+                            if has_tool_recovery(declaration):
+                                actions.append("reconcile")
+                            resolution_actions[call.record_id] = actions
                     results[current.run_id].update(
                         {
                             "messages": [
@@ -6282,7 +6308,12 @@ class WorkflowService:
                                     or awaiting_saved_tool_recovery
                                 )
                                 and not result_issues
-                                and not current.state.get("debug_write_preview")
+                                and (
+                                    not current.state.get("debug_write_preview")
+                                    or current.state["debug_write_preview"].get(
+                                        "authorized_by"
+                                    )
+                                )
                                 and boundary is not None
                                 and (
                                     not boundary.remote_runner
@@ -6425,33 +6456,19 @@ class WorkflowService:
                                 {
                                     **call.model_dump(mode="json"),
                                     "recovery": recovery_data.get(call.record_id, {}),
-                                    "available_actions": [
-                                        "retry",
-                                        "confirm_result",
-                                        "confirm_failure",
-                                    ]
-                                    + (
-                                        ["reconcile"]
-                                        if has_tool_recovery(
-                                            recovery_data.get(call.record_id, {}).get(
-                                                "declaration"
-                                            )
-                                        )
-                                        else []
-                                    )
-                                    if call in unknown_calls
-                                    and current.status
-                                    in {"interrupted", "failed", "blocked"}
-                                    and not any(
-                                        decision.get("execution_id") is None
-                                        for decision in recovery_data.get(
-                                            call.record_id, {}
-                                        ).get("decisions", [])
-                                    )
-                                    else [],
+                                    "available_actions": resolution_actions.get(
+                                        call.record_id, []
+                                    ),
                                 }
                                 for call in current_calls
                                 if history_limit is None
+                                or recovery_data.get(call.record_id, {}).get(
+                                    "debug_write_approval"
+                                )
+                                or call.record_id
+                                == current.state.get("debug_write_preview", {}).get(
+                                    "record_id"
+                                )
                                 or boundary is not None
                                 and call.attempt_id == current.state.get("attempt_id")
                                 and call.invocation_id == boundary.invocation_id
@@ -7417,6 +7434,10 @@ class WorkflowService:
                     session.add(row)
                 await session.commit()
             if permitted:
+                if row.state.get("debug_write_preview", {}).get("authorized_by"):
+                    await self._require_component_owner(
+                        username, "debug_write_preview", resource="debug writes"
+                    )
                 if "chat" in row.snapshot:
                     await self.chat.require_access(row.snapshot["chat"], username)
                 if row.snapshot.get("engine") not in {
@@ -14684,7 +14705,8 @@ class WorkflowService:
                 raise RoleAssetError(
                     "Only interrupted execution can be recovered", status=409
                 )
-            if row.state.get("debug_write_preview"):
+            preview = row.state.get("debug_write_preview")
+            if preview and not preview.get("authorized_by"):
                 raise RoleAssetError(
                     "This call is held at the debug write preview", status=409
                 )
@@ -14918,6 +14940,9 @@ class WorkflowService:
                     call["recovery"] = metadata
             if calls:
                 checkpoint.data["tool_calls"] = calls
+                # Loading recovery decisions may autoflush the checkpoint before
+                # these nested JSON changes are attached.
+                flag_modified(checkpoint, "data")
                 session.add(checkpoint)
             state = {
                 **row.state,
@@ -15119,6 +15144,116 @@ class WorkflowService:
             task.add_done_callback(self._tasks.discard)
         return await self.get_run(username, run_id)
 
+    async def confirm_debug_write(
+        self,
+        username: str,
+        run_id: str,
+        record_id: str,
+        request: DebugWriteConfirmation,
+    ) -> dict:
+        """Authorize one durable write intent and continue its existing attempt.
+
+        Args:
+            username: Authenticated Dashboard owner.
+            run_id: Debug fork task holding the preview.
+            record_id: Durable identity of the previewed call.
+            request: Token of the exact preview seen by the operator.
+
+        Returns:
+            Current task detail after saving the approval.
+
+        Raises:
+            RoleAssetError: The preview is stale, unavailable or inaccessible.
+        """
+        run = await self.get_run(username, run_id)
+        snapshot = run["snapshot"]
+        if "chat" in snapshot:
+            await self.chat.require_access(snapshot["chat"], username)
+        if snapshot["engine"] == "plugin_task_v2":
+            await self._resolve_component(
+                username, snapshot["definition"], snapshot["component_path"]
+            )
+        elif "role" in snapshot:
+            await self.roles.validate_frozen_role(
+                snapshot["role"], snapshot.get("profile")
+            )
+        async with self.db.get_db() as session:
+            row = await session.get(AgentWorkflowRun, run_id)
+            assert row is not None
+            control = await self._lock_control(session, row)
+            await session.refresh(row)
+            if control.status != "active":
+                raise RoleAssetError("Debug fork is no longer active", status=409)
+            recovery = await session.get(AgentWorkflowToolRecovery, record_id)
+            approval = recovery.data.get("debug_write_approval") if recovery else None
+            if approval and recovery.run_id == run_id:
+                if approval["preview_token"] != request.preview_token:
+                    raise RoleAssetError("Debug write preview changed", status=409)
+            else:
+                preview = row.state.get("debug_write_preview") or {}
+                stored = await session.get(AgentWorkflowToolCall, record_id)
+                checkpoint = await session.get(AgentWorkflowCheckpoint, run_id)
+                if (
+                    row.owner_username != username
+                    or row.status != "blocked"
+                    or preview.get("status") != "pending"
+                    or preview.get("record_id") != record_id
+                    or preview.get("preview_token") != request.preview_token
+                    or stored is None
+                    or stored.run_id != run_id
+                    or stored.status != "intent"
+                    or stored.attempt_id != row.state["attempt_id"]
+                    or checkpoint is None
+                    or checkpoint.attempt_id != stored.attempt_id
+                    or checkpoint.invocation_id != stored.invocation_id
+                ):
+                    raise RoleAssetError(
+                        "Debug write preview changed or is unavailable", status=409
+                    )
+                data = copy.deepcopy(checkpoint.data)
+                call = next(
+                    item
+                    for item in data["tool_calls"]
+                    if item["record_id"] == record_id
+                )
+                approval = {
+                    "preview_token": request.preview_token,
+                    "authorized_by": username,
+                }
+                metadata = call.setdefault("recovery", {})
+                metadata["debug_write_approval"] = approval
+                if recovery is None:
+                    recovery = AgentWorkflowToolRecovery(
+                        record_id=record_id, run_id=run_id
+                    )
+                recovery.data = metadata
+                checkpoint.data = data
+                row.state = {
+                    **row.state,
+                    "debug_write_preview": {**preview, "authorized_by": username},
+                    "resolution_pending": True,
+                }
+                session.add_all([recovery, checkpoint, row])
+                session.add(
+                    AgentWorkflowEvent(
+                        run_id=run_id,
+                        kind="tool.resolved",
+                        data={
+                            "record_id": record_id,
+                            "action": "execute_preview",
+                            "authorized_by": username,
+                        },
+                    )
+                )
+                await session.commit()
+        if row.state.get("resolution_pending"):
+            try:
+                return await self.recover_run(username, run_id)
+            except RoleAssetError:
+                # The approval stays saved if admission changed before dispatch.
+                pass
+        return await self.get_run(username, run_id)
+
     async def resolve_tool_call(
         self, username: str, run_id: str, record_id: str, payload: dict
     ) -> dict:
@@ -15177,6 +15312,11 @@ class WorkflowService:
             if stored is None or stored.run_id != run_id:
                 raise RoleAssetError("Tool call not found", status=404)
             metadata = copy.deepcopy(recovery.data if recovery else {})
+            if metadata.get("debug_write_approval") and request.action != "reconcile":
+                raise RoleAssetError(
+                    "An authorized debug write can only be reconciled with its connector",
+                    status=409,
+                )
             decisions = metadata.setdefault("decisions", [])
             previous = next(
                 (
@@ -15230,7 +15370,11 @@ class WorkflowService:
                         "This call no longer requires a decision", status=409
                     )
                 declaration = metadata.get("declaration") or {}
-                if request.action == "reconcile" and not has_tool_recovery(declaration):
+                if request.action == "reconcile" and (
+                    not has_tool_recovery(declaration)
+                    or metadata.get("debug_write_approval")
+                    and not declaration.get("query")
+                ):
                     raise RoleAssetError(
                         "This tool has no declared reconciliation capability",
                         status=409,
@@ -16284,7 +16428,7 @@ class WorkflowService:
             )
             await session.commit()
 
-    async def _pause_debug_write(
+    async def _require_debug_write_approval(
         self,
         username: str,
         run_id: str,
@@ -16296,7 +16440,7 @@ class WorkflowService:
         *,
         parameters_complete: bool = True,
     ) -> None:
-        """Fence the attempt and keep its write intent separate from tool receipts.
+        """Permit the exact authorized call or persist its preview and stop.
 
         Args:
             username: Owner authorized to run and inspect the fork.
@@ -16326,6 +16470,24 @@ class WorkflowService:
                 or not root.snapshot.get("debug_fork")
             ):
                 raise CheckpointRecoveryError("Debug write preview is no longer active")
+            destination = target if isinstance(target, str) and target.strip() else None
+            ready = bool(destination and parameters_complete)
+            preview = row.state.get("debug_write_preview") or {}
+            if preview.get("record_id") == record_id and preview.get("authorized_by"):
+                if (
+                    ready
+                    and preview["authorized_by"] == username
+                    and preview["operation"] == operation
+                    and preview["target"] == destination
+                    and json.dumps(
+                        preview["parameters"], sort_keys=True, ensure_ascii=True
+                    )
+                    == json.dumps(parameters, sort_keys=True, ensure_ascii=True)
+                ):
+                    return
+                raise CheckpointRecoveryError(
+                    "Authorized debug write no longer matches its preview"
+                )
             source = root.snapshot["debug_fork"]["source"]
             historical = []
             if (
@@ -16349,8 +16511,6 @@ class WorkflowService:
                         )
                     )
                 ).all()
-            destination = target if isinstance(target, str) and target.strip() else None
-            ready = bool(destination and parameters_complete)
             reason = (
                 "Paused before external write"
                 if ready
@@ -16365,6 +16525,7 @@ class WorkflowService:
                 "debug_write_preview": {
                     "record_id": record_id,
                     "status": "pending" if ready else "unavailable",
+                    "preview_token": uuid.uuid4().hex if ready else None,
                     "operation": operation,
                     "target": destination,
                     "parameters": parameters,
@@ -16445,14 +16606,25 @@ class WorkflowService:
         call = checkpoint["tool_calls"][0]
         identity = call["record_id"]
         if debug_fork and component.effect == "external" and call["status"] == "intent":
-            await self._pause_debug_write(
+            if "phase" not in checkpoint:
+                checkpoint["phase"] = "response"
+                await self.save_checkpoint(
+                    username, run_id, attempt, execution_id, checkpoint
+                )
+            parameters = call["args"]
+            if component.recovery and component.recovery.idempotency_key_arg:
+                parameters = {
+                    **parameters,
+                    component.recovery.idempotency_key_arg: identity,
+                }
+            await self._require_debug_write_approval(
                 username,
                 run_id,
                 execution_id,
                 identity,
                 call["name"],
-                call["args"],
-                call["args"].get(component.write_target)
+                parameters,
+                parameters.get(component.write_target)
                 if component.write_target
                 else None,
             )
@@ -16552,7 +16724,7 @@ class WorkflowService:
                     declaration.get("safe_retry")
                     or declaration.get("idempotency_key_arg")
                 )
-            if call["status"] != "result_saved" and not safe_delivery:
+            if call["status"] != "result_saved" and (debug_fork or not safe_delivery):
                 raise CheckpointRecoveryError(
                     "Component outcome is unknown and requires confirmation."
                 )
@@ -16987,7 +17159,12 @@ class WorkflowService:
                         ).is_valid(arguments)
                     except (TypeError, ValueError, SchemaError, Unresolvable):
                         parameters_complete = False
-                    await self._pause_debug_write(
+                    if tool.recovery and tool.recovery.idempotency_key_arg:
+                        arguments = {
+                            **arguments,
+                            tool.recovery.idempotency_key_arg: record_id,
+                        }
+                    await self._require_debug_write_approval(
                         username,
                         run_id,
                         execution_id,

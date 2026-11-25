@@ -11,6 +11,7 @@ from astrbot.core.agent.tool import (
     ToolExecResult,
     current_tool_invocation,
 )
+from astrbot.core.agent_team_execution import current_team_execution
 from astrbot.core.astr_agent_context import AstrAgentContext
 from astrbot.core.utils.webchat_access import DashboardPrincipal
 
@@ -661,9 +662,18 @@ class SendChatMessageTool(FunctionTool[AstrAgentContext]):
 
         Returns:
             Acceptance location and state, or a rejection reason.
-        """
-        from astrbot.dashboard.services.chat_service import ChatServiceError
 
+        Raises:
+            RemoteChatAcceptanceUnknown: A debug write was sent but its receipt
+                cannot be verified or disclosed.
+        """
+        from astrbot.dashboard.services.chat_service import (
+            ChatServiceError,
+            RemoteChatAcceptanceUnknown,
+        )
+
+        execution = current_team_execution.get()
+        debug_write = bool(execution and execution.preview_tool_write)
         service = getattr(context.context.context, "session_message_service", None)
         if service is None:
             return "error: ChatUI session messaging is unavailable"
@@ -672,6 +682,7 @@ class SendChatMessageTool(FunctionTool[AstrAgentContext]):
             or not {"session_id", "text"} <= kwargs.keys()
         ):
             return "error: Only session_id and text plus optional connection_id/connection_revision are accepted"
+        verifying_delivery = False
         try:
             if "connection_id" in kwargs:
                 if any(
@@ -718,6 +729,7 @@ class SendChatMessageTool(FunctionTool[AstrAgentContext]):
                     # Unknown cached outcomes must also honor revoked targets.
                     from urllib.parse import quote
 
+                    verifying_delivery = True
                     await service.remote_chat.agent_connection(
                         event,
                         kwargs["connection_id"],
@@ -725,10 +737,16 @@ class SendChatMessageTool(FunctionTool[AstrAgentContext]):
                         "sessions/" + quote(kwargs["session_id"], safe="") + "/history",
                         params={"limit": 1},
                     )
+                    verifying_delivery = False
                 result = await asyncio.shield(pending[identity])
-                # A cached outcome is not a continuing authorization grant.
+                if debug_write and result["status"] in {"unknown", "processing"}:
+                    raise RemoteChatAcceptanceUnknown(
+                        "Remote message acceptance needs verification"
+                    ) from None
+                # Receipt disclosure needs a fresh target-access check.
                 from urllib.parse import quote
 
+                verifying_delivery = True
                 await service.remote_chat.agent_connection(
                     event,
                     kwargs["connection_id"],
@@ -743,7 +761,16 @@ class SendChatMessageTool(FunctionTool[AstrAgentContext]):
                 await service.send_session_message(context.context.event, **kwargs),
                 ensure_ascii=False,
             )
-        except (ChatServiceError, ValueError) as exc:
+        except Exception as exc:
+            if debug_write:
+                if isinstance(exc, RemoteChatAcceptanceUnknown):
+                    raise
+                if verifying_delivery:
+                    raise RemoteChatAcceptanceUnknown(
+                        "Remote message acceptance needs verification"
+                    ) from None
+            if not isinstance(exc, (ChatServiceError, ValueError)):
+                raise
             return f"error: {exc}"
 
 

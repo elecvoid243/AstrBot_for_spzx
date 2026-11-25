@@ -20,10 +20,13 @@
       {{ tm("v2.attempt") }} {{ source.attempt_id }}
     </p>
     <WorkflowDebugWritePreview
-      v-for="{ preview, cancelled } in writes"
+      v-for="{ preview, task } in writes"
       :key="preview.record_id"
       :preview="preview"
-      :cancelled="cancelled"
+      :task="task"
+      :active="active && task.status === 'blocked'"
+      :busy="busy"
+      @refresh="emit('refresh', run.run_id)"
     />
     <WorkflowDebugForkDraftDetails v-if="comparison.definition" :definition="comparison.definition" />
     <div class="fork-results mb-4">
@@ -45,11 +48,14 @@ import type { WorkflowDebugForkComparison, WorkflowDebugWritePreview as DebugWri
 import { useModuleI18n } from "@/i18n/composables";
 import WorkflowDebugForkDraftDetails from "./WorkflowDebugForkDraftDetails.vue";
 import WorkflowDebugForkInputs from "./WorkflowDebugForkInputs.vue";
-import WorkflowDebugWritePreview from "./WorkflowDebugWritePreview.vue";
+import WorkflowDebugWritePreview, { type DebugWriteTask } from "./WorkflowDebugWritePreview.vue";
 
 const props = defineProps<{
   comparison: WorkflowDebugForkComparison;
+  active: boolean;
+  busy: boolean;
   run: {
+    run_id: string;
     status: string;
     state?: { reason?: string };
     result?: unknown;
@@ -58,8 +64,8 @@ const props = defineProps<{
     scopes?: { tasks?: RunTask[]; loops?: RunLoop[] }[];
   };
 }>();
-type RunTask = {
-  status: string;
+const emit = defineEmits<{ refresh: [rootId: string] }>();
+type RunTask = DebugWriteTask & {
   state?: { reason?: string; debug_write_preview?: DebugWritePreview };
   result?: unknown;
 };
@@ -92,14 +98,14 @@ const links = computed(() => Object.fromEntries(
   }),
 ));
 const writes = computed(() => {
-  const records = new Map<string, { preview: DebugWritePreview; cancelled: boolean }>();
+  const records = new Map<string, { preview: DebugWritePreview; task: RunTask }>();
   for (const scope of [props.run, ...(props.run.scopes ?? [])]) {
     for (const task of [
       ...(scope.tasks ?? []),
       ...(scope.loops ?? []).flatMap(loop => loop.iterations.flatMap(round => round.tasks)),
     ]) {
       const preview = task.state?.debug_write_preview;
-      if (preview) records.set(preview.record_id, { preview, cancelled: task.status === "cancelled" });
+      if (preview && !records.has(preview.record_id)) records.set(preview.record_id, { preview, task });
     }
   }
   return [...records.values()];

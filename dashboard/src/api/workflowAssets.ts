@@ -6,6 +6,7 @@ import type {
   WorkflowSaveRequest,
   WorkflowStartRequest,
   ArtifactRevisionRequest,
+  DebugWriteConfirmation,
   ToolResolutionRequest,
   WorkflowControlRequest,
   WorkflowDataLine,
@@ -273,6 +274,12 @@ export const workflowAssetsApi = {
         { signal },
       )
     ).data.data;
+  },
+  async confirmDebugWrite(runId: string, recordId: string, payload: DebugWriteConfirmation) {
+    return (await httpClient.post(
+      `/api/v1/workflow_runs/${encodeURIComponent(runId)}/tool_calls/${encodeURIComponent(recordId)}/execute`,
+      payload,
+    )).data.data;
   },
   async resolveTool(
     runId: string,

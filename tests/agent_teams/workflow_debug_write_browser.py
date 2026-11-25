@@ -52,6 +52,8 @@ class DebugWriteAcceptance(Acceptance):
                 if "missing count" in prompt
                 else {"target": "team/reviewers", "count": 12}
                 if "edited citations" in prompt
+                else {"target": "team/archive", "count": 14}
+                if "final citations" in prompt
                 else {"target": "team/publishers", "count": 7}
             )
             if not results:
@@ -67,6 +69,20 @@ class DebugWriteAcceptance(Acceptance):
                     }
                 ],
             }
+        if not finished and not results and "ambiguous delivery" in prompt:
+            message["tool_calls"][0]["function"]["arguments"] = json.dumps(
+                {"target": "team/uncertain", "count": 15}
+            )
+            message["tool_calls"].append(
+                {
+                    "id": "call_" + secrets.token_hex(6),
+                    "type": "function",
+                    "function": {
+                        "name": "record_report_delivery",
+                        "arguments": json.dumps({"target": "team/next", "count": 20}),
+                    },
+                }
+            )
         completion = {
             "id": f"fixture-{len(self.requests)}",
             "object": "chat.completion",
@@ -89,7 +105,9 @@ class DebugWriteAcceptance(Acceptance):
             return web.json_response(completion)
         delta = {"role": "assistant", "content": message["content"]}
         if calls := message.get("tool_calls"):
-            delta["tool_calls"] = [{"index": 0, **calls[0]}]
+            delta["tool_calls"] = [
+                {"index": index, **call} for index, call in enumerate(calls)
+            ]
         response = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
         await response.prepare(request)
         for delta, finish in (
@@ -133,7 +151,12 @@ class DebugWriteAcceptance(Acceptance):
                 The independent ledger's JSON receipt.
             """
             self.deliveries.append(await request.json())
-            return web.json_response({"receipt": "ledger-receipt-original"})
+            if self.deliveries[-1]["target"] == "team/uncertain":
+                request.transport.close()
+            receipt = (
+                "original" if len(self.deliveries) == 1 else str(len(self.deliveries))
+            )
+            return web.json_response({"receipt": f"ledger-receipt-{receipt}"})
 
         ledger = web.Application()
         ledger.router.add_post("/record", record)
@@ -212,15 +235,27 @@ class DebugWriteAcceptance(Acceptance):
         }
         expected_ledger = list(self.deliveries)
 
-        for locale, page, route, expand, close in (
+        prior_token = None
+        execution_ids = set()
+        for locale, page, route, expand, target, count, notes in (
             (
                 "en",
                 bot,
                 f"/#/agent-teams?workflow_run={root}",
                 "Expand execution graph (read-only)",
-                "Close",
+                "team/reviewers",
+                12,
+                "edited citations",
             ),
-            ("zh", chat, f"/#/chat/runs/{root}", "展开执行图（只读）", "关闭"),
+            (
+                "zh",
+                chat,
+                f"/#/chat/runs/{root}",
+                "展开执行图（只读）",
+                "team/archive",
+                14,
+                "final citations",
+            ),
         ):
             await page.goto(self.origin + route)
             await page.get_by_role("button", name=expand, exact=True).click()
@@ -242,7 +277,7 @@ class DebugWriteAcceptance(Acceptance):
             await (
                 page.get_by_test_id("debug-fork-replacement")
                 .locator("textarea")
-                .first.fill("edited citations")
+                .first.fill(notes)
             )
             assert self.deliveries == expected_ledger
             async with page.expect_response(
@@ -256,8 +291,8 @@ class DebugWriteAcceptance(Acceptance):
             open_preview = page.get_by_test_id("open-debug-write-preview")
             await open_preview.click()
             preview = page.get_by_test_id("debug-write-preview")
-            await expect(preview).to_contain_text("team/reviewers")
-            await expect(preview).to_contain_text('"count": 12')
+            await expect(preview).to_contain_text(target)
+            await expect(preview).to_contain_text(f'"count": {count}')
             await expect(preview).to_contain_text(
                 "Paused before external write"
                 if locale == "en"
@@ -275,40 +310,87 @@ class DebugWriteAcceptance(Acceptance):
                 path=self.evidence / f"agent-workflow-debug-write-{locale}.jpg",
                 quality=88,
             )
-            await page.context.set_offline(True)
-            await preview.get_by_role("button", name=close, exact=True).click()
-            await expect(preview).to_be_hidden()
-            await page.context.set_offline(False)
-            await page.reload()
-            await open_preview.click()
-            await expect(preview).to_contain_text("team/reviewers")
-            assert self.deliveries == expected_ledger
-            await preview.get_by_role("button", name=close, exact=True).click()
-            await page.get_by_test_id("cancel-run").click()
-            await page.get_by_test_id("confirm-run-control").click()
-            await expect(page.get_by_test_id("debug-write-status")).to_contain_text(
-                "Debug fork cancelled" if locale == "en" else "调试分支已取消"
-            )
             fork = await self.api("GET", f"/workflow_runs/{fork_id}")
             (stopped,) = fork["tasks"]
-            preview_id = stopped["state"]["debug_write_preview"]["record_id"]
-            (intent,) = stopped["tool_calls"]
-            assert intent["record_id"] == preview_id and intent["status"] == "intent"
-            assert (
-                intent["started_execution_id"] is None and intent["raw_results"] == []
-            )
-            late = await page.context.request.post(
+            write = stopped["state"]["debug_write_preview"]
+            assert len(self.deliveries) == len(expected_ledger)
+            execute_url = (
                 self.origin
-                + f"/api/v1/workflow_runs/{stopped['run_id']}/tool_calls/{preview_id}/resolve",
-                data={
-                    "action": "confirm_result",
-                    "request_id": "late",
-                    "result": "Late receipt",
-                    "evidence": "Stale browser action after cancellation",
-                },
+                + f"/api/v1/workflow_runs/{stopped['run_id']}"
+                + f"/tool_calls/{write['record_id']}/execute"
             )
-            assert late.status == 409, await late.text()
-            assert self.deliveries == expected_ledger
+            if prior_token:
+                stale = await page.context.request.post(
+                    execute_url, data={"preview_token": prior_token}
+                )
+                assert stale.status == 409, await stale.text()
+                assert self.deliveries == expected_ledger
+                async with page.expect_response(execute_url) as confirmed:
+                    await preview.get_by_test_id("confirm-debug-write").click()
+                response = await confirmed.value
+                assert response.status == 200, await response.text()
+            else:
+                confirmation_lost = asyncio.Event()
+
+                async def lose_confirmation_response(route):
+                    """Forward the exact browser approval and discard its reply.
+
+                    Args:
+                        route: Intercepted Dashboard confirmation request.
+                    """
+                    async with self.client.post(
+                        execute_url,
+                        json=route.request.post_data_json,
+                        headers={
+                            "Authorization": await route.request.header_value(
+                                "authorization"
+                            )
+                        },
+                    ) as response:
+                        assert response.status == 200, await response.text()
+                    await route.abort()
+                    confirmation_lost.set()
+
+                await page.route(execute_url, lose_confirmation_response)
+                await preview.get_by_test_id("confirm-debug-write").click()
+                await asyncio.wait_for(confirmation_lost.wait(), timeout=15)
+                await page.unroute(execute_url)
+            receipt_text = f"ledger-receipt-{len(expected_ledger) + 1}"
+            finished = await self.wait_run(
+                fork_id, lambda run: run["status"] == "completed"
+            )
+            await page.reload()
+            await open_preview.click()
+            evidence = preview.get_by_test_id("debug-write-current")
+            await expect(evidence).to_contain_text(receipt_text)
+            await expect(evidence).not_to_contain_text("ledger-receipt-original")
+            await expect(preview.get_by_test_id("confirm-debug-write")).to_have_count(0)
+            assert len(self.deliveries) == len(expected_ledger) + 1
+            assert self.deliveries[-1] == {
+                "target": target,
+                "record": {"count": count},
+                "identity": write["record_id"],
+            }
+            (finished_task,) = finished["tasks"]
+            call = next(
+                item
+                for item in finished_task["tool_calls"]
+                if item["record_id"] == write["record_id"]
+            )
+            assert call["status"] == "applied" and receipt_text in json.dumps(
+                call["raw_results"]
+            )
+            assert call["started_execution_id"]
+            execution_ids.add(call["started_execution_id"])
+            assert call["started_execution_id"] in await evidence.inner_text()
+            duplicate = await page.context.request.post(
+                execute_url, data={"preview_token": write["preview_token"]}
+            )
+            assert duplicate.status == 200, await duplicate.text()
+            assert len(self.deliveries) == len(expected_ledger) + 1
+            expected_ledger = list(self.deliveries)
+            prior_token = write["preview_token"]
+        assert len(execution_ids) == 2
         (source_task,) = source["tasks"]
         path = f"/workflow_runs/{root}/debug_forks"
         attempt = {
@@ -337,13 +419,72 @@ class DebugWriteAcceptance(Acceptance):
             == "External write parameters are incomplete or invalid"
         )
         assert self.deliveries == expected_ledger
+        await self.exercise_unknown_batch(bot, path, attempt, plan["preview_token"])
         saved = await self.api("GET", f"/workflow_runs/{root}")
         assert saved["cursor"] == source["cursor"]
         assert saved["tasks"] == source["tasks"]
         print(
-            "Verified the unchanged source run and zero new ledger deliveries across three Agent debug forks.",
+            "Verified exact authorized writes from Bot and Chat, response loss and reopen, "
+            "stale approval rejection, and the unchanged source run.",
             flush=True,
         )
+
+    async def exercise_unknown_batch(self, page, launch_path, attempt, preview_token):
+        """Keep an uncertain authorized call ahead of the next unstarted write.
+
+        Args:
+            page: Authenticated Bot workbench page.
+            launch_path: Debug fork entry point for the recorded source.
+            attempt: Exact original attempt selected for replay.
+            preview_token: Confirmation of the fork's initial inputs.
+        """
+        before = list(self.deliveries)
+        fork = await self.api(
+            "POST",
+            launch_path,
+            data={
+                **attempt,
+                "request_id": "ambiguous-batch",
+                "preview_token": preview_token,
+                "replacement": {"name": "notes", "value": "ambiguous delivery"},
+            },
+        )
+        identity = fork["run_id"]
+        await page.goto(self.origin + f"/#/agent-teams?workflow_run={identity}")
+        await page.get_by_test_id("open-debug-write-preview").click()
+        preview = page.get_by_test_id("debug-write-preview")
+        await expect(preview).to_contain_text("team/uncertain")
+        assert self.deliveries == before
+        async with page.expect_response(
+            lambda response: response.url.endswith("/execute")
+        ) as confirmed:
+            await preview.get_by_test_id("confirm-debug-write").click()
+        response = await confirmed.value
+        assert response.status == 200, await response.text()
+        for _ in range(200):
+            current = await self.api("GET", f"/workflow_runs/{identity}")
+            (task,) = current["tasks"]
+            calls = task["tool_calls"]
+            if current["status"] == "blocked" and calls[0]["status"] == "unknown":
+                break
+            await asyncio.sleep(0.05)
+        assert current["status"] == "blocked"
+        assert [call["status"] for call in calls] == ["unknown", "intent"]
+        assert not calls[0]["raw_results"] and not calls[1]["started_execution_id"]
+        assert (
+            task["state"]["debug_write_preview"]["record_id"] == calls[0]["record_id"]
+        )
+        assert self.deliveries == before + [
+            {
+                "identity": calls[0]["record_id"],
+                "target": "team/uncertain",
+                "record": {"count": 15},
+            }
+        ]
+        await page.reload()
+        await page.get_by_test_id("open-debug-write-preview").click()
+        await expect(preview).to_contain_text("External outcome needs verification")
+        await expect(preview.get_by_test_id("confirm-debug-write")).to_have_count(0)
 
 
 if __name__ == "__main__":

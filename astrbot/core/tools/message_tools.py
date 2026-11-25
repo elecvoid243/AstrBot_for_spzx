@@ -13,6 +13,7 @@ import astrbot.core.message.components as Comp
 from astrbot.api import logger
 from astrbot.core.agent.run_context import ContextWrapper
 from astrbot.core.agent.tool import FunctionTool, ToolExecResult
+from astrbot.core.agent_team_execution import current_team_execution
 from astrbot.core.astr_agent_context import AstrAgentContext
 from astrbot.core.computer.computer_client import get_booter
 from astrbot.core.message.message_event_result import MessageChain
@@ -342,6 +343,9 @@ class SendMessageToUserTool(FunctionTool[AstrAgentContext]):
                 message_chain,
             )
         except Exception as exc:
+            execution = current_team_execution.get()
+            if execution and execution.preview_tool_write:
+                raise
             return f"error: failed to send message to session {target_session}: {exc}"
         if not sent:
             return f"error: failed to find platform for session {target_session}."

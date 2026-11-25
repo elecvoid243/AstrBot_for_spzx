@@ -1,7 +1,7 @@
 """Controlled installed workflow component used by the restart and browser fixtures."""
 
-import os
 import json
+import os
 
 import aiohttp
 from mcp.types import CallToolResult
@@ -111,7 +111,13 @@ class WorkflowLedger(Star):
                     ),
                 ),
                 ("unqueryable", "Record without query", None),
-                ("previewable", "Record to selected report ledger", None),
+                (
+                    "previewable",
+                    "Record to selected report ledger",
+                    ToolRecovery(
+                        query=self.query, idempotency_key_arg="invocation_key"
+                    ),
+                ),
             )
         )
 
@@ -159,6 +165,9 @@ class WorkflowLedger(Star):
                     "identity": identity,
                     "binding": context.context.knowledge_base_id,
                     "record": arguments["record"],
+                    **(
+                        {"target": arguments["target"]} if "target" in arguments else {}
+                    ),
                     "credential": os.environ["ATN178_LEDGER_KEY"],
                 },
             ) as response:

@@ -1305,6 +1305,10 @@ class ChatServiceError(Exception):
     pass
 
 
+class RemoteChatAcceptanceUnknown(ChatServiceError):
+    """The remote instance may have accepted the message."""
+
+
 @dataclass(slots=True)
 class ChatRunState:
     """State owned by a WebChat generation independently of its subscribers."""

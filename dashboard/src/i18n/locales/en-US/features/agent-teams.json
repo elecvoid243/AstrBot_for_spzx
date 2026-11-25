@@ -83,6 +83,14 @@
     }
   },
   "debugWrite": {
+    "call": "Call ID",
+    "execute": "Execute real write",
+    "authorized": "Real write authorized",
+    "current": "This call’s execution evidence",
+    "authorizedBy": "Authorized by {name}",
+    "executor": "Execution ID {id}",
+    "receiptSaved": "Connector receipt recorded",
+    "unknown": "External outcome needs verification",
     "title": "External write preview",
     "pending": "Paused before external write",
     "unavailable": "Paused because the write target could not be determined",

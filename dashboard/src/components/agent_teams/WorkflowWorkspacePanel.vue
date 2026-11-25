@@ -283,8 +283,12 @@
           </p>
           <WorkflowDebugForkComparison
             v-if="selectedRun.snapshot.debug_fork && !openingRunId"
+            :key="selectedRun.run_id"
             :comparison="selectedRun.snapshot.debug_fork"
             :run="selectedRun"
+            :active="(selectedRun.control?.status ?? 'active') === 'active'"
+            :busy="!!currentOperation"
+            @refresh="rootId => refresh(false, rootId)"
           />
           <nav v-show="runDisplay === 'workbench'" class="workbench-panel-nav mb-4" :aria-label="tm('workbench.panels')">
             <v-btn v-for="panel in ['tasks', 'process', 'results'] as const" :key="panel" :variant="activeRunPanel === panel ? 'tonal' : 'text'" :aria-pressed="activeRunPanel === panel" @click="activeRunPanel = panel">{{ tm(`workbench.panel${panel}`) }}</v-btn>
@@ -1568,15 +1572,15 @@ async function openCard(asset: any, action: "edit" | "start") {
  *
  * Args:
  *   background: Avoid foreground loading state and skip polling in history.
+ *   confirmedRoot: Reload the focused fork after a write confirmation settles.
  *
  * Returns:
  *   Resolves when the current observation completes or becomes obsolete.
  */
-async function refresh(background = false) {
+async function refresh(background = false, confirmedRoot?: string) {
   if (
     observation.value.signal.aborted ||
-    loading.value ||
-    refreshingRead === runRead ||
+    (confirmedRoot ? selectedRun.value?.run_id !== confirmedRoot : loading.value || refreshingRead === runRead) ||
     currentOperation.value ||
     openingRunId.value ||
     (background && runView.value === "history")
@@ -1587,6 +1591,14 @@ async function refresh(background = false) {
   refreshingRead = read;
   if (!background) loading.value = true;
   try {
+    if (confirmedRoot) {
+      const snapshot = await workflowAssetsApi.run(confirmedRoot, signal);
+      if (!signal.aborted && read === runRead) {
+        applyOperationSnapshot(snapshot);
+        error.value = "";
+      }
+      return;
+    }
     if (props.mode === "assets") {
       await Promise.all(assetSections.map((section) => loadAssetSection(section, read)));
     } else {

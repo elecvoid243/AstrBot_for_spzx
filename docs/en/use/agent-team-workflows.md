@@ -228,9 +228,11 @@ Choose **Start debug fork** to open the new run. Its comparison shows the origin
 
 This path supports recorded inputs for the built-in Parse JSON, Map Fields and JSON Text nodes, installed workflow components, and workflow Agent nodes. A debug fork stops before an external component runs or a local Agent invokes a tool whose external effect must be checked. Open **External write preview** in the fork to see the operation, destination, and parameters from the current call. Expand **Historical receipts from the source attempt** to inspect any recorded results from the original call.
 
-Close the preview with **Close** and reopen it at any time from the fork. Refreshing or reconnecting preserves the stopped call. If the target is unknown or required parameters are missing or invalid, the preview shows the available details and explains why the run stopped. Use **Cancel run** in run controls to end the fork.
+Review the call ID, destination and parameters, then choose **Execute real write** to authorize that exact call. If the destination or contents change, review the new preview and authorize it separately.
 
-![External write preview with the current report destination and historical ledger receipt](/images/agent-workflow-debug-write-en.jpg)
+Reopen the preview after refreshing or reconnecting. **This call’s execution evidence** shows the authorization, execution ID and connector receipt as they become available. If the external outcome needs verification, open the run workbench and choose **Reconcile using declared tool capability** in the execution panel when the connector supports a status query. Use **Cancel run** in run controls to end a paused fork.
+
+![External write preview showing the report destination, parameters and Execute real write button](/images/agent-workflow-debug-write-en.jpg)
 
 ![Debug fork comparing original and replacement citation inputs and results](/images/agent-workflow-debug-fork-en.jpg)
 

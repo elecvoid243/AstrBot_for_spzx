@@ -9646,6 +9646,42 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/workflow_runs/{run_id}/tool_calls/{record_id}/execute:
+    post:
+      tags:
+      - Agent Teams workflows
+      summary: Confirm Workflow Debug Write
+      description: Authorize the exact previewed connector call in an owned debug fork.
+      operationId: confirm_workflow_debug_write_api_v1_workflow_runs__run_id__tool_calls__record_id__execute_post
+      parameters:
+      - {name: run_id, in: path, required: true, schema: {type: string}}
+      - {name: record_id, in: path, required: true, schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DebugWriteConfirmation'
+      responses:
+        '200':
+          description: Current task detail after persisting the confirmation
+          content:
+            application/json:
+              schema: {}
+        '400':
+          description: Frozen connector definition is unavailable or incompatible
+        '403':
+          description: Connector access has been revoked
+        '404':
+          description: Run is inaccessible
+        '409':
+          description: Preview is stale, unavailable or cancelled
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/workflow_runs/{run_id}/tool_calls/{record_id}/resolve:
     post:
       tags:
@@ -14475,6 +14511,12 @@ components:
       properties:
         debug_write_preview:
           $ref: '#/components/schemas/WorkflowDebugWritePreview'
+    DebugWriteConfirmation:
+      type: object
+      additionalProperties: false
+      required: [preview_token]
+      properties:
+        preview_token: {type: string, pattern: '^[a-f0-9]{32}$'}
     WorkflowDebugWritePreview:
       type: object
       description: A debug fork's captured write intent. The task status records cancellation.
@@ -14482,6 +14524,8 @@ components:
       properties:
         record_id: {type: string}
         status: {type: string, enum: [pending, unavailable]}
+        preview_token: {type: [string, 'null'], pattern: '^[a-f0-9]{32}$'}
+        authorized_by: {type: string}
         operation: {type: string}
         target: {type: [string, 'null']}
         parameters: {type: object, additionalProperties: true}

@@ -2,21 +2,35 @@
 
 import asyncio
 import json
+import traceback
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
+import httpx
 import pytest
 
 from astrbot.builtin_stars.session_messages.tools import (
     SendChatMessageTool,
 )
 from astrbot.core.agent.tool import current_tool_invocation
+from astrbot.core.agent_team_execution import (
+    NodeExecutionBinding,
+    current_team_execution,
+)
+from astrbot.core.db.po import DashboardAccount
 from astrbot.core.platform.sources.webchat.webchat_adapter import WebChatAdapter
 from astrbot.core.platform.sources.webchat.webchat_queue_mgr import webchat_queue_mgr
+from astrbot.core.utils.webchat_access import DashboardPrincipal
 from astrbot.dashboard.responses import ApiError
+from astrbot.dashboard.services import remote_chat_service
+from astrbot.dashboard.services.chat_service import RemoteChatAcceptanceUnknown
 from tests.test_remote_chat_connections import (  # noqa: F401
     account_dashboard,
     connected_instances,
     fake_core_lifecycle,
-    ordinary_chat,
+)
+from tests.test_remote_chat_connections import (
+    ordinary_chat as ordinary_chat,
 )
 from tests.test_remote_chat_creation import remote_tools as remote_tools  # noqa: F401
 
@@ -385,6 +399,179 @@ async def test_unknown_acceptance_is_never_refunded_or_retried(
         assert queue.empty()
     finally:
         current_tool_invocation.reset(token)
+        tasks = list(service.control_tasks)
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "boundary",
+    [
+        "unknown",
+        "processing",
+        "history",
+        "history-revoked",
+        "local-switch",
+        "source-revoked",
+        "rejected",
+        "disabled-before-send",
+        "channel-failed",
+        "accepted",
+    ],
+)
+async def test_debug_remote_agent_write_needs_verified_receipt(
+    ordinary_chat, monkeypatch, boundary
+):
+    """Exercise post-send failures at the controlled remote HTTP boundary.
+
+    Args:
+        ordinary_chat: Local Dashboard and independent account database.
+        monkeypatch: Installs the controlled remote HTTP endpoint.
+        boundary: Remote reply or permission check that ends this invocation.
+    """
+    _, server, core, db, _, users = ordinary_chat
+    user = users[0]
+    principal = DashboardPrincipal(
+        user["account_id"], user["resource_owner"], "user", user["username"]
+    )
+    source = await db.create_platform_session(creator=principal.resource_owner)
+    adapter = WebChatAdapter({}, {}, asyncio.Queue())
+    event = adapter.create_event(
+        await adapter.convert_message(
+            (
+                principal.resource_owner,
+                source.session_id,
+                {
+                    "message": [{"type": "plain", "text": "Send a report"}],
+                    "message_id": "source",
+                    "_dashboard_account": principal,
+                },
+            )
+        )
+    )
+    chat = server.asgi_app.state.services.chat
+    service = chat.remote_chat
+    core.astrbot_config["chatui"]["remote_sessions_enabled"] = True
+    async with db.get_db() as session:
+        account = await session.get(DashboardAccount, principal.account_id)
+    connection_id = await service.save_connection(
+        account, "Controlled target", "http://remote", "arc_controlled"
+    )
+    (connection,) = (await service.connections(account))["connections"]
+    sends = []
+    history = []
+
+    async def remote(request):
+        """Return controlled protocol responses and record the actual write.
+
+        Args:
+            request: HTTP request sent by the installed remote ChatUI adapter.
+
+        Returns:
+            Response from the controlled remote instance.
+        """
+        path = request.url.path
+        if path.endswith("/channels"):
+            if boundary == "channel-failed":
+                raise httpx.ReadError("Control response lost", request=request)
+            data = {"channel_id": "target-channel", "limit": 5}
+        elif path.endswith("/poll"):
+            await asyncio.Future()
+        elif path.endswith("/messages"):
+            sends.append(json.loads(request.content))
+            if boundary == "rejected":
+                return httpx.Response(403)
+            if boundary == "local-switch":
+                core.astrbot_config["chatui"]["remote_sessions_enabled"] = False
+            elif boundary == "source-revoked":
+                await db.update_platform_session(source.session_id, archived=1)
+            data = {
+                "status": boundary
+                if boundary in {"unknown", "processing"}
+                else "accepted",
+                "run_id": "private-remote-run",
+            }
+        else:
+            assert path.endswith("/history"), path
+            history.append(path)
+            if boundary == "history-revoked":
+                return httpx.Response(403)
+            if boundary != "accepted":
+                raise httpx.ReadError("private history details", request=request)
+            data = []
+        return httpx.Response(200, json={"status": "ok", "data": data})
+
+    remote_httpx = SimpleNamespace(**vars(httpx))
+    remote_httpx.AsyncClient = lambda **kwargs: httpx.AsyncClient(
+        transport=httpx.MockTransport(remote), **kwargs
+    )
+    monkeypatch.setattr(remote_chat_service, "httpx", remote_httpx)
+    context = SimpleNamespace(
+        context=SimpleNamespace(
+            context=SimpleNamespace(session_message_service=chat),
+            event=event,
+            extra={"main_agent_runner": SimpleNamespace(provider=None, req=None)},
+        )
+    )
+    token = current_team_execution.set(
+        NodeExecutionBinding(
+            run_id="debug-run",
+            team_id="team",
+            member_id="sender",
+            node_id="send",
+            umo=event.unified_msg_origin,
+            owner_username=principal.resource_owner,
+            config_id=None,
+            preview_tool_write=AsyncMock(),
+        )
+    )
+    try:
+        tool = SendChatMessageTool()
+        args = {
+            "connection_id": connection_id,
+            "connection_revision": connection["revision"],
+            "session_id": "remote-recipient",
+            "text": "Reviewed report",
+        }
+        if boundary == "disabled-before-send":
+            core.astrbot_config["chatui"]["remote_sessions_enabled"] = False
+            assert (
+                await tool.call(context, **args)
+                == "error: Remote session connections are disabled"
+            )
+            assert not sends and not history
+            return
+        if boundary == "channel-failed":
+            assert (
+                await tool.call(context, **args) == "error: remote_acceptance_unknown"
+            )
+            assert not sends and not history
+            return
+        if boundary == "rejected":
+            assert await tool.call(context, **args) == "error: remote_disabled"
+        elif boundary == "accepted":
+            result = json.loads(await tool.call(context, **args))
+            assert result["status"] == "accepted"
+            assert result["run_id"] == "private-remote-run"
+        else:
+            with pytest.raises(
+                RemoteChatAcceptanceUnknown,
+                match="^Remote message acceptance needs verification$",
+            ) as uncertain:
+                await tool.call(context, **args)
+            diagnostic = "".join(traceback.format_exception(uncertain.value))
+            assert "private-remote-run" not in diagnostic
+            assert "private history details" not in diagnostic
+        (delivery,) = sends
+        assert delivery["session_id"] == "remote-recipient"
+        assert delivery["text"] == "Reviewed report"
+        assert len(history) == int(
+            boundary in {"history", "history-revoked", "accepted"}
+        )
+    finally:
+        current_team_execution.reset(token)
         tasks = list(service.control_tasks)
         for task in tasks:
             task.cancel()

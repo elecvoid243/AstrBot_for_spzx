@@ -26,6 +26,14 @@
     }
   },
   "debugWrite": {
+    "call": "调用 ID",
+    "execute": "执行真实写入",
+    "authorized": "真实写入已授权",
+    "current": "本次调用的执行证据",
+    "authorizedBy": "授权人 {name}",
+    "executor": "执行 ID {id}",
+    "receiptSaved": "已记录连接器回执",
+    "unknown": "外部结果待核实",
     "title": "外部写入预览",
     "pending": "已在外部写入前暂停",
     "unavailable": "无法确定写入目标，已暂停",

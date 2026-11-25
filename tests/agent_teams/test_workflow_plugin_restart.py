@@ -29,6 +29,7 @@ def external_ledger():
     effects, queries, deliveries = [], [], []
     response_gate = threading.Event()
     query_unknown = threading.Event()
+    drop_receipt = threading.Event()
     response_gate.set()
 
     class Handler(BaseHTTPRequestHandler):
@@ -67,6 +68,8 @@ def external_ledger():
                 if not any(item["identity"] == request["identity"] for item in effects):
                     effects.append(request)
                 response_gate.wait(timeout=30)
+                if drop_receipt.is_set():
+                    return
                 result = {"record": {"count": request["record"]["count"] + 1}}
             else:
                 queries.append(request)
@@ -97,6 +100,7 @@ def external_ledger():
                 queries=queries,
                 deliveries=deliveries,
                 query_unknown=query_unknown,
+                drop_receipt=drop_receipt,
                 gate=response_gate,
             )
         finally:

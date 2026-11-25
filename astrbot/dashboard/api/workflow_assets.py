@@ -21,6 +21,7 @@ from astrbot.core.agent_teams.workflows import (
     ArtifactRevisionRequest,
     DebugForkAttempt,
     DebugForkRequest,
+    DebugWriteConfirmation,
     HumanAnswerRequest,
     ToolResolutionRequest,
     TrialRunRequest,
@@ -1359,6 +1360,37 @@ async def retry_task(
     try:
         await service.retry_task(username, run_id, payload.model_dump())
         return ok(await service.get_run(username, run_id, history_limit=128))
+    except RoleAssetError as exc:
+        return JSONResponse(
+            error(str(exc), {"fields": exc.fields}), status_code=exc.status
+        )
+
+
+@router.post("/workflow_runs/{run_id}/tool_calls/{record_id}/execute")
+async def confirm_workflow_debug_write(
+    run_id: str,
+    record_id: str,
+    payload: DebugWriteConfirmation,
+    username: str = Depends(require_dashboard_user),
+    service: WorkflowService = Depends(get_workflow_service),
+):
+    """Execute the exact previewed write once through the original runner.
+
+    Args:
+        run_id: Debug fork task holding the preview.
+        record_id: Durable connector call identity.
+        payload: Token of the preview the operator approved.
+        username: Authenticated Dashboard owner.
+        service: Shared workflow service.
+
+    Returns:
+        Current task detail after recording the approval.
+    """
+    try:
+        return JSONResponse(
+            ok(await service.confirm_debug_write(username, run_id, record_id, payload)),
+            headers={"Cache-Control": "no-store"},
+        )
     except RoleAssetError as exc:
         return JSONResponse(
             error(str(exc), {"fields": exc.fields}), status_code=exc.status

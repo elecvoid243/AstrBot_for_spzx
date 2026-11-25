@@ -285,6 +285,9 @@
             v-if="selectedRun.snapshot.debug_fork && !openingRunId"
             :comparison="selectedRun.snapshot.debug_fork"
             :task="selectedRun.tasks?.[0]"
+            :active="(selectedRun.control?.status ?? 'active') === 'active'"
+            :busy="!!currentOperation"
+            @refresh="refresh(true)"
           />
           <nav v-show="runDisplay === 'workbench'" class="workbench-panel-nav mb-4" :aria-label="tm('workbench.panels')">
             <v-btn v-for="panel in ['tasks', 'process', 'results'] as const" :key="panel" :variant="activeRunPanel === panel ? 'tonal' : 'text'" :aria-pressed="activeRunPanel === panel" @click="activeRunPanel = panel">{{ tm(`workbench.panel${panel}`) }}</v-btn>

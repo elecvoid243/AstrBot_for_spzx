@@ -1,5 +1,7 @@
 """Verify the original-definition debug fork through the Dashboard API."""
 
+import asyncio
+
 import pytest
 
 from astrbot.core.db.po import AgentWorkflowRun
@@ -210,11 +212,19 @@ async def test_debug_fork_freezes_one_recorded_consumer_attempt(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("component_name", ["previewable", "record"])
-async def test_debug_fork_stops_before_installed_external_write(
-    tmp_path, publication_client, external_ledger, monkeypatch, component_name
+@pytest.mark.parametrize(
+    ("component_name", "decision"),
+    [
+        ("previewable", "cancel"),
+        ("record", "cancel"),
+        ("previewable", "execute"),
+        ("previewable", "unknown"),
+    ],
+)
+async def test_debug_fork_requires_exact_approval_for_installed_external_write(
+    tmp_path, publication_client, external_ledger, monkeypatch, component_name, decision
 ):
-    """A direct Dashboard request cannot invoke the original connector again.
+    """Confirm one new call independently from its source receipt.
 
     Args:
         tmp_path: Temporary database scope.
@@ -222,10 +232,11 @@ async def test_debug_fork_stops_before_installed_external_write(
         external_ledger: Independent recorder for connector calls.
         monkeypatch: Scope the fixture connector to its local ledger.
         component_name: Select whether the connector declares a previewable target.
+        decision: Stop, execute, or lose and reconcile the execution receipt.
     """
     monkeypatch.setenv("ATN178_LEDGER_URL", external_ledger.url)
     monkeypatch.setenv("ATN178_LEDGER_KEY", "local-ledger-secret")
-    service, _ = await fixture_service(tmp_path / "ledger", "debug-fork-ledger")
+    service, plugin = await fixture_service(tmp_path / "ledger", "debug-fork-ledger")
     await configure_owner(service)
     client = publication_client
     app = client._transport.app
@@ -287,6 +298,7 @@ async def test_debug_fork_stops_before_installed_external_write(
         write = stopped["state"]["debug_write_preview"]
         assert write["operation"] == component["reference"]["id"]
         assert write["parameters"]["record"] == {"count": 12}
+        assert write["parameters"]["invocation_key"] == write["record_id"]
         assert write["target"] == (
             "team/reports" if component_name == "previewable" else None
         )
@@ -303,18 +315,112 @@ async def test_debug_fork_stops_before_installed_external_write(
         ] == write
         task_url = f"/api/v1/workflow_runs/{stopped['run_id']}"
         assert (await client.post(f"{task_url}/recover")).status_code == 409
+        confirm_url = f"{task_url}/tool_calls/{write['record_id']}/execute"
+        stale = await client.post(confirm_url, json={"preview_token": "0" * 32})
+        assert stale.status_code == 409, stale.text
         retry = {
             "request_id": "late-retry",
             "attempt_id": stopped["state"]["attempt_id"],
             "input_policy": "original",
         }
         assert (await client.post(f"{task_url}/retry", json=retry)).status_code == 409
-        cancelled = await client.post(
-            f"{fork_url}/control", json={"request_id": "cancel", "action": "cancel"}
-        )
-        assert cancelled.status_code == 200, cancelled.text
-        assert cancelled.json()["data"]["tasks"][0]["status"] == "cancelled"
-        assert (await client.post(f"{task_url}/retry", json=retry)).status_code == 409
+        approval = {"preview_token": write["preview_token"] or "0" * 32}
+        if decision == "cancel":
+            cancelled = await client.post(
+                f"{fork_url}/control", json={"request_id": "cancel", "action": "cancel"}
+            )
+            assert cancelled.status_code == 200, cancelled.text
+            assert cancelled.json()["data"]["tasks"][0]["status"] == "cancelled"
+            assert (await client.post(confirm_url, json=approval)).status_code == 409
+            assert (
+                await client.post(f"{task_url}/retry", json=retry)
+            ).status_code == 409
+        else:
+            overrides = app.dependency_overrides
+            overrides[require_dashboard_user] = lambda: "bob"
+            unauthorized = await client.post(confirm_url, json=approval)
+            overrides[require_dashboard_user] = lambda: "alice"
+            assert unauthorized.status_code == 404
+            plugin.activated = False
+            revoked = await client.post(confirm_url, json=approval)
+            plugin.activated = True
+            assert revoked.status_code == 400, revoked.text
+            assert len(external_ledger.deliveries) == 1
+
+            if decision == "unknown":
+                external_ledger.drop_receipt.set()
+                external_ledger.query_unknown.set()
+            replies = await asyncio.gather(
+                client.post(confirm_url, json=approval),
+                client.post(confirm_url, json=approval),
+            )
+            assert all(reply.status_code == 200 for reply in replies), [
+                reply.text for reply in replies
+            ]
+            for _ in range(200):
+                current = (await client.get(fork_url)).json()["data"]
+                (executed,) = current["tasks"]
+                (call,) = executed["tool_calls"]
+                if (
+                    call["status"] in {"applied", "unknown"}
+                    and current["status"] != "running"
+                ):
+                    break
+                await asyncio.sleep(0.02)
+            assert len(external_ledger.deliveries) == 2
+            assert external_ledger.deliveries[-1] == {
+                "identity": write["record_id"],
+                "target": "team/reports",
+                "binding": "debug-fork-ledger",
+                "record": {"count": 12},
+            }
+            assert call["started_execution_id"]
+            assert call["record_id"] != receipt["record_id"]
+            assert executed["state"]["debug_write_preview"]["authorized_by"] == "alice"
+            assert (await client.post(confirm_url, json=approval)).status_code == 200
+            if decision == "unknown":
+                assert call["status"] == "unknown"
+                assert not call["raw_results"]
+                assert call["available_actions"] == ["reconcile"]
+                resolve = f"{task_url}/tool_calls/{write['record_id']}/resolve"
+                for action in ("retry", "confirm_result"):
+                    fabricated = await client.post(
+                        resolve,
+                        json={
+                            "request_id": action,
+                            "action": action,
+                            "evidence": "Source receipt",
+                            "result": '{"record":{"count":8}}',
+                        },
+                    )
+                    assert fabricated.status_code == 409, fabricated.text
+                for request_id, query_unknown in (
+                    ("ambiguous", True),
+                    ("authoritative", False),
+                ):
+                    if not query_unknown:
+                        external_ledger.query_unknown.clear()
+                    queried = await client.post(
+                        resolve,
+                        json={
+                            "request_id": request_id,
+                            "action": "reconcile",
+                            "evidence": "Query the loopback ledger",
+                        },
+                    )
+                    assert queried.status_code == 200, queried.text
+                    current = await completed_run(service, fork_id)
+                    (call,) = current["tasks"][0]["tool_calls"]
+                    assert call["recovery"]["decisions"][-1]["execution_id"]
+                    if query_unknown:
+                        assert call["status"] == "unknown"
+                        assert not call["raw_results"]
+                assert external_ledger.queries == [external_ledger.deliveries[-1]] * 2
+            assert call["status"] == "applied"
+            assert call["raw_results"][0]["structuredContent"] == {
+                "record": {"count": 13}
+            }
+            assert len(external_ledger.deliveries) == 2
         consumer = next(item for item in run["tasks"] if item["node_id"] == "result")
         safe = {
             **body,
@@ -333,7 +439,7 @@ async def test_debug_fork_stops_before_installed_external_write(
         )
         assert replayed.status_code == 200, replayed.text
         assert replayed.json()["data"]["status"] == "completed"
-        assert len(external_ledger.deliveries) == 1
+        assert len(external_ledger.deliveries) == (1 if decision == "cancel" else 2)
         assert (await client.get(url)).json()["data"]["cursor"] == run["cursor"]
     finally:
         await service.shutdown()

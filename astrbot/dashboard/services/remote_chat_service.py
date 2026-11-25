@@ -34,7 +34,11 @@ from astrbot.core.platform.sources.webchat.message_parts_helper import (
     message_part_attachment_ids,
 )
 from astrbot.dashboard.responses import ApiError
-from astrbot.dashboard.services.chat_service import ChatService, ChatServiceError
+from astrbot.dashboard.services.chat_service import (
+    ChatService,
+    ChatServiceError,
+    RemoteChatAcceptanceUnknown,
+)
 from astrbot.dashboard.services.chatui_project_service import (
     ChatUIProjectService,
     ChatUIProjectServiceError,
@@ -185,7 +189,7 @@ class RemoteChatService:
             "unknown",
             "processing",
         }:
-            raise ChatServiceError(
+            raise RemoteChatAcceptanceUnknown(
                 "Remote acceptance is unknown; do not blindly resend"
             )
         receipt = {
@@ -528,6 +532,8 @@ class RemoteChatService:
 
         Raises:
             ChatServiceError: Source, target, binding or remote policy denies access.
+            RemoteChatAcceptanceUnknown: The send may have taken effect before
+                the local response verification failed.
         """
         await self.chat.list_message_sessions(event)
         principal = event.get_extra("_dashboard_account")
@@ -535,6 +541,13 @@ class RemoteChatService:
             account = await connection.get(DashboardAccount, principal.account_id)
         if account is None:
             raise ChatServiceError("Account is unavailable")
+        source_revision = self.grant_revisions.get(principal.account_id, 0)
+        message_send = (
+            payload is not None
+            and path.startswith("channels/")
+            and path.endswith("/messages")
+        )
+        received_response = False
         try:
             result = await self.read_connection(
                 account,
@@ -545,8 +558,8 @@ class RemoteChatService:
                 method="POST" if payload is not None else "GET",
                 payload=payload,
             )
+            received_response = True
             # Do not reveal a late response after source policy or identity changes.
-            source_revision = self.grant_revisions.get(principal.account_id, 0)
             await self.chat.list_message_sessions(event)
             async with self.db.get_db() as connection:
                 current = await connection.get(RemoteChatConnection, connection_id)
@@ -601,10 +614,17 @@ class RemoteChatService:
                         "Failed to publish remote ChatUI creation", exc_info=True
                     )
             return result
-        except ApiError as exc:
-            raise ChatServiceError(
-                (exc.data or {}).get("code", "Remote access denied")
-            ) from None
+        except Exception as exc:
+            if message_send and received_response:
+                raise RemoteChatAcceptanceUnknown(
+                    "Remote message acceptance needs verification"
+                ) from None
+            if not isinstance(exc, ApiError):
+                raise
+            code = (exc.data or {}).get("code", "Remote access denied")
+            if message_send and code == "remote_acceptance_unknown":
+                raise RemoteChatAcceptanceUnknown(code) from None
+            raise ChatServiceError(code) from None
 
     async def agent_sessions(self, event) -> list[dict]:
         """Discover local chats and authorized directly bound remote chats.
@@ -1269,6 +1289,8 @@ class RemoteChatService:
         Raises:
             ApiError: Binding, local switch, network, protocol or remote grant failed.
                 Remote failures never use local HTTP 401 (which means login expired).
+            RemoteChatAcceptanceUnknown: An Agent send may have taken effect before
+                the local binding and account could be revalidated.
         """
         self.require_enabled()
         async with self.db.get_db() as connection:
@@ -1298,6 +1320,7 @@ class RemoteChatService:
             ) from None
         if stream:
             return self.connection_events(account, row, key, path)
+        received_message_response = False
         try:
             with anyio.fail_after(15):
                 async with httpx.AsyncClient(
@@ -1361,6 +1384,11 @@ class RemoteChatService:
                             or "data" not in payload
                         ):
                             raise ValueError
+            received_message_response = (
+                method == "POST"
+                and path.startswith("agent/channels/")
+                and path.endswith("/messages")
+            )
             self.require_enabled()
             async with self.db.get_db() as connection:
                 current = await connection.get(RemoteChatConnection, connection_id)
@@ -1413,6 +1441,12 @@ class RemoteChatService:
                     else "remote_protocol_error"
                 },
             ) from None
+        except Exception:
+            if received_message_response:
+                raise RemoteChatAcceptanceUnknown(
+                    "Remote message acceptance needs verification"
+                ) from None
+            raise
 
     async def connection_events(
         self, account: DashboardAccount, row: RemoteChatConnection, key: str, path: str

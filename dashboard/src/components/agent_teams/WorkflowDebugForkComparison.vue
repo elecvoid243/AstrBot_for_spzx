@@ -15,7 +15,10 @@
       v-if="task?.state?.debug_write_preview"
       :key="task.state.debug_write_preview.record_id"
       :preview="task.state.debug_write_preview"
-      :cancelled="task.status === 'cancelled'"
+      :task="task"
+      :active="active"
+      :busy="busy"
+      @refresh="emit('refresh')"
     />
     <div class="fork-results mb-4">
       <div v-for="{ title, data } in results" :key="title" class="fork-result pa-3">
@@ -35,12 +38,15 @@ import { useRoute } from "vue-router";
 import type { WorkflowDebugForkComparison, WorkflowDebugWritePreview as DebugWritePreview } from "@/api/generated/openapi-v1";
 import { useModuleI18n } from "@/i18n/composables";
 import WorkflowDebugForkInputs from "./WorkflowDebugForkInputs.vue";
-import WorkflowDebugWritePreview from "./WorkflowDebugWritePreview.vue";
+import WorkflowDebugWritePreview, { type DebugWriteTask } from "./WorkflowDebugWritePreview.vue";
 
 const props = defineProps<{
   comparison: WorkflowDebugForkComparison;
-  task?: { status: string; state?: { reason?: string; debug_write_preview?: DebugWritePreview }; result?: unknown };
+  task?: DebugWriteTask & { state?: { reason?: string; debug_write_preview?: DebugWritePreview }; result?: unknown };
+  active: boolean;
+  busy: boolean;
 }>();
+const emit = defineEmits<{ refresh: [] }>();
 const { tm, getRaw } = useModuleI18n("features/agent-teams");
 const route = useRoute();
 const source = computed(() => props.comparison.source);

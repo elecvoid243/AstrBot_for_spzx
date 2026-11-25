@@ -4132,6 +4132,8 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                 return False
         elif not (contract.idempotency_key_arg or contract.safe_retry):
             return False
+        if metadata.get("debug_write_approval"):
+            return False
         metadata.setdefault("retries", []).append(
             {
                 "identity": call["record_id"],
@@ -4348,6 +4350,10 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                 )
                 continue
             reused = call_state is not None and call_state["status"] == "result_saved"
+            debug_write_approved = bool(
+                call_state
+                and call_state.get("recovery", {}).get("debug_write_approval")
+            )
             retry_prefix: list[dict] | None = None
             if call_state is not None and call_state["status"] in {
                 "started",
@@ -4360,6 +4366,8 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                     or not await self._reconcile_tool_call(call_state, tool)
                 ):
                     unresolved.append(func_tool_id)
+                    if debug_write_approved:
+                        break
                     continue
                 reused = call_state["status"] == "result_saved"
                 if not reused:
@@ -4580,6 +4588,10 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                     await execution.admit_work()
                 if not reused and execution and execution.preview_tool_write:
                     if denial := await func_tool.check_permission(self.run_context):
+                        if debug_write_approved:
+                            error = CheckpointRecoveryError(denial)
+                            execution.recovery_error = error
+                            raise error
                         await _append_tool_call_result(func_tool_id, denial)
                         continue
                     record_id = call_state["record_id"] if call_state else func_tool_id
@@ -4635,11 +4647,20 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                         await self.agent_hooks.on_tool_start(
                             self.run_context,
                             func_tool,
-                            valid_params,
+                            copy.deepcopy(valid_params)
+                            if debug_write_approved
+                            else valid_params,
                         )
                 except Exception as e:
                     logger.error(f"Error in on_tool_start hook: {e}", exc_info=True)
 
+                if (
+                    debug_write_approved
+                    and not reused
+                    and execution
+                    and execution.admit_work
+                ):
+                    await execution.admit_work()
                 executor = (
                     None
                     if reused
@@ -5057,6 +5078,10 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                     )
                 if tool_failed:
                     unresolved.append(func_tool_id)
+                    # Preserve this call's reconciliation boundary before a
+                    # later tool in the batch can park at its own preview.
+                    if debug_write_approved:
+                        break
             elif call_state is not None and reused:
                 execution = current_team_execution.get()
                 if execution and execution.record_process:

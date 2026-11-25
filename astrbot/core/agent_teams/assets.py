@@ -12,6 +12,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col, select, update
 
+from astrbot.core.agent_teams.starter_team import RELEASE_EDITOR
 from astrbot.core.config.agent_runner import (
     get_agent_runner_capabilities,
     get_agent_runner_capability_issues,
@@ -20,6 +21,7 @@ from astrbot.core.db import BaseDatabase
 from astrbot.core.db.po import (
     AgentAssetDraft,
     AgentAssetDraftPublication,
+    AgentAssetExample,
     AgentAssetTombstone,
     AgentRoleInstallation,
     AgentRoleVersion,
@@ -1029,15 +1031,23 @@ class RoleAssetService:
             )
             await session.commit()
 
-    async def list_roles(self, username: str) -> dict:
+    async def list_roles(self, username: str, *, include_example: bool = False) -> dict:
         """List the latest version of each role owned by a user.
 
         Args:
             username: Authenticated owner.
+            include_example: Provision the reusable starter role on first directory access.
 
         Returns:
             The role directory, excluding other users' assets.
         """
+        if include_example:
+            async with self.db.get_db() as session:
+                marker = await session.get(AgentAssetExample, (username, "role"))
+            if marker is None:
+                await self.save_role(
+                    username, {"definition": RELEASE_EDITOR}, provision_example=True
+                )
         async with self.db.get_db() as session:
             identities = (
                 (
@@ -1436,6 +1446,8 @@ class RoleAssetService:
         payload: dict,
         role_id: str | None = None,
         draft_revision: int | None = None,
+        *,
+        provision_example: bool = False,
     ) -> dict:
         """Create a role or append a version without overwriting history.
 
@@ -1444,6 +1456,7 @@ class RoleAssetService:
             payload: Complete definition, installation and expected version.
             role_id: Existing identity when appending a version.
             draft_revision: Trusted draft revision to publish, when supplied.
+            provision_example: Atomically record the original built-in role identity.
 
         Returns:
             The persisted role version and local installation.
@@ -1490,6 +1503,17 @@ class RoleAssetService:
             role_id = uuid.uuid4().hex
         async with self.db.get_db() as session:
             await session.execute(text("BEGIN IMMEDIATE"))
+            if provision_example:
+                marker = await session.get(AgentAssetExample, (username, "role"))
+                if marker:
+                    existing_id = marker.asset_id
+                    await session.rollback()
+                    return await self.get_role(username, existing_id)
+                session.add(
+                    AgentAssetExample(
+                        owner_username=username, kind="role", asset_id=role_id
+                    )
+                )
             if await session.get(AgentAssetTombstone, ("role", role_id)):
                 raise RoleAssetError("Role has been deleted", status=409)
             if draft is not None:
@@ -1609,21 +1633,29 @@ class RoleAssetService:
         """
         async with self.db.get_db() as session:
             rows = (
-                (
-                    await session.execute(
-                        select(AgentRoleVersion)
-                        .where(
-                            AgentRoleVersion.role_id == role_id,
-                            AgentRoleVersion.owner_username == username,
-                        )
-                        .order_by(col(AgentRoleVersion.version).desc())
+                await session.execute(
+                    select(
+                        AgentRoleVersion,
+                        exists().where(
+                            AgentAssetExample.owner_username == username,
+                            AgentAssetExample.kind == "role",
+                            AgentAssetExample.asset_id == AgentRoleVersion.role_id,
+                        ),
                     )
+                    .where(
+                        AgentRoleVersion.role_id == role_id,
+                        AgentRoleVersion.owner_username == username,
+                    )
+                    .order_by(col(AgentRoleVersion.version).desc())
                 )
-                .scalars()
-                .all()
-            )
-            row = next(
-                (r for r in rows if version is None or r.version == version), None
+            ).all()
+            row, is_example = next(
+                (
+                    (row, marker)
+                    for row, marker in rows
+                    if version is None or row.version == version
+                ),
+                (None, False),
             )
             if row is None:
                 raise RoleAssetError("Role version not found", status=404)
@@ -1641,7 +1673,8 @@ class RoleAssetService:
                 "version": row.version,
                 "definition": row.definition,
                 "installation": installation.installation if installation else {},
-                "versions": [r.version for r in rows],
+                "versions": [r.version for r, _ in rows],
+                **({"is_builtin_example": True} if is_example else {}),
                 "deleted": await session.get(AgentAssetTombstone, ("role", role_id))
                 is not None,
             }

@@ -378,11 +378,12 @@ class AgentWorkflowVersion(TimestampMixin, SQLModel, table=True):
     definition: dict = Field(sa_type=JSON)
 
 
-class AgentWorkflowExample(SQLModel, table=True):
+class AgentAssetExample(SQLModel, table=True):
     """Owner's provisioned example identity, retained after ordinary asset deletion."""
 
-    __tablename__: str = "agent_workflow_examples"  # pyright: ignore[reportIncompatibleVariableOverride]
+    __tablename__: str = "agent_asset_examples"  # pyright: ignore[reportIncompatibleVariableOverride]
     owner_username: str = Field(primary_key=True)
+    kind: str = Field(primary_key=True)
     asset_id: str = Field(unique=True)
 
 

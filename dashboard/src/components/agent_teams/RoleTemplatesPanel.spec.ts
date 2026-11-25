@@ -100,6 +100,27 @@ describe("reusable role configuration", () => {
     api.save.mockResolvedValue({ role_id: "r1", version: 1 });
   });
 
+  it("pins the original role, preserves its edited name and removes its guide on deletion", async () => {
+    const ordinary = { role_id: "copy", version: 1, versions: [1], definition: { name: "Release note editor" } };
+    const example = { ...ordinary, role_id: "example", version: 2, is_builtin_example: true, definition: { name: "My editor" } };
+    api.list.mockResolvedValueOnce({ roles: [ordinary, example] }).mockResolvedValue({ roles: [ordinary] });
+    api.delete.mockResolvedValue({});
+    const panel = mount(RoleTemplatesPanel, { global: { stubs } });
+    try {
+      await flushPromises();
+      expect(api.list).toHaveBeenCalledWith(true);
+      const card = panel.get('[data-testid="builtin-role-example"]');
+      expect(panel.findAll(".role-card")[0].text()).toContain("My editor");
+      await card.get('[data-testid="role-example-guide-toggle"]').trigger("click");
+      expect(card.get('[data-testid="release-guide-step"]').attributes("data-step")).toBe("responsibility");
+      await card.get('[data-testid="delete-role"]').trigger("click");
+      await panel.get('[data-testid="confirm-asset-deletion"]').trigger("click");
+      await flushPromises();
+      expect(panel.text()).toContain("Release note editor");
+      expect(panel.find('[data-testid="role-example-guide-toggle"]').exists()).toBe(false);
+    } finally { panel.unmount(); }
+  });
+
   it("confirms deletion and refreshes the role directory", async () => {
     api.list
       .mockResolvedValueOnce({

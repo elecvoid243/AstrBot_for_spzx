@@ -1,4 +1,71 @@
 {
+  "starterTeam": {
+    "title": "Release notes desk",
+    "description": "A managing editor delegates a draft, checks it against the brief, and delivers a release note.",
+    "goal": "Write a two-sentence release note for end users. The app now saves drafts automatically so people can resume editing when they reopen it.",
+    "guide": {
+      "title": "Walkthrough of the v1 example",
+      "nodes": {
+        "lead": "Managing editor",
+        "editor": "Writer",
+        "check": "Editorial check",
+        "chat": "Chat"
+      },
+      "steps": {
+        "configure": {
+          "title": "Configure the team",
+          "body": "Edit this team to inspect its Managing editor coordinator and Release note editor preset. Select a default model with tool calling and save a version."
+        },
+        "goal": {
+          "title": "Give the team a goal",
+          "body": "On the team card choose “{start}”. Keep the suggested goal below or replace it with your own changes and audience, then confirm."
+        },
+        "delegate": {
+          "title": "Delegate the draft",
+          "body": "The managing editor can create a member from the editor preset and assign the writing task. The workbench records the members and tasks actually created."
+        },
+        "collect": {
+          "title": "Check the writer’s result",
+          "body": "The writer submits a draft. The managing editor checks it against the source facts and audience before submitting the team’s final note."
+        },
+        "monitor": {
+          "title": "Follow the run in Chat",
+          "body": "Choose “{chat}” in the run workbench. Expand the tasks to see who did the work, follow progress, and read the final note. Starting again creates a new root run."
+        }
+      }
+    }
+  },
+  "starterRole": {
+    "title": "Release note editor",
+    "description": "Turn supplied changes into short release notes and flag missing facts.",
+    "guide": {
+      "title": "Walkthrough of the v1 example",
+      "nodes": {
+        "prompt": "Responsibility",
+        "model": "Local resources",
+        "version": "Fixed version",
+        "agent": "Agent"
+      },
+      "steps": {
+        "responsibility": {
+          "title": "Read the responsibility",
+          "body": "Choose “{edit}” and read the writing instructions. The editor uses the supplied facts and explains what changed for end users."
+        },
+        "resources": {
+          "title": "Preview local configuration",
+          "body": "Choose an execution profile and a model with tool calling. Select “{rolePreview}” to inspect effective settings and missing resources. The starter requests no extra tools, skills or knowledge bases."
+        },
+        "publish": {
+          "title": "Publish a reusable version",
+          "body": "After editing the responsibility, choose “{publish}” and note the version. Workflows that pin an earlier version retain their original settings."
+        },
+        "reuse": {
+          "title": "Reuse the role",
+          "body": "In a workflow Agent or an autonomous team member preset, select the role template and its fixed version. The role executes when the consuming asset runs."
+        }
+      }
+    }
+  },
   "assetLoading": {
     "assets": "Workflow assets",
     "roles": "Roles",

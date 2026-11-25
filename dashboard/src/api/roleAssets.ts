@@ -9,8 +9,8 @@ export const roleAssetsApi = {
       )
     ).data.data;
   },
-  async list() {
-    return (await httpClient.get("/api/v1/agent_roles")).data.data;
+  async list(includeExample = false) {
+    return (await httpClient.get("/api/v1/agent_roles", { params: { include_example: includeExample || undefined } })).data.data;
   },
   async resources() {
     return (await httpClient.get("/api/v1/agent_roles/resources")).data.data;

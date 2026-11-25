@@ -8253,9 +8253,31 @@ paths:
       - AgentTeams
       summary: List reusable role templates
       operationId: listRoleAssets
+      security:
+      - BearerAuth: []
+      parameters:
+      - name: include_example
+        in: query
+        description: Provision the owner's starter role on first directory access. A deleted example stays deleted.
+        schema: {type: boolean, default: false}
       responses:
         '200':
-          $ref: '#/components/responses/Ok'
+          description: Latest role versions visible to the owner.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, data]
+                properties:
+                  status: {type: string, const: ok}
+                  data:
+                    type: object
+                    required: [roles]
+                    properties:
+                      roles:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/SavedRoleAsset'
         '400':
           description: Role validation or ownership error
         '404':
@@ -8324,9 +8346,19 @@ paths:
       - AgentTeams
       summary: Read a pinned or latest role version
       operationId: getRoleAsset
+      security:
+      - BearerAuth: []
       responses:
         '200':
-          $ref: '#/components/responses/Ok'
+          description: The selected role version and its local installation.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, data]
+                properties:
+                  status: {type: string, const: ok}
+                  data: {$ref: '#/components/schemas/SavedRoleAsset'}
         '400':
           description: Role validation or ownership error
         '404':
@@ -8869,6 +8901,10 @@ paths:
       - name: summary_only
         in: query
         description: Return workbench card summaries without full definitions or version history.
+        schema: {type: boolean, default: false}
+      - name: include_team_example
+        in: query
+        description: Provision the owner's autonomous starter team. Deletion is durable.
         schema: {type: boolean, default: false}
       - name: include_example
         in: query
@@ -13367,6 +13403,17 @@ components:
           enum: [wait, use_recommendation]
           default: wait
       description: Automatic recommendation use requires an explicit deadline.
+    SavedRoleAsset:
+      type: object
+      required: [role_id, version, definition, installation, versions, deleted]
+      properties:
+        role_id: {type: string}
+        version: {type: integer}
+        definition: {$ref: '#/components/schemas/RoleDefinition'}
+        installation: {$ref: '#/components/schemas/RoleInstallation'}
+        versions: {type: array, items: {type: integer}}
+        deleted: {type: boolean}
+        is_builtin_example: {type: boolean, default: false}
     RoleDefinition:
       additionalProperties: false
       description: Role content with direct resource identities.

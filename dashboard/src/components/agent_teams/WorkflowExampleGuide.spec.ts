@@ -54,6 +54,28 @@ describe("Release brief walkthrough", () => {
     }
   });
 
+  it.each([
+    { kind: "team" as const, stages: ["configure", "goal", "delegate", "collect", "monitor"], title: "Editorial check" },
+    { kind: "role" as const, stages: ["responsibility", "resources", "publish", "reuse"], title: "Fixed version" },
+  ])("animates the $kind example through its own stages and replays", async ({ kind, stages, title }) => {
+    vi.useFakeTimers();
+    const wrapper = mount(WorkflowExampleGuide, { props: { kind }, global: { stubs } });
+    try {
+      const step = wrapper.get('[data-testid="release-guide-step"]');
+      expect(wrapper.get('[data-testid="release-guide-graph"]').text()).toContain(title);
+      expect(step.attributes("data-step")).toBe(stages[0]);
+      await wrapper.get('[data-testid="release-guide-play"]').trigger("click");
+      for (const stage of stages.slice(1)) {
+        await vi.advanceTimersToNextTimerAsync();
+        expect(step.attributes("data-step")).toBe(stage);
+      }
+      expect(wrapper.find(".guide-binding").exists()).toBe(false);
+      expect(wrapper.get('[data-testid="release-guide-next"]').attributes("disabled")).toBeDefined();
+      await wrapper.get('[data-testid="release-guide-play"]').trigger("click");
+      expect(step.attributes("data-step")).toBe(stages[0]);
+    } finally { wrapper.unmount(); }
+  });
+
   it("supports keyboard navigation, pauses when stepped manually, and cancels playback on close", async () => {
     vi.useFakeTimers();
     const wrapper = mount(WorkflowExampleGuide, { global: { stubs } });

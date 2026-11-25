@@ -102,6 +102,7 @@ from astrbot.core.agent_teams.result_tool import (
     validate_component_result,
     validate_result,
 )
+from astrbot.core.agent_teams.starter_team import RELEASE_TEAM
 from astrbot.core.agent_teams.usage import (
     RunLimits,
     UsageReport,
@@ -116,6 +117,7 @@ from astrbot.core.db import BaseDatabase
 from astrbot.core.db.po import (
     AgentAssetDraft,
     AgentAssetDraftPublication,
+    AgentAssetExample,
     AgentAssetTombstone,
     AgentRoleInstallation,
     AgentRoleVersion,
@@ -126,7 +128,6 @@ from astrbot.core.db.po import (
     AgentWorkflowCheckpoint,
     AgentWorkflowControl,
     AgentWorkflowEvent,
-    AgentWorkflowExample,
     AgentWorkflowFile,
     AgentWorkflowLaunchReceipt,
     AgentWorkflowMessage,
@@ -1245,14 +1246,23 @@ class WorkflowService:
         async with self.db.get_db() as session:
             await session.execute(text("BEGIN IMMEDIATE"))
             if provision_example:
-                existing = await session.get(AgentWorkflowExample, username)
+                example_kind = (
+                    "autonomous"
+                    if isinstance(definition, AutonomousDefinition)
+                    else "workflow"
+                )
+                existing = await session.get(
+                    AgentAssetExample, (username, example_kind)
+                )
                 if existing is not None:
                     # A concurrent workbench request already published the example.
                     existing_id = existing.asset_id
                     await session.rollback()
                     return await self.get_asset(username, existing_id)
                 session.add(
-                    AgentWorkflowExample(owner_username=username, asset_id=asset_id)
+                    AgentAssetExample(
+                        owner_username=username, kind=example_kind, asset_id=asset_id
+                    )
                 )
             if await session.get(AgentAssetTombstone, ("workflow", asset_id)):
                 raise RoleAssetError("Asset has been deleted", status=409)
@@ -1467,10 +1477,11 @@ class WorkflowService:
             query = sa_select(
                 asset.version,
                 col(asset.definition).cast(Text).label("body"),
-                sa_select(AgentWorkflowExample.asset_id)
+                sa_select(AgentAssetExample.asset_id)
                 .where(
-                    AgentWorkflowExample.asset_id == asset_id,
-                    AgentWorkflowExample.owner_username == username,
+                    AgentAssetExample.asset_id == asset_id,
+                    AgentAssetExample.owner_username == username,
+                    col(AgentAssetExample.kind).in_(["workflow", "autonomous"]),
                 )
                 .exists()
                 .label("is_example"),
@@ -1543,25 +1554,31 @@ class WorkflowService:
         username: str,
         *,
         include_example: bool = False,
+        include_team_example: bool = False,
         summary_only: bool = False,
     ) -> dict:
         """List the owner's latest asset versions.
 
         Args:
             username: Authenticated owner.
+            include_team_example: Provision the autonomous starter team.
             summary_only: Return compact fields for workbench cards.
             include_example: Provision this owner's sample on first workbench access.
 
         Returns:
             Latest definitions, without runtime state.
         """
-        if include_example:
-            async with self.db.get_db() as session:
-                example = await session.get(AgentWorkflowExample, username)
-            if example is None:
-                await self.save_asset(
-                    username, {"definition": RELEASE_BRIEF}, provision_example=True
-                )
+        for requested, kind, definition in (
+            (include_example, "workflow", RELEASE_BRIEF),
+            (include_team_example, "autonomous", RELEASE_TEAM),
+        ):
+            if requested:
+                async with self.db.get_db() as session:
+                    marker = await session.get(AgentAssetExample, (username, kind))
+                if marker is None:
+                    await self.save_asset(
+                        username, {"definition": definition}, provision_example=True
+                    )
         assets = []
         unavailable = []
         async with self.db.get_db() as session:
@@ -1581,7 +1598,7 @@ class WorkflowService:
                         AgentWorkflowVersion.asset_id,
                         AgentWorkflowVersion.version,
                         col(AgentWorkflowVersion.definition).cast(Text).label("body"),
-                        col(AgentWorkflowExample.asset_id)
+                        col(AgentAssetExample.asset_id)
                         .is_not(None)
                         .label("is_example"),
                     )
@@ -1593,11 +1610,11 @@ class WorkflowService:
                         ),
                     )
                     .outerjoin(
-                        AgentWorkflowExample,
+                        AgentAssetExample,
                         and_(
-                            AgentWorkflowExample.asset_id
-                            == AgentWorkflowVersion.asset_id,
-                            AgentWorkflowExample.owner_username == username,
+                            AgentAssetExample.asset_id == AgentWorkflowVersion.asset_id,
+                            AgentAssetExample.owner_username == username,
+                            col(AgentAssetExample.kind).in_(["workflow", "autonomous"]),
                         ),
                     )
                     .where(

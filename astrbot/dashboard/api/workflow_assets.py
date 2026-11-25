@@ -463,6 +463,7 @@ async def list_workflow_components(
 @router.get("/workflow_assets")
 async def list_assets(
     include_example: bool = False,
+    include_team_example: bool = False,
     summary_only: bool = False,
     username: str = Depends(require_dashboard_user),
     service: WorkflowService = Depends(get_workflow_service),
@@ -471,6 +472,7 @@ async def list_assets(
 
     Args:
         include_example: Provision the editable starter workflow on first access.
+        include_team_example: Provision the autonomous starter team.
         summary_only: Return card summaries without full graph definitions.
         username: Stable resource owner of the authorized Dashboard account.
         service: Core-owned workflow service.
@@ -480,7 +482,10 @@ async def list_assets(
     """
     return ok(
         await service.list_assets(
-            username, include_example=include_example, summary_only=summary_only
+            username,
+            include_example=include_example,
+            include_team_example=include_team_example,
+            summary_only=summary_only,
         )
     )
 

@@ -3,12 +3,12 @@
     class="example-guide"
     :class="{ 'motion-paused': motionPaused }"
     data-testid="release-guide"
-    :aria-label="tm('releaseBrief.guide.title')"
+    :aria-label="tm(prefix + '.guide.title')"
     @keydown.left.prevent="move(-1)"
     @keydown.right.prevent="move(1)"
   >
     <div class="guide-toolbar">
-      <strong><v-icon icon="mdi-motion-play-outline" size="18" />{{ tm("releaseBrief.guide.title") }}</strong>
+      <strong><v-icon icon="mdi-motion-play-outline" size="18" />{{ tm(prefix + ".guide.title") }}</strong>
       <v-btn variant="text" color="primary" :prepend-icon="playing ? 'mdi-pause' : last ? 'mdi-replay' : 'mdi-play'"
         data-testid="release-guide-play" @click="togglePlayback">
         {{ tm(`releaseBrief.guide.${playing ? "pause" : last ? "replay" : "play"}`) }}
@@ -25,15 +25,15 @@
         <div v-for="(node, index) in nodes" :key="node.id" class="guide-node"
           :class="{ 'is-current': current.node === index, 'is-review': node.id === 'review' }">
           <span class="guide-node-icon"><v-icon :icon="node.icon" size="21" /></span>
-          <span class="guide-node-label">{{ tm(`releaseBrief.guide.nodes.${node.id}`) }}</span>
+          <span class="guide-node-label">{{ tm(`${prefix}.guide.nodes.${node.id}`) }}</span>
           <span v-if="index < nodes.length - 1" class="guide-wire"
             :class="{ 'is-active': current.edge === index }">
-            <v-icon v-if="index === 2 && (current.id === 'review' || last)" class="guide-gate"
+            <v-icon v-if="kind === 'workflow' && index === 2 && (current.id === 'review' || last)" class="guide-gate"
               :icon="last ? 'mdi-lock-open-check-outline' : 'mdi-lock-outline'" size="14" />
             <i v-if="current.edge === index" :key="current.id" class="guide-packet" />
           </span>
         </div>
-        <div class="guide-binding" :class="{ 'is-active': last }">
+        <div v-if="kind === 'workflow'" class="guide-binding" :class="{ 'is-active': last }">
           <i v-if="last" class="guide-data-packet" />
           <code>project · summary</code>
         </div>
@@ -42,13 +42,14 @@
 
     <div class="guide-caption" data-testid="release-guide-step" :data-step="current.id" aria-live="polite" aria-atomic="true">
       <span class="guide-counter">{{ tm("releaseBrief.guide.progress", { step: step + 1, total: steps.length }) }}</span>
-      <h3>{{ tm(`releaseBrief.guide.steps.${current.id}.title`) }}</h3>
-      <p>{{ tm(`releaseBrief.guide.steps.${current.id}.body`, {
+      <h3>{{ tm(`${prefix}.guide.steps.${current.id}.title`) }}</h3>
+      <p>{{ tm(`${prefix}.guide.steps.${current.id}.body`, {
         canvas: tm('releaseBrief.canvas'), start: tm('v2.start'), chat: tm('runConversation.openChat'),
-        inbox: tm('workbench.panelresults'), preview: tm('human.preview'), approve: tm('human.approve'),
+        inbox: tm('workbench.panelresults'), preview: tm('human.preview'), approve: tm('human.approve'), edit: tm('roles.edit'), publish: tm('draft.publish'), rolePreview: tm('roles.preview'),
       }) }}</p>
+      <q v-if="kind === 'team' && current.id === 'goal'" class="guide-question">{{ tm("starterTeam.goal") }}</q>
       <q v-if="current.id === 'review'" class="guide-question" lang="en">Approve this release brief?</q>
-      <dl v-if="current.id === 'start' || last" class="guide-values">
+      <dl v-if="kind === 'workflow' && (current.id === 'start' || last)" class="guide-values">
         <div><dt>project</dt><dd>Agent Teams</dd></div>
         <div><dt>summary</dt><dd>Ready for release.</dd></div>
       </dl>
@@ -69,26 +70,41 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useModuleI18n } from "@/i18n/composables";
 
 const { tm } = useModuleI18n("features/agent-teams");
-const nodes = [
+const props = withDefaults(defineProps<{ kind?: "workflow" | "team" | "role" }>(), { kind: "workflow" });
+const prefix = computed(() => ({ workflow: "releaseBrief", team: "starterTeam", role: "starterRole" })[props.kind]);
+const nodes = computed(() => props.kind === "team" ? [
+  { id: "lead", icon: "mdi-account-tie" }, { id: "editor", icon: "mdi-file-document-edit-outline" },
+  { id: "check", icon: "mdi-account-check-outline" }, { id: "chat", icon: "mdi-message-outline" },
+] : props.kind === "role" ? [
+  { id: "prompt", icon: "mdi-account-outline" }, { id: "model", icon: "mdi-cog-outline" },
+  { id: "version", icon: "mdi-source-branch" }, { id: "agent", icon: "mdi-account-multiple-outline" },
+] : [
   { id: "inputs", icon: "mdi-form-textbox" },
   { id: "prepare", icon: "mdi-file-document-edit-outline" },
   { id: "review", icon: "mdi-account-check-outline" },
   { id: "deliver", icon: "mdi-file-check-outline" },
-];
-const steps = [
+]);
+const steps = computed(() => props.kind === "team" ? [
+  { id: "configure", node: 0, edge: null }, { id: "goal", node: 0, edge: null },
+  { id: "delegate", node: 1, edge: 0 }, { id: "collect", node: 2, edge: 1 },
+  { id: "monitor", node: 3, edge: 2 },
+] : props.kind === "role" ? [
+  { id: "responsibility", node: 0, edge: null }, { id: "resources", node: 1, edge: 0 },
+  { id: "publish", node: 2, edge: 1 }, { id: "reuse", node: 3, edge: 2 },
+] : [
   { id: "canvas", node: null, edge: null },
   { id: "start", node: 1, edge: 0 },
   { id: "chat", node: 2, edge: 1 },
   { id: "review", node: 2, edge: null },
   { id: "result", node: 3, edge: 2 },
-];
+]);
 const step = ref(0);
-const current = computed(() => steps[step.value]);
-const last = computed(() => step.value === steps.length - 1);
+const current = computed(() => steps.value[step.value]);
+const last = computed(() => step.value === steps.value.length - 1);
 const playing = ref(false);
 const motionPaused = ref(false);
 let timer: number | undefined;
@@ -101,7 +117,7 @@ function pause(freezeIllustration = true) {
 
 function move(direction: number) {
   pause(false);
-  step.value = Math.min(steps.length - 1, Math.max(0, step.value + direction));
+  step.value = Math.min(steps.value.length - 1, Math.max(0, step.value + direction));
 }
 
 function togglePlayback() {
@@ -123,6 +139,10 @@ function onVisibilityChange() {
   if (document.hidden) pause();
 }
 
+watch(() => props.kind, () => {
+  pause(false);
+  step.value = 0;
+});
 onMounted(() => document.addEventListener("visibilitychange", onVisibilityChange));
 onBeforeUnmount(() => {
   pause();

@@ -98,7 +98,7 @@
             </v-card-actions>
           </v-card>
           <v-card v-else class="at-asset-card" :class="{ 'at-example-card': asset.is_builtin_example }"
-            :data-testid="asset.is_builtin_example ? 'builtin-workflow-example' : undefined" variant="outlined">
+            :data-testid="asset.is_builtin_example ? (asset.definition.kind === 'autonomous' ? 'builtin-team-example' : 'builtin-workflow-example') : undefined" variant="outlined">
             <v-card-text>
               <div class="at-card-topline">
                 <span class="at-asset-icon" :class="{ 'is-team': asset.definition.kind === 'autonomous' }" aria-hidden="true"><v-icon :icon="asset.definition.kind === 'autonomous' ? 'mdi-account-group-outline' : 'mdi-sitemap-outline'" size="23" /></span>
@@ -106,7 +106,7 @@
                 <v-chip size="small" variant="tonal">v{{ asset.version }}</v-chip>
               </div>
               <v-card-title>{{ assetDisplayName(asset) }}</v-card-title>
-              <p v-if="asset.is_builtin_example && asset.version === 1" class="at-card-description">{{ tm("releaseBrief.description") }}</p>
+              <p v-if="asset.is_builtin_example && asset.version === 1" class="at-card-description">{{ tm(asset.definition.kind === "autonomous" ? "starterTeam.description" : "releaseBrief.description") }}</p>
               <p v-else-if="asset.summary" class="at-card-description">{{ asset.summary.preview.map((name: string, i: number) => roleNames.get(asset.summary.preview_role_ids?.[i]) ?? name).join(' · ') }}</p>
               <p v-else class="at-card-description">{{ asset.definition.kind === 'autonomous' ? asset.definition.allowed_roles.map((member: any) => member.role?.name || roles.find((role: any) => role.role_id === member.role_id)?.definition.name || member.id).filter(Boolean).join(' · ') : asset.definition.tasks.map((task: any) => task.name).slice(0, 4).join(' · ') }}</p>
               <div class="at-card-metadata">
@@ -118,8 +118,8 @@
             <v-card-actions class="at-card-footer">
               <v-btn v-if="asset.is_builtin_example" variant="text" class="at-guide-toggle"
                 prepend-icon="mdi-play-box-multiple-outline" data-testid="workflow-example-guide-toggle"
-                :aria-expanded="guideOpen" aria-controls="workflow-example-guide" @click="guideOpen = !guideOpen">
-                {{ tm(guideOpen ? "releaseBrief.guide.close" : "releaseBrief.guide.open") }}
+                :aria-expanded="guideId === asset.asset_id" :aria-controls="'guide-' + asset.asset_id" @click="guideId = guideId === asset.asset_id ? null : asset.asset_id">
+                {{ tm(guideId === asset.asset_id ? "releaseBrief.guide.close" : "releaseBrief.guide.open") }}
               </v-btn>
               <div class="at-card-secondary-actions">
                 <v-btn variant="text" class="at-card-icon-action" data-testid="open-chat-access" :aria-label="tm('chatAccess.title')" :title="tm('chatAccess.title')" @click="chatAccessAsset = asset"><v-icon icon="mdi-link-variant" size="18" /><span class="at-sr-only">{{ tm("chatAccess.title") }}</span></v-btn>
@@ -127,11 +127,11 @@
                 <v-btn data-testid="delete-asset" variant="text" class="at-card-icon-action" :aria-label="tm('deletion.delete')" :title="tm('deletion.delete')" @click="deleteTarget = asset"><v-icon icon="mdi-trash-can-outline" size="18" /><span class="at-sr-only">{{ tm('deletion.delete') }}</span></v-btn>
               </div>
               <v-spacer />
-              <v-btn variant="text" data-testid="edit-workflow-asset" @click="asset.definition.kind === 'autonomous' ? openCard(asset, 'edit') : editGraph(asset)">{{ tm(asset.is_builtin_example ? "releaseBrief.canvas" : "v2.edit") }}</v-btn>
+              <v-btn variant="text" data-testid="edit-workflow-asset" @click="asset.definition.kind === 'autonomous' ? openCard(asset, 'edit') : editGraph(asset)">{{ tm(asset.is_builtin_example && asset.definition.kind !== "autonomous" ? "releaseBrief.canvas" : "v2.edit") }}</v-btn>
               <v-btn variant="tonal" color="primary" prepend-icon="mdi-play-outline" data-testid="start-workflow-asset" @click="openCard(asset, 'start')">{{ tm("v2.start") }}</v-btn>
             </v-card-actions>
-            <div v-if="asset.is_builtin_example" v-show="guideOpen" id="workflow-example-guide" class="at-guide-body">
-              <WorkflowExampleGuide v-if="guideOpen" />
+            <div v-if="asset.is_builtin_example" v-show="guideId === asset.asset_id" :id="'guide-' + asset.asset_id" class="at-guide-body">
+              <WorkflowExampleGuide v-if="guideId === asset.asset_id" :kind="asset.definition.kind === 'autonomous' ? 'team' : 'workflow'" />
             </div>
           </v-card>
         </template>
@@ -854,8 +854,9 @@ const assets = ref<any[]>([]);
 const deleteTarget = ref<any>(null);
 const deleting = ref(false);
 const deleteError = ref("");
-function assetDisplayName(asset: { definition: { name?: string }; is_builtin_example?: boolean }) {
-  return asset.is_builtin_example && asset.definition.name === "Release brief"
+function assetDisplayName(asset: { definition: { name?: string; kind?: string }; is_builtin_example?: boolean }) {
+  if (asset.is_builtin_example && asset.definition.kind === "autonomous" && asset.definition.name === "Release notes desk") return tm("starterTeam.title");
+  return asset.is_builtin_example && asset.definition.kind !== "autonomous" && asset.definition.name === "Release brief"
     ? tm("releaseBrief.title")
     : asset.definition.name || tm("draft.untitled");
 }
@@ -910,7 +911,7 @@ const assetCards = computed(() => [
   ...visibleDrafts.value.map((asset) => ({ asset, draft: true })),
   ...visibleAssets.value.map((asset) => ({ asset, draft: false })),
 ].sort((a, b) => Number(b.asset.is_builtin_example === true) - Number(a.asset.is_builtin_example === true)));
-const guideOpen = ref(false);
+const guideId = ref<string | null>(null);
 const chatAccessAsset = ref<any>(null);
 const packageDialog = ref(false);
 const exportedPackage = ref<WorkflowPackage | null>(null);
@@ -1448,7 +1449,7 @@ watch(accountSessionRevision, () => {
   unavailableAssets.value = [];
   sectionErrors.value = {};
   drafts.value = [];
-  guideOpen.value = false;
+  guideId.value = null;
   deleteTarget.value = null;
   starting.value = false;
   chatAccessAsset.value = null;
@@ -1476,7 +1477,7 @@ async function loadAssetSection(section: AssetSection, read: number) {
   const current = () => !disposed && read === runRead && sectionRequests.get(section) === request;
   try {
     if (section === "assets") {
-      const data = await workflowAssetsApi.list(props.assetKind === "workflows", true);
+      const data = await workflowAssetsApi.list(props.assetKind === "teams" ? "team" : props.assetKind === "workflows", true);
       if (!current()) return;
       assets.value = data.assets.map((row: any) => row.summary ? { ...row, definition: row.summary } : row);
       unavailableAssets.value = data.unavailable_assets ?? [];
@@ -1745,6 +1746,9 @@ function prepareRun(asset: any) {
   inputs.value = Object.fromEntries(
     (asset.definition.required_inputs ?? []).map((name: string) => [name, ""]),
   );
+  if (asset.is_builtin_example && asset.definition.kind === "autonomous") {
+    inputs.value.goal = tm("starterTeam.goal");
+  }
   formError.value = "";
   starting.value = true;
   inputArtifacts.value = [];

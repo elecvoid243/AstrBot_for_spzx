@@ -1737,6 +1737,16 @@ export type backend = 'bubblewrap' | 'seatbelt';
  */
 export type status = 'detected' | 'missing' | 'unavailable' | 'unsupported';
 
+export type SavedRoleAsset = {
+    role_id: string;
+    version: number;
+    definition: RoleDefinition;
+    installation: RoleInstallation;
+    versions: Array<(number)>;
+    deleted: boolean;
+    is_builtin_example?: boolean;
+};
+
 export type SavedWorkflowAsset = {
     asset_id: string;
     version: number;
@@ -6513,7 +6523,21 @@ export type ReceivePlatformWebhookResponse = (unknown);
 
 export type ReceivePlatformWebhookError = unknown;
 
-export type ListRoleAssetsResponse = (SuccessEnvelope);
+export type ListRoleAssetsData = {
+    query?: {
+        /**
+         * Provision the owner's starter role on first directory access. A deleted example stays deleted.
+         */
+        include_example?: boolean;
+    };
+};
+
+export type ListRoleAssetsResponse = ({
+    status: "ok";
+    data: {
+        roles: Array<SavedRoleAsset>;
+    };
+});
 
 export type ListRoleAssetsError = (unknown);
 
@@ -6546,7 +6570,10 @@ export type GetRoleAssetData = {
     };
 };
 
-export type GetRoleAssetResponse = (SuccessEnvelope);
+export type GetRoleAssetResponse = ({
+    status: "ok";
+    data: SavedRoleAsset;
+});
 
 export type GetRoleAssetError = (unknown);
 
@@ -6725,6 +6752,10 @@ export type ListAssetsApiV1WorkflowAssetsGetData = {
          * Provision the owner's starter workflow on first workbench access. A deleted example stays deleted.
          */
         include_example?: boolean;
+        /**
+         * Provision the owner's autonomous starter team. Deletion is durable.
+         */
+        include_team_example?: boolean;
         /**
          * Return workbench card summaries without full definitions or version history.
          */

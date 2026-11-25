@@ -32,6 +32,22 @@ Hover over a blue handle to see **Execution input** or **Execution output**. Dra
 
 Publication and full-graph trials identify required data bindings that depend on opposite outcomes of the same decision. They also reject enum or constant ports with no common value. The asset list identifies unsupported versions by asset ID. If one section fails to load, use its **Retry** button to reload that section.
 
+## First run with an autonomous team and a role template
+
+Open **Agent Teams → Assets → Teams**. The pinned **Release notes desk** has a managing editor coordinator and an editor preset. Select **View walkthrough** to see how a writing assignment moves from the coordinator to a member and back for delivery.
+
+1. Select **Edit Asset**, choose a local default model with tool calling, and save a version. The editor and walkthrough are available before model setup.
+2. Select **Start Run**. Keep the suggested goal about automatic draft saving, or enter your own source facts, audience and deliverable.
+3. The coordinator can create an editor, assign the note, and use the submitted draft to complete the goal. Select **Open in Chat** in the workbench to inspect the actual members, tasks and final note.
+
+![The release notes desk walkthrough illustrates delegation to an editor](/images/agent-teams-starter-team-en.png)
+
+Under **Assets → Role templates**, find **Release note editor**. Its walkthrough covers responsibility, local resources, publishing and reuse. Edit the template, preview its prompt, model and resource permissions, and save a version. Select the template and its fixed version in a workflow Agent or an autonomous member preset. Running the consuming team or workflow executes the role.
+
+![The release note editor walkthrough explains publishing and pinning a role version](/images/agent-teams-starter-role-en.png)
+
+Each account owns its examples. The starter team initially uses a directly configured editor preset. You can delete either example independently, and the deletion persists across refreshes and server restarts.
+
 ## Create and configure
 
 Choose **Assets → Workflows → New Workflow** to open a dedicated workflow editor. Enter a name at the top and select a default model in **Workflow settings**. Add Agents directly on the canvas without first creating a role template. Select an Agent to configure its task, responsibilities, profile, persona, model and resources; nearby hints explain their purpose and inheritance rules. An unselected persona means no persona; an Agent without its own model uses the workflow default. Before launch, every local Agent must resolve to an allowed model.

@@ -1073,6 +1073,27 @@ describe("workflow workspace", () => {
     } finally { wrapper.unmount(); }
   });
 
+  it("pins the autonomous example and teaches delegation with an editable launch goal", async () => {
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: "/agent-teams", component: slotStub }] });
+    await router.push("/agent-teams");
+    const team = { ...asset, asset_id: "desk", is_builtin_example: true, definition: {
+      kind: "autonomous", name: "Release notes desk", allowed_roles: [], required_inputs: ["goal"],
+    } };
+    api.list.mockResolvedValue({ assets: [{ ...team, asset_id: "copy", is_builtin_example: false }, team] });
+    const wrapper = mount(WorkflowWorkspacePanel, { props: { mode: "assets", assetKind: "teams" }, global: { plugins: [router], stubs } });
+    try {
+      await flushPromises();
+      const card = wrapper.get('[data-testid="builtin-team-example"]');
+      expect(wrapper.findAll(".at-asset-card")[0].text()).toContain("starterTeam.title");
+      expect(api.list).toHaveBeenCalledWith("team", true);
+      await card.get('[data-testid="workflow-example-guide-toggle"]').trigger("click");
+      expect(card.get('[data-testid="release-guide-step"]').attributes("data-step")).toBe("configure");
+      await card.get('[data-testid="start-workflow-asset"]').trigger("click");
+      await flushPromises();
+      expect(wrapper.get(".dialog input").element).toHaveProperty("value", "starterTeam.goal");
+    } finally { wrapper.unmount(); }
+  });
+
   it("pins only the marked example ahead of drafts and opens its real canvas and run", async () => {
     const router = createRouter({
       history: createMemoryHistory(),
@@ -1175,7 +1196,7 @@ describe("workflow workspace", () => {
     api.delete.mockResolvedValue({});
     const wrapper = mount(WorkflowWorkspacePanel, { props: { mode: "assets", assetKind: kind }, global: { plugins: [router], stubs } });
     await flushPromises();
-    expect(api.list).toHaveBeenCalledWith(kind === "workflows", true);
+    expect(api.list).toHaveBeenCalledWith(kind === "teams" ? "team" : kind === "workflows", true);
     await wrapper.get('[data-testid="delete-asset"]').trigger("click");
     expect(wrapper.text()).toContain("deletion.impact");
     expect(api.delete).not.toHaveBeenCalled();

@@ -183,6 +183,16 @@ class SQLiteDatabase(BaseDatabase):
             await conn.execute(text("PRAGMA optimize"))
             # SQLite does not implicitly start a transaction for DDL.
             await conn.execute(text("BEGIN"))
+            # Preserve edited and deleted starter workflows from the single-example registry.
+            if (
+                await conn.exec_driver_sql(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='agent_workflow_examples'"
+                )
+            ).scalar():
+                await conn.exec_driver_sql(
+                    "INSERT OR IGNORE INTO agent_asset_examples(owner_username, kind, asset_id) "
+                    "SELECT owner_username, 'workflow', asset_id FROM agent_workflow_examples"
+                )
             await self._ensure_workflow_message_scope_identity(conn)
             # Preserve existing requests while replacing the old one-request-per-task index.
             indexes = (

@@ -24,10 +24,12 @@
     <p v-else-if="!roles.length && !loadError">{{ tm("roles.empty") }}</p>
     <div class="role-grid at-asset-grid">
       <v-card
-        v-for="role in roles"
+        v-for="role in sortedRoles"
         :key="role.role_id"
         variant="outlined"
         class="role-card at-asset-card"
+        :class="{ 'starter-role': role.is_builtin_example }"
+        :data-testid="role.is_builtin_example ? 'builtin-role-example' : undefined"
       >
         <v-card-text>
           <div class="role-card-heading">
@@ -35,9 +37,10 @@
               ><v-icon icon="mdi-account-outline" size="21"
             /></span>
             <h3 class="role-name text-h6">
-              {{ role.definition.name || tm("draft.untitled") }}
+              {{ displayRoleName(role) }}
             </h3>
           </div>
+          <span v-if="role.is_builtin_example" class="starter-label"><v-icon icon="mdi-pin-outline" size="15" /> {{ tm("releaseBrief.pinned") }}</span>
           <v-chip
             size="x-small"
             variant="outlined"
@@ -60,7 +63,7 @@
           </p>
           <p class="role-description role-name my-2">
             {{
-              role.definition.description ||
+              (role.is_builtin_example && role.version === 1 ? tm("starterRole.description") : role.definition.description) ||
               role.definition.prompt ||
               tm("roles.none")
             }}
@@ -90,8 +93,11 @@
             {{ role.definition.provider_id || tm("roles.unbound") }}
           </p>
         </v-card-text>
-        <v-card-actions
-          ><v-btn variant="text" @click="edit(role)">{{
+        <v-card-actions>
+          <v-btn v-if="role.is_builtin_example" data-testid="role-example-guide-toggle" variant="text" prepend-icon="mdi-play-box-multiple-outline"
+            :aria-expanded="showGuide" aria-controls="role-example-guide" @click="showGuide = !showGuide">{{ tm(showGuide ? "releaseBrief.guide.close" : "releaseBrief.guide.open") }}</v-btn>
+          <v-spacer v-if="role.is_builtin_example" />
+          <v-btn variant="text" @click="edit(role)">{{
             tm("roles.edit")
           }}</v-btn
           ><v-btn
@@ -102,13 +108,13 @@
             >{{ tm("deletion.delete") }}</v-btn
           ></v-card-actions
         >
+        <div v-if="role.is_builtin_example" v-show="showGuide" id="role-example-guide" class="role-guide-body"><WorkflowExampleGuide v-if="showGuide" kind="role" /></div>
       </v-card>
     </div>
 
     <DeleteAssetDialog
       :name="
-        deleteTarget?.definition.name ||
-        (deleteTarget ? tm('draft.untitled') : null)
+        deleteTarget ? displayRoleName(deleteTarget) : null
       "
       :busy="deleting"
       :error="deleteError"
@@ -405,20 +411,31 @@ import { useModuleI18n } from "@/i18n/composables";
 import { extractApiError } from "@/utils/extractApiError";
 import RunnerCapabilities from "./RunnerCapabilities.vue";
 import RoleResourcesEditor from "./RoleResourcesEditor.vue";
+import WorkflowExampleGuide from "./WorkflowExampleGuide.vue";
 import DeleteAssetDialog from "./DeleteAssetDialog.vue";
 
 const { tm } = useModuleI18n("features/agent-teams");
 const { mobile } = useDisplay();
 const roles = ref<any[]>([]);
+const showGuide = ref(false);
+const sortedRoles = computed(() => [...roles.value].sort((a,b) => Number(!!b.is_builtin_example) - Number(!!a.is_builtin_example)));
+function displayRoleName(role: {definition: {name?: string}; is_builtin_example?: boolean}) {
+  return role.is_builtin_example && role.definition.name === "Release note editor"
+    ? tm("starterRole.title") : role.definition.name || tm("draft.untitled");
+}
 const deleteTarget = ref<any>(null);
 const deleting = ref(false);
 const deleteError = ref("");
 async function deleteRole() {
-  if (!deleteTarget.value) return;
+  if (!deleteTarget.value || deleting.value) return;
+  const id = deleteTarget.value.role_id;
+  const example = deleteTarget.value.is_builtin_example;
   deleting.value = true;
   deleteError.value = "";
   try {
-    await roleAssetsApi.delete(deleteTarget.value.role_id);
+    await roleAssetsApi.delete(id);
+    roles.value = roles.value.filter((role) => role.role_id !== id);
+    if (example) showGuide.value = false;
     deleteTarget.value = null;
     await load();
   } catch (cause) {
@@ -507,22 +524,26 @@ watch(dialog, (open, wasOpen) => {
   if (!open && wasOpen) void load();
 });
 
+let loadGeneration = 0;
 async function load() {
+  const generation = ++loadGeneration;
   loading.value = true;
   loadError.value = "";
   try {
     const [directory, resources, drafts] = await Promise.all([
-      roleAssetsApi.list(),
+      roleAssetsApi.list(true),
       roleAssetsApi.resources(),
       draftApi.list("role"),
     ]);
-    catalog.value = resources;
-    roles.value = await Promise.all(
+    const cards = await Promise.all(
       directory.roles.map(async (role: any) => ({
         ...role,
         readiness: await roleAssetsApi.preview(role),
       })),
     );
+    if (generation !== loadGeneration) return;
+    catalog.value = resources;
+    roles.value = cards;
     for (const item of drafts) {
       const published = roles.value.find(
         (role) => role.role_id === item.asset_id,
@@ -539,9 +560,9 @@ async function load() {
         });
     }
   } catch (err) {
-    loadError.value = extractApiError(err, tm("roles.loadFailed")).message;
+    if (generation === loadGeneration) loadError.value = extractApiError(err, tm("roles.loadFailed")).message;
   } finally {
-    loading.value = false;
+    if (generation === loadGeneration) loading.value = false;
   }
 }
 
@@ -756,6 +777,9 @@ onMounted(load);
 </script>
 
 <style scoped>
+.starter-role { grid-column: 1 / -1; border-inline-start: 3px solid var(--at-accent); }
+.starter-label { display: inline-flex; align-items: center; gap: 5px; margin-right: 10px; color: var(--at-accent); font-size: 12px; font-weight: 600; }
+.role-guide-body { padding: 14px 18px; border-top: 1px solid var(--at-line); }
 .role-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(min(100%, 270px), 1fr));

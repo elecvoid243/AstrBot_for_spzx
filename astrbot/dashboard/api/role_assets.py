@@ -179,11 +179,12 @@ async def role_resources(
 
 @router.get("/agent_roles")
 async def list_roles(
+    include_example: bool = False,
     username: str = Depends(require_dashboard_user),
     service: RoleAssetService = Depends(get_role_service),
 ):
     try:
-        return ok(await service.list_roles(username))
+        return ok(await service.list_roles(username, include_example=include_example))
     except RoleAssetError as exc:
         return JSONResponse(
             error(str(exc), {"fields": exc.fields}), status_code=exc.status

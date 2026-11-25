@@ -1,4 +1,4 @@
-/* Auto-generated MDI subset – 409 icons */
+/* Auto-generated MDI subset – 410 icons */
 /* Do not edit manually. Run: pnpm run subset-icons */
 
 @font-face {
@@ -58,6 +58,10 @@
 
 .mdi-account-question-outline::before {
   content: "\F0B5A";
+}
+
+.mdi-account-tie::before {
+  content: "\F0CE3";
 }
 
 .mdi-account-voice::before {

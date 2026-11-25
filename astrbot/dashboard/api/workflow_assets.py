@@ -1196,7 +1196,7 @@ async def start_workflow_debug_fork(
 
     Args:
         run_id: Source root run.
-        payload: Exact confirmed attempt and optional replacement.
+        payload: Exact confirmed attempt and explicit test values or references.
         username: Authenticated Dashboard owner.
         service: Shared workflow service.
 

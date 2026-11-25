@@ -6,14 +6,13 @@
     "version": "原版本 v{version}",
     "revision": "原草稿 r{revision}",
     "singleNode": "仅执行选中的节点。",
-    "replace": "替换一项已记录的输入",
-    "replacementText": "替换文本",
-    "replacementJson": "替换 JSON",
+    "replace": "选择要编辑的输入",
+    "replacementText": "测试文本",
+    "replacementJson": "测试 JSON",
     "invalidJson": "请输入有效的 JSON。",
     "input": "输入",
     "originalInput": "原值",
     "forkInput": "分支输入值",
-    "reused": "沿用原值",
     "close": "取消",
     "start": "启动调试分支",
     "openSource": "打开来源尝试",
@@ -22,7 +21,19 @@
     "sources": {
       "recorded": "已记录的输入",
       "default": "冻结定义的默认值",
-      "absent": "未读取值"
+      "absent": "未读取值",
+      "missing": "历史值缺失",
+      "unavailable": "已记录的引用不可用或无权访问"
+    },
+    "clearEdit": "清除编辑",
+    "resolveInputs": "请补齐输入 {names} 后再启动。",
+    "attachment": "此精确版本的附件",
+    "noAttachments": "此版本没有受管附件，请选择其他精确版本。",
+    "referenceUnavailable": "此精确版本不可用或你无权访问，请选择有权读取的版本。",
+    "selections": {
+      "reused": "沿用",
+      "filled": "补入",
+      "replaced": "替换"
     }
   },
   "inspection": {
@@ -30,6 +41,7 @@
     "hint": "选择具名数据线，查看消费节点实际读取的值。",
     "close": "关闭数据线检查器",
     "openAttempt": "检查这次尝试的数据线",
+    "skippedDebugHint": "请选择已完成或失败的尝试来启动调试分支。",
     "currentRounds": "当前轮次",
     "loading": "正在读取所选尝试…",
     "sourceRun": "来源任务运行",
@@ -41,7 +53,8 @@
       "null": "已读取显式 null",
       "not_read": "未读取",
       "skipped": "已跳过 · 未读取",
-      "missing": "缺少读取记录"
+      "missing": "缺少读取记录",
+      "unavailable": "已记录的引用不可用或无权访问"
     }
   },
   "starterTeam": {

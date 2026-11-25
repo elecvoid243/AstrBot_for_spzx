@@ -1,7 +1,11 @@
 """Verify the original-definition debug fork through the Dashboard API."""
 
+import json
+from dataclasses import replace
+
 import pytest
 
+from astrbot.core.agent_team_tools import AgentTeamToolRegistry
 from astrbot.core.db.po import AgentWorkflowRun
 from astrbot.dashboard.api.auth import require_dashboard_user
 from tests.agent_teams.test_workflow_assets import completed_run
@@ -117,7 +121,20 @@ async def test_debug_fork_freezes_one_recorded_consumer_attempt(
             saved.snapshot = {**legacy_snapshot, "port_sources": {}}
             await session.commit()
         unproven = await client.post(f"{root_path}/debug_forks/preview", json=identity)
-        assert unproven.status_code == 409, unproven.text
+        assert unproven.status_code == 200, unproven.text
+        unproven_plan = unproven.json()["data"]
+        assert unproven_plan["inputs"][0]["source"] == "missing"
+        assert "original" not in unproven_plan["inputs"][0]
+        filled = await client.post(
+            f"{root_path}/debug_forks",
+            json={
+                **identity,
+                "preview_token": unproven_plan["preview_token"],
+                "request_id": "fill-unproven-text",
+                "replacement": {"name": "text", "value": '{"citation":"Test"}'},
+            },
+        )
+        assert filled.status_code == 200, filled.text
         async with workflow_env.db.get_db() as session:
             saved = await session.get(AgentWorkflowRun, failed["run_id"])
             saved.snapshot = legacy_snapshot
@@ -374,3 +391,323 @@ async def test_debug_fork_replays_a_recorded_input_contract_failure(publication_
     (task,) = fork["tasks"]
     assert task["status"] == "failed"
     assert task["state"]["reason"] == failed["state"]["reason"] == "Invalid port values"
+
+
+@pytest.mark.asyncio
+async def test_debug_fork_fills_missing_history_with_exact_file(
+    publication_client, workflow_env, monkeypatch
+):
+    """Keep the report and admit only an authorized exact attachment.
+
+    Args:
+        publication_client: Dashboard API backed by a disposable database.
+        workflow_env: Storage for a historical attempt with incomplete evidence.
+        monkeypatch: Pause execution between admission and scheduling.
+    """
+    client = publication_client
+    service = workflow_env.service
+    ports = service.ports_factory("alice")
+    original_draft = {"text": "First draft", "confidence": 1.0}
+    draft_schema = {
+        "type": "object",
+        "properties": {
+            "text": {"type": "string", "minLength": 2},
+            "confidence": {"type": "number"},
+        },
+        "required": ["text", "confidence"],
+    }
+
+    async def collect(session_id, message_id, member_id):
+        """Submit the fixed producer result and exact file through task tools.
+
+        Args:
+            session_id: Session with the attempt's registered tools.
+            message_id: Message passed by the runner.
+            member_id: Member passed by the runner.
+
+        Returns:
+            Fixed completion text and an empty trace.
+        """
+        tools = {
+            tool.name: tool
+            for tool in AgentTeamToolRegistry.get_tools(
+                f"webchat:FriendMessage:{session_id}"
+            )
+        }
+        stored = json.loads(
+            await tools["store_task_file"].call(
+                None, filename="citations.pdf", content="Citation evidence"
+            )
+        )
+        await tools["submit_task_result"].call(
+            None,
+            result_json=json.dumps(
+                {"draft": original_draft, "files": [{"file_id": stored["file_id"]}]}
+            ),
+        )
+        return "Done", []
+
+    service.ports_factory = lambda _: replace(ports, collect=collect)
+    artifact_contract = {
+        "type": "object",
+        "properties": {
+            "draft": draft_schema,
+            "files": {"type": "array", "items": {"type": "object"}},
+        },
+        "required": ["draft", "files"],
+    }
+    contract = {
+        "type": "object",
+        "properties": {
+            "draft": draft_schema,
+            "pdf": {"type": "object", "format": "astrbot-file"},
+            "report": {"type": "object", "format": "astrbot-artifact"},
+        },
+        "required": ["draft", "pdf", "report"],
+    }
+    definition = {
+        "name": "Report review",
+        "port_contract_version": 2,
+        "input_contract": {"type": "object", "properties": {}},
+        "entry_task_ids": ["produce", "check"],
+        "result_task_id": "check",
+        "tasks": [
+            {
+                "id": "produce",
+                "name": "Prepare draft and citations",
+                "member": "writer",
+                "role_id": workflow_env.role["role_id"],
+                "role_version": 1,
+                "task": "Prepare draft and citations",
+                "output_contract": artifact_contract,
+            },
+            {
+                "id": "check",
+                "name": "Check citations",
+                "transform": "map_fields",
+                "input_contract": contract,
+                "output_contract": contract,
+                "inputs": {
+                    "draft": {"task_id": "produce", "field": "draft"},
+                    "pdf": {"task_id": "produce", "field": "$file"},
+                    "report": {"task_id": "produce", "field": "$artifact"},
+                },
+            },
+        ],
+    }
+    created = await client.post(
+        "/api/v1/workflow_assets", json={"definition": definition}
+    )
+    assert created.status_code == 200, created.text
+    asset_id = created.json()["data"]["asset_id"]
+    launched = await client.post(
+        f"/api/v1/workflow_assets/{asset_id}/runs", json={"version": 1}
+    )
+    assert launched.status_code == 200, launched.text
+    root = await completed_run(service, launched.json()["data"]["run_id"])
+    tasks = {task["node_id"]: task for task in root["tasks"]}
+    source, check = tasks["produce"], tasks["check"]
+    ref = source["result_ref"]
+    file = {**ref, "file_id": source["result"]["files"][0]["file_id"]}
+    async with service.db.get_db() as session:
+        row = await session.get(AgentWorkflowRun, check["run_id"])
+        row.snapshot = {
+            **row.snapshot,
+            "input_reads": {
+                name: evidence
+                for name, evidence in row.snapshot["input_reads"].items()
+                if name != "draft"
+            },
+            "inputs": {
+                **row.snapshot["inputs"],
+                "pdf": {"filename": "citations.pdf"},
+            },
+        }
+        await session.commit()
+
+    newer = await service.revise_artifact(
+        "alice",
+        ref["artifact_id"],
+        {
+            "request_id": "remove-attachment",
+            "expected_version": 1,
+            "content": {
+                "draft": {**original_draft, "text": "Newer draft"},
+                "files": [],
+            },
+        },
+    )
+    root_id = root["run_id"]
+    url = f"/api/v1/workflow_runs/{root_id}/debug_forks"
+    identity = {
+        "scope_run_id": root_id,
+        "task_run_id": check["run_id"],
+        "attempt_id": check["state"]["attempt_id"],
+    }
+    preview = await client.post(f"{url}/preview", json=identity)
+    assert preview.status_code == 200, preview.text
+    plan = preview.json()["data"]
+    inputs = {port["name"]: port for port in plan["inputs"]}
+    line = await client.get(
+        f"/api/v1/workflow_runs/{root_id}/data_line",
+        params={**identity, "input_name": "draft"},
+    )
+    assert line.json()["data"]["value"] == original_draft
+    assert inputs["draft"]["original"] == original_draft
+    assert inputs["pdf"]["source"] == "missing"
+    assert "original" not in inputs["pdf"]
+    assert inputs["report"]["original"] == ref
+    confirm = {
+        **identity,
+        "preview_token": plan["preview_token"],
+        "request_id": "exact-file",
+    }
+    missing = await client.post(url, json=confirm)
+    assert missing.status_code == 400, missing.text
+    assert missing.json()["data"]["fields"][0]["path"] == "inputs.pdf"
+    nonfinite = await client.post(
+        url,
+        headers={"Content-Type": "application/json"},
+        content=json.dumps(
+            {
+                **confirm,
+                "replacement": {
+                    "name": "draft",
+                    "value": {**original_draft, "confidence": "1e400"},
+                },
+            }
+        ).replace('"1e400"', "1e400"),
+    )
+    assert nonfinite.status_code == 400, nonfinite.text
+    assert "finite JSON numbers" in nonfinite.json()["message"]
+    for name, value in (
+        ("draft", {**original_draft, "text": "x"}),
+        ("pdf", {**file, "version": newer["version"]}),
+        ("pdf", {**file, "version": 999}),
+        ("pdf", {**ref, "file_id": "wrong-file"}),
+    ):
+        invalid = await client.post(
+            url, json={**confirm, "replacement": {"name": name, "value": value}}
+        )
+        assert invalid.status_code in {400, 404}, invalid.text
+        diagnostic_path = "inputs.draft.text" if name == "draft" else "inputs.pdf"
+        assert invalid.json()["data"]["fields"][0]["path"] == diagnostic_path
+    started = await client.post(
+        url,
+        json={
+            **confirm,
+            "replacements": [
+                {"name": "pdf", "value": file},
+                {"name": "report", "value": newer},
+            ],
+        },
+    )
+    assert started.status_code == 200, started.text
+    fork_id = started.json()["data"]["run_id"]
+    await service.revise_artifact(
+        "alice",
+        ref["artifact_id"],
+        {
+            "request_id": "newer-again",
+            "expected_version": newer["version"],
+            "content": {
+                "draft": {**original_draft, "text": "Third draft"},
+                "files": [],
+            },
+        },
+    )
+    saved = (await client.get(f"/api/v1/workflow_runs/{fork_id}")).json()["data"]
+    assert saved["result"] == {"draft": original_draft, "pdf": file, "report": newer}
+    comparisons = {
+        port["name"]: port for port in saved["snapshot"]["debug_fork"]["inputs"]
+    }
+    assert comparisons["draft"]["selection"] == "reused"
+    assert comparisons["pdf"]["selection"] == "filled"
+    assert comparisons["report"]["selection"] == "replaced"
+    assert comparisons["report"]["original"] == ref
+
+    async def delay_execution(username, run_id):
+        """Leave an admitted fork pending until permissions change.
+
+        Args:
+            username: Owner passed to the scheduler.
+            run_id: Pending fork passed to the scheduler.
+        """
+
+    with monkeypatch.context() as fixture:
+        fixture.setattr(service, "advance_run", delay_execution)
+        deferred = await client.post(
+            url,
+            json={
+                **confirm,
+                "request_id": "permission-at-execution",
+                "replacements": [
+                    {"name": "draft", "value": {**original_draft, "confidence": 1}},
+                    {"name": "pdf", "value": file},
+                    {
+                        "name": "report",
+                        "value": {
+                            "version": ref["version"],
+                            "artifact_id": ref["artifact_id"],
+                        },
+                    },
+                ],
+            },
+        )
+    assert deferred.status_code == 200, deferred.text
+    deferred_id = deferred.json()["data"]["run_id"]
+
+    pending = (await client.get(f"/api/v1/workflow_runs/{deferred_id}")).json()["data"]
+    selections = {
+        port["name"]: port["selection"]
+        for port in pending["snapshot"]["debug_fork"]["inputs"]
+    }
+    assert selections == {"draft": "reused", "pdf": "filled", "report": "reused"}
+    assert type(pending["snapshot"]["inputs"]["draft"]["confidence"]) is float
+
+    # An exact historical value may become unreadable between preview and admission.
+    async with service.db.get_db() as session:
+        producer = await session.get(AgentWorkflowRun, source["run_id"])
+        producer.owner_username = "bob"
+        await session.commit()
+    await service.advance_run("alice", deferred_id)
+    blocked = (await client.get(f"/api/v1/workflow_runs/{deferred_id}")).json()["data"]
+    (blocked_task,) = blocked["tasks"]
+    assert blocked_task["status"] == "failed"
+    assert blocked_task["state"]["reason"] == "Artifact version not found"
+    assert blocked_task["result"] is None
+    denied = await client.post(f"{url}/preview", json=identity)
+    assert denied.status_code == 200, denied.text
+    unavailable_plan = denied.json()["data"]
+    report = next(
+        port for port in unavailable_plan["inputs"] if port["name"] == "report"
+    )
+    assert report["source"] == "unavailable"
+    assert "original" not in report and "evidence" not in report
+    line = await client.get(
+        f"/api/v1/workflow_runs/{root_id}/data_line",
+        params={**identity, "input_name": "report"},
+    )
+    assert line.json()["data"]["read_status"] == "unavailable"
+    assert "value" not in line.json()["data"] and "upstream" not in line.json()["data"]
+    stale = await client.post(url, json={**confirm, "request_id": "lost-access"})
+    assert stale.status_code == 409, stale.text
+    rejected = await client.post(
+        url,
+        json={
+            **confirm,
+            "preview_token": unavailable_plan["preview_token"],
+            "request_id": "foreign-file",
+            "replacement": {"name": "pdf", "value": file},
+        },
+    )
+    assert rejected.status_code == 404, rejected.text
+    assert rejected.json()["message"] == "Artifact version not found"
+
+    async with service.db.get_db() as session:
+        row = await session.get(AgentWorkflowRun, check["run_id"])
+        row.status = "skipped"
+        await session.commit()
+    skipped = await client.post(f"{url}/preview", json=identity)
+    assert skipped.status_code == 409, skipped.text
+    assert "skipped" in skipped.json()["message"]

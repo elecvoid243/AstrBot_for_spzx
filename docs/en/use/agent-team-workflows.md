@@ -222,11 +222,15 @@ In the process panel, expand **Attempts** and select **Inspect data lines for th
 
 ### Debug one historical node
 
-On an eligible data line, choose **Debug with this input**. The preview shows the workflow version (or draft revision) that the selected attempt used, its recorded inputs and the single node that will run. Keep the original values or select one recorded input to replace with text or JSON. The preview shows the proposed value alongside the original.
+On an eligible data line, choose **Debug with this input**. The preview identifies the workflow version or draft revision, the selected attempt, and the single node that will run. The input table shows the values recorded for that attempt and flags missing or inaccessible inputs. A skipped attempt shows **Skipped · not read** in the inspector. Select a completed or failed attempt to start a fork.
 
-Choose **Start debug fork** to open the new run. Its comparison shows the original failure or output, any input difference and the fork result. Reopen the fork from run history or its Dashboard Chat run conversation. **Open source attempt** returns to the original task's scope, iteration and attempt.
+Use **Choose an input to edit** to supply missing test values or replace individual inputs. Text and JSON must match the node's input contract. For an artifact, select a version you can read or enter its exact ID and version. For a file, also select an attachment from that version. A filename alone carries no version information. Reopen the preview if access to a recorded reference changes before starting.
 
-This path supports the built-in Parse JSON, Map Fields and JSON Text nodes with recorded inputs. External writes require a write preview before they can run in a debug fork.
+![Debug fork preview with a missing historical PDF, its selected attachment, and the retained draft](/images/agent-workflow-debug-fork-inputs-en.jpg)
+
+Choose **Start debug fork** to open the new run. The comparison labels each value as reused, filled, or replaced, and shows the original and fork results. The selected versions stay pinned when newer versions are published or the page reloads. Reopen the fork from run history or Dashboard Chat. **Open source attempt** returns to the original scope, iteration and attempt.
+
+This path supports the built-in Parse JSON, Map Fields and JSON Text nodes. External writes require a write preview before they can run in a debug fork.
 
 ![Debug fork comparing original and replacement citation inputs and results](/images/agent-workflow-debug-fork-en.jpg)
 

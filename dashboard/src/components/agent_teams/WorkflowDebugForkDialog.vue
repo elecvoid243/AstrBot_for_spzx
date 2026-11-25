@@ -4,7 +4,7 @@
       <v-card-title class="text-h3 pa-4 pb-0 pl-6">{{ tm("debugFork.preview") }}</v-card-title>
       <v-card-text>
         <v-progress-linear v-if="loading" indeterminate />
-        <v-alert v-if="error" type="error" variant="tonal" class="mb-3">{{ error }}</v-alert>
+        <v-alert v-if="error" type="error" variant="tonal" class="mb-3 debug-error">{{ error }}</v-alert>
         <template v-if="plan">
           <p class="font-weight-medium">{{ plan.source.workflow_name }} · {{ version }} · {{ plan.source.node_name }}</p>
           <p class="text-body-2 mb-2" data-testid="debug-fork-scope">{{ tm("debugFork.singleNode") }}</p>
@@ -13,25 +13,43 @@
             {{ tm("v2.attempt") }} {{ plan.source.attempt_id }}
           </p>
           <v-select
-            v-if="editablePorts.length"
+            v-if="plan.inputs.length"
             v-model="field"
-            :items="editablePorts"
+            :items="plan.inputs.map(port => port.name)"
             :label="tm('debugFork.replace')"
             variant="outlined"
             density="compact"
             clearable
             :disabled="starting"
+            data-testid="debug-fork-input-picker"
           />
-          <v-textarea
-            v-if="selectedPort"
-            v-model="replacementText"
-            :label="tm(selectedPort.kind === 'text' ? 'debugFork.replacementText' : 'debugFork.replacementJson')"
-            variant="outlined"
-            rows="3"
-            :disabled="starting"
-            :error-messages="invalidJson ? [tm('debugFork.invalidJson')] : []"
-            data-testid="debug-fork-replacement"
-          />
+          <template v-if="selectedPort">
+            <WorkflowDebugForkReference
+              v-if="selectedPort.kind === 'reference'"
+              :key="`${selectedPort.name}:${editorRevision}`"
+              :selection="referenceEdits.get(selectedPort.name)"
+              :file="selectedPort.format === 'astrbot-file'"
+              :disabled="starting"
+              @update:selection="referenceEdits.set(selectedPort.name, $event)"
+            />
+            <v-textarea
+              v-else
+              :model-value="text"
+              :label="tm(selectedPort.kind === 'text' ? 'debugFork.replacementText' : 'debugFork.replacementJson')"
+              variant="outlined"
+              rows="3"
+              :disabled="starting"
+              :error-messages="edits.has(selectedPort.name) && edits.get(selectedPort.name) === undefined ? [tm('debugFork.invalidJson')] : []"
+              data-testid="debug-fork-replacement"
+              @update:model-value="textEdits.set(selectedPort.name, $event)"
+            />
+            <v-btn v-if="edits.has(selectedPort.name)" variant="text" :disabled="starting" class="mb-2" @click="clearEdit(selectedPort.name)">
+              {{ tm("debugFork.clearEdit") }}
+            </v-btn>
+          </template>
+          <v-alert v-if="unresolved.length" type="warning" variant="tonal" class="mb-3">
+            {{ tm("debugFork.resolveInputs", { names: unresolved.join(", ") }) }}
+          </v-alert>
           <WorkflowDebugForkInputs :inputs="previewInputs" />
         </template>
       </v-card-text>
@@ -42,7 +60,7 @@
           color="primary"
           variant="tonal"
           :loading="starting"
-          :disabled="!plan || invalidJson"
+          :disabled="!canStart"
           data-testid="start-debug-fork"
           @click="start"
         >{{ tm("debugFork.start") }}</v-btn>
@@ -54,11 +72,12 @@
 <script setup lang="ts">
 import { computed, onScopeDispose, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import type { WorkflowDebugForkAttempt, WorkflowDebugForkPreview, WorkflowDebugForkRequest } from "@/api/generated/openapi-v1";
+import type { ArtifactReference, WorkflowDebugForkAttempt, WorkflowDebugForkPreview, WorkflowDebugForkReplacement } from "@/api/generated/openapi-v1";
 import { workflowAssetsApi } from "@/api/workflowAssets";
 import { useModuleI18n } from "@/i18n/composables";
 import { extractApiError } from "@/utils/extractApiError";
 import WorkflowDebugForkInputs from "./WorkflowDebugForkInputs.vue";
+import WorkflowDebugForkReference from "./WorkflowDebugForkReference.vue";
 
 const props = defineProps<{ rootId: string; attempt: WorkflowDebugForkAttempt }>();
 const emit = defineEmits<{ close: [] }>();
@@ -73,41 +92,67 @@ const loading = ref(true);
 const starting = ref(false);
 const error = ref("");
 const field = ref<string | null>(null);
-const replacementText = ref("");
+const textEdits = ref(new Map<string, string>());
+const referenceEdits = ref(new Map<string, (ArtifactReference & { file_id?: string }) | undefined>());
+const editorRevision = ref(0);
 let requestId: string | undefined;
 const version = computed(() =>
   plan.value?.source.draft_revision == null
     ? tm("debugFork.version", { version: plan.value?.source.asset_version ?? '' })
     : tm("debugFork.revision", { revision: plan.value.source.draft_revision }),
 );
-const editablePorts = computed(() =>
-  (plan.value?.inputs ?? [])
-    .filter(port => port.kind !== "reference" && port.source === "recorded")
-    .map(port => port.name),
-);
 const selectedPort = computed(() => plan.value?.inputs.find(port => port.name === field.value));
-watch(selectedPort, port => {
-  replacementText.value = port?.kind === "text"
-    ? String(port.original ?? "")
-    : JSON.stringify(port?.original, null, 2) ?? "";
-});
-watch([field, replacementText], () => { requestId = undefined; });
-
-const replacement = computed<WorkflowDebugForkRequest["replacement"]>(() => {
+const text = computed(() => {
   const port = selectedPort.value;
-  if (!port) return null;
-  try {
-    return { name: port.name, value: port.kind === "text" ? replacementText.value : JSON.parse(replacementText.value) };
-  } catch {
-    return undefined;
-  }
+  if (!port) return "";
+  return textEdits.value.get(port.name) ?? (port.kind === "text"
+    ? String(port.original ?? "")
+    : JSON.stringify(port.original, null, 2) ?? "");
 });
-const invalidJson = computed(() => replacement.value === undefined);
-const previewInputs = computed(() => (plan.value?.inputs ?? []).map(port =>
-  replacement.value?.name === port.name
-    ? { ...port, value: replacement.value.value, changed: true }
-    : port,
-));
+const edits = computed(() => {
+  const values = new Map<string, unknown>(referenceEdits.value);
+  for (const port of plan.value?.inputs ?? []) {
+    const value = textEdits.value.get(port.name);
+    if (value === undefined) continue;
+    try {
+      values.set(port.name, port.kind === "text" ? value : JSON.parse(value, (_key, part) => {
+        if (typeof part === "number" && !Number.isFinite(part)) {
+          throw new Error("Use finite JSON numbers.");
+        }
+        return part;
+      }));
+    } catch {
+      values.set(port.name, undefined);
+    }
+  }
+  return values;
+});
+watch(edits, () => { requestId = undefined; }, { flush: "sync" });
+const unresolved = computed(() => (plan.value?.inputs ?? [])
+  .filter(port => (port.source === "missing" || port.source === "unavailable") && edits.value.get(port.name) === undefined)
+  .map(port => port.name),
+);
+const canStart = computed(() => !!plan.value && !unresolved.value.length &&
+  Array.from(edits.value.values()).every(value => value !== undefined));
+const previewInputs = computed(() => (plan.value?.inputs ?? []).map(port => {
+  const value = edits.value.get(port.name);
+  if (value === undefined) return port;
+  const [original, proposed] = [port.original, value].map(input => JSON.stringify(input, (_key, part) =>
+    part && typeof part === "object" && !Array.isArray(part)
+      ? Object.fromEntries(Object.keys(part).sort().map(key => [key, part[key]]))
+      : part,
+  ));
+  const changed = original !== proposed;
+  const selection = !("original" in port) ? "filled" as const
+    : changed ? "replaced" as const : "reused" as const;
+  return { ...port, value, changed, selection };
+}));
+
+function clearEdit(name: string) {
+  textEdits.value.delete(name);
+  referenceEdits.value.delete(name);
+  editorRevision.value++;
+}
 
 void workflowAssetsApi.previewDebugFork(props.rootId, props.attempt, controller.signal)
   .then(result => { if (!controller.signal.aborted) plan.value = result; })
@@ -117,16 +162,17 @@ void workflowAssetsApi.previewDebugFork(props.rootId, props.attempt, controller.
   .finally(() => { loading.value = false; });
 
 async function start() {
-  if (!plan.value || invalidJson.value || starting.value) return;
+  if (!plan.value || !canStart.value || starting.value) return;
   starting.value = true;
   error.value = "";
   requestId ??= globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   try {
+    const replacements: WorkflowDebugForkReplacement[] = Array.from(edits.value, ([name, value]) => ({ name, value }));
     const { run_id } = await workflowAssetsApi.startDebugFork(props.rootId, {
       ...props.attempt,
       preview_token: plan.value.preview_token,
       request_id: requestId,
-      replacement: replacement.value,
+      replacements,
     });
     if (controller.signal.aborted) return;
     await router.push(route.name === "ChatRunConversation"
@@ -134,7 +180,10 @@ async function start() {
       : { name: "AgentTeams", query: { workflow_run: run_id } });
     emit("close");
   } catch (err) {
-    if (!controller.signal.aborted) error.value = extractApiError(err, tm("errors.operationFailed")).message;
+    if (!controller.signal.aborted) {
+      const info = extractApiError(err, tm("errors.operationFailed"));
+      error.value = info.fields.length ? info.fields.map(field => `${field.path} · ${field.message}`).join("\n") : info.message;
+    }
   } finally {
     starting.value = false;
   }
@@ -143,4 +192,5 @@ async function start() {
 
 <style scoped>
 .debug-attempt { overflow-wrap: anywhere; }
+.debug-error { white-space: pre-line; }
 </style>

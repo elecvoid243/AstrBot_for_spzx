@@ -2065,7 +2065,7 @@ export type WorkflowDataLine = {
         format?: string;
     };
     debug_fork_supported: boolean;
-    read_status: 'read' | 'null' | 'not_read' | 'skipped' | 'missing';
+    read_status: 'read' | 'null' | 'not_read' | 'skipped' | 'missing' | 'unavailable';
     value?: unknown;
     evidence?: {
         artifact?: (ArtifactReference | null);
@@ -2081,7 +2081,7 @@ export type WorkflowDataLine = {
     };
 };
 
-export type read_status = 'read' | 'null' | 'not_read' | 'skipped' | 'missing';
+export type read_status = 'read' | 'null' | 'not_read' | 'skipped' | 'missing' | 'unavailable';
 
 export type WorkflowDebugForkAttempt = {
     scope_run_id: string;
@@ -2111,7 +2111,9 @@ export type WorkflowDebugForkComparison = {
     inputs: Array<{
         name: string;
         kind: 'reference' | 'text' | 'json';
-        source: 'recorded' | 'default' | 'absent';
+        format?: 'astrbot-artifact' | 'astrbot-file';
+        source: 'recorded' | 'default' | 'absent' | 'missing' | 'unavailable';
+        selection?: 'reused' | 'filled' | 'replaced';
         original?: unknown;
         value?: unknown;
         changed: boolean;
@@ -2127,16 +2129,22 @@ export type WorkflowDebugForkPreview = WorkflowDebugForkComparison & {
     preview_token: string;
 };
 
+export type WorkflowDebugForkReplacement = {
+    name: string;
+    /**
+     * JSON matching the consumer's input contract. A managed reference requires an exact artifact_id and version, plus file_id for a file.
+     */
+    value: unknown;
+};
+
 export type WorkflowDebugForkRequest = {
     scope_run_id: string;
     task_run_id: string;
     attempt_id: string;
     preview_token: string;
     request_id: string;
-    replacement?: (null | {
-    name: string;
-    value: unknown;
-});
+    replacement?: (null | WorkflowDebugForkReplacement);
+    replacements?: Array<WorkflowDebugForkReplacement>;
 };
 
 export type WorkflowDebugForkStarted = {

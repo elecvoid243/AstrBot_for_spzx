@@ -1255,6 +1255,41 @@ async def start_workflow_debug_fork(
         )
 
 
+@router.get("/workflow_runs/{run_id}/member_attempt")
+async def inspect_workflow_member_attempt(
+    run_id: str,
+    task_run_id: str,
+    attempt_id: str,
+    username: str = Depends(require_dashboard_user),
+    service: WorkflowService = Depends(get_workflow_service),
+):
+    """Inspect one autonomous member attempt in an owned root run.
+
+    Args:
+        run_id: Root run containing the team.
+        task_run_id: Exact dynamic dispatch.
+        attempt_id: Current or archived attempt of that dispatch.
+        username: Authenticated Dashboard owner.
+        service: Shared workflow service.
+
+    Returns:
+        Read-only dispatch, confirmed messages and readable artifact references.
+    """
+    try:
+        return JSONResponse(
+            ok(
+                await service.inspect_member_attempt(
+                    username, run_id, task_run_id, attempt_id
+                )
+            ),
+            headers={"Cache-Control": "no-store"},
+        )
+    except RoleAssetError as exc:
+        return JSONResponse(
+            error(str(exc), {"fields": exc.fields}), status_code=exc.status
+        )
+
+
 @router.get("/workflow_runs/{run_id}/result")
 async def get_result(
     run_id: str,

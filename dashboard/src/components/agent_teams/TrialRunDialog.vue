@@ -8,9 +8,10 @@
   >
     <v-card>
       <v-card-title class="text-h3 pa-4 pb-0 pl-6">{{
-        tm("trial.title")
+        teamName !== undefined ? tm("memberInspection.wholeTrial") : tm("trial.title")
       }}</v-card-title>
       <v-card-text :inert="starting ? '' : undefined">
+        <p v-if="teamName" class="text-subtitle-1 font-weight-bold">{{ teamName }}</p>
         <p class="text-caption mb-2">
           {{ tm("trial.revision") }} {{ revision }}
         </p>
@@ -176,6 +177,7 @@ const props = defineProps<{
   kind: "workflow" | "autonomous";
   nodes: { id: string; name: string }[];
   initialNode?: string | null;
+  teamName?: string;
 }>();
 const emit = defineEmits<{
   "update:modelValue": [boolean];

@@ -9695,6 +9695,56 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/workflow_runs/{run_id}/member_attempt:
+    get:
+      tags:
+      - Agent Teams workflows
+      summary: Inspect an autonomous member attempt
+      description: Read the selected dispatch, confirmed incoming messages and readable artifact versions using an authorized Dashboard session.
+      operationId: inspect_workflow_member_attempt_api_v1_workflow_runs__run_id__member_attempt_get
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: task_run_id
+        in: query
+        required: true
+        schema:
+          type: string
+      - name: attempt_id
+        in: query
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Read-only evidence from the selected autonomous dispatch and attempt.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, data]
+                properties:
+                  status:
+                    const: ok
+                  message:
+                    type: 'null'
+                  data:
+                    $ref: '#/components/schemas/WorkflowMemberAttempt'
+        '401':
+          description: Dashboard session required.
+        '403':
+          description: Dashboard account permission required.
+        '404':
+          description: Owned root run, member task or attempt unavailable.
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/workflow_runs/{run_id}/tool_calls/{record_id}/resolve:
     post:
       tags:
@@ -14443,6 +14493,90 @@ components:
           description: Port diagnostics include REQUIRED, REFERENCE, INCOMPATIBLE, UNREACHABLE_DATA, and CYCLE.
         message:
           type: string
+    WorkflowMemberAttempt:
+      type: object
+      required: [task_run_id, attempt_id, status, member, dispatch, team, messages, unconfirmed_deliveries, input_artifacts, read_artifacts, result_artifact]
+      properties:
+        task_run_id:
+          type: string
+        attempt_id:
+          type: string
+        status:
+          type: string
+        member:
+          type: object
+          required: [member_id, name]
+          properties:
+            member_id:
+              type: string
+            name:
+              type: string
+        dispatch:
+          type: object
+          required: [name, task, dispatcher_task_id]
+          properties:
+            name:
+              type: string
+            task:
+              type: [string, 'null']
+            dispatcher_task_id:
+              type: string
+        team:
+          type: object
+          required: [asset_id, name, version, draft_revision]
+          properties:
+            asset_id:
+              type: string
+            name:
+              type: string
+            version:
+              type: [integer, 'null']
+            draft_revision:
+              type: [integer, 'null']
+        messages:
+          type: array
+          items:
+            type: object
+            required: [message_id, sender_member_id, text, consumption, artifact_refs]
+            properties:
+              message_id:
+                type: string
+              sender_member_id:
+                type: string
+              text:
+                type: string
+              consumption:
+                type: object
+                required: [task_run_id, attempt_id, invocation_id, context_position]
+                properties:
+                  task_run_id:
+                    type: string
+                  attempt_id:
+                    type: string
+                  invocation_id:
+                    type: string
+                  context_position:
+                    type: integer
+              artifact_refs:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ArtifactReference'
+        unconfirmed_deliveries:
+          type: integer
+          description: Deliveries to the selected member without usable consumption evidence.
+        input_artifacts:
+          type: array
+          items:
+            $ref: '#/components/schemas/ArtifactReference'
+        read_artifacts:
+          type: array
+          description: Exact versions with a recorded read by the selected attempt.
+          items:
+            $ref: '#/components/schemas/ArtifactReference'
+        result_artifact:
+          anyOf:
+          - $ref: '#/components/schemas/ArtifactReference'
+          - type: 'null'
     WorkflowDataLine:
       type: object
       required: [scope_run_id, task_run_id, iteration, attempt_id, task_status, attempts, source, target, read_status, debug_fork_supported]

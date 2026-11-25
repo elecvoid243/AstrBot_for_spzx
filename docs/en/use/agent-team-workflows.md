@@ -244,6 +244,18 @@ In the parent run graph, select the iteration that failed, select the child work
 
 ![Debug fork comparison with links to the exact parent call and child attempt](/images/agent-workflow-debug-child-comparison-en.jpg)
 
+### Inspect an autonomous member attempt
+
+In the Bot run workbench or Dashboard Chat run conversation, select the member's task. In **Execution**, expand **Attempts**, open the failed record, and select **Inspect member attempt**. Choose the current attempt or another saved record to compare. Use **Load older attempts** if needed.
+
+The inspector shows the recorded dispatch, incoming messages confirmed in that attempt's saved context, and exact artifact versions from the dispatch, confirmed messages, recorded reads and result. **Unconfirmed deliveries to this member** counts messages whose consumption could not be verified. **Read exact version** opens an authorized artifact version.
+
+![Autonomous member attempt showing the original dispatch and the consumed message](/images/agent-team-member-attempt-en.jpg)
+
+Choose **Test whole team** to preview the saved team draft. If there is no draft, this prepares one from the latest published team. Check the team name and draft revision, enter the required inputs, then choose **Start test**. The test creates a separate run with the coordinator and dynamic members. It makes real model and tool calls, which may incur costs or external effects.
+
+![Whole-team trial showing the draft revision and real-call notice](/images/agent-team-whole-trial-en.jpg)
+
 ### Open the same run in Dashboard Chat
 
 In the Bot run workbench, choose **Open in Chat**. Dashboard Chat shows one conversation per root run, even when the same asset runs several times. Open a conversation from the Chat sidebar or its direct link (`#/chat/runs/<root-run-id>`) to see the asset, fixed version, root ID and current state. For draft tests, Chat shows the draft revision. Choose **Open run workbench** to return to that exact run.

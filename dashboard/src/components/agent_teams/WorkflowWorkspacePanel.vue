@@ -12,7 +12,7 @@
           )
         }}
       </h2>
-      <span v-if="mode === 'assets'" class="at-asset-count">{{ visibleAssets.length + visibleDrafts.length }}</span>
+      <span v-if="mode === 'assets'" class="at-asset-count">{{ assetCards.length }}</span>
       <v-spacer />
       <v-btn
         v-if="mode === 'assets'"
@@ -72,52 +72,65 @@
     </p>
 
     <template v-if="mode === 'assets'">
-      <v-alert v-if="!visibleAssets.length && !visibleDrafts.length && !loading" type="info" variant="tonal" class="at-empty-state">{{ tm("v2.emptyAssets") }}</v-alert>
+      <v-alert v-if="!assetCards.length && !loading" type="info" variant="tonal" class="at-empty-state">{{ tm("v2.emptyAssets") }}</v-alert>
       <div class="at-asset-grid">
-        <v-card v-for="item in visibleDrafts" :key="item.asset_id" class="at-asset-card at-draft-card" variant="outlined">
-          <v-card-text>
-            <div class="at-card-topline">
-              <span class="at-asset-icon" :class="{ 'is-team': item.kind === 'autonomous' }" aria-hidden="true"><v-icon :icon="item.kind === 'autonomous' ? 'mdi-account-group-outline' : 'mdi-sitemap-outline'" size="23" /></span>
-              <v-chip size="small" color="warning" variant="tonal">{{ tm("draft.unpublished") }}</v-chip>
+        <template v-for="{ asset, draft } in assetCards" :key="asset.asset_id">
+          <v-card v-if="draft" class="at-asset-card at-draft-card" variant="outlined">
+            <v-card-text>
+              <div class="at-card-topline">
+                <span class="at-asset-icon" :class="{ 'is-team': asset.kind === 'autonomous' }" aria-hidden="true"><v-icon :icon="asset.kind === 'autonomous' ? 'mdi-account-group-outline' : 'mdi-sitemap-outline'" size="23" /></span>
+                <v-chip size="small" color="warning" variant="tonal">{{ tm("draft.unpublished") }}</v-chip>
+              </div>
+              <v-card-title>{{ asset.body.definition?.name || tm("draft.untitled") }}</v-card-title>
+              <p class="at-card-description">{{ tm(asset.kind === 'autonomous' ? "workbench.teamIntro" : "workbench.workflowIntro") }}</p>
+            </v-card-text>
+            <v-card-actions>
+              <v-btn variant="tonal" color="primary" prepend-icon="mdi-pencil-outline" @click="asset.kind === 'autonomous' ? editTeam({ asset_id: asset.asset_id, definition: asset.body.definition }) : editGraph({ asset_id: asset.asset_id, definition: asset.body.definition })">{{ tm("v2.edit") }}</v-btn>
+              <v-spacer />
+              <v-btn data-testid="delete-asset" variant="text" color="error" :aria-label="tm('deletion.delete')" :title="tm('deletion.delete')" class="at-card-icon-action" @click="deleteTarget = { asset_id: asset.asset_id, definition: asset.body.definition }"><v-icon icon="mdi-trash-can-outline" size="18" /><span class="at-sr-only">{{ tm('deletion.delete') }}</span></v-btn>
+            </v-card-actions>
+          </v-card>
+          <v-card v-else class="at-asset-card" :class="{ 'at-example-card': asset.is_builtin_example }"
+            :data-testid="asset.is_builtin_example ? 'builtin-workflow-example' : undefined" variant="outlined">
+            <v-card-text>
+              <div class="at-card-topline">
+                <span class="at-asset-icon" :class="{ 'is-team': asset.definition.kind === 'autonomous' }" aria-hidden="true"><v-icon :icon="asset.definition.kind === 'autonomous' ? 'mdi-account-group-outline' : 'mdi-sitemap-outline'" size="23" /></span>
+                <span v-if="asset.is_builtin_example" class="at-example-label"><v-icon icon="mdi-pin-outline" size="15" /> {{ tm("releaseBrief.pinned") }}</span>
+                <v-chip size="small" variant="tonal">v{{ asset.version }}</v-chip>
+              </div>
+              <v-card-title>{{ assetDisplayName(asset) }}</v-card-title>
+              <p v-if="asset.is_builtin_example && asset.version === 1" class="at-card-description">{{ tm("releaseBrief.description") }}</p>
+              <p v-else class="at-card-description">{{ asset.definition.kind === 'autonomous' ? asset.definition.allowed_roles.map((member: any) => member.role?.name || roles.find((role: any) => role.role_id === member.role_id)?.definition.name || member.id).filter(Boolean).join(' · ') : asset.definition.tasks.map((task: any) => task.name).slice(0, 4).join(' · ') }}</p>
+              <div class="at-card-metadata">
+                <span v-if="asset.definition.kind === 'autonomous'"><v-icon icon="mdi-account-multiple-outline" size="15" /> {{ tm("autonomous.allowedRoles") }} · {{ asset.definition.allowed_roles.length }}</span>
+                <span v-else><v-icon icon="mdi-transit-connection-variant" size="15" /> {{ tm("graph.count", { count: asset.definition.tasks.length }) }} <span class="at-meta-divider">·</span> {{ tm("graph.parallel") }} {{ asset.definition.max_parallel }}</span>
+                <span v-if="drafts.some((item) => item.asset_id === asset.asset_id && item.published_revision !== item.revision)" class="at-draft-indicator" data-testid="editing-draft"><i />{{ tm("draft.editing") }}</span>
+              </div>
+            </v-card-text>
+            <v-card-actions class="at-card-footer">
+              <v-btn v-if="asset.is_builtin_example" variant="text" class="at-guide-toggle"
+                prepend-icon="mdi-play-box-multiple-outline" data-testid="workflow-example-guide-toggle"
+                :aria-expanded="guideOpen" aria-controls="workflow-example-guide" @click="guideOpen = !guideOpen">
+                {{ tm(guideOpen ? "releaseBrief.guide.close" : "releaseBrief.guide.open") }}
+              </v-btn>
+              <div class="at-card-secondary-actions">
+                <v-btn variant="text" class="at-card-icon-action" data-testid="open-chat-access" :aria-label="tm('chatAccess.title')" :title="tm('chatAccess.title')" @click="chatAccessAsset = asset"><v-icon icon="mdi-link-variant" size="18" /><span class="at-sr-only">{{ tm("chatAccess.title") }}</span></v-btn>
+                <v-btn variant="text" class="at-card-icon-action" :aria-label="tm('package.export')" :title="tm('package.export')" @click="exportWorkflow(asset)"><v-icon icon="mdi-export-variant" size="18" /><span class="at-sr-only">{{ tm("package.export") }}</span></v-btn>
+                <v-btn data-testid="delete-asset" variant="text" class="at-card-icon-action" :aria-label="tm('deletion.delete')" :title="tm('deletion.delete')" @click="deleteTarget = asset"><v-icon icon="mdi-trash-can-outline" size="18" /><span class="at-sr-only">{{ tm('deletion.delete') }}</span></v-btn>
+              </div>
+              <v-spacer />
+              <v-btn variant="text" data-testid="edit-workflow-asset" @click="asset.definition.kind === 'autonomous' ? editTeam(asset) : editGraph(asset)">{{ tm(asset.is_builtin_example ? "releaseBrief.canvas" : "v2.edit") }}</v-btn>
+              <v-btn variant="tonal" color="primary" prepend-icon="mdi-play-outline" data-testid="start-workflow-asset" @click="prepareRun(asset)">{{ tm("v2.start") }}</v-btn>
+            </v-card-actions>
+            <div v-if="asset.is_builtin_example" v-show="guideOpen" id="workflow-example-guide" class="at-guide-body">
+              <WorkflowExampleGuide v-if="guideOpen" />
             </div>
-            <v-card-title>{{ item.body.definition?.name || tm("draft.untitled") }}</v-card-title>
-            <p class="at-card-description">{{ tm(item.kind === 'autonomous' ? "workbench.teamIntro" : "workbench.workflowIntro") }}</p>
-          </v-card-text>
-          <v-card-actions>
-            <v-btn variant="tonal" color="primary" prepend-icon="mdi-pencil-outline" @click="item.kind === 'autonomous' ? editTeam({ asset_id: item.asset_id, definition: item.body.definition }) : editGraph({ asset_id: item.asset_id, definition: item.body.definition })">{{ tm("v2.edit") }}</v-btn>
-            <v-spacer />
-            <v-btn data-testid="delete-asset" variant="text" color="error" :aria-label="tm('deletion.delete')" :title="tm('deletion.delete')" class="at-card-icon-action" @click="deleteTarget = { asset_id: item.asset_id, definition: item.body.definition }"><v-icon icon="mdi-trash-can-outline" size="18" /><span class="at-sr-only">{{ tm('deletion.delete') }}</span></v-btn>
-          </v-card-actions>
-        </v-card>
-        <v-card v-for="asset in visibleAssets" :key="asset.asset_id" class="at-asset-card" variant="outlined">
-          <v-card-text>
-            <div class="at-card-topline">
-              <span class="at-asset-icon" :class="{ 'is-team': asset.definition.kind === 'autonomous' }" aria-hidden="true"><v-icon :icon="asset.definition.kind === 'autonomous' ? 'mdi-account-group-outline' : 'mdi-sitemap-outline'" size="23" /></span>
-              <v-chip size="small" variant="tonal">v{{ asset.version }}</v-chip>
-            </div>
-            <v-card-title>{{ asset.definition.name }}</v-card-title>
-            <p class="at-card-description">{{ asset.definition.kind === 'autonomous' ? asset.definition.allowed_roles.map((member: any) => member.role?.name || roles.find((role: any) => role.role_id === member.role_id)?.definition.name || member.id).filter(Boolean).join(' · ') : asset.definition.tasks.map((task: any) => task.name).slice(0, 4).join(' · ') }}</p>
-            <div class="at-card-metadata">
-              <span v-if="asset.definition.kind === 'autonomous'"><v-icon icon="mdi-account-multiple-outline" size="15" /> {{ tm("autonomous.allowedRoles") }} · {{ asset.definition.allowed_roles.length }}</span>
-              <span v-else><v-icon icon="mdi-transit-connection-variant" size="15" /> {{ tm("graph.count", { count: asset.definition.tasks.length }) }} <span class="at-meta-divider">·</span> {{ tm("graph.parallel") }} {{ asset.definition.max_parallel }}</span>
-              <span v-if="drafts.some((item) => item.asset_id === asset.asset_id && item.published_revision !== item.revision)" class="at-draft-indicator" data-testid="editing-draft"><i />{{ tm("draft.editing") }}</span>
-            </div>
-          </v-card-text>
-          <v-card-actions class="at-card-footer">
-            <div class="at-card-secondary-actions">
-              <v-btn variant="text" class="at-card-icon-action" data-testid="open-chat-access" :aria-label="tm('chatAccess.title')" :title="tm('chatAccess.title')" @click="chatAccessAsset = asset"><v-icon icon="mdi-link-variant" size="18" /><span class="at-sr-only">{{ tm("chatAccess.title") }}</span></v-btn>
-              <v-btn variant="text" class="at-card-icon-action" :aria-label="tm('package.export')" :title="tm('package.export')" @click="exportWorkflow(asset)"><v-icon icon="mdi-export-variant" size="18" /><span class="at-sr-only">{{ tm("package.export") }}</span></v-btn>
-              <v-btn data-testid="delete-asset" variant="text" class="at-card-icon-action" :aria-label="tm('deletion.delete')" :title="tm('deletion.delete')" @click="deleteTarget = asset"><v-icon icon="mdi-trash-can-outline" size="18" /><span class="at-sr-only">{{ tm('deletion.delete') }}</span></v-btn>
-            </div>
-            <v-spacer />
-            <v-btn variant="text" @click="asset.definition.kind === 'autonomous' ? editTeam(asset) : editGraph(asset)">{{ tm("v2.edit") }}</v-btn>
-            <v-btn variant="tonal" color="primary" prepend-icon="mdi-play-outline" @click="prepareRun(asset)">{{ tm("v2.start") }}</v-btn>
-          </v-card-actions>
-        </v-card>
+          </v-card>
+        </template>
       </div>
     </template>
 
-    <DeleteAssetDialog :name="deleteTarget?.definition.name || (deleteTarget ? tm('draft.untitled') : null)" :busy="deleting" :error="deleteError" @cancel="deleteTarget = null; deleteError = ''" @confirm="deleteAsset" />
+    <DeleteAssetDialog :name="deleteTarget ? assetDisplayName(deleteTarget) : null" :busy="deleting" :error="deleteError" @cancel="deleteTarget = null; deleteError = ''" @confirm="deleteAsset" />
     <template v-if="mode !== 'assets'">
       <template v-if="!conversationRunId">
       <nav
@@ -640,7 +653,7 @@
           />
           </details>
           <p class="mb-4">
-            {{ runAsset.definition.name }} · v{{ runAsset.version }}
+            {{ assetDisplayName(runAsset) }} · v{{ runAsset.version }}
           </p>
           <StructuredWorkflowInputs
             v-if="runAsset.definition.input_contract"
@@ -795,6 +808,7 @@ import StructuredWorkflowInputs, { parseWorkflowInputs } from "./StructuredWorkf
 import { useModuleI18n } from "@/i18n/composables";
 import { extractApiError } from "@/utils/extractApiError";
 import WorkflowGraphCanvas from "./WorkflowGraphCanvas.vue";
+import WorkflowExampleGuide from "./WorkflowExampleGuide.vue";
 import WorkflowPackageDialog from "./WorkflowPackageDialog.vue";
 import WorkflowChatAccessDialog from "./WorkflowChatAccessDialog.vue";
 import RunLimitsForm from "./RunLimitsForm.vue";
@@ -832,13 +846,27 @@ const assets = ref<any[]>([]);
 const deleteTarget = ref<any>(null);
 const deleting = ref(false);
 const deleteError = ref("");
+function assetDisplayName(asset: { definition: { name?: string }; is_builtin_example?: boolean }) {
+  return asset.is_builtin_example && asset.definition.name === "Release brief"
+    ? tm("releaseBrief.title")
+    : asset.definition.name || tm("draft.untitled");
+}
 async function deleteAsset() {
-  if (!deleteTarget.value) return;
+  if (!deleteTarget.value || deleting.value) return;
+  const assetId = deleteTarget.value.asset_id;
   deleting.value = true;
   deleteError.value = "";
   try {
-    await workflowAssetsApi.delete(deleteTarget.value.asset_id);
+    await workflowAssetsApi.delete(assetId);
+    if (disposed) return;
+    assets.value = assets.value.filter((asset) => asset.asset_id !== assetId);
+    drafts.value = drafts.value.filter((draft) => draft.asset_id !== assetId);
     deleteTarget.value = null;
+    // A list requested before deletion can still contain the removed version.
+    if (refreshingRead !== null) {
+      runRead++;
+      loading.value = false;
+    }
     await refresh();
   } catch (cause) {
     deleteError.value = extractApiError(cause, tm("errors.operationFailed")).message;
@@ -870,6 +898,11 @@ const visibleAssets = computed(() =>
         (props.assetKind === "teams"),
   ),
 );
+const assetCards = computed(() => [
+  ...visibleDrafts.value.map((asset) => ({ asset, draft: true })),
+  ...visibleAssets.value.map((asset) => ({ asset, draft: false })),
+].sort((a, b) => Number(b.asset.is_builtin_example === true) - Number(a.asset.is_builtin_example === true)));
+const guideOpen = ref(false);
 const chatAccessAsset = ref<any>(null);
 const packageDialog = ref(false);
 const exportedPackage = ref<WorkflowPackage | null>(null);
@@ -1400,6 +1433,13 @@ let disposed = false;
 watch(accountSessionRevision, () => {
   disposed = true;
   observation.value.abort();
+  assets.value = [];
+  drafts.value = [];
+  guideOpen.value = false;
+  deleteTarget.value = null;
+  starting.value = false;
+  chatAccessAsset.value = null;
+  packageDialog.value = false;
   selectedRun.value = null;
   selectedArtifact.value = null;
   clearFilePreview();
@@ -1437,7 +1477,7 @@ async function refresh(background = false) {
   try {
     if (props.mode === "assets") {
       const [assetData, roleData, runData, resources, workflowDrafts, teamDrafts] = await Promise.all([
-        workflowAssetsApi.list(),
+        workflowAssetsApi.list(props.assetKind === "workflows"),
         roleAssetsApi.list(),
         workflowAssetsApi.runs(),
         roleAssetsApi.resources(),
@@ -2168,6 +2208,14 @@ onUnmounted(() => {
 .workflow-workspace { min-width: 0; container-type: inline-size; }
 .at-asset-count { display: grid; place-items: center; min-width: 24px; height: 24px; padding: 0 7px; border: 1px solid var(--at-line); border-radius: 7px; color: var(--at-muted); font-size: 12px; }
 .at-card-topline { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
+.at-example-card { grid-column: 1 / -1; border-inline-start: 3px solid var(--at-accent); }
+.at-example-label { display: inline-flex; align-items: center; gap: 5px; margin-inline-end: auto; font-size: 12px; font-weight: 600; color: var(--at-accent); }
+.at-example-card .at-card-description { min-height: 0; }
+.at-example-card .at-card-footer { flex-wrap: wrap; }
+.at-guide-body { border-top: 1px solid var(--at-line); padding: 16px 20px; }
+@container (max-width: 480px) {
+  .at-example-card .at-guide-toggle { flex-basis: 100%; justify-content: flex-start; }
+}
 .at-card-description { min-height: 42px; margin-top: 9px; color: var(--at-muted); font-size: 12px; line-height: 1.8; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
 .at-card-metadata { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; color: var(--at-muted); font-size: 11px; line-height: 1.7; }
 .at-meta-divider { margin-inline: 5px; opacity: .6; }

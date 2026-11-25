@@ -82,8 +82,10 @@ export const workflowAssetsApi = {
     return (await httpClient.post("/api/v1/workflow_assets/import", payload))
       .data.data;
   },
-  async list() {
-    return (await httpClient.get("/api/v1/workflow_assets")).data.data;
+  async list(includeExample = false) {
+    return (await httpClient.get("/api/v1/workflow_assets", {
+      params: { include_example: includeExample || undefined },
+    })).data.data;
   },
   async get(assetId: string, version?: number) {
     return (

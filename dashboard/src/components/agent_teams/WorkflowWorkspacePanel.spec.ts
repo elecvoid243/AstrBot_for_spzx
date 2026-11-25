@@ -1021,6 +1021,100 @@ describe("workflow workspace", () => {
     },
   );
 
+  it("pins only the marked example ahead of drafts and opens its real canvas and run", async () => {
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [
+        { path: "/agent-teams", component: slotStub },
+        { path: "/agent-teams/workflows/:assetId", name: "AgentWorkflowEditor", component: slotStub },
+      ],
+    });
+    await router.push("/agent-teams");
+    const copy = { ...asset, definition: { ...asset.definition, name: "Release brief" } };
+    const example = { ...copy, asset_id: "example", is_builtin_example: true };
+    api.list.mockResolvedValue({ assets: [copy, example] });
+    vi.mocked(draftApi.list).mockResolvedValueOnce([
+      { asset_id: "new", base_version: null, revision: 1, body: { definition: { name: "Draft" } } },
+      { asset_id: "example", base_version: 1, revision: 2, body: { definition: example.definition } },
+    ]);
+    const wrapper = mount(WorkflowWorkspacePanel, {
+      props: { mode: "assets", assetKind: "workflows" }, global: { plugins: [router], stubs },
+    });
+    try {
+      await flushPromises();
+      expect(api.list).toHaveBeenCalledWith(true);
+      const cards = wrapper.findAll(".at-asset-card");
+      expect(cards).toHaveLength(3);
+      const pinned = cards[0];
+      expect(pinned.attributes("data-testid")).toBe("builtin-workflow-example");
+      expect(pinned.text()).toContain("releaseBrief.title");
+      expect(pinned.find('[data-testid="editing-draft"]').exists()).toBe(true);
+      expect(cards[1].text()).toContain("Draft");
+      expect(cards[2].text()).toContain("Release brief");
+      expect(wrapper.findAll('[data-testid="workflow-example-guide-toggle"]')).toHaveLength(1);
+      const toggle = pinned.get('[data-testid="workflow-example-guide-toggle"]');
+      await toggle.trigger("click");
+      expect(toggle.attributes("aria-expanded")).toBe("true");
+      expect(pinned.find('[data-testid="release-guide"]').exists()).toBe(true);
+      await toggle.trigger("click");
+      expect(pinned.find('[data-testid="release-guide"]').exists()).toBe(false);
+      expect(api.start).not.toHaveBeenCalled();
+      await pinned.get('[data-testid="start-workflow-asset"]').trigger("click");
+      await flushPromises();
+      expect(api.readiness).toHaveBeenCalledWith("example", 1);
+      expect(wrapper.get(".dialog").text()).toContain("releaseBrief.title · v1");
+      await wrapper.get(".dialog").findAll("button").find((button) => button.text() === "v2.close")!.trigger("click");
+      await pinned.get('[data-testid="edit-workflow-asset"]').trigger("click");
+      await flushPromises();
+      expect(router.currentRoute.value.params.assetId).toBe("example");
+    } finally {
+      wrapper.unmount();
+    }
+  });
+
+  it("keeps an edited example when deletion fails and removes its guide after confirmation", async () => {
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: "/", component: slotStub }] });
+    await router.push("/");
+    const example = {
+      ...asset, asset_id: "example", version: 2, is_builtin_example: true,
+      definition: { ...asset.definition, name: "Deployment notes" },
+    };
+    let finishOlderRead!: () => void;
+    api.list.mockResolvedValueOnce({ assets: [asset, example] })
+      .mockImplementationOnce(() => new Promise((resolve) => {
+        finishOlderRead = () => resolve({ assets: [asset, example] });
+      }))
+      .mockRejectedValue(new Error("Could not refresh"));
+    api.delete.mockRejectedValueOnce(new Error("Version in use")).mockResolvedValueOnce({});
+    const wrapper = mount(WorkflowWorkspacePanel, {
+      props: { mode: "assets", assetKind: "workflows" }, global: { plugins: [router], stubs },
+    });
+    try {
+      await flushPromises();
+      const pinned = wrapper.get('[data-testid="builtin-workflow-example"]');
+      expect(pinned.text()).toContain("Deployment notes");
+      await pinned.get('[data-testid="workflow-example-guide-toggle"]').trigger("click");
+      await wrapper.findAll("button").find((button) => button.text() === "page.refresh")!.trigger("click");
+      await pinned.get('[data-testid="delete-asset"]').trigger("click");
+      expect(wrapper.get(".dialog").text()).toContain("Deployment notes");
+      expect(api.delete).not.toHaveBeenCalled();
+      await wrapper.get('[data-testid="confirm-asset-deletion"]').trigger("click");
+      await flushPromises();
+      expect(wrapper.get(".dialog").text()).toContain("Version in use");
+      expect(pinned.find('[data-testid="release-guide"]').exists()).toBe(true);
+      await wrapper.get('[data-testid="confirm-asset-deletion"]').trigger("click");
+      await flushPromises();
+      expect(api.delete).toHaveBeenCalledWith("example");
+      finishOlderRead();
+      await flushPromises();
+      expect(wrapper.find('[data-testid="builtin-workflow-example"]').exists()).toBe(false);
+      expect(wrapper.find('[data-testid="release-guide"]').exists()).toBe(false);
+      expect(wrapper.get(".at-asset-card").text()).toContain("Report");
+    } finally {
+      wrapper.unmount();
+    }
+  });
+
   it.each(["workflows", "teams"] as const)("confirms deletion in %s", async (kind) => {
     const router = createRouter({ history: createMemoryHistory(), routes: [{ path: "/", component: slotStub }] });
     await router.push("/");
@@ -1029,6 +1123,7 @@ describe("workflow workspace", () => {
     api.delete.mockResolvedValue({});
     const wrapper = mount(WorkflowWorkspacePanel, { props: { mode: "assets", assetKind: kind }, global: { plugins: [router], stubs } });
     await flushPromises();
+    expect(api.list).toHaveBeenCalledWith(kind === "workflows");
     await wrapper.get('[data-testid="delete-asset"]').trigger("click");
     expect(wrapper.text()).toContain("deletion.impact");
     expect(api.delete).not.toHaveBeenCalled();

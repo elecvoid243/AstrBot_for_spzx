@@ -1737,6 +1737,18 @@ export type backend = 'bubblewrap' | 'seatbelt';
  */
 export type status = 'detected' | 'missing' | 'unavailable' | 'unsupported';
 
+export type SavedWorkflowAsset = {
+    asset_id: string;
+    version: number;
+    definition: (GraphDefinition | AutonomousDefinition);
+    versions: Array<(number)>;
+    deleted: boolean;
+    /**
+     * Identifies this owner's original starter asset across edits and published versions.
+     */
+    is_builtin_example: boolean;
+};
+
 export type SessionGroupRequest = {
     name?: string;
     umos?: Array<(string)>;
@@ -6656,7 +6668,21 @@ export type ListWorkflowComponentsApiV1WorkflowComponentsGetResponse = ({
 
 export type ListWorkflowComponentsApiV1WorkflowComponentsGetError = (unknown);
 
-export type ListAssetsApiV1WorkflowAssetsGetResponse = (unknown);
+export type ListAssetsApiV1WorkflowAssetsGetData = {
+    query?: {
+        /**
+         * Provision the owner's starter workflow on first workbench access. A deleted example stays deleted.
+         */
+        include_example?: boolean;
+    };
+};
+
+export type ListAssetsApiV1WorkflowAssetsGetResponse = ({
+    status: "ok";
+    data: {
+        assets: Array<SavedWorkflowAsset>;
+    };
+});
 
 export type ListAssetsApiV1WorkflowAssetsGetError = unknown;
 
@@ -6680,7 +6706,10 @@ export type GetAssetApiV1WorkflowAssetsAssetIdGetData = {
     };
 };
 
-export type GetAssetApiV1WorkflowAssetsAssetIdGetResponse = (unknown);
+export type GetAssetApiV1WorkflowAssetsAssetIdGetResponse = ({
+    status: "ok";
+    data: SavedWorkflowAsset;
+});
 
 export type GetAssetApiV1WorkflowAssetsAssetIdGetError = (HTTPValidationError);
 

@@ -8863,12 +8863,31 @@ paths:
       - Agent Teams workflows
       summary: List Assets
       operationId: list_assets_api_v1_workflow_assets_get
+      security:
+      - BearerAuth: []
+      parameters:
+      - name: include_example
+        in: query
+        description: Provision the owner's starter workflow on first workbench access. A deleted example stays deleted.
+        schema: {type: boolean, default: false}
       responses:
         '200':
           description: Successful Response
           content:
             application/json:
-              schema: {}
+              schema:
+                type: object
+                required: [status, data]
+                properties:
+                  status: {type: string, const: ok}
+                  data:
+                    type: object
+                    required: [assets]
+                    properties:
+                      assets:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/SavedWorkflowAsset'
     post:
       tags:
       - Agent Teams workflows
@@ -8909,6 +8928,8 @@ paths:
       - Agent Teams workflows
       summary: Get Asset
       operationId: get_asset_api_v1_workflow_assets__asset_id__get
+      security:
+      - BearerAuth: []
       parameters:
       - name: asset_id
         in: path
@@ -8930,7 +8951,13 @@ paths:
           description: Successful Response
           content:
             application/json:
-              schema: {}
+              schema:
+                type: object
+                required: [status, data]
+                properties:
+                  status: {type: string, const: ok}
+                  data:
+                    $ref: '#/components/schemas/SavedWorkflowAsset'
         '422':
           description: Validation Error
           content:
@@ -14112,6 +14139,23 @@ components:
           description: Port diagnostics include REQUIRED, REFERENCE, INCOMPATIBLE, UNREACHABLE_DATA, and CYCLE.
         message:
           type: string
+    SavedWorkflowAsset:
+      type: object
+      required: [asset_id, version, definition, versions, deleted, is_builtin_example]
+      properties:
+        asset_id: {type: string}
+        version: {type: integer, minimum: 1}
+        definition:
+          anyOf:
+          - $ref: '#/components/schemas/GraphDefinition'
+          - $ref: '#/components/schemas/AutonomousDefinition'
+        versions:
+          type: array
+          items: {type: integer, minimum: 1}
+        deleted: {type: boolean}
+        is_builtin_example:
+          type: boolean
+          description: Identifies this owner's original starter asset across edits and published versions.
     WorkflowSaveRequest:
       additionalProperties: false
       description: Create an asset or append an immutable version using optimistic locking.

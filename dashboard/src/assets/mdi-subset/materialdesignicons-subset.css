@@ -1,4 +1,4 @@
-/* Auto-generated MDI subset – 402 icons */
+/* Auto-generated MDI subset – 409 icons */
 /* Do not edit manually. Run: pnpm run subset-icons */
 
 @font-face {
@@ -632,6 +632,10 @@
   content: "\F0215";
 }
 
+.mdi-file-check-outline::before {
+  content: "\F0E29";
+}
+
 .mdi-file-code-outline::before {
   content: "\F102B";
 }
@@ -796,6 +800,10 @@
   content: "\F07B9";
 }
 
+.mdi-form-textbox::before {
+  content: "\F060E";
+}
+
 .mdi-format-align-justify::before {
   content: "\F0261";
 }
@@ -814,6 +822,10 @@
 
 .mdi-format-paint::before {
   content: "\F027C";
+}
+
+.mdi-forum-outline::before {
+  content: "\F0822";
 }
 
 .mdi-frequently-asked-questions::before {
@@ -1016,6 +1028,10 @@
   content: "\F16A8";
 }
 
+.mdi-lock-open-check-outline::before {
+  content: "\F16AB";
+}
+
 .mdi-lock-open-outline::before {
   content: "\F0340";
 }
@@ -1120,6 +1136,10 @@
   content: "\F0A07";
 }
 
+.mdi-motion-play-outline::before {
+  content: "\F1591";
+}
+
 .mdi-music-note-outline::before {
   content: "\F0F74";
 }
@@ -1220,6 +1240,10 @@
   content: "\F040A";
 }
 
+.mdi-play-box-multiple-outline::before {
+  content: "\F13E6";
+}
+
 .mdi-play-circle-outline::before {
   content: "\F040D";
 }
@@ -1290,6 +1314,10 @@
 
 .mdi-rename-outline::before {
   content: "\F1C1A";
+}
+
+.mdi-replay::before {
+  content: "\F0459";
 }
 
 .mdi-reply::before {

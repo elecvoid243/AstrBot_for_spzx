@@ -462,10 +462,21 @@ async def list_workflow_components(
 
 @router.get("/workflow_assets")
 async def list_assets(
+    include_example: bool = False,
     username: str = Depends(require_dashboard_user),
     service: WorkflowService = Depends(get_workflow_service),
 ):
-    return ok(await service.list_assets(username))
+    """List the current owner's published workflows and teams.
+
+    Args:
+        include_example: Provision the editable starter workflow on first access.
+        username: Stable resource owner of the authorized Dashboard account.
+        service: Core-owned workflow service.
+
+    Returns:
+        Active assets with their latest versions and example identity.
+    """
+    return ok(await service.list_assets(username, include_example=include_example))
 
 
 class WorkflowDraftGenerationRequest(BaseModel):

@@ -1,4 +1,49 @@
 {
+  "releaseBrief": {
+    "title": "发布简报",
+    "pinned": "置顶示例",
+    "description": "填写项目名称和摘要，核对生成的简报，批准后交付该版本。",
+    "canvas": "打开画布",
+    "guide": {
+      "open": "查看流程演示",
+      "close": "收起演示",
+      "title": "v1 示例流程演示",
+      "play": "播放演示",
+      "pause": "暂停演示",
+      "replay": "重播演示",
+      "progress": "第 {step} 步，共 {total} 步",
+      "previous": "上一步",
+      "next": "下一步",
+      "nodes": {
+        "inputs": "流程输入",
+        "prepare": "准备简报",
+        "review": "人工审批",
+        "deliver": "交付简报"
+      },
+      "steps": {
+        "canvas": {
+          "title": "在画布上读懂流程",
+          "body": "点击示例卡片上的「{canvas}」，依次查看 Prepare brief、Review brief 和 Deliver brief。准备节点还有一条数据线，直接把项目名称和摘要传给交付节点。"
+        },
+        "start": {
+          "title": "用两个字段启动运行",
+          "body": "回到示例卡片，点击「{start}」。保留下面的示例值或填写自己的项目名称和摘要，确认后即会启动一次运行。准备节点将两个字段整理成简报。"
+        },
+        "chat": {
+          "title": "在 Chat 中跟进这次运行",
+          "body": "在运行工作台点击「{chat}」。打开的会话对应刚启动的这次运行，可以查看已准备的简报和正在等待处理的审批待办。"
+        },
+        "review": {
+          "title": "核对并批准当前版本",
+          "body": "找到审批待办，窄屏可先打开「{inbox}」。点击「{preview}」核对两个字段，再点击「{approve}」允许交付。退回会跳过交付。点击演示中的「下一步」可查看批准后的结果。"
+        },
+        "result": {
+          "title": "查看交付的简报",
+          "body": "在已完成的运行中选择 Deliver brief，查看交付的简报。窄屏可打开「{inbox}」阅读结果。使用示例输入时，获批的项目名称和摘要如下。"
+        }
+      }
+    }
+  },
   "reuse": {
     "detachedGate": "{task} 缺少来自 {source} 的控制连线",
     "removeDetachedGate": "移除缺失的控制连线",

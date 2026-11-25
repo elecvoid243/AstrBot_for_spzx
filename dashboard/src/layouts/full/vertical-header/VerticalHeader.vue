@@ -1377,67 +1377,79 @@ onMounted(async () => {
         </v-card>
       </v-menu>
 
-      <v-menu
+      <StyledMenu
         v-if="isChatPath && chatHeader.creationRelations"
         v-model="chatHeader.creationRelationsOpen"
         location="bottom end"
-        offset="8"
+        :offset="8"
+        content-class="creation-relations-menu"
       >
         <template #activator="{ props: menuProps }">
           <v-btn
             v-bind="menuProps"
-            class="chat-action-btn todo-summary-trigger"
-            :class="{ 'todo-summary-trigger--active': chatHeader.creationRelationsOpen }"
+            class="chat-action-btn creation-relations-trigger"
+            :class="{
+              'creation-relations-trigger--active': chatHeader.creationRelationsOpen,
+            }"
             variant="text"
             size="small"
             rounded="sm"
             :title="tm('creationRelations.title')"
             :aria-label="tm('creationRelations.title')"
           >
-            <v-icon size="18" class="todo-trigger-icon">mdi-source-branch</v-icon>
-            <span v-if="chatHeader.creationRelations.created.length" class="todo-trigger-count">
+            <v-icon size="17">mdi-forum-outline</v-icon>
+            <span
+              v-if="chatHeader.creationRelations.created.length"
+              class="creation-relations-count"
+            >
               {{ chatHeader.creationRelations.created.length }}
             </span>
           </v-btn>
         </template>
-        <v-card class="todo-menu-card" elevation="8">
-          <v-list density="compact" lines="two" class="todo-menu-body creation-relations-list">
-            <template v-if="chatHeader.creationRelations.source">
-              <v-list-subheader>{{ tm("creationRelations.source") }}</v-list-subheader>
-              <v-list-item
-                v-if="chatHeader.creationRelations.source.target"
-                :title="chatHeader.creationRelations.source.target.displayName || tm('creationRelations.untitled')"
-                :subtitle="chatHeader.creationRelations.source.target.available ? tm('creationRelations.local_agent') : tm('creationRelations.unavailable')"
-                :disabled="!chatHeader.creationRelations.source.target.available"
-                :aria-disabled="!chatHeader.creationRelations.source.target.available || undefined"
-                :append-icon="chatHeader.creationRelations.source.target.available ? 'mdi-arrow-top-right' : undefined"
-                @click="chatHeader.creationRelationSelection = chatHeader.creationRelations.source.target"
-              />
-              <v-list-item
-                v-else
-                :title="tm(`creationRelations.${chatHeader.creationRelations.source.kind}`)"
-                :subtitle="chatHeader.creationRelations.source.credentialName || undefined"
-              />
-            </template>
-            <template v-if="chatHeader.creationRelations.created.length">
-              <v-list-subheader>{{ tm("creationRelations.created") }}</v-list-subheader>
-              <v-list-item
-                v-for="target in chatHeader.creationRelations.created"
-                :key="JSON.stringify([target.connectionId, target.revision, target.sessionId])"
-                :title="target.displayName || tm('creationRelations.untitled')"
-                :subtitle="[
-                  target.connectionName,
-                  target.available ? null : tm('creationRelations.unavailable'),
-                ].filter(Boolean).join(' · ') || undefined"
-                :disabled="!target.available"
-                :aria-disabled="!target.available || undefined"
-                :append-icon="target.available ? 'mdi-arrow-top-right' : undefined"
-                @click="chatHeader.creationRelationSelection = target"
-              />
-            </template>
-          </v-list>
-        </v-card>
-      </v-menu>
+        <template v-if="chatHeader.creationRelations.source">
+          <v-list-subheader>
+            {{ tm("creationRelations.source") }}
+          </v-list-subheader>
+          <v-list-item
+            v-if="chatHeader.creationRelations.source.target"
+            class="creation-relations-item styled-menu-item"
+            prepend-icon="mdi-chat-outline"
+            :title="chatHeader.creationRelations.source.target.displayName || tm('creationRelations.untitled')"
+            :subtitle="chatHeader.creationRelations.source.target.available ? tm('creationRelations.local_agent') : tm('creationRelations.unavailable')"
+            :disabled="!chatHeader.creationRelations.source.target.available"
+            :aria-disabled="!chatHeader.creationRelations.source.target.available || undefined"
+            :append-icon="chatHeader.creationRelations.source.target.available ? 'mdi-arrow-top-right' : undefined"
+            @click="chatHeader.creationRelationSelection = chatHeader.creationRelations.source.target"
+          />
+          <v-list-item
+            v-else
+            class="creation-relations-item"
+            prepend-icon="mdi-link-variant"
+            :title="tm(`creationRelations.${chatHeader.creationRelations.source.kind}`)"
+            :subtitle="chatHeader.creationRelations.source.credentialName || undefined"
+          />
+        </template>
+        <template v-if="chatHeader.creationRelations.created.length">
+          <v-list-subheader>
+            {{ tm("creationRelations.created") }}
+          </v-list-subheader>
+          <v-list-item
+            v-for="target in chatHeader.creationRelations.created"
+            :key="JSON.stringify([target.connectionId, target.revision, target.sessionId])"
+            class="creation-relations-item styled-menu-item"
+            prepend-icon="mdi-chat-outline"
+            :title="target.displayName || tm('creationRelations.untitled')"
+            :subtitle="[
+              target.connectionName,
+              target.available ? null : tm('creationRelations.unavailable'),
+            ].filter(Boolean).join(' · ') || undefined"
+            :disabled="!target.available"
+            :aria-disabled="!target.available || undefined"
+            :append-icon="target.available ? 'mdi-arrow-top-right' : undefined"
+            @click="chatHeader.creationRelationSelection = target"
+          />
+        </template>
+      </StyledMenu>
 
       <!--
         Workspace files panel toggle button - HIDDEN on this branch.
@@ -2628,7 +2640,8 @@ onMounted(async () => {
   color: rgba(var(--v-theme-primary), 0.85);
 }
 
-.todo-trigger-count {
+.todo-trigger-count,
+.creation-relations-count {
   font-size: 11px;
   font-weight: 600;
   line-height: 1;
@@ -2658,22 +2671,85 @@ onMounted(async () => {
   overflow-y: auto;
 }
 
-.creation-relations-list .v-list-subheader {
-  color: rgba(var(--v-theme-on-surface), 0.72);
+.v-btn.creation-relations-trigger {
+  min-width: 32px;
+  padding-inline: 8px;
 }
 
-.creation-relations-list .v-list-item {
-  color: rgb(var(--v-theme-on-surface));
+.creation-relations-trigger .v-icon {
+  color: rgba(var(--v-theme-primary), 0.85);
+}
+
+.v-btn.creation-relations-trigger--active {
+  background: rgba(var(--v-theme-primary), 0.09);
+  color: rgb(var(--v-theme-primary));
+}
+
+.creation-relations-menu .styled-menu-card {
+  width: min(280px, calc(100vw - 24px));
+  max-height: min(380px, 62vh);
+  overflow-y: auto;
+  border-radius: 12px;
+}
+
+.creation-relations-menu .styled-menu-list {
+  padding: 6px !important;
+}
+
+.creation-relations-menu .v-list-subheader {
+  min-height: 25px;
+  padding: 0 9px;
+  color: rgba(var(--v-theme-on-surface), 0.66);
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.creation-relations-menu .v-list-item + .v-list-subheader {
+  margin-top: 4px;
+  padding-top: 3px;
+  border-top: 1px solid rgba(var(--v-theme-on-surface), 0.08);
+}
+
+.creation-relations-menu .creation-relations-item {
+  min-height: 32px;
+  padding: 5px 9px;
   border-radius: 8px;
+  color: rgba(var(--v-theme-on-surface), 0.87);
 }
 
-.creation-relations-list .v-list-item--disabled {
-  color: rgba(var(--v-theme-on-surface), 0.68);
+.creation-relations-menu .creation-relations-item.v-list-item--disabled {
+  color: rgba(var(--v-theme-on-surface), 0.62);
   opacity: 1;
 }
 
-.creation-relations-list .v-list-item-subtitle {
-  opacity: 0.82;
+.creation-relations-menu .creation-relations-item:focus-visible {
+  outline: 2px solid rgba(var(--v-theme-primary), 0.65);
+  outline-offset: -2px;
+}
+
+.creation-relations-menu .v-list-item-title {
+  font-size: 0.8125rem;
+  line-height: 1.35;
+  letter-spacing: 0;
+}
+
+.creation-relations-menu .v-list-item-subtitle {
+  margin-top: 2px;
+  color: rgba(var(--v-theme-on-surface), 0.65);
+  font-size: 0.6875rem;
+  line-height: 1.35;
+  letter-spacing: 0;
+  opacity: 1;
+}
+
+.creation-relations-menu .creation-relations-item .v-icon {
+  color: rgba(var(--v-theme-on-surface), 0.63);
+  font-size: 14px;
+  opacity: 1;
+}
+
+.creation-relations-menu .creation-relations-item .v-list-item__spacer {
+  width: 8px;
 }
 
 .todo-menu-footer {
@@ -2694,7 +2770,8 @@ onMounted(async () => {
 @media (max-width: 760px) {
   /* Toolbar space is scarce on phones: the icon and the warning dot still
      carry the state, and the exact counts live inside the menu. */
-  .todo-trigger-count {
+  .todo-trigger-count,
+  .creation-relations-count {
     display: none;
   }
 }

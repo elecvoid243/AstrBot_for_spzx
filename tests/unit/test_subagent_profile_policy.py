@@ -1,6 +1,7 @@
 """Protect profile migration, concurrent dispatch and live tool authorization."""
 
 import asyncio
+from pathlib import Path
 from types import SimpleNamespace
 
 import mcp.types
@@ -11,6 +12,7 @@ from astrbot.core.agent.handoff import HandoffTool
 from astrbot.core.agent.run_context import ContextWrapper
 from astrbot.core.agent.tool import FunctionTool
 from astrbot.core.astr_agent_tool_exec import FunctionToolExecutor
+from astrbot.core.config.astrbot_config import AstrBotConfig
 from astrbot.core.subagent_orchestrator import SubAgentOrchestrator
 from astrbot.core.subagent_policy import current_subagent_policy
 
@@ -41,6 +43,24 @@ def test_legacy_policy_migrates_once_per_existing_profile():
         == 9
     )
     assert profiles["new"]["subagent_policy"] is None
+
+
+def test_restart_preserves_the_one_time_migration_marker(tmp_path: Path):
+    default_path = str(tmp_path / "cmd_config.json")
+    default = AstrBotConfig(config_path=default_path)
+    default["subagent_orchestrator"]["main_enable"] = True
+    SubAgentOrchestrator.migrate_profiles(
+        {"default": default}, default["subagent_orchestrator"]
+    )
+    assert default["subagent_policy"]["main_enable"] is True
+
+    reopened = AstrBotConfig(config_path=default_path)
+    imported = AstrBotConfig(config_path=str(tmp_path / "abconf_imported.json"))
+    SubAgentOrchestrator.migrate_profiles(
+        {"default": reopened, "imported": imported}, reopened["subagent_orchestrator"]
+    )
+    assert reopened["subagent_policy_migrated"] is True
+    assert imported["subagent_policy"] is None
 
 
 @pytest.mark.asyncio

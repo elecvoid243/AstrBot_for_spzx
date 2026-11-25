@@ -5,6 +5,7 @@ import io
 import json
 import re
 import shutil
+import uuid
 import zipfile
 from datetime import datetime
 from pathlib import Path
@@ -14,10 +15,7 @@ from astrbot.core import logger
 from astrbot.core.config.agent_runner import normalize_agent_runner
 from astrbot.core.config.default import CONFIG_METADATA_2, DEFAULT_CONFIG, VERSION
 from astrbot.core.core_lifecycle import AstrBotCoreLifecycle
-from astrbot.core.utils.astrbot_path import (
-    get_astrbot_config_path,
-    get_astrbot_data_path,
-)
+from astrbot.core.utils.astrbot_path import get_astrbot_config_path
 from astrbot.dashboard.services.config_service import save_config, validate_config
 
 PACKAGE_FORMAT_VERSION = 1
@@ -28,6 +26,7 @@ MAX_PROFILE_BYTES = 2 * 1024 * 1024
 MAX_UNCOMPRESSED_BYTES = 40 * 1024 * 1024
 MANIFEST_NAME = "manifest.json"
 DEFAULT_CONFIG_NAME = "cmd_config.json"
+SUBAGENT_DEFINITIONS_KEY = "subagent_definitions"
 
 UUID_PATTERN = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
@@ -74,8 +73,8 @@ def _normalize_config(config: dict) -> dict:
     """Return a deep copy ready for validation or persistence."""
     normalized = copy.deepcopy(config)
     normalized.pop("dashboard", None)
-    normalized["agent_runner"] = normalize_agent_runner(normalized.get("agent_runner"))
     _fill_missing(normalized, DEFAULT_CONFIG)
+    normalized["agent_runner"] = normalize_agent_runner(normalized["agent_runner"])
     return normalized
 
 
@@ -122,6 +121,25 @@ class ConfigTransferService:
         if not selected and not include_default:
             raise ConfigTransferError("没有可导出的配置文件。")
 
+        referenced_ids = set()
+        for conf_id in selected:
+            policy = self.acm.confs[conf_id].get("subagent_policy")
+            agent_ids = policy.get("agent_ids") if isinstance(policy, dict) else None
+            if isinstance(agent_ids, list):
+                referenced_ids.update(
+                    item for item in agent_ids if isinstance(item, str)
+                )
+        catalogue = (
+            self.acm.confs["default"].get("subagent_orchestrator", {}).get("agents", [])
+        )
+        definitions = [
+            agent
+            for agent in (catalogue if isinstance(catalogue, list) else [])
+            if isinstance(agent, dict)
+            and isinstance(agent.get("id"), str)
+            and agent["id"] in referenced_ids
+        ]
+
         timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         if len(selected) == 1 and not include_default:
             conf_id = selected[0]
@@ -132,6 +150,8 @@ class ConfigTransferService:
                 "id": conf_id,
                 "config": self._export_config(conf_id),
             }
+            if definitions:
+                payload[SUBAGENT_DEFINITIONS_KEY] = definitions
             return (
                 json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8"),
                 "application/json",
@@ -147,6 +167,8 @@ class ConfigTransferService:
             "includes_default": bool(include_default),
             "profiles": [],
         }
+        if definitions and not include_default:
+            manifest[SUBAGENT_DEFINITIONS_KEY] = definitions
         buffer = io.BytesIO()
         with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
             for conf_id in selected:
@@ -191,6 +213,7 @@ class ConfigTransferService:
     def _export_config(self, conf_id: str) -> dict:
         config = copy.deepcopy(dict(self.acm.confs[conf_id]))
         config.pop("dashboard", None)
+        config.pop("subagent_policy_migrated", None)
         return config
 
     def preview_import(
@@ -215,7 +238,7 @@ class ConfigTransferService:
         Raises:
             ConfigTransferError: If the package is invalid.
         """
-        entries, default_config, meta = self._parse_package(raw, filename)
+        entries, default_config, meta, _ = self._parse_package(raw, filename)
         plan = self._build_plan(entries, conflict_mode)
         default_plan = self._prepare_default(default_config, apply_default)
         return {
@@ -250,13 +273,17 @@ class ConfigTransferService:
         Raises:
             ConfigTransferError: If the package is invalid.
         """
-        entries, default_config, meta = self._parse_package(raw, filename)
+        entries, default_config, meta, definitions = self._parse_package(raw, filename)
         plan = self._build_plan(entries, conflict_mode)
         default_plan = self._prepare_default(default_config, apply_default)
-        backup_path = self._backup(plan, default_plan)
+        catalogue = self._merge_subagent_definitions(plan, default_plan, definitions)
+        backup_path = self._backup(
+            plan, default_plan, catalogue_changed=catalogue is not None
+        )
         changed = await self._apply_plan(
             plan,
             default_plan,
+            catalogue=catalogue,
             allow_admin_id_change=allow_admin_id_change,
         )
         return {
@@ -273,21 +300,65 @@ class ConfigTransferService:
         self,
         raw: bytes,
         filename: str,
-    ) -> tuple[list[dict], dict | None, dict]:
+    ) -> tuple[list[dict], dict | None, dict, list[dict]]:
         if not raw:
             raise ConfigTransferError("上传的文件为空。")
         if len(raw) > MAX_PACKAGE_BYTES:
             raise ConfigTransferError("配置文件包不能超过 20 MB。")
 
         if zipfile.is_zipfile(io.BytesIO(raw)):
-            return self._parse_zip(raw)
-        return self._parse_json(raw, filename)
+            entries, default, meta, exported_definitions = self._parse_zip(raw)
+        else:
+            entries, default, meta, exported_definitions = self._parse_json(
+                raw, filename
+            )
+
+        legacy = (default or {}).get("subagent_orchestrator")
+        from_default = exported_definitions is None and isinstance(legacy, dict)
+        if from_default:
+            exported_definitions = legacy.get("agents", [])
+        definitions: list[dict] = []
+        if exported_definitions is not None:
+            if not isinstance(exported_definitions, list):
+                raise ConfigTransferError("静态子代理定义必须是列表。")
+            ids: set[str] = set()
+            for agent in exported_definitions:
+                name = agent.get("name") if isinstance(agent, dict) else None
+                if not isinstance(name, str) or not name.strip():
+                    raise ConfigTransferError("静态子代理定义缺少有效名称。")
+                agent_id = agent.get("id")
+                if from_default and not agent_id:
+                    agent_id = uuid.uuid4().hex
+                if not isinstance(agent_id, str) or not agent_id or agent_id in ids:
+                    raise ConfigTransferError("静态子代理定义缺少唯一 ID。")
+                ids.add(agent_id)
+                definitions.append({**agent, "name": name.strip(), "id": agent_id})
+
+        if (
+            default is not None
+            and "subagent_policy" not in default
+            and isinstance(legacy, dict)
+        ):
+            # Old packages only stored the effective policy in the default file.
+            policy = {
+                key: copy.deepcopy(value)
+                for key, value in legacy.items()
+                if key != "agents"
+            }
+            policy["agent_ids"] = [
+                agent["id"] for agent in definitions if agent.get("enabled", True)
+            ]
+            default["subagent_policy"] = policy
+            for entry in entries:
+                entry["config"].setdefault("subagent_policy", policy)
+
+        return entries, default, meta, definitions
 
     def _parse_json(
         self,
         raw: bytes,
         filename: str,
-    ) -> tuple[list[dict], dict | None, dict]:
+    ) -> tuple[list[dict], dict | None, dict, Any]:
         try:
             payload = json.loads(raw.decode("utf-8-sig"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -296,8 +367,10 @@ class ConfigTransferService:
             raise ConfigTransferError("配置文件必须是 JSON 对象。")
 
         stem = Path(filename or "config.json").stem
+        definitions = None
         if isinstance(payload.get("config"), dict):
             config = payload["config"]
+            definitions = payload.get(SUBAGENT_DEFINITIONS_KEY)
             name = str(payload.get("name") or stem).strip() or stem
             conf_id = str(payload.get("id") or "").strip()
             source_id = conf_id if UUID_PATTERN.match(conf_id) else None
@@ -314,12 +387,12 @@ class ConfigTransferService:
             "includes_default": False,
             "profile_count": 1,
         }
-        return [entry], None, meta
+        return [entry], None, meta, definitions
 
     def _parse_zip(
         self,
         raw: bytes,
-    ) -> tuple[list[dict], dict | None, dict]:
+    ) -> tuple[list[dict], dict | None, dict, Any]:
         try:
             with zipfile.ZipFile(io.BytesIO(raw)) as archive:
                 infos = archive.infolist()
@@ -411,7 +484,7 @@ class ConfigTransferService:
             "includes_default": default_config is not None,
             "profile_count": len(entries),
         }
-        return entries, default_config, meta
+        return entries, default_config, meta, manifest.get(SUBAGENT_DEFINITIONS_KEY)
 
     @staticmethod
     def _assert_safe_member(name: str) -> None:
@@ -522,8 +595,14 @@ class ConfigTransferService:
                 used_names.add(item["target_name"])
 
             if item["action"] != "error":
-                config = _normalize_config(entry["config"])
                 try:
+                    config = _normalize_config(entry["config"])
+                    if (
+                        "subagent_policy" not in entry["config"]
+                        and item["action"] == "overwrite"
+                    ):
+                        # A legacy package without the global config has no policy to apply.
+                        config.pop("subagent_policy", None)
                     errors, normalized = validate_config(
                         config,
                         CONFIG_METADATA_2,
@@ -564,9 +643,12 @@ class ConfigTransferService:
             return item
 
         config = copy.deepcopy(default_config)
-        config["agent_runner"] = normalize_agent_runner(config.get("agent_runner"))
         _fill_missing(config, DEFAULT_CONFIG)
+        config.pop("subagent_policy_migrated", None)
+        if "subagent_policy" not in default_config:
+            config.pop("subagent_policy", None)
         try:
+            config["agent_runner"] = normalize_agent_runner(config["agent_runner"])
             errors, normalized = validate_config(
                 config,
                 CONFIG_METADATA_2,
@@ -585,14 +667,118 @@ class ConfigTransferService:
         item.update(action="overwrite", config=normalized)
         return item
 
+    def _merge_subagent_definitions(
+        self, plan: list[dict], default_plan: dict, definitions: list[dict]
+    ) -> list[dict] | None:
+        """Plan catalogue additions and rewrite references in imported policies.
+
+        Args:
+            plan: Validated profile import actions.
+            default_plan: Validated default configuration import action.
+            definitions: Static subagents shipped in the package.
+
+        Returns:
+            The updated shared catalogue, or None when it needs no write.
+        """
+        if not definitions:
+            return None
+
+        configs = [item["config"] for item in plan if item["config"] is not None]
+        apply_default = default_plan["action"] == "overwrite"
+        if apply_default:
+            configs.append(default_plan["config"])
+        references = []
+        for config in configs:
+            policy = config.get("subagent_policy")
+            agent_ids = policy.get("agent_ids") if isinstance(policy, dict) else None
+            if isinstance(agent_ids, list):
+                references.append(agent_ids)
+        selected_ids = {
+            agent_id
+            for agent_ids in references
+            for agent_id in agent_ids
+            if isinstance(agent_id, str)
+        }
+
+        local = self.acm.confs["default"]["subagent_orchestrator"].get("agents", [])
+        catalogue = list(local) if isinstance(local, list) else []
+        by_id = {
+            agent["id"]: agent
+            for agent in catalogue
+            if isinstance(agent, dict) and isinstance(agent.get("id"), str)
+        }
+        by_name = {
+            agent["name"].strip(): agent
+            for agent in by_id.values()
+            if isinstance(agent.get("name"), str)
+        }
+        remapped = {}
+        for agent in definitions:
+            source_id = agent["id"]
+            if not apply_default and source_id not in selected_ids:
+                continue
+            if by_id.get(source_id) == agent:
+                continue
+
+            name = agent["name"]
+            candidate = name
+            index = 1
+            while candidate in by_name:
+                existing = by_name[candidate]
+                # Match a previous import even if it needed a new name or ID.
+                if existing == {**agent, "id": existing["id"], "name": candidate}:
+                    remapped[source_id] = existing["id"]
+                    break
+                candidate = f"{name}_import" if index == 1 else f"{name}_import_{index}"
+                index += 1
+            else:
+                agent_id = uuid.uuid4().hex if source_id in by_id else source_id
+                imported = {**agent, "id": agent_id, "name": candidate}
+                catalogue.append(imported)
+                by_id[agent_id] = imported
+                by_name[candidate] = imported
+                remapped[source_id] = agent_id
+
+        for agent_ids in references:
+            agent_ids[:] = [
+                remapped.get(agent_id, agent_id)
+                if isinstance(agent_id, str)
+                else agent_id
+                for agent_id in agent_ids
+            ]
+        return catalogue if catalogue != local else None
+
     async def _apply_plan(
         self,
         plan: list[dict],
         default_plan: dict,
         *,
+        catalogue: list[dict] | None,
         allow_admin_id_change: bool,
     ) -> list[str]:
         changed: list[str] = []
+        local = self.acm.confs["default"]
+        if catalogue is not None:
+            previous = local["subagent_orchestrator"]
+            try:
+                # Persist definitions before writing any profile that refers to them.
+                local.save_config(
+                    {"subagent_orchestrator": {**previous, "agents": catalogue}}
+                )
+            except Exception as exc:
+                local["subagent_orchestrator"] = previous
+                raise ConfigTransferError("保存静态子代理定义失败。") from exc
+            changed.append("default")
+            if self.core_lifecycle.subagent_orchestrator:
+                try:
+                    await self.core_lifecycle.subagent_orchestrator.reload_from_config(
+                        local["subagent_orchestrator"]
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to reload subagent definitions after import: %s", exc
+                    )
+
         for item in plan:
             if item["action"] not in {"overwrite", "create"} or item["error"]:
                 continue
@@ -642,11 +828,13 @@ class ConfigTransferService:
 
         if default_plan["action"] == "overwrite" and default_plan["config"]:
             try:
-                local = self.acm.confs["default"]
                 merged = copy.deepcopy(default_plan["config"])
                 for key in DEFAULT_PROTECTED_KEYS:
                     if key in local:
                         merged[key] = copy.deepcopy(local.get(key))
+                merged["subagent_orchestrator"]["agents"] = copy.deepcopy(
+                    local["subagent_orchestrator"].get("agents", [])
+                )
                 save_config(
                     merged,
                     local,
@@ -671,13 +859,15 @@ class ConfigTransferService:
                 )
         return list(dict.fromkeys(changed))
 
-    def _backup(self, plan: list[dict], default_plan: dict) -> str | None:
+    def _backup(
+        self, plan: list[dict], default_plan: dict, *, catalogue_changed: bool
+    ) -> str | None:
         targets = [
             item
             for item in plan
             if item["action"] == "overwrite" and item.get("target_id")
         ]
-        include_default = default_plan["action"] == "overwrite"
+        include_default = default_plan["action"] == "overwrite" or catalogue_changed
         if not targets and not include_default:
             return None
 
@@ -708,7 +898,7 @@ class ConfigTransferService:
             if source.is_file():
                 shutil.copy2(source, backup_root / source.name)
         if include_default:
-            cmd_config = Path(get_astrbot_data_path()) / "cmd_config.json"
+            cmd_config = Path(self.acm.confs["default"].config_path)
             if cmd_config.is_file():
                 shutil.copy2(cmd_config, backup_root / "cmd_config.json")
         return str(backup_root)

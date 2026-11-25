@@ -240,6 +240,7 @@ DEFAULT_CONFIG = {
     #   fixed transfer_to_subagent tool. remove_main_duplicate_tools can remove tools
     #   that are duplicated on subagents from the main LLM toolset.
     "subagent_policy": None,
+    "subagent_policy_migrated": False,
     "subagent_orchestrator": {
         "main_enable": False,
         "remove_main_duplicate_tools": False,

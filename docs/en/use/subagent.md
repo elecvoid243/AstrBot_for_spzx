@@ -40,6 +40,8 @@ An upgrade copies the previous global policy into existing profiles once. Later 
 
 ![Subagent policy in the default profile](/images/subagent-profile-en.jpg)
 
+Exporting a profile from the WebUI includes its subagent policy and the static definitions it selects. During import, AstrBot merges those definitions into the destination's shared catalogue. If a local definition with the same name or ID differs, AstrBot assigns the imported definition an available name or ID and updates the imported profile's references. Referenced personas and models must be available on the destination instance.
+
 The former **Orchestration mode → DAG orchestration** option has been removed. Existing DAG settings no longer enable DAG; subagents use the default delegation mode.
 
 ### 2. Create a SubAgent

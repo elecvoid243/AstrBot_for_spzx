@@ -6,10 +6,14 @@ import json
 import uuid
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
 from astrbot.core.config.default import DEFAULT_CONFIG
+from astrbot.core.subagent_orchestrator import SubAgentOrchestrator
+from astrbot.core.subagent_policy import SubAgentPolicy
 from astrbot.dashboard.services import config_transfer_service as transfer_module
 from astrbot.dashboard.services.config_transfer_service import (
     ConfigTransferError,
@@ -73,6 +77,7 @@ class FakeLifecycle:
     def __init__(self, acm: FakeACM) -> None:
         self.astrbot_config_mgr = acm
         self.reloaded: list[str] = []
+        self.subagent_orchestrator = AsyncMock()
 
     async def reload_pipeline_scheduler(self, conf_id: str) -> None:
         self.reloaded.append(conf_id)
@@ -86,11 +91,6 @@ def transfer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         transfer_module,
         "get_astrbot_config_path",
         lambda: str(config_dir),
-    )
-    monkeypatch.setattr(
-        transfer_module,
-        "get_astrbot_data_path",
-        lambda: str(tmp_path),
     )
     acm = FakeACM(config_dir)
     lifecycle = FakeLifecycle(acm)
@@ -182,6 +182,209 @@ async def test_export_default_only_produces_importable_package(transfer) -> None
     )
     assert plan["items"] == []
     assert plan["default"]["action"] == "overwrite"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("package_type", ["json", "zip", "zip_with_default"])
+async def test_subagent_policy_round_trip_without_applying_default(
+    transfer, tmp_path: Path, package_type: str
+) -> None:
+    service, acm, _ = transfer
+    reviewer = {"id": "reviewer", "name": "reviewer", "system_prompt": "Review changes"}
+    writer = {"id": "writer", "name": "writer", "system_prompt": "Draft text"}
+    acm.confs["default"]["subagent_orchestrator"]["agents"] = [reviewer, writer]
+    policy = {
+        "main_enable": True,
+        "agent_ids": [reviewer["id"]],
+        "execution_timeout": 90,
+        "dynamic_agents": {"enabled": True, "max_subagent_count": 2},
+    }
+    profile_id = await _add_profile(acm, "Development", subagent_policy=policy)
+    ids = [profile_id]
+    if package_type == "zip":
+        ids.append(
+            await _add_profile(acm, "Support", subagent_policy={"main_enable": False})
+        )
+    raw, _, filename = service.export_profiles(ids, package_type == "zip_with_default")
+    if package_type == "json":
+        assert json.loads(raw)["subagent_definitions"] == [reviewer]
+    elif package_type == "zip":
+        with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+            assert json.loads(archive.read("manifest.json"))[
+                "subagent_definitions"
+            ] == [reviewer]
+
+    destination_dir = tmp_path / "destination"
+    destination_dir.mkdir()
+    destination = FakeACM(destination_dir)
+    local = destination.confs["default"]
+    local_reviewer = {**reviewer, "system_prompt": "Local instructions"}
+    local["subagent_orchestrator"]["agents"] = [local_reviewer]
+    local["subagent_policy"] = {"agent_ids": [reviewer["id"]]}
+    local.save_config()
+    lifecycle = FakeLifecycle(destination)
+    orchestrator = SubAgentOrchestrator(
+        None, SimpleNamespace(get_persona_v3_by_id=lambda _: None)
+    )
+    lifecycle.subagent_orchestrator = orchestrator
+    orchestrator.reload_from_config = AsyncMock(wraps=orchestrator.reload_from_config)
+    importer = ConfigTransferService(lifecycle)
+
+    result = await importer.import_package(
+        raw,
+        filename,
+        conflict_mode="overwrite",
+        apply_default=False,
+        allow_admin_id_change=True,
+    )
+
+    agents = local["subagent_orchestrator"]["agents"]
+    assert len(agents) == 2
+    imported = agents[1]
+    assert agents[0] == local_reviewer
+    assert imported["name"] == "reviewer_import"
+    assert imported["id"] != reviewer["id"]
+    assert imported["system_prompt"] == reviewer["system_prompt"]
+    assert local["subagent_policy"] == {"agent_ids": [reviewer["id"]]}
+    assert destination.confs[profile_id]["subagent_policy"] == {
+        **policy,
+        "agent_ids": [imported["id"]],
+    }
+    assert result["summary"]["applied"] == len(ids)
+    assert (Path(result["backup"]) / "cmd_config.json").is_file()
+    lifecycle.subagent_orchestrator.reload_from_config.assert_awaited_once_with(
+        local["subagent_orchestrator"]
+    )
+    effective = SubAgentPolicy.from_profile(destination.confs[profile_id])
+    assert [tool.name for tool in orchestrator.available_handoffs(effective, {})] == [
+        "transfer_to_reviewer_import"
+    ]
+
+    await importer.import_package(
+        raw,
+        filename,
+        conflict_mode="overwrite",
+        apply_default=False,
+        allow_admin_id_change=True,
+    )
+    assert local["subagent_orchestrator"]["agents"] == agents
+    assert destination.confs[profile_id]["subagent_policy"]["agent_ids"] == [
+        imported["id"]
+    ]
+    lifecycle.subagent_orchestrator.reload_from_config.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("apply_default", [True, False])
+async def test_import_legacy_package_migrates_global_subagent_policy(
+    transfer, apply_default: bool
+) -> None:
+    service, acm, _ = transfer
+    local = acm.confs["default"]
+    local["subagent_policy_migrated"] = True
+    local_agent = {"id": "local", "name": "local"}
+    local["subagent_orchestrator"]["agents"] = [local_agent]
+    profile_id = str(uuid.uuid4())
+    profile_file = f"profiles/abconf_{profile_id}.json"
+    package = {
+        "manifest.json": json.dumps(
+            {
+                "profiles": [
+                    {"id": profile_id, "name": "Development", "file": profile_file}
+                ]
+            }
+        ),
+        profile_file: "{}",
+        "cmd_config.json": json.dumps(
+            {
+                "subagent_orchestrator": {
+                    "main_enable": True,
+                    "dynamic_agents": {"enabled": True, "max_subagent_count": 3},
+                    "agents": [
+                        {"name": "reviewer"},
+                        {"name": "disabled", "enabled": False},
+                    ],
+                },
+            }
+        ),
+    }
+    await service.import_package(
+        _zip_bytes(package),
+        "legacy.zip",
+        conflict_mode="overwrite",
+        apply_default=apply_default,
+        allow_admin_id_change=True,
+    )
+
+    catalogue = local["subagent_orchestrator"]["agents"]
+    assert catalogue[0] == local_agent
+    assert [agent["name"] for agent in catalogue[1:]] == (
+        ["reviewer", "disabled"] if apply_default else ["reviewer"]
+    )
+    expected_policy = {
+        "main_enable": True,
+        "dynamic_agents": {"enabled": True, "max_subagent_count": 3},
+        "agent_ids": [catalogue[1]["id"]],
+    }
+    assert acm.confs[profile_id]["subagent_policy"] == expected_policy
+    assert local["subagent_policy"] == (expected_policy if apply_default else None)
+    assert local["subagent_policy_migrated"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("explicit_null", [False, True])
+async def test_import_profile_distinguishes_missing_policy_from_null(
+    transfer, explicit_null: bool
+) -> None:
+    service, acm, _ = transfer
+    policy = {"main_enable": True, "agent_ids": ["reviewer"]}
+    conf_id = await _add_profile(acm, "Development", subagent_policy=policy)
+    config = {"subagent_policy": None} if explicit_null else {}
+    raw = json.dumps({"id": conf_id, "name": "Development", "config": config}).encode()
+    result = await service.import_package(
+        raw,
+        "legacy.json",
+        conflict_mode="overwrite",
+        apply_default=False,
+        allow_admin_id_change=True,
+    )
+    assert result["summary"]["applied"] == 1
+    assert acm.confs[conf_id]["subagent_policy"] == (None if explicit_null else policy)
+
+
+@pytest.mark.asyncio
+async def test_catalogue_save_failure_does_not_publish_profiles(
+    transfer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service, acm, lifecycle = transfer
+    default = acm.confs["default"]
+    previous = copy.deepcopy(default["subagent_orchestrator"])
+
+    def fail_after_update(config: dict) -> None:
+        default.update(config)
+        raise OSError("Cannot write configuration")
+
+    monkeypatch.setattr(default, "save_config", fail_after_update)
+    raw = json.dumps(
+        {
+            "name": "Development",
+            "config": {"subagent_policy": {"agent_ids": ["reviewer"]}},
+            "subagent_definitions": [{"id": "reviewer", "name": "reviewer"}],
+        }
+    ).encode()
+
+    with pytest.raises(ConfigTransferError, match="保存静态子代理定义失败"):
+        await service.import_package(
+            raw,
+            "development.json",
+            conflict_mode="overwrite",
+            apply_default=False,
+            allow_admin_id_change=True,
+        )
+
+    assert default["subagent_orchestrator"] == previous
+    assert list(acm.confs) == ["default"]
+    assert lifecycle.reloaded == []
 
 
 @pytest.mark.asyncio

@@ -51,7 +51,7 @@ class Acceptance:
         self.runtime = self.evidence / "astrbot"
         (self.runtime / "data").mkdir(parents=True)
         self.origin = f"http://127.0.0.1:{available_port()}"
-        self.password = "Report-" + secrets.token_urlsafe(18)
+        self.password = "Report1-" + secrets.token_urlsafe(18)
         self.requests = []
         self.extracted = []
         self.extract_started = set()

@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from astrbot.core.agent.tool import FunctionTool
     from astrbot.dashboard.services.agent_team_ports import TeamPorts
 
 
@@ -33,6 +34,10 @@ class ProcessPersistenceError(RuntimeError):
 
 class CheckpointRecoveryError(ProcessPersistenceError):
     """Block the original attempt until its saved capabilities can be restored."""
+
+
+class DebugWritePending(CheckpointRecoveryError):
+    """Unwind after the debug fork has captured its pending write."""
 
 
 class HumanInputRequired(Exception):
@@ -102,6 +107,10 @@ class NodeExecutionBinding:
     """Original attempt state to restore after rebuilding the normal main pipeline."""
     admit_work: Callable[[], Awaitable[None]] | None = None
     """Durable whole-run admission before fresh or restored external invocations."""
+    preview_tool_write: (
+        Callable[["FunctionTool", dict, str], Awaitable[None]] | None
+    ) = None
+    """Inspect a resolved tool before execution in a debug fork."""
     pending_messages: Callable[[], Awaitable[list[dict]]] | None = None
     """Read member deliveries at the runner's serialized model-request boundary."""
     begin_usage: Callable[[dict], Awaitable[dict]] | None = None
@@ -265,6 +274,8 @@ async def execute_team_turn(
     begin_usage: Callable[[dict], Awaitable[dict]] | None = None,
     report_usage: Callable[[str, dict], Awaitable[dict]] | None = None,
     request_human: Callable[[str, dict], Awaitable[dict]] | None = None,
+    preview_tool_write: Callable[["FunctionTool", dict, str], Awaitable[None]]
+    | None = None,
 ) -> tuple[str, list]:
     """Execute a member or coordinator turn through the existing pipeline ports.
 
@@ -290,6 +301,7 @@ async def execute_team_turn(
         begin_usage: Reserve an actual delivery under shared frozen limits.
         report_usage: Save consumption without altering the current executor fence.
         request_human: Persist or read the original tool's human choice.
+        preview_tool_write: Inspect resolved tool arguments before a debug delivery.
 
     Returns:
         Full reply text and existing chat message parts.
@@ -336,6 +348,7 @@ async def execute_team_turn(
         begin_usage=begin_usage,
         report_usage=report_usage,
         request_human=request_human,
+        preview_tool_write=preview_tool_write,
     )
     token = AgentTeamExecutionRegistry.register(binding)
     framing = (

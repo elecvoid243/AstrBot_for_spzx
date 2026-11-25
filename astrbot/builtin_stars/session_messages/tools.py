@@ -612,6 +612,7 @@ class ReadChatSessionTool(FunctionTool[AstrAgentContext]):
 @dataclass
 class SendChatMessageTool(FunctionTool[AstrAgentContext]):
     name: str = "send_chat_message"
+    write_target: str | None = "session_id"
     description: str = (
         "Send text to an existing ordinary ChatUI session by ID. Returns after input "
         "acceptance, without waiting for the recipient's execution. The recipient "

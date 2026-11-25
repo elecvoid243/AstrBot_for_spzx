@@ -25,6 +25,25 @@
       "absent": "未读取值"
     }
   },
+  "debugWrite": {
+    "title": "外部写入预览",
+    "pending": "已在外部写入前暂停",
+    "unavailable": "无法确定写入目标，已暂停",
+    "invalidParameters": "写入参数缺失或无效，已暂停",
+    "cancelled": "调试分支已取消",
+    "operation": "操作",
+    "target": "目标",
+    "unknownTarget": "未确定",
+    "parameters": "参数",
+    "history": "来源尝试的历史回执",
+    "noReceipt": "没有回执记录",
+    "receiptStates": {
+      "started": "历史调用已开始",
+      "unknown": "历史调用结果未知",
+      "result_saved": "历史结果已保存",
+      "applied": "历史结果已应用"
+    }
+  },
   "inspection": {
     "title": "数据线检查器",
     "hint": "选择具名数据线，查看消费节点实际读取的值。",

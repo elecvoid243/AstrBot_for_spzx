@@ -210,8 +210,9 @@ async def test_debug_fork_freezes_one_recorded_consumer_attempt(
 
 
 @pytest.mark.asyncio
-async def test_debug_fork_refuses_installed_external_write(
-    tmp_path, publication_client, external_ledger, monkeypatch
+@pytest.mark.parametrize("component_name", ["previewable", "record"])
+async def test_debug_fork_stops_before_installed_external_write(
+    tmp_path, publication_client, external_ledger, monkeypatch, component_name
 ):
     """A direct Dashboard request cannot invoke the original connector again.
 
@@ -220,6 +221,7 @@ async def test_debug_fork_refuses_installed_external_write(
         publication_client: Authorized Dashboard API client.
         external_ledger: Independent recorder for connector calls.
         monkeypatch: Scope the fixture connector to its local ledger.
+        component_name: Select whether the connector declares a previewable target.
     """
     monkeypatch.setenv("ATN178_LEDGER_URL", external_ledger.url)
     monkeypatch.setenv("ATN178_LEDGER_KEY", "local-ledger-secret")
@@ -232,7 +234,7 @@ async def test_debug_fork_refuses_installed_external_write(
         component = next(
             item
             for item in await service.list_components("alice")
-            if item["reference"]["id"].endswith("/record")
+            if item["reference"]["id"].endswith(f"/{component_name}")
         )
         graph = ledger_graph(component, "debug-fork-ledger")
         created = await client.post(
@@ -263,15 +265,56 @@ async def test_debug_fork_refuses_installed_external_write(
             f"{url}/data_line", params={**body, "input_name": "record"}
         )
         assert line.status_code == 200, line.text
-        assert not line.json()["data"]["debug_fork_supported"]
+        assert line.json()["data"]["debug_fork_supported"]
         preview = await client.post(f"{url}/debug_forks/preview", json=body)
+        assert preview.status_code == 200, preview.text
         direct = await client.post(
             f"{url}/debug_forks",
-            json={**body, "preview_token": "0" * 64, "request_id": "direct"},
+            json={
+                **body,
+                "preview_token": preview.json()["data"]["preview_token"],
+                "request_id": "preview-write",
+                "replacement": {"name": "record", "value": {"count": 12}},
+            },
         )
-        for response in (preview, direct):
-            assert response.status_code == 409, response.text
-            assert "external write preview" in response.json()["message"]
+        assert direct.status_code == 200, direct.text
+        fork_id = direct.json()["data"]["run_id"]
+        fork = await completed_run(service, fork_id)
+        assert fork["status"] == "blocked"
+        fork_url = f"/api/v1/workflow_runs/{fork_id}"
+        read = (await client.get(fork_url)).json()["data"]
+        (stopped,) = read["tasks"]
+        write = stopped["state"]["debug_write_preview"]
+        assert write["operation"] == component["reference"]["id"]
+        assert write["parameters"]["record"] == {"count": 12}
+        assert write["target"] == (
+            "team/reports" if component_name == "previewable" else None
+        )
+        assert write["status"] == (
+            "pending" if component_name == "previewable" else "unavailable"
+        )
+        (receipt,) = write["historical_receipts"]
+        assert receipt["status"] == "applied"
+        assert receipt["results"][0]["structuredContent"] == {"record": {"count": 8}}
+        assert len(external_ledger.deliveries) == 1
+        assert not external_ledger.queries
+        assert (await client.get(fork_url)).json()["data"]["tasks"][0]["state"][
+            "debug_write_preview"
+        ] == write
+        task_url = f"/api/v1/workflow_runs/{stopped['run_id']}"
+        assert (await client.post(f"{task_url}/recover")).status_code == 409
+        retry = {
+            "request_id": "late-retry",
+            "attempt_id": stopped["state"]["attempt_id"],
+            "input_policy": "original",
+        }
+        assert (await client.post(f"{task_url}/retry", json=retry)).status_code == 409
+        cancelled = await client.post(
+            f"{fork_url}/control", json={"request_id": "cancel", "action": "cancel"}
+        )
+        assert cancelled.status_code == 200, cancelled.text
+        assert cancelled.json()["data"]["tasks"][0]["status"] == "cancelled"
+        assert (await client.post(f"{task_url}/retry", json=retry)).status_code == 409
         consumer = next(item for item in run["tasks"] if item["node_id"] == "result")
         safe = {
             **body,

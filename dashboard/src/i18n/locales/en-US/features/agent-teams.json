@@ -25,6 +25,25 @@
       "absent": "No value read"
     }
   },
+  "debugWrite": {
+    "title": "External write preview",
+    "pending": "Paused before external write",
+    "unavailable": "Paused because the write target could not be determined",
+    "invalidParameters": "Paused because the write parameters are incomplete or invalid",
+    "cancelled": "Debug fork cancelled",
+    "operation": "Operation",
+    "target": "Target",
+    "unknownTarget": "Undetermined",
+    "parameters": "Parameters",
+    "history": "Historical receipts from the source attempt",
+    "noReceipt": "No recorded receipt",
+    "receiptStates": {
+      "started": "Historical call started",
+      "unknown": "Historical outcome unknown",
+      "result_saved": "Historical result saved",
+      "applied": "Historical result applied"
+    }
+  },
   "inspection": {
     "title": "Data line inspector",
     "hint": "Select a named data line to see what the consumer read.",

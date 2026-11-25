@@ -9477,7 +9477,26 @@ paths:
           description: Successful Response
           content:
             application/json:
-              schema: {}
+              schema:
+                type: object
+                required: [status, message, data]
+                properties:
+                  status: {type: string, enum: [ok]}
+                  message: {type: 'null'}
+                  data:
+                    type: object
+                    additionalProperties: true
+                    properties:
+                      state:
+                        $ref: '#/components/schemas/WorkflowObservedTaskState'
+                      tasks:
+                        type: array
+                        items:
+                          type: object
+                          additionalProperties: true
+                          properties:
+                            state:
+                              $ref: '#/components/schemas/WorkflowObservedTaskState'
         '422':
           description: Validation Error
           content:
@@ -14450,6 +14469,34 @@ components:
             artifact:
               $ref: '#/components/schemas/ArtifactReference'
             value: {}
+    WorkflowObservedTaskState:
+      type: object
+      additionalProperties: true
+      properties:
+        debug_write_preview:
+          $ref: '#/components/schemas/WorkflowDebugWritePreview'
+    WorkflowDebugWritePreview:
+      type: object
+      description: A debug fork's captured write intent. The task status records cancellation.
+      required: [record_id, status, operation, target, parameters, historical_receipts]
+      properties:
+        record_id: {type: string}
+        status: {type: string, enum: [pending, unavailable]}
+        operation: {type: string}
+        target: {type: [string, 'null']}
+        parameters: {type: object, additionalProperties: true}
+        historical_receipts:
+          type: array
+          description: Original observations from matching calls in the exact source attempt.
+          items:
+            type: object
+            required: [record_id, status, results]
+            properties:
+              record_id: {type: string}
+              status: {type: string, enum: [started, unknown, result_saved, applied]}
+              results:
+                type: array
+                items: {type: object, additionalProperties: true}
     WorkflowDebugForkAttempt:
       type: object
       additionalProperties: false

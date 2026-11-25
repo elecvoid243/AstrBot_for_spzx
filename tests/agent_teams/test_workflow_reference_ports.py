@@ -366,6 +366,29 @@ async def test_agent_reads_only_its_bound_fields_and_exact_file(
     assert json.loads(pointer)["content"] == {}
     assert "Private sibling" not in context
     assert "Bound message" in context
+
+    reader = next(task for task in run["tasks"] if task["node_id"] == "reader")
+    fork_path = f"/api/v1/workflow_runs/{run['run_id']}/debug_forks"
+    source_attempt = {
+        "scope_run_id": run["run_id"],
+        "task_run_id": reader["run_id"],
+        "attempt_id": reader["state"]["attempt_id"],
+    }
+    preview = await publication_client.post(f"{fork_path}/preview", json=source_attempt)
+    assert preview.status_code == 200, preview.text
+    started = await publication_client.post(
+        fork_path,
+        json={
+            **source_attempt,
+            "preview_token": preview.json()["data"]["preview_token"],
+            "request_id": "retain-bound-fields",
+        },
+    )
+    assert started.status_code == 200, started.text
+    fork = await completed_run(service, started.json()["data"]["run_id"])
+    assert fork["status"] == "completed", fork
+    assert reads[1][:-1] == reads[0][:-1]
+    assert "Private sibling" not in reads[1][-1]
     for value in (
         {**evidence, "version": True},
         {**evidence, "unexpected": "metadata"},
@@ -411,7 +434,7 @@ async def test_agent_reads_only_its_bound_fields_and_exact_file(
     assert bounded.status_code == 200, bounded.text
     trial = await completed_run(service, bounded.json()["data"]["run_id"])
     assert trial["status"] == "completed", trial
-    projection, attachment, wrong_version, wrong_file, pointer, context = reads[1]
+    projection, attachment, wrong_version, wrong_file, pointer, context = reads[-1]
     assert json.loads(projection) == {
         **source["result_ref"],
         "version": 2,

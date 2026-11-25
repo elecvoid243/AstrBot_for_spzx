@@ -1,4 +1,30 @@
 {
+  "debugFork": {
+    "title": "Debug fork",
+    "open": "Debug with this input",
+    "preview": "Preview debug fork",
+    "version": "Original version v{version}",
+    "revision": "Original draft r{revision}",
+    "singleNode": "Only the selected node will run.",
+    "replace": "Replace one recorded input",
+    "replacementText": "Replacement text",
+    "replacementJson": "Replacement JSON",
+    "invalidJson": "Enter valid JSON.",
+    "input": "Input",
+    "originalInput": "Original value",
+    "forkInput": "Fork value",
+    "reused": "Reused",
+    "close": "Cancel",
+    "start": "Start debug fork",
+    "openSource": "Open source attempt",
+    "originalResult": "Original result",
+    "forkResult": "Fork result",
+    "sources": {
+      "recorded": "Recorded input",
+      "default": "Frozen default",
+      "absent": "No value read"
+    }
+  },
   "inspection": {
     "title": "Data line inspector",
     "hint": "Select a named data line to see what the consumer read.",

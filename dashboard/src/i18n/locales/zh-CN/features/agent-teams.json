@@ -1,4 +1,30 @@
 {
+  "debugFork": {
+    "title": "调试分支",
+    "open": "用这次输入调试",
+    "preview": "预览调试分支",
+    "version": "原版本 v{version}",
+    "revision": "原草稿 r{revision}",
+    "singleNode": "仅执行选中的节点。",
+    "replace": "替换一项已记录的输入",
+    "replacementText": "替换文本",
+    "replacementJson": "替换 JSON",
+    "invalidJson": "请输入有效的 JSON。",
+    "input": "输入",
+    "originalInput": "原值",
+    "forkInput": "分支输入值",
+    "reused": "沿用原值",
+    "close": "取消",
+    "start": "启动调试分支",
+    "openSource": "打开来源尝试",
+    "originalResult": "原结果",
+    "forkResult": "分支结果",
+    "sources": {
+      "recorded": "已记录的输入",
+      "default": "冻结定义的默认值",
+      "absent": "未读取值"
+    }
+  },
   "inspection": {
     "title": "数据线检查器",
     "hint": "选择具名数据线，查看消费节点实际读取的值。",

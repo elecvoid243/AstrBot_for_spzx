@@ -9541,6 +9541,92 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/workflow_runs/{run_id}/debug_forks/preview:
+    post:
+      tags: [Agent Teams workflows]
+      summary: Preview a single-node debug fork
+      operationId: preview_workflow_debug_fork_api_v1_workflow_runs__run_id__debug_forks_preview_post
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WorkflowDebugForkAttempt'
+      responses:
+        '200':
+          description: Original definition, recorded inputs and result.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, data]
+                properties:
+                  status: {const: ok}
+                  message: {type: 'null'}
+                  data:
+                    $ref: '#/components/schemas/WorkflowDebugForkPreview'
+        '400':
+          description: Replacement violates the input contract.
+        '401':
+          description: Dashboard session required.
+        '404':
+          description: Owned run, scope, task or attempt unavailable.
+        '409':
+          description: Attempt unsupported, evidence incomplete, or confirmation conflicts.
+        '422':
+          description: Invalid request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/workflow_runs/{run_id}/debug_forks:
+    post:
+      tags: [Agent Teams workflows]
+      summary: Start a single-node debug fork
+      operationId: start_workflow_debug_fork_api_v1_workflow_runs__run_id__debug_forks_post
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WorkflowDebugForkRequest'
+      responses:
+        '200':
+          description: Independent debug fork.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, data]
+                properties:
+                  status: {const: ok}
+                  message: {type: 'null'}
+                  data:
+                    $ref: '#/components/schemas/WorkflowDebugForkStarted'
+        '400':
+          description: Replacement violates the input contract.
+        '401':
+          description: Dashboard session required.
+        '404':
+          description: Owned run, scope, task or attempt unavailable.
+        '409':
+          description: Attempt unsupported, evidence incomplete, or confirmation conflicts.
+        '422':
+          description: Invalid request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/workflow_runs/{run_id}/tool_calls/{record_id}/resolve:
     post:
       tags:
@@ -14291,7 +14377,7 @@ components:
           type: string
     WorkflowDataLine:
       type: object
-      required: [scope_run_id, task_run_id, iteration, attempt_id, task_status, attempts, source, target, read_status]
+      required: [scope_run_id, task_run_id, iteration, attempt_id, task_status, attempts, source, target, read_status, debug_fork_supported]
       properties:
         scope_run_id:
           type: string
@@ -14338,6 +14424,7 @@ components:
               - type: 'null'
             format:
               type: string
+        debug_fork_supported: {type: boolean}
         read_status:
           type: string
           enum: [read, 'null', not_read, skipped, missing]
@@ -14363,6 +14450,93 @@ components:
             artifact:
               $ref: '#/components/schemas/ArtifactReference'
             value: {}
+    WorkflowDebugForkAttempt:
+      type: object
+      additionalProperties: false
+      required: [scope_run_id, task_run_id, attempt_id]
+      properties:
+        scope_run_id: {type: string, minLength: 1, maxLength: 128}
+        task_run_id: {type: string, minLength: 1, maxLength: 128}
+        attempt_id: {type: string, minLength: 1, maxLength: 128}
+    WorkflowDebugForkRequest:
+      type: object
+      additionalProperties: false
+      required: [scope_run_id, task_run_id, attempt_id, preview_token, request_id]
+      properties:
+        scope_run_id: {type: string, minLength: 1, maxLength: 128}
+        task_run_id: {type: string, minLength: 1, maxLength: 128}
+        attempt_id: {type: string, minLength: 1, maxLength: 128}
+        preview_token: {type: string, pattern: '^[a-f0-9]{64}$'}
+        request_id: {type: string, minLength: 1, maxLength: 128}
+        replacement:
+          anyOf:
+          - type: 'null'
+          - type: object
+            additionalProperties: false
+            required: [name, value]
+            properties:
+              name: {type: string, minLength: 1, maxLength: 128}
+              value: {}
+    WorkflowDebugForkComparison:
+      type: object
+      required: [source, original, inputs]
+      properties:
+        source:
+          type: object
+          required: [root_run_id, scope_run_id, task_run_id, attempt_id, asset_id, asset_version, workflow_name, node_id, node_name, iteration]
+          properties:
+            root_run_id: {type: string}
+            scope_run_id: {type: string}
+            task_run_id: {type: string}
+            attempt_id: {type: string}
+            asset_id: {type: string}
+            asset_version: {type: [integer, 'null']}
+            draft_revision: {type: integer}
+            workflow_name: {type: string}
+            node_id: {type: string}
+            node_name: {type: string}
+            iteration: {type: [integer, 'null']}
+        original:
+          type: object
+          required: [status, reason, result]
+          properties:
+            status: {type: string}
+            reason: {type: [string, 'null']}
+            result: {}
+        inputs:
+          type: array
+          items:
+            type: object
+            required: [name, kind, source, changed]
+            properties:
+              name: {type: string}
+              kind: {type: string, enum: [reference, text, json]}
+              source: {type: string, enum: [recorded, default, absent]}
+              original: {}
+              value: {}
+              changed: {type: boolean}
+              evidence:
+                type: object
+                properties:
+                  artifact:
+                    anyOf:
+                    - $ref: '#/components/schemas/ArtifactReference'
+                    - type: 'null'
+                  source_run_id: {type: string}
+                additionalProperties: true
+    WorkflowDebugForkPreview:
+      allOf:
+      - $ref: '#/components/schemas/WorkflowDebugForkComparison'
+      - type: object
+        required: [preview_token]
+        properties:
+          preview_token: {type: string}
+    WorkflowDebugForkStarted:
+      type: object
+      required: [run_id, status]
+      properties:
+        run_id: {type: string}
+        status: {type: string}
     WorkflowRunCard:
       type: object
       required: [run_id, status, snapshot, control, state, progress, artifact_count]
@@ -14379,6 +14553,7 @@ components:
               properties:
                 name: {type: string}
             task: {type: string}
+            debug_fork: {type: boolean}
             trial:
               type: object
               properties:

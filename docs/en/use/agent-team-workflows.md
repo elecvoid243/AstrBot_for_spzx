@@ -220,6 +220,16 @@ In the process panel, expand **Attempts** and select **Inspect data lines for th
 
 ![Data line inspector showing the failed second-round read and its artifact version](/images/agent-workflow-data-line-en.jpg)
 
+### Debug one historical node
+
+On an eligible data line, choose **Debug with this input**. The preview shows the workflow version (or draft revision) that the selected attempt used, its recorded inputs and the single node that will run. Keep the original values or select one recorded input to replace with text or JSON. The preview shows the proposed value alongside the original.
+
+Choose **Start debug fork** to open the new run. Its comparison shows the original failure or output, any input difference and the fork result. Reopen the fork from run history or its Dashboard Chat run conversation. **Open source attempt** returns to the original task's scope, iteration and attempt.
+
+This path supports the built-in Parse JSON, Map Fields and JSON Text nodes with recorded inputs. External writes require a write preview before they can run in a debug fork.
+
+![Debug fork comparing original and replacement citation inputs and results](/images/agent-workflow-debug-fork-en.jpg)
+
 ### Open the same run in Dashboard Chat
 
 In the Bot run workbench, choose **Open in Chat**. Dashboard Chat shows one conversation per root run, even when the same asset runs several times. Open a conversation from the Chat sidebar or its direct link (`#/chat/runs/<root-run-id>`) to see the asset, fixed version, root ID and current state. For draft tests, Chat shows the draft revision. Choose **Open run workbench** to return to that exact run.

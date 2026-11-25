@@ -49,16 +49,31 @@
         </p>
         <pre class="data-line-value">{{ JSON.stringify(data.upstream.value, null, 2) }}</pre>
       </details>
+      <v-btn
+        v-if="data.debug_fork_supported"
+        variant="tonal"
+        size="small"
+        class="mt-3"
+        data-testid="open-debug-fork"
+        @click="debugAttempt = { scope_run_id: data.scope_run_id, task_run_id: data.task_run_id, attempt_id: data.attempt_id }"
+      >{{ tm("debugFork.open") }}</v-btn>
     </template>
+    <WorkflowDebugForkDialog
+      v-if="debugAttempt"
+      :root-id="rootId"
+      :attempt="debugAttempt"
+      @close="debugAttempt = undefined"
+    />
   </section>
 </template>
 
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import type { WorkflowDataLine } from "@/api/generated/openapi-v1";
+import type { WorkflowDataLine, WorkflowDebugForkAttempt } from "@/api/generated/openapi-v1";
 import { workflowAssetsApi } from "@/api/workflowAssets";
 import { useModuleI18n } from "@/i18n/composables";
 import { extractApiError } from "@/utils/extractApiError";
+import WorkflowDebugForkDialog from "./WorkflowDebugForkDialog.vue";
 
 const props = defineProps<{
   rootId: string;
@@ -76,6 +91,7 @@ const props = defineProps<{
 const emit = defineEmits<{ close: [] }>();
 const { tm, getRaw } = useModuleI18n("features/agent-teams");
 const data = ref<WorkflowDataLine>();
+const debugAttempt = ref<WorkflowDebugForkAttempt>();
 const loading = ref(false);
 const error = ref("");
 const attempts = ref<{ taskId: string; options: WorkflowDataLine["attempts"] }>();
@@ -91,6 +107,10 @@ const portType = computed(() => {
 watch(() => [props.taskId, props.initialAttempt] as const, () => {
   attemptId.value = props.initialAttempt;
 }, { flush: "sync" });
+watch(
+  [() => props.rootId, () => props.scopeId, () => props.taskId, () => props.inputName, () => attemptId.value ?? props.currentAttempt],
+  () => { debugAttempt.value = undefined; },
+);
 watch(
   () => [props.rootId, props.scopeId, props.taskId, props.inputName, attemptId.value ?? props.currentAttempt, props.signal, props.taskStatus, props.executionId, props.upstreamState] as const,
   async ([root, scope, task, input, attempt, signal], _previous, onCleanup) => {

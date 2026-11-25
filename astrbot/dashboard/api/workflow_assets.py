@@ -19,6 +19,8 @@ from astrbot.core.agent_teams.graph import GraphDefinition, validate_graph
 from astrbot.core.agent_teams.history import RunHistoryService
 from astrbot.core.agent_teams.workflows import (
     ArtifactRevisionRequest,
+    DebugForkAttempt,
+    DebugForkRequest,
     HumanAnswerRequest,
     ToolResolutionRequest,
     TrialRunRequest,
@@ -1148,6 +1150,62 @@ async def inspect_workflow_data_line(
             ),
             headers={"Cache-Control": "no-store"},
         )
+    except RoleAssetError as exc:
+        return JSONResponse(
+            error(str(exc), {"fields": exc.fields}), status_code=exc.status
+        )
+
+
+@router.post("/workflow_runs/{run_id}/debug_forks/preview")
+async def preview_workflow_debug_fork(
+    run_id: str,
+    payload: DebugForkAttempt,
+    username: str = Depends(require_dashboard_user),
+    service: WorkflowService = Depends(get_workflow_service),
+):
+    """Preview the recorded inputs for one deterministic node.
+
+    Args:
+        run_id: Source root run.
+        payload: Exact scope, task, and attempt to preview.
+        username: Authenticated Dashboard owner.
+        service: Shared workflow service.
+
+    Returns:
+        The original definition, input evidence and result.
+    """
+    try:
+        return JSONResponse(
+            ok(await service.preview_debug_fork(username, run_id, payload)),
+            headers={"Cache-Control": "no-store"},
+        )
+    except RoleAssetError as exc:
+        return JSONResponse(
+            error(str(exc), {"fields": exc.fields}), status_code=exc.status
+        )
+
+
+@router.post("/workflow_runs/{run_id}/debug_forks")
+async def start_workflow_debug_fork(
+    run_id: str,
+    payload: DebugForkRequest,
+    username: str = Depends(require_dashboard_user),
+    service: WorkflowService = Depends(get_workflow_service),
+):
+    """Start the confirmed debug fork and return its independent identity.
+
+    Args:
+        run_id: Source root run.
+        payload: Exact confirmed attempt and optional replacement.
+        username: Authenticated Dashboard owner.
+        service: Shared workflow service.
+
+    Returns:
+        The persisted fork's root run identity.
+    """
+    try:
+        run = await service.start_debug_fork(username, run_id, payload)
+        return ok({"run_id": run["run_id"], "status": run["status"]})
     except RoleAssetError as exc:
         return JSONResponse(
             error(str(exc), {"fields": exc.fields}), status_code=exc.status

@@ -486,6 +486,31 @@ class TrialRunRequest(BaseModel):
     sources: dict[str, TrialSource] = Field(default_factory=dict)
 
 
+class DebugForkAttempt(BaseModel):
+    """Identify the exact consumer attempt to preview."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    scope_run_id: str = Field(min_length=1, max_length=128)
+    task_run_id: str = Field(min_length=1, max_length=128)
+    attempt_id: str = Field(min_length=1, max_length=128)
+
+
+class DebugForkReplacement(BaseModel):
+    """Replace one recorded ordinary value with a contract-checked test value."""
+
+    model_config = ConfigDict(extra="forbid", strict=True, allow_inf_nan=False)
+    name: str = Field(min_length=1, max_length=128)
+    value: JsonValue
+
+
+class DebugForkRequest(DebugForkAttempt):
+    """Confirm a preview and persist an independent single-node run."""
+
+    preview_token: str = Field(pattern=r"^[a-f0-9]{64}$")
+    request_id: str = Field(min_length=1, max_length=128)
+    replacement: DebugForkReplacement | None = None
+
+
 class ToolResolutionRequest(BaseModel):
     """An explicit, evidenced decision about an uncertain external effect."""
 
@@ -525,6 +550,35 @@ class HumanAnswerRequest(BaseModel):
     artifact_ref: ArtifactReference | None = None
     choice_id: str | None = Field(default=None, min_length=1, max_length=128)
     free_text: str | None = Field(default=None, min_length=1, max_length=10_000)
+
+
+DEBUG_FORK_TRANSFORMS = {"parse_json", "map_fields", "json_text"}
+
+
+def _debug_fork_reads(node: dict, snapshot: dict) -> dict | None:
+    """Read the consumer's recorded inputs or recover exact legacy port evidence.
+
+    Args:
+        node: Consumer from the frozen workflow definition.
+        snapshot: Saved attempt, including its round's feedback bindings.
+
+    Returns:
+        The recorded reads, or None if the source values cannot be proven.
+    """
+    reads = snapshot.get("input_reads")
+    if reads is None:
+        # Legacy V2 transforms recorded exact artifact and field on consumed ports.
+        reads = {
+            name: evidence
+            for name, evidence in (snapshot.get("port_sources") or {}).items()
+            if evidence.get("artifact") and evidence.get("field")
+        }
+        bound = (
+            node.get("inputs", {}).keys() | snapshot.get("iteration_inputs", {}).keys()
+        )
+        if not bound <= reads.keys():
+            return None
+    return reads if reads.keys() <= (snapshot.get("inputs") or {}).keys() else None
 
 
 def _current_task_runs(run: AgentWorkflowRun) -> dict[str, str]:
@@ -3429,6 +3483,7 @@ class WorkflowService:
                 source.status != "completed"
                 or snapshot.get("parent_run_id")
                 or snapshot.get("trial")
+                or snapshot.get("debug_fork")
                 or snapshot.get("engine") != "graph_v2"
             ):
                 raise RoleAssetError(
@@ -3648,6 +3703,343 @@ class WorkflowService:
             ],
         }
 
+    async def _inspection_attempt(
+        self,
+        session: AsyncSession,
+        username: str,
+        run_id: str,
+        scope_run_id: str,
+        task_run_id: str,
+        attempt_id: str | None,
+    ) -> tuple[AgentWorkflowRun, AgentWorkflowRun, dict]:
+        """Resolve an attempt in exactly one authorized root, scope and task.
+
+        Args:
+            session: Transaction shared by the caller's observation or admission.
+            username: Authenticated Dashboard owner.
+            run_id: Root run containing the invocation.
+            scope_run_id: Exact workflow invocation.
+            task_run_id: Exact task instance, including any round.
+            attempt_id: Archived or current attempt, defaulting to the current one.
+
+        Returns:
+            Frozen scope, task instance, and the selected attempt's saved facts.
+
+        Raises:
+            RoleAssetError: The root, scope, task, or attempt is inaccessible.
+        """
+        root = await session.get(AgentWorkflowRun, run_id)
+        scope = await session.get(AgentWorkflowRun, scope_run_id)
+        task = await session.get(AgentWorkflowRun, task_run_id)
+        if (
+            root is None
+            or scope is None
+            or task is None
+            or any(row.owner_username != username for row in (root, scope, task))
+            or root.snapshot.get("root_run_id") != run_id
+            or scope.snapshot.get("root_run_id") != run_id
+            or task.snapshot.get("parent_run_id") != scope_run_id
+            or task.snapshot.get("root_run_id") != run_id
+            or scope.snapshot.get("engine") != "graph_v2"
+        ):
+            raise RoleAssetError("Workflow task not found", status=404)
+
+        current_id = task.state["attempt_id"]
+        if not attempt_id or attempt_id == current_id:
+            return (
+                scope,
+                task,
+                {
+                    "attempt_id": current_id,
+                    "snapshot": task.snapshot,
+                    "state": task.state,
+                    "status": task.status,
+                    "result": task.result,
+                },
+            )
+        attempt = await session.get(AgentWorkflowAttempt, attempt_id)
+        if attempt is None or attempt.run_id != task_run_id:
+            raise RoleAssetError("Attempt not found", status=404)
+        return scope, task, attempt.data
+
+    async def _debug_fork_plan(
+        self,
+        session: AsyncSession,
+        username: str,
+        run_id: str,
+        request: DebugForkAttempt,
+    ) -> tuple[dict, dict]:
+        """Project a frozen transform and its exact recorded input boundary.
+
+        Args:
+            session: Transaction containing the frozen source attempt.
+            username: Authenticated Dashboard owner.
+            run_id: Root run containing the source.
+            request: Scope, task and attempt selected in the inspector.
+
+        Returns:
+            Persistable comparison data and the isolated single-node definition.
+
+        Raises:
+            RoleAssetError: The node cannot safely run or lacks replayable evidence.
+        """
+        scope, task, attempt = await self._inspection_attempt(
+            session,
+            username,
+            run_id,
+            request.scope_run_id,
+            request.task_run_id,
+            request.attempt_id,
+        )
+        definition = scope.snapshot["definition"]
+        node = next(
+            (
+                item
+                for item in definition["tasks"]
+                if item["id"] == task.snapshot["node_id"]
+            ),
+            None,
+        )
+        # Only these built-in transforms execute locally without tools or resource calls.
+        if (
+            node is None
+            or task.snapshot.get("engine") != "transform_task_v2"
+            or node.get("transform") not in DEBUG_FORK_TRANSFORMS
+        ):
+            raise RoleAssetError(
+                "Only built-in data transforms can run without an external write preview",
+                status=409,
+            )
+        if attempt["status"] not in {"completed", "failed"}:
+            raise RoleAssetError("Select a completed or failed attempt", status=409)
+        snapshot = attempt.get("snapshot") or {}
+        reads = _debug_fork_reads(node, snapshot)
+        values = snapshot.get("inputs") or {}
+        if reads is None:
+            raise RoleAssetError(
+                "Recorded inputs are incomplete for this attempt", status=409
+            )
+
+        contract = task_input_contract(node.get("input_contract"), node["transform"])
+        assert contract is not None
+        inputs = []
+        for name, schema in contract["properties"].items():
+            recorded = name in reads
+            defaulted = not recorded and "default" in schema
+            value = (
+                {"original": values[name], "value": values[name]}
+                if recorded
+                else {"original": schema["default"], "value": schema["default"]}
+                if defaulted
+                else {}
+            )
+            kind = (
+                "reference"
+                if schema.get("format") in REFERENCE_OUTPUTS.values()
+                else "text"
+                if schema.get("type") == "string"
+                else "json"
+            )
+            inputs.append(
+                {
+                    "name": name,
+                    "kind": kind,
+                    "source": "recorded"
+                    if recorded
+                    else "default"
+                    if defaulted
+                    else "absent",
+                    "changed": False,
+                    **value,
+                    **(
+                        {
+                            "evidence": {
+                                **(reads[name] or {}),
+                                **(snapshot.get("port_sources") or {}).get(name, {}),
+                            }
+                        }
+                        if recorded
+                        else {}
+                    ),
+                }
+            )
+
+        state = attempt.get("state") or {}
+        plan = {
+            "source": {
+                "root_run_id": run_id,
+                "scope_run_id": request.scope_run_id,
+                "task_run_id": request.task_run_id,
+                "attempt_id": request.attempt_id,
+                "asset_id": scope.snapshot["asset_id"],
+                "asset_version": scope.snapshot["asset_version"],
+                **(
+                    {"draft_revision": scope.snapshot["trial"]["draft_revision"]}
+                    if scope.snapshot.get("trial")
+                    else {}
+                ),
+                "workflow_name": definition["name"],
+                "node_id": node["id"],
+                "node_name": node["name"],
+                "iteration": snapshot.get("iteration"),
+            },
+            "original": {
+                "status": attempt["status"],
+                "reason": state.get("reason"),
+                "result": attempt.get("result"),
+            },
+            "inputs": inputs,
+        }
+        # Boundary bindings read the saved consumer values without scheduling producers.
+        isolated = {
+            "name": definition["name"],
+            "port_contract_version": definition["port_contract_version"],
+            "input_contract": contract,
+            "limits": definition.get("limits"),
+            "entry_task_ids": [node["id"]],
+            "result_task_id": node["id"],
+            "tasks": [
+                {
+                    **node,
+                    "inputs": {
+                        name: {"input": name} for name in contract["properties"]
+                    },
+                }
+            ],
+        }
+        plan["preview_token"] = hashlib.sha256(
+            json.dumps([plan, isolated], ensure_ascii=True).encode()
+        ).hexdigest()
+        return plan, isolated
+
+    async def preview_debug_fork(
+        self, username: str, run_id: str, request: DebugForkAttempt
+    ) -> dict:
+        """Read a single-node plan without starting or modifying a run.
+
+        Args:
+            username: Authenticated Dashboard owner.
+            run_id: Root run containing the source.
+            request: Exact scope, task and attempt.
+
+        Returns:
+            The original definition's identity, recorded inputs and result.
+
+        Raises:
+            RoleAssetError: The attempt is inaccessible or cannot be replayed.
+        """
+        async with self.db.get_db() as session:
+            if self.db.engine.dialect.name == "sqlite":
+                await session.execute(text("BEGIN"))
+            plan, _ = await self._debug_fork_plan(session, username, run_id, request)
+            return plan
+
+    async def start_debug_fork(
+        self, username: str, run_id: str, request: DebugForkRequest
+    ) -> dict:
+        """Commit a single-node debug fork through the ordinary scheduler.
+
+        Args:
+            username: Authenticated Dashboard owner.
+            run_id: Root run containing the source.
+            request: Confirmed preview, request identity and optional replacement.
+
+        Returns:
+            The independent persisted root run.
+
+        Raises:
+            RoleAssetError: The confirmation, evidence, or replacement is invalid.
+        """
+        key = (f"debug-fork:{run_id}", request.request_id)
+        fingerprint = hashlib.sha256(
+            json.dumps(request.model_dump(), ensure_ascii=True).encode()
+        ).hexdigest()
+        async with self.db.get_db() as session:
+            await session.execute(text("BEGIN IMMEDIATE"))
+            root = await session.get(AgentWorkflowRun, run_id)
+            if root is None or root.owner_username != username:
+                raise RoleAssetError("Run not found", status=404)
+            receipt = await session.get(AgentWorkflowLaunchReceipt, key)
+            if receipt is not None:
+                if receipt.fingerprint != fingerprint:
+                    raise WorkflowLaunchConflict()
+                fork_id = receipt.run_id
+            else:
+                plan, definition = await self._debug_fork_plan(
+                    session, username, run_id, request
+                )
+                if plan.pop("preview_token") != request.preview_token:
+                    raise RoleAssetError("Debug fork preview has changed", status=409)
+                if replacement := request.replacement:
+                    port = next(
+                        (
+                            item
+                            for item in plan["inputs"]
+                            if item["name"] == replacement.name
+                        ),
+                        None,
+                    )
+                    if (
+                        port is None
+                        or port["source"] != "recorded"
+                        or port["kind"] == "reference"
+                    ):
+                        raise RoleAssetError(
+                            "Select a recorded text or JSON input to replace"
+                        )
+                    port["value"] = replacement.value
+                    port["changed"] = json.dumps(port["original"]) != json.dumps(
+                        replacement.value
+                    )
+
+                contract = definition["input_contract"]
+                inputs = {
+                    item["name"]: item["value"]
+                    for item in plan["inputs"]
+                    if item["source"] == "recorded"
+                }
+                if request.replacement is not None:
+                    normalize_port_inputs(contract, inputs, "inputs")
+                else:
+                    # The scheduler must reproduce any failures of the original
+                    # values. Managed references need shape checks before lookup.
+                    reference_properties = {
+                        item["name"]: contract["properties"][item["name"]]
+                        for item in plan["inputs"]
+                        if item["kind"] == "reference" and item["name"] in inputs
+                    }
+                    if reference_properties:
+                        normalize_port_inputs(
+                            {"type": "object", "properties": reference_properties},
+                            {name: inputs[name] for name in reference_properties},
+                            "inputs",
+                        )
+                source = plan["source"]
+                frozen = await self._freeze_graph(
+                    username,
+                    {
+                        "asset_id": source["asset_id"],
+                        "version": source["asset_version"],
+                        "definition": definition,
+                    },
+                    WorkflowStartRequest(
+                        version=source["asset_version"] or 1, inputs=inputs
+                    ),
+                )
+                frozen["debug_fork"] = plan
+                fork_id = await self._create_scope(session, username, frozen)
+                session.add(
+                    AgentWorkflowLaunchReceipt(
+                        principal=key[0],
+                        request_id=key[1],
+                        fingerprint=fingerprint,
+                        run_id=fork_id,
+                    )
+                )
+                await session.commit()
+        await self.advance_run(username, fork_id)
+        return await self.get_run(username, fork_id)
+
     async def inspect_data_line(
         self,
         username: str,
@@ -3676,22 +4068,9 @@ class WorkflowService:
         async with self.db.get_db() as session:
             if self.db.engine.dialect.name == "sqlite":
                 await session.execute(text("BEGIN"))
-            root = await session.get(AgentWorkflowRun, run_id)
-            scope = await session.get(AgentWorkflowRun, scope_run_id)
-            task = await session.get(AgentWorkflowRun, task_run_id)
-            if (
-                root is None
-                or scope is None
-                or task is None
-                or any(row.owner_username != username for row in (root, scope, task))
-                or root.snapshot.get("root_run_id") != run_id
-                or scope.snapshot.get("root_run_id") != run_id
-                or task.snapshot.get("parent_run_id") != scope_run_id
-                or task.snapshot.get("root_run_id") != run_id
-                or scope.snapshot.get("engine") != "graph_v2"
-            ):
-                raise RoleAssetError("Data line not found", status=404)
-
+            scope, task, attempt = await self._inspection_attempt(
+                session, username, run_id, scope_run_id, task_run_id, attempt_id
+            )
             current_id = task.state["attempt_id"]
             attempt_data = col(AgentWorkflowAttempt.data)
             archived = {
@@ -3714,16 +4093,10 @@ class WorkflowService:
                 attempts.append({"attempt_id": previous_id, "status": saved_status})
                 seen.add(previous_id)
                 previous_id = older_id
-            attempt_id = attempt_id or current_id
-            if attempt_id == current_id:
-                snapshot, state, status = task.snapshot, task.state, task.status
-            else:
-                attempt = await session.get(AgentWorkflowAttempt, attempt_id)
-                if attempt is None or attempt.run_id != task_run_id:
-                    raise RoleAssetError("Attempt not found", status=404)
-                snapshot = attempt.data.get("snapshot") or {}
-                state = attempt.data.get("state") or {}
-                status = attempt.data["status"]
+            attempt_id = attempt["attempt_id"]
+            snapshot = attempt.get("snapshot") or {}
+            state = attempt.get("state") or {}
+            status = attempt["status"]
 
             definition = _run_definition(scope)
             node_id = task.snapshot.get("node_id")
@@ -3807,6 +4180,12 @@ class WorkflowService:
                     "type": port.get("type"),
                     **({"format": port["format"]} if "format" in port else {}),
                 },
+                "debug_fork_supported": (
+                    node.get("transform") in DEBUG_FORK_TRANSFORMS
+                    and task.snapshot.get("engine") == "transform_task_v2"
+                    and status in {"completed", "failed"}
+                    and _debug_fork_reads(node, snapshot) is not None
+                ),
                 "read_status": "missing",
             }
             upstream_ref = None
@@ -6874,6 +7253,10 @@ class WorkflowService:
                         run.snapshot["trial"]["draft_revision"]
                         .as_integer()
                         .label("revision"),
+                        run.snapshot["debug_fork"]["source"]["root_run_id"]
+                        .as_string()
+                        .is_not(None)
+                        .label("debug_fork"),
                         run.state["reason"].as_string().label("reason"),
                         AgentWorkflowControl.status.label("control"),
                     )
@@ -6896,6 +7279,7 @@ class WorkflowService:
                     "snapshot": {
                         "definition": {"name": r.name},
                         "task": r.goal if r.goal is not None else r.name,
+                        **({"debug_fork": True} if r.debug_fork else {}),
                         **(
                             {
                                 "trial": {

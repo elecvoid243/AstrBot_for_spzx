@@ -176,7 +176,8 @@ const canRerun = computed(() =>
   status.value !== "cancelled" &&
   props.run.snapshot?.engine === "graph_v2" &&
   props.run.snapshot.root_run_id === props.run.run_id &&
-  !props.run.snapshot.trial,
+  !props.run.snapshot.trial &&
+  !props.run.snapshot.debug_fork,
 );
 const failed = computed(() => ["failed", "awaiting_result", "blocked"].includes(props.task.status));
 const attemptId = computed(() => props.task.state?.attempt_id);

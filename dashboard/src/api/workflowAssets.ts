@@ -9,6 +9,10 @@ import type {
   ToolResolutionRequest,
   WorkflowControlRequest,
   WorkflowDataLine,
+  WorkflowDebugForkAttempt,
+  WorkflowDebugForkPreview,
+  WorkflowDebugForkRequest,
+  WorkflowDebugForkStarted,
   WorkflowRerunRequest,
   WorkflowRetryRequest,
   HumanAnswerRequest,
@@ -157,6 +161,16 @@ export const workflowAssetsApi = {
     return (await httpClient.get(
       `/api/v1/workflow_runs/${encodeURIComponent(runId)}/data_line`,
       { params, signal },
+    )).data.data;
+  },
+  async previewDebugFork(runId: string, attempt: WorkflowDebugForkAttempt, signal: AbortSignal): Promise<WorkflowDebugForkPreview> {
+    return (await httpClient.post(
+      `/api/v1/workflow_runs/${encodeURIComponent(runId)}/debug_forks/preview`, attempt, { signal },
+    )).data.data;
+  },
+  async startDebugFork(runId: string, request: WorkflowDebugForkRequest): Promise<WorkflowDebugForkStarted> {
+    return (await httpClient.post(
+      `/api/v1/workflow_runs/${encodeURIComponent(runId)}/debug_forks`, request,
     )).data.data;
   },
   async runHistoryPage(runId: string, taskRunId: string, kind: "events" | "messages" | "usage" | "attempts", before?: string | null, signal?: AbortSignal) {

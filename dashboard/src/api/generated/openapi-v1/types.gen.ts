@@ -2064,6 +2064,7 @@ export type WorkflowDataLine = {
         type?: (string | Array<(string)> | null);
         format?: string;
     };
+    debug_fork_supported: boolean;
     read_status: 'read' | 'null' | 'not_read' | 'skipped' | 'missing';
     value?: unknown;
     evidence?: {
@@ -2081,6 +2082,67 @@ export type WorkflowDataLine = {
 };
 
 export type read_status = 'read' | 'null' | 'not_read' | 'skipped' | 'missing';
+
+export type WorkflowDebugForkAttempt = {
+    scope_run_id: string;
+    task_run_id: string;
+    attempt_id: string;
+};
+
+export type WorkflowDebugForkComparison = {
+    source: {
+        root_run_id: string;
+        scope_run_id: string;
+        task_run_id: string;
+        attempt_id: string;
+        asset_id: string;
+        asset_version: (number) | null;
+        draft_revision?: number;
+        workflow_name: string;
+        node_id: string;
+        node_name: string;
+        iteration: (number) | null;
+    };
+    original: {
+        status: string;
+        reason: (string) | null;
+        result: unknown;
+    };
+    inputs: Array<{
+        name: string;
+        kind: 'reference' | 'text' | 'json';
+        source: 'recorded' | 'default' | 'absent';
+        original?: unknown;
+        value?: unknown;
+        changed: boolean;
+        evidence?: {
+            artifact?: (ArtifactReference | null);
+            source_run_id?: string;
+            [key: string]: unknown | string;
+        };
+    }>;
+};
+
+export type WorkflowDebugForkPreview = WorkflowDebugForkComparison & {
+    preview_token: string;
+};
+
+export type WorkflowDebugForkRequest = {
+    scope_run_id: string;
+    task_run_id: string;
+    attempt_id: string;
+    preview_token: string;
+    request_id: string;
+    replacement?: (null | {
+    name: string;
+    value: unknown;
+});
+};
+
+export type WorkflowDebugForkStarted = {
+    run_id: string;
+    status: string;
+};
 
 export type WorkflowDraftGenerationRequest = {
     description: string;
@@ -2178,6 +2240,7 @@ export type WorkflowRunCard = {
             name: string;
         };
         task: string;
+        debug_fork?: boolean;
         trial?: {
             mode?: string;
             draft_revision?: number;
@@ -7059,6 +7122,36 @@ export type InspectWorkflowDataLineApiV1WorkflowRunsRunIdDataLineGetResponse = (
 });
 
 export type InspectWorkflowDataLineApiV1WorkflowRunsRunIdDataLineGetError = (unknown | HTTPValidationError);
+
+export type PreviewWorkflowDebugForkApiV1WorkflowRunsRunIdDebugForksPreviewPostData = {
+    body: WorkflowDebugForkAttempt;
+    path: {
+        run_id: string;
+    };
+};
+
+export type PreviewWorkflowDebugForkApiV1WorkflowRunsRunIdDebugForksPreviewPostResponse = ({
+    status: "ok";
+    message?: null;
+    data: WorkflowDebugForkPreview;
+});
+
+export type PreviewWorkflowDebugForkApiV1WorkflowRunsRunIdDebugForksPreviewPostError = (unknown | HTTPValidationError);
+
+export type StartWorkflowDebugForkApiV1WorkflowRunsRunIdDebugForksPostData = {
+    body: WorkflowDebugForkRequest;
+    path: {
+        run_id: string;
+    };
+};
+
+export type StartWorkflowDebugForkApiV1WorkflowRunsRunIdDebugForksPostResponse = ({
+    status: "ok";
+    message?: null;
+    data: WorkflowDebugForkStarted;
+});
+
+export type StartWorkflowDebugForkApiV1WorkflowRunsRunIdDebugForksPostError = (unknown | HTTPValidationError);
 
 export type ResolveToolCallApiV1WorkflowRunsRunIdToolCallsRecordIdResolvePostData = {
     body: ToolResolutionRequest;

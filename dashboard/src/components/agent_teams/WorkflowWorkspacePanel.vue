@@ -226,7 +226,7 @@
             <div class="flex-grow-1 workflow-name">
               <strong>{{ run.snapshot.definition.name }}</strong>
               <v-chip size="small" class="ml-2">{{
-                tm(run.snapshot.trial ? "trial.test" : "trial.production")
+                tm(run.snapshot.debug_fork ? "debugFork.title" : run.snapshot.trial ? "trial.test" : "trial.production")
               }}</v-chip>
               <p class="text-body-2">
                 {{ tm(`v2.states.${run.status}`) }} · {{ run.run_id }}
@@ -281,6 +281,11 @@
           <p class="at-run-snapshot">
             <v-icon size="small" class="mr-1">mdi-lock-outline</v-icon>{{ tm("workbench.snapshotHint") }}
           </p>
+          <WorkflowDebugForkComparison
+            v-if="selectedRun.snapshot.debug_fork && !openingRunId"
+            :comparison="selectedRun.snapshot.debug_fork"
+            :task="selectedRun.tasks?.[0]"
+          />
           <nav v-show="runDisplay === 'workbench'" class="workbench-panel-nav mb-4" :aria-label="tm('workbench.panels')">
             <v-btn v-for="panel in ['tasks', 'process', 'results'] as const" :key="panel" :variant="activeRunPanel === panel ? 'tonal' : 'text'" :aria-pressed="activeRunPanel === panel" @click="activeRunPanel = panel">{{ tm(`workbench.panel${panel}`) }}</v-btn>
           </nav>
@@ -833,6 +838,7 @@ import StructuredWorkflowInputs, { parseWorkflowInputs } from "./StructuredWorkf
 import { useModuleI18n } from "@/i18n/composables";
 import { extractApiError } from "@/utils/extractApiError";
 import WorkflowRunCanvas from "./WorkflowRunCanvas.vue";
+import WorkflowDebugForkComparison from "./WorkflowDebugForkComparison.vue";
 import WorkflowExampleGuide from "./WorkflowExampleGuide.vue";
 import WorkflowPackageDialog from "./WorkflowPackageDialog.vue";
 import WorkflowChatAccessDialog from "./WorkflowChatAccessDialog.vue";
@@ -1019,7 +1025,7 @@ const visibleHumanRequests = computed(() =>
 );
 const visibleRuns = computed(() =>
   runs.value.filter((run) => {
-    if (runType.value !== "all" && (runType.value === "test") !== !!run.snapshot.trial)
+    if (runType.value !== "all" && (runType.value === "test") !== !!(run.snapshot.trial || run.snapshot.debug_fork))
       return false;
     const terminal = ["completed", "cancelled", "skipped"].includes(run.status);
     if (runView.value === "history")
@@ -1073,6 +1079,16 @@ watch(observedStatus, (status) => {
 });
 const runDisplay = ref<'workbench' | 'graph'>('workbench');
 const inspectionFocus = ref<{ taskId: string; attemptId: string } | null>(null);
+watch(
+  [() => selectedRun.value?.run_id, () => route.query.debug_task, () => route.query.debug_attempt],
+  ([runId, taskId, attemptId]) => {
+    if (runId && runId === (props.conversationRunId ?? route.query.workflow_run)
+      && typeof taskId === "string" && typeof attemptId === "string") {
+      inspectionFocus.value = { taskId, attemptId };
+      runDisplay.value = "graph";
+    }
+  },
+);
 const activeRunPanel = ref<'tasks' | 'process' | 'results'>('process');
 const runOperations = ref(
   new Map<
@@ -1939,7 +1955,12 @@ async function openRun(runId: string) {
     historyOlderHidden.value = {};
     followProcess.value = true;
     selectedTaskNode.value = snapshot.tasks?.[0]?.run_id ?? null;
-    await router.replace({ query: { ...route.query, workflow_run: runId } });
+    const query = { ...route.query, workflow_run: runId };
+    if (route.query.workflow_run !== runId && !props.conversationRunId) {
+      await router.replace({ query: { ...query, debug_task: undefined, debug_attempt: undefined } });
+    } else {
+      await router.replace({ query });
+    }
     if (disposed || read !== runRead) return;
     artifactVersion.value = detailRun.value.result_ref?.version ?? 1;
     await loadArtifact();

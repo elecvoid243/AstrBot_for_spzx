@@ -49,6 +49,7 @@ class WorkflowComponent:
         effect: Whether the operation can have external effects.
         knowledge_base: Whether this component requires read access to a bound KB.
         recovery: Native recovery guarantees for an externally effectful call.
+        write_target: Input port identifying the external destination in debug previews.
     """
 
     name: str
@@ -60,6 +61,7 @@ class WorkflowComponent:
     effect: Literal["read_only", "external"]
     knowledge_base: bool = False
     recovery: ToolRecovery | None = None
+    write_target: str | None = None
 
     def descriptor(self, plugin_id: str) -> dict:
         """Build the public, portable declaration without any runtime handlers.
@@ -100,6 +102,13 @@ class WorkflowComponent:
             raise ValueError(
                 "Use semantic output ports to return bound file references"
             )
+        if self.write_target is not None and (
+            self.effect != "external"
+            or self.write_target not in self.input_contract["properties"]
+        ):
+            raise ValueError(
+                "The write target must name a declared external input port"
+            )
         guarantees = self.recovery_declaration
         declaration = {
             "input_contract": self.input_contract,
@@ -109,7 +118,10 @@ class WorkflowComponent:
             "recovery": guarantees,
         }
         canonical = json.dumps(
-            declaration,
+            {
+                **declaration,
+                **({"write_target": self.write_target} if self.write_target else {}),
+            },
             ensure_ascii=True,
             sort_keys=True,
             separators=(",", ":"),

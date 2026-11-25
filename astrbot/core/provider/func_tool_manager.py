@@ -242,6 +242,7 @@ class _PermissionGuardedTool(FunctionTool):
             name=tool.name,
             description=tool.description,
             parameters=getattr(tool, "parameters", {}),
+            write_target=tool.write_target,
         )
         self._wrapped = tool
         self._mgr = manager
@@ -269,17 +270,28 @@ class _PermissionGuardedTool(FunctionTool):
                     Raises:
                         PermissionError: The caller no longer has tool permission.
                     """
-                    error = await self._mgr._check_tool_permission(self.name, context)
+                    error = await self.check_permission(context)
                     if error is not None:
                         raise PermissionError(error)
                     return await query(context, identity, arguments)
 
                 self.recovery.query = authorized_query
 
+    async def check_permission(self, context: ContextWrapper) -> str | None:
+        """Apply the installed tool's permission policy before its handler runs.
+
+        Args:
+            context: Current caller and event.
+
+        Returns:
+            The denial message if the caller lacks permission.
+        """
+        return await self._mgr._check_tool_permission(self.name, context)
+
     async def call(self, context: Any, **kwargs: Any) -> Any:
         import inspect as _inspect
 
-        error = await self._mgr._check_tool_permission(self.name, context)
+        error = await self.check_permission(context)
         if error is not None:
             if current_tool_recovery_retry.get():
                 raise PermissionError(error)

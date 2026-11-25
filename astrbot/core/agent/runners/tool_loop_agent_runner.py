@@ -4578,6 +4578,14 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                 execution = current_team_execution.get()
                 if execution and execution.admit_work:
                     await execution.admit_work()
+                if not reused and execution and execution.preview_tool_write:
+                    if denial := await func_tool.check_permission(self.run_context):
+                        await _append_tool_call_result(func_tool_id, denial)
+                        continue
+                    record_id = call_state["record_id"] if call_state else func_tool_id
+                    await execution.preview_tool_write(
+                        func_tool, valid_params, record_id
+                    )
                 if not reused:
                     usage_receipt = await self._begin_metered_call(
                         "tool",

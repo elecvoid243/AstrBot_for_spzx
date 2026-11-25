@@ -49,6 +49,7 @@ from astrbot.core.agent.tool import (
 )
 from astrbot.core.agent_team_execution import (
     CheckpointRecoveryError,
+    DebugWritePending,
     HumanInputRequired,
     ProcessPersistenceError,
     execute_team_turn,
@@ -3876,7 +3877,7 @@ class WorkflowService:
         run_id: str,
         request: DebugForkAttempt,
     ) -> tuple[dict, dict]:
-        """Project a frozen transform and its exact recorded input boundary.
+        """Project a frozen node and its exact recorded input boundary.
 
         Args:
             session: Transaction containing the frozen source attempt.
@@ -3907,14 +3908,14 @@ class WorkflowService:
             ),
             None,
         )
-        # Only these built-in transforms execute locally without tools or resource calls.
-        if (
-            node is None
-            or task.snapshot.get("engine") != "transform_task_v2"
-            or node.get("transform") not in DEBUG_FORK_TRANSFORMS
+        if node is None or not (
+            node.get("transform") in DEBUG_FORK_TRANSFORMS
+            or task.snapshot.get("engine") in {"plugin_task_v2", "single_task_v2"}
+            and task.snapshot.get("graph_task")
+            and definition.get("port_contract_version") == 2
         ):
             raise RoleAssetError(
-                "Only built-in data transforms can run without an external write preview",
+                "This node has no supported debug execution boundary",
                 status=409,
             )
         if attempt["status"] not in {"completed", "failed"}:
@@ -3927,8 +3928,15 @@ class WorkflowService:
                 "Recorded inputs are incomplete for this attempt", status=409
             )
 
-        contract = task_input_contract(node.get("input_contract"), node["transform"])
-        assert contract is not None
+        contract = task_input_contract(
+            node.get("input_contract"), node.get("transform")
+        )
+        if contract is None:
+            # Agent bindings without a declared contract consume text values.
+            contract = {
+                "type": "object",
+                "properties": {name: {"type": "string"} for name in reads},
+            }
         inputs = []
         for name, schema in contract["properties"].items():
             recorded = name in reads
@@ -3955,6 +3963,19 @@ class WorkflowService:
                 if recorded
                 else {}
             )
+            if (
+                recorded
+                and "port_sources" not in snapshot
+                and (artifact := evidence.get("artifact"))
+                and artifact["version"] == 1
+            ):
+                binding = snapshot.get("iteration_inputs", {}).get(name) or node.get(
+                    "inputs", {}
+                ).get(name, {})
+                if binding.get("field") in snapshot.get("selected_fields", {}).get(
+                    artifact["artifact_id"], []
+                ):
+                    evidence["field"] = binding["field"]
             if ref := evidence.get("artifact"):
                 await self._artifact_source(session, username, ref)
             ref_value = value.get("value")
@@ -4058,6 +4079,7 @@ class WorkflowService:
         isolated = {
             "name": definition["name"],
             "port_contract_version": definition["port_contract_version"],
+            "default_provider_id": definition.get("default_provider_id"),
             "input_contract": contract,
             "limits": definition.get("limits"),
             "entry_task_ids": [node["id"]],
@@ -4190,6 +4212,32 @@ class WorkflowService:
                         version=source["asset_version"] or 1, inputs=inputs
                     ),
                 )
+                if frozen["members"]:
+                    scope = await session.get(AgentWorkflowRun, source["scope_run_id"])
+                    assert scope is not None
+                    (member_name,) = frozen["members"]
+                    original_member = scope.snapshot.get("members", {}).get(member_name)
+                    if original_member is None:
+                        raise RoleAssetError(
+                            "Original Agent resources were not recorded", status=409
+                        )
+                    await self.roles.validate_frozen_role(
+                        original_member["role"], original_member["profile"]
+                    )
+                    frozen["members"][member_name] = original_member
+                    for port in plan["inputs"]:
+                        evidence = port.get("evidence", {})
+                        if (
+                            not port["changed"]
+                            and evidence.get("field")
+                            and evidence.get("artifact")
+                        ):
+                            await self._require_port_reference(
+                                session,
+                                username,
+                                evidence["artifact"],
+                                f"inputs.{port['name']}",
+                            )
                 frozen["debug_fork"] = plan
                 fork_id = await self._create_scope(session, username, frozen)
                 session.add(
@@ -4345,8 +4393,13 @@ class WorkflowService:
                     **({"format": port["format"]} if "format" in port else {}),
                 },
                 "debug_fork_supported": (
-                    node.get("transform") in DEBUG_FORK_TRANSFORMS
-                    and task.snapshot.get("engine") == "transform_task_v2"
+                    (
+                        node.get("transform") in DEBUG_FORK_TRANSFORMS
+                        or task.snapshot.get("engine")
+                        in {"plugin_task_v2", "single_task_v2"}
+                        and task.snapshot.get("graph_task")
+                        and definition.get("port_contract_version") == 2
+                    )
                     and status in {"completed", "failed"}
                     and _debug_fork_reads(node, snapshot) is not None
                 ),
@@ -5167,6 +5220,7 @@ class WorkflowService:
                                     or awaiting_saved_tool_recovery
                                 )
                                 and not result_issues
+                                and not current.state.get("debug_write_preview")
                                 and boundary is not None
                                 and (
                                     not boundary.remote_runner
@@ -6522,6 +6576,10 @@ class WorkflowService:
             else:
                 if control.status == "cancelled":
                     raise RoleAssetError("The run was cancelled", status=409)
+                if row.state.get("debug_write_preview"):
+                    raise RoleAssetError(
+                        "This call is held at the debug write preview", status=409
+                    )
                 root = (
                     row
                     if control.run_id == run_id
@@ -11177,6 +11235,20 @@ class WorkflowService:
                             trial_feedback = root.snapshot.get("trial", {})
                             if task["id"] == trial_feedback.get("node_id"):
                                 bindings.update(trial_feedback.get("feedback", {}))
+                            debug_fork = root.snapshot.get("debug_fork", {})
+                            debug_ports = (
+                                {
+                                    port["name"]: port["evidence"]
+                                    for port in debug_fork.get("inputs", [])
+                                    if not port["changed"] and "evidence" in port
+                                }
+                                if (
+                                    row.snapshot.get("engine") == "single_task_v2"
+                                    and task["id"]
+                                    == debug_fork.get("source", {}).get("node_id")
+                                )
+                                else {}
+                            )
                             for key, ref in [] if retrying else bindings.items():
                                 if key in iteration_inputs:
                                     fixed = iteration_inputs[key]
@@ -11261,6 +11333,28 @@ class WorkflowService:
                                         input_reads[key] = {
                                             "source_run_id": root.run_id
                                         }
+                                        # Preserve the exact field grant for an unchanged historical input.
+                                        evidence = debug_ports.get(key, {})
+                                        if (pinned := evidence.get("artifact")) and (
+                                            field := evidence.get("field")
+                                        ):
+                                            input_reads[key] = {
+                                                name: evidence[name]
+                                                for name in (
+                                                    "artifact",
+                                                    "source_run_id",
+                                                )
+                                                if name in evidence
+                                            }
+                                            port_sources[key] = {
+                                                "artifact": pinned,
+                                                "field": field,
+                                            }
+                                            if pinned not in refs:
+                                                refs.append(pinned)
+                                            selected_fields.setdefault(
+                                                pinned["artifact_id"], []
+                                            ).append(field)
                                     inherited = root.snapshot.get(
                                         "trial_inputs", {}
                                     ).get(ref["input"])
@@ -13469,6 +13563,10 @@ class WorkflowService:
                 raise RoleAssetError(
                     "Only interrupted execution can be recovered", status=409
                 )
+            if row.state.get("debug_write_preview"):
+                raise RoleAssetError(
+                    "This call is held at the debug write preview", status=409
+                )
             if row.status == "waiting_human":
                 todo = await session.get(
                     AgentWorkflowTodo, row.state.get("human_request_id")
@@ -15065,6 +15163,104 @@ class WorkflowService:
             )
             await session.commit()
 
+    async def _pause_debug_write(
+        self,
+        username: str,
+        run_id: str,
+        execution_id: str,
+        record_id: str,
+        operation: str,
+        parameters: dict,
+        target: object,
+        *,
+        parameters_complete: bool = True,
+    ) -> None:
+        """Fence the attempt and keep its write intent separate from tool receipts.
+
+        Args:
+            username: Owner authorized to run and inspect the fork.
+            run_id: Fork task holding the current invocation.
+            execution_id: Executor admitted for the current attempt.
+            record_id: Identity of the captured invocation.
+            operation: Resolved connector or tool name.
+            parameters: Actual supplied arguments at the execution boundary.
+            target: Destination identified by the installed implementation, if available.
+            parameters_complete: Whether the arguments meet the installed tool schema.
+
+        Raises:
+            DebugWritePending: Stop dependent execution at the saved boundary.
+            CheckpointRecoveryError: The fork lost execution admission.
+        """
+        async with self.db.get_db() as session:
+            row = await session.get(AgentWorkflowRun, run_id)
+            assert row is not None
+            control = await self._lock_control(session, row)
+            await self._require_execution_owner(session, run_id, execution_id)
+            await session.refresh(row)
+            root = await session.get(AgentWorkflowRun, control.run_id)
+            if (
+                control.status == "cancelled"
+                or root is None
+                or root.owner_username != username
+                or not root.snapshot.get("debug_fork")
+            ):
+                raise CheckpointRecoveryError("Debug write preview is no longer active")
+            source = root.snapshot["debug_fork"]["source"]
+            historical = (
+                await session.execute(
+                    select(AgentWorkflowToolCall)
+                    .where(
+                        col(AgentWorkflowToolCall.run_id) == source["task_run_id"],
+                        col(AgentWorkflowToolCall.attempt_id) == source["attempt_id"],
+                        col(AgentWorkflowToolCall.name) == operation,
+                        col(AgentWorkflowToolCall.status) != "intent",
+                    )
+                    .order_by(
+                        col(AgentWorkflowToolCall.created_at),
+                        col(AgentWorkflowToolCall.record_id),
+                    )
+                )
+            ).scalars()
+            destination = target if isinstance(target, str) and target.strip() else None
+            ready = bool(destination and parameters_complete)
+            reason = (
+                "Paused before external write"
+                if ready
+                else "External write parameters are incomplete or invalid"
+                if destination
+                else "External write target could not be determined"
+            )
+            row.status = "blocked"
+            row.state = {
+                **row.state,
+                "reason": reason,
+                "debug_write_preview": {
+                    "record_id": record_id,
+                    "status": "pending" if ready else "unavailable",
+                    "operation": operation,
+                    "target": destination,
+                    "parameters": parameters,
+                    "historical_receipts": [
+                        {
+                            "record_id": call.record_id,
+                            "status": call.status,
+                            "results": call.raw_results,
+                        }
+                        for call in historical
+                    ],
+                },
+            }
+            session.add(row)
+            session.add(
+                AgentWorkflowEvent(
+                    run_id=run_id,
+                    kind="task.blocked",
+                    data={"attempt_id": row.state["attempt_id"], "reason": reason},
+                )
+            )
+            await session.commit()
+        raise DebugWritePending(reason)
+
     async def _execute_plugin_component(
         self,
         username: str,
@@ -15073,6 +15269,8 @@ class WorkflowService:
         snapshot: dict,
         state: dict,
         checkpoint: dict | None,
+        *,
+        debug_fork: bool,
     ) -> None:
         """Execute one deterministic tool call using the native durable receipt.
 
@@ -15083,6 +15281,7 @@ class WorkflowService:
             snapshot: Frozen component, resource binding and node input values.
             state: Original task attempt identity.
             checkpoint: Native tool receipt envelope when continuing an attempt.
+            debug_fork: Pause external components at their original invocation boundary.
 
         Raises:
             CheckpointRecoveryError: The external outcome remains unconfirmed.
@@ -15117,6 +15316,18 @@ class WorkflowService:
             }
         call = checkpoint["tool_calls"][0]
         identity = call["record_id"]
+        if debug_fork and component.effect == "external" and call["status"] == "intent":
+            await self._pause_debug_write(
+                username,
+                run_id,
+                execution_id,
+                identity,
+                call["name"],
+                call["args"],
+                call["args"].get(component.write_target)
+                if component.write_target
+                else None,
+            )
         recovery = call.setdefault("recovery", {})
         context = ContextWrapper(
             context=WorkflowComponentContext(identity, node.get("knowledge_base_id")),
@@ -15375,6 +15586,8 @@ class WorkflowService:
                 return
             saved = await session.get(AgentWorkflowCheckpoint, run_id)
             checkpoint = copy.deepcopy(saved.data) if saved else None
+            root = await session.get(AgentWorkflowRun, control.run_id)
+            debug_fork = bool(root and root.snapshot.get("debug_fork"))
         member = snapshot.get("member", {})
         ports = None
         tools: list[FunctionTool] = []
@@ -15387,7 +15600,13 @@ class WorkflowService:
         try:
             if snapshot.get("engine") == "plugin_task_v2":
                 await self._execute_plugin_component(
-                    username, run_id, execution_id, snapshot, state, checkpoint
+                    username,
+                    run_id,
+                    execution_id,
+                    snapshot,
+                    state,
+                    checkpoint,
+                    debug_fork=debug_fork,
                 )
                 return
             if snapshot.get("engine") == "native_task_v2":
@@ -15397,6 +15616,10 @@ class WorkflowService:
                 return
             await self._await_execution_permission(username, run_id, execution_id)
             effective = snapshot["effective"]
+            if debug_fork and effective["runner"]["type"] != "local":
+                raise RoleAssetError(
+                    "The configured runner cannot preview external writes", status=409
+                )
             ports = self.ports_factory(snapshot.get("initiator", username))
 
             async def accept(payload: dict) -> None:
@@ -15615,6 +15838,38 @@ class WorkflowService:
                 tools.append(read_tool)
             AgentTeamToolRegistry.register(member["umo"], tools)
 
+            async def preview_tool_write(
+                tool: FunctionTool, arguments: dict, record_id: str
+            ) -> None:
+                """Hold a resolved tool unless it belongs to the fork's own task.
+
+                Args:
+                    tool: Tool resolved from the Agent's authorized tool set.
+                    arguments: Parameters after the runner's handler filtering.
+                    record_id: Durable identity assigned by the runner.
+                """
+                if type(tool) not in (
+                    ReadArtifactTool,
+                    StoreTaskFileTool,
+                    SubmitTaskResultTool,
+                ):
+                    try:
+                        parameters_complete = Draft202012Validator(
+                            tool.parameters, registry=Registry()
+                        ).is_valid(arguments)
+                    except (TypeError, ValueError, SchemaError, Unresolvable):
+                        parameters_complete = False
+                    await self._pause_debug_write(
+                        username,
+                        run_id,
+                        execution_id,
+                        record_id,
+                        tool.name,
+                        arguments,
+                        arguments.get(tool.write_target) if tool.write_target else None,
+                        parameters_complete=parameters_complete,
+                    )
+
             async def admit_work() -> None:
                 """Stop the runner while retaining an actionable admission error.
 
@@ -15783,6 +16038,7 @@ class WorkflowService:
                     if snapshot.get("parent_run_id") and not snapshot.get("graph_task")
                     else None,
                     admit_work=admit_work,
+                    preview_tool_write=preview_tool_write if debug_fork else None,
                     text=snapshot["task"],
                     context="Submit the final result with submit_task_result according to its declared contract. Plain text does not complete this task. "
                     + (

@@ -2153,6 +2153,31 @@ export type WorkflowDebugForkStarted = {
     status: string;
 };
 
+/**
+ * A debug fork's captured write intent. The task status records cancellation.
+ */
+export type WorkflowDebugWritePreview = {
+    record_id: string;
+    status: 'pending' | 'unavailable';
+    operation: string;
+    target: (string) | null;
+    parameters: {
+        [key: string]: unknown;
+    };
+    /**
+     * Original observations from matching calls in the exact source attempt.
+     */
+    historical_receipts: Array<{
+        record_id: string;
+        status: 'started' | 'unknown' | 'result_saved' | 'applied';
+        results: Array<{
+            [key: string]: unknown;
+        }>;
+    }>;
+};
+
+export type status2 = 'pending' | 'unavailable';
+
 export type WorkflowDraftGenerationRequest = {
     description: string;
     provider_id: string;
@@ -2193,6 +2218,11 @@ export type WorkflowNode = {
     member_id: string;
     task: string;
     title?: (string) | null;
+};
+
+export type WorkflowObservedTaskState = {
+    debug_write_preview?: WorkflowDebugWritePreview;
+    [key: string]: unknown | WorkflowDebugWritePreview;
 };
 
 /**
@@ -7108,7 +7138,18 @@ export type GetRunApiV1WorkflowRunsRunIdGetData = {
     };
 };
 
-export type GetRunApiV1WorkflowRunsRunIdGetResponse = (unknown);
+export type GetRunApiV1WorkflowRunsRunIdGetResponse = ({
+    status: 'ok';
+    message: null;
+    data: {
+        state?: WorkflowObservedTaskState;
+        tasks?: Array<{
+            state?: WorkflowObservedTaskState;
+            [key: string]: unknown | WorkflowObservedTaskState;
+        }>;
+        [key: string]: unknown | WorkflowObservedTaskState;
+    };
+});
 
 export type GetRunApiV1WorkflowRunsRunIdGetError = (HTTPValidationError);
 

@@ -165,8 +165,22 @@ class FunctionTool(ToolSchema, Generic[TContext]):
     recovery: ToolRecovery | None = None
     """Explicit idempotency, authoritative query or safe replay guarantees."""
 
+    write_target: str | None = None
+    """Name of the argument identifying the external destination in debug previews."""
+
     def __repr__(self) -> str:
         return f"FuncTool(name={self.name}, parameters={self.parameters}, description={self.description})"
+
+    async def check_permission(self, context: ContextWrapper[TContext]) -> str | None:
+        """Check permission before previewing or invoking the tool.
+
+        Args:
+            context: Caller context for this invocation.
+
+        Returns:
+            The denial message if the caller lacks permission.
+        """
+        return None
 
     async def call(self, context: ContextWrapper[TContext], **kwargs) -> ToolExecResult:
         """Run the tool with the given arguments. The handler field has priority."""

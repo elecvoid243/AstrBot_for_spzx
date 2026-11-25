@@ -68,7 +68,7 @@
         >{{ tm("controls.rerun") }}</v-btn
       >
     </div>
-    <p v-if="failed && !terminal && retryBlockedReason" class="text-body-2 mt-3">
+    <p v-if="failed && !terminal && !task.state?.debug_write_preview && retryBlockedReason" class="text-body-2 mt-3">
       {{ tm(retryBlockedReason) }}
     </p>
     <p class="text-caption mt-3">{{ tm("controls.semantics") }}</p>
@@ -183,6 +183,7 @@ const failed = computed(() => ["failed", "awaiting_result", "blocked"].includes(
 const attemptId = computed(() => props.task.state?.attempt_id);
 const retryableTask = computed(() =>
   !!attemptId.value &&
+  !props.task.state?.debug_write_preview &&
   !["graph_v2", "human_task_v2", "control_task_v2"].includes(props.task.snapshot?.engine) &&
   !(
     ["team_call_v2", "workflow_call_v2"].includes(props.task.snapshot?.engine) &&

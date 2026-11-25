@@ -79,6 +79,7 @@ def _can_send_local_file(
 @dataclass
 class SendMessageToUserTool(FunctionTool[AstrAgentContext]):
     name: str = "send_message_to_user"
+    write_target: str | None = "session"
     description: str = (
         "Send message to the user. "
         "Supports various message types including `plain`, `image`, `record`, `video`, `file`, and `mention_user`. "

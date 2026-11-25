@@ -893,6 +893,11 @@ export type DebugWriteConfirmation = {
     preview_token: string;
 };
 
+export type DebugWriteSimulation = {
+    preview_token: string;
+    result: unknown;
+};
+
 export type DecisionTask = {
     kind?: 'boolean' | 'choice' | 'score';
     instructions: string;
@@ -2077,11 +2082,13 @@ export type WorkflowDataLine = {
             [key: string]: unknown;
         };
         source_run_id?: string;
+        simulated_sources?: Array<WorkflowSimulatedSource>;
     };
     upstream?: {
         source_run_id: string;
         artifact?: ArtifactReference;
         value: unknown;
+        simulated_sources?: Array<WorkflowSimulatedSource>;
     };
 };
 
@@ -2138,6 +2145,7 @@ export type WorkflowDebugForkComparison = {
         status: string;
         reason: (string) | null;
         result: unknown;
+        simulated_sources?: Array<WorkflowSimulatedSource>;
     };
     inputs: Array<{
         name: string;
@@ -2171,7 +2179,8 @@ export type WorkflowDebugForkDraft = {
 export type WorkflowDebugForkInputEvidence = {
     artifact?: (ArtifactReference | null);
     source_run_id?: string;
-    [key: string]: unknown | string;
+    simulated_sources?: Array<WorkflowSimulatedSource>;
+    [key: string]: unknown | string | WorkflowSimulatedSource;
 };
 
 export type WorkflowDebugForkLocation = {
@@ -2229,6 +2238,13 @@ export type WorkflowDebugWritePreview = {
     status: 'pending' | 'unavailable';
     preview_token?: (string) | null;
     authorized_by?: string;
+    output_contract?: {
+        [key: string]: unknown;
+    } | null;
+    simulated_receipt?: {
+        result: unknown;
+        submitted_by: string;
+    };
     operation: string;
     target: (string) | null;
     parameters: {
@@ -2335,7 +2351,8 @@ export type WorkflowNode = {
 
 export type WorkflowObservedTaskState = {
     debug_write_preview?: WorkflowDebugWritePreview;
-    [key: string]: unknown | WorkflowDebugWritePreview;
+    simulated_sources?: Array<WorkflowSimulatedSource>;
+    [key: string]: unknown | WorkflowDebugWritePreview | WorkflowSimulatedSource;
 };
 
 /**
@@ -2424,6 +2441,12 @@ export type WorkflowRunCard = {
 export type WorkflowSaveRequest = {
     definition: (GraphDefinition | AutonomousDefinition);
     expected_version?: (number | null);
+};
+
+export type WorkflowSimulatedSource = {
+    record_id: string;
+    task_run_id: string;
+    attempt_id: string;
 };
 
 /**
@@ -7364,6 +7387,18 @@ export type ConfirmWorkflowDebugWriteApiV1WorkflowRunsRunIdToolCallsRecordIdExec
 export type ConfirmWorkflowDebugWriteApiV1WorkflowRunsRunIdToolCallsRecordIdExecutePostResponse = (unknown);
 
 export type ConfirmWorkflowDebugWriteApiV1WorkflowRunsRunIdToolCallsRecordIdExecutePostError = (unknown | HTTPValidationError);
+
+export type SimulateWorkflowDebugWriteApiV1WorkflowRunsRunIdToolCallsRecordIdSimulatePostData = {
+    body: DebugWriteSimulation;
+    path: {
+        record_id: string;
+        run_id: string;
+    };
+};
+
+export type SimulateWorkflowDebugWriteApiV1WorkflowRunsRunIdToolCallsRecordIdSimulatePostResponse = (unknown);
+
+export type SimulateWorkflowDebugWriteApiV1WorkflowRunsRunIdToolCallsRecordIdSimulatePostError = (unknown);
 
 export type ResolveToolCallApiV1WorkflowRunsRunIdToolCallsRecordIdResolvePostData = {
     body: ToolResolutionRequest;

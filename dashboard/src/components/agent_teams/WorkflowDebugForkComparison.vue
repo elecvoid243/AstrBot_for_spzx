@@ -34,6 +34,7 @@
         <h4 class="text-subtitle-1 font-weight-bold">{{ tm(title) }}</h4>
         <p class="text-body-2 text-medium-emphasis">{{ getRaw(`v2.states.${data.status}`) ?? data.status }}</p>
         <p v-if="data.reason" class="text-body-2 mt-2">{{ data.reason }}</p>
+        <WorkflowSimulatedSources :sources="data.simulated_sources" />
         <pre v-if="data.result != null" class="mt-2">{{ JSON.stringify(data.result, null, 2) }}</pre>
       </div>
     </div>
@@ -44,10 +45,11 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { useRoute } from "vue-router";
-import type { WorkflowDebugForkComparison, WorkflowDebugWritePreview as DebugWritePreview } from "@/api/generated/openapi-v1";
+import type { WorkflowDebugForkComparison, WorkflowDebugWritePreview as DebugWritePreview, WorkflowSimulatedSource } from "@/api/generated/openapi-v1";
 import { useModuleI18n } from "@/i18n/composables";
 import WorkflowDebugForkDraftDetails from "./WorkflowDebugForkDraftDetails.vue";
 import WorkflowDebugForkInputs from "./WorkflowDebugForkInputs.vue";
+import WorkflowSimulatedSources from "./WorkflowSimulatedSources.vue";
 import WorkflowDebugWritePreview, { type DebugWriteTask } from "./WorkflowDebugWritePreview.vue";
 
 const props = defineProps<{
@@ -57,7 +59,7 @@ const props = defineProps<{
   run: {
     run_id: string;
     status: string;
-    state?: { reason?: string };
+    state?: { reason?: string; simulated_sources?: WorkflowSimulatedSource[] };
     result?: unknown;
     tasks?: RunTask[];
     loops?: RunLoop[];
@@ -66,7 +68,7 @@ const props = defineProps<{
 }>();
 const emit = defineEmits<{ refresh: [rootId: string] }>();
 type RunTask = DebugWriteTask & {
-  state?: { reason?: string; debug_write_preview?: DebugWritePreview };
+  state?: { reason?: string; debug_write_preview?: DebugWritePreview; simulated_sources?: WorkflowSimulatedSource[] };
   result?: unknown;
 };
 type RunLoop = { iterations: { tasks: RunTask[] }[] };
@@ -117,6 +119,7 @@ const results = computed(() => [
     status: resultRun.value?.status ?? "pending",
     reason: resultRun.value?.state?.reason,
     result: resultRun.value?.result,
+    simulated_sources: resultRun.value?.state?.simulated_sources,
   } },
 ]);
 </script>

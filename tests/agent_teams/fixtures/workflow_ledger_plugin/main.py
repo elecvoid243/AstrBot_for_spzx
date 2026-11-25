@@ -37,6 +37,12 @@ class WorkflowLedger(Star):
                     "required": ["target", "count"],
                 },
                 write_target="target",
+                debug_output_contract={
+                    "type": "object",
+                    "properties": {"receipt": {"type": "string"}},
+                    "required": ["receipt"],
+                    "additionalProperties": False,
+                },
                 handler=self.record_report_delivery,
             )
         )

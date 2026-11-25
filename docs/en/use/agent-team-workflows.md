@@ -252,6 +252,12 @@ Reopen the preview after refreshing or reconnecting. **This call’s execution e
 
 ![External write preview showing the report destination, parameters and Execute real write button](/images/agent-workflow-debug-write-en.jpg)
 
+To test downstream handling, choose **Continue with test value** in the write preview. Enter a JSON result, such as a test message ID, and select **Submit simulated receipt**. Expand **Expected output contract** when the connector or tool declares one. Validation errors identify the field that needs correction. For Agent tools without a declared output contract, the Agent receives the JSON as plain text.
+
+The execution timeline records the simulated receipt. **Uses simulated values** in the data-line inspector and on derived results shows the source call and attempt after reopening the fork. The fork skips the external call and pauses again at any later write, such as an external archive. Test values cannot provide managed references or verify an uncertain external outcome.
+
+![Write preview with a test message ID in the simulated receipt editor](/images/agent-workflow-simulated-receipt-en.jpg)
+
 ### Debug a failed fixed child call
 
 In the parent run graph, select the iteration that failed, select the child workflow call, and choose **Debug failed child call**. The graph opens the child scope for that invocation and previews a recorded failed attempt. If several attempts failed, select the node, iteration (when applicable), and attempt in the preview. The preview shows the original fixed version and the inputs and artifact versions recorded for that attempt.

@@ -17,6 +17,10 @@
           </div>
         </th>
         <td>
+          <WorkflowSimulatedSources
+            v-if="'original' in port"
+            :sources="(port.original_evidence ?? (port.source === 'mapped' ? undefined : port.evidence))?.simulated_sources"
+          />
           <pre v-if="'original' in port">{{ JSON.stringify(port.original, null, 2) }}</pre>
           <span v-else>—</span>
           <div v-if="port.original_evidence?.artifact" class="text-caption">
@@ -25,6 +29,7 @@
         </td>
         <td>
           <template v-if="'value' in port">
+            <WorkflowSimulatedSources :sources="port.evidence?.simulated_sources" />
             <span class="text-caption text-medium-emphasis">
               {{ tm(`debugFork.selections.${port.selection ?? (!('original' in port) ? "filled" : port.changed ? "replaced" : "reused")}`) }}
             </span>
@@ -41,6 +46,7 @@
 </template>
 
 <script setup lang="ts">
+import WorkflowSimulatedSources from "./WorkflowSimulatedSources.vue";
 import type { WorkflowDebugForkComparison } from "@/api/generated/openapi-v1";
 import { useModuleI18n } from "@/i18n/composables";
 

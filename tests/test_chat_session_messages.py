@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 import pytest_asyncio
+from jsonschema import Draft202012Validator
 
 from astrbot.builtin_stars.session_messages.main import Main
 from astrbot.builtin_stars.session_messages.tools import SendChatMessageTool
@@ -1299,3 +1300,14 @@ async def test_send_receipt_reports_the_saved_input_baseline(messaging):
     ]["history"]
     saved = next(row for row in rows if row["content"].get("agent_source"))
     assert accepted["input_message_id"] == saved["id"]
+
+
+def test_send_simulated_receipt_contract_supports_local_and_remote_ids():
+    """Apply the installed tool's receipt contract to local and older remote receipts."""
+    receipt = Draft202012Validator(SendChatMessageTool().debug_output_contract)
+    acceptance = {"status": "accepted", "session_id": "recipient"}
+    receipt.validate({**acceptance, "message_id": "message", "input_message_id": 12})
+    receipt.validate({**acceptance, "input_message_id": None})
+    receipt.validate({**acceptance, "connection_id": "peer"})
+    (issue,) = receipt.iter_errors({**acceptance, "input_message_id": "invalid"})
+    assert list(issue.path) == ["input_message_id"]

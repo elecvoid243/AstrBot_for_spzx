@@ -83,6 +83,17 @@
     }
   },
   "debugWrite": {
+    "simulate": "Continue with test value",
+    "submitTestValue": "Submit simulated receipt",
+    "testValue": "Test result (JSON)",
+    "testValueHint": "This call will be skipped. Managed references cannot be supplied as test values.",
+    "textValueHint": "This call will be skipped. The Agent receives the JSON as plain text.",
+    "outputContract": "Expected output contract",
+    "invalidJson": "Enter a valid JSON value.",
+    "simulated": "Simulated receipt recorded",
+    "submittedBy": "Test value submitted by {name}",
+    "derived": "Uses simulated values",
+    "backToPreview": "Back to write options",
     "call": "Call ID",
     "execute": "Execute real write",
     "authorized": "Real write authorized",
